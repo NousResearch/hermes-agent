@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from gateway.run_turn_runner import TurnRunner
+from gateway.pre_delivery import PreDeliveryGate
 
 
 
@@ -117,6 +119,43 @@ async def test_release_is_ordered_after_queued_commentary():
     assert adapter.draft_calls == []
     adapter.send.assert_awaited_once()
     assert adapter.send.call_args.kwargs["content"] == "approved final"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result_shape", [
+    {"failed": True, "completed": True},
+    {"interrupted": True, "completed": True},
+    {"completed": False},
+    {"completed": True, "final_response": ""},
+])
+async def test_turn_runner_suppresses_non_success_terminal_shapes(result_shape):
+    adapter = _adapter()
+    consumer = GatewayStreamConsumer(
+        adapter, "chat-1", StreamConsumerConfig(transport="auto", chat_type="dm", cursor=""),
+    )
+    runner = SimpleNamespace(pre_delivery_gate=PreDeliveryGate(
+        mode="strict", policy=lambda **_: {"allowed": True, "status": "passed", "final_text": "ok"},
+    ))
+    ctx = SimpleNamespace(
+        result_holder=[None],
+        source=SimpleNamespace(platform="test", chat_id="chat-1"),
+        session_key="session-1",
+        run_generation=1,
+        inbound_message_id="turn-1",
+    )
+    turn = TurnRunner(runner, ctx)
+    consumer.quarantine_content_delivery()
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta("buffered but unvalidated")
+    turn._finish_stream_consumer(
+        {"final_response": "buffered but unvalidated", "messages": [], **result_shape},
+        [], consumer,
+    )
+    await task
+
+    assert adapter.draft_calls == []
+    adapter.send.assert_not_awaited()
+    adapter.edit_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

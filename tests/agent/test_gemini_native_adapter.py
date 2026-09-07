@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from types import SimpleNamespace
 
@@ -17,6 +18,21 @@ class DummyResponse:
 
     def json(self):
         return self._payload
+
+
+def test_input_audio_becomes_validated_gemini_inline_data():
+    from agent.gemini_native_adapter import _extract_multimodal_parts
+
+    encoded = base64.b64encode(b"OggSvoice").decode("ascii")
+    parts = _extract_multimodal_parts([
+        {"type": "text", "text": "listen"},
+        {"type": "input_audio", "input_audio": {"data": encoded, "format": "ogg"}},
+    ])
+
+    assert parts == [
+        {"text": "listen"},
+        {"inlineData": {"mimeType": "audio/ogg", "data": encoded}},
+    ]
 
 
 

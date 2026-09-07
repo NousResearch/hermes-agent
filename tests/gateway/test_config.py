@@ -209,6 +209,12 @@ class TestStreamingConfig:
 
 class TestGatewayConfigRoundtrip:
 
+    def test_audio_mode_accepts_nested_and_legacy_forms_with_safe_normalization(self):
+        assert GatewayConfig.from_dict({"gateway": {"audio_mode": "native"}}).audio_mode == "native"
+        assert GatewayConfig.from_dict({"audio_mode": "stt", "gateway": {"audio_mode": "native"}}).audio_mode == "stt"
+        assert GatewayConfig.from_dict({"gateway": {"audio_mode": "invalid"}}).audio_mode == "auto"
+        assert GatewayConfig(audio_mode="NATIVE").to_dict()["audio_mode"] == "native"
+
     def test_systemd_watchdog_from_dict_disables_invalid_values(self):
         invalid_values = [
             None,
@@ -489,6 +495,17 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.stt_enabled is False
+
+    def test_audio_mode_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n  audio_mode: native\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert load_gateway_config().audio_mode == "native"
 
 
     @staticmethod

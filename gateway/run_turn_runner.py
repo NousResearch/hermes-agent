@@ -1389,17 +1389,95 @@ class TurnRunner:
             ctx.message = build_resume_recovery_note(resume_reason, "", interactive=self._resume_note_interactive())
         return persist_override, ctx.persist_user_timestamp
 
-    def _native_image_run_message(self):
+    @staticmethod
+    def _prepend_message_text(message: Any, prefix: str) -> Any:
+        """Prepend text without discarding native multimodal content parts."""
+        prefix = str(prefix or "").strip()
+        if not prefix:
+            return message
+        if isinstance(message, list):
+            updated = list(message)
+            for index, part in enumerate(updated):
+                if not isinstance(part, dict) or part.get("type") != "text":
+                    continue
+                current = part.get("text") if isinstance(part.get("text"), str) else ""
+                updated[index] = {**part, "text": f"{prefix}\n\n{current}" if current else prefix}
+                return updated
+            return [{"type": "text", "text": prefix}, *updated]
+        if isinstance(message, str) and message:
+            return f"{prefix}\n\n{message}"
+        return prefix
+
+    @staticmethod
+    def _message_text(message: Any) -> str:
+        if isinstance(message, str):
+            return message
+        if isinstance(message, list):
+            return "\n".join(
+                part["text"] for part in message
+                if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str)
+            )
+        return ""
+
+    @staticmethod
+    def _native_audio_fallback_note(audio_paths: List[str]) -> str:
+        """Return a non-empty last-resort note when the STT bridge is unavailable."""
+        def visible_path(path: str) -> str:
+            try:
+                from tools.credential_files import to_agent_visible_cache_path
+
+                return to_agent_visible_cache_path(path)
+            except Exception:
+                return path
+
+        notes, seen = [], set()
+        for path in audio_paths:
+            raw_path = str(path or "")
+            if not raw_path or raw_path in seen:
+                continue
+            seen.add(raw_path)
+            notes.append(
+                "[voice message could not be transcribed automatically; "
+                f"the audio is available at: {visible_path(raw_path)}]"
+            )
+        return "\n\n".join(notes) or (
+            "[voice message could not be processed natively or transcribed automatically]"
+        )
+
+    def _transcribe_native_audio_fallback_sync(self, audio_paths: List[str]) -> str:
+        """Bridge rejected native audio back to the gateway's async STT path."""
+        if not audio_paths:
+            return self._native_audio_fallback_note([])
+        ctx = self._ctx
+        future = self._schedule(
+            self._runner._transcribe_native_audio_fallback(
+                audio_paths,
+                source=ctx.source,
+                reply_to_message_id=ctx.event_message_id,
+            ),
+            "Native audio STT fallback scheduling error",
+        )
+        if future is not None:
+            try:
+                fallback_text = future.result()
+                if isinstance(fallback_text, str) and fallback_text.strip():
+                    return fallback_text.strip()
+            except Exception as exc:
+                logger.warning("Native audio STT fallback failed: %s", exc)
+        return self._native_audio_fallback_note(audio_paths)
+
+    def _native_image_run_message(self, native_imgs: Optional[List[str]] = None):
         """Wrap the user turn as an OpenAI-style multimodal content list when
         _prepare_inbound_message_text buffered image paths; consume-and-clear so later turns on the
         same runner never re-attach stale images. Falls back to plain text when nothing is readable."""
         ctx = self._ctx
-        native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
+        if native_imgs is None:
+            native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key or "")
         if not native_imgs:
             return ctx.message
         try:
             from agent.image_routing import build_native_content_parts
-            parts, skipped = build_native_content_parts(ctx.message, native_imgs)
+            parts, skipped = build_native_content_parts(ctx.message or "", native_imgs)
             if skipped:
                 logger.warning("Native image attachment: skipped %d unreadable path(s): %s", len(skipped), skipped)
             if any(p.get("type") == "image_url" for p in parts):
@@ -1407,6 +1485,72 @@ class TurnRunner:
         except Exception as exc:
             logger.warning("Native image attachment failed, falling back to text: %s", exc)
         return ctx.message
+
+    def _native_media_run_message(self, agent, persist_user_message_override):
+        """Build one mixed image/audio turn, preserving clean text-only persistence."""
+        ctx = self._ctx
+        session_key = ctx.session_key or ""
+        native_imgs = self._runner._consume_pending_native_image_paths(session_key)
+        native_audio = self._runner._consume_pending_native_audio_attachments(session_key)
+        run_message = self._native_image_run_message(native_imgs) if native_imgs else ctx.message
+        if not native_audio:
+            return run_message, persist_user_message_override
+
+        audio_paths = [
+            str(item.get("path") or "") if isinstance(item, dict) else str(item or "")
+            for item in native_audio
+        ]
+        audio_paths = [path for path in audio_paths if path]
+        failed_audio_paths: List[str] = []
+        native_audio_count = 0
+        try:
+            from agent.audio_routing import build_native_audio_content_parts
+
+            existing_media = (
+                [part for part in run_message if isinstance(part, dict) and part.get("type") != "text"]
+                if isinstance(run_message, list) else []
+            )
+            audio_parts, skipped = build_native_audio_content_parts(
+                self._message_text(run_message),
+                native_audio,
+                target_provider=(
+                    getattr(agent, "provider", "")
+                    or getattr(agent, "requested_provider", "")
+                    or ""
+                ),
+            )
+            if skipped:
+                logger.warning(
+                    "Native audio attachment: skipped %d path(s): %s",
+                    len(skipped),
+                    skipped,
+                )
+            skipped_paths = {str(path) for path in skipped}
+            failed_audio_paths = [path for path in audio_paths if path in skipped_paths]
+            native_audio_parts = [part for part in audio_parts if part.get("type") == "input_audio"]
+            native_audio_count = len(native_audio_parts)
+            if native_audio_parts:
+                text_parts = [part for part in audio_parts if part.get("type") == "text"]
+                run_message = [*text_parts, *existing_media, *native_audio_parts]
+            elif not failed_audio_paths:
+                # A builder must either attach or explicitly reject each staged clip.
+                failed_audio_paths = list(audio_paths)
+        except Exception as exc:
+            logger.warning("Native audio attachment failed, falling back to STT: %s", exc)
+            failed_audio_paths = list(audio_paths)
+
+        fallback_text = ""
+        if failed_audio_paths:
+            fallback_text = self._transcribe_native_audio_fallback_sync(failed_audio_paths)
+            run_message = self._prepend_message_text(run_message, fallback_text)
+
+        # The request carries Base64, but session history only keeps text plus a compact marker.
+        persist_base = persist_user_message_override if persist_user_message_override is not None else ctx.message
+        if native_audio_count:
+            persist_base = self._prepend_message_text(persist_base, "[Voice message attached natively]")
+        if fallback_text:
+            persist_base = self._prepend_message_text(persist_base, fallback_text)
+        return run_message, persist_base
 
     def _run_conversation_with_approval(self, agent, agent_history, observed_group_context,
                                         persist_user_message_override, persist_user_timestamp_override):
@@ -1420,7 +1564,10 @@ class TurnRunner:
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
-            api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
+            run_message, persist_user_message_override = self._native_media_run_message(
+                agent, persist_user_message_override,
+            )
+            api_message = _wrap_current_message_with_observed_context(run_message, observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
             if persist_user_message_override is not None:
                 kwargs["persist_user_message"] = persist_user_message_override

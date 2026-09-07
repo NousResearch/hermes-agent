@@ -251,7 +251,9 @@ def _run_git(args: List[str], store: Path, working_dir: str, timeout: int = _GIT
         return False, "", str(exc)
 
     ok = result.returncode == 0
-    stdout, stderr = result.stdout.strip(), result.stderr.strip()
+    # NUL-delimited output contains literal paths, including leading spaces.
+    stdout = result.stdout if "-z" in args else result.stdout.strip()
+    stderr = result.stderr.strip()
     if not ok and result.returncode not in (allowed_returncodes or set()):
         logger.error("Git command failed: %s (rc=%d) stderr=%s",
                      " ".join(cmd), result.returncode, stderr)
@@ -596,7 +598,7 @@ class CheckpointManager:
         if err:
             return err
 
-        (ok, names_out, err), = _diff_staged_tree(p, ["diff", "--name-only", commit_hash, "--cached"])
+        (ok, names_out, err), = _diff_staged_tree(p, ["diff", "--name-only", "-z", commit_hash, "--cached"])
         if not ok:
             return {"success": False, "error": f"Could not compute changed files: {err}"}
 
@@ -604,7 +606,7 @@ class CheckpointManager:
         if not ledger:
             return {"success": True, "restore": [], "skipped": [], "ledger_empty": True}
         out: Dict[str, List[str]] = {"restore": [], "skipped": []}
-        for rel in filter(None, (line.strip() for line in names_out.splitlines())):
+        for rel in filter(None, names_out.split("\x00")):
             abs_path = Path(p.abs_dir) / rel
             entry = ledger.get(str(abs_path))
             recorded = entry.get("sha256") if isinstance(entry, dict) else None
@@ -855,7 +857,7 @@ class CheckpointManager:
             return
         ok, stdout, _ = _run_git(["ls-files", "--cached", "-z"], store, working_dir, index_file=index_file)
         abs_workdir = _normalize_path(working_dir)
-        # NUL-separated; _run_git's strip() leaves NULs alone.
+        # NUL-separated literal paths; whitespace is part of the file name.
         oversize = [rel for rel in (stdout if ok else "").split("\x00") if rel and self._exceeds_size_cap(abs_workdir / rel)]
         if not oversize:
             return

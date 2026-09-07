@@ -1161,3 +1161,142 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# kanban_close_gate — the sanctioned narrow cross-task close for workers
+# ---------------------------------------------------------------------------
+
+def _make_gate(worker_env, *, created_by="test-worker", link_to_worker=True, blocked=True):
+    """Create a gate (or card) the worker may or may not be allowed to close."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        parents = []
+        if blocked:
+            sentinel = kb.create_task(
+                conn, title="parking sentinel", assignee="human", initial_status="blocked",
+            )
+            parents = [sentinel]
+        gate = kb.create_task(
+            conn, title="Gate: Lucas release", assignee="test-worker",
+            created_by=created_by, parents=parents,
+            initial_status="blocked" if blocked else "running",
+        )
+        if link_to_worker:
+            kb.link_tasks(conn, parent_id=gate, child_id=worker_env)
+    finally:
+        conn.close()
+    return gate
+
+
+def test_close_gate_happy_path(worker_env):
+    """A worker may close a blocked gate it opened (created_by == profile) that
+    lists its own task among its children — the sanctioned narrow close."""
+    from tools import kanban_tools as kt
+    gate = _make_gate(worker_env)
+
+    out = kt._handle_close_gate({"gate_id": gate, "result": "Lucas said ship it"})
+    d = json.loads(out)
+    assert d.get("ok") is True, d
+    assert d.get("status") == "done"
+    assert d.get("unblocked_child") == worker_env
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        done = kb.get_task(conn, gate)
+        assert done.status == "done"
+        assert done.result == "Lucas said ship it"
+        # The parking sentinel parent was unlinked; no residual parent edge.
+        assert kb.parent_ids(conn, gate) == []
+    finally:
+        conn.close()
+
+
+def test_close_gate_refuses_when_not_opened_by_this_worker(worker_env):
+    """created_by must be the worker's own profile — a gate another profile
+    opened is off limits even if it lists this task as a child."""
+    from tools import kanban_tools as kt
+    gate = _make_gate(worker_env, created_by="vx-spec")
+
+    out = kt._handle_close_gate({"gate_id": gate, "result": "x"})
+    d = json.loads(out)
+    assert d.get("error")
+    assert "created by" in d["error"]
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, gate).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_close_gate_refuses_when_child_not_listed(worker_env):
+    """The gate must list the worker's current task among its children; a gate
+    the worker opened that does not block this task is not closable here."""
+    from tools import kanban_tools as kt
+    gate = _make_gate(worker_env, link_to_worker=False)
+
+    out = kt._handle_close_gate({"gate_id": gate, "result": "x"})
+    d = json.loads(out)
+    assert d.get("error")
+    assert "children" in d["error"]
+
+
+def test_close_gate_refuses_when_not_blocked(worker_env):
+    """close_gate only closes blocked gates; a ready card the worker opened is
+    not a gate and must not be reachable through this narrow close."""
+    from tools import kanban_tools as kt
+    gate = _make_gate(worker_env, blocked=False)
+
+    out = kt._handle_close_gate({"gate_id": gate, "result": "x"})
+    d = json.loads(out)
+    assert d.get("error")
+    assert "not blocked" in d["error"]
+
+
+def test_close_gate_requires_worker_context(monkeypatch, worker_env):
+    """Without HERMES_KANBAN_TASK (an orchestrator) close_gate points at
+    kanban_complete instead of silently no-opping."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+    out = kt._handle_close_gate({"gate_id": "t_whatever", "result": "x"})
+    d = json.loads(out)
+    assert d.get("error")
+    assert "HERMES_KANBAN_TASK" in d["error"]
+
+
+def test_refused_complete_leaves_diagnostic_comment(worker_env):
+    """A refused cross-task lifecycle mutation is loud: it leaves a diagnostic
+    comment on the TARGET card, not just a warning in a log nobody reads."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        other = kb.create_task(conn, title="sibling")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (other,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"task_id": other, "summary": "HIJACK"})
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    assert "refusing to mutate" in d.get("error", "")
+    # The guard now also names the sanctioned alternative.
+    assert "kanban_close_gate" in d.get("error", "")
+
+    conn = kbc.connect()
+    try:
+        # Target still untouched, but the refusal is recorded on it.
+        assert kb.get_task(conn, other).status == "ready"
+        comments = kb.list_comments(conn, other)
+        assert any("refused lifecycle mutation" in c.body for c in comments)
+    finally:
+        conn.close()

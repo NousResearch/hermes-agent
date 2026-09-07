@@ -21,7 +21,8 @@ from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
-    KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
+    KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA,
+    KANBAN_CLOSE_GATE_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
     KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
@@ -161,7 +162,25 @@ def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Op
     return {**(metadata or {}), "worker_session_id": session_id} if session_id else metadata
 
 
-def _enforce_worker_task_ownership(tid: str) -> None:
+def _record_refusal_diagnostic(tool_name: str, env_tid: str, tid: str, board: Optional[str]) -> None:
+    """Best-effort loud artifact for a refused cross-task lifecycle mutation: a
+    diagnostic comment on the TARGET card, so a silently-survived refusal is still
+    visible where a human looks instead of only in a log nobody reads."""
+    try:
+        author = os.environ.get("HERMES_PROFILE") or "worker"
+        body = (
+            f"[refused lifecycle mutation] {tool_name or 'a kanban tool'} by {author} "
+            f"(scoped to {env_tid}) on this card was refused by the ownership guard; "
+            f"no state changed. If this card is a gate you opened to unblock {env_tid}, "
+            f"use kanban_close_gate instead of {tool_name or 'kanban_complete'}."
+        )
+        with _board(board, quiet_close=True) as (kb, conn):
+            kb.add_comment(conn, tid, author=author, body=body)
+    except Exception:
+        logger.debug("refusal diagnostic on %s failed", tid, exc_info=True)
+
+
+def _enforce_worker_task_ownership(tid: str, *, tool_name: str = "", board: Optional[str] = None) -> None:
     """A dispatcher-spawned worker may only mutate its own HERMES_KANBAN_TASK; a
     prompt-injected ``task_id`` must not corrupt sibling/cross-tenant runs.
     Orchestrators (toolset enabled, no env task) legitimately route child tasks.
@@ -172,9 +191,11 @@ def _enforce_worker_task_ownership(tid: str) -> None:
     """
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
     if env_tid and tid != env_tid:
+        _record_refusal_diagnostic(tool_name, env_tid, tid, board)
         raise _Reject(
             f"worker is scoped to task {env_tid}; refusing to mutate {tid}. Use kanban_comment "
-            f"to hand off information to other tasks, or kanban_create to spawn follow-up work.")
+            f"to hand off information to other tasks, kanban_create to spawn follow-up work, or "
+            f"kanban_close_gate to close a gate you opened that lists this task among its children.")
 
 
 def _worker_guard(tool_name: str, args: dict) -> str:
@@ -182,7 +203,7 @@ def _worker_guard(tool_name: str, args: dict) -> str:
     resolution, task-scope ownership. Returns the task id."""
     _reject_delegated_child_mutation(tool_name)
     tid = _require_task_id(args)
-    _enforce_worker_task_ownership(tid)
+    _enforce_worker_task_ownership(tid, tool_name=tool_name, board=args.get("board"))
     return tid
 
 
@@ -625,6 +646,45 @@ def _handle_block(args: dict, **kw) -> str:
         return _ok_landed(kb, conn, tid, "blocked", block_kind=kind)
 
 
+@_kanban_handler("kanban_close_gate")
+def _handle_close_gate(args: dict, **kw) -> str:
+    """Close a gate this worker itself opened, to unblock its own current task.
+
+    The one sanctioned cross-task completion for a dispatcher worker: the gate
+    must be ``blocked``, ``created_by`` this worker's profile, and list the
+    worker's current task among its children. Unlink + complete are atomic so
+    the gate never sits ``ready`` (dispatcher bait)."""
+    _reject_delegated_child_mutation("kanban_close_gate")
+    gate_id = args.get("gate_id")
+    _check(gate_id, "gate_id is required")
+    gate_id = str(gate_id)
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    _check(env_tid, "kanban_close_gate is a worker tool (HERMES_KANBAN_TASK required); "
+                    "an orchestrator closes gates with kanban_complete")
+    summary = _redact_opt(args.get("summary"))
+    result = _redact_opt(args.get("result"))
+    metadata = args.get("metadata")
+    _require_dict_metadata(metadata)
+    _check(summary or result, "provide at least one of: summary, result (the evidence that resumed work)")
+    with _board(args.get("board")) as (kb, conn):
+        gate = kb.get_task(conn, gate_id)
+        _check(gate is not None, f"gate {gate_id} not found")
+        _check((gate.status or "") == "blocked",
+               f"gate {gate_id} is {gate.status or 'unknown'}, not blocked — nothing to close")
+        profile = os.environ.get("HERMES_PROFILE") or ""
+        _check(bool(profile) and gate.created_by == profile,
+               f"refusing to close {gate_id}: it was created by {gate.created_by or 'unknown'}, "
+               f"not this worker ({profile or 'unknown'})")
+        _check(env_tid in kb.child_ids(conn, gate_id),
+               f"refusing to close {gate_id}: it does not list this worker's task "
+               f"{env_tid} among its children")
+        ok = kb.close_gate(conn, gate_id, result=result, summary=summary, metadata=metadata)
+        _check(ok, f"could not close {gate_id}")
+        landed = kb.get_task(conn, gate_id)
+        return _ok(task_id=gate_id, status=landed.status if landed else "done",
+                   unblocked_child=env_tid)
+
+
 @_kanban_handler("kanban_request_review")
 def _handle_request_review(args: dict, **kw) -> str:
     """Move implementation into the first-class review phase."""
@@ -965,6 +1025,7 @@ _TOOLS = (
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
     ("kanban_complete", KANBAN_COMPLETE_SCHEMA, _handle_complete, "✔"),
     ("kanban_block", KANBAN_BLOCK_SCHEMA, _handle_block, "⏸"),
+    ("kanban_close_gate", KANBAN_CLOSE_GATE_SCHEMA, _handle_close_gate, "🚪"),
     ("kanban_request_review", KANBAN_REQUEST_REVIEW_SCHEMA, _handle_request_review, "👀"),
     ("kanban_request_changes", KANBAN_REQUEST_CHANGES_SCHEMA, _handle_request_changes, "↩"),
     ("kanban_heartbeat", KANBAN_HEARTBEAT_SCHEMA, _handle_heartbeat, "💓"),

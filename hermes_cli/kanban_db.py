@@ -2521,6 +2521,113 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+def _unlink_blocking_parents(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Delete parent links whose parent is not yet terminal (a parking sentinel is
+    ``blocked``), so a gate can be completed. Deliberately does NOT call
+    ``recompute_ready``: the caller completes in the same txn, so the gate never
+    transiently lands ``ready`` (dispatcher bait for an ``assignee``-carrying gate)."""
+    rows = conn.execute(
+        "SELECT l.parent_id FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived')",
+        (task_id,),
+    ).fetchall()
+    unlinked = [r["parent_id"] for r in rows]
+    for pid in unlinked:
+        conn.execute(
+            "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?", (pid, task_id),
+        )
+        _append_event(conn, task_id, "unlinked", {"parent": pid, "child": task_id})
+    return unlinked
+
+
+def _complete_task_write(
+    conn: sqlite3.Connection, task_id: str, *, result: Optional[str],
+    summary: Optional[str], metadata: Optional[dict], verified_cards: list[str],
+    expected_run_id: Optional[int], now: int,
+) -> tuple[bool, Optional[int]]:
+    """The completion write, inside an ALREADY-OPEN write txn; returns ``(ok, run_id)``.
+
+    ``complete_task`` re-checks ``_parents_satisfied`` before calling; ``close_gate``
+    unlinks still-open parents first. Extracted so both paths share one source of truth
+    for the status/run/event writes (no divergence between the two entry points)."""
+    prior_status = _task_status(conn, task_id)
+    sql = """
+            UPDATE tasks
+               SET status       = 'done',
+                   result       = ?,
+                   completed_at = ?,
+                   claim_lock   = NULL,
+                   claim_expires= NULL,
+                   worker_pid   = NULL,
+                   block_kind   = NULL,
+                   block_recurrences = 0
+             WHERE id = ?
+               AND status IN ('running', 'ready', 'blocked', 'review')
+            """
+    params: tuple = (result, now, task_id)
+    if expected_run_id is not None:
+        sql += " AND current_run_id = ?"
+        params = (*params, int(expected_run_id))
+    if conn.execute(sql, params).rowcount != 1:
+        return False, None
+    if isinstance(metadata, dict):
+        _stage_completion_artifacts(conn, task_id, metadata, now)
+    run_id = _end_run(
+        conn, task_id, outcome="completed", status="done", summary=summary,
+        metadata=metadata,
+    )
+    # Never-claimed task: synthesize a run so the handoff fields survive.
+    if run_id is None and (summary or metadata or result or prior_status == "review"):
+        synth_summary, synth_metadata = summary, metadata
+        if prior_status == "review" and not synth_summary and not synth_metadata:
+            synth_summary = _REVIEW_APPROVED_NOTE
+            synth_metadata = {"source_status": "review", "approval": "manual"}
+        run_id = _synthesize_ended_run(
+            conn, task_id, outcome="completed", summary=synth_summary, metadata=synth_metadata,
+        )
+    event_summary = summary
+    if prior_status == "review" and not event_summary:
+        event_summary = _REVIEW_APPROVED_NOTE
+    _append_event(
+        conn, task_id, "completed",
+        _completed_event_payload(result, event_summary, verified_cards, metadata),
+        run_id=run_id,
+    )
+    return True, run_id
+
+
+def close_gate(
+    conn: sqlite3.Connection, gate_id: str, *, result: Optional[str] = None,
+    summary: Optional[str] = None, metadata: Optional[dict] = None,
+    expected_run_id: Optional[int] = None, fire_lifecycle_hook: bool = True,
+) -> bool:
+    """Atomically close a worker-opened gate: unlink its still-open (parking-sentinel)
+    parents and complete it in ONE txn, so an ``assignee``-carrying gate never sits
+    ``ready``. The caller (``kanban_close_gate``) has already verified the gate is
+    ``blocked`` and belongs to this worker; ``created_cards`` is intentionally
+    unsupported — a gate close claims no child cards."""
+    now = int(time.time())
+    metadata = _merge_completion_prose_artifacts(
+        conn, gate_id, metadata, summary=summary, result=result,
+    )
+    handoff_summary = summary if summary is not None else result
+    with write_txn(conn):
+        _unlink_blocking_parents(conn, gate_id)
+        ok, run_id = _complete_task_write(
+            conn, gate_id, result=result, summary=handoff_summary, metadata=metadata,
+            verified_cards=[], expected_run_id=expected_run_id, now=now,
+        )
+        if not ok:
+            return False
+    _clear_failure_counter(conn, gate_id)
+    recompute_ready(conn)
+    _cleanup_workspace(conn, gate_id)
+    done_task = get_task(conn, gate_id)
+    if fire_lifecycle_hook:
+        _fire_task_hook("kanban_task_completed", done_task, gate_id, run_id, summary=handoff_summary)
+    return True
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
@@ -2557,49 +2664,12 @@ def complete_task(
             return False
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
-        prior_status = _task_status(conn, task_id)
-        sql = """
-                UPDATE tasks
-                   SET status       = 'done',
-                       result       = ?,
-                       completed_at = ?,
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL,
-                       block_kind   = NULL,
-                       block_recurrences = 0
-                 WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked', 'review')
-                """
-        params: tuple = (result, now, task_id)
-        if expected_run_id is not None:
-            sql += " AND current_run_id = ?"
-            params = (*params, int(expected_run_id))
-        if conn.execute(sql, params).rowcount != 1:
+        ok, run_id = _complete_task_write(
+            conn, task_id, result=result, summary=handoff_summary, metadata=metadata,
+            verified_cards=verified_cards, expected_run_id=expected_run_id, now=now,
+        )
+        if not ok:
             return False
-        if isinstance(metadata, dict):
-            _stage_completion_artifacts(conn, task_id, metadata, now)
-        run_id = _end_run(
-            conn, task_id, outcome="completed", status="done", summary=handoff_summary,
-            metadata=metadata,
-        )
-        # Never-claimed task: synthesize a run so the handoff fields survive.
-        if run_id is None and (summary or metadata or result or prior_status == "review"):
-            synth_summary, synth_metadata = handoff_summary, metadata
-            if prior_status == "review" and not synth_summary and not synth_metadata:
-                synth_summary = _REVIEW_APPROVED_NOTE
-                synth_metadata = {"source_status": "review", "approval": "manual"}
-            run_id = _synthesize_ended_run(
-                conn, task_id, outcome="completed", summary=synth_summary, metadata=synth_metadata,
-            )
-        event_summary = handoff_summary
-        if prior_status == "review" and not event_summary:
-            event_summary = _REVIEW_APPROVED_NOTE
-        _append_event(
-            conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
-            run_id=run_id,
-        )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)

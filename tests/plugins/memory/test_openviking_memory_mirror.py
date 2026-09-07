@@ -375,7 +375,7 @@ def test_failed_replace_keeps_previous_registry_mapping(tmp_path, caplog):
     client = _FakeVikingClient()
     provider = _provider(tmp_path, client)
     provider.on_memory_write("add", "user", "Preferred shell is zsh")
-    _wait_for(lambda: len(client.snapshot()) == 1)
+    _wait_for(lambda: _registry_path(tmp_path).exists())
     previous = json.loads(_registry_path(tmp_path).read_text(encoding="utf-8"))
     client.fail_post = True
 
@@ -399,7 +399,7 @@ def test_failed_remove_keeps_registry_mapping(tmp_path, caplog):
     client = _FakeVikingClient()
     provider = _provider(tmp_path, client)
     provider.on_memory_write("add", "memory", "Project delta is active")
-    _wait_for(lambda: len(client.snapshot()) == 1)
+    _wait_for(lambda: _registry_path(tmp_path).exists())
     previous = json.loads(_registry_path(tmp_path).read_text(encoding="utf-8"))
     client.fail_delete = True
 

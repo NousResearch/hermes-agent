@@ -1947,7 +1947,7 @@ async def get_model_context_length_async(model: str, base_url: str = "", api_key
         config_context_length=config_context_length, provider=provider, custom_providers=custom_providers)
 
 
-# CJK/Hangul/Kana codepoints (~1 token each), counted in one C-level regex pass: Hangul
+# CJK/Hangul/Kana codepoints (~0.6 tokens each), counted in one C-level regex pass: Hangul
 # Jamo (+Ext-A), CJK radicals/ideographs (+compat), Hangul syllables, fullwidth/halfwidth.
 _CJK_DENSE_RE = re.compile("[\u1100-\u11ff\u2e80-\u9fff\ua960-\ua97f\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]")
 
@@ -1957,8 +1957,14 @@ def _is_cjk_token_dense_char(ch: str) -> bool:
 
 
 def estimate_tokens_rough(text: str) -> int:
-    """Rough token estimate: CJK/Hangul/Kana codepoints ~1 token each; everything else ceil(UTF-8 bytes/4).
+    """Rough token estimate: CJK/Hangul/Kana codepoints ~0.6 tokens each; everything else ceil(UTF-8 bytes/4).
     Ceiling keeps short texts from estimating 0. Runs on every preflight walk, so all-ASCII stays O(1).
+
+    The dense rate is calibrated like the byte rule below: o200k/GLM/Qwen-family Chinese runs
+    ~1.6-1.7 chars/token, so the legacy 1.0/char rate inflated CJK-heavy sessions ~1.7x (measured
+    rough/real 1.83x-4.59x on all-Chinese sessions) and preflight compaction fired while the real
+    window was only 17-50% consumed (#104806). ceil(0.6/char) keeps 1-3 CJK chars at >=1 token so
+    the compressor never sees a zero-cost CJK text.
 
     Byte-counting (not chars) is the corrective for non-CJK, non-ASCII text: Cyrillic/Greek/Arabic are 2
     bytes/char so count ~chars/2, matching real BPE cost (~2-3 chars/token) where chars/4 under-counted
@@ -1973,7 +1979,8 @@ def estimate_tokens_rough(text: str) -> int:
         return (len(text) + 3) // 4
     stripped = _CJK_DENSE_RE.sub("", text)
     dense = len(text) - len(stripped)
-    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // 4)
+    # ceil(0.6 * dense) via integer 3/5 math; keeps 1-3 CJK chars at >=1 token.
+    return (dense * 3 + 4) // 5 + ((len(stripped.encode("utf-8", "replace")) + 3) // 4)
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> int:

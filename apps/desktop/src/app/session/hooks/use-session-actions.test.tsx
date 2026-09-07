@@ -876,7 +876,10 @@ describe('createBackendSessionForSend profile routing', () => {
       'source-a',
       'default',
       'session.create',
-      expect.objectContaining({ profile: 'backend-default', source: 'desktop' })
+      expect.objectContaining({ profile: 'backend-default', source: 'desktop' }),
+      undefined,
+      undefined,
+      'foreground'
     )
     expect(ambientRequest).not.toHaveBeenCalledWith('session.create', expect.anything())
   })

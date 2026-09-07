@@ -6223,6 +6223,80 @@ def _save_ollama_cloud_cache(models: list[str]) -> None:
         pass
 
 
+def _ollama_cloud_config_allowlist() -> Optional[list[str]]:
+    """Return the user's pinned Ollama Cloud model allowlist, if any.
+
+    Reads ``providers.ollama-cloud`` from config.yaml. When the user has
+    explicitly opted out of live discovery (``discover_models: false``) and
+    declared a ``models`` list, that list is treated as an intentional ID
+    allowlist — the picker shows only those models instead of the full live
+    catalog. Mirrors the ``_models_config_is_allowlist`` contract used for
+    custom providers (list/string shapes are allowlists; dict-shaped
+    ``models`` is per-model metadata and does NOT narrow).
+
+    Returns None when no narrowing is configured (full live catalog).
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        providers_cfg = config.get("providers", {})
+        if not isinstance(providers_cfg, dict):
+            return None
+        entry = providers_cfg.get("ollama-cloud") or providers_cfg.get("ollama_cloud")
+        if not isinstance(entry, dict):
+            return None
+        if entry.get("discover_models") is not False:
+            return None
+        models = entry.get("models")
+        if isinstance(models, str):
+            models = [models]
+        if not isinstance(models, (list, tuple)):
+            return None
+        ids: list[str] = []
+        for item in models:
+            if isinstance(item, str) and item.strip():
+                ids.append(item.strip())
+            elif isinstance(item, dict):
+                mid = item.get("id") or item.get("name")
+                if isinstance(mid, str) and mid.strip():
+                    ids.append(mid.strip())
+        return ids or None
+    except Exception:
+        return None
+
+
+def _apply_ollama_cloud_allowlist(
+    models: list[str], allowlist: Optional[list[str]]
+) -> list[str]:
+    """Filter a merged Ollama Cloud model list down to the pinned allowlist.
+
+    When ``allowlist`` is None (no narrowing configured), returns ``models``
+    unchanged. Otherwise returns only the entries whose ID (after stripping
+    the ``:cloud`` / ``-cloud`` suffix) matches a pinned ID — preserving the
+    original order. A pinned ID that is not present in the live catalog is
+    still included so a user's explicit choice never silently disappears.
+    """
+    if not allowlist:
+        return list(models)
+    allowed = {a.lower() for a in allowlist}
+    result: list[str] = []
+    seen: set[str] = set()
+    for m in models:
+        if not m:
+            continue
+        key = _strip_ollama_cloud_suffix(m).lower()
+        if key in allowed and key not in seen:
+            seen.add(key)
+            result.append(m)
+    # Ensure every pinned ID is present even if the live catalog lacks it.
+    for a in allowlist:
+        key = _strip_ollama_cloud_suffix(a).lower()
+        if key not in seen:
+            seen.add(key)
+            result.append(a)
+    return result
+
+
 def fetch_ollama_cloud_models(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
@@ -6237,13 +6311,20 @@ def fetch_ollama_cloud_models(
       3. models.dev registry (secondary — fills gaps for unlisted models)
       4. Merge: live models first, then models.dev additions (deduped)
 
+    When the user has pinned an allowlist (``providers.ollama-cloud`` with
+    ``discover_models: false`` + a ``models`` list), the merged catalog is
+    filtered down to exactly those IDs — the picker shows only the pinned
+    models. Otherwise the full merged catalog is returned.
+
     Returns a list of model IDs (never None — empty list on total failure).
     """
+    allowlist = _ollama_cloud_config_allowlist()
+
     # 1. Check disk cache
     if not force_refresh:
         cached = _load_ollama_cloud_cache()
         if cached is not None:
-            return cached["models"]
+            return _apply_ollama_cloud_allowlist(cached["models"], allowlist)
 
     # 2. Live API probe
     if not api_key:
@@ -6280,12 +6361,12 @@ def fetch_ollama_cloud_models(
                 merged.append(normalized)
         if merged:
             _save_ollama_cloud_cache(merged)
-            return merged
+            return _apply_ollama_cloud_allowlist(merged, allowlist)
 
     # Total failure — return stale cache if available (ignore TTL)
     stale = _load_ollama_cloud_cache(ignore_ttl=True)
     if stale is not None:
-        return stale["models"]
+        return _apply_ollama_cloud_allowlist(stale["models"], allowlist)
 
     return []
 

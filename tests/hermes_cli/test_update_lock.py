@@ -129,14 +129,53 @@ def test_proven_live_owner_past_the_age_ceiling_is_not_reclaimed(marker, monkeyp
     ["", "not-a-pid\n123\n", "\n\n", "12345"],
     ids=["empty", "garbage-pid", "blank-lines", "no-start-time"],
 )
-def test_malformed_markers_block_without_deletion(marker, body):
+def test_marker_that_names_nobody_is_reclaimed_after_a_dwell(marker, body):
+    """Upstream main unlinks an unparseable marker (update_lock.py:125). The PR
+    made every such body block forever, so a torn write from windows.ps1 broke
+    updates until a human deleted a file no message ever named."""
     marker.write_text(body, encoding="utf-8")
+    slept = []
+
+    assert read_live_update(path=marker, dwell_seconds=0.01, sleep=slept.append) is None
+    assert slept == [0.01], "the dwell must run before reclaiming"
+    assert not marker.exists()
+
+    marker.write_text(body, encoding="utf-8")
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True
+    assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["", "not-a-pid\n123\n"],
+    ids=["empty", "garbage-pid"],
+)
+def test_a_body_rewritten_inside_the_dwell_keeps_its_new_claim(marker, body, monkeypatch):
+    """The reclaim is an exact-content CAS behind the dwell, so an updater that
+    finishes writing mid-dwell never loses the claim it just made."""
+    monkeypatch.setattr("hermes_cli.update_lock.pid_alive", lambda pid: True)
+    monkeypatch.setattr("hermes_cli.update_lock._pid_create_time", lambda pid: 100.0)
+    marker.write_text(body, encoding="utf-8")
+    finished = f"{os.getpid()}\n{int(time.time())}\n"
+
+    holder = read_live_update(path=marker, dwell_seconds=0,
+                              sleep=lambda _s: marker.write_text(finished, encoding="utf-8"))
+
+    assert holder is not None and holder.pid == os.getpid()
+    assert marker.read_text(encoding="utf-8") == finished
+
+
+def test_an_unreadable_marker_still_fails_closed(marker):
+    """Opposite of the case above: unreadable is a genuine unknown, so callers
+    must stop rather than mutate an installation someone may be updating."""
+    marker.mkdir()
 
     with pytest.raises(UpdateMarkerError):
         read_live_update(path=marker)
     with pytest.raises(UpdateMarkerError):
         UpdateLock(path=marker).acquire()
-    assert marker.read_text(encoding="utf-8") == body
+    assert marker.is_dir()
 
 
 def test_stale_marker_is_removed_on_read(marker):
@@ -181,6 +220,11 @@ def test_unwritable_marker_location_blocks_the_update(tmp_path):
 
 class TestHandoffFromOrchestratingUpdater:
     """The Tauri updater holds the marker, then spawns ``hermes update``.
+
+    This channel has a live production writer: ``update_child_env`` in
+    ``apps/bootstrap-installer/src-tauri/src/update.rs`` (asserted there by
+    ``update_child_env_names_our_pid_for_the_lock_handoff``). Deleting the
+    adoption path here dead-ends every GUI update on exit 2.
 
     The regression: the child saw its own parent's live marker and exited 2,
     so every GUI update failed with "Hermes is still running" and retrying
@@ -242,7 +286,7 @@ class TestAncestryHandoff:
 
     @pytest.fixture(autouse=True)
     def _liveness_pinned_true(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.update_lock._pid_alive", lambda pid: True)
+        monkeypatch.setattr("hermes_cli.update_lock.pid_alive", lambda pid: True)
 
     def test_marker_owned_by_our_parent_process_is_our_orchestrator(self, marker):
         marker.write_text(f"{os.getppid()}\n{int(time.time())}\n", encoding="utf-8")
@@ -279,12 +323,20 @@ def test_release_restores_claim_replaced_during_isolation(marker, monkeypatch):
     assert marker.read_text() == successor
 
 
-def test_unknown_old_owner_does_not_expire(marker, monkeypatch):
-    monkeypatch.setattr("hermes_cli.update_lock._pid_alive", lambda pid: True)
+def test_unknown_owner_blocks_until_the_ceiling_then_expires(marker, monkeypatch):
+    """An unprovable owner holds the gate -- but not forever, or one recycled
+    PID wedges every update path and the MCP bridge with no way back."""
+    monkeypatch.setattr("hermes_cli.update_lock.pid_alive", lambda pid: True)
     monkeypatch.setattr("hermes_cli.update_lock._pid_create_time", lambda pid: None)
-    marker.write_text(f"{DEAD_PID}\n{int(time.time()) - 10000}\n")
+
+    marker.write_text(f"{DEAD_PID}\n{int(time.time()) - 60}\n")
     assert UpdateLock(path=marker).acquire() is False
     assert marker.exists()
+
+    marker.write_text(f"{DEAD_PID}\n{int(time.time()) - UPDATE_MARKER_MAX_AGE_SECONDS - 60}\n")
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True
+    assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
 
 
 def test_unknown_cleanup_artifact_never_expires(marker):

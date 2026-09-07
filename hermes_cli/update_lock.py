@@ -16,21 +16,33 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_mcp_update_gate import (
-    UpdateMarkerError, _pid_alive, _pid_create_time as _stdlib_pid_create_time, live_update_marker_owner,
+    MARKER_NAME,
+    UPDATE_MARKER_MAX_AGE_SECONDS,
+    UpdateMarkerError,
+    UpdateMarkerUnhealthyError,
+    live_update_marker_owner,
+    pid_alive,
+    pid_create_time as _stdlib_pid_create_time,
 )
 
 logger = logging.getLogger(__name__)
 
-# Keep in sync with UPDATE_MARKER_MAX_AGE_MS in apps/desktop/electron/update-marker.ts:
-# Age is diagnostic only; a slow live or unknown owner remains blocking.
-UPDATE_MARKER_MAX_AGE_SECONDS = 20 * 60
+__all__ = ["MARKER_NAME", "UPDATE_MARKER_MAX_AGE_SECONDS", "UpdateMarkerError", "UpdateLock",
+           "UpdateHolder", "UPDATE_EXIT_CONCURRENT", "HANDOFF_PID_ENV", "describe_holder",
+           "read_live_update", "update_marker_path"]
 
-MARKER_NAME = ".hermes-update-in-progress"
+# A body that names nobody may be a rewrite caught in flight. Observe the exact
+# same bytes across this dwell before reclaiming, so a real writer always wins.
+UPDATE_MARKER_DWELL_SECONDS = 2.0
 
 # Set by an orchestrating updater (Tauri `hermes-setup --update`) to its own pid before
 # spawning `hermes update` as a child stage; the parent holds the marker for its whole run,
-# so without this the child would refuse its own parent's lock. Keep in sync with
-# update_child_env in apps/bootstrap-installer/src-tauri/src/update.rs.
+# so without this the child would refuse its own parent's lock. The writer is
+# `update_child_env` in apps/bootstrap-installer/src-tauri/src/update.rs (with its own test,
+# `update_child_env_names_our_pid_for_the_lock_handoff`) -- this is a live production
+# channel, not a vestigial one, and removing the adoption path here dead-ends every GUI
+# update on exit 2. Adoption still requires the named pid to be the marker's `matching`
+# owner, so naming a pid grants nothing on its own.
 HANDOFF_PID_ENV = "HERMES_UPDATE_HANDOFF_PID"
 
 # Exit code meaning "another updater/instance owns this install right now" — the same
@@ -124,13 +136,22 @@ def _remove_exact_marker(marker: Path, expected: str) -> None:
         raise UpdateMarkerError("Cannot reclaim the update marker safely") from exc
 
 
-def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
-    """Read the shared claim, reclaiming only a proven stale exact marker.
+def read_live_update(
+    *,
+    path: Path | None = None,
+    dwell_seconds: float = UPDATE_MARKER_DWELL_SECONDS,
+    sleep=None,
+) -> UpdateHolder | None:
+    """Read the shared claim, reclaiming a proven stale or unowned exact marker.
 
-    Unreadable, malformed and uncertain cleanup states raise UpdateMarkerError;
-    callers must stop, never interpret these states as permission to update.
+    A marker we cannot READ still raises UpdateMarkerError and callers must
+    stop. A marker we read fine and found to name nobody -- empty, malformed,
+    future-dated, the residue of a torn write -- is reclaimed after a dwell
+    instead of blocking every update from then on (upstream main unlinks these
+    outright at :125; the PR removed that and left no way back).
     """
     marker = path or update_marker_path()
+    _sleep = sleep or time.sleep
     for _ in range(3):
         try:
             artifacts = list(marker.parent.glob(marker.name + ".cas-*"))
@@ -140,20 +161,38 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
                     # A live releaser owns the rename/read/unlink transaction.
                     # Recover only an abandoned release, never resurrect one
                     # that another process is still removing.
-                    if releaser.isdecimal() and int(releaser) > 0 and not _pid_alive(int(releaser)):
+                    if releaser.isdecimal() and int(releaser) > 0 and not pid_alive(int(releaser)):
                         _restore_marker(marker, artifacts[0])
                         continue
-                raise UpdateMarkerError("Update marker cleanup is unresolved; retry after the updater finishes")
+                raise UpdateMarkerError(
+                    f"Update marker cleanup is unresolved; retry after the updater finishes ({artifacts[0]})"
+                )
             raw = marker.read_text(encoding="utf-8")
         except FileNotFoundError:
             return None
         except (OSError, UnicodeError) as exc:
-            raise UpdateMarkerError("Cannot read the update marker safely") from exc
-        owner = live_update_marker_owner(marker, pid_alive=_pid_alive, pid_create_time=_pid_create_time)
+            raise UpdateMarkerError(f"Cannot read the update marker safely: {marker}") from exc
+        try:
+            owner = live_update_marker_owner(marker, pid_alive=pid_alive, pid_create_time=_pid_create_time)
+        except UpdateMarkerUnhealthyError:
+            # Dwell, then re-read. _remove_exact_marker is already an exact
+            # content CAS, so an owner that finished writing inside the dwell
+            # keeps its claim and we simply loop again.
+            _sleep(dwell_seconds)
+            try:
+                if marker.read_text(encoding="utf-8") != raw:
+                    continue
+            except FileNotFoundError:
+                return None
+            except (OSError, UnicodeError) as exc:
+                raise UpdateMarkerError(f"Cannot read the update marker safely: {marker}") from exc
+            logger.warning("Reclaiming an update marker that names no owner: %s", marker)
+            _remove_exact_marker(marker, raw)
+            continue
         if owner is not None:
             return UpdateHolder(owner.pid, owner.age_seconds, owner.identity)
         _remove_exact_marker(marker, raw)
-    raise UpdateMarkerError("Update marker changed during reclamation; retry")
+    raise UpdateMarkerError(f"Update marker changed during reclamation; retry ({marker})")
 
 
 def describe_holder(holder: UpdateHolder) -> str:

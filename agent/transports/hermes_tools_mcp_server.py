@@ -127,7 +127,15 @@ def _update_quiesce_requested() -> bool:
 def _watch_for_update_quiesce() -> None:
     while True:
         time.sleep(0.5)
-        if _update_quiesce_requested():
+        try:
+            requested = _update_quiesce_requested()
+        except Exception:
+            # A transient read failure -- the updater rewriting the marker, a
+            # brief Windows sharing violation -- must not kill this thread. It
+            # is the only thing that releases the venv mid-session, and a dead
+            # one fails silently for the whole life of the process.
+            continue
+        if requested:
             # Exit without importing or unwinding code the updater may replace.
             os._exit(0)
 

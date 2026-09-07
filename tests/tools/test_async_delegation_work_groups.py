@@ -788,6 +788,71 @@ def test_reopen_requires_trusted_identity_and_old_generation_cannot_mutate_new()
     )
 
 
+def test_reopened_generation_accepts_multiple_grouped_dispatch_units(monkeypatch):
+    _register("work-1", "old-member")
+    _finish("old-member")
+    assert ad.seal_work_group("work-1", "turn-1")
+    claim = _claim_bound("work-1", "owner-b")
+    delivery_id = claim["envelope"]["delivery_id"]
+    monkeypatch.setattr(ad, "task_scoped_closeout_enabled", lambda _config=None: True)
+    gate = threading.Event()
+
+    def runner():
+        assert gate.wait(timeout=5)
+        return {"results": [{"status": "completed", "summary": "done"}]}
+
+    common = {
+        "goals": ["one", "two"],
+        "context": None,
+        "toolsets": None,
+        "role": "worker",
+        "model": "model",
+        "runner": runner,
+        "interrupt_fn": lambda: None,
+        "session_key": "session-key",
+        "origin_ui_session_id": "ui",
+        "origin_session_id": "origin",
+        "parent_session_id": "parent",
+        "max_async_children": 1,
+        "origin_work_id": "work-1",
+        "work_generation": 1,
+        "owner_turn_id": "owner-b",
+    }
+    first = ad.dispatch_async_delegation_batch(
+        **common,
+        delegation_id="replacement-1",
+        task_indexes=[0],
+        closeout_delivery_id=delivery_id,
+        closeout_claim_id=claim["claim_id"],
+    )
+    second = ad.dispatch_async_delegation_batch(
+        **common,
+        delegation_id="replacement-2",
+        slot_key="replacement-1",
+        task_indexes=[1],
+    )
+
+    assert first["status"] == second["status"] == "dispatched"
+    with ad._transaction() as conn:
+        state = conn.execute(
+            "SELECT generation, state FROM async_delegation_work_groups WHERE work_id = ?",
+            ("work-1",),
+        ).fetchone()
+        members = conn.execute(
+            "SELECT delegation_id FROM async_delegations "
+            "WHERE origin_work_id = ? AND work_generation = ? ORDER BY delegation_id",
+            ("work-1", 1),
+        ).fetchall()
+    assert tuple(state) == (1, "open")
+    assert [row[0] for row in members] == ["replacement-1", "replacement-2"]
+
+    gate.set()
+    deadline = time.time() + 5
+    while ad.active_task_count() and time.time() < deadline:
+        time.sleep(0.01)
+    assert ad.active_task_count() == 0
+
+
 def test_unresolved_grouped_rows_survive_legacy_pruning_age_and_attempt_drop(monkeypatch):
     assert _register()
     _finish("deleg-1")

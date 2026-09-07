@@ -940,6 +940,11 @@ def push_task_failure_notice(delegation_id: str, entry: Dict[str, Any], *, n_tas
         if record is None or record.get("status") not in _ACTIVE_STATES:
             return
         snapshot = dict(record)
+    # Task-scoped closeout intentionally withholds every conversational result until the
+    # whole durable work group is reconciled. Its terminal completion persists this same
+    # failed child outcome; an interim notice here would leak it into the parent turn.
+    if snapshot.get("origin_work_id"):
+        return
     try:
         from tools.process_registry import process_registry
     except Exception as exc:  # pragma: no cover

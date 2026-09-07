@@ -400,6 +400,13 @@ def _dispatch_background(batch: _Batch) -> str:
         if dispatch.get("status") == "dispatched":
             slot_key = slot_key or dispatch["delegation_id"]
             dispatched.append((unit, dispatch["delegation_id"]))
+            if unit.closeout_delivery_id and unit.closeout_claim_id:
+                # The first accepted unit atomically reopens a claimed closeout generation.
+                # Sibling units join that now-open generation normally; replaying the consumed
+                # closeout claim for every unit would reject the second grouped dispatch.
+                for sibling in units[k + 1:]:
+                    sibling.closeout_delivery_id = ""
+                    sibling.closeout_claim_id = ""
             continue
         if not dispatched:
             logger.info(

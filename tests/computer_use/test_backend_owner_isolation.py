@@ -152,6 +152,31 @@ def test_get_backend_does_not_reuse_or_release_across_profiles(monkeypatch):
     assert backend_a.stopped is True
 
 
+def test_release_fences_inflight_start_before_same_owner_reacquires(monkeypatch):
+    from tools.computer_use import tool as computer_use
+
+    stale, replacement = _SlowStartBackend(), _InstantBackend()
+    backends = iter((stale, replacement))
+    monkeypatch.setattr(computer_use, "_new_backend", lambda *args: next(backends))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        original = pool.submit(computer_use._get_backend, "session-a")
+        try:
+            assert stale.started.wait(timeout=5)
+            pool.submit(computer_use.release_computer_use_session, "session-a").result(timeout=5)
+            acquired = pool.submit(computer_use._get_backend, "session-a").result(timeout=5)
+            assert acquired is replacement
+            assert not replacement.stopped
+        finally:
+            stale.release.set()
+        with pytest.raises(RuntimeError, match="released"):
+            original.result(timeout=5)
+        assert stale.stopped
+        assert computer_use._get_backend("session-a") is replacement
+        assert computer_use.release_computer_use_session("session-a")
+        assert replacement.stopped
+
+
 def test_slow_start_for_one_owner_does_not_pin_unrelated_owner(monkeypatch):
     """Finding 3: while owner A's backend.start() is blocked (slow remote
     handshake), owner B must still be able to create, look up, and release

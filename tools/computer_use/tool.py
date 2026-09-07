@@ -85,6 +85,7 @@ _backend_permission_modes: Dict[str, str] = {}
 # Per-owner single-flight locks: ensure only one thread does the expensive backend.start()
 # (which may be a network handshake to a remote host) — other threads for the same owner
 # wait, and unrelated owners proceed concurrently without holding _backend_lock (#104080 finding 3).
+# The lock object also identifies the ownership generation: detaching invalidates starters and waiters.
 _backend_start_locks: Dict[str, threading.Lock] = {}
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str], bool] = {}  # process-scoped: (provider, model) → bool
 # Approval state keyed by session_id so a gateway serving concurrent sessions can't leak one run's
@@ -209,6 +210,8 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
             # Re-check under the cache lock: another thread may have installed a backend
             # while we were waiting on the start lock.
             with _backend_lock:
+                if _backend_start_locks.get(owner) is not start_lock:
+                    raise RuntimeError("computer_use session released during backend startup")
                 if (recheck := _backends.get(owner)) is not None:
                     if _backend_permission_modes.get(owner, "standard") == permission_mode:
                         return recheck
@@ -217,11 +220,15 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
                     cached = recheck
             if cached is not None:
                 _stop_backend(cached, stale_lock, lambda e: None)
-                # fall through to create a new backend
+                continue  # detaching invalidated this start generation; acquire a new one
             backend = _new_backend(permission_mode)
             backend.start()  # outside _backend_lock: unrelated owners proceed concurrently
             with _backend_lock:
-                return _install_backend(owner, backend, permission_mode)
+                if _backend_start_locks.get(owner) is start_lock:
+                    return _install_backend(owner, backend, permission_mode)
+            _stop_backend(backend, None,
+                          lambda e: logger.debug("computer_use stale startup teardown failed: %s", e))
+            raise RuntimeError("computer_use session released during backend startup")
 
 def release_computer_use_session(session_id: str) -> bool:
     """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.

@@ -575,19 +575,20 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     return _bare_model(model) == "trinity-large-thinking"
 
 
-# Codex OAuth hard-caps gpt-5.4/5.5/5.6 at 272K (raw API/OpenRouter expose 1.05M); the default
-# 50% trigger would compact at ~136K, so raise to 85% (~231K).
+# Codex OAuth hard-caps gpt-5.4/5.5/5.6 and gpt-6 Astra at 272K (raw API/OpenRouter expose 1.05M);
+# the default 50% trigger would compact at ~136K, so raise to 85% (~231K).
 _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD = 0.85
 # gpt-5.3-codex-spark: Codex-OAuth-only, native 128K; 70% (~90K) leaves summary headroom.
 _CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
 
 
 def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for gpt-5.4/5.5/5.6 (and the Daybreak Sol alias) on the Codex OAuth route only.
+    """True for gpt-5.4/5.5/5.6, gpt-6 Astra (and the Daybreak Sol alias) on the Codex OAuth route only.
 
     Other routes expose a larger window for the same slug and keep the user's threshold.
     Prefix-matched so ``-pro`` and dated snapshots track every 272K-capped family; ``-900k``
-    picker variants are excluded. Name kept for the ``compression.codex_gpt55_autoraise`` key.
+    picker variants are excluded. Astra is substring-matched (any slug containing ``astra``
+    without ``900k``). Name kept for the ``compression.codex_gpt55_autoraise`` key.
     """
     bare = _codex_route_bare_model(model, provider)
     if bare is None:
@@ -595,6 +596,8 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
     from agent.model_metadata import is_codex_context_variant
     if is_codex_context_variant(bare):
         return False
+    if "astra" in bare:
+        return "900k" not in bare
     return bare == "gpt-daybreak-blue-latest" or any(
         bare == fam or bare.startswith(fam + "-") or bare.startswith(fam + ".")
         for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6"))
@@ -626,7 +629,7 @@ def _compression_threshold_for_model(
 ) -> Optional[float]:
     """Per-model/route compression threshold override (fraction of context used), or None.
 
-    Arcee Trinity Large Thinking → 0.75 (preserve reasoning context); Codex-route gpt-5.4/5.5/5.6
+    Arcee Trinity Large Thinking → 0.75 (preserve reasoning context); Codex-route gpt-5.4/5.5/5.6/Astra
     → 0.85, gated by ``allow_codex_gpt55_autoraise``; Codex-route gpt-5.3-codex-spark → 0.70, ungated.
     """
     if _is_arcee_trinity_thinking(model):

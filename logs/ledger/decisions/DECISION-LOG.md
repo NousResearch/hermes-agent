@@ -85,6 +85,12 @@ gains a `Superseded-by:` / `Supersedes:` link.
   Cut `NF-v0.2.0` (MAJOR). Committed locally, **not pushed** (held for review).
   Implementing changes: `CHG-2026-09-06-020`, `CHG-2026-09-06-021`,
   `CHG-2026-09-06-022`, `CHG-2026-09-06-023`, `CHG-2026-09-06-024`.
+- **Follow-up:** 2026-09-06 (`RUN-2026-09-06-003`, `NF-v0.2.1`, PATCH) — the two
+  loose ends the rebrand commit left: `assets/banner.png` re-branded to North
+  Forge and re-referenced in `README.md` (**placeholder art**, flagged in the
+  PNG `tEXt` chunks — final art still owed), and two drive-facing README sections
+  added ("Drive class", "Customizing your agent"). No code / `.env` / dist-name
+  change. `CHG-2026-09-06-025`, `CHG-2026-09-06-026`. Local only, not pushed.
 - **Status:** DECIDED
 
 ---

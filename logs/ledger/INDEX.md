@@ -12,11 +12,11 @@ Master pointer for the project ledger. Newest first. Rules: [`README.md`](./READ
 | Coordinate | Value | As of |
 | --- | --- | --- |
 | Upstream base | `hermes@693641aa8b` (**0 behind** `upstream/main`) | 2026-09-06 |
-| North-Forge version | `NF-v0.2.0` (rebrand; local only — `NF-v0.1.1` is the last pushed) | 2026-09-06 |
+| North-Forge version | `NF-v0.2.1` (branding-pass finish; local only — `NF-v0.1.1` is the last pushed) | 2026-09-06 |
 | Ledger schema | `v2` | 2026-09-06 |
-| Latest run | `RUN-2026-09-06-002` — fork rebrand, `NF-v0.2.0` (`CHG-2026-09-06-020..024`) | 2026-09-06 |
+| Latest run | `RUN-2026-09-06-003` — branding-pass finish: North Forge banner asset + README "Drive class" / "Customizing your agent" sections (`CHG-2026-09-06-025..026`) | 2026-09-06 |
 | First fork commits | `NF-v0.1.0` + `NF-v0.1.1` on `origin/main` (`CHG-2026-09-06-010`); fork synced to upstream (`CHG-2026-09-06-014`) | 2026-09-06 |
-| Fork identity | **full rebrand implemented** — `NF-v0.2.0` (`CHG-2026-09-06-020..024`); `DECISION-2026-09-06-001` DECIDED. Local only, not pushed. | 2026-09-06 |
+| Fork identity | **full rebrand implemented** — `NF-v0.2.0` (`CHG-2026-09-06-020..024`) + branding-pass finish `NF-v0.2.1` (`CHG-2026-09-06-025..026`: banner iconography — **placeholder art** — and README drive-facing sections); `DECISION-2026-09-06-001` DECIDED. Local only, not pushed. | 2026-09-06 |
 
 ## Audits
 

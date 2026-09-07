@@ -8,6 +8,67 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.2.1] — 2026-09-06 — hermes@693641aa8b (0 behind upstream/main)
+
+Finishes the branding pass started by **`DECISION-2026-09-06-001` Option B (full
+rebrand)** — the two items the `NF-v0.2.0` commit left open. **PATCH** per the
+version table ("docs" + one image asset; no new capability, no further reshape).
+Branding / docs only — no application code, no `.env`, no `pyproject.toml`
+distribution-name change, no attic-clone change; agent behaviour is identical
+before and after. All entries in this block are `RUN-2026-09-06-003`.
+**Committed locally; not pushed** — held for review, same as `NF-v0.1.2` /
+`NF-v0.2.0`.
+
+### Changed
+
+- **CHG-2026-09-06-025** — `assets/banner.png`: replaced the upstream Hermes Agent
+  banner (blocky gold "HERMES-AGENT" wordmark) with a North Forge equivalent —
+  same envelope (1145×196, PNG, 8-bit RGB, non-interlaced): "NORTH FORGE"
+  wordmark, an anvil mark, an amber accent rule, and the strap-line "A brandable
+  AI-agent chassis on the Hermes engine" on a dark ground. **This is a
+  PLACEHOLDER, not final brand art** — an auto-generated wordmark (Pillow +
+  system fonts); a `PLACEHOLDER - replace with final art` note is carried in the
+  PNG `tEXt` chunks (`Title` / `Comment`). Restored the banner reference in
+  `README.md` (removed by `CHG-2026-09-06-020`): a centred
+  `<img src="assets/banner.png" alt="North Forge" width="100%">` directly under
+  the `# North Forge` H1. The three translated READMEs
+  (`README.es.md` / `README.zh-CN.md` / `README.ur-pk.md`) already reference the
+  same path with `alt="Hermes Agent"` — left as-is here (out of scope; see the
+  known-issues note below). Paths: `assets/banner.png`, `README.md`. Ref:
+  `DECISION-2026-09-06-001`. Run: RUN-2026-09-06-003.
+
+### Added
+
+- **CHG-2026-09-06-026** — `README.md`: two new top-level sections between
+  "Getting Started" and the Nous Portal section. **"Drive class"** (one sentence)
+  — acknowledges that a deployed drive carries a class label in its volume name
+  so a recipient or support person can identify the drive at a glance;
+  deliberately documents *no* naming scheme, codes, or access mechanics.
+  **"Customizing your agent"** (two short paragraphs) — plain-language statement
+  that some North Forge editions allow full customization of the underlying AI
+  (model/provider, persona, configuration) via the drive's setup menu while
+  others ship pre-configured; describes only the user-facing difference, no
+  passcode / admin / unlock mechanism. Paths: `README.md`. Ref:
+  `DECISION-2026-09-06-001`. Run: RUN-2026-09-06-003.
+
+### Unchanged (called out)
+
+- **Application code, `.env`, `pyproject.toml` distribution name, the attic
+  clone, the translated `README.*.md` files** — untouched, same carve-outs as
+  `NF-v0.2.0`.
+
+### Known / carried forward
+
+- The translated READMEs (`README.es.md`, `README.zh-CN.md`, `README.ur-pk.md`)
+  now render the new North Forge banner but still carry `alt="Hermes Agent"`.
+  Pre-existing (they were left upstream-branded at the rebrand); a follow-up if
+  those files are kept rather than dropped.
+- `ERR-2026-09-06-001` (**OPEN**, HIGH) — live `ANTHROPIC_API_KEY`; unchanged,
+  user-owned.
+- `DECISION-2026-09-06-002` (**OPEN**) — attic-clone keep-or-delete; unchanged.
+
+---
+
 ## [NF-v0.2.0] — 2026-09-06 — hermes@693641aa8b (0 behind upstream/main)
 
 First fork-identity commit — **`DECISION-2026-09-06-001` Option B (full rebrand)**,

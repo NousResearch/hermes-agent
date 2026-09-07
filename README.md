@@ -1,6 +1,10 @@
 # North Forge
 
 <p align="center">
+  <img src="assets/banner.png" alt="North Forge" width="100%">
+</p>
+
+<p align="center">
   A generic, brandable AI-agent chassis on top of the <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> engine by Nous Research.
 </p>
 <p align="center">
@@ -119,6 +123,20 @@ hermes doctor       # Diagnose any issues
 ```
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
+
+---
+
+## Drive class
+
+Every deployed North Forge drive carries a short **class label** in its volume name, so a recipient — or anyone helping them troubleshoot — can tell at a glance what kind of drive they're holding.
+
+---
+
+## Customizing your agent
+
+North Forge ships in different editions. Some editions let you fully customize the AI behind it — the model and provider it runs on, its persona, and its configuration — from the drive's setup menu. Other editions come pre-configured and are ready to use exactly as they are, with nothing to set up.
+
+If your edition supports customization, the options are in the setup menu. If it doesn't, everything is already wired up — just start it and go.
 
 ---
 

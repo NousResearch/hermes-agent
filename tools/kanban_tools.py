@@ -892,6 +892,14 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
         delivery_metadata=delivery_metadata or None)
 
 
+def _resolve_notify_targets() -> list[dict[str, Any]]:
+    target = _resolve_notify_target()
+    if target is None:
+        return []
+    from hermes_cli.kanban_notify_policy import kanban_auto_subscribe_targets
+    return kanban_auto_subscribe_targets(target)
+
+
 def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
     """Subscribe the calling session to completion/block events; True iff a row was
     written (surfaced as ``subscribed`` so an orchestrator can fall back to explicit
@@ -902,19 +910,19 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             return False
     except Exception:
         pass  # unreadable config keeps the user-friendly default (True)
-    target = None
+    targets: list[dict[str, Any]] = []
     try:
-        target = _resolve_notify_target()
-        if target is None:
+        targets = _resolve_notify_targets()
+        if not targets:
             return False  # CLI / cron / test — no persistent channel
         from hermes_cli import kanban_db as _kb
         from hermes_cli import kanban_db_notify as _kbn
-        _kbn.add_notify_sub(conn, task_id=task_id, **target)
+        for target in targets:
+            _kbn.add_auto_notify_sub(conn, task_id=task_id, **target)
         return True
     except Exception as _exc:
         logger.warning(
-            "_maybe_auto_subscribe failed: %r (platform=%r key_set=%r)",
-            _exc, target["platform"] if target else "", bool(target and target["chat_id"]))
+            "_maybe_auto_subscribe failed: %r (targets=%d)", _exc, len(targets))
         return False
 
 

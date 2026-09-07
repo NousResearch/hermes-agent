@@ -129,6 +129,42 @@ def add_notify_sub(
             )
 
 
+def notify_sub_exists(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+) -> bool:
+    """True when the exact subscription routing key already exists."""
+    return conn.execute(
+        "SELECT 1 FROM kanban_notify_subs " + _SUB_KEY_WHERE + " LIMIT 1",
+        _sub_key(task_id, platform, chat_id, thread_id),
+    ).fetchone() is not None
+
+
+def add_auto_notify_sub(conn: sqlite3.Connection, **kwargs: Any) -> bool:
+    """Auto-subscribe without mutating an existing explicit subscription.
+
+    ``add_notify_sub`` is deliberately last-write-wins for the explicit
+    ``notify-subscribe`` CLI. Auto-subscribe is weaker: if a row already exists
+    for the same task/platform/chat/thread (explicit, inherited, or an earlier
+    idempotent create), leave every stored field untouched and report that no
+    new row was inserted.
+    """
+    if notify_sub_exists(
+        conn,
+        task_id=kwargs["task_id"],
+        platform=kwargs["platform"],
+        chat_id=kwargs["chat_id"],
+        thread_id=kwargs.get("thread_id"),
+    ):
+        return False
+    add_notify_sub(conn, **kwargs)
+    return True
+
+
 def _notify_profile_filter(
     notifier_profiles: Optional[Iterable[str]],
     *,

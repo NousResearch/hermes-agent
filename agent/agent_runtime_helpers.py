@@ -1705,7 +1705,10 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent.provider, reason, shared, agent._client_log_context(),
         )
         return provider_client
-    if agent.provider == "gemini":
+    # Alias-set membership, not a literal: the fallback flow installs the RAW entry name
+    # (e.g. "google") on agent.provider, and every later rebuild re-enters this gate (#104583).
+    from agent.gemini_native_adapter import GEMINI_NATIVE_PROVIDER_NAMES
+    if (getattr(agent, "provider", "") or "").strip().lower() in GEMINI_NATIVE_PROVIDER_NAMES:
         client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
         if client is not None:
             return client

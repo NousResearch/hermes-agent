@@ -102,3 +102,51 @@ def test_skip_flags_replace_the_isinstance_checks_for_in_and_out_of_tree_clients
     client = _FakeClient()  # never imported by auxiliary_client
     assert _maybe_wrap_anthropic(client, "m", "k", "acp://seam-test") is client
     assert _to_async_client(client, "m")[0] is client
+
+
+def test_gemini_provider_aliases_route_to_the_native_client():
+    """A `google` fallback entry must get GeminiNativeClient, not the generic
+    OpenAI SDK client (#104583).
+
+    try_activate_fallback installs the RAW entry provider (``google`` and its
+    sibling aliases) on ``agent.provider``; every later client rebuild re-enters
+    create_openai_client with that raw name. The native-client gate must match
+    the aliases registered by the gemini profile, or the rebuilt client POSTs
+    OpenAI-shaped payloads (bare top-level ``thinking_config``) at the native
+    Gemini endpoint and 400s.
+    """
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    native_url = "https://generativelanguage.googleapis.com/v1beta"
+    # Every alias registered by plugins/model-providers/gemini plus the canonical name.
+    for provider in ("gemini", "google", "google-gemini", "google-ai-studio"):
+        client = _build(provider, native_url)
+        assert isinstance(client, GeminiNativeClient), (
+            f"provider={provider!r} on the native Gemini URL must build GeminiNativeClient, got {type(client).__name__}"
+        )
+
+
+def test_non_gemini_provider_on_a_gemini_url_keeps_the_generic_client():
+    """Boundary: the alias set must not capture unrelated providers.
+
+    A custom provider pointing at the Gemini endpoint is NOT the ``gemini``
+    provider identity — it keeps the generic OpenAI client (pre-existing
+    behavior, pinned here so widening the gate cannot silently change it).
+    """
+    from openai import OpenAI
+
+    native_url = "https://generativelanguage.googleapis.com/v1beta"
+    assert isinstance(_build("custom", native_url), OpenAI)
+    assert isinstance(_build("some-other-provider", native_url), OpenAI)
+
+
+def test_gemini_alias_set_matches_the_registered_profile_aliases():
+    """Invariant: the native-route alias set and the registered gemini profile
+    aliases must stay in lockstep — a new profile alias without a routing alias
+    reintroduces this bug class (#104583)."""
+    from agent.gemini_native_adapter import GEMINI_NATIVE_PROVIDER_NAMES
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("gemini")
+    assert profile is not None, "the bundled gemini profile must be discoverable"
+    assert GEMINI_NATIVE_PROVIDER_NAMES == frozenset({profile.name, *profile.aliases})

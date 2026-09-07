@@ -5793,7 +5793,9 @@ def _nous_on_messages_wire(provider_norm: str, model: str) -> bool:
 
 
 _NVIDIA_PROVIDER_NAMES = {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron"}
-_GEMINI_NATIVE_PROVIDER_NAMES = {"gemini", "google", "google-gemini", "google-ai-studio"}
+# Single source of truth lives in agent.gemini_native_adapter (the Gemini-native owner
+# module): the canonical name + every alias registered by the gemini provider profile.
+from agent.gemini_native_adapter import GEMINI_NATIVE_PROVIDER_NAMES as _GEMINI_NATIVE_PROVIDER_NAMES
 
 
 def _is_gemini_native_route(provider_norm: str, effective_base: str) -> bool:

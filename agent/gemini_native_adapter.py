@@ -34,6 +34,16 @@ _API_CLIENT = f"hermes-agent/{_HERMES_VERSION}"  # client context per Gemini's p
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
+# Provider identities that mean "the Gemini native API" — the canonical name plus every
+# alias registered by plugins/model-providers/gemini. Client-construction gates must match
+# on this SET, never on the literal "gemini": try_activate_fallback installs the RAW
+# fallback entry name (e.g. ``google``) on ``agent.provider``, so a literal check makes
+# every later client rebuild fall through to the generic OpenAI SDK client pointed at the
+# native endpoint → 400 "Unknown name 'thinking_config'" (#104583).
+# Keep in lockstep with the profile's ``aliases`` (pinned by
+# tests/agent/test_provider_client_seam.py::test_gemini_alias_set_matches_the_registered_profile_aliases).
+GEMINI_NATIVE_PROVIDER_NAMES = frozenset({"gemini", "google", "google-gemini", "google-ai-studio"})
+
 # Published max output-token ceiling shared by every current Gemini text model; used
 # for max_tokens=None because the native API's low internal default truncates output.
 GEMINI_DEFAULT_MAX_OUTPUT_TOKENS = 65535

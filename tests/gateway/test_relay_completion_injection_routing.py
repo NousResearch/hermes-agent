@@ -81,10 +81,8 @@ async def test_injection_resolves_relay_adapter_for_fronted_platform():
 
 
 @pytest.mark.asyncio
-async def test_injection_still_none_when_platform_not_fronted():
-    """Control: a platform the relay does NOT front stays undeliverable
-    (returns None) — the resolver must not let relay hijack unrelated
-    targets."""
+async def test_injection_retries_when_platform_not_fronted():
+    """Unavailable transport stays retryable without letting relay hijack unrelated targets."""
     adapter = _RelayAdapter()  # fronts slack only
     runner = _runner_with_relay(adapter)
     evt = _slack_async_event()
@@ -92,5 +90,5 @@ async def test_injection_still_none_when_platform_not_fronted():
     evt["platform"] = "discord"
 
     result = await runner._inject_watch_notification("[x]", evt)
-    assert result is None
+    assert result is False
     assert adapter.handle_message.await_count == 0

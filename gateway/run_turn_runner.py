@@ -1460,6 +1460,22 @@ class TurnRunner:
                 clear_session(session_key)
             reset_current_session_key(token)
 
+    @staticmethod
+    def _evaluator_turn_id(ctx: TurnContext) -> Optional[str]:
+        """Return a globally scoped immutable identity for one gateway turn."""
+        session_key = getattr(ctx, "session_key", None)
+        run_generation = getattr(ctx, "run_generation", None)
+        if not isinstance(session_key, str) or not session_key or run_generation is None:
+            return None
+        source = getattr(ctx, "source", None)
+        return json.dumps({
+            "platform": str(getattr(source, "platform", "")),
+            "chat_id": str(getattr(source, "chat_id", "")),
+            "session_key": session_key,
+            "run_generation": run_generation,
+            "inbound_message_id": str(getattr(ctx, "inbound_message_id", "") or ""),
+        }, sort_keys=True, separators=(",", ":"))
+
     def _finish_stream_consumer(self, result, agent_history, stream_consumer):
         ctx = self._ctx
         # Canonicalize a model-emitted computer-use screenshot path at the common result boundary so
@@ -1481,11 +1497,7 @@ class TurnRunner:
             if isinstance(fr, str) and fr.strip() and fr != "(empty)":
                 _final_for_stream = fr
         if pre_delivery_gate is not None and getattr(pre_delivery_gate, "mode", "legacy") == "shadow" and _final_for_stream is not None:
-            turn_id = getattr(ctx, "inbound_message_id", None) or (
-                f"{ctx.session_key}:{ctx.run_generation}"
-                if getattr(ctx, "session_key", None) and getattr(ctx, "run_generation", None) is not None
-                else None
-            )
+            turn_id = self._evaluator_turn_id(ctx)
             decision = pre_delivery_gate.evaluate_sync(
                 final_text=_final_for_stream,
                 metadata={"platform": getattr(ctx.source, "platform", ""), "chat_id": str(ctx.source.chat_id), "turn_id": turn_id},
@@ -1497,11 +1509,7 @@ class TurnRunner:
             result["pre_delivery_shadow_status"] = decision.status
             result["pre_delivery_shadow_evidence_ref"] = decision.evidence_ref
         if pre_delivery_gate is not None and getattr(pre_delivery_gate, "mode", "legacy") == "strict" and _final_for_stream is not None:
-            turn_id = getattr(ctx, "inbound_message_id", None) or (
-                f"{ctx.session_key}:{ctx.run_generation}"
-                if getattr(ctx, "session_key", None) and getattr(ctx, "run_generation", None) is not None
-                else None
-            )
+            turn_id = self._evaluator_turn_id(ctx)
             decision = pre_delivery_gate.evaluate_sync(
                 final_text=_final_for_stream,
                 metadata={"platform": getattr(ctx.source, "platform", ""), "chat_id": str(ctx.source.chat_id), "turn_id": turn_id},
@@ -1519,10 +1527,6 @@ class TurnRunner:
             if isinstance(decision.final_text, str):
                 _final_for_stream = decision.final_text
                 result["final_response"] = decision.final_text
-            if stream_consumer is not None:
-                release = getattr(stream_consumer, "release_content_delivery", None)
-                if callable(release):
-                    release()
         if stream_consumer is None:
             return
         if _final_for_stream is None:

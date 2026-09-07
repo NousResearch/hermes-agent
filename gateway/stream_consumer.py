@@ -522,6 +522,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         loop adopts it as the finalize payload.  Interrupt/error paths call ``finish()`` bare."""
         if final_text is not None:
             self._queue.put((_FINAL_TEXT, final_text))
+            # Keep the approved final and its release barrier in producer order.
+            # Otherwise the consumer can observe quarantine opening before the
+            # approved final exists in the queue.
+            if self._quarantine_content_delivery:
+                self._queue.put(_RELEASE_CONTENT)
         self._queue.put(_DONE)
 
     def suppress_final_delivery(self) -> None:

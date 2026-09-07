@@ -165,7 +165,6 @@ async def test_local_e2e_gate_evaluator_and_real_consumer():
         metadata={"turn_id": "local-e2e-001", "platform": "test"},
     )
     assert decision.allowed is True
-    consumer.release_content_delivery()
     consumer.finish(decision.final_text)
     await task
 

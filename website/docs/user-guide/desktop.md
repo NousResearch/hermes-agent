@@ -51,6 +51,8 @@ The center of the app. You get:
 - **A conversation timeline rail** — long chats get a slim rail of markers along the edge of the transcript, one per prompt. Hover it to pop open the list of prompts, click one to jump straight to that point in the conversation. (It appears once the chat has a handful of turns.)
 - **Find in page** — press **Cmd/Ctrl+F** to open a find bar that searches the rendered chat transcript. Enter / Shift+Enter (or Cmd/Ctrl+G / Cmd/Ctrl+Shift+G while the bar is open) step through matches; Esc closes it.
 
+Async cron and delegation completions keep a compact timeline label and render the result body (including job output) as Markdown. Task instructions and delivery envelopes are not shown as report content.
+
 #### Status bar
 
 The bar along the bottom of the chat shows live session state and exposes quick controls without opening Settings:

@@ -2503,6 +2503,17 @@ def claim_job_for_fire(
         now = _hermes_now()
         if _claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds):
             return False  # someone holds a fresh claim
+        from cron.occurrences import completed_occurrence, scheduled_instant
+
+        manual = force or job.get("manual_run_at") == job.get("next_run_at")
+        instant = None if manual else scheduled_instant(job.get("next_run_at"))
+        if instant and completed_occurrence(job, instant):
+            if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
+                nxt = compute_next_run(job["schedule"], now.isoformat())
+                if nxt:
+                    job["next_run_at"] = nxt
+                    save_jobs(jobs)
+            return False
         if force:
             _activate_job_record(job)
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
@@ -2513,7 +2524,7 @@ def claim_job_for_fire(
             if nxt:
                 job["next_run_at"] = nxt
         save_jobs(jobs)
-        return copy.deepcopy(job) if return_job else True
+        return dict(copy.deepcopy(job), _scheduled_instant=instant) if return_job else True
 
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
 
@@ -2914,11 +2925,21 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     # into both fields, and any rewrite of next_run_at (edit, re-anchor, fire-claim advance) must
     # invalidate the marker. Do not "fix" this with _ensure_aware normalization.
     manual_run = job.get("manual_run_at") == next_run
+    from cron.occurrences import completed_occurrence, scheduled_instant
+
+    if not manual_run and completed_occurrence(job, next_run):
+        new_next = d.recompute_next() if recurring else None
+        if new_next:
+            scan.persist(job["id"], next_run_at=new_next)
+        return False
     if kind == "cron" and not manual_run and _repair_timezone_shifted_cron(d):
         return False
     d.next_run_dt = _rearm_stale_error_recurring(d)
     if d.next_run_dt > now:
         return False
+
+    # Only the dispatch snapshot carries this field; never infer it from a later stamp.
+    job["_scheduled_instant"] = None if manual_run else scheduled_instant(d.next_run_dt.isoformat())
 
     if not manual_run and kind == "cron" and _reanchor_stale_cron(d):
         return False

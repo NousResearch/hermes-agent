@@ -14,7 +14,10 @@ Ownership rules, identical in ``apps/desktop/electron/update-marker.ts``,
   every update path permanently;
 * a body that is empty, malformed or future-dated names nobody at all. It is
   not a claim, so it never gates. Mutating owners (the desktop and the CLI
-  lock) reclaim it after a dwell; this module only reads.
+  lock) reclaim it after a dwell; this module only reads;
+* a ``<marker>.cas-release-<pid>-<uuid>`` tombstone whose PID is alive is a
+  release still in flight, so the claim behind it is still real and it gates.
+  An abandoned one (dead PID) does not; the mutating readers recover it.
 
 Readers here do not mutate the marker; updater lock owners handle reclamation.
 """
@@ -355,6 +358,29 @@ class UpdateMarkerUnhealthyError(UpdateMarkerError):
     """
 
 
+def _live_release_tombstone_owner(
+    marker: Path,
+    artifacts: list[Path],
+    pid_alive: Callable[[int], bool],
+) -> int | None:
+    """PID of a release still in flight, or ``None``.
+
+    ``_remove_exact_marker`` renames the marker to
+    ``<marker>.cas-release-<pid>-<uuid>`` before reading and unlinking it. While
+    that PID is alive the transaction is unfinished and the claim is still real.
+    An abandoned release (dead PID) is recovered by the mutating readers; this
+    module only reads, so it just declines to call that one blocking.
+    """
+    prefix = marker.name + ".cas-release-"
+    for artifact in artifacts:
+        if not artifact.name.startswith(prefix):
+            continue
+        owner = artifact.name[len(prefix):].split("-", 1)[0]
+        if owner.isdecimal() and int(owner) > 0 and pid_alive(int(owner)):
+            return int(owner)
+    return None
+
+
 def live_update_marker_owner(
     marker: str | Path | None = None,
     *,
@@ -368,6 +394,16 @@ def live_update_marker_owner(
     try:
         artifacts = list(path.parent.glob(path.name + ".cas-*"))
         if artifacts:
+            releaser = _live_release_tombstone_owner(path, artifacts, pid_alive)
+            if releaser is not None:
+                # A live releaser holds the marker inside its rename/read/unlink
+                # transaction, so an update IS running and the venv is not safe
+                # to touch. update-marker.ts answers 'cleanup-race' here and
+                # update_lock.py raises the blocking error; this reader used to
+                # be the only one that let the bridge walk straight through.
+                raise UpdateMarkerError(
+                    f"Update marker cleanup is in progress (releaser pid {releaser}): {artifacts[0]}"
+                )
             raise UpdateMarkerUnhealthyError(
                 f"Update marker cleanup is still unresolved: {artifacts[0]}"
             )
@@ -410,12 +446,13 @@ def should_quiesce_mcp_bridge(
 ) -> bool:
     """Gate the exact MCP module launch while the marker prevents installation access.
 
-    Never raises. Only two things gate: a live owner, and a marker we could not
-    READ at all (permissions/IO) -- that one stays fail-closed because it might
-    be hiding a real update. Everything else, including a marker that names
-    nobody and any unexpected internal failure, does NOT gate: turning every
-    exception into "quiesce" is how a single torn write made the bridge exit 0
-    at import on every launch, on every platform, until a human intervened.
+    Never raises. Three things gate: a live owner, a release transaction still
+    in flight under a live PID, and a marker we could not READ at all
+    (permissions/IO) -- the last stays fail-closed because it might be hiding a
+    real update. Everything else, including a marker that names nobody and any
+    unexpected internal failure, does NOT gate: turning every exception into
+    "quiesce" is how a single torn write made the bridge exit 0 at import on
+    every launch, on every platform, until a human intervened.
     """
     try:
         original_argv = getattr(sys, "orig_argv", sys.argv) if argv is None else argv

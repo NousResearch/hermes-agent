@@ -26,8 +26,24 @@ _MIN_PLAUSIBLE, _MAX_PLAUSIBLE = 64, 32_768
 _EMA_ALPHA = 0.5
 
 _image_cost_var: ContextVar[Optional[int]] = ContextVar("hermes_image_token_cost", default=None)
-_LEARNED: Dict[str, int] = {}
-_LOADED = False
+# Learned costs, per profile: a process serving more than one profile in the same process
+# (desktop multiplex) must not let one profile's calibration bleed into another's, even though
+# the on-disk file path is already resolved per-profile via get_hermes_home(). Keyed by
+# hermes_home_key() first, then by the model@host key from _key() -- same shape as the other
+# established per-profile registries (agent.secret_sources.registry._SCOPED_SOURCES).
+_LEARNED: Dict[str, Dict[str, int]] = {}
+# hermes_home_key()s whose on-disk file has already been loaded into _LEARNED this process.
+_LOADED_SCOPES: set = set()
+
+
+def _scope() -> str:
+    from hermes_constants import hermes_home_key
+
+    return hermes_home_key()
+
+
+def _learned_for_scope(scope: str) -> Dict[str, int]:
+    return _LEARNED.setdefault(scope, {})
 
 
 def _cache_path():
@@ -43,21 +59,23 @@ def _key(model: Any, base_url: Any) -> str:
 
 
 def _load() -> None:
-    global _LOADED
-    if _LOADED:
+    """Load the active profile's on-disk learned costs, once per profile per process."""
+    scope = _scope()
+    if scope in _LOADED_SCOPES:
         return
-    _LOADED = True
+    _LOADED_SCOPES.add(scope)
     from agent.model_metadata import _load_json_dict
 
+    learned = _learned_for_scope(scope)
     for k, v in _load_json_dict(_cache_path()).items():
         if isinstance(v, int) and _MIN_PLAUSIBLE <= v <= _MAX_PLAUSIBLE:
-            _LEARNED[k] = v
+            learned[k] = v
 
 
 def learned_image_token_cost(model: Any, base_url: Any) -> int:
-    """Learned per-image cost for ``model@host``, else the flat default."""
+    """Learned per-image cost for ``model@host`` in the active profile, else the flat default."""
     _load()
-    return _LEARNED.get(_key(model, base_url), DEFAULT_IMAGE_TOKEN_COST)
+    return _learned_for_scope(_scope()).get(_key(model, base_url), DEFAULT_IMAGE_TOKEN_COST)
 
 
 def current_image_token_cost() -> int:
@@ -118,14 +136,15 @@ def calibrate_from_usage(agent: Any, messages: List[Dict[str, Any]], prompt_toke
         return None
     key = _key(getattr(agent, "model", None), getattr(agent, "base_url", None))
     _load()
-    prior = _LEARNED.get(key)
+    learned_dict = _learned_for_scope(_scope())
+    prior = learned_dict.get(key)
     learned = per_image if prior is None else int(prior + _EMA_ALPHA * (per_image - prior))
-    _LEARNED[key] = learned
+    learned_dict[key] = learned
     _image_cost_var.set(learned)
     try:
         from utils import atomic_json_write
 
-        atomic_json_write(_cache_path(), dict(_LEARNED), indent=0, separators=(",", ":"))
+        atomic_json_write(_cache_path(), dict(learned_dict), indent=0, separators=(",", ":"))
     except Exception:
         logger.debug("image token cost persist failed", exc_info=True)
     logger.info(

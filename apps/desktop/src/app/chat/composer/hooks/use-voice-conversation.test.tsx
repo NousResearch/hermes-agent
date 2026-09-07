@@ -2,6 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { BargeMonitorCallbacks } from '@/lib/voice-barge-in'
+import { playSpeechText, startSpeechStream } from '@/lib/voice-playback'
 
 import type { MicRecording } from './use-mic-recorder'
 import { useVoiceConversation } from './use-voice-conversation'
@@ -75,7 +76,9 @@ interface HookProps {
   busy: boolean
 }
 
-function renderConversation(overrides: { onInterrupt?: () => void; transcript?: string } = {}) {
+function renderConversation(
+  overrides: { onInterrupt?: () => void; pendingResponse?: () => { id: string; pending: boolean; text: string } | null; speakReplies?: boolean; transcript?: string } = {}
+) {
   const onInterrupt = overrides.onInterrupt ?? vi.fn()
 
   // Mirrors the real app: submitting a turn makes the agent busy.
@@ -95,24 +98,27 @@ function renderConversation(overrides: { onInterrupt?: () => void; transcript?: 
     transcriptions++ === 0 ? 'kick off the task' : (overrides.transcript ?? 'and another thing')
   )
 
+  const consumePendingResponse = vi.fn()
+
   const hook = renderHook(
     ({ busy }: HookProps) =>
       useVoiceConversation({
         busy,
-        consumePendingResponse: vi.fn(),
+        consumePendingResponse,
         enabled: true,
         onInterrupt,
         onStopWord,
         onSubmit,
         onTranscribeAudio,
-        pendingResponse: () => null
+        pendingResponse: overrides.pendingResponse ?? (() => null),
+        speakReplies: overrides.speakReplies
       }),
     { initialProps: { busy: false } }
   )
 
   onBusyChange.current = busy => hook.rerender({ busy })
 
-  return { hook, onInterrupt, onStopWord, onSubmit, onTranscribeAudio }
+  return { consumePendingResponse, hook, onInterrupt, onStopWord, onSubmit, onTranscribeAudio }
 }
 
 /** Drive the hook into the generation phase (turn submitted, model working). */
@@ -262,5 +268,61 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     hook.rerender({ busy: true })
 
     expect(monitorCalls.length).toBe(armed)
+  })
+})
+
+describe('useVoiceConversation spoken replies off', () => {
+  beforeEach(() => {
+    monitorCalls.length = 0
+    vi.clearAllMocks()
+    micHandle.start.mockResolvedValue(undefined)
+    micHandle.stop.mockResolvedValue(null)
+  })
+
+  afterEach(cleanup)
+
+  it('never plays the reply and re-listens once the turn completes', async () => {
+    const { hook } = renderConversation({
+      pendingResponse: () => ({ id: 'reply-1', pending: false, text: 'the answer' }),
+      speakReplies: false
+    })
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await enterThinking(hook)
+
+    await act(async () => {
+      hook.rerender({ busy: false })
+    })
+
+    await waitFor(() => expect(hook.result.current.status).not.toBe('thinking'))
+    expect(hook.result.current.status).not.toBe('speaking')
+    expect(startSpeechStream).not.toHaveBeenCalled()
+    expect(playSpeechText).not.toHaveBeenCalled()
+  })
+
+  it('still speaks the reply when spoken replies are on', async () => {
+    const { hook } = renderConversation({
+      pendingResponse: () => ({ id: 'reply-1', pending: false, text: 'the answer' }),
+      speakReplies: true
+    })
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+
+    micHandle.stop.mockResolvedValueOnce({
+      audio: new Blob(['q'], { type: 'audio/webm' }),
+      durationMs: 900,
+      heardSpeech: true
+    })
+
+    await act(async () => {
+      hook.result.current.stopTurn()
+    })
+
+    await waitFor(() => expect(startSpeechStream).toHaveBeenCalled())
   })
 })

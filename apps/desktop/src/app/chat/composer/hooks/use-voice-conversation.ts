@@ -36,6 +36,8 @@ interface VoiceConversationOptions {
   onTranscribeAudio?: (audio: Blob) => Promise<string>
   pendingResponse: () => PendingVoiceResponse | null
   consumePendingResponse: () => void
+  /** `voice.auto_tts` — false leaves the reply text-only, same as CLI voice mode. */
+  speakReplies?: boolean
   /** Awaited right before the mic is opened. Used to let the wake-word listener
    *  fully release the capture device first, so the two never contend. */
   beforeMicOpen?: () => Promise<void> | void
@@ -55,6 +57,7 @@ export function useVoiceConversation({
   onTranscribeAudio,
   pendingResponse,
   consumePendingResponse,
+  speakReplies = true,
   beforeMicOpen
 }: VoiceConversationOptions) {
   const { t } = useI18n()
@@ -693,7 +696,21 @@ export function useVoiceConversation({
       const response = pendingResponse()
 
       if (response) {
-        openLiveSpeech(response.id)
+        if (speakReplies) {
+          openLiveSpeech(response.id)
+
+          return
+        }
+
+        // Spoken replies off: nothing will ever play, so close the turn out
+        // here instead of waiting on playback and hand the mic straight back.
+        if (!busy && !response.pending) {
+          awaitingSpokenResponseRef.current = false
+          consumePendingResponse()
+          dropSpeechSession()
+          pendingStartRef.current = true
+          setStatus('idle')
+        }
 
         return
       }
@@ -717,7 +734,18 @@ export function useVoiceConversation({
     if (pendingStartRef.current) {
       void startListening()
     }
-  }, [busy, enabled, muted, ensureBargeMonitor, openLiveSpeech, pendingResponse, startListening, status])
+  }, [
+    busy,
+    consumePendingResponse,
+    enabled,
+    muted,
+    ensureBargeMonitor,
+    openLiveSpeech,
+    pendingResponse,
+    speakReplies,
+    startListening,
+    status
+  ])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {

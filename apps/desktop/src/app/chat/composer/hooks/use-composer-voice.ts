@@ -67,6 +67,7 @@ export function useComposerVoice({
   const ownsWakeIndicatorRef = useRef(false)
   const previousSessionIdRef = useRef(sessionId)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
+  const autoSpeak = useStore($autoSpeakReplies)
 
   // eslint-disable-next-line no-restricted-syntax -- session-id adopt token, not an atom mirror
   useEffect(() => {
@@ -160,6 +161,7 @@ export function useComposerVoice({
     onSubmit: submitVoiceTurn,
     onTranscribeAudio,
     pendingResponse: pendingTurnResponse,
+    speakReplies: autoSpeak,
     // Before the conversation opens the mic, wait for any in-flight wake.pause
     // to finish releasing the capture device (see wakePauseBarrierRef).
     beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined

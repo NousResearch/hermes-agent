@@ -17,7 +17,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig  # noqa: E402
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult  # noqa: E402
+from gateway.platforms.base import BasePlatformAdapter, SendResult  # noqa: E402
+from gateway.platforms.event import MessageEvent  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
 from gateway.session import SessionSource, SessionStore, build_session_key  # noqa: E402
 from hermes_cli import heartbeat  # noqa: E402

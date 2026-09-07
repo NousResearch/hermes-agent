@@ -42,11 +42,39 @@ with tempfile.TemporaryDirectory(prefix="hermes-deny-dispatch-") as directory:
              "env -S 'printf %s' 'sudo -n id'", "env -S printf BENIGN",
              "env -S " + shlex.quote("bash -c " + shlex.quote(binary + " -n id")),
              "echo ok # ignored\n bash -c " + shlex.quote(binary + " -n id")]
+    cases += [
+        r"env -S 'printf\_SAFE'", r"env -S 'printf\_SAFE\c ignored'",
+        "env -S 'printf SAFE # ignored'", "env -S 'printf # ignored' SAFE",
+        "env -a marker printf SAFE", "env --argv0 marker printf SAFE",
+        "env --argv0=marker printf SAFE", "env -amarker printf SAFE",
+        r"env -a marker -S 'printf\_SAFE'",
+        "env -S '\"printf\"\\_SAFE'", "env -S \"'printf' SAFE\"",
+        r"env -S 'printf\_\_SAFE'", r"env -S 'printf\c ignored' SAFE",
+        "env -a sudo printf BENIGN", "env --argv0 sudo printf BENIGN",
+        "env -S 'printf %s \"sudo\\_-n\\_id\"'",
+        r"env -S 'printf BENIGN\c bash -c sudo'",
+        "env -S 'printf BENIGN # bash -c sudo'",
+        r"env -S 'printf %s \${IGNORED}'",
+    ]
     rows = []
     for command in cases:
         result = registry.dispatch("terminal", {"command": command, "workdir": directory, "timeout": 10})
         if isinstance(result, str):
             result = json.loads(result)
         rows.append({"command": command, "result": result})
+    # Optional assertions keep the same harness usable for before/after receipts.
+    expected_outputs = {5: 'sudo -n id -u', 6: 'sudo;-n;id;', 9: 'ok',
+                        10: 'sudo -n id', 11: 'BENIGN', 27: 'BENIGN', 28: 'BENIGN',
+                        29: 'sudo -n id', 30: 'BENIGN', 31: 'BENIGN', 32: '${IGNORED}'}
+    if '--verify' in sys.argv:
+        for index, row in enumerate(rows):
+            result = row['result']
+            if index in expected_outputs:
+                assert result.get('exit_code') == 0, row
+                assert result.get('output', '').strip() == expected_outputs[index], row
+            else:
+                assert result.get('status') == 'blocked', row
+                assert 'user-defined deny rule' in result.get('error', ''), row
+                assert not result.get('output'), row
     print(json.dumps({"source": str(source), "config": approval_context._get_approval_config(),
                       "rows": rows}, indent=2))

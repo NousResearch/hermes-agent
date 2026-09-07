@@ -6,6 +6,7 @@ making it the user-editable counterpart to the code-shipped hardline floor.
 """
 
 import os
+import shlex
 
 import pytest
 
@@ -88,6 +89,13 @@ def test_deny_follows_executable_identity(deny_config, clean_env, monkeypatch):
         "echo ok # ignored\n bash -c '/usr/bin/sudo -n id -u'",
         "printf SAFE", "env -S printf SAFE", "env -Sprintf SAFE",
         "env --split-string=printf SAFE", "env -S 'printf' SAFE",
+        r"env -S 'printf\_SAFE'", r"env -S 'printf\_SAFE\c ignored'",
+        "env -S 'printf SAFE # ignored'", "env -S 'printf # ignored' SAFE",
+        "env -a marker printf SAFE", "env --argv0 marker printf SAFE",
+        "env --argv0=marker printf SAFE", "env -amarker printf SAFE",
+        r"env -a marker -S 'printf\_SAFE'",
+        "env -S '\"printf\"\\_SAFE'", "env -S \"'printf' SAFE\"",
+        r"env -S 'printf\_\_SAFE'", r"env -S 'printf\c ignored' SAFE",
         "2>/tmp/log FOO=bar /usr/bin/sudo -n id -u",
         "if true; then /usr/bin/sudo -n id -u; fi",
     ]
@@ -95,6 +103,7 @@ def test_deny_follows_executable_identity(deny_config, clean_env, monkeypatch):
         deny_config(["sudo *", "printf SAFE"], mode=mode)
         monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", yolo)
         for command in commands:
+            assert approval_floors._match_user_deny_rule(command), command
             for guard in (mod.check_dangerous_command, mod.check_all_command_guards):
                 result = guard(command, "local")
                 assert result.get("user_deny") is True, (mode, yolo, command, result)
@@ -112,6 +121,12 @@ def test_deny_projection_preserves_data_and_path_rules(deny_config):
         'printf "%s" "$(printf safe) sudo -n id -u"',
         "command -v sudo", "command -V sudo", "command -pv sudo",
         "env -u sudo printf ok", "exec -a sudo printf ok",
+        "env -a sudo printf ok", "env --argv0 sudo printf ok",
+        r"env -S 'printf %s\_sudo\_-n\_id'",
+        "env -S 'printf %s \"sudo\\_-n\\_id\"'",
+        r"env -S 'printf ok\c bash -c sudo'",
+        "env -S 'printf ok # bash -c sudo'",
+        r"env -S 'printf %s \${IGNORED}'",
         "ionice --pid sudo", "chrt --pid sudo", "taskset --pid 1 sudo",
         "echo 'first\nsudo -n id -u'", "echo ok # ; sudo -n id -u",
         "env -S 'printf %s; sudo -n id'",
@@ -131,6 +146,25 @@ def test_deny_projection_preserves_data_and_path_rules(deny_config):
     deny_config(['printf "a  b"'])
     assert approval_floors._match_user_deny_rule('env printf "a  b"')
     assert approval_floors._match_user_deny_rule('env printf "a b"') is None
+    # The argv projection must retain GNU escapes as data, not shell syntax.
+    from tools.approval_detection import _split_env_string
+
+    for literal, expected in (
+        (r'a\_b', ['a', 'b']), (r'"a\_b"', ['a b']),
+        (r"'a\_b'", [r'a\_b']), (r'a\cb ignored', ['a']),
+        ('a # ignored', ['a']), ('a#b', ['a#b']), (r'\#a', ['#a']),
+        (r'\${NAME}', ['${NAME}']), ("'${NAME}'", ['${NAME}']),
+        (r"'a\'b'", ["a'b"]), (r"'a\\b'", [r'a\b']),
+        (r'a\"b', ['a"b']), ('"" a', ['', 'a']),
+        *((rf'a\{key}b', ['a' + value + 'b'])
+          for key, value in {'f': '\f', 'n': '\n', 'r': '\r', 't': '\t', 'v': '\v'}.items()),
+    ):
+        assert _split_env_string(literal) == expected, literal
+        command = 'env -S ' + shlex.quote('printf %s ' + literal)
+        deny_config(['sudo *'])
+        assert approval_floors._match_user_deny_rule(command) is None, command
+    for unresolved in ('${NAME}', '"${NAME}"', r'"a\cb"', r'a\qb', "'unclosed"):
+        assert _split_env_string(unresolved) is None
 
 
 class TestDenyBeatsYolo:

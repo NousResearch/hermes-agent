@@ -506,7 +506,8 @@ _SUDO_OPTIONS_WITH_ARG = {"-c", "--close-from", "-g", "--group", "-h", "--host",
 # data, not executable positions; option spelling remains case-sensitive.
 _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
     "chroot": {"--groups", "--userspec"},
-    "sudo": _SUDO_OPTIONS_WITH_ARG, "env": {"-C", "--chdir", "-S", "--split-string", "-u", "--unset"},
+    "sudo": _SUDO_OPTIONS_WITH_ARG,
+    "env": {"-a", "--argv0", "-C", "--chdir", "-S", "--split-string", "-u", "--unset"},
     "exec": {"-a"}, "nice": {"-n", "--adjustment"},
     "time": {"-f", "--format", "-o", "--output"},
     "timeout": {"-k", "--kill-after", "-s", "--signal"},
@@ -1181,6 +1182,64 @@ def _shell_command_segment(command: str, start: int) -> str:
     return command[start:end].strip()
 
 
+def _split_env_string(payload: str) -> list[str] | None:
+    r"""Project GNU env -S literal argv, not POSIX shell words.
+
+    Dynamic ${NAME} expansion is deliberately not evaluated: the execution
+    backend's environment need not be this process's environment.
+    """
+    escapes = {"f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v",
+               "#": "#", "$": "$", "\"": "\"", "'": "'", "\\": "\\"}
+    args, word = [], []
+    quote, started, index = None, False, 0
+    while index < len(payload):
+        char = payload[index]
+        index += 1
+        if char == "\\":
+            if index == len(payload):
+                return None
+            escaped = payload[index]
+            if quote == "'" and escaped not in ("'", "\\"):
+                word.append(char)
+                started = True
+                continue
+            index += 1
+            if escaped == "c":
+                if quote:
+                    return None
+                break
+            if escaped == "_" and quote is None:
+                if started:
+                    args.append("".join(word))
+                word, started = [], False
+                continue
+            if escaped not in escapes and escaped != "_":
+                return None
+            word.append(" " if escaped == "_" else escapes[escaped])
+            started = True
+            continue
+        if char in ("'", '"') and (quote is None or char == quote):
+            quote = char if quote is None else None
+            started = True
+            continue
+        if quote is None and char in " \t\n\r\v\f":
+            if started:
+                args.append("".join(word))
+            word, started = [], False
+            continue
+        if quote is None and char == "#" and not started:
+            break
+        if char == "$" and quote != "'":
+            return None
+        word.append(char)
+        started = True
+    if quote:
+        return None
+    if started:
+        args.append("".join(word))
+    return args
+
+
 def _env_split_payload(tokens: list[str]) -> str | None:
     index = 1
     while index < len(tokens):
@@ -1194,12 +1253,10 @@ def _env_split_payload(tokens: list[str]) -> str | None:
                 index += 1
             payload = (value if option == "--split-string" else token[2:]) if attached else (
                 tokens[index] if index < len(tokens) else "")
-            try:
-                # env splits argv, not shell syntax: protect literal separators and
-                # expansions when feeding the existing command-position scanner.
-                return shlex.join(shlex.split(payload) + tokens[index + 1:])
-            except ValueError:
-                return None
+            args = _split_env_string(payload)
+            # Protect literal separators when reusing command-position detection;
+            # only a real shell -c carrier may turn these argv bytes into code.
+            return shlex.join(args + tokens[index + 1:]) if args is not None else None
         index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
     return None
 

@@ -130,13 +130,25 @@ class TestFinalizeInterruptsOwnDelegations:
         mock_db.get_session.return_value = {"source": "tui"}
         mock_get_db.return_value = mock_db
 
-        with patch("tools.async_delegation.interrupt_for_session") as mock_int:
+        with (
+            patch("tools.async_delegation.interrupt_for_session") as mock_int,
+            patch(
+                "tools.async_delegation.close_work_groups_for_session"
+            ) as mock_close,
+        ):
             _finalize_session(self._make_session(), end_reason="tui_close")
 
         mock_int.assert_called_once()
         kwargs = mock_int.call_args.kwargs
         assert kwargs["session_key"] == "sess_A"
         assert kwargs["origin_ui_session_id"] == "tab1"
+        mock_close.assert_called_once_with(
+            origin_session="sess_A",
+            origin_ui_session_id="tab1",
+            parent_session_id="sess_A",
+            disposition="cancelled",
+            diagnostics="TUI/Desktop intentional session close",
+        )
 
     @patch("tui_gateway.server._get_db")
     def test_viewer_of_gateway_session_only_interrupts_by_origin(self, mock_get_db):
@@ -147,7 +159,12 @@ class TestFinalizeInterruptsOwnDelegations:
         mock_db.get_session.return_value = {"source": "telegram"}
         mock_get_db.return_value = mock_db
 
-        with patch("tools.async_delegation.interrupt_for_session") as mock_int:
+        with (
+            patch("tools.async_delegation.interrupt_for_session") as mock_int,
+            patch(
+                "tools.async_delegation.close_work_groups_for_session"
+            ) as mock_close,
+        ):
             _finalize_session(
                 self._make_session(session_key="agent:main:telegram:dm:123", sid="tab9"),
                 end_reason="ws_orphan_reap",
@@ -156,3 +173,4 @@ class TestFinalizeInterruptsOwnDelegations:
         kwargs = mock_int.call_args.kwargs
         assert kwargs["session_key"] == ""
         assert kwargs["origin_ui_session_id"] == "tab9"
+        mock_close.assert_not_called()

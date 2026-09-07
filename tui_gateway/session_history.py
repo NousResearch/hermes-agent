@@ -178,6 +178,8 @@ _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 
 def _history_to_messages(history: list[dict]) -> list[dict]:
+    from agent.message_metadata import HIDDEN_DISPLAY_KINDS
+
     messages = []
     tool_call_args = {}
     for m in history:
@@ -187,8 +189,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if m is None:
             continue
         role = m.get("role")
-        # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch.
-        if role not in _HISTORY_ROLES or m.get("display_kind") == "hidden":
+        if role not in _HISTORY_ROLES:
             continue
         content_text = _coerce_message_text(m.get("content"))
         if _is_display_hidden_marker(role, content_text):
@@ -202,6 +203,9 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
+        # Retain tool-call attribution even when its companion prose is hidden.
+        if m.get("display_kind") in HIDDEN_DISPLAY_KINDS:
+            continue
         if role == "tool":
             tc_name, tc_args = tool_call_args.get(m.get("tool_call_id") or "", (None, None))
             name = tc_name or m.get("tool_name") or "tool"

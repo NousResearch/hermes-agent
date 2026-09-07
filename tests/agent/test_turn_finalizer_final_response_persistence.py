@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent.turn_finalizer import finalize_turn
+from agent.stream_delivery import StreamDeliveryMixin
 
 
 class FakeAgent:
@@ -35,6 +36,22 @@ class FakeAgent:
         self._persist_user_message_idx: int | None = None
         self._persist_user_message_override: Any = None
         self._persist_user_message_timestamp: float | None = None
+        self.replaced_response: str | None = None
+        self.admit_calls = 0
+        self._current_work_id = ""
+        self._current_work_generation = 0
+        self._current_work_delivery_id = ""
+        self._current_work_claim_id = ""
+        self._current_turn_id = ""
+
+    def _replace_conversational_response(self, final_text):
+        self.replaced_response = final_text
+
+    def _admit_conversational_response(self):
+        self.admit_calls += 1
+
+    def _discard_conversational_response(self):
+        pass
 
     def _handle_max_iterations(self, messages, api_call_count):
         raise AssertionError("not expected")
@@ -128,6 +145,85 @@ def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
     assert isinstance(result["messages"][-1]["timestamp"], float)
     assert agent.persisted_messages is not None
     assert agent.persisted_messages[-1] == result["messages"][-1]
+
+
+def test_canonical_closeout_replaces_buffered_retry_text(monkeypatch):
+    """A retry that adopts durable canonical content must not stream its discarded draft."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setattr(
+        "tools.async_delegation.find_closeout_provisional",
+        lambda _work_id, _delivery_id: {"content": "Canonical closeout.", "row_id": 17},
+    )
+    monkeypatch.setattr("tools.async_delegation.close_work_group", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "tools.async_delegation.reconcile_closed_closeout_provisionals",
+        lambda: None,
+    )
+    agent = FakeAgent()
+    agent._current_work_id = "work-1"
+    agent._current_work_generation = 2
+    agent._current_work_delivery_id = "delivery-1"
+    agent._current_work_claim_id = "claim-1"
+    agent._current_turn_id = "turn"
+    messages = [
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "Retry draft."},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="Retry draft.",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="continue",
+        original_user_message="continue",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+        closeout_terminal_candidate=True,
+    )
+
+    assert result["final_response"] == "Canonical closeout."
+    assert result["messages"][-1]["content"] == "Canonical closeout."
+    assert agent.persisted_messages[-1]["content"] == "Canonical closeout."
+    assert agent.replaced_response == "Canonical closeout."
+    assert agent.admit_calls == 1
+
+
+def test_replace_conversational_response_rewrites_gated_stream():
+    stream = StreamDeliveryMixin()
+    stream._conversational_response_gated = True
+    stream._conversational_response_events = [
+        ("delta", "Retry draft."),
+        ("interim", {"text": "discarded commentary"}),
+    ]
+    stream._conversational_stream_end = {
+        "final_text": "Retry draft.",
+        "finish_reason": "stop",
+        "error": None,
+    }
+    delivered = []
+    stream._deliver_stream_delta = lambda text: delivered.append(("delta", text))
+    stream._deliver_stream_end = lambda **payload: delivered.append(("stream_end", payload))
+
+    stream._replace_conversational_response("Canonical closeout.")
+    stream._admit_conversational_response()
+
+    assert delivered == [
+        ("delta", "Canonical closeout."),
+        (
+            "stream_end",
+            {
+                "final_text": "Canonical closeout.",
+                "finish_reason": "stop",
+                "error": None,
+            },
+        ),
+    ]
 
 
 def test_fallback_timestamp_survives_delayed_sqlite_persistence(

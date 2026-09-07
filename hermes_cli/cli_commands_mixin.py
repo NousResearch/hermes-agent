@@ -897,7 +897,19 @@ class CLICommandsMixin:
         running = [p for p in process_registry.list_sessions() if p.get("status") == "running"]
         # Background subagents live in their own registry, not the process registry.
         n_async = _probe("tools.async_delegation", "active_count", 0)
-        if not running and not n_async:
+        n_groups = 0
+        try:
+            from tools.async_delegation import close_work_groups_for_session
+
+            n_groups = close_work_groups_for_session(
+                origin_session=str(getattr(self, "session_id", "") or ""),
+                parent_session_id=str(getattr(self, "session_id", "") or ""),
+                disposition="cancelled",
+                diagnostics="classic CLI /stop cancelled outstanding delegation work",
+            )
+        except Exception:
+            n_groups = 0
+        if not running and not n_async and not n_groups:
             return print("  No running background processes.")
         if running:
             print(f"  Stopping {len(running)} background process(es)...")

@@ -504,11 +504,15 @@ def _project_for_display(messages: list) -> list:
     """Replace compaction summaries with their display-only projection."""
     from agent.compaction_display import project_compaction_message_for_display
     from agent.context_compressor import is_compaction_summary_message
+    from agent.message_metadata import HIDDEN_DISPLAY_KINDS
 
     projected_messages = []
     for message in messages:
         if not is_compaction_summary_message(message):
-            projected_messages.append(message)
+            projected_messages.append(
+                {**message, "display_kind": "hidden"}
+                if message.get("display_kind") in HIDDEN_DISPLAY_KINDS else message
+            )
             continue
         display_view = project_compaction_message_for_display(message)
         projected = message.copy()

@@ -953,7 +953,7 @@ def test_batch_model_rejection_notice_requires_configured_model_in_text(monkeypa
 # together, and the units of one call share ONE capacity slot.
 # ---------------------------------------------------------------------------
 
-def _grouped_fanout(monkeypatch, tasks, gates):
+def _grouped_fanout(monkeypatch, tasks, gates, **delegate_kwargs):
     """delegate_task(tasks) in the background with gated fake children; returns the parsed handle."""
     from unittest.mock import MagicMock
     import tools.delegate_tool as dt
@@ -981,7 +981,7 @@ def _grouped_fanout(monkeypatch, tasks, gates):
     monkeypatch.setattr(dt, "_build_child_agent", build)
     monkeypatch.setattr(dt, "_run_single_child", child)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
-    return json.loads(dt.delegate_task(tasks=tasks, background=True, parent_agent=parent))
+    return json.loads(dt.delegate_task(tasks=tasks, background=True, parent_agent=parent, **delegate_kwargs))
 
 
 def test_ungrouped_task_completes_alone_and_group_completes_together(monkeypatch):
@@ -1084,6 +1084,43 @@ def test_units_beyond_slot_count_still_start_and_are_not_stalled_while_queued(mo
         assert ad._records["deleg_q"]["status"] == "running"
     assert "q" not in started
     release.set()
+
+
+def test_grouped_closeout_units_share_work_identity_and_consume_reopen_claim_once(monkeypatch):
+    """A closeout turn may dispatch several independent ``group`` units for one work group."""
+    import tools.async_delegation as ad
+    import tools.delegate_tool as dt
+
+    monkeypatch.setattr(dt, "_load_config", lambda: {"independent_completions": True})
+    calls = []
+
+    def dispatch(**kwargs):
+        calls.append(kwargs)
+        return {"status": "dispatched", "delegation_id": kwargs["delegation_id"]}
+
+    monkeypatch.setattr(ad, "dispatch_async_delegation_batch", dispatch)
+    tasks = [
+        {"goal": "complete grouped task one", "group": "a"},
+        {"goal": "complete grouped task two", "group": "b"},
+    ]
+    handle = _grouped_fanout(
+        monkeypatch,
+        tasks,
+        [threading.Event(), threading.Event()],
+        origin_work_id="work-1",
+        work_generation=3,
+        owner_turn_id="turn-2",
+        closeout_delivery_id="delivery-1",
+        closeout_claim_id="claim-1",
+    )
+
+    assert handle.get("status") == "dispatched", handle
+    assert len(calls) == 2
+    assert [call["origin_work_id"] for call in calls] == ["work-1", "work-1"]
+    assert [call["work_generation"] for call in calls] == [3, 3]
+    assert [call["owner_turn_id"] for call in calls] == ["turn-2", "turn-2"]
+    assert [call["closeout_delivery_id"] for call in calls] == ["delivery-1", ""]
+    assert [call["closeout_claim_id"] for call in calls] == ["claim-1", ""]
 
 
 def test_child_finished_before_crash_is_recovered_with_its_result(tmp_path):

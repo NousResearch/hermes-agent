@@ -8,6 +8,7 @@ inside each method (``from cli import ...``) — never at module load time (impo
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import shutil
 import sys
@@ -18,6 +19,8 @@ from pathlib import Path
 from rich.console import Console
 from rich.markup import escape as _escape
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _user_turn_indices(history: list) -> list[int]:
@@ -500,6 +503,18 @@ class CLISessionMixin:
             CLI_CONFIG, _parse_reasoning_config, _parse_service_tier_config,
             _sync_process_session_id, datetime)
         old_session_id = self.session_id
+        if old_session_id:
+            try:
+                from tools.async_delegation import close_work_groups_for_session
+
+                close_work_groups_for_session(
+                    origin_session=old_session_id,
+                    parent_session_id=old_session_id,
+                    disposition="cancelled",
+                    diagnostics="classic CLI /new reset discarded the owning session",
+                )
+            except Exception:
+                logger.debug("Failed to close delegation groups at /new", exc_info=True)
         _boundary_snapshot = None
         if self.agent:
             if self.conversation_history:

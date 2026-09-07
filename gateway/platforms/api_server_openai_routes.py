@@ -7,6 +7,8 @@ module (top-level import = cycle), and lazy lookup keeps ``patch("...api_server.
 """
 
 import asyncio
+import base64
+import hmac
 import json
 import logging
 import re
@@ -421,6 +423,41 @@ class OpenAICompatRoutesMixin:
             body = await request.json()
         except Exception:
             return _error_response("Invalid JSON in request body", 400)
+
+        internal_continuation = None
+        encoded_internal = request.headers.get(
+            "X-Hermes-Internal-Continuation", ""
+        ).strip()
+        if encoded_internal:
+            supplied_token = request.headers.get("X-Hermes-Internal-Auth", "")
+            expected_token = str(
+                getattr(self, "_internal_self_post_token", "") or ""
+            )
+            if not expected_token or not hmac.compare_digest(
+                supplied_token, expected_token
+            ):
+                return _error_response(
+                    "Trusted internal continuation authentication failed", 403
+                )
+            try:
+                decoded = json.loads(
+                    base64.urlsafe_b64decode(encoded_internal.encode("ascii"))
+                )
+                required = ("work_id", "delivery_id", "claim_id")
+                if not isinstance(decoded, dict) or not all(
+                    str(decoded.get(key) or "") for key in required
+                ):
+                    raise ValueError("missing closeout identity")
+                internal_continuation = {
+                    "work_id": str(decoded["work_id"]),
+                    "generation": int(decoded.get("generation") or 0),
+                    "delivery_id": str(decoded["delivery_id"]),
+                    "claim_id": str(decoded["claim_id"]),
+                }
+            except (ValueError, TypeError, json.JSONDecodeError, UnicodeError):
+                return _error_response(
+                    "Invalid trusted internal continuation metadata", 400
+                )
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return _invalid_request("Missing or invalid 'messages' field")
@@ -494,7 +531,8 @@ class OpenAICompatRoutesMixin:
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
-            gateway_session_key=gateway_session_key, **agent_overrides, route=route)
+            gateway_session_key=gateway_session_key, **agent_overrides, route=route,
+            internal_continuation=internal_continuation)
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
             # tool_call_ids with an emitted "running": a "completed" without one (internal/

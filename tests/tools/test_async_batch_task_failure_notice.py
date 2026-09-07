@@ -48,6 +48,22 @@ def test_notice_is_not_sent_for_a_finished_batch_and_does_not_dedup_against_the_
     assert _notification_event_dedup_key(notice) != _notification_event_dedup_key(final)
 
 
+def test_task_scoped_closeout_does_not_emit_interim_failure_notice():
+    q = queue.Queue()
+    record = _record()
+    record["origin_work_id"] = "work-1"
+    with patch.object(ad, "_records", {"deleg-closeout": record}), \
+         patch("tools.process_registry.process_registry") as reg:
+        reg.completion_queue = q
+        ad.push_task_failure_notice(
+            "deleg-closeout",
+            {"task_index": 0, "status": "error", "error": "failed"},
+            n_tasks=3,
+        )
+
+    assert q.empty()
+
+
 def test_interim_notice_never_claims_or_acknowledges_the_batch_final_row(tmp_path, monkeypatch):
     """Independent-review witness: a busy parent that drained the notice first acknowledged the FINAL
     result's durable row, and the consolidated result was never delivered (nor replayed after restart)."""

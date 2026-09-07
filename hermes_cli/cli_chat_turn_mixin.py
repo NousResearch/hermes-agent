@@ -22,7 +22,17 @@ from typing import Optional
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
 
-    def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
+    def chat(
+        self,
+        message,
+        images: list = None,
+        voice_input: bool = False,
+        *,
+        origin_work_id: str = "",
+        work_generation: int = 0,
+        work_delivery_id: str = "",
+        work_claim_id: str = "",
+    ) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
 
         Input typed while the agent runs goes to ``_interrupt_queue`` (separate from
@@ -72,7 +82,12 @@ class CLIChatTurnMixin:
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
 
-        turn = _ChatTurn()
+        turn = _ChatTurn(
+            origin_work_id=origin_work_id,
+            work_generation=work_generation,
+            work_delivery_id=work_delivery_id,
+            work_claim_id=work_claim_id,
+        )
         try:
             self._reset_stream_state()
             # Not part of _reset_stream_state: must persist across intermediate turn
@@ -89,6 +104,18 @@ class CLIChatTurnMixin:
             self._chat_settle_turn(turn)
             return self._chat_render_turn(turn, agent_thread, interrupt_msg)
         except Exception as e:
+            if origin_work_id:
+                from cli import _InternalContinuation, _retry_failed_closeout_continuation
+
+                _retry_failed_closeout_continuation(
+                    _InternalContinuation(
+                        message,
+                        origin_work_id,
+                        work_generation,
+                        work_delivery_id,
+                        work_claim_id,
+                    )
+                )
             print(f"Error: {e}")
             return None
         finally:
@@ -309,13 +336,25 @@ class CLIChatTurnMixin:
         _persist_clean_user_message = message if (turn.voice_prefix or agent_message != message) else None
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
-        try:
-            turn.result = self.agent.run_conversation(
-                user_message=agent_message,
-                conversation_history=self.conversation_history[:-1],  # exclude the message just staged
-                stream_callback=turn.stream_callback, task_id=self.session_id,
-                persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
+        conversation_kwargs = {
+            "user_message": agent_message,
+            "conversation_history": self.conversation_history[:-1],
+            "stream_callback": turn.stream_callback,
+            "task_id": self.session_id,
+            "persist_user_message": _persist_clean_user_message,
+            "moa_config": _moa_cfg,
+        }
+        if turn.origin_work_id:
+            conversation_kwargs.update(
+                {
+                    "origin_work_id": turn.origin_work_id,
+                    "work_generation": turn.work_generation,
+                    "work_delivery_id": turn.work_delivery_id,
+                    "work_claim_id": turn.work_claim_id,
+                }
             )
+        try:
+            turn.result = self.agent.run_conversation(**conversation_kwargs)
             if getattr(self, "_pending_moa_disable_after_turn", False):
                 _restore = getattr(self, "_pending_moa_restore_model", None) or {}
                 for _key, _value in _restore.items():
@@ -478,6 +517,11 @@ class CLIChatTurnMixin:
         pending_message, _show_interrupt_marker = self._chat_resolve_interrupt(
             turn, agent_thread, interrupt_msg, response)
 
+        if turn.result and turn.result.get("waiting_on_delegates"):
+            # Waiting suppresses presentation, not late user-input recovery.
+            self._chat_requeue_pending_input(turn, pending_message)
+            return None
+
         self._chat_print_reasoning_box(turn)
         self._chat_print_response_panel(turn, response)
 
@@ -506,6 +550,11 @@ class CLIChatTurnMixin:
         if self._voice_tts and response and not turn.use_streaming_tts:
             self._voice_speak_response_async(response)
 
+        self._chat_requeue_pending_input(turn, pending_message)
+        return response
+
+    def _chat_requeue_pending_input(self, turn, pending_message):
+        """Recover late interrupts and steering even when the turn has no display."""
         # Re-queue the interrupt message (plus any that arrived meanwhile) as the next
         # prompt. Only reached in busy_input_mode == "interrupt"; "queue" mode routes
         # Enter straight to _pending_input.
@@ -532,8 +581,6 @@ class CLIChatTurnMixin:
             preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
             print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
             self._pending_input.put(_leftover_steer)
-
-        return response
 
     def _chat_resolve_interrupt(self, turn, agent_thread, interrupt_msg, response):
         """Return ``(pending_message, show_marker)``; clears a stale agent interrupt flag.

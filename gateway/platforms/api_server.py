@@ -7,6 +7,7 @@ OpenAI-compatible frontend connects at http://localhost:8642/v1 with API_SERVER_
 """
 
 import asyncio
+import base64
 import concurrent.futures
 import errno
 import hashlib
@@ -359,8 +360,10 @@ def _project_client_message(message: Dict[str, Any]) -> Dict[str, Any]:
     ids), merged handoffs keep only the real prior-tail content; inherited tool calls dropped."""
     from agent.compaction_display import (
         _COMPACTION_INTERNAL_FIELDS, project_compaction_message_for_display)
+    from agent.message_metadata import HIDDEN_DISPLAY_KINDS
+
     projected = project_compaction_message_for_display(message)
-    if projected is None:
+    if projected is None or projected.get("display_kind") in HIDDEN_DISPLAY_KINDS:
         projected = {k: v for k, v in message.items() if k not in _COMPACTION_INTERNAL_FIELDS}
         projected["content"] = ""
         projected["display_kind"] = "hidden"
@@ -1110,6 +1113,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", _get_scoped_secret("API_SERVER_KEY", ""))
+        # Process-local capability used only by gateway/wake.py self-posts.
+        # API bearer auth alone cannot assert trusted closeout identity.
+        self._internal_self_post_token = uuid.uuid4().hex
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")))
         self._model_name: str = self._resolve_model_name(
@@ -3531,13 +3537,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 code="rate_limit_exceeded", headers={"Retry-After": "1"})
         return None
 
-    @staticmethod
     def _bind_api_server_session(
-        *, chat_id: str = "", session_key: str = "", session_id: str = "",
+        self, *, chat_id: str = "", session_key: str = "", session_id: str = "",
         browser_control_principal: str = "", browser_control_transport_family: str = "") -> list:
         """Bind session contextvars for an API-server agent run — the SINGLE chokepoint for every
         agent-entry path. Hardwires ``platform="api_server"`` + ``async_delivery=False`` (HTTP
-        can never wake the agent after the turn) so no route reintroduces the silent no-op bug.
+        cannot provide generic push delivery) while identified sessions allow
+        authenticated task-scoped closeout self-posts.
         Returns reset tokens for ``clear_session_vars`` in a ``finally`` (request-scoped).
 
         See #10760.
@@ -3547,7 +3553,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
             browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family,
-            async_delivery=False, cron_session="")
+            # Self-wakes resume via an authenticated session-id header. No-key
+            # local APIs remain supported, but must return delegated work inline.
+            async_delivery=False, closeout_delivery=bool(session_id and self._api_key), cron_session="")
 
     def _turn_runtime_metadata(
         self, agent: Any, *, route: Optional[Dict[str, Any]], requested_runtime: Optional[Dict[str, Any]],
@@ -3621,7 +3629,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_provider: Optional[str] = None, model_options: Optional[Dict[str, Any]] = None,
         route: Optional[Dict[str, Any]] = None, session_model: Optional[str] = None,
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
-        confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False) -> tuple:
+        confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
+        internal_continuation: Optional[Dict[str, Any]] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3668,9 +3677,31 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     # two callers pass ``agent_ref``, and only /v1/runs has a run_id, so neither is a usable
                     # hook for the rest. See #63529.
                     self._shutdown_interruptible_agents[id(agent)] = agent
-                    result = agent.run_conversation(
-                        user_message=user_message, conversation_history=conversation_history,
-                        task_id=effective_task_id)
+                    conversation_kwargs = {
+                        "user_message": user_message,
+                        "conversation_history": conversation_history,
+                        "task_id": effective_task_id,
+                    }
+                    if internal_continuation:
+                        internal_metadata = {
+                            "work_id": str(internal_continuation["work_id"]),
+                            "generation": int(
+                                internal_continuation.get("generation") or 0
+                            ),
+                            "delivery_id": str(internal_continuation["delivery_id"]),
+                            "claim_id": str(internal_continuation["claim_id"]),
+                        }
+                        conversation_kwargs.update(
+                            {
+                                "origin_work_id": internal_metadata["work_id"],
+                                "work_generation": internal_metadata["generation"],
+                                "work_delivery_id": internal_metadata["delivery_id"],
+                                "work_claim_id": internal_metadata["claim_id"],
+                                "persist_user_display_kind": "internal_notification",
+                                "persist_user_display_metadata": internal_metadata,
+                            }
+                        )
+                    result = agent.run_conversation(**conversation_kwargs)
                     return self._finish_turn_result(
                         agent, result, session_id, route=route, requested_runtime=requested_runtime,
                         route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock)

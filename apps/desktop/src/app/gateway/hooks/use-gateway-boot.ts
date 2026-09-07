@@ -72,6 +72,7 @@ import {
   $sessionTiles,
   $workingSessionIds,
   foregroundSessionScopes,
+  forgetProfileOnlyRuntimeOwners,
   liveSessionScopes,
   openTileGatewayScopes,
   reconcileBusyStatesOnReconnect,
@@ -760,6 +761,7 @@ export function useGatewayBoot({
       // primary thread or a just-created session's owner hold is bound to
       // (#93892).
       foregroundScopes: foregroundSessionScopes,
+      onLocalProfileRetired: forgetProfileOnlyRuntimeOwners,
       onActiveConnectionChanged: publish,
       // Keep $activeGatewayProfile in lockstep with the registry's OWN record
       // of which profile the active socket serves. The registry is the only

@@ -16,7 +16,7 @@
  * itself here as the delegate so tile UI stays dependency-light.
  */
 
-import { LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
+import { type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
@@ -56,6 +56,7 @@ import {
   setBusy,
   setSessions
 } from './session'
+import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   requestForSessionProfile,
@@ -84,22 +85,50 @@ export const $sessionStates = atom<Record<string, ClientSessionState>>({})
 
 const sessionScopeByRuntimeId = new Map<string, string>()
 
-// Structured twin of the scope ledger: the same inbound events also carry the
-// exact (connectionId, profile) owner, which the composite scope string
-// cannot give back. Consumed as the LAST rung of knownOwnerForSession so a
-// runtime whose event source already proved its owner can still route
-// session-scoped RPCs (approval.respond) when every durable binding
-// (tile / hint / row) is absent — while durable stored identity keeps
-// outranking it (#97511).
-const sessionOwnerByRuntimeId = new Map<string, SessionOwnerRoute>()
+// Structured twin of the scope ledger: inbound events can carry either an
+// exact (connectionId, profile) owner or a producer-proven profile-only pool
+// owner. Consumed as the LAST rung of knownOwnerForSession so a runtime whose
+// event source already proved its owner can still route session-scoped RPCs
+// (approval.respond) when every durable binding (tile / hint / row) is absent
+// — while durable stored identity keeps outranking it (#97511).
+const sessionOwnerByRuntimeId = new Map<string, SessionOwnerScope>()
 
 export function recordSessionEventScope(event: { connectionId?: string; profile?: string; session_id?: string }): void {
-  if (event.session_id && event.connectionId) {
+  if (!event.session_id) {
+    return
+  }
+
+  if (event.connectionId) {
     sessionScopeByRuntimeId.set(event.session_id, registryBackendScopeKey(event.connectionId, event.profile))
     sessionOwnerByRuntimeId.set(event.session_id, {
       connectionId: event.connectionId,
       profile: String(event.profile ?? '').trim() || 'default'
     })
+
+    return
+  }
+
+  // Only gateway.ts's secondary closure can add this non-serializable marker.
+  // A profile field from a primary or arbitrary inbound event is descriptive,
+  // not an owner route, and must keep failing closed in multi-profile installs.
+  const profile = secondaryProfileOwnerForEvent(event as GatewayEvent)
+
+  if (profile) {
+    sessionOwnerByRuntimeId.set(event.session_id, profile)
+  }
+}
+
+/** Forget only profile-pool runtime owners during permanent LOCAL profile
+ * teardown. These string routes came exclusively from the legacy secondary
+ * producer; exact connection descriptors must survive a same-named remote
+ * profile's local delete/rename. */
+export function forgetProfileOnlyRuntimeOwners(profile: string): void {
+  const retired = normalizeProfileKey(profile)
+
+  for (const [runtimeId, owner] of sessionOwnerByRuntimeId) {
+    if (typeof owner === 'string' && normalizeProfileKey(owner) === retired) {
+      sessionOwnerByRuntimeId.delete(runtimeId)
+    }
   }
 }
 
@@ -989,10 +1018,10 @@ export function openTileGatewayScopes(): Set<string> {
  * Last rung: the owner recorded from the inbound runtime event itself
  * (sessionOwnerByRuntimeId, #97511) — an orphan runtime whose tile/hint/row
  * binding is absent or stale still routes through the exact
- * (connectionId, profile) its events proved, while every durable rung above
- * keeps outranking it, so a stored-id collision never inherits a stale
- * runtime ledger entry. Untagged events record nothing, so unknown owners in
- * multi-profile topology still fail closed.
+ * (connectionId, profile) or secondary socket's proven local profile. Every
+ * durable rung above keeps outranking it, so a stored-id collision never
+ * inherits a stale runtime ledger entry. Unproven profile fields record
+ * nothing, so unknown owners in multi-profile topology still fail closed.
  * Returns undefined when no owner is known — the caller fails closed
  * (assertSessionOwnerResolved), never falls to "active".
  */

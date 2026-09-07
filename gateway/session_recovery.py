@@ -324,7 +324,7 @@ class SessionRecoveryMixin:
         display_name: Optional[str], during: str = "") -> None:
         """SQLite side of a routing transition, outside ``_lock``: promote the predecessor row to an
         explicit reset boundary (with the specific reason so state.db is auditable, e.g.
-        ``resume_pending_expired`` vs plain ``session_reset``), then INSERT the new row + routing
+        ``suspended`` vs plain ``session_reset``), then INSERT the new row + routing
         peer. Both best-effort: failures are warned and self-healed by the next peer refresh."""
         if self._db_for_key(session_key) and end_session_id:
             self._promote_session_reset(

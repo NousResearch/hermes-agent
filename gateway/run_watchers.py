@@ -1,4 +1,4 @@
-"""Session expiry / stall / catalog-refresh watcher loops, bound onto ``GatewayRunner`` via the MRO.
+"""Session housekeeping / stall / catalog-refresh watcher loops, bound onto ``GatewayRunner`` via the MRO.
 
 ``gateway.run`` internals are imported lazily inside method bodies (import cycle), so
 ``patch("gateway.run.X")`` keeps intercepting them at call time.
@@ -35,7 +35,7 @@ async def _interruptible_sleep(runner, seconds: int) -> None:
 
 
 class GatewaySessionWatchersMixin:
-    """Session expiry / stall / catalog-refresh watcher loops for GatewayRunner."""
+    """Session housekeeping / stall / catalog-refresh watcher loops for GatewayRunner."""
 
     async def _session_housekeeping_watcher(self, interval: int = 300):
         """Reclaim resources without ending durable conversations."""
@@ -49,7 +49,6 @@ class GatewaySessionWatchersMixin:
 
     async def _session_housekeeping(self) -> None:
         """Idle/pressure agent-cache sweeps plus the hourly SessionStore prune."""
-        # Sweep idle agents regardless of reset policy: long/"never" windows would pin memory.
         try:
             if evicted := self._sweep_idle_cached_agents():
                 logger.info("Agent cache idle sweep: evicted %d agent(s)", evicted)

@@ -346,7 +346,7 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
         yaml_cfg = yaml.safe_load(f) or {}
 
     # Managed scope: overlay administrator-pinned values (this loader bypasses
-    # hermes_cli.config.load_config, so a managed session_reset / quick_commands / stt would otherwise be ignored).
+    # hermes_cli.config.load_config, so managed quick_commands / stt would otherwise be ignored).
     from hermes_cli import managed_scope
     yaml_cfg = managed_scope.apply_managed_overlay(yaml_cfg)
 

@@ -2795,10 +2795,6 @@ class GatewayTurnMixin:
             self._thread_metadata_for_progress(
                 source, event_message_id, _progress_thread_id, _relay_prospective_thread_id,
             ),
-            # Freshness-gate stale resume_pending zombies (#46934) — but honor an explicit
-            # ``session_reset.mode: none``: the user opted out of ALL automatic resets, so an expired resume
-            # marker must fall through to a normal resume of the preserved transcript, never a silent fresh
-            # session (#61052).
             platform=source.platform,
         )
         if _native_slack_task_cards:

@@ -433,7 +433,7 @@ _TOOL_PROGRESS_HELP = (
     "  log     — Silent in chat; write every tool call to ~/.hermes/logs/tool_calls.log (gateway only)",
 )
 def setup_agent_settings(config: dict):
-    """Configure agent behavior: iterations, progress display, compression, session reset."""
+    """Configure agent behavior: iterations, progress display and compression."""
     print_header("Agent Settings")
     _info(f"   Guide: {_DOCS_BASE}/user-guide/configuration", None)
 

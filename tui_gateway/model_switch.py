@@ -230,8 +230,26 @@ def _apply_model_switch(
         confirm = _expensive_model_confirm(result, current_base_url, current_api_key)
         if confirm is not None:
             return confirm
-    if agent:
-        _commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot)
+    records_composer_override = (
+        pin_session_override and isinstance(session, dict) and not one_turn
+        and not persist_global and session.get("follow_profile_config"))
+    had_composer_profile = "composer_override_profile" in session
+    previous_composer_profile = session.get("composer_override_profile")
+    if records_composer_override:
+        profile_model, profile_provider = _config_model_target()
+        session["composer_override_profile"] = {
+            "model": profile_model, "provider": profile_provider}
+    try:
+        if agent:
+            # Provenance must exist before this transaction persists the switched runtime.
+            _commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot)
+    except Exception:
+        if records_composer_override:
+            if had_composer_profile:
+                session["composer_override_profile"] = previous_composer_profile
+            else:
+                session.pop("composer_override_profile", None)
+        raise
     # PER-SESSION override so a rebuild of THIS session (/new, resume) re-derives the model.
     # Deliberately NOT written to process-global env (HERMES_MODEL & co.): the desktop hosts
     # every same-profile session in one process, so os.environ would leak the switch to all.
@@ -275,8 +293,12 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
     try:
         tokens = _set_session_context(sid, cwd=_session_cwd(session))
         try:
-            new_agent = _make_agent(sid, session["session_key"], session_id=session["session_key"],
-                                    platform_override=_session_source(session))
+            new_agent = _make_agent(
+                sid, session["session_key"], session_id=session["session_key"],
+                model_override=session.get("model_override"),
+                reasoning_config_override=session.get("create_reasoning_override"),
+                service_tier_override=session.get("create_service_tier_override"),
+                platform_override=_session_source(session))
         finally:
             _clear_session_context(tokens)
         new_agent._session_title_hint = "Bot Chat"
@@ -290,19 +312,35 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     """Adopt a config.yaml model change at turn start (like gateways do per message). Sessions
     pinned with /model keep their choice; a failed switch keeps the current model."""
     agent = session.get("agent")
-    if agent is None or session.get("model_override"):
+    if agent is None:
         return
     target = _config_model_target()
     if not target[0]:
         return
     seen = session.get("config_model_seen")
+    if target == seen:
+        return
+    superseded_pin = None
+    if session.get("model_override"):
+        composer_profile = session.get("composer_override_profile")
+        pinned_profile = (
+            str(composer_profile.get("model") or "").strip(),
+            str(composer_profile.get("provider") or "").strip(),
+        ) if isinstance(composer_profile, dict) else None
+        if pinned_profile is None or pinned_profile == target:
+            return
+        # A later profile edit supersedes the canonical chat's explicit pick. Clearing both fields lets
+        # the normal config-sync path switch now and prevents the old composer pick resurfacing on rebuild.
+        superseded_pin = session.pop("model_override"), composer_profile
+        session["composer_override_profile"] = None
     # Record first so a broken config gets one attempt per edit, not per turn.
     session["config_model_seen"] = target
     model, provider = target
     # Already on the configured model (resumed before first sync, or a config revert after
     # a failed switch): adopt without switching.
-    if target == seen or (
-            model == getattr(agent, "model", "") and (not provider or provider == getattr(agent, "provider", ""))):
+    if model == getattr(agent, "model", "") and (not provider or provider == getattr(agent, "provider", "")):
+        if superseded_pin is not None:
+            _persist_live_session_runtime(session)
         return
     raw = f"{model} --provider {provider}" if provider else model
     try:
@@ -312,6 +350,8 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             sid, session, raw, confirm_expensive_model=True, pin_session_override=False,
             persist_override=False)
     except Exception as e:
+        if superseded_pin is not None:
+            session["model_override"], session["composer_override_profile"] = superseded_pin
         _emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"})
 
 

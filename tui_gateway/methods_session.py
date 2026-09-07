@@ -469,10 +469,22 @@ class _Resume:
         ``overrides`` restores the stored model/provider/reasoning/tier so the deferred build matches eager."""
         if overrides is not None:
             extra.update(model_override=overrides.get("model_override"), resume_runtime_overrides=overrides or None)
-        return _deferred_session_record(
+            model_config = _parse_model_config(self.found.get("model_config"), quiet=True) if self.found else {}
+            title = str((self.found or {}).get("title") or "").strip()
+            follows_profile = bool(model_config.get("follow_profile_config") or title == "Bot Chat")
+        else:
+            model_config, follows_profile = {}, False
+        record = _deferred_session_record(
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
+        if follows_profile:
+            record.update(
+                follow_profile_config=True,
+                composer_override_profile=(model_config.get("composer_override_profile")
+                                           if overrides and overrides.get("model_override") else None),
+            )
+        return record
 
     def claim(self, sid: str, record: dict) -> dict | None:
         """Register ``record`` live under the resume lock, or reuse a concurrent winner's session."""
@@ -695,10 +707,16 @@ def _resume_lazy(ctx: _Resume) -> dict:
                             count_source=display, running=running, status="streaming" if running else "idle")
 
 
+def _resume_runtime_overrides(ctx) -> dict:
+    """Resolve stored runtime identity against the resumed profile, not the launch profile."""
+    with _profile_build_scope(getattr(ctx, "profile_home", None)):
+        return _stored_session_runtime_overrides(ctx.found)
+
+
 def _resume_deferred(ctx: _Resume) -> dict:
     """Bounded ack; the transcript hydrates in the background (the ONE history read) and pages over REST."""
     sid, source, cwd = ctx.mint()
-    overrides = _stored_session_runtime_overrides(ctx.found)
+    overrides = _resume_runtime_overrides(ctx)
     record = ctx.record(source, cwd, [], overrides)
     record.update(resume_history_ready=threading.Event(), resume_hydrating=True,
                   resume_message_count=int(ctx.found.get("message_count") or 0))
@@ -720,7 +738,7 @@ def _resume_cold(ctx: _Resume) -> dict:
         history, display_history, raw_history = ctx.restore()
     except Exception as e:
         return _err(ctx.rid, 5000, f"resume failed: {e}")
-    overrides = _stored_session_runtime_overrides(ctx.found)
+    overrides = _resume_runtime_overrides(ctx)
     record = ctx.record(source, cwd, history, overrides, display_history_prefix=ctx.display_prefix(),
                         todo_state=_todo_state_from_history(history))
     if (reused := ctx.claim(sid, record)) is not None:
@@ -741,7 +759,7 @@ def _resume_eager(ctx: _Resume) -> dict:
             display_history_prefix = ctx.display_prefix()
             # Profile db so turns persist to the right state.db; stored runtime identity so switching chats does
             # not inherit another chat's global model.
-            stored_runtime_overrides = _stored_session_runtime_overrides(ctx.found)
+            stored_runtime_overrides = _resume_runtime_overrides(ctx)
             agent = _make_agent_in_context(
                 sid, ctx.target, session_db=ctx.db, platform_override=source,
                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
@@ -768,6 +786,12 @@ def _resume_eager(ctx: _Resume) -> dict:
             if (session := _sessions.get(sid)) is not None:
                 if stored_runtime_overrides.get("model_override") is not None:
                     session["model_override"] = stored_runtime_overrides["model_override"]
+                model_config = _parse_model_config(ctx.found.get("model_config"), quiet=True)
+                if model_config.get("follow_profile_config") or str(ctx.found.get("title") or "").strip() == "Bot Chat":
+                    session["follow_profile_config"] = True
+                    session["composer_override_profile"] = (
+                        model_config.get("composer_override_profile")
+                        if stored_runtime_overrides.get("model_override") else None)
                 # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
                 if ctx.profile_home is not None:
                     session["profile_home"] = str(ctx.profile_home)

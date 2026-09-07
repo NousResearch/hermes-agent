@@ -37,6 +37,8 @@ export interface GuestMenuParams {
 /** Verbs the preview pane binds over its webview element (and the guest IPC
  *  for the two things the tag cannot do: image bytes and the dictionary). */
 export interface GuestMenuHandle {
+  /** Insert a guest-page text selection into the active chat composer. */
+  addSelectionToChat: (text: string) => void
   addToDictionary: (word: string) => void
   copyImage: () => void
   editCommand: (command: 'copy' | 'cut' | 'paste' | 'selectAll') => void

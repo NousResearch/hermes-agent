@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { onComposerInsertRequest } from '@/app/chat/composer/focus'
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -398,6 +399,38 @@ describe('AppContextMenu', () => {
     expect(await screen.findByText('Settings')).toBeTruthy()
   })
 
+  it('adds a selected normal-chat passage to the active composer', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<div data-slot="aui_assistant-message-root"><p>Normal chat passage\n```js\nconst value = 1\n```</p></div>')
+    const text = host.querySelector('p')!.firstChild!
+    const range = document.createRange()
+
+    range.selectNodeContents(text)
+    Object.assign(range, { getBoundingClientRect: () => ({ bottom: 200, right: 100 }) })
+    const selection = window.getSelection()!
+
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    const inserts: Array<{ mode: string; target: string; text: string }> = []
+    const unsubscribe = onComposerInsertRequest(detail => inserts.push(detail))
+
+    fireEvent(window, new Event('selectionchange'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add to chat' }))
+
+    await waitFor(() =>
+      expect(inserts).toEqual([
+        {
+          mode: 'block',
+          target: 'main',
+          text: '[Selected chat text]\n````text\nNormal chat passage\n```js\nconst value = 1\n```\n````\n\n[My annotation]'
+        }
+      ])
+    )
+    unsubscribe()
+  })
+
   it('skips plain right-clicks inside a skip-marked surface, but not links in it', async () => {
     installBridge()
     mountMenu()
@@ -464,6 +497,7 @@ describe('AppContextMenu', () => {
 
 describe('AppContextMenu guest (in-app browser)', () => {
   const guestHandle = (overrides: Partial<GuestMenuHandle> = {}): GuestMenuHandle => ({
+    addSelectionToChat: vi.fn(),
     addToDictionary: vi.fn(),
     copyImage: vi.fn(),
     editCommand: vi.fn(),
@@ -521,6 +555,17 @@ describe('AppContextMenu guest (in-app browser)', () => {
     fireEvent.click(await screen.findByText('Inspect element'))
 
     expect(guest.inspectElement).toHaveBeenCalled()
+  })
+
+  it('adds a selected guest-page passage to chat', async () => {
+    installBridge()
+    mountMenu()
+    const guest = guestHandle()
+
+    openGuestContextMenu(10, 10, guestParams({ selectionText: 'Selected passage' }), guest)
+    fireEvent.click(await screen.findByText('Add to chat'))
+
+    expect(guest.addSelectionToChat).toHaveBeenCalledWith('Selected passage')
   })
 
   it('adds a link section above the tools for guest links', async () => {

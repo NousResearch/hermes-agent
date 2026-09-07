@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
@@ -26,24 +27,27 @@ _SUBCENT_THRESHOLD = Decimal("0.01")
 _INCLUDED_NOTE = "subscription-included; no provider invoice for usage"
 
 
-def format_cost_label(amount: Decimal) -> str:
+def format_cost_label(amount: Decimal, *, approx: bool = True) -> str:
     """Cost display label: zero → "$0.00"; sub-cent → "~$0.0046" (4 dp, or
     "~$<0.0001" when it rounds to 0.0000 so the label never reads as zero);
     else "~$1.23". Shared by per-response labels and insights cost buckets.
+    ``approx=False`` drops the "~" for amounts the provider actually billed
+    (status="actual"), not estimated.
 
     This fixes #79220 where sub-cent per-turn costs on cheap models (DeepSeek, etc.) rendered as "$0.00"
     despite amount_usd carrying full Decimal precision.
     """
+    prefix = "~$" if approx else "$"
     if amount == _ZERO:
         return "$0.00"
     if amount < _SUBCENT_THRESHOLD:
-        label = f"~${amount:.4f}"
+        label = f"{prefix}{amount:.4f}"
         # Compare the rendered label: a naive `< 0.00005` threshold misses
         # the exact boundary under ROUND_HALF_EVEN.
         # A positive amount that rounds to 0.0000 at 4 dp would render "~$0.0000" — a zero-looking label,
         # the exact #79220 dishonesty.
-        return label if label != "~$0.0000" else "~$<0.0001"
-    return f"~${amount:.2f}"
+        return label if label != f"{prefix}0.0000" else f"{prefix}<0.0001"
+    return f"{prefix}{amount:.2f}"
 
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
 CostSource = Literal[
@@ -490,6 +494,29 @@ _CHAT_USAGE_SHAPE = (
 )
 
 
+def _raw_usage_dict(response_usage: Any) -> Optional[dict[str, Any]]:
+    """Best-effort dict snapshot of a raw usage payload (pydantic model,
+    mapping, or plain attribute object), so cost pricing can read provider
+    extensions such as OpenRouter's ``usage.cost`` that never fit the
+    canonical token buckets."""
+    if isinstance(response_usage, dict):
+        return dict(response_usage)
+    for dump_name in ("model_dump", "dict"):
+        method = getattr(response_usage, dump_name, None)
+        if callable(method):
+            try:
+                dumped = method()
+            except Exception:  # pragma: no cover - defensive
+                dumped = None
+            if isinstance(dumped, dict):
+                return dict(dumped)
+    try:
+        plain = vars(response_usage)
+    except TypeError:  # no __dict__ (e.g. slotted/C-extension objects)
+        return None
+    return dict(plain) if plain else None
+
+
 def normalize_usage(
     response_usage: Any, *, provider: Optional[str] = None, api_mode: Optional[str] = None
 ) -> CanonicalUsage:
@@ -542,11 +569,28 @@ def normalize_usage(
     return CanonicalUsage(
         input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens, reasoning_tokens=reasoning_tokens,
+        raw_usage=_raw_usage_dict(u),
     )
 
 
 def _unknown_cost(source: CostSource, *notes: str) -> CostResult:
     return CostResult(amount_usd=None, status="unknown", source=source, label="n/a", notes=notes)
+
+
+def _provider_reported_cost(usage: CanonicalUsage) -> Optional[Decimal]:
+    """A finite, non-negative cost the provider reported inline in raw usage
+    (OpenRouter's ``usage.cost``, passed through unchanged by OpenAI-compatible
+    proxies such as LiteLLM). None when the payload carries no such field."""
+    raw = usage.raw_usage if isinstance(usage.raw_usage, dict) else None
+    if raw is None:
+        return None
+    cost = raw.get("cost")
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+        return None
+    cost = float(cost)
+    if not math.isfinite(cost) or cost < 0:
+        return None
+    return Decimal(str(cost))
 
 
 def estimate_usage_cost(
@@ -558,6 +602,17 @@ def estimate_usage_cost(
         return CostResult(
             amount_usd=_ZERO, status="included", source="none", label="included",
             pricing_version="included-route", notes=(_INCLUDED_NOTE,),
+        )
+
+    # A cost the provider reported on the wire is the amount actually billed
+    # (cache-read discounts already applied) — strictly better than any table
+    # estimate, so it wins whenever present. Otherwise fall through to the
+    # pricing-table estimate as before.
+    reported = _provider_reported_cost(usage)
+    if reported is not None:
+        return CostResult(
+            amount_usd=reported, status="actual", source="provider_cost_api",
+            label=format_cost_label(reported, approx=False),
         )
 
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)

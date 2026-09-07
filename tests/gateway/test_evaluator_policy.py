@@ -72,6 +72,49 @@ def test_subprocess_policy_does_not_use_shell_commands():
     assert policy._command[0] == sys.executable
 
 
+def test_subprocess_policy_rejects_mismatched_request_id(monkeypatch):
+    policy = SubprocessEvaluatorPolicy(
+        [sys.executable, str(EVALUATOR_ADAPTER)],
+        policy=_policy(),
+        agent_configuration_id="hermes-test-v1",
+        evaluator_configuration_id="evaluator-test-v1",
+    )
+
+    class Completed:
+        stdout = '{"schema_version": 1, "request_id": "other-turn", "status": "passed", "allowed": true, "final_text": "ok"}'
+
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: Completed())
+    with pytest.raises(RuntimeError, match="mismatched request_id"):
+        policy(final_text="Answer includes evidence.", metadata={"turn_id": "turn-1"})
+
+
+def test_subprocess_policy_rejects_unknown_schema(monkeypatch):
+    policy = SubprocessEvaluatorPolicy(
+        [sys.executable, str(EVALUATOR_ADAPTER)],
+        policy=_policy(),
+        agent_configuration_id="hermes-test-v1",
+        evaluator_configuration_id="evaluator-test-v1",
+    )
+
+    class Completed:
+        stdout = '{"schema_version": 999, "request_id": "turn-1", "status": "passed", "allowed": true, "final_text": "ok"}'
+
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: Completed())
+    with pytest.raises(RuntimeError, match="unsupported schema_version"):
+        policy(final_text="Answer includes evidence.", metadata={"turn_id": "turn-1"})
+
+
+def test_subprocess_policy_requires_turn_identity():
+    policy = SubprocessEvaluatorPolicy(
+        [sys.executable, str(EVALUATOR_ADAPTER)],
+        policy=_policy(),
+        agent_configuration_id="hermes-test-v1",
+        evaluator_configuration_id="evaluator-test-v1",
+    )
+    with pytest.raises(RuntimeError, match="requires a non-empty turn_id"):
+        policy(final_text="Answer includes evidence.", metadata={})
+
+
 def test_gateway_runner_exposes_supported_gate_injection_seam():
     from gateway.run import GatewayRunner
 

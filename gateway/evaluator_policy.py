@@ -33,9 +33,12 @@ class SubprocessEvaluatorPolicy:
         self._timeout_seconds = timeout_seconds
 
     def __call__(self, *, final_text: str, metadata: dict[str, Any]) -> dict[str, Any]:
+        turn_id = metadata.get("turn_id")
+        if not isinstance(turn_id, str) or not turn_id.strip():
+            raise RuntimeError("evaluator policy requires a non-empty turn_id")
         request = {
             "schema_version": 1,
-            "request_id": str(metadata.get("turn_id") or "hermes-turn"),
+            "request_id": turn_id,
             "final_text": final_text,
             "metadata": {
                 **metadata,
@@ -58,4 +61,8 @@ class SubprocessEvaluatorPolicy:
             raise RuntimeError(f"evaluator policy invocation failed: {exc}") from exc
         if not isinstance(result, dict):
             raise RuntimeError("evaluator policy must return a JSON object")
+        if result.get("schema_version") != 1:
+            raise RuntimeError("evaluator policy returned an unsupported schema_version")
+        if result.get("request_id") != turn_id:
+            raise RuntimeError("evaluator policy returned a mismatched request_id")
         return result

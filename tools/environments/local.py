@@ -660,7 +660,12 @@ def _kill_process_group_posix(proc) -> None:
             raise
     try:  # psutil children snapshot; empty on any failure (must never break the kill)
         import psutil
-        descendants = psutil.Process(proc.pid).children(recursive=True)
+        from tools.environments.base import _run_best_effort_bounded
+        _children: list = []
+        _run_best_effort_bounded(
+            lambda: _children.extend(psutil.Process(proc.pid).children(recursive=True)),
+            1.0, "psutil-children")
+        descendants = _children
     except Exception:
         descendants = []
     try:

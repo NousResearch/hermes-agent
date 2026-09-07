@@ -42,6 +42,42 @@ _DEBUG_INTERRUPT = bool(os.getenv("HERMES_DEBUG_INTERRUPT"))
 # that loop itself never returns (family A of #94285: a blocked wait that silently disables asyncio timers).
 _EXECUTE_WAIT_BOUND_GRACE_S = 2.0
 
+# Hard wall-clock budget for best-effort kill paths. A kernel-stalled cleanup
+# (psutil /proc walk or waitpid on an unkillable D-state child) must never hold
+# the caller — and through it the gateway event loop — far past the command's
+# own timeout; the watchdog then pays the price with a full gateway restart.
+_KILL_BUDGET_S = 3.0
+
+
+def _run_best_effort_bounded(fn, budget_s: float, label: str) -> None:
+    """Run best-effort cleanup ``fn`` on a daemon thread with a hard wall-clock budget.
+
+    Returns as soon as ``fn`` returns, or after ``budget_s`` if it is still running
+    (the worker is then abandoned — daemon threads can never keep the process
+    alive, and its kill attempts are best-effort anyway). Guards every kill path
+    against kernel-stalled syscalls — psutil ``/proc`` walks, ``waitpid`` on
+    unkillable D-state children — that would otherwise wedge the caller far past
+    the command's own timeout and, on the gateway, silently disable the asyncio
+    event loop until the shutdown watchdog kills the whole process.
+    """
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            fn()
+        except BaseException:  # noqa: BLE001 — best-effort cleanup must never raise
+            logger.debug("%s best-effort cleanup failed", label, exc_info=True)
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=_worker, name=f"cleanup-{label}", daemon=True)
+    worker.start()
+    worker.join(timeout=budget_s)
+    if not done.is_set():
+        logger.warning(
+            "[cleanup] %s exceeded %.1fs budget; worker abandoned (process may linger briefly)",
+            label, budget_s)
+
 if _DEBUG_INTERRUPT:
     # quiet_mode forces the `tools` logger to ERROR on CLI startup, which would
     # swallow every trace; force this logger back to INFO in the opt-in case.
@@ -368,7 +404,8 @@ class BaseEnvironment(ABC):
         trace.enter()
 
         def _kill_and_join():
-            self._kill_process(proc)
+            _run_best_effort_bounded(
+                lambda: self._kill_process(proc), _KILL_BUDGET_S, "kill_and_join")
             drain_thread.join(timeout=2)
 
         try:
@@ -565,19 +602,20 @@ class BaseEnvironment(ABC):
         return result
 
     def _kill_spawned_tree(self, spawned) -> None:
-        """Best-effort kill of a wedged spawned process and its tree (backstop path)."""
-        try:
-            self._kill_process(spawned)
-        except Exception:
-            logger.debug("terminal wait-bound kill_process failed", exc_info=True)
+        """Best-effort kill of a wedged spawned process and its tree (backstop path).
+
+        Every step runs under a hard budget: the kill path may stall on kernel
+        state (unkillable D-state child, stalled /proc walk) and this backstop
+        itself must not become the thing that wedges the event loop.
+        """
+        _run_best_effort_bounded(
+            lambda: self._kill_process(spawned), _KILL_BUDGET_S, "kill_spawned_tree")
         pid = getattr(spawned, "pid", None)
         if not pid:
             return
-        try:
-            from agent.deadline import kill_process_tree
-            kill_process_tree(int(pid))
-        except Exception:
-            logger.debug("terminal wait-bound kill_process_tree failed", exc_info=True)
+        from agent.deadline import kill_process_tree
+        _run_best_effort_bounded(
+            lambda: kill_process_tree(int(pid)), _KILL_BUDGET_S * 2, "kill_process_tree")
 
     # --- Shared helpers ---
     def __del__(self):

@@ -129,6 +129,39 @@ def test_abc_growth_stays_additive():
     )
 
 
+def test_force_fire_capability_detects_legacy_override():
+    from cron.scheduler_provider import CronScheduler
+
+    class Current(CronScheduler):
+        @property
+        def name(self):
+            return "current"
+
+        def start(self, stop_event, **kw):
+            pass
+
+    class Legacy(Current):
+        def fire_due(  # type: ignore[invalid-method-override]
+            self, job_id, *, adapters=None, loop=None
+        ):
+            return True
+
+    class PositionalOnly(Current):
+        def fire_due(  # type: ignore[invalid-method-override]
+            self, job_id, force=False, /
+        ):
+            return True
+
+    class KeywordSink(Current):
+        def fire_due(self, job_id, **kwargs):
+            return True
+
+    assert Current().supports_force_fire is True
+    assert Legacy().supports_force_fire is False
+    assert PositionalOnly().supports_force_fire is False
+    assert KeywordSink().supports_force_fire is True
+
+
 def test_inprocess_provider_ticks_and_stops():
     """The built-in provider drives cron.scheduler.tick(sync=False) on a loop
     and exits promptly when stop_event is set — same contract as the raw
@@ -214,6 +247,98 @@ def test_resolve_defaults_to_builtin(monkeypatch):
     assert prov.name == "builtin"
 
 
+def test_resolve_no_cron_section_falls_back_to_builtin(monkeypatch):
+    """Config with no cron section at all → built-in (cfg_get returns default)."""
+    import hermes_cli.config as cfg
+    from cron import scheduler_provider as sp
+
+    monkeypatch.setattr(cfg, "load_config", lambda: {})
+    prov = sp.resolve_cron_scheduler()
+    assert prov.name == "builtin"
+
+
+def test_resolve_unknown_provider_falls_back_to_builtin(monkeypatch):
+    """A named provider that doesn't exist → built-in (cron never dies)."""
+    import hermes_cli.config as cfg
+    from cron import scheduler_provider as sp
+
+    monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": "nope-not-real"}})
+    prov = sp.resolve_cron_scheduler()
+    assert prov.name == "builtin"
+
+
+def test_resolve_unavailable_provider_falls_back(monkeypatch):
+    """A provider that loads but reports is_available()==False → built-in."""
+    import hermes_cli.config as cfg
+    import plugins.cron_providers as pc
+    from cron import scheduler_provider as sp
+    from cron.scheduler_provider import CronScheduler
+
+    class Unavailable(CronScheduler):
+        @property
+        def name(self):
+            return "unavailable"
+
+        def is_available(self):
+            return False
+
+        def start(self, stop_event, **kw):
+            pass
+
+    monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": "unavailable"}})
+    monkeypatch.setattr(pc, "load_cron_scheduler", lambda n: Unavailable())
+    prov = sp.resolve_cron_scheduler()
+    assert prov.name == "builtin"
+
+
+def test_resolve_available_provider_is_used(monkeypatch):
+    """A provider that loads and is available is returned (not the fallback)."""
+    import hermes_cli.config as cfg
+    import plugins.cron_providers as pc
+    from cron import scheduler_provider as sp
+    from cron.scheduler_provider import CronScheduler
+
+    class Fake(CronScheduler):
+        @property
+        def name(self):
+            return "fake"
+
+        def is_available(self):
+            return True
+
+        def start(self, stop_event, **kw):
+            pass
+
+    monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": "fake"}})
+    monkeypatch.setattr(pc, "load_cron_scheduler", lambda n: Fake())
+    prov = sp.resolve_cron_scheduler()
+    assert prov.name == "fake"
+
+
+def test_external_provider_falls_back_to_builtin_under_multiplex():
+    from cron.scheduler_provider import (
+        CronScheduler,
+        InProcessCronScheduler,
+        scheduler_for_profile_mode,
+    )
+
+    class External(CronScheduler):
+        @property
+        def name(self):
+            return "external"
+
+        def start(self, stop_event, **kwargs):
+            return None
+
+    external = External()
+
+    assert scheduler_for_profile_mode(external, multiplex_profiles=False) is external
+    assert isinstance(
+        scheduler_for_profile_mode(external, multiplex_profiles=True),
+        InProcessCronScheduler,
+    )
+
+
 # ── Phase 4B: additive hooks (on_jobs_changed / fire_due / reconcile) ────────
 
 
@@ -238,19 +363,120 @@ def test_builtin_inherits_hook_defaults():
 
 
 def test_fire_due_default_claims_then_runs(monkeypatch):
-    """The default fire_due claims via the store CAS, fetches the job, and runs
-    it through the shared run_one_job body."""
+    """The default fire_due runs the exact owner-bearing CAS snapshot."""
     import cron.jobs as jobs
     import cron.scheduler as sched
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
-    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
-    monkeypatch.setattr(jobs, "get_job", lambda jid: {"id": jid, "name": "t"})
-    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+    claims = []
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kw: claims.append((jid, kw))
+        or {"id": jid, "name": "t", "fire_claim": {"by": "exact-owner"}},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        sched,
+        "run_one_job",
+        lambda job, **kw: ran.append((job["id"], job["fire_claim"]["by"])) or True,
+    )
 
     assert InProcessCronScheduler().fire_due("j1") is True
-    assert ran == ["j1"]
+    assert claims == [("j1", {"return_job": True})]
+    assert ran == [("j1", "exact-owner")]
+
+
+def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    events = []
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kwargs: events.append("claim")
+        or {"id": jid, "fire_claim": {"by": "owner"}},
+    )
+    monkeypatch.setattr(
+        executions,
+        "create_execution",
+        lambda jid, source: events.append("ledger") or {"id": "exec-1"},
+    )
+    monkeypatch.setattr(
+        sched,
+        "run_one_job",
+        lambda job, **kwargs: events.append(("run", job["execution_id"])) or True,
+    )
+
+    provider = InProcessCronScheduler()
+    claimed = provider.claim_fire("j1")
+
+    assert events == ["ledger", "claim"]
+    assert claimed is not None
+    assert claimed["execution_id"] == "exec-1"
+    assert provider.fire_claimed(claimed) is True
+    assert events == ["ledger", "claim", ("run", "exec-1")]
+
+
+def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    claims = []
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kw: claims.append((jid, kw))
+        or {"id": jid, "name": "t", "fire_claim": {"by": "manual-owner"}},
+    )
+    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: True)
+
+    assert InProcessCronScheduler().fire_due("j1", force=True) is True
+    assert claims == [("j1", {"force": True, "return_job": True})]
+
+
+def test_fire_due_lost_claim_does_not_run(monkeypatch):
+    """If the CAS claim is lost (another machine/retry won), fire_due returns
+    False and never runs the job."""
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    ran = []
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kw: False,
+        raising=False,
+    )
+    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+
+    assert InProcessCronScheduler().fire_due("j1") is False
+    assert ran == []
+
+
+def test_fire_due_missing_job_does_not_run(monkeypatch):
+    """If the job vanished before atomic claim, fire_due does not run it."""
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    ran = []
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kw: False,
+        raising=False,
+    )
+    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+
+    assert InProcessCronScheduler().fire_due("gone") is False
+    assert ran == []
 
 
 # ── F2a: ticker liveness — survival, heartbeat, honest status (#32612, #32895) ──
@@ -414,3 +640,255 @@ def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
         f"Expected >= {len(profile_homes)} tick calls, got {len(tick_count)}"
 
 
+def test_multiplex_ticker_skips_deleted_profile_from_startup_snapshot(tmp_path):
+    """A stale profile_homes entry must not recreate a deleted profile."""
+    import cron.jobs as jobs
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    default_home = tmp_path / "default"
+    (default_home / "cron").mkdir(parents=True)
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir()
+    deleted_home = profiles_dir / "deleted"
+    profile_homes = [("default", default_home), ("deleted", deleted_home)]
+
+    ticked_homes = []
+    stop = threading.Event()
+
+    def _tracking_tick(*args, **kwargs):
+        ticked_homes.append(jobs._current_cron_store().cron_dir.parent)
+        stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_tracking_tick):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 0, "profile_homes": profile_homes},
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert ticked_homes == [default_home.resolve()]
+    assert not deleted_home.exists()
+
+
+def test_existing_profile_homes_filters_deleted(tmp_path):
+    """The existence filter keeps live homes and drops deleted ones, whether
+    entries are (name, path) tuples or bare paths."""
+    from cron.scheduler_provider import _existing_profile_homes
+
+    live = tmp_path / "live"
+    deleted = tmp_path / "deleted"
+    live.mkdir(parents=True)
+    # deleted intentionally not created
+
+    as_tuples = _existing_profile_homes([("live", live), ("deleted", deleted)])
+    assert [p[0] for p in as_tuples] == ["live"]
+
+    as_paths = _existing_profile_homes([live, deleted])
+    assert [p for p in as_paths] == [live]
+
+
+def _run_multiplex_capture(tmp_path, *, profile_adapters, shared_adapters):
+    """Run the multiplex ticker one full cycle and return the ``adapters``
+    object passed to ``tick()`` for the default profile and the secondary
+    profile (in ``profile_homes`` order: default first, secondary second)."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    p_default = tmp_path / "default"
+    p_sec = tmp_path / "home-ops"
+    for d in (p_default, p_sec):
+        (d / "cron").mkdir(parents=True)
+    profile_homes = [("default", p_default), ("home-ops", p_sec)]
+
+    captured: list = []  # adapters seen per tick call; order follows profile_homes
+
+    def _capturing_tick(*args, **kwargs):
+        captured.append(kwargs.get("adapters"))
+        return 0
+
+    stop = threading.Event()
+    prov = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_capturing_tick), \
+         patch("cron.jobs.record_ticker_heartbeat", lambda **kw: None):
+        t = threading.Thread(
+            target=prov.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": profile_homes,
+                "adapters": shared_adapters,
+                "profile_adapters": profile_adapters,
+                "default_profile": "default",
+            },
+            daemon=True,
+        )
+        t.start()
+        deadline = time.monotonic() + 10
+        while len(captured) < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    assert len(captured) >= 2, f"expected >= 2 tick calls, got {len(captured)}"
+    return captured[0], captured[1]  # (default, secondary) of the first cycle
+
+
+def test_multiplex_default_profile_uses_shared_adapters(tmp_path):
+    """The default profile's cron is delivered via the shared ``adapters`` set
+    (which belongs to the default profile)."""
+    shared = {"kind": "shared"}
+    default_ad, _ = _run_multiplex_capture(
+        tmp_path, profile_adapters={"home-ops": {"kind": "secondary"}},
+        shared_adapters=shared,
+    )
+    assert default_ad is shared
+
+
+def test_multiplex_connected_secondary_uses_its_own_adapters(tmp_path):
+    """A connected secondary is delivered via ITS OWN adapters, not the shared
+    default-profile set."""
+    shared = {"kind": "shared"}
+    sec = {"kind": "secondary"}
+    default_ad, sec_ad = _run_multiplex_capture(
+        tmp_path, profile_adapters={"home-ops": sec}, shared_adapters=shared,
+    )
+    assert default_ad is shared
+    assert sec_ad is sec
+
+
+def test_multiplex_empty_secondary_does_not_fall_back_to_shared(tmp_path):
+    """A secondary whose adapter map is present-but-empty (its bot has not
+    connected yet) must NOT fall back to the default profile's shared adapters
+    — otherwise its cron output ships through the wrong bot. It receives an
+    empty adapter set and simply does not deliver this tick."""
+    shared = {"kind": "shared"}
+    default_ad, sec_ad = _run_multiplex_capture(
+        tmp_path, profile_adapters={"home-ops": {}}, shared_adapters=shared,
+    )
+    assert default_ad is shared
+    assert sec_ad is not shared
+    assert not sec_ad  # empty → no delivery, not the default bot
+
+
+def test_multiplex_missing_secondary_does_not_fall_back_to_shared(tmp_path):
+    """A secondary absent from profile_adapters entirely (its adapter map has
+    not been created yet) also must not fall back to the shared adapters."""
+    shared = {"kind": "shared"}
+    default_ad, sec_ad = _run_multiplex_capture(
+        tmp_path, profile_adapters={}, shared_adapters=shared,
+    )
+    assert default_ad is shared
+    assert sec_ad is not shared
+    assert not sec_ad
+
+
+def test_multiplex_ticker_isolates_profile_failures(tmp_path):
+    """A failing profile's tick must not skip healthy siblings in the same
+    cycle, nor darken their status (#74878)."""
+    from cron.jobs import get_ticker_last_error, record_ticker_error, use_cron_store
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    failing_home = tmp_path / "failing"
+    healthy_home = tmp_path / "healthy"
+    for home in (failing_home, healthy_home):
+        (home / "cron").mkdir(parents=True)
+        with use_cron_store(home):
+            record_ticker_error("RuntimeError: stale failure")
+
+    stop = threading.Event()
+    tick_homes: list[str] = []
+
+    def _tick(*args, **kwargs):
+        home = str(get_hermes_home())
+        tick_homes.append(home)
+        if home == str(failing_home):
+            raise RuntimeError("profile-local failure")
+        stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_tick):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [("failing", failing_home), ("healthy", healthy_home)],
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert str(healthy_home) in tick_homes, "healthy sibling was skipped"
+    assert not (failing_home / "cron" / "ticker_last_success").exists()
+    assert (healthy_home / "cron" / "ticker_last_success").exists()
+    with use_cron_store(failing_home):
+        assert get_ticker_last_error() == "RuntimeError: profile-local failure"
+    with use_cron_store(healthy_home):
+        assert get_ticker_last_error() is None
+
+
+def test_multiplex_recovery_isolates_profile_failures(tmp_path):
+    """A startup-recovery error in one profile's ledger must not kill the
+    ticker thread before it ever ticks (#74878)."""
+    import sqlite3
+
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    failing_home = tmp_path / "failing"
+    healthy_home = tmp_path / "healthy"
+    for home in (failing_home, healthy_home):
+        (home / "cron").mkdir(parents=True)
+
+    stop = threading.Event()
+    recovery_homes: list[str] = []
+    tick_homes: list[str] = []
+
+    def _recover():
+        home = str(get_hermes_home())
+        recovery_homes.append(home)
+        if home == str(failing_home):
+            raise sqlite3.OperationalError("unable to open database file")
+        return 0
+
+    def _tick(*args, **kwargs):
+        tick_homes.append(str(get_hermes_home()))
+        if len(tick_homes) >= 2:
+            stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with (
+        patch.object(provider, "recover_interrupted", side_effect=_recover),
+        patch("cron.scheduler.tick", side_effect=_tick),
+    ):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [("failing", failing_home), ("healthy", healthy_home)],
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert recovery_homes == [str(failing_home), str(healthy_home)]
+    # The failing profile stays in rotation: its ledger may still hold jobs.
+    assert set(tick_homes) == {str(failing_home), str(healthy_home)}

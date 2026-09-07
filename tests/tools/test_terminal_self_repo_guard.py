@@ -32,10 +32,12 @@ def repo(tmp_path):
     return root.resolve()
 
 
-def _run(command, config, monkeypatch, repo_root, session_cwds=None, **kwargs):
+def _run(command, config, monkeypatch, repo_root, session_cwds=None,
+         guard_on=True, **kwargs):
     from tools.terminal_tool import terminal_tool
 
     monkeypatch.setattr(self_repo_guard, "get_running_source_root", lambda: repo_root)
+    monkeypatch.setattr(self_repo_guard, "guard_active", lambda: guard_on)
     mock_env = MagicMock()
     mock_env.execute.return_value = {"output": "ok", "returncode": 0}
     mock_env.cwd = config["cwd"]
@@ -116,3 +118,19 @@ class TestSelfRepoGuardWiring:
         result, env = _run("git checkout main", config, monkeypatch, None)
         assert result.get("status") != "blocked"
         env.execute.assert_called_once()
+
+    def test_guard_inactive_passes_through(self, repo, monkeypatch):
+        """POSIX (guard_active() False): mutations in the source repo run."""
+        config = _make_env_config(cwd=str(repo))
+        result, env = _run(
+            "git reset --hard origin/main", config, monkeypatch, repo,
+            guard_on=False,
+        )
+        assert result.get("status") != "blocked"
+        env.execute.assert_called_once()
+
+    def test_guard_active_matches_platform(self):
+        """guard_active() is True exactly on Windows."""
+        import os
+
+        assert self_repo_guard.guard_active() == (os.name == "nt")

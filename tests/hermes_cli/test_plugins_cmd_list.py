@@ -1,3 +1,4 @@
+import importlib.metadata
 import argparse
 import json
 from types import SimpleNamespace
@@ -75,7 +76,7 @@ def test_discover_all_plugins_includes_entrypoint_plugins(monkeypatch, tmp_path)
         lambda: bundled_dir,
     )
     monkeypatch.setattr(
-        plugins_cmd.importlib.metadata,
+        importlib.metadata,
         "entry_points",
         lambda: [entry_point],
     )
@@ -91,6 +92,39 @@ def test_discover_all_plugins_includes_entrypoint_plugins(monkeypatch, tmp_path)
             "adapters.hermes.cli_plugin",
             "wiki",
         )
+    ]
+
+
+def test_declared_capabilities_for_entrypoint_uses_distribution_metadata(
+    monkeypatch, tmp_path
+):
+    bundled_dir = tmp_path / "bundled"
+    user_dir = tmp_path / "user"
+    bundled_dir.mkdir()
+    user_dir.mkdir()
+    plugin_ep = SimpleNamespace(
+        name="thread-namer",
+        value="thread_namer.plugin:register",
+        group="hermes_agent.plugins",
+        dist=SimpleNamespace(version="1.0", metadata={"Summary": ""}),
+    )
+    capability_ep = SimpleNamespace(
+        name="thread-namer.gateway.platform_actions",
+        value="thread_namer.plugin:register",
+        group="hermes_agent.plugin_capabilities",
+    )
+    monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: user_dir)
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_bundled_plugins_dir", lambda: bundled_dir
+    )
+    monkeypatch.setattr(
+        importlib.metadata,
+        "entry_points",
+        lambda: [plugin_ep, capability_ep],
+    )
+
+    assert plugins_cmd._declared_capabilities_for_key("thread-namer") == [
+        "gateway.platform_actions"
     ]
 
 

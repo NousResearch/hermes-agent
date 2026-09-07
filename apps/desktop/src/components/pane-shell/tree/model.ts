@@ -15,6 +15,20 @@
 
 export type Orientation = 'row' | 'column'
 
+/**
+ * A zone's STANDING CHOICE about its tab strip. Absent is the third value and
+ * the default: AUTO, where the strip's presence is a pure function of what the
+ * zone currently holds (see `resolveTabStripVisible`).
+ *
+ * This replaced a `headerHidden?: boolean` that tried to carry both the user's
+ * choice and the layout's own repairs in one field. `false` there meant either
+ * "the user wants the strip" or "some code path pinned it visible to escape a
+ * dead end" — insert, tab cycling, dock enforcement and pane adoption all wrote
+ * it — so a repair permanently overwrote a choice and neither could be read
+ * back. Only the user writes `tabStrip`; everything else asks AUTO.
+ */
+export type TabStripMode = 'always' | 'never'
+
 export interface SplitNode {
   type: 'split'
   id: string
@@ -33,12 +47,10 @@ export interface GroupNode {
   active: string
   /** Collapsed to header strip (chevron restores). */
   minimized?: boolean
-  /**
-   * Header hidden entirely (double-click the header to hide, double-click the
-   * zone's top edge to bring it back). Minimize always shows the header —
-   * a minimized group IS its header.
-   */
-  headerHidden?: boolean
+  /** The user's standing choice for this zone's strip; absent = auto. Written
+   *  only by the zone menu and the toggle command. Minimize ignores it — a
+   *  minimized group IS its strip. */
+  tabStrip?: TabStripMode
 }
 
 export type LayoutNode = SplitNode | GroupNode
@@ -57,7 +69,7 @@ export const group = (panes: string[], options?: Partial<Omit<GroupNode, 'type' 
   panes,
   active: options?.active ?? panes[0] ?? '',
   minimized: options?.minimized,
-  headerHidden: options?.headerHidden
+  tabStrip: options?.tabStrip
 })
 
 export const split = (
@@ -156,12 +168,10 @@ export function normalize(node: LayoutNode): LayoutNode | null {
 
     const active = node.panes.includes(node.active) ? node.active : node.panes[0]
 
-    // NOTE: `headerHidden` is deliberately untouched here. A zone down to one
-    // pane is headerless by default anyway, so a stored `true` is visually
-    // redundant *while it's alone* — but normalize used to DROP it, which threw
-    // away the user's standing choice: the bar came back the moment a pane
-    // rejoined (close a stacked tool panel, toggle it back on). `false` is
-    // sticky for the mirror reason — once a zone has had a tab bar, it keeps it.
+    // `tabStrip` is deliberately untouched: it is the user's standing choice
+    // about this zone, not a derived attribute, so no structural edit may
+    // launder it. (Its predecessor `headerHidden` had to be reasoned about here
+    // precisely because the layout wrote to it too.)
     if (active === node.active) {
       return node
     }
@@ -262,15 +272,17 @@ export function insertAtGroup(
         const at = before ? n.panes.indexOf(before) : -1
         const panes = at >= 0 ? [...n.panes.slice(0, at), paneId, ...n.panes.slice(at)] : [...n.panes, paneId]
 
-        // Gaining a pane pins the header EXPLICITLY shown (not just cleared):
-        // a stack you can't see is a trap, and once a zone has ever stacked
-        // the bar STAYS when it drops back to one tab — the auto-hide flicker
-        // while dragging tabs around felt broken. Hiding is the user's call
-        // (double-click / zone menu). Active moves only on a gesture; an empty
-        // target has no prior tab, so the newcomer takes it regardless.
+        // `tabStrip` is NOT touched. Gaining a pane used to pin the strip
+        // visible so a surprise arrival always had a handle, which is how a
+        // deliberate hide came undone by a background adoption. Reachability
+        // is the resolver's job now, and it answers per-pane: a closeable tile
+        // forces the strip open, a stack of tool panels doesn't need it
+        // because tab cycling already reaches every member.
+        // Active moves only on a gesture; an empty target has no prior tab, so
+        // the newcomer takes it regardless.
         const active = activate || n.panes.length === 0 ? paneId : n.active
 
-        return { ...n, panes, active, headerHidden: false }
+        return { ...n, panes, active }
       }
 
       const orientation: Orientation = pos === 'left' || pos === 'right' ? 'row' : 'column'
@@ -530,8 +542,9 @@ export function setGroupMinimized(root: LayoutNode, groupId: string, minimized: 
   return mapGroups(root, g => (g.id === groupId ? { ...g, minimized } : g))
 }
 
-export function setGroupHeaderHidden(root: LayoutNode, groupId: string, headerHidden: boolean): LayoutNode {
-  return mapGroups(root, g => (g.id === groupId ? { ...g, headerHidden } : g))
+/** Write a zone's standing strip choice; `undefined` returns it to auto. */
+export function setGroupTabStrip(root: LayoutNode, groupId: string, tabStrip: TabStripMode | undefined): LayoutNode {
+  return mapGroups(root, g => (g.id === groupId ? { ...g, tabStrip } : g))
 }
 
 function replaceNode(node: LayoutNode, id: string, make: (g: GroupNode) => LayoutNode): LayoutNode {
@@ -576,6 +589,33 @@ export function setSplitWeights(root: LayoutNode, splitId: string, weights: numb
 // ---------------------------------------------------------------------------
 // Validation (persisted trees are untrusted)
 // ---------------------------------------------------------------------------
+
+/**
+ * Bring a persisted tree onto the current attribute schema.
+ *
+ * Retires `headerHidden` outright rather than translating it. A stored `true`
+ * could have come from a deliberate "Hide header", or from a double-tap the
+ * user never meant (that gesture rode every tab, so an ordinary double-click
+ * on a title hid the strip), and nothing on disk distinguishes them. Since the
+ * hide also unmounted the only surface offering "Show header", every wrongly
+ * hidden zone stayed hidden across restarts — the state people actually
+ * reported being stuck in. Carrying those forward as `tabStrip: 'never'` would
+ * re-strand exactly them, so the flag is dropped and the zone returns to auto;
+ * the strip is now hidden deliberately, from controls that say how to undo it.
+ *
+ * A stored `false` is dropped for the same reason in reverse: most were written
+ * by the layout's own repair paths, not by anyone choosing to see a strip.
+ */
+export function migratePersistedTree(node: LayoutNode): LayoutNode {
+  if (node.type === 'group') {
+    const { headerHidden, ...rest } = node as GroupNode & { headerHidden?: unknown }
+    const tabStrip = rest.tabStrip === 'always' || rest.tabStrip === 'never' ? rest.tabStrip : undefined
+
+    return headerHidden === undefined && rest.tabStrip === tabStrip ? node : { ...rest, tabStrip }
+  }
+
+  return { ...node, children: node.children.map(migratePersistedTree) }
+}
 
 export function isLayoutNode(value: unknown): value is LayoutNode {
   if (!value || typeof value !== 'object') {

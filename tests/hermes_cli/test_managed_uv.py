@@ -83,6 +83,74 @@ class TestManagedUvPath:
             assert managed_uv_path() == tmp_path / "bin" / "uv"
 
 
+class TestMacOSManagedPythonSigning:
+    def test_signs_with_stable_identifier_and_verifies(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        python = tmp_path / "generation" / "bin" / "python3.11"
+        python.parent.mkdir(parents=True)
+        python.touch()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(managed_uv.shutil, "which", lambda name: "/usr/bin/codesign")
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+
+        assert managed_uv._macos_sign_managed_python(python) is True
+        assert calls[0][0] == [
+            "/usr/bin/codesign",
+            "--force",
+            "--deep",
+            "--sign",
+            "-",
+            "--timestamp=none",
+            "--identifier",
+            "com.nousresearch.hermes.managed-python",
+            "--requirements",
+            '=designated => identifier "com.nousresearch.hermes.managed-python"',
+            str(python),
+        ]
+        assert calls[1][0] == [
+            "/usr/bin/codesign",
+            "--verify",
+            "--deep",
+            "--strict",
+            str(python),
+        ]
+
+    def test_is_non_blocking_when_signing_fails(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        python = tmp_path / "python3.11"
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(managed_uv.shutil, "which", lambda name: "/usr/bin/codesign")
+        monkeypatch.setattr(
+            managed_uv.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=1, stdout="", stderr="not signable"
+            ),
+        )
+
+        assert managed_uv._macos_sign_managed_python(python) is False
+
+    def test_skips_non_macos(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(
+            managed_uv.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("codesign must not run on Linux"),
+        )
+
+        assert managed_uv._macos_sign_managed_python(tmp_path / "python") is False
+
+
 # ---------------------------------------------------------------------------
 # resolve_uv
 # ---------------------------------------------------------------------------
@@ -778,20 +846,13 @@ class TestPatchRetryOnVulnerableCandidate:
 
 
     def test_retry_is_bounded_by_max_retries_constant(self, tmp_path, monkeypatch):
-        """A very long patch list must not result in unbounded retries --
-        capped at _MAX_PATCH_RETRIES attempts."""
+        """A very long patch list must not result in unbounded retries -- capped at
+        _MAX_PATCH_RETRIES attempts.  After exhausting same-minor retries the
+        fallback tries the next minor line, which may succeed."""
         import hermes_cli.managed_uv as managed_uv
 
-        install_calls = []
-        fake_run, fake_probe = self._versioned_probe_run({"3.11"})
-        original_fake_run = fake_run
-
-        def counting_fake_run(cmd, **kwargs):
-            if "install" in cmd:
-                install_calls.append(cmd[3])
-            return original_fake_run(cmd, **kwargs)
-
         from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+
         current = SQLiteRuntimeInfo(
             executable=Path("/venv/bin/python"), base_prefix=Path("/venv"),
             python_version=(3, 11, 14), sqlite_version=(3, 50, 4),
@@ -802,7 +863,14 @@ class TestPatchRetryOnVulnerableCandidate:
         all_vulnerable = {f"3.11.{v}" for v in range(30, 10, -1)} | {"3.11"}
         fake_run2, fake_probe2 = self._versioned_probe_run(all_vulnerable)
 
-        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run2)
+        install_calls = []
+
+        def counting_fake_run(cmd, **kwargs):
+            if "install" in cmd:
+                install_calls.append(cmd[3])
+            return fake_run2(cmd, **kwargs)
+
+        monkeypatch.setattr(managed_uv.subprocess, "run", counting_fake_run)
         monkeypatch.setattr(managed_uv, "probe_sqlite_runtime", fake_probe2)
         monkeypatch.setattr(
             managed_uv, "_list_available_patches", lambda *a, **kw: huge_patch_list
@@ -810,12 +878,195 @@ class TestPatchRetryOnVulnerableCandidate:
         result = managed_uv._install_safe_python_generation(
             "uv", project_root=tmp_path, current=current
         )
-        assert result is None
+        # The same-minor retries are bounded, but the minor-line fallback
+        # (3.11 → 3.12) succeeds because the mock returns a fixed build.
+        assert result is not None, (
+            "Minor-line fallback should find a fixed 3.12 build"
+        )
         # 1 initial bare-minor attempt + at most _MAX_PATCH_RETRIES retries.
         assert managed_uv._MAX_PATCH_RETRIES <= 5, (
             "sanity: constant should stay small since each attempt is a "
             "real download+install+probe cycle"
         )
+        same_minor_explicit = [
+            call for call in install_calls if call.startswith("3.11.")
+        ]
+        assert len(same_minor_explicit) <= managed_uv._MAX_PATCH_RETRIES, (
+            f"same-minor explicit retries must be capped: {same_minor_explicit}"
+        )
+        assert install_calls[0] == "3.11"
+        # The run ends the moment the bare next-minor fallback succeeds.
+        assert install_calls[-1] == "3.12"
+        assert install_calls.count("3.12") == 1
+
+
+class TestMinorLineFallForward:
+    """Regression tests for issue #76106: when EVERY build on the current
+    minor line (e.g. all of 3.11 on Windows) links a vulnerable SQLite,
+    the provisioner must fall forward to the next supported minor line
+    (3.12, then 3.13) -- first via a bare minor request, then via explicit
+    patches on that line -- instead of leaving the user stuck on every
+    `hermes update` with no path to a fixed runtime.
+    """
+
+    @staticmethod
+    def _mapped_run(resolutions, fixed_versions, install_calls):
+        """Fake subprocess.run/probe pair driven by explicit tables:
+
+        - *resolutions*: request string -> python_version tuple the probe
+          reports for that request (bare minors resolve like uv would).
+        - *fixed_versions*: set of version tuples that link FIXED SQLite;
+          everything else probes as vulnerable 3.50.4.
+        - *install_calls*: list collecting each `uv python install` request,
+          in order, so tests can assert the actual request sequence.
+        """
+        from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+
+        state: dict = {"requested": None}
+
+        def fake_run(cmd, **kwargs):
+            if "install" in cmd:
+                # cmd = [uv, "python", "install", <request>, ...]
+                state["requested"] = cmd[3]
+                state["generation"] = Path(kwargs["env"]["UV_PYTHON_INSTALL_DIR"])
+                install_calls.append(cmd[3])
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if "list" in cmd:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            # uv python find → a path inside the generation dir, tagged with
+            # the request that produced it so the probe can look it up.
+            python = state["generation"] / "cpython" / "bin" / "python3"
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.write_text(state["requested"] or "")
+            return SimpleNamespace(returncode=0, stdout=str(python), stderr="")
+
+        def fake_probe(python, **kwargs):
+            requested = Path(python).read_text()
+            version = resolutions[requested]
+            if version in fixed_versions:
+                return SQLiteRuntimeInfo(
+                    executable=Path(python),
+                    base_prefix=Path(python).parent.parent,
+                    python_version=version, sqlite_version=(3, 53, 1),
+                    sqlite_version_string="3.53.1", sqlite_source_id="fixed",
+                )
+            return SQLiteRuntimeInfo(
+                executable=Path(python),
+                base_prefix=Path(python).parent.parent,
+                python_version=version, sqlite_version=(3, 50, 4),
+                sqlite_version_string="3.50.4", sqlite_source_id="vulnerable",
+            )
+
+        return fake_run, fake_probe
+
+    @staticmethod
+    def _current_3_11_14():
+        from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+
+        return SQLiteRuntimeInfo(
+            executable=Path("/venv/bin/python"), base_prefix=Path("/venv"),
+            python_version=(3, 11, 14), sqlite_version=(3, 50, 4),
+            sqlite_version_string="3.50.4", sqlite_source_id="old",
+        )
+
+    def test_explicit_patch_fallback_when_bare_next_minor_is_vulnerable(
+        self, tmp_path, monkeypatch
+    ):
+        """The review-gap scenario from #76252: the bare '3.12' request
+        resolves to a VULNERABLE 3.12 build, but an explicit 3.12 patch
+        links fixed SQLite -- the `_list_available_patches(..., '3.12', ...)`
+        fallback branch must run, skip the already-tried bare resolution,
+        and succeed via the explicit patch."""
+        import hermes_cli.managed_uv as managed_uv
+
+        install_calls = []
+        fake_run, fake_probe = self._mapped_run(
+            resolutions={
+                "3.11": (3, 11, 14),      # bare current minor: vulnerable
+                "3.12": (3, 12, 11),      # bare next minor: ALSO vulnerable
+                "3.12.10": (3, 12, 10),   # explicit patch: fixed
+            },
+            fixed_versions={(3, 12, 10)},
+            install_calls=install_calls,
+        )
+        patch_lists = {
+            # No newer 3.11 patch exists (the Windows #76106 reality).
+            "3.11": [(3, 11, 14), (3, 11, 13)],
+            # Newest 3.12 is the same build the bare request resolved to.
+            "3.12": [(3, 12, 11), (3, 12, 10)],
+        }
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+        monkeypatch.setattr(managed_uv, "probe_sqlite_runtime", fake_probe)
+        monkeypatch.setattr(
+            managed_uv, "_list_available_patches",
+            lambda uv_bin, minor, **kw: patch_lists[minor],
+        )
+
+        result = managed_uv._install_safe_python_generation(
+            "uv", project_root=tmp_path, current=self._current_3_11_14()
+        )
+        assert result is not None, (
+            "Explicit-patch fallback on the next minor line must recover"
+        )
+        _, _, candidate = result
+        assert candidate.python_version == (3, 12, 10)
+        assert not candidate.wal_reset_vulnerable
+        # The actual uv-install request sequence: bare current minor, then
+        # bare next minor, then STRAIGHT to the fixed explicit patch --
+        # 3.12.11 must NOT be re-requested explicitly, because the bare
+        # '3.12' attempt already resolved to (and rejected) that build.
+        assert install_calls == ["3.11", "3.12", "3.12.10"]
+
+    def test_returns_none_with_bounded_attempts_when_all_minors_exhausted(
+        self, tmp_path, monkeypatch
+    ):
+        """When every build on every supported minor line (3.11-3.13) is
+        vulnerable, the provisioner must give up with None -- and the total
+        install workload must stay bounded by _MAX_PATCH_RETRIES per line."""
+        import hermes_cli.managed_uv as managed_uv
+
+        install_calls = []
+        resolutions = {"3.11": (3, 11, 14), "3.12": (3, 12, 30), "3.13": (3, 13, 30)}
+        patch_lists = {}
+        for minor in (11, 12, 13):
+            versions = [(3, minor, v) for v in range(30, 10, -1)]  # 20 patches
+            patch_lists[f"3.{minor}"] = versions
+            for version in versions:
+                resolutions[".".join(str(p) for p in version)] = version
+
+        fake_run, fake_probe = self._mapped_run(
+            resolutions=resolutions, fixed_versions=set(),
+            install_calls=install_calls,
+        )
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+        monkeypatch.setattr(managed_uv, "probe_sqlite_runtime", fake_probe)
+        monkeypatch.setattr(
+            managed_uv, "_list_available_patches",
+            lambda uv_bin, minor, **kw: patch_lists[minor],
+        )
+
+        result = managed_uv._install_safe_python_generation(
+            "uv", project_root=tmp_path, current=self._current_3_11_14()
+        )
+        assert result is None, "Nothing fixed anywhere: must give up cleanly"
+
+        cap = managed_uv._MAX_PATCH_RETRIES
+        # Per line: one bare request + at most _MAX_PATCH_RETRIES explicit
+        # patches; three lines total (3.11, 3.12, 3.13) and nothing beyond
+        # 3.13 (requires-python is <3.14).
+        assert install_calls.count("3.11") == 1
+        assert install_calls.count("3.12") == 1
+        assert install_calls.count("3.13") == 1
+        assert not any(call.startswith("3.14") for call in install_calls)
+        for minor in (11, 12, 13):
+            explicit = [
+                call for call in install_calls
+                if call.startswith(f"3.{minor}.")
+            ]
+            assert len(explicit) <= cap, (
+                f"3.{minor} explicit retries must be capped at {cap}: {explicit}"
+            )
+        assert len(install_calls) <= 3 * (1 + cap)
 
 
 class TestListAvailablePatches:
@@ -1104,3 +1355,147 @@ class TestVenvPythonUpdateBoundary:
             if sys.platform == "win32" else Path("/opt/hermes/venv/bin/python")
         assert _venv_python(Path("/opt/hermes/venv")) == expected
 
+
+
+class TestWindowsRuntimeSelfLock:
+    """The repair pre-flight must see the ONE holder the generic scan hides:
+    the updater itself (#93032).
+
+    A CLI ``hermes update`` runs from the venv's own python, and
+    ``_detect_venv_python_processes`` excludes the calling process and its
+    ancestors on purpose (correct for the dependency-sync path).  For the
+    whole-venv park rename that exemption is fatal on Windows: a directory
+    containing an executable mapped by a running process cannot be renamed,
+    so the cutover retries burn out against a lock that cannot be released
+    while the updater lives.  The repair must detect the self-lock and defer
+    with honest guidance instead of provisioning a candidate for a doomed
+    rename.
+    """
+
+    def _checkout(self, tmp_path):
+        root, live, sentinel = _make_runtime_install(tmp_path)
+        # Windows-layout interpreter so sys.executable can point inside the
+        # live venv on any host (the detector only string-compares paths).
+        scripts_python = live / "Scripts" / "python.exe"
+        scripts_python.parent.mkdir(parents=True, exist_ok=True)
+        scripts_python.write_text("live interpreter", encoding="utf-8")
+        return root, live, sentinel, scripts_python
+
+    def test_self_lock_defers_repair_before_provisioning(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Regression for #93032: pre-fix, the repair walks straight into the
+        doomed rename (provisioning + cutover) whenever the updater itself
+        maps the live venv; the park then fails with WinError 5 and the user
+        gets the misleading 'next update will retry' message forever."""
+        from hermes_cli import managed_uv
+        from hermes_cli.managed_uv import repair_vulnerable_runtime
+
+        root, live, sentinel, scripts_python = self._checkout(tmp_path)
+        current = _runtime_info(scripts_python, (3, 50, 4))
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(sys, "executable", str(scripts_python))
+
+        with patch(
+                 "hermes_cli.managed_uv._windows_runtime_holders",
+                 return_value=(False, ""),
+             ), \
+             patch(
+                 "hermes_cli.managed_uv.probe_sqlite_runtime",
+                 return_value=current,
+             ), \
+             patch(
+                 "hermes_cli.managed_uv._install_safe_python_generation"
+             ) as mock_install:
+            result = repair_vulnerable_runtime("uv", project_root=root)
+
+        assert result.status == "skipped"
+        assert "live venv" in result.detail
+        assert mock_install.call_count == 0, (
+            "a self-locked updater must not provision a candidate it can "
+            "never cut over"
+        )
+        assert sentinel.read_text(encoding="utf-8") == "live"
+        assert not (root / ".hermes-runtime").exists()
+
+        out = capsys.readouterr().out
+        assert "SQLite runtime repair deferred" in out
+        assert "will retry" not in out, (
+            "the structural self-lock must not promise that retrying helps"
+        )
+        assert "outside" in out, "the deferral must point at an escape hatch"
+
+    def test_non_self_locked_repair_proceeds(self, tmp_path, monkeypatch):
+        """The guard must fail OPEN when the updater runs from outside the
+        venv — an always-firing deferral would recreate the never-converging
+        loop this fix removes (#86735 class)."""
+        from hermes_cli import managed_uv
+        from hermes_cli.managed_uv import repair_vulnerable_runtime
+
+        root, live, sentinel, scripts_python = self._checkout(tmp_path)
+        current = _runtime_info(scripts_python, (3, 50, 4))
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(
+            sys, "executable", str(tmp_path / "outside" / "python.exe")
+        )
+
+        with patch(
+                 "hermes_cli.managed_uv._windows_runtime_holders",
+                 return_value=(False, ""),
+             ), \
+             patch(
+                 "hermes_cli.managed_uv.probe_sqlite_runtime",
+                 return_value=current,
+             ), \
+             patch(
+                 "hermes_cli.managed_uv._install_safe_python_generation",
+                 return_value=None,
+             ) as mock_install:
+            result = repair_vulnerable_runtime("uv", project_root=root)
+
+        assert result.status == "failed"
+        assert "provision" in result.detail
+        mock_install.assert_called_once()
+        assert sentinel.read_text(encoding="utf-8") == "live"
+
+    def test_self_lock_is_a_noop_off_windows(self, tmp_path, monkeypatch):
+        """POSIX renames work while the updater maps the venv, so the guard
+        must stay Windows-only."""
+        from hermes_cli import managed_uv
+
+        root, live, sentinel, scripts_python = self._checkout(tmp_path)
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(sys, "executable", str(scripts_python))
+
+        locked, detail = managed_uv._windows_runtime_self_lock(live)
+        assert (locked, detail) == (False, "")
+
+    def test_venv_launcher_ancestor_is_a_self_lock(self, tmp_path, monkeypatch):
+        r"""The venv\Scripts\hermes.exe shim stays mapped while it waits for
+        this child — an ancestor running from the venv blocks the rename too."""
+        from hermes_cli import managed_uv
+
+        root, live, sentinel, scripts_python = self._checkout(tmp_path)
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(
+            sys, "executable", str(tmp_path / "outside" / "python.exe")
+        )
+
+        class _FakeProc:
+            def __init__(self, pid, exe):
+                self.pid = pid
+                self._exe = exe
+
+            def exe(self):
+                return self._exe
+
+        fake_psutil = SimpleNamespace(
+            Process=lambda: SimpleNamespace(
+                parents=lambda: [_FakeProc(999, str(scripts_python))],
+            ),
+        )
+        with patch.dict(sys.modules, {"psutil": fake_psutil}):
+            locked, detail = managed_uv._windows_runtime_self_lock(live)
+
+        assert locked
+        assert "999" in detail

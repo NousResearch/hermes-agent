@@ -5,9 +5,13 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import {
+  collectRelaunchArgs,
   MARKER_SELF_ADOPT_EPOCH_MS,
+  observeUpdaterHandoff,
+  resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
+  sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
   wrapHandoffForDetachedConsole
@@ -170,7 +174,7 @@ test('resolveStagedUpdaterBinary returns null on Windows when nothing is staged'
 
 test('resolveUpdateScriptHandoff prefers the repo script on Windows when present', () => {
   const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
-  const expected = path.join(root, 'scripts', 'desktop-update.ps1')
+  const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
 
   const handoff = resolveUpdateScriptHandoff(root, {
     isWindows: true,
@@ -181,6 +185,19 @@ test('resolveUpdateScriptHandoff prefers the repo script on Windows when present
   assert.equal(handoff.command, 'powershell')
   assert.equal(handoff.scriptPath, expected)
   assert.deepEqual(handoff.args, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', expected])
+})
+
+test('resolveUpdateScriptHandoff falls back to the pre-reorg flat path', () => {
+  const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
+  const legacy = path.join(root, 'scripts', 'desktop-update.ps1')
+
+  const handoff = resolveUpdateScriptHandoff(root, {
+    isWindows: true,
+    fileExists: candidate => candidate === legacy
+  })
+
+  assert.ok(handoff)
+  assert.equal(handoff.scriptPath, legacy)
 })
 
 test('resolveUpdateScriptHandoff returns null when the checkout predates the script', () => {
@@ -203,7 +220,7 @@ test('resolveUpdateScriptHandoff is Windows-only (POSIX updates in place)', () =
 
 test('wrapHandoffForDetachedConsole routes through cmd start with own console', () => {
   const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
-  const expected = path.join(root, 'scripts', 'desktop-update.ps1')
+  const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
 
   const handoff = resolveUpdateScriptHandoff(root, {
     isWindows: true,
@@ -232,4 +249,214 @@ test('wrapHandoffForDetachedConsole routes through cmd start with own console', 
     '-Branch',
     'main'
   ])
+})
+
+test('resolvePosixScriptHandoff returns the bash recipe when the script exists', () => {
+  const root = '/home/hermes/.hermes/hermes-agent'
+  const expected = path.join(root, 'scripts', 'desktop-update', 'posix.sh')
+
+  const handoff = resolvePosixScriptHandoff(root, {
+    isWindows: false,
+    fileExists: candidate => candidate === expected
+  })
+
+  assert.ok(handoff)
+  assert.equal(handoff.command, '/bin/bash')
+  assert.deepEqual(handoff.args, [expected])
+})
+
+test('resolvePosixScriptHandoff is null when the checkout predates the script', () => {
+  const handoff = resolvePosixScriptHandoff('/home/hermes/.hermes/hermes-agent', {
+    isWindows: false,
+    fileExists: () => false
+  })
+
+  assert.equal(handoff, null)
+})
+
+test('resolvePosixScriptHandoff is null on Windows', () => {
+  const handoff = resolvePosixScriptHandoff(String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`, {
+    isWindows: true,
+    fileExists: () => true
+  })
+
+  assert.equal(handoff, null)
+})
+
+test('collectRelaunchArgs drops Electron internals, keeps user/launcher args', () => {
+  const argv = [
+    '--type=renderer',
+    '--user-data-dir=/tmp/x',
+    '--enable-features=A,B',
+    '--field-trial-handle=123',
+    '--enable-logging',
+    '--log-file=/tmp/log',
+    '--lang=en-US',
+    '--inspect=9229',
+    '--remote-debugging-port=9222',
+    '--no-sandbox',
+    'hermes://open/session/abc',
+    '--profile=work'
+  ]
+
+  assert.deepEqual(collectRelaunchArgs(argv), ['--no-sandbox', 'hermes://open/session/abc', '--profile=work'])
+  assert.deepEqual(collectRelaunchArgs(undefined), [])
+})
+
+test('sandboxFallbackFromEnv: ELECTRON_DISABLE_SANDBOX / --no-sandbox opt out', () => {
+  assert.equal(sandboxFallbackFromEnv({ ELECTRON_DISABLE_SANDBOX: '1' }, []), true)
+  assert.equal(sandboxFallbackFromEnv({ ELECTRON_DISABLE_SANDBOX: 'true' }, []), true)
+  assert.equal(sandboxFallbackFromEnv({}, ['--no-sandbox']), true)
+  assert.equal(sandboxFallbackFromEnv({ ELECTRON_DISABLE_SANDBOX: '0' }, []), false)
+  assert.equal(sandboxFallbackFromEnv({}, []), false)
+})
+
+// ── observeUpdaterHandoff (#66753) ──────────────────────────────────────────
+
+class FakeChild {
+  pid = 1234
+  listeners = new Map<string, Array<(...args: unknown[]) => void>>()
+  removed: string[] = []
+
+  unref() {}
+
+  once(event: string, listener: (...args: unknown[]) => void) {
+    const arr = this.listeners.get(event) ?? []
+
+    arr.push(listener)
+    this.listeners.set(event, arr)
+
+    return this
+  }
+
+  removeListener(event: string, _listener: (...args: unknown[]) => void) {
+    this.removed.push(event)
+
+    return this
+  }
+
+  emit(event: string, ...args: unknown[]) {
+    for (const listener of this.listeners.get(event) ?? []) {
+      listener(...args)
+    }
+  }
+}
+
+function manualTimer() {
+  const pending: Array<() => void> = []
+
+  return {
+    deps: {
+      setTimeoutFn: (callback: () => void, _ms: number) => {
+        pending.push(callback)
+
+        return 0
+      },
+      clearTimeoutFn: () => {}
+    },
+    fire: () => {
+      for (const callback of pending.splice(0)) {
+        callback()
+      }
+    }
+  }
+}
+
+test('observeUpdaterHandoff reports a spawn error instead of settling ok', async () => {
+  const child = new FakeChild()
+  const timer = manualTimer()
+  const outcomePromise = observeUpdaterHandoff(child, 2500, timer.deps)
+
+  const err: Error & { code?: string } = new Error('spawn ENOENT')
+
+  err.code = 'ENOENT'
+  child.emit('error', err)
+
+  const outcome = await outcomePromise
+
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.reason, 'spawn-error')
+  assert.match(outcome.message ?? '', /ENOENT/)
+})
+
+test('observeUpdaterHandoff reports a non-zero early exit', async () => {
+  const child = new FakeChild()
+  const timer = manualTimer()
+  const outcomePromise = observeUpdaterHandoff(child, 2500, timer.deps)
+
+  child.emit('exit', 127, null)
+
+  const outcome = await outcomePromise
+
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.reason, 'early-exit')
+  assert.equal(outcome.code, 127)
+})
+
+test('observeUpdaterHandoff reports a signal death inside the window', async () => {
+  const child = new FakeChild()
+  const timer = manualTimer()
+  const outcomePromise = observeUpdaterHandoff(child, 2500, timer.deps)
+
+  child.emit('exit', null, 'SIGTERM')
+
+  const outcome = await outcomePromise
+
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.reason, 'early-exit')
+  assert.equal(outcome.signal, 'SIGTERM')
+})
+
+test('observeUpdaterHandoff accepts a clean exit 0 (Windows cmd start wrapper)', async () => {
+  const child = new FakeChild()
+  const timer = manualTimer()
+  const outcomePromise = observeUpdaterHandoff(child, 2500, timer.deps)
+
+  child.emit('exit', 0, null)
+
+  const outcome = await outcomePromise
+
+  assert.equal(outcome.ok, true)
+  assert.equal(outcome.code, 0)
+})
+
+test('observeUpdaterHandoff settles ok when the child survives the window', async () => {
+  const child = new FakeChild()
+  const timer = manualTimer()
+  const outcomePromise = observeUpdaterHandoff(child, 2500, timer.deps)
+
+  timer.fire()
+
+  const outcome = await outcomePromise
+
+  assert.equal(outcome.ok, true)
+  assert.equal(outcome.reason, undefined)
+  // Listeners must be detached so a post-quit late exit can't fire them.
+  assert.deepEqual(child.removed.sort(), ['error', 'exit'])
+})
+
+test('observeUpdaterHandoff ignores events after the first settle', async () => {
+  const child = new FakeChild()
+  const timer = manualTimer()
+  const outcomePromise = observeUpdaterHandoff(child, 2500, timer.deps)
+
+  child.emit('exit', 1, null)
+  child.emit('error', new Error('late'))
+  timer.fire()
+
+  const outcome = await outcomePromise
+
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.reason, 'early-exit')
+})
+
+test('observeUpdaterHandoff settles ok for children without an event interface', async () => {
+  const timer = manualTimer()
+  const outcomePromise = observeUpdaterHandoff({ pid: 1, unref: () => {} }, 2500, timer.deps)
+
+  timer.fire()
+
+  const outcome = await outcomePromise
+
+  assert.equal(outcome.ok, true)
 })

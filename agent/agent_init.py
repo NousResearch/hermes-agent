@@ -1148,6 +1148,8 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     agent.session_start = datetime.now()
     agent.session_id = session_id or new_session_id(agent.session_start)
     _publish_session_id(agent.session_id)
+    # Reaper/close threads need the session's home after its build scope is gone.
+    agent._session_hermes_home = get_hermes_home().resolve()
 
     # ~/.hermes/sessions/ — kept unconditionally for request_dump_*.json debug breadcrumbs.
     agent.logs_dir = get_hermes_home() / "sessions"

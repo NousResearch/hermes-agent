@@ -462,6 +462,28 @@ def get_custom_provider_extra_headers(
     return {}
 
 
+def get_custom_provider_api_key(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None) -> str:
+    """``api_key`` of the first route-matching entry declaring one, else ``""``.
+
+    Resolution chains that probe an endpoint (server-type fingerprint, live context
+    length) forward this instead of reaching the probe with the default empty key and
+    spraying a 401 per waterfall leg against keyed local servers. See #105379.
+    SECURITY: the value is a credential — callers must never log it.
+    """
+    import os
+    for entry in _entries_for_route(base_url, custom_providers, config):
+        key = str(entry.get("api_key") or "").strip()
+        if key:
+            return key
+        env_name = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+        if env_name and os.environ.get(env_name):
+            return os.environ[env_name]
+    return ""
+
+
 def apply_custom_provider_extra_headers_to_client_kwargs(
     client_kwargs: Dict[str, Any],
     base_url: str,

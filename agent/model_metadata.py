@@ -1906,6 +1906,15 @@ def get_model_context_length(
     # 2. Live /models for truly custom endpoints. Known providers skip this: their /models may
     # report a provider-imposed limit (Copilot: 128k) rather than the window.
     if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
+        # Forward the route's configured key: callers that never resolved the custom provider's
+        # credential would reach the probes with the default empty key and spray a 401 per
+        # waterfall leg against keyed local servers (#105379 — the #89863 key-forwarding class).
+        if not api_key and custom_providers:
+            try:
+                from hermes_cli.config_providers import get_custom_provider_api_key
+                api_key = get_custom_provider_api_key(base_url, custom_providers) or api_key
+            except Exception:
+                pass
         return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider)
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (base_url and base_url_hostname(base_url) == "api.anthropic.com"):

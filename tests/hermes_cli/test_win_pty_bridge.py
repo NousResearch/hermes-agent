@@ -207,6 +207,28 @@ class TestWinPtyBridgeUnavailable:
         with pytest.raises(PtyUnavailableError):
             WinPtyBridge.spawn(["true"])
 
+    def test_spawn_marks_dashboard_host_env(self, monkeypatch):
+        """ConPTY children must see HERMES_PTY_HOST=dashboard like POSIX ones,
+        so the Ink child skips its native-emulator repaint under xterm.js."""
+        import hermes_cli.win_pty_bridge as bridge_mod
+
+        captured = {}
+
+        class _FakeProc:
+            pid = 42
+
+            @classmethod
+            def spawn(cls, argv, cwd=None, env=None, dimensions=None):
+                captured["env"] = dict(env or {})
+                return cls()
+
+        monkeypatch.setattr(bridge_mod, "_PTY_AVAILABLE", True)
+        monkeypatch.setattr(bridge_mod, "PtyProcess", _FakeProc)
+        bridge = WinPtyBridge.spawn(["hermes", "--tui"], env={})
+        assert bridge.pid == 42
+        assert captured["env"]["HERMES_PTY_HOST"] == "dashboard"
+        assert captured["env"]["TERM"] == "xterm-256color"
+
 
 # ---------------------------------------------------------------------------
 # Windows-only end-to-end behaviour

@@ -67,6 +67,12 @@ class WinPtyBridge:
             build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
             if env is None else dict(env))
         spawn_env["TERM"] = spawn_env.get("TERM") or "xterm-256color"
+        # Tell the Ink child it runs under the dashboard's xterm.js so it
+        # skips the focus-in erase+repaint native emulators need (visible
+        # flash on every app-switch). Mirrors pty_bridge.PTY_HOST_ENV /
+        # PTY_HOST_DASHBOARD — duplicated, not imported: pty_bridge imports
+        # fcntl/termios at top level, which does not exist on Windows.
+        spawn_env["HERMES_PTY_HOST"] = "dashboard"
         # pywinpty mirrors ptyprocess: dimensions=(rows, cols).
         return cls(PtyProcess.spawn(list(argv), cwd=cwd, env=spawn_env, dimensions=(rows, cols)))  # type: ignore[union-attr]
 

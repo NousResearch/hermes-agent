@@ -17,7 +17,7 @@ def test_shared_cache_contention_is_bounded_and_releases_after_warmup(tmp_path, 
     fake = tmp_path / 'fake_npx.py'
     fake.write_text(
         'from pathlib import Path\nimport time, sys\n'
-        f'if sys.argv[1:4] == ["config", "get", "cache"]:\n print(Path({str(tmp_path / ".npmrc")!r}).read_text().split("=", 1)[1].strip()); sys.exit(0)\n'
+        f'if sys.argv[1:4] == ["config", "get", "cache"]:\n print(Path({str(tmp_path / ".npmrc")!r}).read_text(encoding="utf-8").split("=", 1)[1].strip()); sys.exit(0)\n'
         f'trace=Path({str(trace)!r}); release=Path({str(release)!r})\n'
         "with trace.open('a') as f: f.write('enter\\n')\n"
         'while not release.exists(): time.sleep(0.01)\n'
@@ -64,7 +64,7 @@ print(json.dumps(install.warm_agent_browser_npx_cache(float(sys.argv[2]))))
         out, err = second.communicate(timeout=10)
         assert second.returncode == 0, err
         assert json.loads(out) is False
-        assert trace.read_text().splitlines() == ['enter']
+        assert trace.read_text(encoding="utf-8").splitlines() == ['enter']
         release.touch()
         out, err = first.communicate(timeout=10)
         assert first.returncode == 0, err
@@ -73,7 +73,7 @@ print(json.dumps(install.warm_agent_browser_npx_cache(float(sys.argv[2]))))
         out, err = third.communicate(timeout=10)
         assert third.returncode == 0, err
         assert json.loads(out) is True
-        assert trace.read_text().splitlines() == ['enter', 'exit', 'enter', 'exit']
+        assert trace.read_text(encoding="utf-8").splitlines() == ['enter', 'exit', 'enter', 'exit']
         assert (tmp_path / 'shared-cache' / '.hermes-agent-browser-warmup.lock').exists()
     finally:
         release.touch()

@@ -3550,7 +3550,8 @@ function installLockResources(updateRoot) {
 // synchronous openSync calls (measured on a real install: ~27 ms median, and
 // seconds when a filter driver is cold), which the release gate paid on every
 // 300 ms poll. A caller that only needs "is anything locked" passes limit: 1
-// and stops at the first definite lock (~0.3 ms while the install is held).
+// and stops at the first lock of either kind (~0.3 ms while the install is
+// held); attribution re-probes the full set when it needs the whole picture.
 function probeInstallLocks(updateRoot, options: { limit?: number } = {}): InstallResourceLocks {
   const resources = installLockResources(updateRoot)
 

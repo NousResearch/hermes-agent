@@ -110,7 +110,7 @@ def calibrate_from_usage(agent: Any, messages: List[Dict[str, Any]], prompt_toke
     if n_images <= 0:
         return None
     with image_cost_context(0):
-        text_only = anchored_context_tokens(messages, anchor)
+        text_only = anchored_context_tokens(messages, anchor, route=agent)
     if text_only is None:
         return None
     per_image = (real - text_only) // n_images

@@ -148,10 +148,10 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
     # anchoring on the LAST response makes the meter sawtooth. Fall back to the
     # last-response anchor, then measured, then estimated.
     anchor = getattr(agent, "_turn_base_usage_anchor", None)
-    context_used = anchored_context_tokens(messages, anchor, charge_stale_thinking=False)
+    context_used = anchored_context_tokens(messages, anchor, route=agent, charge_stale_thinking=False)
     if context_used is None:
         anchor = getattr(agent, "_usage_anchor", None)
-        context_used = anchored_context_tokens(messages, anchor)
+        context_used = anchored_context_tokens(messages, anchor, route=agent)
     if context_used is None:
         measured_used = int(getattr(comp, "last_prompt_tokens", 0) or 0) if comp else 0
         context_used = measured_used if measured_used > 0 else estimated_total

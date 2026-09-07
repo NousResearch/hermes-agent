@@ -554,6 +554,7 @@ class GatewayTurnMixin:
                 hs.provider = _hyg_runtime.get("provider") or hs.provider
                 hs.base_url = _hyg_runtime.get("base_url") or hs.base_url
                 hs.api_key = _hyg_runtime.get("api_key") or hs.api_key
+                hs.api_mode = _hyg_runtime.get("api_mode") or ""
 
             if hs.config_context_length is not None:
                 try:
@@ -614,6 +615,7 @@ class GatewayTurnMixin:
                 _session_db = getattr(self, "_session_db", None)
                 _anchored = persisted_anchor_tokens(
                     getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
+                    route=hs,
                 )
             if session_entry.last_prompt_tokens > 0:
                 _approx_tokens, _token_source = session_entry.last_prompt_tokens, "actual"

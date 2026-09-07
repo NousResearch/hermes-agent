@@ -11,7 +11,8 @@ The fingerprint (not ``id()``) is the identity: the gateway re-reads the transcr
 every turn and a resumed session runs in a fresh process, so object identity is never stable
 across the surfaces where the estimate mattered most (#99421, #104462). The anchor also persists
 on the session row (``model_config._usage_anchor``) so a restarted process can restore it; a
-restored anchor is honored only while the durable transcript still matches its fingerprint.
+restored anchor is honored only while both the durable transcript and the active model route
+match. Usage from another model, provider, endpoint or wire format cannot price this request.
 """
 
 from __future__ import annotations
@@ -76,11 +77,33 @@ def _anchor_matches(messages: List[Dict[str, Any]], anchor: Dict[str, Any]) -> b
     return isinstance(fp, str) and bool(fp) and message_fingerprint(base_msg) == fp
 
 
-def anchored_context_tokens(messages: List[Dict[str, Any]], anchor: Optional[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> Optional[int]:
+def _route_fingerprint(route: Any) -> str:
+    from hermes_cli.providers import normalize_provider
+    from hermes_cli.route_identity import normalize_route_base_url
+
+    fields = [str(getattr(route, key, "") or "") for key in ("model", "provider", "base_url", "api_mode")]
+    fields[1] = normalize_provider(fields[1])
+    fields[2] = normalize_route_base_url(fields[2])
+    # Named custom providers persist their menu id, but the agent runs as "custom".
+    # Only fold that alias with a concrete endpoint to distinguish separate servers.
+    if fields[1].startswith("custom:") and fields[2]:
+        fields[1] = "custom"
+    # Do not persist credentials (including userinfo/query strings in custom endpoint URLs).
+    return hashlib.sha256(json.dumps(fields, ensure_ascii=True).encode()).hexdigest()
+
+
+def _route_matches(anchor: Any, route: Any) -> bool:
+    return isinstance(anchor, dict) and anchor.get("route_fp") == _route_fingerprint(route)
+
+
+def anchored_context_tokens(messages: List[Dict[str, Any]], anchor: Optional[Dict[str, Any]], *, route: Any = None, charge_stale_thinking: bool = True) -> Optional[int]:
     """Anchored prompt+completion tokens plus a rough estimate of ONLY the messages appended since;
     None when the anchor is missing or stale. The anchored response's own reply is skipped (already
-    in completion_tokens). ``charge_stale_thinking`` is forwarded to the delta estimate."""
+    in completion_tokens). Runtime consumers pass ``route`` to reject another route's usage,
+    including legacy anchors without provenance. ``charge_stale_thinking`` controls the delta."""
     if not isinstance(anchor, dict) or not isinstance(messages, list) or not _anchor_matches(messages, anchor):
+        return None
+    if route is not None and not _route_matches(anchor, route):
         return None
     from agent.model_metadata import estimate_messages_tokens_rough
 
@@ -103,8 +126,10 @@ def _serialize(anchor: Any) -> Optional[Dict[str, Any]]:
     fp, role = anchor.get("base_last_fp"), anchor.get("base_last_role")
     if pt <= 0 or base_count <= 0 or not isinstance(fp, str) or not fp:
         return None
+    route_fp = anchor.get("route_fp")
     return {"prompt_tokens": pt, "completion_tokens": max(0, ct), "base_count": base_count,
-            "base_last_role": role if isinstance(role, str) else None, "base_last_fp": fp}
+            "base_last_role": role if isinstance(role, str) else None, "base_last_fp": fp,
+            "route_fp": route_fp if isinstance(route_fp, str) else None}
 
 
 def persist_usage_anchor(agent: Any, anchor: Optional[Dict[str, Any]]) -> None:
@@ -122,9 +147,11 @@ def persist_usage_anchor(agent: Any, anchor: Optional[Dict[str, Any]]) -> None:
 
 
 def set_usage_anchor(agent: Any, anchor: Optional[Dict[str, Any]], *, turn_base: bool = False) -> None:
-    """Install ``anchor`` on the agent (``None`` clears) and mirror it to the session row."""
+    """Bind fresh usage to its reporting route (``None`` clears) and mirror it to the session row."""
+    if anchor is not None:
+        anchor = dict(anchor, route_fp=_route_fingerprint(agent))
     agent._usage_anchor = anchor
-    if turn_base or anchor is None:
+    if turn_base or anchor is None or not _route_matches(getattr(agent, "_turn_base_usage_anchor", None), agent):
         agent._turn_base_usage_anchor = anchor
     persist_usage_anchor(agent, anchor)
 
@@ -145,15 +172,15 @@ def restore_usage_anchor(agent: Any, conversation_history: Optional[List[Dict[st
         return
     if anchor is None:
         return
-    if _anchor_matches(conversation_history, anchor):
+    if _anchor_matches(conversation_history, anchor) and _route_matches(anchor, agent):
         agent._usage_anchor = anchor
     else:
         persist_usage_anchor(agent, None)
 
 
-def persisted_anchor_tokens(session_db: Any, session_id: Any, messages: Any) -> Optional[int]:
+def persisted_anchor_tokens(session_db: Any, session_id: Any, messages: Any, *, route: Any) -> Optional[int]:
     """Anchored token figure from the session row's persisted anchor, for callers without a live
-    agent (gateway hygiene); None when absent, unreadable, or stale against ``messages``."""
+    agent (gateway hygiene); None when absent, unreadable, or stale against messages/route."""
     getter = getattr(session_db, "get_session_model_config_value", None)
     if not session_id or not callable(getter) or not isinstance(messages, list):
         return None
@@ -162,4 +189,4 @@ def persisted_anchor_tokens(session_db: Any, session_id: Any, messages: Any) -> 
     except Exception:
         logger.debug("usage anchor load failed", exc_info=True)
         return None
-    return anchored_context_tokens(messages, anchor) if anchor else None
+    return anchored_context_tokens(messages, anchor, route=route) if anchor else None

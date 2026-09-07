@@ -43,7 +43,7 @@ try:
     try:
         if catchup:
             failed = []
-            fleet._restart_systemd_gateway_units_best_effort(failed)
+            fleet._restart_systemd_gateway_units_best_effort(failed, list(fleet._systemd_gateway_unit_listings()))
             record.update(failed_units=failed)
         else:
             result = _systemctl_reset_and_restart(cmd, unit)

@@ -126,6 +126,18 @@ def main():
                 ('assistant', 'Local fixture reply.')]
         assert any(r[0] == sid and r[2] > 0 for r in result['after_prompt'])
         assert any(r[0] == result['fork_id'] and r[2] > 0 for r in result['after_fork'])
+        legacy = rpc('session/new', {'cwd': str(home), 'mcpServers': []})['sessionId']
+        with sqlite3.connect(hermes / 'state.db') as db:
+            db.execute("INSERT OR IGNORE INTO sessions (id, source, started_at) VALUES (?, 'acp', 1)",
+                       (legacy,))
+        moved = home / 'moved'
+        moved.mkdir()
+        rpc('session/load', {'sessionId': legacy, 'cwd': str(moved), 'mcpServers': []})
+        with sqlite3.connect(hermes / 'state.db') as db:
+            result['existing_empty_metadata'] = db.execute(
+                'SELECT model_config, message_count FROM sessions WHERE id = ?', (legacy,)).fetchone()
+        assert json.loads(result['existing_empty_metadata'][0])['cwd'] == str(moved)
+        assert result['existing_empty_metadata'][1] == 0
         assert result['after_open'] == [], 'session/new created an empty durable row'
     finally:
         proc.terminate()

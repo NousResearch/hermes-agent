@@ -205,6 +205,7 @@ class MCPServerHealthMixin:
         self._reconnect_retries = 0
         if self._was_parked:
             self._was_parked = False
+            self._park_warned_keys.clear()
             logger.warning("MCP server '%s': revived — session healthy again after "
                            "parking (state: parked → connected)", self.name)
         # A proven fresh transport clears the one-time permanent-failure grace and any race bookkeeping.

@@ -314,7 +314,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_auth_type", "_refresh_lock", "_rpc_lock", "_pending_refresh_tasks", "_pending_call_context",
         "_lifecycle_started_at", "_last_tool_call_at", "_idle_timeout_seconds", "_max_lifetime_seconds",
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
-        "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
+        "_reconnect_retries", "_session_proven", "_was_parked", "_park_warned_keys", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
         "_ever_connected")
 
@@ -347,6 +347,9 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._ever_connected: bool = False
         # True from park until proven healthy again; logs the revival once.
         self._was_parked: bool = False
+        # Park transitions already WARNed this episode (#105190); cleared with
+        # _was_parked when a revival proves the session healthy.
+        self._park_warned_keys: set = set()
         # In-flight RPC tasks so a deliberate teardown fails them fast; _reconnecting is True
         # during that teardown so _track_inflight_rpc turns the cancel into a retryable error.
         # In-flight RPC bookkeeping (#48069 salvage): user-visible requests registered while running so a

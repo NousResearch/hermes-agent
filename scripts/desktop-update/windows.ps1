@@ -75,10 +75,28 @@
 # back through the UI, so a missing nonce logs one line and proceeds without an
 # ack -- the old Desktop authenticates the old way. A nonce that IS present
 # means a Desktop is waiting for the ack and will refuse the hand-off without
-# it, so failing to write one then is fatal (exit 8). The Desktop side is
+# it, so failing to write one then is fatal (exit 9). The Desktop side is
 # always strict: the current authenticate requires the ack, so an old script
 # that writes none is refused while the Desktop stays alive -- the safe way to
 # be wrong.
+#
+# EXIT CODES. Each one has to name a single situation, or the result surfaced
+# to the user and the tests that assert on it stop meaning anything:
+#
+#   0   update complete
+#   3   the venv interpreter is missing; the install needs repair
+#   4   the Desktop did not exit within 30s (nothing was changed)
+#   5   the venv shim never unlocked (nothing was changed)
+#   6   code updated, Desktop REBUILD failed (running the previous build)
+#   7   updater processes could not be stopped; not restarted, marker kept
+#   8   the updated runtime/Desktop build failed verification
+#   9   step 0 could not claim or acknowledge the update marker
+#   124 a step stalled and was terminated
+#   other  propagated from `hermes update`
+#
+# 8 and 9 were both 8 until the ack protocol landed, which made "nothing was
+# changed" and "the install was rewritten and does not verify" -- opposite
+# situations for a user -- indistinguishable in the result file.
 
 param(
     [string]$InstallRoot,
@@ -2029,7 +2047,9 @@ try {
         if ($DesktopPid -gt 0 -and (Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue)) {
             $script:DesktopStillRunning = $true
         }
-        $finalCode = 8
+        # 9, not 8: 8 is upstream's "the updated runtime failed verification",
+        # which means the install WAS rewritten. This one changed nothing.
+        $finalCode = 9
         $finalMsg = "Update aborted: could not claim the authenticated update marker ($MarkerPath). Nothing was changed."
         Write-HandoffLog "$finalMsg $($_.Exception.Message)"
         exit $finalCode

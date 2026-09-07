@@ -258,7 +258,9 @@ test.skipIf(process.platform !== 'win32')(
 
       const result = runWindows(box.installRoot, desktopPid, startedAt)
 
-      assert.equal(result.status, 8, `${label}: ${String(result.stderr || result.stdout)}`)
+      // 9 = step 0 refused the claim and changed nothing. 8 is upstream's
+      // post-mutation "the updated runtime failed verification".
+      assert.equal(result.status, 9, `${label}: ${String(result.stderr || result.stdout)}`)
       assert.equal(fs.readFileSync(box.marker, 'utf8'), body, `${label}: a refused claim leaves the marker alone`)
       assert.equal(fs.existsSync(`${box.marker}.ack`), false, `${label}: nothing was acknowledged`)
     }
@@ -280,7 +282,7 @@ test.skipIf(process.platform !== 'win32')(
 
     const result = runWindows(box.installRoot, desktopPid, String(startedAt))
 
-    assert.equal(result.status, 8, String(result.stderr || result.stdout))
+    assert.equal(result.status, 9, String(result.stderr || result.stdout))
     assert.equal(fs.readFileSync(box.marker, 'utf8'), foreign, 'a foreign owner keeps its claim')
   },
   // Each PowerShell spawn costs ~1-2s; the 5s default trips under the

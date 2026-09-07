@@ -1,26 +1,29 @@
-# Markdown rendering probe
+# Markdown whitespace live probe
 
-This uses the production Desktop components in a real Chromium renderer, without
-starting an agent or making a model request. It is not a native Electron/backend
-transport E2E test.
+This fixture now runs Markdown ONLY: no producer.json, hydration, SystemMessage,
+backend, model request, or notification delivery. The separate async-report lane
+owns #101078. Historical combined producer harness: commit 07a4da338bc, files
+navigation-markdown-{probe.tsx,live.mjs}; markdown-producer.py is unchanged.
 
-From the worktree root, with the campaign's locked dependencies and Xvfb ready:
+From the worktree root (locked workspace dependencies installed):
 
 ```sh
-.venv/bin/python evals/desktop_bug_campaign/markdown-producer.py /home/teknium/.hermes/cache/desktop-bugs-74848ed3/navigation-markdown/producer.json
 node evals/desktop_bug_campaign/navigation-vite.mjs
-# In another terminal:
-DISPLAY=:208 PLAYWRIGHT_BROWSERS_PATH=/home/teknium/.hermes/cache/desktop-bugs-74848ed3/navigation-markdown/browsers node evals/desktop_bug_campaign/navigation-markdown-live.mjs after
+PLAYWRIGHT_BROWSERS_PATH=/home/teknium/.hermes/cache/desktop-bugs-74848ed3/navigation-markdown/browsers node evals/desktop_bug_campaign/navigation-markdown-live.mjs after
 ```
 
-The producer isolates both HOME and HERMES_HOME, saves a deterministic report via
-`save_job_output`, formats it through the cron completion and process-notification
-producers, persists an actual delivery row, and reads it back from SQLite. It does
-not execute the scheduled job. The browser feeds that row through hydration,
-runtime conversion, and `SystemMessage`, independently of the assistant Markdown
-samples. JSON receipts and screenshots go to the campaign artifact directory.
+Vite requires owned port 18160 (strictPort); verify the HTML references this
+worktree's probe entry. Chromium is headless; no Xvfb/native Electron needed.
+NAVIGATION_ARTIFACT_DIR overrides the default campaign receipt directory.
 
-The browser is a receipt collector: compare `hardBr`, `softBr`, `breaks`, `outputs`,
-`errors`, and `producer.dom`. Hard-break samples should emit a `br`; the soft-break
-control should not. The separate async report loss (#101078) is not repaired by
-the whitespace fix (#97117).
+The harness asserts 30 cases: five actual ingress functions, each with hard/soft
+breaks, first-line indented code, unfinished fence with terminal spaces, closed
+code with a final-space line, and leading/trailing blank lines. It waits for real
+Shiki, reads code textContent, clicks the code-card Copy control, and reads the
+real browser clipboard. Code expectations include the Markdown parser's final LF;
+we preserve its raw payload rather than arbitrarily trimming it. Nonzero exit
+means a failed assertion or page error. JSON and screenshot are retained.
+
+Unit invariants live in src/lib/markdown-whitespace.test.ts (exactly two tests).
+Run all verification under campaign tests.lock. This is production-component
+Chromium proof, NOT native Electron/backend/transport or macOS proof.

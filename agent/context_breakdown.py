@@ -90,6 +90,29 @@ def _glyph(cat: Dict[str, Any]) -> str:
     return _CATEGORIES.get(str(cat.get("id") or ""), (None, None, "▪"))[2]
 
 
+def context_display_source(compressor: Any) -> str:
+    """Distinguish the built-in preflight display seed from a provider reading.
+
+    Engines without the built-in real-usage ledger own their occupancy figure.
+    A seed never updates that ledger, even if its number later matches real usage.
+    """
+    real = getattr(compressor, "last_real_prompt_tokens", None)
+    shown = getattr(compressor, "last_prompt_tokens", 0) or 0
+    return "local_estimate" if isinstance(real, (int, float)) and shown != real else "provider_usage"
+
+
+def context_usage_fields(compressor: Any) -> Dict[str, Any]:
+    """Current occupancy only; lifetime throughput is never a context fallback."""
+    used = max(0, getattr(compressor, "last_prompt_tokens", 0) or 0)
+    maximum = getattr(compressor, "context_length", 0) or 0
+    if not used or not maximum:
+        return {}
+    source = context_display_source(compressor)
+    return {"context_used": used, "context_max": maximum,
+            "context_percent": max(0, min(100, round(used / maximum * 100))),
+            "context_source": source, "context_estimated": source != "provider_usage"}
+
+
 def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]] = None) -> Dict[str, Any]:
     """Return a Cursor-style context usage breakdown for one live agent."""
     from agent.model_metadata import estimate_messages_tokens_rough
@@ -125,14 +148,20 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
     # prompt_tokens with replayed thinking that evaporates at the turn boundary, so
     # anchoring on the LAST response makes the meter sawtooth. Fall back to the
     # last-response anchor, then measured, then estimated.
-    context_used = anchored_context_tokens(
-        messages, getattr(agent, "_turn_base_usage_anchor", None), charge_stale_thinking=False
-    )
+    anchor = getattr(agent, "_turn_base_usage_anchor", None)
+    context_used = anchored_context_tokens(messages, anchor, charge_stale_thinking=False)
     if context_used is None:
-        context_used = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+        anchor = getattr(agent, "_usage_anchor", None)
+        context_used = anchored_context_tokens(messages, anchor)
     if context_used is None:
         measured_used = int(getattr(comp, "last_prompt_tokens", 0) or 0) if comp else 0
         context_used = measured_used if measured_used > 0 else estimated_total
+        source = context_display_source(comp) if measured_used > 0 else "local_estimate"
+    else:
+        delta = messages[int(anchor["base_count"]):]
+        if delta and delta[0].get("role") == "assistant":
+            delta = delta[1:]
+        source = "provider_usage_plus_estimate" if delta else "provider_usage"
 
     return {
         "categories": [
@@ -143,6 +172,8 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
         "context_max": context_max,
         "context_percent": max(0, min(100, round(context_used / context_max * 100))) if context_max else 0,
         "context_used": context_used,
+        "context_source": source,
+        "context_estimated": source != "provider_usage",
         "estimated_total": estimated_total,
         "model": getattr(agent, "model", "") or "",
     }
@@ -214,15 +245,15 @@ def render_context_category_lines(payload: Dict[str, Any]) -> List[str]:
     width = max(len("Free space"), *(len(str(cat.get("label") or "")) for cat in categories))
     for cat in categories:
         tokens, label = int(cat.get("tokens") or 0), str(cat.get("label") or cat.get("id") or "")
-        lines.append(f"{_glyph(cat)} {label:<{width}} {tokens:>9,} tokens {tokens / denom * 100 if denom else 0.0:>5.1f}%")
+        lines.append(f"{_glyph(cat)} {label:<{width}} ~{tokens:>9,} tokens ~{tokens / denom * 100 if denom else 0.0:>5.1f}%")
     if context_max > 0:
         free = max(0, context_max - estimated_total)
-        lines.append(f"{_FREE_GLYPH} {'Free space':<{width}} {free:>9,} tokens {free / context_max * 100:>5.1f}%")
+        lines.append(f"{_FREE_GLYPH} {'Free space':<{width}} ~{free:>9,} tokens ~{free / context_max * 100:>5.1f}%")
     return lines
 
 
 def _toolset_row(group: Dict[str, Any]) -> str:
-    return f"  {group['toolset']:<24} {group['tool_count']:>3} tools {group['schema_tokens']:>8,} tokens"
+    return f"  {group['toolset']:<24} {group['tool_count']:>3} tools ~{group['schema_tokens']:>8,} tokens"
 
 
 def _skill_row(entry: Dict[str, Any]) -> str:
@@ -230,8 +261,8 @@ def _skill_row(entry: Dict[str, Any]) -> str:
     if len(name) > 28:
         name = name[:27] + "…"
     md = entry.get("skill_md_tokens")
-    md_str = f"{md:>8,}" if md is not None else f"{'n/a':>8}"
-    return f"  {name:<28} index {entry['index_tokens']:>6,}  SKILL.md {md_str} tokens"
+    md_str = f"~{md:>8,}" if md is not None else f"{'n/a':>8}"
+    return f"  {name:<28} index ~{entry['index_tokens']:>6,}  SKILL.md {md_str} tokens"
 
 
 def _table(lines: List[str], title: str, rows: List[Dict[str, Any]], fmt) -> None:
@@ -268,7 +299,13 @@ def render_context_breakdown_lines(
     context_max = int(payload.get("context_max") or 0)
     if context_max > 0:
         used, pct = int(payload.get("context_used") or 0), int(payload.get("context_percent") or 0)
-        lines.extend(["", f"Context window: {used:,} / {context_max:,} tokens ({pct}%)"])
+        mark = "~" if payload.get("context_estimated") else ""
+        lines.extend(["", f"Context window: {mark}{used:,} / {context_max:,} tokens ({mark}{pct}%)"])
+        source = payload.get("context_source")
+        if source:
+            labels = {"local_estimate": "local estimate", "provider_usage": "provider usage",
+                      "provider_usage_plus_estimate": "provider usage + estimated new messages"}
+            lines.append(f"Source: {labels.get(source, source)}; category counts are local estimates.")
 
     if details is None:
         lines.extend(["", "Use /context all for per-skill and per-toolset costs."])

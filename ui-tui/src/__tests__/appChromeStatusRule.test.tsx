@@ -105,6 +105,20 @@ const baseProps = {
 }
 
 describe('StatusRule session title', () => {
+  it('marks only estimated context occupancy at every visible width', () => {
+    for (const cols of [80, 120, 200]) {
+      for (const estimated of [true, false]) {
+        const text = textContent(StatusRule({
+          ...baseProps, cols,
+          statusBarFields: new Set(['context_detail']),
+          usage: { ...baseProps.usage, context_estimated: estimated }
+        }))
+
+        expect(text.includes('~')).toBe(estimated)
+      }
+    }
+  })
+
   it('pins the named session at the far-right edge instead of the cwd label', () => {
     const element = StatusRule({
       ...baseProps,

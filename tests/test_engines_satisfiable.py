@@ -294,4 +294,3 @@ class TestDeclaredFloorsClearTheLockedTree:
                     f"engines.node arm {arm!r} has no matching gate in "
                     f"install.ps1 Test-NodeVersionOk (expected: {ps1_gate})"
                 )
-

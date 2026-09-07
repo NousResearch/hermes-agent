@@ -27,7 +27,7 @@ import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
 import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
-import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
+import { $prBranchBySession, $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
@@ -173,7 +173,7 @@ function SidebarSessionRowImpl({
   // The branch's PR, if the row was asked to show one. A selector, not a plain
   // useStore: a repo's PRs land as a single map write, and only the rows on
   // those branches should repaint.
-  const prKey = sessionPrKey(session)
+  const prKey = useStoreSelector($prBranchBySession, () => sessionPrKey(session))
   const pr = useStoreSelector($pullRequestsByBranch, prs => (rowMeta.includes('pr') && prKey ? prs[prKey] : undefined))
   // Open in a pane, but not the focused one. A selector rather than a prop:
   // it reaches all four row render paths at once, the set only changes when a

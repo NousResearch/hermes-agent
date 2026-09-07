@@ -798,21 +798,22 @@ export function ChatSidebar({
     return () => window.clearTimeout(warm)
   }, [activeConnectionId, worktreeGroupingActive, showAllProfiles, profileScope, gatewayReady])
 
-  // Sessions the branch join can't answer for get one look at their own
-  // transcript — a `gh pr create` in there names the PR outright. Backfills
-  // whatever is loaded, whether or not the badge is on: gating it on the badge
-  // meant switching PR on showed a half-empty list until a second pass caught
-  // up. One request per batch of never-scanned rows, and the scanned set makes
-  // that batch empty from the second pass on, so this settles to nothing.
+  // Revisit changed transcripts: agents may open a PR later in the conversation
+  // or work in a different checkout from the branch recorded at session start.
   useEffect(() => {
-    if (!gatewayReady) {
+    if (!gatewayReady || !prDataWanted) {
       return
     }
 
-    const warm = window.setTimeout(() => void recoverSessionPullRequests(scopedSessions), PROJECT_TREE_WARM_MS)
+    const recover = () => void recoverSessionPullRequests(scopedSessions)
+    const warm = window.setTimeout(recover, PROJECT_TREE_WARM_MS)
+    window.addEventListener('focus', recover)
 
-    return () => window.clearTimeout(warm)
-  }, [gatewayReady, scopedSessions])
+    return () => {
+      window.clearTimeout(warm)
+      window.removeEventListener('focus', recover)
+    }
+  }, [gatewayReady, prDataWanted, scopedSessions])
 
   // PR state is only fetched for someone who asked to see it — the badge or the
   // filter — and it asks about the branches on screen, so the answer can't be

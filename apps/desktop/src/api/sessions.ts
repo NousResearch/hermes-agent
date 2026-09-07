@@ -242,10 +242,8 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
   }
 }
 
-/** The PR each of these sessions opened, recovered from its own transcript —
- *  for sessions whose recorded branch can't answer (they started on trunk and
- *  did the work in a worktree). Also returns every id it looked at, so the
- *  caller can remember a miss and never ask again. */
+/** Recover the PR opened in each session's transcript. `scanned` acknowledges
+ *  the rows read; callers cache that result only for that transcript revision. */
 export function scanSessionPullRequests(
   ids: string[]
 ): Promise<{ pull_requests: Record<string, { number: number; url: string }>; scanned: string[] }> {

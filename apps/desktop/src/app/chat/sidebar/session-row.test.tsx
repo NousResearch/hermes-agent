@@ -8,6 +8,8 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
+import { $sidebarRowMeta } from '@/store/layout'
+import { $prBranchBySession, $pullRequestsByBranch, numberPrKey } from '@/store/pull-requests'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
@@ -143,6 +145,32 @@ function makeSession(overrides: Partial<SessionInfo> & { title: string }): Sessi
     ...overrides
   } as unknown as SessionInfo
 }
+
+it.each([false, true])('updates a recovered PR association on an already mounted row (card=%s)', card => {
+  const key = numberPrKey('/repo', 42)
+  const previousMeta = $sidebarRowMeta.get()
+  $sidebarRowMeta.set(['pr'])
+  $prBranchBySession.set({})
+  $pullRequestsByBranch.set({
+    [key]: {
+      number: 42,
+      url: 'https://github.com/example/project/pull/42',
+      title: 'Fix',
+      branch: 'fix',
+      state: 'open',
+      draft: false
+    }
+  })
+  renderRow(makeSession({ id: 'pr-row', title: 'PR row', git_repo_root: '/repo', git_branch: 'main' }), { card })
+  expect(screen.queryByRole('button', { name: 'Open pull request #42' })).toBeNull()
+  act(() => $prBranchBySession.set({ 'pr-row': key }))
+  expect(screen.getByRole('button', { name: 'Open pull request #42' })).toBeTruthy()
+  act(() => $sidebarRowMeta.set([]))
+  expect(screen.queryByRole('button', { name: 'Open pull request #42' })).toBeNull()
+  $prBranchBySession.set({})
+  $pullRequestsByBranch.set({})
+  act(() => $sidebarRowMeta.set(previousMeta))
+})
 
 const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
 

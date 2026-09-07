@@ -47,6 +47,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -85,15 +86,44 @@ _lock = threading.Lock()
 _receipts: dict[tuple[str, str], _Receipt] = {}
 
 
+def _to_canonical_json_value(value: Any) -> Any:
+    """Recursively validate that ``value`` contains only unambiguous JSON-native types
+    (``None``, ``str``, ``bool``, ``int``, finite ``float``, mapping, list/tuple).
+
+    Deliberately does NOT fall back to ``str(value)`` for anything else: ``pre_tool_call``
+    hooks are Python code and may merge arbitrary objects into the final dispatch args, and a
+    ``default=str`` fallback would let two semantically/type-distinct values (``Path("x")`` vs
+    the string ``"x"``, ``Decimal("1")`` vs ``"1"``, or any plugin object whose ``__str__``
+    happens to collide with another value's canonical form) hash to the same digest. That would
+    let an approval minted for one value be silently consumed for a different one — the exact
+    wrong-argument confusion this module exists to prevent. Unrecognized types and non-finite
+    floats are rejected outright (fail closed) rather than coerced."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"non-finite float is not a canonical action value: {value!r}")
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _to_canonical_json_value(v) for key, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_canonical_json_value(v) for v in value]
+    raise ValueError(f"value of type {type(value).__name__!r} cannot be canonicalized for an "
+                     "exact-action approval")
+
+
 def canonicalize_action(tool_name: str, args: Mapping[str, Any]) -> str:
     """Digest binding an approval to one exact dispatch action. Raises ``ValueError``
-    on malformed input (fail closed at the caller)."""
+    on malformed or non-canonical input (fail closed at the caller) — see
+    :func:`_to_canonical_json_value` for why non-JSON-native values are rejected rather
+    than stringified."""
     if not isinstance(tool_name, str) or not tool_name:
         raise ValueError("tool_name must be a non-empty string")
     if not isinstance(args, Mapping):
         raise ValueError("args must be a mapping")
-    canonical = json.dumps({"tool_name": tool_name, "args": args},
-                           sort_keys=True, separators=(",", ":"), default=str)
+    safe_args = _to_canonical_json_value(dict(args))
+    canonical = json.dumps({"tool_name": tool_name, "args": safe_args},
+                           sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

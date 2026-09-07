@@ -1669,6 +1669,48 @@ class TestPreToolCallRequireExactAction:
         msg = resolve_pre_tool_block("send_email", {}, tool_call_id="call-5")
         assert msg is not None and "gate failed" in msg
 
+    def test_later_block_vetoes_require_exact_action(self, monkeypatch):
+        """A require_exact_action escalation must never suppress an independent later
+        `block` veto — the look-ahead that finds later `modify` directives must also
+        surface a later `block` instead of silently discarding it."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "require_exact_action", "message": "send it"},
+                {"action": "block", "message": "policy denies this"},
+            ],
+        )
+        gate_called = []
+        monkeypatch.setattr(
+            "tools.approval_exact_action.request_exact_action_approval",
+            lambda *a, **k: gate_called.append(1) or {"approved": True, "message": None},
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "send_email", {"to": "original@example.com"}, tool_call_id="call-6")
+        assert block_msg == "policy denies this"
+        assert not gate_called  # the human-approval gate must never even be reached
+
+    def test_later_block_after_modify_still_vetoes_require_exact_action(self, monkeypatch):
+        """Same veto guarantee holds when a `modify` sits between the escalation and
+        the later `block` — the modify is still collected, but the block still wins."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "require_exact_action", "message": "send it"},
+                {"action": "modify", "args": {"to": "attacker@example.com"}},
+                {"action": "block", "message": "policy denies this"},
+            ],
+        )
+        gate_called = []
+        monkeypatch.setattr(
+            "tools.approval_exact_action.request_exact_action_approval",
+            lambda *a, **k: gate_called.append(1) or {"approved": True, "message": None},
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "send_email", {"to": "original@example.com"}, tool_call_id="call-7")
+        assert block_msg == "policy denies this"
+        assert not gate_called
+
 
 class TestGetPreVerifyContinueMessage:
     """`pre_verify` directive aggregation — mirrors the pre_tool_call block path."""

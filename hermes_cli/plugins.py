@@ -1783,9 +1783,12 @@ def _get_pre_tool_call_directive_details(
 
     A winning ``require_exact_action`` keeps scanning the REMAINING hook results for ``modify``
     directives after it (below), so its approval is always computed against the true final args
-    regardless of hook registration order. ``block``/``approve`` intentionally keep the historical
-    stop-at-first-match behavior unchanged — see ``TestPreToolCallModify.test_modify_after_block_is_invisible``
-    and the sibling tests for ``approve``."""
+    regardless of hook registration order. A later valid ``block`` found during that scan still
+    wins outright — an escalation to human approval must never suppress an independent later
+    veto — see ``TestPreToolCallRequireExactAction.test_later_block_vetoes_require_exact_action``.
+    ``block``/``approve`` intentionally keep the historical stop-at-first-match behavior unchanged
+    otherwise — see ``TestPreToolCallModify.test_modify_after_block_is_invisible`` and the sibling
+    tests for ``approve``."""
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
@@ -1827,10 +1830,20 @@ def _get_pre_tool_call_directive_details(
         if action == "require_exact_action":
             # A high-assurance approval must bind to the FINAL dispatch args: keep collecting
             # modify directives from the rest of the hook list so a hook registered after this
-            # one cannot make the human approve one action and dispatch a different one.
+            # one cannot make the human approve one action and dispatch a different one. A later
+            # valid `block` is a stronger, independent veto and must still win outright — an
+            # escalation to human approval is not licensed to suppress a later policy denial.
             for later in hook_results[index + 1:]:
-                if isinstance(later, dict) and later.get("action") == "modify":
+                if not isinstance(later, dict):
+                    continue
+                later_action = later.get("action")
+                if later_action == "modify":
                     modified_args = _merge_modify(modified_args, later)
+                elif later_action == "block":
+                    later_message = later.get("message")
+                    if isinstance(later_message, str) and later_message:
+                        return _PreToolCallDirective(
+                            action="block", message=later_message, modified_args=modified_args)
         return _PreToolCallDirective(action=action, message=message, rule_key=rule_key, modified_args=modified_args)
     return _PreToolCallDirective(modified_args=modified_args)
 

@@ -10,6 +10,8 @@ receipts bound to exact args/session/tool-call.
 """
 
 import time
+from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -69,6 +71,31 @@ class TestCanonicalizeAction:
     def test_malformed_input_raises(self, tool_name, args):
         with pytest.raises(ValueError):
             canonicalize_action(tool_name, args)
+
+    @pytest.mark.parametrize("value", [Path("x"), Decimal("1"), object(), {1, 2}])
+    def test_non_json_native_value_raises_instead_of_stringifying(self, value):
+        """Regression: canonicalize_action must reject values it cannot represent
+        unambiguously in JSON rather than falling back to str(value) — a fallback
+        would let two type-distinct values collide in the digest (e.g. Path("x")
+        and the plain string "x" both stringify to "x")."""
+        with pytest.raises(ValueError):
+            canonicalize_action("write_file", {"path": value})
+
+    def test_non_finite_float_raises(self):
+        with pytest.raises(ValueError):
+            canonicalize_action("transfer", {"amount": float("nan")})
+        with pytest.raises(ValueError):
+            canonicalize_action("transfer", {"amount": float("inf")})
+
+    def test_type_distinct_values_do_not_collide(self):
+        """The specific collision the reviewer flagged: a string and a same-looking
+        non-JSON-native value (e.g. Decimal/Path) must not canonicalize identically.
+        Since the non-native value now raises, it can never even reach the digest."""
+        string_digest = canonicalize_action("transfer", {"amount": "100"})
+        with pytest.raises(ValueError):
+            canonicalize_action("transfer", {"amount": Decimal("100")})
+        # sanity: the string form alone is stable and well-formed
+        assert string_digest == canonicalize_action("transfer", {"amount": "100"})
 
 
 class TestRequestExactActionApproval:
@@ -240,6 +267,28 @@ class TestConsumeExactActionApproval:
             consume_exact_action_approval("send_email", args)  # first: succeeds
             with pytest.raises(ExactActionApprovalError):
                 consume_exact_action_approval("send_email", args)  # second: fails closed
+        finally:
+            approval_context.reset_current_observability_context(tokens)
+
+    def test_type_changed_args_cannot_consume_receipt(self, monkeypatch):
+        """Collision regression: a receipt minted for a plain string value must not
+        be consumable by args where that value was swapped for a same-looking but
+        type-distinct object (e.g. Decimal/Path) injected by a modify hook between
+        minting and consumption. Both canonicalizations now fail closed."""
+        args = {"amount": "100"}
+        self._mint(monkeypatch, "transfer", args, "call-9")
+        tokens = approval_context.set_current_observability_context(tool_call_id="call-9")
+        try:
+            with pytest.raises(ExactActionApprovalError):
+                consume_exact_action_approval("transfer", {"amount": Decimal("100")})
+        finally:
+            approval_context.reset_current_observability_context(tokens)
+        # the original receipt is untouched (canonicalization failed before lookup) and
+        # still fails closed for the exact args it was minted with, since it's still
+        # the correctly-typed call that should succeed
+        tokens = approval_context.set_current_observability_context(tool_call_id="call-9")
+        try:
+            consume_exact_action_approval("transfer", args)  # must not raise
         finally:
             approval_context.reset_current_observability_context(tokens)
 

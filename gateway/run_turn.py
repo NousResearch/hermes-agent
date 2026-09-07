@@ -1730,6 +1730,11 @@ class GatewayTurnMixin:
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
+            silence_adapter = self._adapter_for_source(source)
+            if silence_adapter is not None:
+                silence_adapter.conversation_middleware().output_suppressed(
+                    event, response, "host_intentional_silence"
+                )
             response = ""
 
         adapter = self._adapter_for_source(source)
@@ -2415,6 +2420,12 @@ class GatewayTurnMixin:
         _streaming_enabled = (
             _scfg.enabled and _scfg.transport != "off" if _plat_streaming is None else bool(_plat_streaming)
         )
+        _conversation_adapter = self._adapter_for_source(source)
+        if (
+            _conversation_adapter
+            and _conversation_adapter.conversation_middleware().buffers_output
+        ):
+            _streaming_enabled = False
         if not _streaming_enabled:
             return None
         try:

@@ -797,6 +797,15 @@ class TurnRunner:
             scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
         )
         want_interim_messages = ctx.interim_assistant_messages_enabled
+        # A policy that classifies final replies must decide before drafts,
+        # edits, or interim commentary become public.
+        conversation_adapter = self._runner._adapter_for_source(ctx.source)
+        if (
+            conversation_adapter
+            and conversation_adapter.conversation_middleware().buffers_output
+        ):
+            want_stream_deltas = False
+            want_interim_messages = False
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer

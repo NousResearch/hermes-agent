@@ -1,0 +1,51 @@
+..........................................s............................. [ 58%]
+.............F........F................F............                     [100%]
+=================================== FAILURES ===================================
+___________________ TestSynthesisEnabled.test_explicit_false ___________________
+
+self = <tests.tools.test_delegate_synthesis.TestSynthesisEnabled testMethod=test_explicit_false>
+
+    def test_explicit_false(self):
+        with patch("tools.delegate_tool._load_config", return_value={"synthesis_enabled": False}):
+>           self.assertFalse(_get_synthesis_enabled())
+E           AssertionError: True is not false
+
+tests/tools/test_delegate_synthesis.py:110: AssertionError
+_ TestPersistentConfigOverlay.test_features_disabled_when_persistent_says_false _
+
+self = <tests.tools.test_delegate_synthesis.TestPersistentConfigOverlay testMethod=test_features_disabled_when_persistent_says_false>
+
+    def test_features_disabled_when_persistent_says_false(self):
+        """When persistent config has False, gates return False (CLI can't force True)."""
+        mock_cfg = {"verify_enabled": False, "synthesis_enabled": False}
+        with patch("tools.delegate_tool._load_config", return_value=mock_cfg):
+>           self.assertFalse(_get_verify_enabled())
+E           AssertionError: True is not false
+
+tests/tools/test_delegate_synthesis.py:213: AssertionError
+_ TestToolSchemaSurface.test_output_schema_advertised_for_single_and_batch_forms _
+
+self = <tests.tools.test_delegate_output_schema.TestToolSchemaSurface object at 0x7f3df83c6a50>
+
+    def test_output_schema_advertised_for_single_and_batch_forms(self):
+        """KENSEI keeps the single-goal route model-facing alongside batch.
+    
+        Both forms must therefore advertise the same optional output contract.
+        """
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+>       assert props["output_schema"]["type"] == "object"
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'output_schema'
+
+tests/tools/test_delegate_output_schema.py:142: KeyError
+=============================== warnings summary ===============================
+tests/tools/test_async_delegation.py::test_gateway_formatter_renders_async_block
+  /home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-7/agent/account_usage.py:11: HermesPluginCompatWarning: hermes plugin compat: `agent.anthropic_adapter.resolve_anthropic_token` moved to `agent.anthropic_credentials.resolve_anthropic_token`. The old path is kept only for external plugins and is removed on 2026-09-14; update your import.
+    from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/tools/test_delegate_synthesis.py::TestSynthesisEnabled::test_explicit_false
+FAILED tests/tools/test_delegate_synthesis.py::TestPersistentConfigOverlay::test_features_disabled_when_persistent_says_false
+FAILED tests/tools/test_delegate_output_schema.py::TestToolSchemaSurface::test_output_schema_advertised_for_single_and_batch_forms
+3 failed, 120 passed, 1 skipped, 1 warning in 10.10s

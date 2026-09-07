@@ -1,31 +1,46 @@
-Phase 7 independent Kensei audit
+Phase 7 independent Kensei audit — personal verification record
 
-Verdict: BLOCKED — do not hand off, push, merge, activate or deploy
+Verdict: AWAITING ORIGINAL REQUIREMENTS-BUILDER AUDIT
 Auditor: KENSEI
-Candidate implementation commit: 97020dc275ac82cfb7f986c6774ffe14a00deb1e
-Candidate base endpoint: 1a3f87deba8a221be732ca88a6b47980cc856e37
-Deployed runtime SHA: 98a4aa453c1c576798a4461d5b2902d805eef71d
+This is not a final GO and does not authorise push, merge, activation or deployment.
 
-Passed personally
-- Complete targeted Phase 1–5/7 matrix after fallback remediation: 90 passed, 1 warning.
-- Full Phase 5 delivery suite: 69 passed, 1 skipped.
-- Phase 6 memory guard suite: 32 passed.
-- Phase 4 authority suite: 18 passed.
-- Phase 3 routing/provider suite: 44 passed.
-- Phase 2 profile/scope and gateway regressions: 14 + 15 passed.
-- Direct PTY TUI boot reached `ready` under the bounded safe-mode run.
-- AIAgent signature/call-site sweep: 82 parameters, 312 call sites, zero unknown kwargs.
-- Fork customisation check: 71/71 intact.
-- Target-profile fallback test repaired and passed independently.
+Candidate
 
-Blocking findings
-- Candidate and frozen baseline full collection both fail on the same five known import/optional-dependency modules; this is baseline-identical, but unfiltered collection is not green.
-- Candidate and baseline filtered full suites were actively progressing but error-dominated. They were stopped by KENSEI after a bounded ~one-hour budget at 71% and 78%, respectively, before pytest totals. No full-suite PASS is claimed.
-- Real AIAgent construction with a synthetic key fails identically on candidate and baseline before network access because this environment has no configured provider.
-- Compatibility-pointer check fails identically on candidate and baseline; no candidate-only pointer.
-- Earlier Phase 3 GO was superseded/revised after the fallback gap was found and repaired in candidate commit 97020dc…; do not use the original Phase 3 GO as final approval.
+- SHA: 2cefc2d5a0f3b4ff5073f178ea8abfc6610d70a3
+- Branch: delegate-task-phase-7-release
+- Worktree: /home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-7
+- Frozen deployed baseline: 98a4aa453c1c576798a4461d5b2902d805eef71d
+- Worktree clean after test-residue move; no candidate code is active in production.
 
-State-control checks
-- No production candidate is active; all 14 gateways remain on deployed baseline `98a4aa…`.
-- No merge, push, restart, activation, deployment or external handoff occurred.
-- The full personal completion confirmation requested by Sahil is intentionally withheld until the full-suite blocker is resolved or explicitly waived by Sahil.
+Independent evidence
+
+- Candidate full isolated suite: 3,969 files, 47,926 passed, 572 failed, 447 skipped, complete, exit 1.
+- Repaired baseline full isolated suite: 3,965 files, 47,895 passed, 583 failed, 447 skipped, complete, exit 1.
+- Exact comparison: 572 common failed IDs, 0 candidate-only failed IDs, 11 baseline-only failed IDs.
+- Candidate-only regression: none.
+- Fresh unfiltered collection: 49,092/49,180 collected, 88 deselected, exit 0.
+- Exact late-regression rerun: 4 passed.
+- Source-only diff check: exit 0.
+- Existing targeted Phase 1–5/7 evidence: 90 passed, 1 warning.
+- Evidence manifest: updated with final hashes for 42 files.
+
+Verified repairs
+
+- Full-suite collection no longer fails from MCP namespace shadowing, stale semantic-judge roots, or bare Denji plugin imports.
+- Legacy FastMCP tests skip cleanly because the runtime pins MCP 2.0 and does not provide mcp.server.fastmcp; MCP 2.0 tests remain active.
+- Child model is preserved in AIAgent runtime kwargs.
+- Target profile/config errors are reported before malformed ancestry can mask them, without creating a live transcript for an invalid profile.
+
+Residual limitations
+
+- The full suite exits 1 because 572 failures are common to candidate and baseline. They are not candidate-only regressions, but they remain repository test debt and prevent a literal all-green full-suite claim.
+- 447 tests are skipped identically by the isolated runner/host gates.
+- The FastMCP legacy integration is not exercised under MCP 2.0; installing fastmcp would downgrade MCP and was rejected.
+- Raw evidence logs retain their original whitespace; source-only diff hygiene is clean.
+
+Release controls
+
+- No push, merge, restart, activation or deployment occurred.
+- All 14 active gateways remain on deployed baseline 98a4aa…
+- Phase 6 memory experiment remains authorised NO-GO and quarantined.
+- Final green light is withheld until Sahil shares this candidate and packet with the original agent that built the requirements and that agent completes the independent deep audit.

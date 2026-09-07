@@ -1,30 +1,50 @@
 Phase 7 integrated release result
 
-Status: BLOCKED — personal completion gate not yet satisfied
-Candidate base: 1a3f87deba8a221be732ca88a6b47980cc856e37
+Status: PERSONALLY VERIFIED — AWAITING ORIGINAL REQUIREMENTS-BUILDER AUDIT
+Candidate: 2cefc2d5a0f3b4ff5073f178ea8abfc6610d70a3
+Candidate branch: delegate-task-phase-7-release
 Candidate worktree: /home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-7
 Deployed runtime remains: 98a4aa453c1c576798a4461d5b2902d805eef71d
 
-Personally verified green
-- Phase 1–5 targeted matrix after late fallback remediation: 90 passed, 1 warning.
-- Phase 7 clean integrated target command: 87 passed, 3 explicitly deselected by a fallback filter in the earlier command.
-- Full Phase 5 delivery suite: 69 passed, 1 skipped.
-- Phase 6 memory guards: 32 passed.
-- Phase 4 authority: 18 passed.
-- Phase 3 routing/provider: 44 passed.
-- Phase 2 profile/scope: 14 passed; gateway scope: 15 passed.
-- Direct PTY TUI boot reached starting agent → ready and was stopped only by the 20-second timeout.
-- AIAgent signature sweep: 82 parameters, 312 static call sites, zero unknown keyword findings.
-- Fork patch check: 71/71 customisations intact.
+Personal verification
 
-Baseline-identical blockers
-- Unfiltered candidate and baseline collection both fail on the same five pre-existing import/optional-dependency modules; candidate collected 48,819, baseline 48,789, both with 88 deselections.
-- Filtered full suites were actively progressing but error-dominated; after 71% candidate / 78% baseline and roughly one hour, both were stopped by KENSEI under a bounded resource budget before totals. No full-suite PASS is claimed.
-- Real AIAgent construction with a synthetic key fails identically on candidate and baseline with no configured provider; no network call occurred.
-- Compatibility-pointer checker fails identically on candidate and baseline; no candidate-only pointer.
+- Full isolated candidate inventory: 3,969 files; 47,926 passed; 572 failed; 447 skipped; 100% complete; exit 1.
+- Repaired frozen-baseline inventory: 3,965 files; 47,895 passed; 583 failed; 447 skipped; 100% complete; exit 1.
+- Exact failed-test comparison: 572 common failures; 0 candidate-only failures; 11 baseline-only failures.
+- Candidate-only regression verdict: none.
+- Fresh candidate collection: 49,092/49,180 collected; 88 deselected; exit 0.
+- Exact repaired candidate regressions: 4 passed.
+- Previously accepted Phase 1–5/7 targeted matrix: 90 passed, 1 warning.
+- Phase 5 delivery suite: 69 passed, 1 skipped.
+- Phase 6 memory guards: 32 passed; experiment remains quarantined/NO-GO.
+- Direct PTY TUI boot reached ready.
+- AIAgent signature/call-site sweep: 82 parameters, 312 call sites, zero unknown kwargs.
+- Fork customisation check: 71/71 intact.
+- Source-only diff check against deployed baseline: exit 0.
 
-Corrective action
-- The formerly red target-profile fallback-chain test is now green; the correction is in this Phase 7 candidate and must receive its own audit before any handoff.
-- Earlier Phase 3 evidence incorrectly called that deferred fallback red a GO; this is superseded by the correction and must not be treated as final approval.
+Repairs made after the previous blocked gate
 
-No merge, push, restart, activation or deployment has occurred.
+- 09488d0ac0832227f56b83fffd3c01cc757a5730 — repair full-suite collection compatibility:
+  early MCP SDK preload, candidate-relative Denji import, correct semantic-judge import roots, and clean legacy FastMCP skip under pinned MCP 2.0.
+- 2cefc2d5a0f3b4ff5073f178ea8abfc6610d70a3 — preserve effective child model in AIAgent kwargs and validate target profile/config before cycle checks or transcript creation.
+
+Failure classification
+
+- The complete full-suite failure set is baseline-dominated and identical at test-ID level except for candidate fixes.
+- Candidate-only relay-metrics failure from the earlier run reproduced as a transient SQLite lock and passed on both candidate and baseline reruns.
+- Baseline-only profile tests are the expected pre-implementation failures; the candidate passes them.
+- The remaining baseline-only failures are unrelated timing/environment failures.
+- Raw logs and machine-derived comparison are in this directory:
+  candidate-full-isolated-final.txt
+  baseline-full-isolated-repaired.txt
+  full-suite-comparison-final.md
+  candidate-collection-final.txt
+  regression-fix-exact-final.txt
+  source-diff-check-final.txt
+
+Operational state
+
+- No push, merge, restart, activation or deployment occurred.
+- All 14 active gateways remain on deployed baseline 98a4aa…
+- Candidate worktree is clean after moving test-generated artefacts to /tmp.
+- Final green light is intentionally withheld. Sahil must share this exact candidate and evidence packet with the original agent that built the requirements; that agent must perform the independent deep audit before any release decision.

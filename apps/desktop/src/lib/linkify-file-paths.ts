@@ -15,12 +15,19 @@
 // spaces makes consecutive paths (`/tmp/a.ts 与 /tmp/b.json`) or a bare
 // directory + trailing text (`/Users/echo/notes 与 .../README.md`) swallow
 // into one link. The match is non-greedy so consecutive paths each link
-// separately; the trailing `(?![A-Za-z0-9_])` stops truncating a match right
-// before a suffix (e.g. doc.md). The leading lookbehind also rejects a dot
-// or slash before the match so `./src/main.ts` stays relative and URL hosts
-// (`https://github.com/…`) never get linked as local files. The `(?!\/)` also
-// rejects double slashes — a URL scheme's `//` must not start a match.
-const ABSOLUTE_FILE_PATH = /(?<![A-Za-z0-9_./])(\/(?!\/)[^`"<>\[\]{}()\s]+?\.([A-Za-z0-9]{1,8}))(?![A-Za-z0-9_])/g
+// separately.
+// The leading lookbehind rejects a `~` (home-path shorthand: `~/x.md`
+// resolves elsewhere, but not in this regex — matching it would leave a stray
+// `~` in the text and build a `#media:` link to a `/…` path that does not
+// exist), a dot/slash (`./` and `../` stay relative), URL hosts
+// (`https://github.com/…` never link as local files), and CJK letters (a
+// Chinese relative dir like `中文/文档.md` must not be truncated into a fake
+// absolute `/文档.md`). The `(?!\/)` rejects double slashes — a URL scheme's
+// `//` must not start a match. The trailing `(?![A-Za-z0-9_/])` stops a
+// match ending right before a `/`, so a dot-directory's `.` (as in
+// `/Users/echo/.hermes/config.yaml`) is never mistaken for the extension
+// dot — the match runs on to the real file extension.
+const ABSOLUTE_FILE_PATH = /(?<![A-Za-z0-9_./~\p{L}])(\/(?!\/)[^`"<>\[\]{}()\s]+?\.([A-Za-z0-9]{1,8}))(?![A-Za-z0-9_/])/gu
 
 // 相对路径必须包含至少一个目录分隔符（./ ../ 或 /），这样
 // seed-audio-1.0 / whisper-large-v3 等技术词不会被当成路径。
@@ -30,8 +37,10 @@ const ABSOLUTE_FILE_PATH = /(?<![A-Za-z0-9_./])(\/(?!\/)[^`"<>\[\]{}()\s]+?\.([A
 // 匹配非贪婪以避免吞相邻路径。
 // 扩展名限 1-8 个字母数字（.ts, .py, .json, .md 等），不含点号以免
 // seed-audio-1.0 中 .0 被当扩展名。
+// 前置排除 `~`（~/ 开头的 home 路径整体不匹配，避免 ~ 残留+假路径卡片）
+// 和 CJK 字母（中文段相对路径不识别，避免被 ABSOLUTE 截成假绝对路径）。
 const RELATIVE_FILE_PATH =
-  /(?<![A-Za-z0-9_/.])((?:\.\.?\/[\w@%.-]+(?:\/[\w@%.-]+)*|[\w@%.-]+\/[\w@%.-]+(?:\/[\w@%.-]+)*)\.([A-Za-z0-9]{1,8}))(?![A-Za-z0-9_/])/g
+  /(?<![A-Za-z0-9_/.~\p{L}])((?:\.\.?\/[\w@%.-]+(?:\/[\w@%.-]+)*|[\w@%.-]+\/[\w@%.-]+(?:\/[\w@%.-]+)*)\.([A-Za-z0-9]{1,8}))(?![A-Za-z0-9_/])/gu
 
 /**
  * Turn file paths in markdown text into `#media:` links.

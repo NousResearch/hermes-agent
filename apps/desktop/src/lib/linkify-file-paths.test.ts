@@ -105,4 +105,53 @@ describe('linkifyFilePaths', () => {
       '绝对路径 **/tmp/b.md** 也在强调'
     )
   })
+
+  // ── 回归防线：能识别 / 不能识别的边界全集 ──────────────────────
+  it('links multi-segment absolute and relative paths', () => {
+    const out = linkifyFilePaths(
+      '跑 /app/src/main.ts 与 /tmp/build.log 再看 a/b/c/file.ts 和 src/components/x.tsx',
+      '/repo'
+    )
+    expect(out).toContain('[/app/src/main.ts](#media:%2Fapp%2Fsrc%2Fmain.ts)')
+    expect(out).toContain('[/tmp/build.log](#media:%2Ftmp%2Fbuild.log)')
+    expect(out).toContain('[a/b/c/file.ts](#media:%2Frepo%2Fa%2Fb%2Fc%2Ffile.ts)')
+    expect(out).toContain('[src/components/x.tsx](#media:%2Frepo%2Fsrc%2Fcomponents%2Fx.tsx)')
+  })
+
+  it('does not linkify ~-prefixed home paths (no stray ~, no fake /… card)', () => {
+    // 截图同款：~/.hermes/config.yaml 曾被截成 /.hermes/config.yaml ——
+    // ~ 残留在正文，卡片指向根目录下不存在的假路径。现在整体不识别。
+    const src = '2. 查看 ~/.hermes/config.yaml 中 ollama-cloud provider 的配置'
+    expect(linkifyFilePaths(src)).toBe(src)
+    expect(linkifyFilePaths('改 ~/config.yaml 就好')).toBe('改 ~/config.yaml 就好')
+  })
+
+  it('links a full path past a dot-directory instead of truncating at the hidden dir', () => {
+    // 隐藏目录的 `.` 不能当扩展名分隔符：整段识别到真实扩展名。
+    const out = linkifyFilePaths('路径 /Users/echo/.hermes/config.yaml 是配置')
+    expect(out).toContain(
+      '[/Users/echo/.hermes/config.yaml](#media:%2FUsers%2Fecho%2F.hermes%2Fconfig.yaml)'
+    )
+  })
+
+  it('does not truncate a CJK relative path into a fake absolute path', () => {
+    // 中文段相对路径：REL 字符类不含 CJK 所以不识别，也绝不能被 ABSOLUTE
+    // 截成 /文档.md 这种假绝对路径卡片。
+    const src = '见 中文/文档.md 说明'
+    expect(linkifyFilePaths(src)).toBe(src)
+  })
+
+  it('still links CJK absolute paths', () => {
+    expect(linkifyFilePaths('/用户/文档/测试.txt')).toContain(
+      '[/用户/文档/测试.txt](#media:%2F%E7%94%A8%E6%88%B7%2F%E6%96%87%E6%A1%A3%2F%E6%B5%8B%E8%AF%95.txt)'
+    )
+  })
+
+  it('does not linkify bare names, tech tokens, URLs, Windows paths, or extensionless paths', () => {
+    // 纯文件名、技术词、URL、Windows 盘符、无扩展名 —— 全部保持纯文本。
+    const src =
+      'config.yaml 与 seed-audio-1.0、whisper-large-v3、zh_female_xiaohe_uranus_bigtts、' +
+      'deepseek-v4-flash:0731、https://github.com/x/y.md、C:\\logs\\run.txt、/etc/hosts 都不动'
+    expect(linkifyFilePaths(src, '/repo')).toBe(src)
+  })
 })

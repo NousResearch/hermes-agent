@@ -125,6 +125,20 @@ Type [1/2]:
 
 ## Rotation Strategies
 
+Priority positions are zero-based and clamp to the pool's ends; displayed targets
+are one-based indices, entry IDs, or unambiguous exact labels. `auth add --priority`
+also places an existing entry updated by reauthentication. Anthropic keeps manual
+credentials ahead of seeded credentials, so the command reports the effective
+position when that rule changes it. Other strategies may override priority, and
+reordering does not rebind credentials already held by a running session.
+
+Every successful pool selection increments `request_count`, regardless of strategy.
+Refresh-only lookups and peeks do not count. These are selection counters, not
+billing totals or a count of every inference request: a cached credential can serve
+multiple requests. Counts remain in memory until the next existing pool write
+(for example rotation, exhaustion, refresh, or an administrative change); this does
+not add a disk write per selection.
+
 Configure via `hermes auth` → "Set rotation strategy" or in `config.yaml`:
 
 ```yaml
@@ -222,7 +236,7 @@ For the full data flow diagram, see [`docs/credential-pool-flow.excalidraw`](htt
 
 The credential pool integrates at the provider resolution layer:
 
-1. **`agent/credential_pool.py`** — Pool manager: storage, selection, rotation, cooldowns
+1. **`agent/credential_pool.py`** — Pool manager: storage, selection, rotation, cooldowns; **`agent/credential_pool_admin.py`** owns locked target resolution, reset, add, removal, and priority mutations
 2. **`hermes_cli/auth_commands.py`** — CLI commands and interactive wizard
 3. **`hermes_cli/runtime_provider.py`** — Pool-aware credential resolution
 4. **`agent/turn_api_error.py`** — Error recovery: 429/402/401 → pool rotation → fallback

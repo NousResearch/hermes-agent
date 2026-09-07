@@ -141,6 +141,56 @@ The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_ind
 
 Synchronous single-task delegation from an orchestrator runs directly without thread pool overhead.
 
+### Dependency-aware scheduling
+
+Use `depends_on` when a task needs another task's output before it can start:
+
+```json
+{"tasks": [
+  {"id": "source", "goal": "Extract the relevant input values"},
+  {"id": "consumer", "goal": "Compute a result from those values", "depends_on": ["source"]},
+  {"id": "independent", "goal": "Review the unrelated documentation"}
+]}
+```
+
+The source and independent task start immediately. The consumer starts only
+after the source succeeds and receives its bounded summary (up to 6,000
+characters per prerequisite and approximately 16,000 in total). These summaries
+are self-reports, not trusted instructions. Worktree metadata is included when
+available; dependent tasks must explicitly inspect or integrate upstream changes.
+
+Dependency scheduling activates only when at least one `depends_on` list is
+non-empty. Every task must then have a unique `id`; missing IDs, unknown
+references, self-dependencies, malformed lists, and cycles are rejected before
+any child is constructed. IDs alone and omitted, null, or empty dependency lists
+retain the ordinary completion-group behavior described above.
+
+Connected tasks form a completion cluster. Disconnected clusters deliver
+independently, while the entire graph uses one background capacity slot and one
+public `graph_id` / `delegation_id`. Components retain separate durable event IDs
+in `delegation_ids` and `clusters` for delivery claims and recovery. All child
+transcripts keep the graph's ID, and summary budgets use the full task count.
+Explicit `group` values can join otherwise disconnected clusters for delivery;
+they do not create execution dependencies or serialize independent roots.
+
+Splitting automatically stays off for a single cluster or synchronous nested
+delegation. Unsupported async sessions run synchronously. If atomic graph
+admission fails, Hermes retries consolidated background delivery, then falls
+back to synchronous execution if no async slot is available. Dependency ordering
+is preserved in every fallback, and rejected admission starts no children.
+
+Cancellation stops pending and queued tasks before entering the child runner,
+reporting `interrupted` with zero API calls. Already running children receive
+an interrupt and retain their real partial results. Children remain attached
+to the parent until background dispatch succeeds, so synchronous fallback is
+still interruptible. Failed prerequisites block descendants without model calls.
+
+Graph listings separately count active, successfully completed, stalled, failed,
+and interrupted clusters. A stalled or failed graph remains visible while its
+siblings run and retains that outcome after they finish. Lifecycle hooks, cost
+rollup, incremental result persistence, failure notices, and fresh-turn delivery
+reuse the normal completion-unit pipeline.
+
 ### Durable background completions
 
 When a background delegation finishes, Hermes stores its completion event in

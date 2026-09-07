@@ -267,12 +267,15 @@ def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
                 "status": "running"} for i, t in enumerate(task_list)]})
 
 
+_MANIFEST_UPDATE_LOCK = threading.Lock()
+
+
 def update_manifest_statuses(delegation_id: Optional[str],
                              results: List[Dict[str, Any]]) -> None:
     """Best-effort per-task status update once the batch has aggregated."""
     if not delegation_id:
         return
-    with _best_effort("manifest update"):
+    with _best_effort("manifest update"), _MANIFEST_UPDATE_LOCK:
         mp = _manifest_path(delegation_id)
         manifest = json.loads(mp.read_text(encoding="utf-8"))
         by_index = {r.get("task_index"): r for r in results if isinstance(r, dict)}
@@ -282,7 +285,8 @@ def update_manifest_statuses(delegation_id: Optional[str],
                 task["status"] = r.get("status", task.get("status"))
                 if r.get("exit_reason"):
                     task["exit_reason"] = r["exit_reason"]
-        manifest["completed"] = time.strftime(_TIME_FMT)
+        if all(task.get("status") not in {"running", "stalling", "finalizing"} for task in manifest.get("tasks", [])):
+            manifest["completed"] = time.strftime(_TIME_FMT)
         _dump_json(mp, manifest)
 
 

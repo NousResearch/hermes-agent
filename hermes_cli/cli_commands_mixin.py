@@ -921,11 +921,14 @@ class CLICommandsMixin:
         # Background (async) delegations — delegate_task(background=true)
         delegations = _probe("tools.async_delegation", "list_async_delegations", [])
         if delegations:
-            running_d = [d for d in delegations if d.get("status") in ("running", "stalling")]
+            running_d = [d for d in delegations if d.get("status") in ("running", "stalling") or d.get("active_clusters", 0) > 0]
             _cp(f"  Background delegations: {len(running_d)} running")
             for d in delegations:
                 status = d.get("status", "?")
                 line = f"    {d.get('delegation_id', '?')} · {status} · {(d.get('goal') or '')[:60]}"
+                if d.get("graph_id"):
+                    from tools.async_delegation import graph_status_counts
+                    line += " · " + graph_status_counts(d)
                 # Live-status detail for in-flight delegations.
                 # See #51690.
                 if status == "stalling":

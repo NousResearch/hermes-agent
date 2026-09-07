@@ -201,6 +201,7 @@ Subagents inherit the parent's enabled toolsets. `delegate_task` does not accept
 ## Constraints
 
 - **Default 3 parallel tasks**: batches default to 3 concurrent subagents (configurable via `delegation.max_concurrent_children` in config.yaml, no hard ceiling, only a floor of 1)
+- **Dependencies are explicit and fail closed**: use a non-empty `depends_on` list for prerequisites and give every task a unique `id`. IDs alone or empty dependency lists keep flat batching. For activated graphs, Hermes rejects missing ids, unknown references, and cycles before spawning. Disconnected components deliver independently within one capacity slot, share a graph-level control handle, and budget summaries across the full batch. Delivery consolidates automatically when the session or dispatcher cannot support the split.
 - **Nested delegation is opt-in**: leaf subagents (default) cannot call `delegate_task`, `clarify`, `memory`, or `execute_code`. Orchestrator subagents (`role="orchestrator"`) retain `delegate_task` for further delegation, but only when `delegation.max_spawn_depth` is raised above the default of 1 (floor 1, no ceiling); the other three remain blocked. Disable globally via `delegation.orchestrator_enabled: false`.
 
 ### Tuning Concurrency and Depth

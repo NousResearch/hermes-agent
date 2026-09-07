@@ -138,6 +138,8 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
     # ``goals`` is the whole delegate_task call (task_index indexes it); ``results`` is this unit's subset.
     n, n_unit = len(goals) or len(results), len(results) or len(goals)
     group = evt.get("group")
+    metadata = evt.get("batch_metadata") or {}
+    adaptive = metadata.get("adaptive_scheduling", False)
     unit = f"group '{group}' ({n_unit} subagent(s))" if group is not None else f"{n_unit} subagent(s)"
     lines = _preamble(
         evt,
@@ -147,22 +149,27 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         "they finish. You may have moved on since dispatching — act on these or re-dispatch if things have changed.",
         completed_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
+    if adaptive:
+        lines.append(f"Dependency cluster {metadata.get('cluster_index', 1)}/{metadata.get('cluster_count', 1)}")
     if evt.get("error") and not results:
         lines += ["--- ERROR ---", f"The batch did not complete successfully: {evt['error']}"]
         return "\n".join(lines)
     # Config-level rejection notice BEFORE the per-task wall — a rejected
     # delegation model fails every task identically and must not stay buried.
     lines += _notice_lines(results)
-    for r in sorted(results, key=lambda x: x.get("task_index", 0)):
+    for ordinal, r in enumerate(sorted(results, key=lambda x: x.get("task_index", 0)), 1):
         idx, r_truncated = r.get("task_index", 0), _is_truncated(r)
         r_status, r_summary, r_error = r.get("status", "?"), r.get("summary"), r.get("error")
-        r_goal = goals[idx] if idx < len(goals) else r.get("goal", "")
+        r_goal = goals[idx] if idx < len(goals) else (goals[ordinal - 1] if adaptive and ordinal <= len(goals) else r.get("goal", ""))
         icon = "⚠" if r_truncated else ("✓" if r_status in _DONE else "✗")
-        header = (f"--- {icon} TASK {idx + 1}/{n}" + (f": {r_goal}" if r_goal else "") + f"  (status={r_status}"
+        slot = f"{ordinal}/{n_unit} [{r.get('task_id', idx + 1)}]" if adaptive else f"{idx + 1}/{n}"
+        header = (f"--- {icon} TASK {slot}" + (f": {r_goal}" if r_goal else "") + f"  (status={r_status}"
                   + (f", api_calls={r['api_calls']}" if r.get("api_calls") else "")
                   + (f", {r['duration_seconds']}s" if r.get("duration_seconds") is not None else "")
                   + (", TRUNCATED: hit max_iterations — work may be incomplete" if r_truncated else ""))
         lines += ["", header + ") ---"]
+        if r.get("task_id"):
+            lines.append(f"Task ID: {r['task_id']}" + (" · Depends on: " + ", ".join(r["depends_on"]) if r.get("depends_on") else ""))
         if r_status in _DONE and r_summary:
             if r_truncated:
                 lines.append(_TRUNCATED_SUMMARY_NOTE)
@@ -182,7 +189,7 @@ def _format_async_delegation(evt: dict) -> str:
     """Self-contained re-injection for an async-delegation completion: the FULL
     original task source (goal, context, toolsets, role, model), dispatch time, status
     and result, so an agent deep in unrelated context can act on it or re-dispatch."""
-    deleg_id = evt.get("delegation_id", "unknown")
+    deleg_id = evt.get("graph_id") or evt.get("delegation_id", "unknown")
     completed_at = evt.get("completed_at") or time.time()
     if evt.get("task_failure_notice"):
         return _format_task_failure_notice(evt, deleg_id)

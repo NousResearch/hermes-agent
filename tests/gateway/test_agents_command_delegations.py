@@ -84,3 +84,47 @@ async def test_agents_command_marks_stalling_delegation(monkeypatch):
     assert "no progress" in out
 
 
+@pytest.mark.asyncio
+async def test_agents_command_lists_one_graph_handle_for_independent_clusters():
+    gate = threading.Event()
+    try:
+        result = ad.dispatch_async_delegation_batches(
+            graph_id="deleg_visible_graph", max_async_children=1,
+            batches=[
+                {
+                    "goals": [f"task {i}"],
+                    "runner": lambda: {} if gate.wait(10) else {},
+                    "progress_fn": lambda: (((1, "terminal", time.time()),), True),
+                }
+                for i in range(3)
+            ],
+        )
+        assert result["status"] == "dispatched"
+        output = await _make_runner()._handle_agents_command(_Event())
+        assert output.count("`deleg_visible_graph`") == 1
+        for component in result["delegations"]:
+            assert component["delegation_id"] not in output
+        assert "child 3" in output
+    finally:
+        gate.set()
+
+
+@pytest.mark.asyncio
+async def test_agents_keeps_stalled_graph_visible_while_sibling_is_active():
+    gate = threading.Event()
+    try:
+        result = ad.dispatch_async_delegation_batches(
+            graph_id="deleg_stalled_graph", max_async_children=1,
+            batches=[
+                {"goals": [f"task {i}"], "runner": lambda: {} if gate.wait(10) else {}}
+                for i in range(2)
+            ],
+        )
+        assert result["status"] == "dispatched"
+        first_id = result["delegations"][0]["delegation_id"]
+        ad._finalize(first_id, lambda record: ad._stalled_result(first_id, record), "stalled")
+        output = await _make_runner()._handle_agents_command(_Event())
+        assert "`deleg_stalled_graph` · stalled" in output
+        assert "1 active, 0 completed, 1 stalled" in output
+    finally:
+        gate.set()

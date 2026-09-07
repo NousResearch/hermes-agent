@@ -160,6 +160,13 @@ def _capture_routing_origin() -> Dict[str, Any]:
 
 
 def _persist_dispatch(record: Dict[str, Any]) -> None:
+    with _DB_LOCK, _transaction() as conn:
+        _insert_dispatch(conn, record)
+    _prune_durable_records()
+
+
+def _insert_dispatch(conn, record: Dict[str, Any]) -> None:
+    """Insert within the caller's transaction (all graph components commit together)."""
     now = time.time()
     try:
         from gateway.status import get_process_start_time
@@ -168,10 +175,9 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", *_ROUTING_KEYS)
+        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "graph_id", "batch_metadata", *_ROUTING_KEYS)
         if key in record}
-    with _DB_LOCK, _transaction() as conn:
-        conn.execute("""INSERT OR REPLACE INTO async_delegations
+    conn.execute("""INSERT OR REPLACE INTO async_delegations
                (delegation_id, origin_session, origin_ui_session_id,
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
@@ -180,7 +186,6 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
             (record["delegation_id"], record.get("session_key", ""), record.get("origin_ui_session_id", ""),
              record.get("parent_session_id"), record["dispatched_at"], now, os.getpid(), owner_started_at,
              json.dumps(task_payload), record.get("origin_session_id", "")))
-    _prune_durable_records()
 
 
 def _prune_durable_records() -> None:
@@ -281,6 +286,7 @@ def recover_abandoned_delegations() -> int:
                 "status": "unknown", "summary": None, "error": error,
                 **({"results": recovered_results} if recovered_results else {}),
                 "dispatched_at": dispatched_at, "completed_at": now,
+                **{k: task[k] for k in ("graph_id", "batch_metadata") if k in task},
                 **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
             result = {"status": "unknown", "summary": None, "error": event["error"],
                       **({"results": recovered_results} if recovered_results else {})}
@@ -462,9 +468,9 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
 
 
 def active_count() -> int:
-    """Number of live async delegation UNITS (one per completion message: a task group or an ungrouped task)."""
+    """Live units; dependency components share one public graph handle."""
     with _records_lock:
-        return sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
+        return len({r.get("graph_id") or r["delegation_id"] for r in _records.values() if r.get("status") in _LIVE_STATES})
 
 
 def active_task_count() -> int:
@@ -503,10 +509,14 @@ def _new_delegation_id() -> str:
 
 def _prune_completed_locked() -> None:
     """Drop the oldest completed records beyond the cap. Caller holds ``_records_lock``."""
-    completed = [(rid, r) for rid, r in _records.items() if r.get("status") != "running"]
-    completed.sort(key=lambda kv: kv[1].get("completed_at") or kv[1].get("dispatched_at") or 0)
-    for rid, _ in completed[: max(0, len(completed) - _MAX_RETAINED_COMPLETED)]:
-        _records.pop(rid, None)
+    units = {}
+    for record in _records.values():
+        units.setdefault(record.get("graph_id") or record["delegation_id"], []).append(record)
+    completed = [group for group in units.values() if all(r.get("status") not in _LIVE_STATES for r in group)]
+    completed.sort(key=lambda group: max(r.get("completed_at") or r.get("dispatched_at") or 0 for r in group))
+    for group in completed[:max(0, len(completed) - _MAX_RETAINED_COMPLETED)]:
+        for record in group:
+            _records.pop(record["delegation_id"], None)
 
 
 def _current_origin_session_id() -> str:
@@ -535,6 +545,11 @@ def _batch_crash(error: str, duration: float) -> Dict[str, Any]:
 def _batch_status(combined: Dict[str, Any]) -> str:
     """Batch status: completed unless every child errored/was interrupted."""
     child_results = combined.get("results") or []
+    if combined.get("adaptive_scheduling"):
+        statuses = {r.get("status") for r in child_results}
+        if combined.get("error") or statuses - {"completed", "success", "stalled", "interrupted"}:
+            return "error"
+        return next((status for status in ("stalled", "interrupted") if status in statuses), "completed")
     ok = ("completed", "success")
     return "error" if child_results and all(r.get("status") not in ok for r in child_results) else "completed"
 
@@ -545,7 +560,7 @@ def _dispatch(
     parent_session_id: Optional[str], runner: Callable[[], Dict[str, Any]], origin_ui_session_id: str,
     origin_session_id: str, interrupt_fn: Optional[Callable[[], None]], max_async_children: int,
     progress_fn: Optional[Callable[[], tuple]], capacity_error: str, slot_key: Optional[str] = None,
-    task_indexes: Optional[List[int]] = None,
+    task_indexes: Optional[List[int]] = None, graph_id: Optional[str] = None, batch_metadata: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
@@ -553,10 +568,20 @@ def _dispatch(
     can't pile up unbounded background work. ``slot_key`` names the pool slot the unit occupies
     (default: its own id); the units of one delegate_task call share the first unit's id so
     splitting a call into per-group completions never consumes more capacity than the call did."""
+    record = _make_record(
+        delegation_id=delegation_id, goal=goal, goals=goals, context=context, toolsets=toolsets, role=role, model=model,
+        session_key=session_key, parent_session_id=parent_session_id, origin_ui_session_id=origin_ui_session_id,
+        origin_session_id=origin_session_id, interrupt_fn=interrupt_fn, progress_fn=progress_fn, slot_key=slot_key,
+        task_indexes=task_indexes, graph_id=graph_id, batch_metadata=batch_metadata,
+    )
+    result = _submit_records([record], [runner], max_async_children, capacity_error)
+    return {"status": "dispatched", "delegation_id": delegation_id} if result["status"] == "dispatched" else result
+
+
+def _make_record(*, delegation_id, goal, goals, context=None, toolsets=None, role="leaf", model=None,
+                 session_key="", parent_session_id=None, origin_ui_session_id="", origin_session_id="",
+                 interrupt_fn=None, progress_fn=None, slot_key=None, task_indexes=None, graph_id=None, batch_metadata=None):
     is_batch = goals is not None
-    label = " batch" if is_batch else ""
-    classify = _batch_status if is_batch else (lambda r: r.get("status") or "completed")
-    crash_result = _batch_crash if is_batch else _single_crash
     dispatched_at = time.time()
     record: Dict[str, Any] = {
         "delegation_id": delegation_id, "goal": goal, **({"goals": list(goals)} if is_batch else {}),
@@ -567,42 +592,125 @@ def _dispatch(
         "status": "running", "dispatched_at": dispatched_at, "completed_at": None,
         "interrupt_fn": interrupt_fn, **({"is_batch": True} if is_batch else {}), "progress_fn": progress_fn,
         "slot_key": slot_key or delegation_id,
+        **({"graph_id": graph_id} if graph_id else {}),
+        **({"batch_metadata": dict(batch_metadata)} if batch_metadata else {}),
         # Which of the call's ``goals`` this unit runs (None = all of them).
         **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
-    with _records_lock:
-        active_slots = {r.get("slot_key") or r["delegation_id"] for r in _records.values() if r.get("status") in _ACTIVE_STATES}
-        if record["slot_key"] not in active_slots and len(active_slots) >= max_async_children:
-            return {"status": "rejected", "error": capacity_error}
-        _records[delegation_id] = record
-    _persist_dispatch(record)
-    executor = _get_executor(max_async_children)
+    return record
 
-    def _worker() -> None:
-        result: Dict[str, Any] = {}
-        status = "error"
-        try:
-            result = runner() or {}
-            status = classify(result)
-        except Exception as exc:  # noqa: BLE001 — must never crash the worker
-            logger.exception(f"Async delegation{label} %s crashed", delegation_id)
-            result = crash_result(f"{type(exc).__name__}: {exc}", round(time.time() - dispatched_at, 2))
-        finally:
-            _finalize(delegation_id, result, status)
 
+def _run_record(record, runner):
+    result, status = {}, "error"
     try:
-        # Propagate the dispatching profile so the detached child resolves get_hermes_home() correctly.
-        executor.submit(propagate_context_to_thread(_worker))
-    except Exception as exc:  # pragma: no cover — pool submit failure is rare
-        with _records_lock:
-            _records.pop(delegation_id, None)
-        with _DB_LOCK, _transaction() as conn:
-            conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
-        return {"status": "rejected", "error": f"Failed to schedule async delegation{label}: {exc}"}
-    if progress_fn is not None:
+        result = runner() or {}
+        classified = {**result, "adaptive_scheduling": True} if record.get("graph_id") else result
+        status = _batch_status(classified) if record.get("is_batch") else result.get("status") or "completed"
+    except Exception as exc:
+        logger.exception("Async delegation %s crashed", record["delegation_id"])
+        crash = _batch_crash if record.get("is_batch") else _single_crash
+        result = crash(f"{type(exc).__name__}: {exc}", round(time.time() - record["dispatched_at"], 2))
+    finally:
+        _finalize(record["delegation_id"], result, status)
+
+
+def _submit_records(records, runners, max_async_children, capacity_error):
+    """Atomic admission with one shared-executor coordinator, regardless of graph size."""
+    ids = [record["delegation_id"] for record in records]
+    admitted, start, cancelled = threading.Event(), threading.Event(), threading.Event()
+    component_pool, futures = None, []
+
+    def component(record, runner):
+        start.wait()
+        if not cancelled.is_set():
+            _run_record(record, runner)
+
+    def coordinator():
+        admitted.wait()
+        if cancelled.is_set():
+            return
+        if len(records) == 1:
+            _run_record(records[0], runners[0])
+            return
+        # Component workers are private to the graph, so they never exhaust
+        # the shared pool's slots reserved for unrelated delegations.
+        start.set()
+        try:
+            for future in futures:
+                try:
+                    future.result()
+                except Exception:
+                    logger.exception("Async dependency component finalization failed")
+        finally:
+            component_pool.shutdown(wait=False)
+
+    with _records_lock:
+        active_slots = {r.get("slot_key") or r["delegation_id"] for r in _records.values() if r.get("status") in _LIVE_STATES}
+        new_slots = {r["slot_key"] for r in records} - active_slots
+        if len(active_slots) + len(new_slots) > max_async_children:
+            return {"status": "rejected", "error": capacity_error, "required_slots": len(new_slots),
+                    "available_slots": max(0, max_async_children - len(active_slots))}
+        if len(set(ids)) != len(ids) or any(uid in _records for uid in ids):
+            return {"status": "rejected", "error": "Delegation ID already registered"}
+        try:
+            if len(records) == 1:
+                _persist_dispatch(records[0])
+            else:
+                with _DB_LOCK, _transaction() as conn:
+                    for record in records:
+                        _insert_dispatch(conn, record)
+                _prune_durable_records()
+            _records.update(zip(ids, records))
+            if len(records) > 1:
+                component_pool = DaemonThreadPoolExecutor(max_workers=len(records))
+                for record, runner in zip(records, runners):
+                    futures.append(component_pool.submit(propagate_context_to_thread(
+                        lambda r=record, fn=runner: component(r, fn))))
+            _get_executor(max_async_children).submit(propagate_context_to_thread(coordinator))
+        except Exception as exc:
+            cancelled.set()
+            admitted.set()
+            start.set()
+            for future in futures:
+                future.cancel()
+            if component_pool is not None:
+                component_pool.shutdown(wait=False)
+            for uid in ids:
+                _records.pop(uid, None)
+            with _DB_LOCK, _transaction() as conn:
+                conn.executemany("DELETE FROM async_delegations WHERE delegation_id=?", [(uid,) for uid in ids])
+            return {"status": "rejected", "error": f"Failed to schedule async delegation: {exc}"}
+    admitted.set()
+    if any(record.get("progress_fn") is not None for record in records):
         _ensure_stale_monitor()
-    return {"status": "dispatched", "delegation_id": delegation_id}
+    return {"status": "dispatched", "delegations": [{"delegation_id": uid} for uid in ids]}
+
+
+def dispatch_async_delegation_batches(*, batches: List[dict], max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+                                      graph_id: Optional[str] = None) -> dict:
+    """Register every component of a dependency graph before any runner may start."""
+    if not batches or any(not callable(batch.get("runner")) or not batch.get("goals") for batch in batches):
+        return {"status": "rejected", "error": "Every component requires goals and a runner"}
+    owner_keys = ("session_key", "origin_ui_session_id", "origin_session_id", "parent_session_id")
+    if len({tuple(batch.get(key) or "" for key in owner_keys) for batch in batches}) != 1:
+        return {"status": "rejected", "error": "Graph components must share the same owner"}
+    graph_id = graph_id or _new_delegation_id()
+    records = []
+    for index, batch in enumerate(batches):
+        goals = batch["goals"]
+        metadata = {**batch.get("batch_metadata", {}), "adaptive_scheduling": True,
+                    "cluster_index": index + 1, "cluster_count": len(batches)}
+        records.append(_make_record(
+            delegation_id=batch.get("delegation_id") or f"{graph_id}_cluster_{index + 1}",
+            goal="; ".join(goals), goals=goals, slot_key=graph_id, graph_id=graph_id, batch_metadata=metadata,
+            **{key: batch[key] for key in (*owner_keys, "context", "toolsets", "role", "model", "interrupt_fn", "progress_fn", "task_indexes") if key in batch},
+        ))
+    result = _submit_records(records, [batch["runner"] for batch in batches], max_async_children,
+                             "Async delegation capacity reached; run synchronously or wait for a completion.")
+    if result["status"] == "dispatched":
+        result.update(delegation_id=graph_id, graph_id=graph_id)
+    return result
 
 
 def dispatch_async_delegation(
@@ -639,7 +747,7 @@ def dispatch_async_delegation_batch(
     origin_ui_session_id: str = "", origin_session_id: str = "", interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, delegation_id: Optional[str] = None,
     progress_fn: Optional[Callable[[], tuple]] = None, slot_key: Optional[str] = None,
-    task_indexes: Optional[List[int]] = None,
+    task_indexes: Optional[List[int]] = None, graph_id: Optional[str] = None, batch_metadata: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
     background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
@@ -657,7 +765,7 @@ def dispatch_async_delegation_batch(
         parent_session_id=parent_session_id, runner=runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
-        task_indexes=task_indexes,
+        task_indexes=task_indexes, graph_id=graph_id, batch_metadata=batch_metadata,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "
@@ -727,6 +835,7 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         "context": record.get("context"), "toolsets": record.get("toolsets"), "role": record.get("role"),
         "model": record.get("model") if is_batch else (result.get("model") or record.get("model")),
         "status": status, **payload, "dispatched_at": dispatched_at, "completed_at": completed_at,
+        **{k: record[k] for k in ("graph_id", "batch_metadata") if k in record},
         **({} if is_batch else {"exit_reason": result.get("exit_reason")}),
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result}}
@@ -940,14 +1049,71 @@ def list_async_delegations() -> List[Dict[str, Any]]:
         if activity is not None:
             item["children_activity"] = activity
         item["in_tool"] = bool(in_tool)
-    return items
+    return _group_graph_snapshots(items)
+
+
+def _group_graph_snapshots(items):
+    units = {}
+    for item in items:
+        units.setdefault(item.get("graph_id") or item["delegation_id"], []).append(item)
+    snapshots = []
+    for unit_id, components in units.items():
+        if not components[0].get("graph_id"):
+            snapshots.extend(components)
+            continue
+        graph = dict(components[0])
+        statuses = [c["status"] for c in components]
+        live = [c for c in components if c["status"] in _LIVE_STATES]
+        status = next((s for s in ("stalled", "error", "failed", "unknown", "interrupted",
+                                   "stalling", "running", "finalizing") if s in statuses), "completed")
+        graph.update(
+            delegation_id=unit_id, clusters=components, cluster_count=len(components), status=status,
+            active_clusters=len(live), completed_clusters=statuses.count("completed"),
+            stalled_clusters=statuses.count("stalled"), interrupted_clusters=statuses.count("interrupted"),
+            failed_clusters=sum(statuses.count(s) for s in ("error", "failed", "unknown")),
+            completed_at=None if live else max(c.get("completed_at") or 0 for c in components),
+            batch_metadata={"graph_id": unit_id, "cluster_count": len(components)},
+        )
+        activity = {}
+        for component in components:
+            indexes = component.get("task_indexes") or component.get("batch_metadata", {}).get("task_indices")
+            children = component.get("children_activity") or []
+            offset = max(activity, default=-1) + 1
+            for index, child in zip(indexes if indexes is not None else range(offset, offset + len(children)), children):
+                activity[index] = child
+        graph["children_activity"] = [activity.get(i) for i in range(max(activity, default=-1) + 1)]
+        graph["in_tool"] = any(c.get("in_tool") for c in live)
+        quiet = [c["seconds_since_progress"] for c in live if "seconds_since_progress" in c]
+        if quiet:
+            graph["seconds_since_progress"] = min(quiet)
+        for _, key in _STALL_FIELD_MAP:
+            graph.pop(key, None)
+            stalled = next((c for c in components if c["status"] == status), None) if status in {"stalling", "stalled"} else None
+            if stalled and key in stalled:
+                graph[key] = stalled[key]
+        snapshots.append(graph)
+    return snapshots
+
+
+def graph_status_counts(record: dict) -> str:
+    """One shared status suffix for CLI and gateway graph rows."""
+    return ", ".join(f"{record.get(key + '_clusters', 0)} {label}" for key, label in (
+        ("active", "active"), ("completed", "completed"), ("stalled", "stalled"),
+        ("failed", "failed"), ("interrupted", "interrupted"))) + " clusters"
+
+
+def interrupt_delegation(delegation_id: str) -> bool:
+    """Stop one component, or every remaining component matching a public graph handle."""
+    with _records_lock:
+        targets = [r for r in _records.values() if r.get("status") in _ACTIVE_STATES
+                   and delegation_id in (r["delegation_id"], r.get("graph_id"))]
+    return bool(_interrupt_records(targets, "interrupt_delegation", "cancel", "Interrupted %d delegation(s) (%s)"))
 
 
 def _interrupt_records(targets: List[Dict[str, Any]], caller: str, reason: str, msg: str) -> int:
     """Call ``interrupt_fn`` on each record; log ``msg`` once; returns how many succeeded."""
-    count = sum(
-        _call_interrupt(r.get("interrupt_fn"), "%s: %s interrupt failed: %s", caller, r.get("delegation_id"))
-        for r in targets)
+    count = len({r.get("graph_id") or r["delegation_id"] for r in targets
+                 if _call_interrupt(r.get("interrupt_fn"), "%s: %s interrupt failed: %s", caller, r.get("delegation_id"))})
     if count:
         logger.info(msg, count, reason)
     return count

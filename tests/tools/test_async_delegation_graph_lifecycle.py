@@ -1,0 +1,312 @@
+"""Real registry/SQLite coverage for graph capacity, identity and delivery."""
+
+import json
+import os
+import queue
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+from tools import async_delegation as ad
+from tools.process_registry import process_registry
+
+
+def _wait_until(predicate):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    pytest.fail("background state did not converge")
+
+
+@pytest.fixture(autouse=True)
+def clean_registry():
+    ad._reset_for_tests()
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+    yield
+    _wait_until(lambda: ad.active_count() == 0)
+    ad._reset_for_tests()
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+
+def _batch(index, gate, started, **kwargs):
+    def runner():
+        started.set()
+        assert gate.wait(10)
+        return {"results": [{"task_index": index, "status": "completed", "summary": str(index)}]}
+
+    return {
+        "goals": [f"Task {index}"], "runner": runner,
+        "session_key": "owner", "origin_ui_session_id": "owner-ui",
+        "batch_metadata": {"task_indices": [index]},
+        **kwargs,
+    }
+
+
+def _single(goal, runner, **kwargs):
+    return ad.dispatch_async_delegation(
+        goal=goal, context=None, toolsets=None, role="leaf", model="m",
+        session_key="other", runner=runner, **kwargs,
+    )
+
+
+def test_graph_occupies_one_slot_without_starving_other_dispatches():
+    gate = threading.Event()
+    started = [threading.Event() for _ in range(5)]
+    try:
+        result = ad.dispatch_async_delegation_batches(
+            batches=[_batch(i, gate, started[i]) for i in range(3)],
+            graph_id="deleg_graph", max_async_children=3,
+        )
+        assert result["delegation_id"] == "deleg_graph"
+        for event in started[:3]:
+            assert event.wait(5)
+        assert ad.active_count() == 1
+        assert ad.has_live_for_session(origin_ui_session_id="owner-ui")
+        assert ad.active_task_count() == 3
+        assert [row["delegation_id"] for row in ad.list_async_delegations()] == ["deleg_graph"]
+
+        for i in (3, 4):
+            accepted = _single(str(i), _batch(i, gate, started[i])["runner"], max_async_children=3)
+            assert accepted["status"] == "dispatched"
+            # Proves the graph did not consume every physical executor worker.
+            assert started[i].wait(5)
+        assert ad.active_count() == 3
+        rejected = _single("overflow", lambda: pytest.fail("must not run"), max_async_children=3)
+        assert rejected["status"] == "rejected"
+    finally:
+        gate.set()
+    events = [process_registry.completion_queue.get(timeout=5) for _ in range(5)]
+    assert len({event["delegation_id"] for event in events}) == 5
+    assert sum(event.get("graph_id") == "deleg_graph" for event in events) == 3
+
+
+def test_graph_handle_survives_partial_completion_and_cancels_remaining_clusters(monkeypatch):
+    gates = [threading.Event() for _ in range(3)]
+    started = [threading.Event() for _ in gates]
+    interrupts = [MagicMock(side_effect=gate.set) for gate in gates]
+    # Completed components must not be pruned while their graph is still live.
+    monkeypatch.setattr(ad, "_MAX_RETAINED_COMPLETED", 0)
+    try:
+        result = ad.dispatch_async_delegation_batches(
+            batches=[_batch(i, gates[i], started[i], interrupt_fn=interrupts[i]) for i in range(3)],
+            graph_id="deleg_control", max_async_children=1,
+        )
+        assert all(event.wait(5) for event in started)
+        gates[0].set()
+        first = process_registry.completion_queue.get(timeout=5)
+        assert first["results"][0]["task_index"] == 0
+        _wait_until(lambda: ad.list_async_delegations()[0]["completed_clusters"] == 1)
+        snapshot = ad.list_async_delegations()[0]
+        assert snapshot["delegation_id"] == result["delegation_id"]
+        assert snapshot["status"] == "running"
+        assert snapshot["cluster_count"] == 3
+        assert ad.active_count() == 1
+        assert ad.interrupt_delegation(result["delegation_id"])
+        interrupts[0].assert_not_called()
+        interrupts[1].assert_called_once()
+        interrupts[2].assert_called_once()
+    finally:
+        for gate in gates:
+            gate.set()
+    remaining = [process_registry.completion_queue.get(timeout=5) for _ in range(2)]
+    assert {event["results"][0]["task_index"] for event in remaining} == {1, 2}
+
+
+def test_session_interrupt_stops_whole_graph_without_touching_another_session():
+    gates = [threading.Event(), threading.Event()]
+    other_gate = threading.Event()
+    stopped = [MagicMock(side_effect=gate.set) for gate in gates]
+    other_stopped = MagicMock(side_effect=other_gate.set)
+    try:
+        graph = ad.dispatch_async_delegation_batches(
+            batches=[_batch(i, gates[i], threading.Event(), interrupt_fn=stopped[i]) for i in range(2)],
+            graph_id="deleg_owned", max_async_children=2,
+        )
+        other = _single(
+            "unrelated", _batch(2, other_gate, threading.Event())["runner"],
+            interrupt_fn=other_stopped, max_async_children=2,
+        )
+        assert graph["status"] == other["status"] == "dispatched"
+        assert ad.interrupt_for_session(origin_ui_session_id="foreign") == 0
+        assert ad.interrupt_for_session(origin_ui_session_id="owner-ui") == 1
+        for callback in stopped:
+            callback.assert_called_once()
+        other_stopped.assert_not_called()
+    finally:
+        for gate in gates:
+            gate.set()
+        other_gate.set()
+
+
+@pytest.mark.parametrize("failure", ["persist", "executor", "submit", "component_submit"])
+def test_failed_group_admission_rolls_back_every_component(failure, monkeypatch):
+    started = threading.Event()
+    if failure == "persist":
+        persist = ad._insert_dispatch
+
+        def failing_persist(conn, record):
+            persist(conn, record)
+            if record["delegation_id"].endswith("_2"):
+                raise OSError("test persistence failure")
+
+        monkeypatch.setattr(ad, "_insert_dispatch", failing_persist)
+    elif failure == "executor":
+        monkeypatch.setattr(ad, "_get_executor", MagicMock(side_effect=RuntimeError("pool creation failed")))
+    elif failure == "component_submit":
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+
+        class FailingComponentPool(DaemonThreadPoolExecutor):
+            def submit(self, fn, /, *args, **kwargs):
+                if self._threads:
+                    raise RuntimeError("second component cannot start")
+                return super().submit(fn, *args, **kwargs)
+
+        monkeypatch.setattr(ad, "DaemonThreadPoolExecutor", FailingComponentPool)
+    else:
+        executor = MagicMock()
+        executor.submit.side_effect = RuntimeError("test submission failure")
+        monkeypatch.setattr(ad, "_get_executor", lambda _max: executor)
+    result = ad.dispatch_async_delegation_batches(
+        batches=[{"goals": [str(i)], "runner": lambda: started.set() or {}} for i in range(2)],
+        graph_id="deleg_atomic", max_async_children=1,
+    )
+    assert result["status"] == "rejected"
+    assert not started.is_set()
+    assert ad.active_count() == 0
+    assert ad.list_async_delegations() == []
+    for i in (1, 2):
+        assert ad.get_durable_delegation(f"deleg_atomic_cluster_{i}") is None
+
+
+def test_graph_cannot_combine_different_owners():
+    result = ad.dispatch_async_delegation_batches(batches=[
+        {"goals": ["a"], "session_key": "a", "runner": lambda: {}},
+        {"goals": ["b"], "session_key": "b", "runner": lambda: {}},
+    ])
+    assert result["status"] == "rejected"
+    assert ad.active_count() == 0
+
+
+@pytest.mark.parametrize("outcome", ["error", "failed", "timeout", "unknown", "interrupted", "stalled"])
+def test_unsuccessful_task_never_marks_its_graph_completed(outcome):
+    result = ad.dispatch_async_delegation_batches(graph_id="deleg_outcomes", batches=[{
+        "goals": ["Successful input", "Unsuccessful consumer"],
+        "runner": lambda: {"results": [
+            {"task_index": 0, "status": "completed", "summary": "input"},
+            {"task_index": 1, "status": outcome, "summary": "partial output"},
+        ]},
+    }])
+    assert result["status"] == "dispatched"
+    event = process_registry.completion_queue.get(timeout=5)
+    assert event["status"] == (outcome if outcome in {"interrupted", "stalled"} else "error")
+    assert event["results"][1]["summary"] == "partial output"
+
+
+@pytest.mark.parametrize("outcome", ["stalled", "error", "interrupted"])
+def test_graph_listing_preserves_failure_while_siblings_run_and_after_completion(outcome):
+    gates = [threading.Event(), threading.Event()]
+    started = [threading.Event(), threading.Event()]
+    try:
+        result = ad.dispatch_async_delegation_batches(
+            graph_id="deleg_outcome", max_async_children=1,
+            batches=[_batch(i, gates[i], started[i]) for i in range(2)],
+        )
+        assert all(event.wait(5) for event in started)
+        first_id = result["delegations"][0]["delegation_id"]
+        if outcome == "stalled":
+            # Exercise the actual monitor terminalization path, including its
+            # guard against a late worker return overwriting the stall.
+            ad._finalize(first_id, lambda record: ad._stalled_result(first_id, record), "stalled")
+        else:
+            ad._finalize(first_id, {"results": [], "error": "test outcome"}, outcome)
+        event = process_registry.completion_queue.get(timeout=5)
+        assert event["status"] == outcome
+        row = ad.list_async_delegations()[0]
+        assert row["status"] == outcome
+        assert row["active_clusters"] == 1
+        assert row["completed_clusters"] == 0
+        assert row["stalled_clusters"] == int(outcome == "stalled")
+        assert row["failed_clusters"] == int(outcome == "error")
+        assert row["interrupted_clusters"] == int(outcome == "interrupted")
+        assert row["completed_at"] is None
+        assert ad.active_count() == 1
+    finally:
+        for gate in gates:
+            gate.set()
+    _wait_until(lambda: ad.active_count() == 0)
+    row = ad.list_async_delegations()[0]
+    assert row["status"] == outcome
+    assert row["active_clusters"] == 0
+    assert row["completed_clusters"] == 1
+    assert row["completed_at"] is not None
+    assert row["completed_clusters"] + row["stalled_clusters"] + row["failed_clusters"] + row["interrupted_clusters"] == 2
+
+
+def test_cli_agents_counts_a_stalled_graph_with_active_siblings(monkeypatch):
+    import cli
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+    gate = threading.Event()
+    printed = []
+    monkeypatch.setattr(cli, "_cprint", printed.append)
+    try:
+        result = ad.dispatch_async_delegation_batches(
+            graph_id="deleg_cli_stall", max_async_children=1,
+            batches=[_batch(i, gate, threading.Event()) for i in range(2)],
+        )
+        first_id = result["delegations"][0]["delegation_id"]
+        ad._finalize(first_id, lambda record: ad._stalled_result(first_id, record), "stalled")
+        CLICommandsMixin._handle_agents_command(CLICommandsMixin())
+        output = "\n".join(printed)
+        assert "Background delegations: 1 running" in output
+        assert "deleg_cli_stall · stalled" in output
+        assert "1 active, 0 completed, 1 stalled" in output
+    finally:
+        gate.set()
+
+
+def test_restart_replays_components_with_shared_graph_identity_and_separate_claims(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    repo = str(Path(__file__).resolve().parents[2])
+    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
+    producer = '''
+import json, time
+from tools import async_delegation as ad
+result = ad.dispatch_async_delegation_batches(
+    graph_id="deleg_restart", max_async_children=1,
+    batches=[{"goals": [str(i)], "session_key": "owner", "runner": lambda: {"results": []}} for i in range(2)],
+)
+deadline = time.monotonic() + 5
+while ad.active_count() and time.monotonic() < deadline:
+    time.sleep(.01)
+assert ad.active_count() == 0
+print(json.dumps(result))
+'''
+    first = subprocess.run(
+        [sys.executable, "-c", producer], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    dispatched = json.loads(first.stdout.strip().splitlines()[-1])
+    assert dispatched["delegation_id"] == "deleg_restart"
+    # This interpreter imports the actual ledger and restores the other
+    # process's completions, not fixture-created event dictionaries.
+    restored = queue.Queue()
+    assert ad.restore_undelivered_completions(restored) == 2
+    events = [restored.get_nowait() for _ in range(2)]
+    assert {event["graph_id"] for event in events} == {"deleg_restart"}
+    assert len({event["delegation_id"] for event in events}) == 2
+    claims = [ad.claim_event_delivery(event, "test") for event in events]
+    assert all(claims)
+    for event, claim in zip(events, claims):
+        assert ad.claim_event_delivery(event, "another-consumer") is None
+        ad.complete_event_delivery(event, claim)
+    assert ad.restore_undelivered_completions(queue.Queue()) == 0

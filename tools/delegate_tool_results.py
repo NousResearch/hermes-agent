@@ -263,7 +263,7 @@ def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]
         logger.debug("Summary budget computation failed", exc_info=True)
         return None
 
-def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
+def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent, *, batch_size: Optional[int] = None) -> None:
     """Trim subagent summaries in-place so a batch can't overflow the parent's context window (full text spilled to
     disk). Per-summary cap = MIN(dynamic headroom budget, static ``delegation.max_summary_chars`` ceiling; 0 =
     disabled); over-cap summaries become head+tail plus a pointer to the spill file."""
@@ -275,7 +275,7 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         static_ceiling = int(_load_config().get("max_summary_chars", DEFAULT_MAX_SUMMARY_CHARS))
     except (TypeError, ValueError):
         static_ceiling = DEFAULT_MAX_SUMMARY_CHARS
-    candidates = [c for c in (static_ceiling, _parent_summary_char_budget(parent_agent, len(summaries))) if c and c > 0]
+    candidates = [c for c in (static_ceiling, _parent_summary_char_budget(parent_agent, batch_size or len(summaries))) if c and c > 0]
     if not candidates:
         return  # both disabled / unknown → leave summaries untouched
     cap = min(candidates)
@@ -391,11 +391,11 @@ def _rollup_children_cost(parent_agent, children_cost_total: float) -> None:
 
 def _finalize_child_results(
     results: List[Dict[str, Any]], task_list: List[Dict[str, Any]], children: List[tuple[int, Dict[str, Any], Any]],
-    parent_agent,
+    parent_agent, *, batch_size: Optional[int] = None,
 ) -> None:
     """Apply host-owned summary, memory, hook, and cost contracts once."""
     with _parent_finalization_lock(parent_agent):
-        _apply_summary_budget(results, parent_agent)
+        _apply_summary_budget(results, parent_agent, batch_size=batch_size)
         child_by_index = {index: child for index, _task, child in children}
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
         _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))

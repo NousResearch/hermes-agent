@@ -93,6 +93,13 @@ delegation is process-local; work that must survive restart uses `cronjob` or
 
 ## Tests
 
+Dependency-aware calls (`depends_on` non-empty) are planned in `delegation_graph.py`
+and executed by `delegate_tool_dependency.py` through the ordinary `_Batch` lifecycle.
+Completion groups join delivery components without adding prerequisite edges. Atomic
+graph admission shares one capacity slot/coordinator; cancellation gates queued work,
+and parent interrupt ownership transfers only after dispatch succeeds. Calls without
+dependency edges retain upstream per-task/group delivery.
+
 `tests/tools/`. Test the handler through the registry (real dispatch), not the bare function only;
 assert contracts ("every registered tool has a toolset", "no schema description names a tool from
 another toolset") rather than tool counts. Approval/security-boundary tools are E2E'd with real

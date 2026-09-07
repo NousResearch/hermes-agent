@@ -258,18 +258,19 @@ def _ask(prompt: str, reader: Callable[[str], str] | None = None) -> str | None:
         return None
 
 
-def _add_nous_oauth_credential(args, provider: str) -> None:
+def _add_nous_oauth_credential(args, provider: str) -> PooledCredential:
     """``hermes auth add nous --type oauth``: shared-credential import, else device-code login."""
     custom_label = (getattr(args, "label", None) or "").strip() or None
     timeout = getattr(args, "timeout", None) or 15.0
 
-    def _persist(creds: dict, what: str) -> None:
+    def _persist(creds: dict, what: str) -> PooledCredential:
         # `--label` is embedded into providers.nous so label_from_token doesn't overwrite it on every
         # subsequent load_pool("nous").
         entry = auth_mod.persist_nous_credentials(creds, label=custom_label)
         shown_label = entry.label if entry is not None else label_from_token(
             creds.get("access_token", ""), f"{provider}-oauth-1")
         print(f'{what} {provider} OAuth {"device-code " if what == "Saved" else ""}credentials: "{shown_label}"')
+        return entry
 
     # Codex-style auto-import: a shared Nous credential at <hermes-root>/shared/nous_auth.json
     # (written by any previous login) makes `hermes --profile <name> auth add nous --type oauth`
@@ -286,8 +287,7 @@ def _add_nous_oauth_credential(args, provider: str) -> None:
             print("Rehydrating Nous session from shared credentials...")
             rehydrated = auth_mod._try_import_shared_nous_state(timeout_seconds=timeout)
             if rehydrated is not None:
-                _persist(rehydrated, "Imported")
-                return
+                return _persist(rehydrated, "Imported")
             # Expired refresh_token, portal down, etc. — fall through to device-code.
             print("Could not refresh shared credentials — falling back to device-code login.")
 
@@ -297,7 +297,7 @@ def _add_nous_oauth_credential(args, provider: str) -> None:
         client_id=getattr(args, "client_id", None), scope=getattr(args, "scope", None),
         open_browser=not getattr(args, "no_browser", False), timeout_seconds=timeout,
         insecure=bool(getattr(args, "insecure", False)), ca_bundle=getattr(args, "ca_bundle", None))
-    _persist(creds, "Saved")
+    return _persist(creds, "Saved")
 
 
 def _unsuppress_provider_sources(provider: str) -> None:
@@ -312,7 +312,7 @@ def _unsuppress_provider_sources(provider: str) -> None:
         pass
 
 
-def _add_api_key_credential(args, provider: str, pool) -> None:
+def _add_api_key_credential(args, provider: str, pool) -> PooledCredential:
     token = ((getattr(args, "api_key", None) or "").strip()
              or masked_secret_prompt("Paste your API key: ").strip())
     if not token:
@@ -325,8 +325,9 @@ def _add_api_key_credential(args, provider: str, pool) -> None:
     entry = PooledCredential(
         provider=provider, id=uuid.uuid4().hex[:6], label=label, auth_type=AUTH_TYPE_API_KEY,
         priority=0, source=SOURCE_MANUAL, access_token=token, base_url=_provider_base_url(provider))
-    pool.add_entry(entry)
+    entry = pool.add_entry(entry)
     print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')
+    return entry
 
 
 def auth_add_command(args) -> None:
@@ -350,19 +351,18 @@ def auth_add_command(args) -> None:
         _unsuppress_provider_sources(provider)
 
     wanted_priority = getattr(args, "priority", None)
-    before = {entry.id for entry in pool.entries()}
-    _add_credential(args, provider, pool, requested_type)
+    entry = _add_credential(args, provider, pool, requested_type)
     if wanted_priority is not None:
-        _place_added_credential(provider, before, int(wanted_priority))
+        placed_pool = load_pool(provider)
+        moved = placed_pool.move_entry(entry.id, int(wanted_priority))
+        _report_priority(provider, placed_pool, moved, int(wanted_priority), "Placed", "at")
 
 
-def _add_credential(args, provider: str, pool, requested_type: str) -> None:
+def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCredential:
     if requested_type == AUTH_TYPE_API_KEY:
-        _add_api_key_credential(args, provider, pool)
-        return
+        return _add_api_key_credential(args, provider, pool)
     if provider == "nous":
-        _add_nous_oauth_credential(args, provider)
-        return
+        return _add_nous_oauth_credential(args, provider)
 
     spec = _OAUTH_ADD_SPECS.get(provider)
     if spec is None:
@@ -379,38 +379,13 @@ def _add_credential(args, provider: str, pool, requested_type: str) -> None:
         provider=provider, id=uuid.uuid4().hex[:6], label=label, auth_type=AUTH_TYPE_OAUTH, priority=0,
         source=spec.source, access_token=token, **spec.fields(creds, provider))
     first_credential = not pool.entries()
-    pool.add_entry(entry)
+    entry = pool.add_entry(entry)
     # The first Codex/xAI credential becomes the active provider (as the old singleton save path
     # did implicitly); subsequent adds leave the active provider as-is.
     if spec.activate_first and first_credential:
         auth_mod.mark_provider_active_if_unset(provider)
     print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
-
-
-def _place_added_credential(provider: str, before_ids: set, priority: int) -> None:
-    """Move the credential `auth add` just created to *priority*.
-
-    Every add path (api key, OAuth spec, Nous) persists through the pool, so the
-    new row is the one id that was not there before the add. Reloading rather
-    than reusing the add's pool object keeps this correct for paths that write
-    their own store.
-    """
-    pool = load_pool(provider)
-    entries = pool.entries()
-    added = [entry for entry in entries if entry.id not in before_ids]
-    if len(added) == 1:
-        target = added[0]
-    elif not added and len(entries) == 1:
-        # The add updated the sole existing row in place (a repeat Nous login).
-        target = entries[0]
-    else:
-        # The credential was saved; only the placement is unresolved, so do not fail.
-        print(f"note: could not identify the credential just added to {provider}; set its "
-              f"priority with `hermes auth priority {provider} <target> {priority}`.",
-              file=sys.stderr)
-        return
-    moved = pool.move_entry(target.id, priority)
-    _report_priority(provider, pool, moved, priority, "Placed", "at")
+    return entry
 
 
 def _report_priority(provider: str, pool, moved, requested: int, verb: str, prep: str) -> None:

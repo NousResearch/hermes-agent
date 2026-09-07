@@ -1714,7 +1714,15 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
                     None,
                 )
                 if match is None:
-                    preserved.append(item)
+                    # A modified unnamed object no longer equals its expanded counterpart.
+                    # Keep its positional raw counterpart as a structural fallback so
+                    # unchanged nested template fields are still restored.
+                    index = len(preserved)
+                    if index < len(raw) and index < len(loaded_expanded):
+                        preserved.append(
+                            _preserve_env_ref_templates(item, raw[index], loaded_expanded[index]))
+                    else:
+                        preserved.append(item)
                     continue
                 used_loaded.add(match)
                 preserved.append(

@@ -26,7 +26,9 @@ def test_auxiliary_chat_wire_sanitizes_without_mutating_history(async_mode):
     else:
         with OpenAI(api_key="fixture", base_url="http://127.0.0.1:1/v1") as client:
             _relay_sync_completion(client, kwargs, create=captured.append)
-    assert captured[0]["messages"] == [{"role": "assistant", "content": "answer"}]
+    assert captured[0]["messages"] == [
+        {"role": "assistant", "content": "answer", "reasoning": "private"}
+    ]
     assert kwargs["messages"] == original
 
 

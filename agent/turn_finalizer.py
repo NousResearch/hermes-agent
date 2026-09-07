@@ -473,7 +473,7 @@ def finalize_turn(
     # the fallible tail-shaping / override / micro-compaction / persist calls — so a
     # raise in any of them can't drop text the user already saw (#95514, #8049).
     def _persist_step():
-        nonlocal final_response
+        nonlocal final_response, failed, _turn_exit_reason
         _drop_transcript_scaffolding(agent, messages)
         final_response, _recovered_from_stream = _recover_final_from_stream(
             agent, final_response, interrupted, failed
@@ -481,7 +481,11 @@ def finalize_turn(
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed:
             _micro_compact_after_turn(agent, messages, final_response, logger)
-        agent._persist_session(messages, conversation_history)
+        _persisted = agent._persist_session(messages, conversation_history)
+        if _persisted is False:
+            failed = True
+            _turn_exit_reason = "session_persistence_failed"
+            final_response = ""
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
 

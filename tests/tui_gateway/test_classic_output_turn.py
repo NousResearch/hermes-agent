@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from hermes_cli.profiles import get_profile_dir
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tools import hosted_room_artifact
 from tools.registry import registry
@@ -16,8 +17,8 @@ from tests.tui_gateway.test_prompt_accept_logging import _session, turn_env
 
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_real_submit_publication_and_recipient_bytes(turn_env, tmp_path, monkeypatch, interrupted):
-    home = tmp_path / "writer"
-    home.mkdir()
+    home = get_profile_dir("writer")
+    home.mkdir(parents=True)
     token = set_hermes_home_override(home)
     transport = SimpleNamespace(write=lambda frame: True)
     transport_token = bind_transport(transport)
@@ -74,8 +75,8 @@ def test_real_submit_publication_and_recipient_bytes(turn_env, tmp_path, monkeyp
 
 @pytest.mark.parametrize('failure', ['persistence', 'build_start', 'build_ready'])
 def test_pre_run_failure_retires_admission_without_model_or_replay(turn_env, tmp_path, monkeypatch, failure):
-    home = tmp_path / 'failed-writer'
-    home.mkdir()
+    home = get_profile_dir('failed-writer')
+    home.mkdir(parents=True)
     token = set_hermes_home_override(home)
     transport = SimpleNamespace(write=lambda frame: True)
     transport_token = bind_transport(transport)

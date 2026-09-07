@@ -12395,14 +12395,16 @@ function touchPoolBackend(profile) {
 
 // Evict least-recently-used SPAWNED pool backends until at most `keep` remain —
 // but only ever evict backends without a live renderer socket (stale beyond the
-// keepalive window). When every backend is actively kept alive we let the pool
-// exceed the soft cap rather than kill a running session. Process-less
-// descriptor entries (remote/cloud registry sources, per-profile remote
-// overrides — `entry.process === null`) are excluded from the cap entirely:
-// they hold no local process, so counting them used to let a roster refresh
-// across N registered remote connections LRU-evict a REAL local backend that
-// was merely idle past the keepalive window. Descriptors are still reclaimed
-// by the idle reaper.
+// keepalive window) under the soft cap. When every backend is actively kept
+// alive we let the pool exceed the soft cap rather than kill a running
+// session, but the hard cap (keep + 6, see pool-eviction.ts) bounds the
+// pinned tier so N-profile fleets cannot hold N resident serve processes
+// indefinitely (#105239). Process-less descriptor entries (remote/cloud
+// registry sources, per-profile remote overrides — `entry.process === null`)
+// are excluded from the cap entirely: they hold no local process, so
+// counting them used to let a roster refresh across N registered remote
+// connections LRU-evict a REAL local backend that was merely idle past the
+// keepalive window. Descriptors are still reclaimed by the idle reaper.
 function evictLruPoolBackends(keep) {
   const evictions = selectPoolEvictions(backendPool.entries(), Math.max(0, keep), Date.now(), POOL_KEEPALIVE_FRESH_MS)
 

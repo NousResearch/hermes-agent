@@ -17,7 +17,8 @@ field failure each stage guards are documented in `hermes_cli/AGENTS.md`; user-f
 The systemd blunt-restart fallback waits for the unit's `TimeoutStopUSec` plus
 `TimeoutStartUSec`, with 15 seconds of client-side slack. It reads the target unit
 in the same manager scope as the restart; both the initial attempt and retry use
-this budget. A start after a graceful drain uses only the start budget plus slack.
+this budget, including the catch-up restart after an interrupted update.
+A start after a graceful drain uses only the start budget plus slack.
 A missing, unparseable, or infinite phase limit falls back to 90 seconds
 for that phase, keeping unattended updates bounded. Timing out the `systemctl`
 client does **not** cancel the manager's transaction. Custom multi-command stop

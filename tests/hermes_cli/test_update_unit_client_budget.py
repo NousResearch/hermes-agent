@@ -6,14 +6,17 @@ import pytest
 from hermes_cli import update_cmd_fleet as fleet
 
 
-@pytest.mark.parametrize("graceful,retry", [(False, False), (False, True), (True, False)])
+@pytest.mark.parametrize("graceful,retry", [(False, False), (False, True), (True, False), ("catchup", False)])
 def test_unit_transaction_budget_preserves_scope_and_health(monkeypatch, graceful, retry):
-    scope = ["systemctl", "--no-ask-password"]
-    manage = ["sudo", "-n", *scope]
+    catchup = graceful == "catchup"
+    scope = ["systemctl", "--user"] if catchup else ["systemctl", "--no-ask-password"]
+    manage = scope if catchup else ["sudo", "-n", *scope]
     calls = []
 
     def systemctl(cmd, *, timeout):
         calls.append((cmd, timeout))
+        if "list-units" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "hermes-serve-test.service loaded active running", "")
         if "show" in cmd:
             assert cmd[:len(scope)] == scope
             output = "42" if "--property=MainPID" in cmd else "TimeoutStopUSec=70s\nTimeoutStartUSec=90s"
@@ -24,6 +27,13 @@ def test_unit_transaction_budget_preserves_scope_and_health(monkeypatch, gracefu
         return subprocess.CompletedProcess(cmd, 0, "active", "")
 
     monkeypatch.setattr(fleet, "_systemctl", systemctl)
+    if catchup:
+        monkeypatch.setattr(fleet, "_SYSTEMD_SCOPES", (("user", scope),))
+        failed = []
+        fleet._restart_systemd_gateway_units_best_effort(failed)
+        assert not failed
+        assert sum("restart" in cmd for cmd, _ in calls) == 1
+        return
     monkeypatch.setattr(fleet, "_drain_or_signal_gateway_for_update", lambda *a: True)
     health = iter([False, True] if retry else [True])
     monkeypatch.setattr(fleet, "_wait_for_service_active", lambda *a, **kw: next(health))

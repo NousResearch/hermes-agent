@@ -137,7 +137,7 @@ def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
     monkeypatch.setattr(
         codex_models,
         "_fetch_models_from_api",
-        lambda _token: codex_models._finalize_codex_models(["gpt-6-astra"], allow_astra=True),
+        lambda _token: codex_models._finalize_codex_models(["gpt-6-astra"]),
     )
     entitled = get_codex_model_ids(access_token="entitled-token")
     assert entitled[entitled.index("gpt-6-astra") + 1] == "gpt-6-astra-900k"

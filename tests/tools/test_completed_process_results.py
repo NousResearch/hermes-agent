@@ -136,6 +136,7 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
         return json.loads(result.stdout)
 
     receipt = json.loads((home / "logs" / "process-results" / f"{process_id}.json").read_text(encoding="utf-8"))
+    assert receipt["parent_session_id"]  # CLI owner must be stamped before its reader starts.
     env["HERMES_SESSION_ID"] = receipt["parent_session_id"]
     recovered = read_result(home)
     assert recovered["result"]["status"] == "exited", recovered
@@ -205,3 +206,20 @@ def test_receipts_are_bounded_redacted_and_session_scoped(tmp_path, monkeypatch)
         expired = time.time() - receipts.RESULT_RETENTION_SECONDS - 1
         os.utime(path, (expired, expired))
     assert fresh.get(recovered.id) is None
+
+    # Multiplex readers must keep the producer's profile on native threads.
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    profile = tmp_path / "thread-profile"
+    token = set_hermes_home_override(profile)
+    try:
+        with scoped_current_session_id("thread-owner"):
+            child = registry.spawn_local(
+                shlex.join([Path(sys.executable).as_posix(), "-c", "print('SCOPED_RESULT')"]),
+                cwd=str(tmp_path), task_id="thread-task")
+            child._reader_thread.join(timeout=20)
+            assert not child._reader_thread.is_alive()
+            assert (profile / "logs" / "process-results" / f"{child.id}.json").exists()
+            assert "SCOPED_RESULT" in ProcessRegistry().read_log(child.id)["output"]
+    finally:
+        reset_hermes_home_override(token)
+    assert not (get_hermes_home() / "logs" / "process-results" / f"{child.id}.json").exists()

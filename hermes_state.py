@@ -27,6 +27,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
+from hermes_cli.sqlite_runtime import ensure_safe_sqlite_writer
 from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
 from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
@@ -670,7 +671,7 @@ class SessionDB(
         jittered application-level retry handles contention, not SQLite's busy handler;
         isolation_level=None: explicit BEGIN IMMEDIATE."""
         conn = _connect_tracked_db(
-            str(self.db_path), check_same_thread=False, timeout=1.0, isolation_level=None,
+            str(self.db_path), check_same_thread=False, timeout=0.1, isolation_level=None,
         )
         try:
             conn.row_factory = sqlite3.Row
@@ -680,6 +681,7 @@ class SessionDB(
             # Unknown -> reads queue on the writer lock (slow but correct) instead of racing SQLITE_BUSY
             # on a file that may really be in rollback-journal mode.
             self._wal_active = mode == "wal" and _on_disk_journal_mode(conn) == "wal"
+            ensure_safe_sqlite_writer(conn)
             # Existing WAL/SHM files may predate the main-file hardening;
             # normalize any sidecars that became visible during WAL setup.
             _secure_state_db_files(self.db_path)

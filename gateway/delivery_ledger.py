@@ -146,12 +146,19 @@ def _connect() -> sqlite3.Connection:
     from hermes_cli.sqlite_util import open_db
 
     # Shared state.db: SessionDB owns the durable PRAGMA set; this opener keeps the plain-tuple rows
-    # and the 10 s busy timeout it always had.
+    # and the 10 s busy timeout it always had. open_db() routes journal-mode through
+    # apply_wal_with_fallback() (before `initialize` runs), which already fails closed correctly on a
+    # WAL-reset-vulnerable runtime by keeping DELETE mode instead of refusing the open outright;
+    # ensure_safe_sqlite_writer() in _initialize_schema is the harder stop for the one case that leaves
+    # open — an existing on-disk WAL database on a vulnerable runtime, which apply_wal_with_fallback
+    # deliberately keeps (never-live-downgrade) rather than refuses.
     return open_db(_db_path(), db_label="state.db (delivery_ledger)", busy_timeout_ms=10_000,
                    row_factory=None, initialize=_initialize_schema)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
+    from hermes_cli.sqlite_runtime import ensure_safe_sqlite_writer
+    ensure_safe_sqlite_writer(conn)
     conn.execute(
         """CREATE TABLE IF NOT EXISTS delivery_obligations (
             obligation_id TEXT PRIMARY KEY,

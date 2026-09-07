@@ -31,9 +31,7 @@ class StreamDeliveryMixin:
             return False
 
     def _deliver_to_stream_callbacks(self, text: str) -> bool:
-        """Send text only when the current turn has passed the public response gate."""
-        if getattr(self, "_public_stream_suppressed", False):
-            return False
+        """Send provider deltas to the normal public stream callbacks."""
         results = [self._call_quietly(cb, text) for cb in (self.stream_delta_callback, self._stream_callback)]
         return any(results)
 
@@ -319,6 +317,8 @@ class StreamDeliveryMixin:
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered; superseded writers are fenced like content deltas."""
+        if getattr(self, "_public_stream_suppressed", False):
+            return
         if self._stream_writer_superseded():
             # Single-writer guard (#65991): fence out a superseded stream's reasoning deltas the same way as
             # content deltas.

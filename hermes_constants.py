@@ -1042,12 +1042,16 @@ def is_container() -> bool:
     return _container_detected
 
 
-def _proc_file_has_marker(path: str, markers: tuple[str, ...]) -> bool:
+def _read_proc(path: str) -> str:
     try:
         with open(path, "r", encoding="utf-8") as f:
-            content = f.read()
+            return f.read()
     except OSError:
-        return False
+        return ""
+
+
+def _proc_file_has_marker(path: str, markers: tuple[str, ...]) -> bool:
+    content = _read_proc(path)
     return any(marker in content for marker in markers)
 
 
@@ -1067,15 +1071,9 @@ def _detect_container() -> bool:
 
 
 def _root_mount_has_marker(path: str, markers: tuple[str, ...]) -> bool:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                fields = line.split()  # mountinfo field 5 (index 4) is the mount point
-                if len(fields) >= 5 and fields[4] == "/":
-                    return any(marker in line for marker in markers)
-    except OSError:
-        pass
-    return False
+    """mountinfo field 5 (index 4) is the mount point; only the root ("/") line is the process's own rootfs."""
+    root_lines = [line for line in _read_proc(path).splitlines() if len(f := line.split()) >= 5 and f[4] == "/"]
+    return any(marker in line for line in root_lines for marker in markers)
 
 
 def get_config_path() -> Path:

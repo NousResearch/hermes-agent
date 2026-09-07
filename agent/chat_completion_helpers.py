@@ -1827,102 +1827,103 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
     from agent.fallback_cooldown import _arm_rate_limit_cooldown
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason)
-    if agent._fallback_index >= len(agent._fallback_chain):
-        return _fallback_chain_exhausted(agent, reason)
-    fb = agent._fallback_chain[agent._fallback_index]
-    agent._fallback_index += 1
-    fb_key = _fallback_entry_key(fb)
-    if getattr(agent, "_unavailable_fallback_keys", None) is None:
-        agent._unavailable_fallback_keys = set()
-    unavailable = agent._unavailable_fallback_keys
-    fb_provider = (fb.get("provider") or "").strip().lower()
-    fb_model = (fb.get("model") or "").strip()
-    if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
-        return agent._try_activate_fallback(reason)
+    while True:
+        if agent._fallback_index >= len(agent._fallback_chain):
+            return _fallback_chain_exhausted(agent, reason)
+        fb = agent._fallback_chain[agent._fallback_index]
+        agent._fallback_index += 1
+        fb_key = _fallback_entry_key(fb)
+        if getattr(agent, "_unavailable_fallback_keys", None) is None:
+            agent._unavailable_fallback_keys = set()
+        unavailable = agent._unavailable_fallback_keys
+        fb_provider = (fb.get("provider") or "").strip().lower()
+        fb_model = (fb.get("model") or "").strip()
+        if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
+            continue
 
-    try:
-        from agent.auxiliary_client import resolve_provider_client
-        from hermes_cli.fallback_config import resolve_entry_api_key
-        # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
-        # of falling through to OpenRouter defaults.
-        fb_base_url_hint = (fb.get("base_url") or "").strip() or None
-        fb_api_key_hint = resolve_entry_api_key(fb)
-        fb_api_mode_explicit, fb_api_mode = _fallback_api_mode_hint(fb, fb_provider, fb_base_url_hint)
-        # Ollama Cloud: OLLAMA_API_KEY from env when the entry has no key. Host match, not
-        # substring — GHSA-76xc-57q6-vm5m.
-        if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
-            from agent.secret_scope import get_secret
-            fb_api_key_hint = get_secret("OLLAMA_API_KEY") or None
-        # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
-        fb_client, _resolved_fb_model = resolve_provider_client(
-            fb_provider, model=fb_model, raw_codex=True, explicit_base_url=fb_base_url_hint, explicit_api_key=fb_api_key_hint, api_mode=fb_api_mode)
-        if fb_client is None:
-            logger.warning("Fallback to %s failed: provider not configured", fb_provider)
-            unavailable.add(fb_key)
-            return agent._try_activate_fallback(reason)
         try:
-            from hermes_cli.model_normalize import normalize_model_for_provider
-            fb_model = normalize_model_for_provider(fb_model, fb_provider)
-        except Exception as _norm_err:
-            logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
+            from agent.auxiliary_client import resolve_provider_client
+            from hermes_cli.fallback_config import resolve_entry_api_key
+            # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
+            # of falling through to OpenRouter defaults.
+            fb_base_url_hint = (fb.get("base_url") or "").strip() or None
+            fb_api_key_hint = resolve_entry_api_key(fb)
+            fb_api_mode_explicit, fb_api_mode = _fallback_api_mode_hint(fb, fb_provider, fb_base_url_hint)
+            # Ollama Cloud: OLLAMA_API_KEY from env when the entry has no key. Host match, not
+            # substring — GHSA-76xc-57q6-vm5m.
+            if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
+                from agent.secret_scope import get_secret
+                fb_api_key_hint = get_secret("OLLAMA_API_KEY") or None
+            # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
+            fb_client, _resolved_fb_model = resolve_provider_client(
+                fb_provider, model=fb_model, raw_codex=True, explicit_base_url=fb_base_url_hint, explicit_api_key=fb_api_key_hint, api_mode=fb_api_mode)
+            if fb_client is None:
+                logger.warning("Fallback to %s failed: provider not configured", fb_provider)
+                unavailable.add(fb_key)
+                continue
+            try:
+                from hermes_cli.model_normalize import normalize_model_for_provider
+                fb_model = normalize_model_for_provider(fb_model, fb_provider)
+            except Exception as _norm_err:
+                logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
 
-        fb_base_url = str(fb_client.base_url)
-        if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
-            fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
+            fb_base_url = str(fb_client.base_url)
+            if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
+                fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
 
-        old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
+            old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
 
-        # Clear the per-config context_length override so the fallback model's own context
-        # window is resolved instead of the previous model's stale value.
-        # See #22387.
-        agent._config_context_length = None
-        agent.model, agent.provider, agent.requested_provider = fb_model, fb_provider, fb_provider
-        agent.base_url, agent.api_mode = fb_base_url, fb_api_mode
-        # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
-        agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
-        if hasattr(agent, "_transport_cache"):
-            agent._transport_cache.clear()
-        agent._fallback_activated = True
+            # Clear the per-config context_length override so the fallback model's own context
+            # window is resolved instead of the previous model's stale value.
+            # See #22387.
+            agent._config_context_length = None
+            agent.model, agent.provider, agent.requested_provider = fb_model, fb_provider, fb_provider
+            agent.base_url, agent.api_mode = fb_base_url, fb_api_mode
+            # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
+            agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
+            if hasattr(agent, "_transport_cache"):
+                agent._transport_cache.clear()
+            agent._fallback_activated = True
 
-        _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
-        from agent.client_lifecycle import _swap_fallback_clients
-        _swap_fallback_clients(agent, fb_client, fb_provider, fb_model, fb_base_url, fb_api_mode)
+            _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
+            from agent.client_lifecycle import _swap_fallback_clients
+            _swap_fallback_clients(agent, fb_client, fb_provider, fb_model, fb_base_url, fb_api_mode)
 
-        from agent.agent_runtime_helpers import sync_credential_pool_entry_id
-        sync_credential_pool_entry_id(agent)
+            from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+            sync_credential_pool_entry_id(agent)
 
-        agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
-            provider=fb_provider, base_url=fb_base_url, api_mode=fb_api_mode, model=fb_model)
-        agent._ensure_lmstudio_runtime_loaded()  # LM Studio: preload before probing context length
-        _update_fallback_context_compressor(agent)
-        _reresolve_fallback_reasoning_config(agent)
-        _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
-        rewrite_prompt_model_identity(agent, fb_model, fb_provider)
+            agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
+                provider=fb_provider, base_url=fb_base_url, api_mode=fb_api_mode, model=fb_model)
+            agent._ensure_lmstudio_runtime_loaded()  # LM Studio: preload before probing context length
+            _update_fallback_context_compressor(agent)
+            _reresolve_fallback_reasoning_config(agent)
+            _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+            rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
-        notice = (
-            f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
-            f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
-        if cooldown_seconds is not None:
-            remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
-            notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
-        _buffer_fallback_notice(agent, notice)
-        # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
-        # provenance so the restore path only emits a recovery notice after a real fallback.
-        agent._provider_fallback_active = True
-        agent._provider_fallback_route = (str(fb_model), str(fb_provider))
-        logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
-        # The stale-call streak measured the OLD provider; carrying it over would
-        # short-circuit the fresh fallback before its first stream attempt.
-        _reset_stale_streak(agent)
-        from agent.native_compaction import resolve_native_compaction_capabilities
-        agent.runtime_capabilities = resolve_native_compaction_capabilities(
-            model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
-        return True
-    except Exception as e:
-        if fb_provider == "nous":
-            unavailable.add(fb_key)
-        logger.error("Failed to activate fallback %s: %s", fb_model, e)
-        return agent._try_activate_fallback(reason)  # try next in chain
+            notice = (
+                f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
+                f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
+            if cooldown_seconds is not None:
+                remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
+                notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
+            _buffer_fallback_notice(agent, notice)
+            # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
+            # provenance so the restore path only emits a recovery notice after a real fallback.
+            agent._provider_fallback_active = True
+            agent._provider_fallback_route = (str(fb_model), str(fb_provider))
+            logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
+            # The stale-call streak measured the OLD provider; carrying it over would
+            # short-circuit the fresh fallback before its first stream attempt.
+            _reset_stale_streak(agent)
+            from agent.native_compaction import resolve_native_compaction_capabilities
+            agent.runtime_capabilities = resolve_native_compaction_capabilities(
+                model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
+            return True
+        except Exception as e:
+            if fb_provider == "nous":
+                unavailable.add(fb_key)
+            logger.error("Failed to activate fallback %s: %s", fb_model, e)
+            continue  # try next in chain
 
 
 # Keys outside the Chat Completions schema that strict gateways (Fireworks-backed OpenCode

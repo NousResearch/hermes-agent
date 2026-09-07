@@ -39,6 +39,17 @@ _FAILURE_TYPE_ORDER = (
 MAX_ERROR_CHARS = 500
 _MAX_SIGNATURE_ERROR_CHARS = 200
 
+# Some script runners deliberately replace a repeated failure card with a short
+# stdout marker while preserving the non-zero exit. The outer cron scheduler sees
+# that marker as the error for this run. Its occurrence counter is telemetry, not
+# condition identity: signing it verbatim mints a fresh outer incident every tick
+# and defeats both the runner's dedup and cron's ack gate.
+_SUPPRESSED_DUPLICATE_OCCURRENCE_RE = re.compile(
+    r"(?P<prefix>suppressed:\s*duplicate of an open condition\s*\(occurrence\s*)"
+    r"\d+(?P<suffix>\))",
+    re.IGNORECASE,
+)
+
 _lock = threading.RLock()
 
 
@@ -90,8 +101,12 @@ def _transaction() -> Iterator[sqlite3.Connection]:
 
 
 def _normalize_error(error: str) -> str:
-    """Strip whitespace and lowercase before signing (dedup normalization)."""
-    return re.sub(r"\s+", " ", str(error or "")).strip().lower()
+    """Remove run-varying fields, then normalize whitespace/case for signing."""
+    text = str(error or "")
+    text = _SUPPRESSED_DUPLICATE_OCCURRENCE_RE.sub(
+        r"\g<prefix>N\g<suffix>", text
+    )
+    return re.sub(r"\s+", " ", text).strip().lower()
 
 
 def _redact_error(error: str) -> str:

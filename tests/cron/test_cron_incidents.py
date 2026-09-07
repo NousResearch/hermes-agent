@@ -106,6 +106,38 @@ def test_same_signature_dedups_same_incident(monkeypatch, tmp_path):
     assert inc.get_incident(id1)["state"] == "detected"
 
 
+def test_runner_suppression_occurrence_dedups_same_outer_incident(monkeypatch, tmp_path):
+    """An inner runner's occurrence counter must not bypass outer cron dedup."""
+    inc = _point_db(monkeypatch, tmp_path)
+    error_2 = (
+        "Script exited with code 3\nstdout:\n"
+        "(suppressed: duplicate of an open condition (occurrence 2))"
+    )
+    error_43 = (
+        "Script exited with code 3\nstdout:\n"
+        "(suppressed: duplicate of an open condition (occurrence 43))"
+    )
+
+    id1, new1 = inc.upsert_incident("job-1", error_2)
+    id2, new2 = inc.upsert_incident("job-1", error_43)
+
+    assert id1 == id2
+    assert new1 is True
+    assert new2 is False
+    assert inc.count_incidents() == 1
+
+
+def test_unsuppressed_occurrence_text_still_mints_distinct_incidents(monkeypatch, tmp_path):
+    """Do not erase numbers from arbitrary failures that may carry real identity."""
+    inc = _point_db(monkeypatch, tmp_path)
+
+    id1, _ = inc.upsert_incident("job-1", "worker failed at occurrence 2")
+    id2, new2 = inc.upsert_incident("job-1", "worker failed at occurrence 43")
+
+    assert id1 != id2
+    assert new2 is True
+
+
 def test_error_change_mints_new_incident(monkeypatch, tmp_path):
     inc = _point_db(monkeypatch, tmp_path)
 

@@ -9,7 +9,8 @@ forever. The fix gives ``block_task`` a typed ``kind`` and a persistent
   never enter the human ``blocked`` bucket a cron would keep unblocking.
 * ``needs_input`` / ``capability`` / un-typed blocks land in ``blocked``;
   each same-cause re-block after an unblock increments ``block_recurrences``,
-  and at ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+  and at ``BLOCK_RECURRENCE_LIMIT`` non-needs_input tasks route to ``triage``.
+  ``needs_input`` stays blocked for a human, never auto-decomposed.
 * ``unblock_task`` deliberately does NOT reset ``block_recurrences`` (the
   amnesia that let the loop run unbounded).
 * A successful ``complete_task`` resets the loop memory.

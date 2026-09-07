@@ -278,7 +278,7 @@ when the dependency gate clears. `unblock` never routes directly to `triage`.
 If you unblock a task and it later shows up in **`triage`**, the unblock is not
 what put it there. A subsequent *re-block for the same reason* did: after a task
 is blocked → unblocked → re-blocked for the same cause `BLOCK_RECURRENCE_LIMIT`
-times (default `2`), the unblock-loop breaker stops sending it back to `blocked`
+times (default `2`), except for `needs_input`, the unblock-loop breaker stops sending it back to `blocked`
 — where a cron would just keep unblocking it — and routes it to `triage` for a
 human decision. This is a deterministic DB guard, not an LLM judgment call, and
 a task's body text cannot opt out of it: the recurrence counter deliberately
@@ -286,6 +286,11 @@ survives each unblock (it resets only on a successful `complete`). To keep an
 unblocked task in the work pool, resolve *why it keeps re-blocking* (unfinished
 parent, missing input, unmet capability) before unblocking, or raise
 `BLOCK_RECURRENCE_LIMIT` if the loop is expected.
+
+`kind=needs_input` always stays in **`blocked`**, including repeated blocks: a
+human answer cannot be replaced by decomposition. Its recurrence counter and
+`blocked` notifications are preserved. Automation must not unblock it until
+the requested input has actually arrived.
 :::
 
 ## How workers interact with the board
@@ -299,7 +304,7 @@ parent, missing input, unmet capability) before unblocking, or raise
 | `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
 | `kanban_request_review` | Start same-card review with a durable `summary`, optional `metadata`, and optional reviewer profile. The task moves to `review`; this is not a block. | `summary` |
 | `kanban_request_changes` | Reviewer verdict from an active review run. Closes that run, reapplies parent gating, and routes the task to its original implementer without block-loop accounting. | `reason` |
-| `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`. | `reason` |
+| `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`, except `needs_input`, which stays `blocked`. | `reason` |
 | `kanban_heartbeat` | Signal liveness during long operations. Pure side-effect. | — |
 | `kanban_comment` | Append a durable note to the task thread. | `task_id`, `body` |
 | `kanban_attach` | Attach a file to a task by passing its bytes inline (base64); stored under the task's attachments dir (25 MB cap). | file bytes + name |
@@ -571,7 +576,7 @@ hermes dashboard        # "Kanban" tab appears in the nav, after "Skills"
 ### What the plugin gives you
 
 - A **Kanban** tab showing one column per status: `triage`, `todo`, `ready`, `running`, `blocked`, `done` (plus `archived` when the toggle is on).
-  - `triage` is the parking column for rough ideas. By default (`kanban.auto_decompose: true`), the dispatcher auto-runs the **decomposer** on tasks that land here. The built-in decomposer uses the `auxiliary.kanban_decomposer` model path, reads your profile roster (with descriptions), and fans the task out into a small graph of child tasks routed to the best-fit specialists. The original task stays alive as the parent of every child so its assignee (`kanban.orchestrator_profile`, or the active default profile when unset) wakes back up to judge completion when everything finishes. Flip the **Orchestration: Auto/Manual** pill at the top of the page (emerald = Auto, muted gray = Manual), or by editing `config.yaml` directly. Both modes coexist with `hermes kanban specify` - that's still available as a single-task spec rewrite when you don't want fan-out.
+  - `triage` is the parking column for rough ideas. By default (`kanban.auto_decompose: true`), the dispatcher auto-runs the **decomposer** on tasks that land here. The built-in decomposer uses the `auxiliary.kanban_decomposer` model path, reads your profile roster (with descriptions), and fans the task out into a small graph of child tasks routed to the best-fit specialists. The original task stays alive as the parent of every child so its existing assignee (or, for unassigned roots, `kanban.orchestrator_profile` with the active default profile as fallback) wakes back up to judge completion when everything finishes. Flip the **Orchestration: Auto/Manual** pill at the top of the page (emerald = Auto, muted gray = Manual), or by editing `config.yaml` directly. Both modes coexist with `hermes kanban specify` - that's still available as a single-task spec rewrite when you don't want fan-out.
 - Cards show the task id, title, priority badge, tenant tag, assigned profile, comment/link counts, a **progress pill** (`N/M` children done when the task has dependents), and "created N ago". A per-card checkbox enables multi-select.
 - **Per-profile lanes inside Running** — toolbar checkbox toggles sub-grouping of the Running column by assignee.
 - **Live updates via WebSocket** — the plugin tails the append-only `task_events` table on a short poll interval; the board reflects changes the instant any profile (CLI, gateway, or another dashboard tab) acts. Reloads are debounced so a burst of events triggers a single refetch.
@@ -593,7 +598,7 @@ Visually the target is the familiar Linear / Fusion layout: dark theme, column h
 
 The kanban board has two ways to handle a task you drop into the Triage column:
 
-**Auto (default)** — `kanban.auto_decompose: true`. The gateway-embedded dispatcher runs the **decomposer** on each tick, capped by `kanban.auto_decompose_per_tick` (default 3 tasks per tick) so a bulk-load of triage tasks doesn't burst-spend the auxiliary LLM. The decomposer uses the built-in decomposition prompt plus the `auxiliary.kanban_decomposer` model path, reads your installed profiles + their descriptions, and asks the LLM to produce a JSON task graph: which tasks to spawn, who they go to, and which depend on which. The original triage task becomes the parent of every leaf in the graph, so it stays alive until the whole graph completes - and then promotes back to `ready` so its assignee (`kanban.orchestrator_profile`, or the active default profile when unset) can judge completion and add more tasks if the work isn't done. This is the "drop a one-liner, walk away" flow.
+**Auto (default)** — `kanban.auto_decompose: true`. The gateway-embedded dispatcher runs the **decomposer** on each tick, capped by `kanban.auto_decompose_per_tick` (default 3 tasks per tick) so a bulk-load of triage tasks doesn't burst-spend the auxiliary LLM. The decomposer uses the built-in decomposition prompt plus the `auxiliary.kanban_decomposer` model path, reads your installed profiles + their descriptions, and asks the LLM to produce a JSON task graph: which tasks to spawn, who they go to, and which depend on which. The original triage task becomes the parent of every leaf in the graph, so it stays alive until the whole graph completes - and then promotes back to `ready` so its existing assignee (or, for unassigned roots, `kanban.orchestrator_profile` with the active default profile as fallback) can judge completion and add more tasks if the work isn't done. This is the "drop a one-liner, walk away" flow.
 
 **Manual** — `kanban.auto_decompose: false`. Triage tasks stay in triage until you act. Click the **⚗ Decompose** button on a card, run `hermes kanban decompose <id>` (or `--all`), or use `/kanban decompose <id>` from a chat. This matches the pre-decomposer behavior of the board, useful when you want full control over what runs when.
 
@@ -603,7 +608,7 @@ Flip between the two modes from the **Orchestration: Auto/Manual** pill at the t
 
 The decomposer's routing decisions depend on profile descriptions, which is a per-profile labeling primitive you set with `hermes profile create --description "..."`, `hermes profile describe <name> --text "..."`, `hermes profile describe <name> --auto` (LLM-generates from the profile's installed skills + model), or the dashboard's per-profile editor in the expanded **Orchestration settings** panel. Profiles without a description still appear in the roster — they're routable by name, just less precisely. The decomposer NEVER lands a child task with `assignee=None`: when the LLM picks an unknown profile, the child gets routed to `kanban.default_assignee` (or the active default profile if that's unset).
 
-`kanban.orchestrator_profile` does not load that profile's prompt, skills, or custom logic into the decomposition call. It controls who owns the root/orchestration task after fan-out. To change the decomposer's model/provider, configure `auxiliary.kanban_decomposer`. To use a profile's custom task-splitting logic instead of the built-in decomposer, switch to Manual mode and have that profile create or decompose tasks explicitly.
+`kanban.orchestrator_profile` does not load that profile's prompt, skills, or custom logic into the decomposition call. It supplies the owner for an **unassigned** root/orchestration task after fan-out. An existing root owner is preserved, just as with single-task specification; child routing remains independent. To deliberately transfer ownership, assign the root explicitly. To change the decomposer's model/provider, configure `auxiliary.kanban_decomposer`. To use a profile's custom task-splitting logic instead of the built-in decomposer, switch to Manual mode and have that profile create or decompose tasks explicitly.
 
 Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 
@@ -611,7 +616,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 |---|---|---|
 | `auto_decompose` | `true` | Dispatcher auto-runs the built-in decomposer for Triage tasks every tick. It does not gate profile-driven `kanban_create` calls or creator wake turns. |
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
-| `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
+| `orchestrator_profile` | `""` | Fallback owner for an unassigned root after decomposition; existing owners are retained. Empty = active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
 | `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
 | `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |
@@ -1131,7 +1136,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `completed` | `{result_len, summary?}` | Worker wrote `--result` / `--summary` and task hit `done`. `summary` is the first-line handoff (400-char cap); full version lives on the run row. If `complete_task` is called on a never-claimed task with handoff fields, a zero-duration run is synthesized so `run_id` still points at something. |
 | `blocked` | `{reason, kind, recurrences}` | Worker or human flipped the task to `blocked`. `kind` is the typed block reason (`needs_input`, `capability`, `transient`, or `null` for a generic block); `recurrences` is the unblock-loop counter. Synthesizes a zero-duration run when called on a never-claimed task with `--reason`. |
 | `dependency_wait` | `{reason, kind}` | Worker blocked with `kind=dependency` — the task is only waiting on another task, so it routes to `todo` (parent-gated, auto-promoted) instead of `blocked`. No human needed. |
-| `block_loop_detected` | `{reason, kind, recurrences, limit}` | A task was unblocked and re-blocked for the same reason `BLOCK_RECURRENCE_LIMIT` times (default 2). Instead of landing in `blocked` again — where a cron would keep unblocking it — it routes to `triage` for a human decision, breaking the unblock↔re-block loop. |
+| `block_loop_detected` | `{reason, kind, recurrences, limit}` | A task was unblocked and re-blocked for the same reason `BLOCK_RECURRENCE_LIMIT` times (default 2), excluding `needs_input` (which stays `blocked`). Instead of landing in `blocked` again — where a cron would keep unblocking it — it routes to `triage` for a human decision, breaking the unblock↔re-block loop. |
 | `unblocked` | — | `blocked → ready` (or `todo` if parents are still open), either manually or via `/unblock`. Resets the dispatcher's `consecutive_failures` but deliberately preserves `block_recurrences` so the loop breaker keeps its memory. `run_id` is `NULL`. |
 | `archived` | — | Hidden from the default board. If the task was still running, carries the `run_id` of the run that was reclaimed as a side effect. |
 

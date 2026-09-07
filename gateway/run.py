@@ -2866,6 +2866,21 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
+def _profile_from_session_key(session_key: str) -> "str | None":
+    """Return the multiplexed profile embedded in a namespaced session key.
+
+    Keys look like ``agent:main:{platform}:...`` for the default profile and
+    ``agent:<profile>:{platform}:...`` for a multiplexed secondary. Returns
+    ``None`` for the default profile and for keys that don't parse.
+    """
+    parts = (session_key or "").split(":")
+    if len(parts) >= 5 and parts[0] == "agent":
+        profile = parts[1]
+        if profile and profile != "main":
+            return profile
+    return None
+
+
 def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key (``agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
     For group/channel sessions the suffix may be a user_id, not a thread_id, so ``thread_id`` is omitted.

@@ -832,9 +832,9 @@ class GatewayNotificationsMixin:
             with _log_suppressed(logging.ERROR, "Watch notification injection error: %s"):
                 await self._inject_watch_notification(synth_text, evt)
 
-    def _adapter_by_platform_value(self, platform_name: str):
+    def _adapter_by_platform_value(self, platform_name: str, adapters=None):
         """Literal ``p.value == platform_name`` scan over connected adapters (native adapters only)."""
-        for p, a in self.adapters.items():
+        for p, a in (adapters if adapters is not None else self.adapters).items():
             if p.value == platform_name:
                 return a
         return None
@@ -863,18 +863,19 @@ class GatewayNotificationsMixin:
             logger.warning(fail, raw_sid, e)
             return False
 
-    def _resolve_injection_adapter(self, platform_name: str):
+    def _resolve_injection_adapter(self, platform_name: str, adapters=None):
         """Adapter for a synthetic-event platform: alias-aware transport resolver first (one
         Platform.RELAY adapter fronts N logical platforms; native wins), literal ``p.value`` scan as
         fallback for minimal runner stubs / exotic platform strings when the resolver can't run."""
         from gateway.delivery import resolve_delivery_transport
+        adapter_map = adapters if adapters is not None else self.adapters
         try:
-            _transport = resolve_delivery_transport(Platform(platform_name), self.config, self.adapters)
+            _transport = resolve_delivery_transport(Platform(platform_name), self.config, adapter_map)
         except Exception:
             _transport = None
         if _transport is not None:
             return _transport.adapter
-        return self._adapter_by_platform_value(platform_name)
+        return self._adapter_by_platform_value(platform_name, adapters=adapter_map)
 
     async def _inject_watch_notification(self, synth_text: str, evt: dict) -> Optional[bool]:
         """Inject a watch/completion notification as a synthetic message event.
@@ -907,7 +908,33 @@ class GatewayNotificationsMixin:
             )
             return None
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
-        adapter = self._resolve_injection_adapter(platform_name)
+        # Multiplex: a secondary profile's background output must route to
+        # THAT profile's adapters (its own bot), not the default profile's.
+        # self.adapters only ever holds the default profile's map; secondaries
+        # live in self._profile_adapters[name] (same disposition as the
+        # cron-handoff delivery path). A session_key like
+        # ``agent:<profile>:telegram:dm:<uid>`` carries the ownership — and
+        # because a Telegram DM's chat_id is the shared user id, ignoring it
+        # routes profile-B's output into profile-A's bot (#102635).
+        from gateway.run import _profile_from_session_key
+
+        profile_name = _profile_from_session_key(str(evt.get("session_key") or ""))
+        profile_adapters = None
+        if profile_name:
+            profile_adapters = (getattr(self, "_profile_adapters", None) or {}).get(profile_name)
+            if not profile_adapters:
+                # No live adapters for the owning profile (disconnected or
+                # stopped): drop rather than misroute through the default
+                # profile's bot.
+                logger.warning(
+                    "Background-process event for session %s routes to profile "
+                    "'%s', which has no live adapters in this gateway — "
+                    "dropping instead of delivering through the default "
+                    "profile's bot (#102635).",
+                    evt.get("session_key"), profile_name,
+                )
+                return None
+        adapter = self._resolve_injection_adapter(platform_name, adapters=profile_adapters)
         if not adapter:
             return None
         if not adapter_supports_push(adapter):

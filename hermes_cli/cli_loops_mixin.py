@@ -82,7 +82,8 @@ class CLILoopsMixin:
         if self.compact or shutil.get_terminal_size().columns < 80:
             cc.print(_build_compact_banner())
         else:
-            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
+                                         disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
             agent = getattr(self, "agent", None)
             ctx_len = None
             if agent and hasattr(agent, "context_compressor"):

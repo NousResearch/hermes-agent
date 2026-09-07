@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import { normalizeRegistry, REGISTRY_VERSION } from './connection-registry'
-import { resolveDesktopRemoteRoute } from './desktop-remote-route'
+import { backendScopeKey } from './connection-registry'
+import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 
 const tokenA = { encoding: 'plain', value: 'token-a' }
 const tokenB = { encoding: 'plain', value: 'token-b' }
@@ -151,6 +152,46 @@ test('global SSH treats an omitted port as 22 and checks the primary route', () 
 
   assert.equal(route?.kind, 'ssh')
   assert.equal(route?.connectionId, 'ssh-primary')
+})
+
+test('v1 settings SSH pool key ignores registry identity tags', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'ssh', remote: { mode: 'ssh', host: 'box.test', user: 'hermes' } },
+    profile: 'worker',
+    registry: registry('ssh-primary', [
+      { id: 'ssh-primary', kind: 'ssh', label: 'SSH primary', host: 'box.test', user: 'hermes', port: 22 }
+    ])
+  })
+
+  assert.ok(route)
+  assert.equal(route.kind, 'ssh')
+  assert.equal(route.connectionId, 'ssh-primary')
+  assert.equal(v1SshTerminalPoolKey(route, 'worker'), '')
+  assert.notEqual(v1SshTerminalPoolKey(route, 'worker'), backendScopeKey(route.connectionId, 'worker'))
+})
+
+test('v1 profile SSH pool key is the profile, not conn:id::profile', () => {
+  const ssh = {
+    mode: 'ssh',
+    host: 'box.test',
+    user: 'hermes',
+    port: 2222,
+    keyPath: '/keys/a',
+    remoteHermesPath: '/srv/hermes',
+    remoteProfile: 'worker'
+  }
+
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'local', profiles: { worker: ssh } },
+    profile: 'worker',
+    registry: registry('local', [{ id: 'worker-ssh', kind: 'ssh', label: 'Worker SSH', ...ssh }])
+  })
+
+  assert.ok(route)
+  assert.equal(route.kind, 'ssh')
+  assert.equal(route.connectionId, 'worker-ssh')
+  assert.equal(v1SshTerminalPoolKey(route, 'worker'), 'worker')
+  assert.notEqual(v1SshTerminalPoolKey(route, 'worker'), backendScopeKey(route.connectionId, 'worker'))
 })
 
 test('profile route omits identity when two registry entries match exactly', () => {

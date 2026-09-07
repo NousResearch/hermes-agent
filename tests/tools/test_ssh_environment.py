@@ -76,6 +76,48 @@ class TestBuildSSHCommand:
         env = SSHEnvironment(host="h", user="u")
         assert env._build_ssh_command()[-1] == "u@h"
 
+    def _capture_run_bash(self, monkeypatch, env, cmd="echo ok"):
+        captured = {}
+
+        def _fake_popen(cmd, stdin_data=None, **kwargs):
+            captured["cmd"], captured["env"] = cmd, kwargs.get("env")
+            return MagicMock()
+
+        monkeypatch.setattr(ssh_env, "_popen_bash", _fake_popen)
+        env._run_bash(cmd)
+        return captured
+
+    def test_run_bash_forwards_passthrough_by_sendenv_never_in_remote_argv(self, monkeypatch):
+        """#14091: allowlisted names travel as ``-o SendEnv=NAME`` with values only in the ssh client env;
+        provider credentials on the allowlist stay behind; a .env value fills an unset shell var."""
+        import tools.env_passthrough as env_passthrough
+
+        env = SSHEnvironment(host="h", user="u")
+        monkeypatch.setenv("NEXTCLOUD_URL", "https://next.example")
+        monkeypatch.delenv("NEXTCLOUD_PASS", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-must-not-forward")
+        monkeypatch.setattr(env_passthrough, "get_all_passthrough",
+                            lambda: frozenset({"NEXTCLOUD_URL", "NEXTCLOUD_PASS", "OPENAI_API_KEY"}))
+        monkeypatch.setattr(ssh_env, "_load_hermes_env_vars", lambda: {"NEXTCLOUD_PASS": "from-dotenv"})
+
+        captured = self._capture_run_bash(monkeypatch, env)
+
+        sent = {a.split("=", 1)[1] for a in captured["cmd"] if a.startswith("SendEnv=")}
+        assert sent == {"NEXTCLOUD_URL", "NEXTCLOUD_PASS"}
+        assert captured["env"]["NEXTCLOUD_URL"] == "https://next.example"
+        assert captured["env"]["NEXTCLOUD_PASS"] == "from-dotenv"
+        remote_text = " ".join(captured["cmd"])
+        assert "https://next.example" not in remote_text and "from-dotenv" not in remote_text
+        assert "sk-must-not-forward" not in remote_text
+
+    def test_run_bash_without_passthrough_inherits_env_unchanged(self, monkeypatch):
+        import tools.env_passthrough as env_passthrough
+
+        monkeypatch.setattr(env_passthrough, "get_all_passthrough", lambda: frozenset())
+        captured = self._capture_run_bash(monkeypatch, SSHEnvironment(host="h", user="u"))
+        assert not any(a.startswith("SendEnv=") for a in captured["cmd"])
+        assert captured["env"] is None
+
 
 class TestControlSocketPath:
     """Regression tests for issue #11840.

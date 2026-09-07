@@ -28,8 +28,8 @@ from tools.environments.docker_egress import (
     check_forward_env_collisions, merge_egress_env,
 )
 from tools.environments.path_utils import sanitize_task_id_for_path
-from tools.environments.remote_common import bash_argv, run_capture
-from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST, _is_hermes_internal_secret
+from tools.environments.remote_common import (
+    bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     if not env:
         return {}
     if not isinstance(env, dict):
-        logger.warning("docker_env is not a dict: %r", env)
+        logger.warning("docker_env is not a dict: %s", type(env).__name__)
         return {}
     normalized: dict[str, str] = {}
     for key, value in env.items():
@@ -73,19 +73,14 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
             logger.warning("Ignoring invalid docker_env key: %r", key)
             continue
         if not isinstance(value, (str, int, float, bool)):
-            logger.warning("Ignoring non-string docker_env value for %r: %r", key.strip(), value)
+            logger.warning("Ignoring non-string docker_env value for %r: %s", key.strip(), type(value).__name__)
             continue
         normalized[key.strip()] = value if isinstance(value, str) else str(value)
     return normalized
 
 
-def _load_hermes_env_vars() -> dict[str, str]:
-    """Load ~/.hermes/.env values without failing Docker command execution."""
-    try:
-        from hermes_cli.config import load_env
-        return load_env() or {}
-    except Exception:
-        return {}
+# Module-level binding: tests patch ``docker._load_hermes_env_vars`` to fake the .env file.
+_load_hermes_env_vars = load_hermes_env_vars
 
 
 # Docker label values must match [a-zA-Z0-9_.-] and stay <=63 chars to round-trip
@@ -267,6 +262,24 @@ def _extra_args_set_shm_size(extra_args: list) -> bool:
     return any(
         isinstance(a, str) and (a == "--shm-size" or a.startswith("--shm-size="))
         for a in (extra_args or []))
+
+
+_NETWORK_FLAGS = ("--network", "--net")
+
+
+def _extra_args_network_mode(extra_args: list) -> Optional[str]:
+    """Network mode requested by ``docker_extra_args`` (``--network none`` / ``--network=none`` /
+    ``--net``), or None when the operator set no network flag. Docker rejects a repeated
+    ``--network`` outright (exit 125), so the implicit ``docker_network: false`` flag and an
+    operator-supplied one must be reconciled before the command line is built."""
+    args = [a for a in (extra_args or []) if isinstance(a, str)]
+    for i, arg in enumerate(args):
+        for flag in _NETWORK_FLAGS:
+            if arg == flag:
+                return args[i + 1] if i + 1 < len(args) else ""
+            if arg.startswith(f"{flag}="):
+                return arg.split("=", 1)[1]
+    return None
 
 
 # /run is separate from _BASE_SECURITY_ARGS: s6-overlay images exec
@@ -620,7 +633,18 @@ class DockerEnvironment(BaseEnvironment):
                     "Docker storage driver does not support per-container disk limits "
                     "(requires overlay2 on XFS with pquota). Container will run without disk quota.")
         if not network:
-            args.append("--network=none")
+            extra_network = _extra_args_network_mode(extra_args)
+            if extra_network is None:
+                args.append("--network=none")
+            elif extra_network != "none":
+                # Contradictory intent: honouring the extra arg would hand the agent a networked
+                # container despite the configured lockdown, and the reuse guard (NetworkMode ==
+                # "none") would churn it every startup. Fail closed and name both keys.
+                raise RuntimeError(
+                    f"terminal.docker_network is false (air-gapped) but terminal.docker_extra_args "
+                    f"requests --network={extra_network!r}. Remove the --network entry from "
+                    f"docker_extra_args, or set docker_network: true to opt into that network.")
+            # extra_network == "none": same intent stated twice; the extra arg carries it once.
         return args
 
     def _mount_args(self, volumes, host_cwd, auto_mount_cwd, task_id) -> tuple[list[str], list[str]]:
@@ -766,7 +790,7 @@ class DockerEnvironment(BaseEnvironment):
         live in ``/proc/<pid>/environ`` instead, which is owner/root-only. Returns ``None`` (inherit as
         before) when there is nothing to add.
         """
-        return {**os.environ, **values} if values else None
+        return client_env_with(values)
 
     def _build_init_env_args(self) -> list[str]:
         """Name-only ``-e`` args for init_session so ``export -p`` captures docker_env
@@ -784,34 +808,8 @@ class DockerEnvironment(BaseEnvironment):
         return _name_only_env_args(exec_env)
 
     def _resolve_passthrough_env(self) -> tuple[dict[str, str], set[str]]:
-        """Forwarded values plus scoped names that must be unset. Explicit docker_forward_env
-        entries are an opt-in that wins over the Hermes secret blocklist; only implicit
-        passthrough keys are filtered (incl. Hermes-internal dynamic secrets)."""
-        exec_env: dict[str, str] = {}
-        passthrough_keys: set[str] = set()
-        resolve_passthrough_value = None
-        multiplex_active = False
-        is_global_env = lambda _name: False  # noqa: E731
-        try:
-            from tools.env_passthrough import get_all_passthrough, resolve_passthrough_value
-            from agent.secret_scope import _is_global_env as is_global_env, is_multiplex_active
-            multiplex_active = is_multiplex_active()
-            passthrough_keys = set(get_all_passthrough())
-        except Exception:
-            pass
-        implicit_forward = {k for k in passthrough_keys if not _is_hermes_internal_secret(k)}
-        forward_keys = set(self._forward_env) | (implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
-        hermes_env = _load_hermes_env_vars() if forward_keys else {}
-        unset_names: set[str] = set()
-        for key in sorted(forward_keys):
-            value = os.getenv(key) or hermes_env.get(key)
-            if resolve_passthrough_value is not None:
-                value = resolve_passthrough_value(key, value)
-            if value is not None:
-                exec_env[key] = value
-            elif multiplex_active and not is_global_env(key) and _ENV_VAR_NAME_RE.fullmatch(key):
-                unset_names.add(key)
-        return exec_env, unset_names
+        """See ``remote_common.resolve_passthrough_env``; explicit docker_forward_env bypasses the blocklist."""
+        return resolve_passthrough_env(self._forward_env, hermes_env_loader=_load_hermes_env_vars)
 
     def _build_runtime_env_args_with_unsets(self) -> tuple[list[str], tuple[str, ...], dict[str, str]]:
         """Runtime name-only forwarding args, names absent from scope, and the values
@@ -846,10 +844,7 @@ class DockerEnvironment(BaseEnvironment):
         elif self._profile_scoped_passthrough:
             runtime_args, unset_names, env_values = self._build_runtime_env_args_with_unsets()
             cmd.extend(runtime_args)
-        if unset_names:
-            quoted_names = " ".join(shlex.quote(name) for name in unset_names)
-            cmd_string = f"unset {quoted_names} 2>/dev/null || true\n{cmd_string}"
-        cmd += [self._container_id, *bash_argv(cmd_string, login)]
+        cmd += [self._container_id, *bash_argv(prepend_unset(cmd_string, unset_names), login)]
 
         client_env = self._docker_client_env(env_values)
         return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
@@ -953,39 +948,30 @@ class DockerEnvironment(BaseEnvironment):
     def _find_reusable_container(
         self, task_label: str, profile_label: str, egress_label: str) -> Optional[tuple[str, str]]:
         """``(container_id, state)`` of an existing container labeled for this task/profile/
-        egress posture, or ``None`` on miss or any failure. With egress off the probe is
-        widened to all task+profile containers and post-filtered to reject a non-"off" egress
-        label — else a container built with egress on would be reused after ``hermes egress
-        disable`` with its baked-in proxy env and CA mounts."""
-        egress_off = egress_label == "off"
+        egress posture, or ``None`` on miss or any failure. The egress posture is a label
+        FILTER for every posture, "off" included: a container built with egress on must not be
+        reused after ``hermes egress disable`` (baked-in proxy env and CA mounts), and every
+        container this class creates carries the label. The ``{{.Label "key"}}`` template
+        function is Docker-only — podman ps exits 125 on it — so the probe never uses it (#99213)."""
         filters = [
             "--filter", "label=hermes-agent=1",
             "--filter", f"label=hermes-task-id={task_label}",
-            "--filter", f"label=hermes-profile={profile_label}"]
-        if egress_off:
-            fmt = '{{.ID}}\t{{.State}}\t{{.Label "' + _EGRESS_LABEL_KEY + '"}}'
-        else:
-            filters.extend(["--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"])
-            fmt = "{{.ID}}\t{{.State}}"
+            "--filter", f"label=hermes-profile={profile_label}",
+            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"]
         result = _docker_query(
-            [self._docker_exe, "ps", "-a", *filters, "--format", fmt], timeout=10,
+            [self._docker_exe, "ps", "-a", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
             fail="docker ps probe failed: %s — will start a fresh container",
             nonzero="docker ps probe returned %d: %s — will start a fresh container")
         if result is None:
             return None
         # Multiple matches can happen after a crash mid-cleanup: prefer a running
         # one, else the first listed; stale duplicates are the orphan reaper's job.
-        nparts = 3 if egress_off else 2
         running = first = None
         for ln in (ln for ln in result.stdout.splitlines() if ln.strip()):
-            parts = ln.split("\t", nparts - 1)
-            if len(parts) != nparts:
+            parts = ln.split("\t", 1)
+            if len(parts) != 2:
                 continue
-            cid, state = parts[0], parts[1].lower()
-            if egress_off and parts[2] not in ("", "<no value>", "off"):
-                logger.debug(
-                    "skipping container %s for egress=off reuse: label %s=%r", cid, _EGRESS_LABEL_KEY, parts[2])
-                continue
+            cid, state = parts[0], parts[1].strip().lower()
             if first is None:
                 first = (cid, state)
             if state == "running" and running is None:

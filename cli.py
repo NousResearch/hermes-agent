@@ -2531,6 +2531,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
     # _pending_input, so it is enqueued only after the fresh queue exists.
     _seeded_first_message: Optional["_SeededQueryMessage"] = None
+    # Inspection surfaces (banner, /tools, status line) read this on partially built instances too.
+    disabled_toolsets: Optional[List[str]] = None
 
     def __init__(
         self,

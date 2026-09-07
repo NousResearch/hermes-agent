@@ -3397,18 +3397,51 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         return str(resolved_key) == current_key
 
     def _drain_process_notifications(self, consumer: str) -> None:
-        """Queue background notifications owned by this session (drained with our stable identity so another window can't claim them)."""
+        """Queue background notifications owned by this session (drained with our stable identity so another window can't claim them).
+
+        Completions drained together are coalesced into ONE synthetic turn: a
+        backlog of N ready completions otherwise becomes N full model calls
+        for individually low-value telemetry (#104671). Non-completion events
+        (async-delegation results) keep their exact one-by-one delivery and
+        are never folded into the batch.
+        """
         from tools.process_registry import process_registry
         from tools.async_delegation import claim_event_delivery, complete_event_delivery
 
+        claimed: "list[tuple[dict, str, str]]" = []
         for event, synthetic_message in process_registry.drain_notifications(
             session_key=getattr(self, "session_id", "") or "", owns_event=self._owns_process_notification,
         ):
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
+            claimed.append((event, synthetic_message, claim))
+        batchable = [
+            (event, text, claim)
+            for event, text, claim in claimed
+            if event.get("type", "completion") == "completion"
+        ]
+        for event, synthetic_message, claim in claimed:
+            if event.get("type", "completion") == "completion":
+                continue
             self._pending_input.put(synthetic_message)
             complete_event_delivery(event, claim)
+        if len(batchable) == 1:
+            (event, synthetic_message, claim), = batchable
+            self._pending_input.put(synthetic_message)
+            complete_event_delivery(event, claim)
+        elif batchable:
+            blocks = [text for _event, text, _claim in batchable]
+            header = (
+                f"[IMPORTANT: {len(blocks)} background processes completed "
+                "for this session. Treat these completions as one batch and "
+                "send at Arabella one consolidated user-facing response. If a "
+                "completion does not change the current conclusion, absorb it "
+                "silently.]"
+            )
+            self._pending_input.put("\n\n".join([header, *blocks]))
+            for event, _text, claim in batchable:
+                complete_event_delivery(event, claim)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray ``_interrupt_queue`` messages into ``_pending_input`` after every turn.

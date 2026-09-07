@@ -9,6 +9,7 @@
 
 import { host, LruCache } from '@hermes/plugin-sdk'
 
+import { isPrivateFlag } from './bot-flags'
 import { botHandle, clearBotAttention, noteBotAttention } from './data'
 import { RELAY_DELIVER_TIMEOUT_MS } from './relay-budget'
 import { ID } from './shared'
@@ -310,6 +311,11 @@ async function relayAgentsOn(
     const label = labels.get(connection.id) || connection.id
 
     return profiles
+      // A bot that went private left the agent-to-agent mesh: never advertise it to other
+      // machines. Enforced here at the publisher AND in the gateway consumer (bot_relay.py),
+      // so a peer on an older build cannot put it back. `hidden` is deliberately not
+      // consulted — that is a roster-display concern for this desktop only.
+      .filter(profile => !isPrivateFlag(profile?.ui_meta?.['hermes-bots']?.private))
       .map(profile => ({
         profile: String(profile?.name || ''),
         handle: botHandle(profile?.name, profile),

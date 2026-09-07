@@ -664,7 +664,6 @@ export function preprocessMarkdown(text: string): string {
       return leading + transformed + trailing
     })
     .join('')
-    .replace(/[ \t]+\n/g, '\n')
 }
 
 /**

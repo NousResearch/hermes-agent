@@ -8,12 +8,16 @@ import { hiddenWindowsChildOptions } from './windows-child-options'
 export function windowsUpdatePrerequisiteError(updateRoot: string): string | null {
   const maintainedDir = path.join(updateRoot, 'scripts', 'desktop-update')
   const required = [path.join(updateRoot, 'venv', 'Scripts', 'python.exe')]
+
   // Pre-reorg flat scripts remain supported; damaged modern trees do not.
-  if (existsSync(maintainedDir)) required.push(path.join(maintainedDir, 'windows.ps1'))
+  if (existsSync(maintainedDir)) {required.push(path.join(maintainedDir, 'windows.ps1'))}
+
   for (const candidate of required) {
-    if (stagedFileExists(candidate)) continue
+    if (stagedFileExists(candidate)) {continue}
+
     return `Update aborted: ${candidate} is missing or unreadable. Repair the installation and review antivirus quarantine before retrying.`
   }
+
   return null
 }
 

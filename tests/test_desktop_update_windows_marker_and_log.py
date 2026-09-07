@@ -115,9 +115,10 @@ def test_claim_acknowledges_the_handoff_with_the_desktops_nonce(tmp_path: Path) 
 
 
 @pytest.mark.windows_only
-def test_claim_fails_closed_when_it_cannot_acknowledge(tmp_path: Path) -> None:
-    """No nonce means the Desktop can never attribute the claim, so it would
-    refuse and exit while we mutated the install underneath it."""
+def test_claim_without_a_nonce_adopts_the_marker_but_writes_no_ack(tmp_path: Path) -> None:
+    """A nonce-less caller is a Desktop predating the ack protocol. It has no
+    way to verify an ack, so none is written -- and the claim still happens,
+    because refusing would strand a stale bundle with no route back."""
     install_root = tmp_path / "hermes-agent"
     install_root.mkdir()
     marker = tmp_path / ".hermes-update-in-progress"
@@ -127,8 +128,85 @@ def test_claim_fails_closed_when_it_cannot_acknowledge(tmp_path: Path) -> None:
 
     result = _run_marker_claim(install_root, desktop_pid, started_at, nonce="")
 
-    assert result.returncode == 8, result.stdout + result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
     assert not (tmp_path / ".hermes-update-in-progress.ack").exists()
+    assert int(marker.read_text(encoding="utf-8").splitlines()[0]) != desktop_pid
+
+
+# ---------------------------------------------------------------------------
+# Nonce compatibility, exercised through the REAL script with no -SelfTest*
+# switch involved: the run goes step 0 -> step 1 -> step 2 -> step 3 and stops
+# at the missing venv interpreter (exit 3), which is what proves it proceeded
+# past the claim rather than aborting inside it.
+# ---------------------------------------------------------------------------
+
+
+def _reaped_pid() -> int:
+    """A PID that has certainly exited, so step 1's wait returns immediately."""
+    child = subprocess.Popen([sys.executable, "-c", "pass"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    assert child.wait(timeout=30) == 0
+    return child.pid
+
+
+def _run_full_handoff(tmp_path: Path, *extra: str) -> subprocess.CompletedProcess:
+    install_root = tmp_path / "hermes-agent"
+    install_root.mkdir(exist_ok=True)
+    marker = tmp_path / ".hermes-update-in-progress"
+    started_at = 1_700_000_000
+    desktop_pid = _reaped_pid()
+    marker.write_text(f"{desktop_pid}\n{started_at}\n", encoding="utf-8", newline="")
+
+    return subprocess.run(
+        [
+            str(_powershell()), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPT),
+            "-InstallRoot", str(install_root),
+            "-DesktopPid", str(desktop_pid),
+            "-NoUi", "-NoMarkerCleanup", *extra,
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HERMES_UPDATE_STARTED_AT": str(started_at)},
+        cwd=REPO_ROOT,
+        timeout=120,
+    )
+
+
+@pytest.mark.windows_only
+def test_legacy_launch_without_a_nonce_claims_and_proceeds(tmp_path: Path) -> None:
+    """A Desktop older than the ack protocol sends no nonce. That skew is
+    reachable: the pull lands, the desktop rebuild fails, and the next Update
+    click drives this newer script from the stale asar. Refusing there would
+    leave that bundle with no route back through the UI."""
+    marker = tmp_path / ".hermes-update-in-progress"
+    ack = tmp_path / ".hermes-update-in-progress.ack"
+
+    result = _run_full_handoff(tmp_path)
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert not ack.exists(), "a nonce-less caller cannot verify an ack, so none is written"
+
+    claimed = marker.read_text(encoding="utf-8").splitlines()
+    assert int(claimed[0]) > 0 and int(claimed[1]) > 1_700_000_000, "the claim still happens"
+
+    log = (tmp_path / "logs" / "desktop-update-handoff.log").read_text(encoding="utf-8")
+    assert "sent no nonce" in log, log
+
+
+@pytest.mark.windows_only
+def test_nonce_launch_fails_closed_when_the_ack_cannot_be_written(tmp_path: Path) -> None:
+    """A caller that DID send a nonce is waiting for the ack and will refuse the
+    hand-off without it. Proceeding would mutate the install under a live
+    Desktop -- the exact hazard the ack exists to close."""
+    # A directory where the ack belongs makes every write to it fail.
+    (tmp_path / ".hermes-update-in-progress.ack").mkdir()
+
+    result = _run_full_handoff(tmp_path, "-HandoffNonce", NONCE)
+
+    assert result.returncode == 8, result.stdout + result.stderr
+    log = (tmp_path / "logs" / "desktop-update-handoff.log").read_text(encoding="utf-8")
+    assert "could not acknowledge the hand-off" in log, log
+    assert "sent no nonce" not in log, "a nonce WAS sent; this is not the legacy path"
 
 
 @pytest.mark.windows_only

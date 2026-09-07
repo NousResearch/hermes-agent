@@ -1527,19 +1527,14 @@ def _resolve_job_runtime(
         return runtime, model, primary_provider_for_drift
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during
-        # OAuth refresh); anything else re-raises. An explicit per-job --provider/--model pin
-        # must not be replaced by fallback_providers (#100437).
+        # OAuth refresh); anything else re-raises. A per-job --model pin still allows
+        # same-model provider swaps, but not a different fallback model (#100437).
         is_auth = isinstance(resolve_exc, AuthError)
         is_transient_net = _is_transient_provider_resolve_error(resolve_exc)
         if not (is_auth or is_transient_net):
             raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
-        pinned = bool(
-            str(job.get("provider") or "").strip() or str(job.get("model") or "").strip()
-        )
-        if pinned:
-            raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
-
+        pinned_model = str(job.get("model") or "").strip()
         primary_provider_for_drift = (
             str(getattr(resolve_exc, "provider", "") or "").strip().lower()
             or primary_provider_for_drift
@@ -1553,6 +1548,10 @@ def _resolve_job_runtime(
             fb_provider = str(entry.get("provider") or "").strip()
             fb_model = str(entry.get("model") or "").strip()
             if not fb_provider or not fb_model:
+                continue
+            # Explicit --model pin: keep same-model provider swaps (xai-oauth→xai)
+            # but never replace the pin with a different model such as qwen3:8b (#100437).
+            if pinned_model and fb_model.lower() != pinned_model.lower():
                 continue
             try:
                 from hermes_cli.fallback_config import resolve_entry_api_key

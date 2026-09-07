@@ -3906,6 +3906,13 @@ class SlackAdapter(BasePlatformAdapter):
             return None
         edited = updated_message.get("edited")
         edited_ts = str(edited.get("ts") or "") if isinstance(edited, dict) else ""
+        # Unfurls and reply-count updates also emit message_changed. They must not
+        # replay an old request after restart has cleared the in-memory claims.
+        if not edited_ts:
+            return None
+        previous_message = event.get("previous_message")
+        if isinstance(previous_message, dict) and previous_message.get("edited") == edited:
+            return None
         outer_event_ts = str(event.get("ts") or "")
         changed_event_ts = (
             str(event.get("event_ts") or edited_ts or "")

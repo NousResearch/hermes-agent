@@ -303,3 +303,21 @@ class TestClaimReleasedOnFailure:
 
         asyncio.run(scenario())
         assert len(delivered) == 1
+
+
+@pytest.mark.parametrize("previously_edited", [False, True])
+def test_root_metadata_update_after_restart_does_not_replay_request(previously_edited):
+    """A fresh adapter must not route old root text when Slack updates its metadata."""
+    delivered = []
+    adapter = _make_adapter(delivered)
+    adapter._resolve_user_name = AsyncMock(return_value="test user")
+    update = _unfurl_event()
+    update["message"]["thread_ts"] = ORIGINAL_TS
+    update["message"]["reply_count"] = 2
+    if previously_edited:
+        update["message"]["edited"] = {"user": USER, "ts": "1787365410.000000"}
+    update["previous_message"] = dict(update["message"], reply_count=1)
+
+    asyncio.run(adapter._handle_slack_message(update, _body()))
+
+    assert delivered == [], "root metadata update replayed an old user request after restart"

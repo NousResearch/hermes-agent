@@ -69,7 +69,14 @@ settings continue to apply only to the default asynchronous mode.
 Timeouts, errors, busy workers and cadence gaps omit recall instead of reusing
 another query's context. A timed-out worker keeps its slot until it exits; its
 late result is discarded. Base and dialectic retain independent cadences and
-reasoning/depth settings. `injectionFrequency: "first-turn"` suppresses only later
+reasoning/depth settings. A completed empty lookup consumes its cadence; failed,
+timed-out or superseded operations do not advance either cadence. Empty dialectic
+results also increase the existing backoff. No previous-query cache or generic
+user-representation/card fallback is substituted for an empty query-scoped lookup.
+Session changes, shutdown, and new turn generations discard in-flight results,
+even when turn numbers repeat. The wait deadline does not cancel an SDK HTTP call;
+the occupied worker slot bounds accumulation until that call returns.
+`injectionFrequency: "first-turn"` suppresses only later
 base retrievals. Every dialectic pass includes the current request, including when
 rewriting is disabled or empty. Generic prewarm and post-turn automatic retrieval
 are disabled; message writes continue normally. `tools` mode is unchanged.

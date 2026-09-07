@@ -16,6 +16,7 @@ import atexit
 import logging
 import os
 import re
+import shlex
 import select as _select
 import socket
 import sys
@@ -32,6 +33,56 @@ logger = logging.getLogger(__name__)
 MAX_OUTPUT_CHARS = 100_000
 DEFAULT_ENV_PATH = "~/.hermes/.env"
 ENV_PATH = os.environ.get("HERMES_SSH_ENV_FILE", DEFAULT_ENV_PATH)
+
+
+def _load_official_env_map() -> Tuple[Dict[str, str], List[str]]:
+    """复用 hermes-agent 官方 load_hermes_dotenv 的完整加载语义。
+
+    按官方优先级链解析 env（不触碰进程环境，纯读取）：
+      1. ~/.hermes/.env                    （用户档）
+      2. /etc/hermes/.env                  （managed scope，机器全局、权重最高，
+                                             见 managed_scope.get_managed_dir +
+                                             env_loader._apply_managed_env override=True）
+      3. HERMES_MANAGED_DIR 覆盖目录/.env   （IT 部署覆盖层）
+
+    解析器直接 import 官方模块保持单一事实源；任何一层不存在则跳过。
+    返回 (合并后的 {key: value}, warnings)。"""
+    data: Dict[str, str] = {}
+    warnings: List[str] = []
+    try:
+        sys.path.insert(0, "/home/vm/.hermes/hermes-agent")
+        from hermes_cli.managed_scope import get_managed_dir  # noqa: E402
+
+        candidates: List[Path] = [Path(os.path.expanduser(ENV_PATH))]
+        managed_dir = None
+        try:
+            managed_dir = get_managed_dir()
+        except Exception as exc:  # noqa: BLE001 — 与官方 fail-open 一致
+            warnings.append(f"managed scope 解析失败: {exc}")
+        if managed_dir is not None:
+            candidates.append(Path(managed_dir) / ".env")
+
+        for cand in candidates:
+            if not cand.exists():
+                continue
+            try:
+                for raw in cand.read_text(encoding="utf-8",
+                                          errors="replace").splitlines():
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, _, val = line.partition("=")
+                    k = k.strip()
+                    if k.startswith("export "):
+                        k = k[len("export "):].strip()
+                    val = val.strip().strip('"').strip("'")
+                    if k:
+                        data[k] = val   # 后读的覆盖先读的 → managed 殿后 = 权重最高
+            except OSError as exc:
+                warnings.append(f"{cand} 读取失败: {exc}")
+    except ImportError as exc:
+        warnings.append(f"官方 managed_scope 导入失败({exc})，回退单文件 {ENV_PATH}")
+    return data, warnings
 
 
 # ===========================================================================
@@ -133,27 +184,42 @@ def echo_to_chat(command: str, exit_code: Any, stdout: str, stderr: str,
                     platform, chat_id, type(adapter).__name__)
 
         # ---- 组飞书交互卡片 (interactive card) ----
-        ok = (exit_code == 0)
-        icon = "✅" if ok else ("⏱" if str(exit_code).upper() == "TIMEOUT" else "❌")
-        template = "green" if ok else (
-            "orange" if str(exit_code).upper() == "TIMEOUT" else "red")
+        # 状态三档 (布布 2026-09-07 定稿方案A):
+        #   exit=0                    → ✅ 绿 (成功)
+        #   exit≠0 但 stdout 非空      → 🔶 橙 "完成·有告警" (探测类命令预期内非零,
+        #                                如 which/grep 无命中 — 有实际产出不算失败)
+        #   TIMEOUT / 无输出且非零      → ❌ 红 (真失败)
+        _timeout_hit = str(exit_code).upper() == "TIMEOUT"
+        if not _timeout_hit and exit_code == 0:
+            icon, template, verdict_note = "✅", "green", ""
+        elif not _timeout_hit and stdout.strip():
+            icon, template = "🔶", "orange"
+            verdict_note = f"exit={exit_code} · 完成(有告警), 输出见下"
+        else:
+            icon = "⏱" if _timeout_hit else "❌"
+            template = "orange" if _timeout_hit else "red"
+            verdict_note = ""
 
         def _esc(s: str) -> str:
-            return s.replace("\\", "\\\\").replace('"', '\\"') \
-                    .replace("\r", "").rstrip("\n")
+            # 只清 \\r (飞书 markdown 不需要手动转义引号/反斜杠 —
+            # JSON 序列化由 json.dumps 统一处理; 手动加 \\ 会渲染成
+            # 可见的反斜杠尸体, 实测 2026-09-07 NAME=\"TencentOS\")
+            return s.replace("\r", "").rstrip("\n")
 
         from datetime import datetime as _dt  # noqa: PLC0415
         ts = _dt.now().strftime("%H:%M:%S")
 
         # ⚠ 飞书卡片 JSON 1.0: div+lark_md 的 text 组件【不支持```代码块】,
         # 必须用独立 "tag":"markdown" 元素(官方富文本组件, 支持全部子集语法).
-        body_lines = [f"**$ {command}**"]
+        body_lines = [f"**command:**\n```\n{_esc(command[:2000])}\n```"]
         if stdout:
             body_lines.append(f"```\n{_esc(stdout[:7000])}\n```")
         if stderr:
             body_lines.append("**stderr:**\n```\n%s\n```" % _esc(stderr[:3000]))
         if status_note:
             body_lines.append(f"*{status_note}*")
+        elif verdict_note:
+            body_lines.append(f"<font color='orange'>ℹ️ {verdict_note}</font>")
         body_lines.append(f"<font color='grey'>🕐 {ts}</font>")
 
         elements = [{
@@ -391,52 +457,98 @@ _env_cache: Dict[str, Any] = {"mtime": None, "data": {}, "warnings": [], "exists
 
 
 def get_env_mtime() -> Optional[float]:
-    path = Path(os.path.expanduser(ENV_PATH))
+    """多源 env 的变化指纹：任一文件 mtime 变化即视为 env 更新。
+
+    覆盖用户档 (~/.hermes/.env) + managed 档 (/etc/hermes/.env 或
+    $HERMES_MANAGED_DIR)，与 _load_official_env_map 的候选集一致。"""
+    parts: List[Optional[int]] = []
     try:
-        return path.stat().st_mtime_ns
-    except OSError:
-        return None
+        sys.path.insert(0, "/home/vm/.hermes/hermes-agent")
+        from hermes_cli.managed_scope import get_managed_dir  # noqa: E402
+
+        candidates: List[Path] = [Path(os.path.expanduser(ENV_PATH))]
+        try:
+            md = get_managed_dir()
+        except Exception:  # noqa: BLE001
+            md = None
+        if md is not None:
+            candidates.append(Path(md) / ".env")
+
+        for cand in candidates:
+            try:
+                parts.append(cand.stat().st_mtime_ns)
+            except OSError:
+                parts.append(None)
+    except ImportError:
+        path = Path(os.path.expanduser(ENV_PATH))
+        try:
+            return path.stat().st_mtime_ns
+        except OSError:
+            return None
+    # 组合成单一指纹（mtime 缺失用 -1 占位，存在性变化也会改变指纹）
+    return hash(tuple(p if p is not None else -1 for p in parts))
 
 
 def get_env() -> Tuple[Dict[str, str], List[str]]:
-    path = Path(os.path.expanduser(ENV_PATH))
-    exists = path.exists()
-    if not exists:
-        changed = _env_cache["exists"] is not False
+    """多源 env 读取（官方 load_hermes_dotenv 语义的纯读版）。
+
+    候选：~/.hermes/.env + managed 档(/etc/hermes/.env 等)。
+    mtime 组合指纹做缓存键，任一档变化即失效重载。"""
+    try:
+        fingerprint = get_env_mtime()
+    except Exception:  # noqa: BLE001
+        fingerprint = None
+
+    if fingerprint is not None and _env_cache["mtime"] == fingerprint \
+            and _env_cache["exists"]:
+        return _env_cache["data"], _env_cache["warnings"]
+
+    data, warnings = _load_official_env_map()
+
+    user_exists = Path(os.path.expanduser(ENV_PATH)).exists()
+    changed = _env_cache["exists"] is not False or bool(data)
+    if not user_exists and not data:
         _env_cache.update(exists=False, mtime=None, data={}, warnings=[])
         return {}, ([f"{ENV_PATH} 不存在"] if changed else [])
 
-    try:
-        mtime = path.stat().st_mtime_ns
-    except OSError as exc:
-        return {}, [f"{ENV_PATH} stat 失败: {exc}"]
-
-    if _env_cache["mtime"] == mtime and _env_cache["exists"]:
-        return _env_cache["data"], _env_cache["warnings"]
-
-    data: Dict[str, str] = {}
-    warnings: List[str] = []
-    try:
-        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, _, val = line.partition("=")
-            k = k.strip()
-            if k.startswith("export "):
-                k = k[len("export "):].strip()
-            val = val.strip().strip('"').strip("'")
-            if k:
-                data[k] = val
-    except OSError as exc:
-        warnings.append(f"{ENV_PATH} 读取失败: {exc}")
-
-    _env_cache.update(exists=True, mtime=mtime, data=data, warnings=warnings)
+    _env_cache.update(exists=True, mtime=fingerprint, data=data,
+                      warnings=warnings)
     return data, warnings
 
 
 def _env_token(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", text.upper()).strip("_")
+
+
+# ---- sudo -S 注入工具 (sudo 自动喂密码链路, 见 exec_command) ----
+
+_SUDO_STDIN_FLAGS = {"-S", "--stdin"}
+_SUDO_NOPASS_FLAGS = {"-n", "--non-interactive", "-A", "--askpass"}
+
+
+def command_has_sudo_stdin_flag(command: str) -> bool:
+    """命令里(任一 sudo 词元后)已带 -S/-n/-A 就不重复注入。"""
+    toks = shlex.split(command)
+    for i, tok in enumerate(toks):
+        if tok == "sudo" or tok.endswith("/sudo"):
+            for t2 in toks[i + 1:]:
+                if t2 in _SUDO_STDIN_FLAGS or t2 in _SUDO_NOPASS_FLAGS:
+                    return True
+                if not t2.startswith("-"):   # 第一个非 flag 即子命令, 停止
+                    break
+    return False
+
+
+def inject_sudo_dash_S(command: str) -> str:
+    """给首个裸 sudo 注入 -S; 只动第一个 token 位, 管道/组合跳过。"""
+    try:
+        toks = shlex.split(command)
+    except ValueError:
+        return command
+    for i, tok in enumerate(toks):
+        if tok == "sudo" or tok.endswith("/sudo"):
+            return " ".join(toks[:i + 1] + ["-S"] + toks[i + 1:])
+    return command
 
 
 def _password_candidates(node: Dict[str, Any]) -> List[str]:
@@ -790,7 +902,7 @@ class Tunings:
 
     __slots__ = ("idle_ttl", "max_sessions", "channel_limit",
                  "auth_cooldown", "keepalive", "supervisor_poll",
-                 "record_output", "audit_enabled")
+                 "record_output", "audit_enabled", "sudo_autofill")
 
     @classmethod
     def snapshot(cls) -> "Tunings":
@@ -803,6 +915,7 @@ class Tunings:
         t.supervisor_poll = float(cfg("tuning.supervisor_poll_seconds", 5))
         t.audit_enabled = bool(cfg("audit.enabled", True))
         t.record_output = bool(cfg("audit.record_output", False))
+        t.sudo_autofill = bool(cfg("tuning.sudo_autofill", True))
         return t
 
 
@@ -1179,6 +1292,37 @@ class SSHSession:
                 raise RuntimeError("无法打开执行通道")
 
             chan.settimeout(2.0)
+            # ---- sudo 密码自动喂入 (tuning.sudo_autofill, 默认开) ----
+            # 在 exec 前完成: 取密码 + 裸 sudo 注入 -S（stdin 读密码，免 tty）。
+            # 凭据只在内存流转，不落日志/审计；单通道只喂一次。
+            _sudo_pw = ""
+            if getattr(tun, "sudo_autofill", True):
+                try:
+                    label_tok = re.sub(r"[^A-Z0-9]+", "_",
+                                       self.label.upper()).strip("_")
+                    env_map, _warns = get_env()
+                    for cand in (
+                            f"HERMES_SSH_SUDO_PASSWORD_{label_tok}",
+                            "HERMES_SSH_SUDO_PASSWORD"):
+                        val = env_map.get(cand)
+                        if val:
+                            _sudo_pw = val
+                            break
+                    if not _sudo_pw:  # 回落: SSH 登录同把密码 — 用【末跳】(真正执行命令的主机)
+                        for node_cfg in reversed(self.nodes_cfg):
+                            for ev in node_cfg.get("env_candidates", []) or []:
+                                val = env_map.get(ev)
+                                if val:
+                                    _sudo_pw = val
+                                    break
+                            if _sudo_pw:
+                                break
+                except Exception:  # noqa: BLE001 — 凭据读取故障不阻断普通命令
+                    _sudo_pw = ""
+                if _sudo_pw and not command_has_sudo_stdin_flag(command):
+                    command = inject_sudo_dash_S(command)
+            _sudo_fed = False
+
             chan.exec_command(command)
 
             stdout_buf = bytearray()
@@ -1208,6 +1352,15 @@ class SSHSession:
                                 stderr_buf += data[:room]
                             if len(data) > room:
                                 truncated = True
+                    # ---- sudo 提示出现 → 喂密码 (一次) ----
+                    if (_sudo_pw and not _sudo_fed
+                            and b"password for" in bytes(stderr_buf).lower()
+                            + bytes(stdout_buf).lower()):
+                        try:
+                            chan.sendall(_sudo_pw.encode() + b"\n")
+                        except Exception:  # noqa: BLE001
+                            pass
+                        _sudo_fed = True
                     if (chan.exit_status_ready()
                             and not chan.recv_ready()
                             and not chan.recv_stderr_ready()):

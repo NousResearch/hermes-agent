@@ -241,7 +241,8 @@ def _handle_ssh_exec(args: Dict[str, Any], **kw) -> str:
     # 被拒时返回 BLOCKED 消息并审计 exec_rejected。
     try:
         from tools.approval import check_all_command_guards  # noqa: PLC0415
-        verdict = check_all_command_guards(command, "local")
+        verdict = check_all_command_guards(command, "local",
+                                           tool_tag=f"SSH·{target}")
         if not verdict.get("approved"):
             _audit.emit("exec_rejected", target=target,
                         caller_session=caller_session, command=command,

@@ -2441,8 +2441,13 @@ class FeishuAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        source_tag: Optional[str] = None,
     ) -> SendResult:
         """Send an interactive card with approval buttons.
+
+        ``source_tag`` optionally identifies the calling surface (e.g.
+        "SSH·gz"); when set it prefixes the card header title so the user
+        can tell which tool asked for consent.
 
         The buttons carry ``hermes_action`` in their value dict so that
         ``_handle_card_action_event`` can intercept them and call
@@ -2468,10 +2473,12 @@ class FeishuAdapter(BasePlatformAdapter):
                 if allow_permanent:
                     actions.append(_btn("✅ Always", "approve_always"))
             actions.append(_btn("❌ Deny", "deny", "danger"))
+            _title = (f"⚠️ {source_tag} · Command Approval Required"
+                      if source_tag else "⚠️ Command Approval Required")
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
-                    "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
+                    "title": {"content": _title, "tag": "plain_text"},
                     "template": "orange",
                 },
                 "elements": [

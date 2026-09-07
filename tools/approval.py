@@ -4729,13 +4729,18 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             tool_tag: str = "") -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
     presents them as a single combined approval request. This prevents
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
+
+    ``tool_tag`` is an optional short label identifying the calling tool
+    (e.g. "SSH·gz"). When non-empty it rides through ``approval_data`` so
+    gateway approval prompts can show where the command came from.
 
     ``has_host_access`` is True when a Docker sandbox bind-mounts host paths;
     such a session is no longer isolated, so it goes through the normal flow
@@ -5233,6 +5238,8 @@ def check_all_command_guards(command: str, env_type: str,
                 # a session tier independently of the permanent tier.
                 "allow_session": not smart_denied_for_owner,
             }
+            if tool_tag:
+                approval_data["tool_tag"] = str(tool_tag)
             if smart_denied_for_owner:
                 approval_data["smart_denied"] = True
             decision = _await_gateway_decision(

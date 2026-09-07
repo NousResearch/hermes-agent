@@ -305,6 +305,21 @@ def get_read_block_error(path: str) -> Optional[str]:
         except Exception:
             continue
 
+    # Managed scope directory (/etc/hermes or $HERMES_MANAGED_DIR) —
+    # IT-pushed credential store that should get the same read protection
+    # as ~/.hermes/.env.  Resolved through the same managed_scope seam
+    # that the dotenv loader uses so the detection can't drift.
+    try:
+        from hermes_cli.managed_scope import get_managed_dir
+
+        managed_dir = get_managed_dir()
+        if managed_dir is not None:
+            managed_dir = managed_dir.resolve()
+            if managed_dir not in hermes_dirs:
+                hermes_dirs.append(managed_dir)
+    except Exception:
+        pass  # fail-open: managed scope detection must never break read guard
+
     # Skills .hub: prompt-injection carriers.
     for hd in hermes_dirs:
         blocked_dirs = [

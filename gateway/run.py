@@ -6825,6 +6825,12 @@ class TurnRunner:
 
             cmd = approval_data.get("command", "")
             desc = approval_data.get("description", "dangerous command")
+            # Optional tool-origin label (e.g. "SSH·gz" from a plugin's exec
+            # guard call). Surfaced in both the card header and the reason
+            # line so the user can tell which surface asked for consent.
+            _tool_tag = str(approval_data.get("tool_tag") or "").strip()
+            if _tool_tag:
+                desc = f"[{_tool_tag}] {desc}"
 
             # Redact credentials from the command before displaying it in
             # the approval prompt — Tirith's findings are already redacted,
@@ -6849,6 +6855,7 @@ class TurnRunner:
                             allow_permanent=approval_data.get("allow_permanent", True),
                             allow_session=approval_data.get("allow_session", True),
                             smart_denied=approval_data.get("smart_denied", False),
+                            source_tag=_tool_tag or None,
                         ),
                         ctx._loop_for_step,
                         logger=logger,

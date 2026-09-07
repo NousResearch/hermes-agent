@@ -274,6 +274,7 @@ class SessionSessionsMixin:
         chat_id: str = None, chat_type: str = None, thread_id: str = None,
         parent_session_id: str = None, cwd: str = None, profile_name: Optional[str] = None,
         git_repo_root: str = None, origin_json: str = None, display_name: str = None,
+        preload_skills: Optional[List[str]] = None,
     ) -> None:
         """Upsert a session row, never overwriting what an earlier writer set (the gateway creates a
         bare row before create_session carries the real model/prompt). chat_id/thread_id scope gateway
@@ -304,6 +305,16 @@ class SessionSessionsMixin:
         if not (profile_name or "").strip():
             profile_name = self._own_profile_name()
         def _do(conn):
+            merged_origin_json = origin_json
+            if preload_skills:
+                # merge preloaded skill names into origin_json (analytics:
+                # distinguish `-s` preload sessions; origin_json is an existing
+                # COALESCE'd TEXT column — no schema change).
+                base = json.loads(origin_json) if origin_json else {}
+                if not isinstance(base, dict):
+                    base = {}
+                base.setdefault("preload_skills", list(preload_skills))
+                merged_origin_json = json.dumps(base, ensure_ascii=False)
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
             conn.execute(
                 """INSERT INTO sessions (
@@ -348,7 +359,7 @@ class SessionSessionsMixin:
                 (
                     session_id, source, user_id, session_key, chat_id, chat_type, thread_id, model,
                     json.dumps(model_config) if model_config else None, system_prompt_hash,
-                    parent_session_id, cwd, profile_name, git_repo_root, origin_json, display_name,
+                    parent_session_id, cwd, profile_name, git_repo_root, merged_origin_json, display_name,
                     time.time(),
                 ),
             )

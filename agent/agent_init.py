@@ -1150,6 +1150,7 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
 
     agent._session_db = session_db  # optional SQLite store (CLI/gateway-provided)
     agent._parent_session_id = parent_session_id
+    agent.preloaded_skills = list(preload_skills or [])
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
@@ -2215,6 +2216,7 @@ def init_agent(
     gateway_session_key: str = None, skip_context_files: bool = False,
     load_soul_identity: bool = False, skip_memory: bool = False,
     skip_background_review: bool = False, session_db=None, parent_session_id: str = None,
+    preload_skills: List[str] = None,
     iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
     fallback_model: Dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,

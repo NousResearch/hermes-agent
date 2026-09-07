@@ -46,6 +46,9 @@ def _normalize_skills(skills: object = None) -> list[str]:
     return list(dict.fromkeys(_normalize_toolsets(skills) or []))
 
 
+_loaded_preload_skill_names: list[str] = []  # single-shot process: safe module state
+
+
 def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
     """Load requested skills using the same partial-success contract as CLI chat."""
     parsed_skills = _normalize_skills(skills)
@@ -55,6 +58,9 @@ def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
     from agent.skill_commands import build_preloaded_skills_prompt
 
     skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(parsed_skills)
+    # persisted on the session row (origin_json.preload_skills) so `-s`
+    # sessions are distinguishable in state.db analytics
+    _loaded_preload_skill_names.extend(loaded_skills or [])
     if missing_skills:
         missing_display = ", ".join(missing_skills)
         if not loaded_skills:
@@ -393,6 +399,7 @@ def _run_agent(
             requested_provider=runtime.get("requested_provider"),
             api_mode=runtime.get("api_mode"),
             model=choice.model,
+            preload_skills=_loaded_preload_skill_names,
             enabled_toolsets=toolsets_list,
             quiet_mode=True,
             platform="cli",

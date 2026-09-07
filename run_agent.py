@@ -53,6 +53,28 @@ def _session_source_for_agent(platform: Optional[str]) -> str:
     return str(source or "").strip() or platform or "cli"
 
 
+def _preload_skills_merge(origin: Optional[dict], agent: "AIAgent") -> Optional[dict]:
+    """Attach ``preload_skills`` (from ``-s``/``--skills``) to the origin dict."""
+    names = getattr(agent, "preloaded_skills", None)
+    if names:
+        origin = origin if origin is not None else {}
+        origin.setdefault("preload_skills", list(names))
+    return origin
+
+
+def _session_origin_json(agent: "AIAgent") -> Optional[str]:
+    """Session-row ``origin_json``: gateway origin (when any) + preload skills."""
+    origin = _gateway_origin_json(agent)
+    preload = getattr(agent, "preloaded_skills", None)
+    if not preload:
+        return origin
+    origin = _preload_skills_merge(origin, agent)
+    try:
+        return json.dumps(origin)
+    except Exception:
+        return None
+
+
 def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
     """Gateway routing ``origin_json`` for a session row; None when the agent carries no gateway identity.
 
@@ -264,6 +286,7 @@ class AIAgent(
         skip_context_files: bool = False, load_soul_identity: bool = False,
         skip_memory: bool = False, skip_background_review: bool = False,
         session_db=None, parent_session_id: str = None,
+        preload_skills: List[str] = None,
         iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
         fallback_model: Dict[str, Any] = None, credential_pool=None,
         checkpoints_enabled: bool = False, checkpoint_max_snapshots: int = 20,
@@ -341,7 +364,7 @@ class AIAgent(
                 chat_id=getattr(self, "_chat_id", None), chat_type=getattr(self, "_chat_type", None),
                 thread_id=getattr(self, "_thread_id", None),
                 display_name=getattr(self, "_chat_name", None) or getattr(self, "_user_name", None),
-                origin_json=_gateway_origin_json(self), parent_session_id=self._parent_session_id,
+                origin_json=_session_origin_json(self), parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source), profile_name=profile_for_session,
             )
             self._session_db_created = True

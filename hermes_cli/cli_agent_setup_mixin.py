@@ -371,6 +371,22 @@ class CLIAgentSetupMixin:
         _cprint("  Provider setup didn't complete. Run 'hermes model' to retry.")
         return False
 
+    def _loaded_preload_skill_names(self) -> list:
+        """Names of skills successfully loaded via ``-s``/``--skills`` preload.
+
+        Read from the background preload result (joined before agent build),
+        so the AIAgent can persist them on the session row for analytics.
+        Best-effort: never fails agent construction.
+        """
+        try:
+            result = getattr(self, "_preload_skills_result", None)
+            if result and len(result) >= 2 and result[1]:
+                return list(result[1])
+            requested = getattr(self, "_preload_skills_requested", None)
+            return list(requested or [])
+        except Exception:
+            return []
+
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Effective model/runtime config for one turn — always the session's primary
         provider. With `/fast` on (service_tier == "priority") attach request_overrides;

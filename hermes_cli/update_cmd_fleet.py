@@ -142,15 +142,59 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     )
 
 
-def _pending_fleet_restart_needed() -> bool:
-    """True when a prior pull still owes the fleet a restart.
+def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
+    """Require current successors for every recorded runtime, not just any live row.
 
-    See #95294.
+    A PID changes on restart; the stable identity is (runtime kind, profile).
+    The gateway matrix cannot vouch for serve/dashboard or unidentified runtimes.
+    Keep the historical receipt intact: a manual restart is not a successful update.
     """
+    if not expected_sha:
+        return False
+    from hermes_cli.update_receipt import collect_fleet_versions, read_latest_receipt
+
+    try:
+        receipt = read_latest_receipt() or {}
+        plan = receipt.get("plan") or {}
+        runtimes = plan.get("runtimes") or []
+        recorded_fleet = receipt.get("fleet") or []
+        owed = set()
+        entries: list[tuple[object, str | None]] = [(entry, None) for entry in runtimes]
+        entries.extend((entry, "gateway") for entry in recorded_fleet)
+        for entry, default_kind in entries:
+            if not isinstance(entry, dict):
+                return False
+            kind = entry.get("kind", default_kind)
+            profile = entry.get("profile")
+            if kind != "gateway" or not profile or profile == "unknown":
+                return False
+            owed.add((kind, profile))
+        if not owed:
+            return False
+        fleet = collect_fleet_versions()
+        if not fleet or any(
+            row.get("state") != "current" or row.get("code_sha") != expected_sha
+            for row in fleet
+        ):
+            return False
+        return owed <= {("gateway", row.get("profile")) for row in fleet}
+    except Exception as exc:
+        logger.debug("Could not reconcile pending fleet identities: %s", exc)
+        return False
+
+
+def _pending_fleet_restart_needed() -> bool:
+    """Reconcile old restart obligations against current, identity-matched gateways."""
+    from hermes_cli.update_cmd import _current_checkout_sha
+
+    # The marker has no runtime inventory and may belong to a newer, killed update
+    # than latest.json. An older receipt cannot discharge that unknown obligation.
     with suppress(OSError):
         if _fleet_restart_pending_marker_path().is_file():
             return True
-    return _receipt_reports_stale_runtime()
+    if not _receipt_reports_stale_runtime():
+        return False
+    return not _live_fleet_covers_receipt(_current_checkout_sha())
 
 
 def _warn_pending_fleet_restart(*, startup: bool = False) -> None:

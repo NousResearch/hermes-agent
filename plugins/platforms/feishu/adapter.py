@@ -3591,12 +3591,18 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _send_raw_message(
         self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+        uuid_value: Optional[str] = None,
     ) -> Any:
+        if uuid_value is None:
+            # Deterministic idempotency key: every attempt for the same payload
+            # derives the SAME uuid, so Feishu's server-side dedupe window can
+            # collapse retry double-delivery instead of seeing fresh uuid4s.
+            uuid_value = uuid.uuid5(uuid.NAMESPACE_DNS, payload).hex
         thread_id = (metadata or {}).get("thread_id")
         effective_reply_to = reply_to or ((metadata or {}).get("reply_to_message_id") if thread_id else None)
         if effective_reply_to:
             body = self._build_reply_message_body(
-                content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=str(uuid.uuid4()),
+                content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=uuid_value,
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
@@ -3608,7 +3614,7 @@ class FeishuAdapter(BasePlatformAdapter):
         else:
             receive_id, receive_id_type = chat_id, "open_id" if chat_id.startswith("ou_") else "chat_id"
         body = self._build_create_message_body(
-            receive_id=receive_id, msg_type=msg_type, content=payload, uuid_value=str(uuid.uuid4()),
+            receive_id=receive_id, msg_type=msg_type, content=payload, uuid_value=uuid_value,
         )
         request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
@@ -3748,10 +3754,16 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> Any:
         last_error: Optional[Exception] = None
         active_reply_to = reply_to
+        # One deterministic idempotency key per logical send: retries and the
+        # reply→create fallback re-send the SAME uuid5(payload), so Feishu's
+        # server-side dedupe window can collapse double-delivery instead of
+        # seeing a fresh uuid4 per attempt.
+        stable_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, payload).hex
 
         async def _raw(reply_target: Optional[str]) -> Any:
             return await self._send_raw_message(
                 chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_target, metadata=metadata,
+                uuid_value=stable_uuid,
             )
 
         for attempt in range(_FEISHU_SEND_ATTEMPTS):

@@ -423,8 +423,74 @@ def _hermes_cli_command(argv: str | Sequence[str]) -> str | None:
     return tail[0].lower()
 
 
+def _gateway_subcommand(argv: str | Sequence[str]) -> str | None:
+    """Hermes gateway lifecycle subcommand from a command line, or ``None``.
+
+    A stdlib port of ``gateway.status._gateway_command_subcommand``, kept
+    byte-identical in both scanner copies. It cannot simply delegate: the
+    carrier runs with ``python -I`` under the target venv against the install
+    root it is about to rewrite, so importing ``gateway.status`` out of that
+    checkout is exactly what shipping the scanner as a resource exists to
+    prevent — the same constraint that governs ``_redact_sensitive_cmdline``.
+    Inlining keeps one implementation for both copies instead of a
+    generator substitution that could drift silently;
+    ``test_gateway_subcommand_matches_the_canonical_parser`` pins this port
+    against the canonical parser over a shared corpus so a change to
+    ``gateway/status.py`` fails here.
+
+    No loose substring matching (``"gateway" in cmdline`` also matches
+    ``gateway status`` and ``python -m tui_gateway``): a Hermes entrypoint
+    plus the ``gateway`` subcommand, or a gateway-dedicated entrypoint.
+    Tokenizing is quote-aware for Windows paths with spaces, and
+    ``--profile``/``-p`` selectors are stripped anywhere in argv because
+    ``_apply_profile_override`` removes them before argparse — a hand-rolled
+    token scan regressed ``--profile gateway gateway run``, where the profile
+    *value* shadowed the subcommand token.
+    """
+    if isinstance(argv, str):
+        if not argv:
+            return None
+        try:
+            raw_tokens = shlex.split(argv, posix=False)
+        except ValueError:
+            raw_tokens = argv.split()
+    else:
+        raw_tokens = [str(part) for part in argv]
+    tokens = [token.strip("\"'").replace("\\", "/").lower() for token in raw_tokens]
+    if not tokens:
+        return None
+    basenames = [token.rsplit("/", 1)[-1] for token in tokens]
+    # Gateway-dedicated entrypoints carry no subcommand to inspect.
+    if any(token == "gateway/run.py" or token.endswith("/gateway/run.py") for token in tokens):
+        return "run"
+    if any(base in ("hermes-gateway", "hermes-gateway.exe") for base in basenames):
+        return "run"
+    joined = " ".join(tokens)
+    if (
+        "hermes_cli.main" not in joined
+        and "hermes_cli/main.py" not in joined
+        and not any(base in ("hermes", "hermes.exe") for base in basenames)
+    ):
+        return None
+    # Drop --profile X / -p X / --profile=X / -p=X (consumes a VALUE of "gateway" too).
+    filtered: list[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+        elif token in ("--profile", "-p"):
+            skip_next = True
+        elif not token.startswith(("--profile=", "-p=")):
+            filtered.append(token)
+    for index, token in enumerate(filtered):
+        if token == "gateway":
+            # Bare ``hermes gateway`` defaults to ``run``.
+            return filtered[index + 1] if index + 1 < len(filtered) else "run"
+    return None
+
+
 def _is_pausable_gateway(argv: str | Sequence[str]) -> bool:
-    """Return only when live token boundaries prove ``gateway run``.
+    """True for a gateway runtime the updater's pause machinery stops.
 
     A running gateway shows up in the venv-holder scan as one or both halves
     of its launcher/worker chain (``venv\\Scripts\\python.exe -m
@@ -436,22 +502,25 @@ def _is_pausable_gateway(argv: str | Sequence[str]) -> bool:
     stop these processes (and is always active: ``hermes-setup`` invokes
     ``hermes update --yes --gateway``) — never gets the chance to run.
 
-    Only gateway invocations are exempted. Anything else running from the
-    venv (an operator's REPL, a stray script, a ``serve`` backend that
-    survived the desktop's own teardown) has no pause machinery downstream
-    and must keep blocking the handoff.
+    This exemption must therefore cover exactly what that pause path stops,
+    never less. Pause discovery is ``hermes_cli.gateway.find_gateway_pids``
+    → ``_scan_gateway_pids(include_restart_managers=not
+    supports_systemd_services())``, which on Windows is always ``True`` and
+    accepts ``looks_like_gateway_runtime_command_line`` — the ``run`` OR
+    ``restart`` shapes, including ``hermes-gateway.exe``, ``gateway/run.py``
+    and bare ``hermes gateway``. A hand-rolled ``hermes_cli.main``-tail
+    parser matched none of those, so a launcher-started gateway was reported
+    as a hard blocker that the hand-off could not clear.
+    ``update_cmd._classify_concurrent_instance`` already uses the same
+    runtime matcher.
 
-    The tail parser is profile-selector aware on purpose: a hand-rolled
-    token scan regressed ``--profile gateway gateway run``, where the
-    profile *value* shadowed the subcommand token.
+    Only gateway runtimes are exempted. Anything else running from the venv
+    (an operator's REPL, a stray script, a ``serve`` backend that survived
+    the desktop's own teardown, or a gateway *management* subcommand such as
+    ``gateway status``/``gateway stop``) has no pause machinery downstream
+    and must keep blocking the handoff.
     """
-    tail = _hermes_cli_tail(argv)
-    return bool(
-        tail
-        and len(tail) >= 2
-        and tail[0].casefold() == "gateway"
-        and tail[1].casefold() == "run"
-    )
+    return _gateway_subcommand(argv) in {"run", "restart"}
 
 
 def _is_updater_owned_backend(pid: int, cmdline: str) -> bool:

@@ -495,8 +495,11 @@ def test_migration_backfills_inflight_run_for_legacy_db(kanban_home):
             task = kb.get_task(conn2, tid)
             assert task.current_run_id == runs[0].id
 
-            # Subsequent complete closes the backfilled run cleanly.
-            kb.complete_task(conn2, tid, result="done", summary="ok")
+            # Subsequent complete closes the backfilled run cleanly. This is
+            # a deliberate operator recovery of a legacy running task whose
+            # worker is gone — force=True is the explicit reclaim override
+            # (never an implicit silent close of a live run).
+            kb.complete_task(conn2, tid, result="done", summary="ok", force=True)
             r = kb.latest_run(conn2, tid)
             assert r.outcome == "completed"
             assert r.summary == "ok"
@@ -697,13 +700,15 @@ def test_pid_alive_detects_zombie(kanban_home):
 
 
 
-def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
-    """The dispatcher no longer auto-loads a bundled kanban skill.
+def test_default_spawn_force_loads_git_verify_skill(kanban_home, monkeypatch):
+    """The dispatcher force-loads exactly the bundled git-verify skill.
 
     The kanban lifecycle (formerly the kanban-worker/kanban-orchestrator
-    skills) is now injected into every worker's system prompt via
-    KANBAN_GUIDANCE, so _default_spawn must NOT append a `--skills` flag
-    when the task carries no per-task skills.
+    skills) is injected into every worker's system prompt via KANBAN_GUIDANCE,
+    so _default_spawn must NOT append per-task ``--skills`` flags — but it
+    DOES force-load the single ``kanban-git-verified-completion`` skill so the
+    git-verified completion gate is always in scope. When the task carries no
+    per-task skills, that is the only ``--skills`` flag emitted.
 
     We intercept Popen to capture the argv without actually spawning a
     hermes subprocess (which would hang trying to call an LLM).
@@ -733,8 +738,15 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
         conn.close()
 
     cmd = captured["cmd"]
-    assert "--skills" not in cmd, (
-        f"spawn argv should not auto-load any skill: {cmd}"
+    assert "--skills" in cmd, (
+        f"spawn argv must auto-load the git-verify skill: {cmd}"
+    )
+    # Only DEFAULT_GIT_VERIFY_SKILL is force-loaded when the task carries no
+    # per-task skills; no other skill is auto-appended.
+    loaded = [cmd[i + 1] for i, tok in enumerate(cmd)
+              if tok == "--skills" and i + 1 < len(cmd)]
+    assert loaded == [kbd.DEFAULT_GIT_VERIFY_SKILL], (
+        f"expected only {kbd.DEFAULT_GIT_VERIFY_SKILL} auto-loaded, got {loaded}"
     )
     assert "--accept-hooks" in cmd, f"spawn argv missing --accept-hooks: {cmd}"
     assert cmd.index("--accept-hooks") < cmd.index("chat"), (
@@ -1140,19 +1152,25 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
         # Two parallel completing tasks so we can exercise both retry
         # shapes without status interference.
         parent_a = kb.create_task(conn, title="retry-empty", assignee="alice")
-        kb.claim_task(conn, parent_a)
+        claim_a = kb.claim_task(conn, parent_a)
+        assert claim_a is not None
         parent_b = kb.create_task(conn, title="retry-corrected", assignee="alice")
-        kb.claim_task(conn, parent_b)
+        claim_b = kb.claim_task(conn, parent_b)
+        assert claim_b is not None
         real = kb.create_task(
             conn, title="real-child", assignee="x", created_by="alice",
         )
 
         # First attempt: phantom in the list rejects, task stays running.
+        # The completing worker owns the run (it claimed it), so it threads
+        # its own current_run_id as expected_run_id — exactly as the tool
+        # layer's _worker_run_id does in production.
         with pytest.raises(kb.HallucinatedCardsError):
             kb.complete_task(
                 conn, parent_a,
                 summary="oops",
                 created_cards=["t_phantomdeadbeef"],
+                expected_run_id=claim_a.current_run_id,
             )
         assert kb.get_task(conn, parent_a).status == "running"
 
@@ -1161,6 +1179,7 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
             conn, parent_a,
             summary="retry without claims",
             created_cards=[],
+            expected_run_id=claim_a.current_run_id,
         )
         assert ok is True
         assert kb.get_task(conn, parent_a).status == "done"
@@ -1172,6 +1191,7 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
                 conn, parent_b,
                 summary="oops",
                 created_cards=[real, "t_anotherphantom"],
+                expected_run_id=claim_b.current_run_id,
             )
         assert kb.get_task(conn, parent_b).status == "running"
 
@@ -1179,6 +1199,7 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
             conn, parent_b,
             summary="retry with corrected list",
             created_cards=[real],
+            expected_run_id=claim_b.current_run_id,
         )
         assert ok is True
         assert kb.get_task(conn, parent_b).status == "done"

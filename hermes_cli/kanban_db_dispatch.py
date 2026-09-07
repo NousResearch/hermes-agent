@@ -126,6 +126,14 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    review_deduped: list[str] = field(default_factory=list)
+    """Review task ids whose HEADLESS auto-dispatch was suppressed this tick
+    because another session already owns the review run (e.g. an interactive
+    reviewer claimed the card via the gateway notifier, or a concurrent
+    dispatcher won the race). The CAS in ``claim_review_task`` is the real
+    suppression (no second worker is spawned); this bucket + a logged
+    ``review_deduped`` event make that suppression observable instead of a
+    silent ``continue``. One session acts on a card in review, never two."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -143,6 +151,171 @@ class DispatchResult:
 _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
+
+
+# ---------------------------------------------------------------------------
+# Git-verified completion: dispatch-time worktree isolation + skill force-load
+# (post-mortem 2026-09-07 / t_737d627e).
+#
+# A card that edits a git repo must never be dispatched as a bare `scratch`
+# directory: two concurrent workers would then share one checkout, and one
+# worker's `git add`/`commit` would sweep the other's uncommitted edits. Where
+# a scratch card references a repo (absolute / ~-prefixed path in prose, or the
+# board default_workdir), upgrade it to an isolated per-task worktree.
+DEFAULT_GIT_VERIFY_SKILL = "kanban-git-verified-completion"
+_WORKTREE_DEFAULT_BRANCH_PREFIX = "wt/"
+
+
+def _worktree_branch_for(task_id: str) -> str:
+    return f"{_WORKTREE_DEFAULT_BRANCH_PREFIX}{task_id}"
+
+
+# A path token in card prose: words beginning with /, ~/, or $HOME/.
+_REPO_PATH_PATTERN = re.compile(r"""(?:^|[\s(=\\"'`])(?P<path>(?:~/|/|\$HOME(?:/|$))[^\s,;)"']+)""")
+
+
+def _card_repo_anchor(
+    title: Optional[str],
+    body: Optional[str],
+    board: Optional[str] = None,
+) -> Optional[Path]:
+    """Return a git repo root the card's title/body references, else ``None``.
+
+    Every absolute / ~-prefixed path token in the card prose is expanded and
+    checked with ``git rev-parse --show-toplevel`` (via ``_kbw._git_toplevel``);
+    the first that names a git repo wins. Falls back to the board's
+    ``default_workdir`` when it (or a parent) is a git repo.
+    """
+    text = f"{title or ''}\n{body or ''}"
+    for m in _REPO_PATH_PATTERN.finditer(text):
+        raw = m.group("path")
+        expanded = os.path.expandvars(os.path.expanduser(raw))
+        if not os.path.isabs(expanded):
+            continue
+        # Strip trailing punctuation git would reject (",", ";", ")", "]", "}", ".").
+        while expanded and expanded[-1] in ',.;:)]}"':
+            expanded = expanded[:-1]
+        if not expanded:
+            continue
+        # `git -C` needs an existing directory; walk up to the nearest existing
+        # ancestor when the token points at a not-yet-created file inside a repo.
+        p = Path(expanded)
+        while not p.exists() and p != p.parent:
+            p = p.parent
+        top = _kbw._git_toplevel(p)
+        if top is not None:
+            return top
+    if board:
+        default_workdir = (_kb.read_board_metadata(board).get("default_workdir") or "").strip()
+        if default_workdir:
+            top = _kbw._git_toplevel(Path(os.path.expanduser(default_workdir)))
+            if top is not None:
+                return top
+    return None
+
+
+def _maybe_upgrade_repo_scratch(
+    conn: sqlite3.Connection,
+    task: Task,
+    *,
+    board: Optional[str] = None,
+) -> Task:
+    """Dispatch-time worktree isolation for a card that edits a git repo.
+
+    If ``task`` was created as ``scratch`` but its prose references a git repo
+    path (or the board ``default_workdir`` is a repo), upgrade it to an
+    isolated ``worktree`` so concurrent workers never share a checkout.
+    Otherwise emit a ``scratch_repo_reference_warning`` event (advisory) and
+    leave it as scratch. Returns the (possibly refreshed) Task.
+    """
+    if (task.workspace_kind or "scratch") != "scratch":
+        return task
+    anchor = _card_repo_anchor(task.title, task.body, board=board)
+    if anchor is None:
+        # Advisory only: cannot prove there is a repo to isolate on, so do not
+        # block the tick. Surface the hazard so an operator can pin the card to
+        # a project/worktree if it genuinely edits a repo.
+        with _kb.write_txn(conn):
+            _kb._append_event(
+                conn, task.id, "scratch_repo_reference_warning",
+                {
+                    "reason": "card body references no resolvable git repo; "
+                              "dispatched as scratch (concurrent workers may "
+                              "share a checkout)",
+                },
+            )
+        return task
+    branch = task.branch_name or _worktree_branch_for(task.id)
+    with _kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='worktree', workspace_path=?, branch_name=? "
+            "WHERE id=?",
+            (str(anchor), branch, task.id),
+        )
+        _kb._append_event(
+            conn, task.id, "workspace_upgraded_to_worktree",
+            {
+                "from": "scratch",
+                "to": "worktree",
+                "repo": str(anchor),
+                "branch": branch,
+                "reason": "card references a git repo; per-task worktree isolation "
+                          "prevents concurrent workers sharing one checkout",
+            },
+        )
+    refreshed = _kb.get_task(conn, task.id)
+    _kb._log.info(
+        "kanban dispatch: upgraded %s from scratch to worktree on %s (%s) — "
+        "repo-card isolation (post-mortem 2026-09-07)",
+        task.id, anchor, branch,
+    )
+    return refreshed or task
+
+
+def _note_review_deduped(
+    conn: sqlite3.Connection,
+    result: "DispatchResult",
+    task_id: str,
+    *,
+    dry_run: bool = False,
+) -> bool:
+    """Record a suppressed duplicate review dispatch; return whether it was.
+
+    Called from the review lane when ``claim_review_task`` returns ``None``
+    (the card left ``review`` between the pre-query and the claim). Distinguishes
+    the dedupe case — ``status=running`` with a live ``current_run_id``, meaning
+    another session already owns the review run — from a parent-reopened
+    dependency wait (``status=todo``). The suppression itself is the
+    ``claim_review_task`` CAS; this helper makes it observable (appends the task
+    to ``result.review_deduped``, logs a notice, emits a ``review_deduped``
+    event). One session acts on a card in review, never two.
+    """
+    post = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if post is None or post["status"] != "running" or not post["current_run_id"]:
+        return False
+    if dry_run:
+        return True
+    live = int(post["current_run_id"])
+    result.review_deduped.append(task_id)
+    _kb._log.warning(
+        "kanban dispatch: review task %s already claimed by another "
+        "session (run %s); suppressing duplicate review dispatch "
+        "(recorded as review_deduped) — exactly one session acts "
+        "on a card in review",
+        task_id, live,
+    )
+    with _kb.write_txn(conn):
+        _kb._append_event(
+            conn, task_id, "review_deduped",
+            {
+                "run_id": live,
+                "suppressed": "duplicate_review_dispatch",
+            },
+        )
+    return True
 
 
 def _record_worker_exit(pid: int, raw_status: int) -> None:
@@ -1550,7 +1723,18 @@ def _dispatch_lane_task(
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
+        # Review lane: the card left `review` between the pre-query and the
+        # claim. Distinguish a duplicate-review dedupe (another session already
+        # owns the live review run — one session acts on a card in review, never
+        # two) from a parent-reopened dependency wait. See _note_review_deduped.
+        if lane == "review":
+            _note_review_deduped(conn, result, task_id, dry_run=dry_run)
         return False
+    # Worktree isolation (post-mortem 2026-09-07): a card dispatched as
+    # `scratch` that references a git repo is auto-upgraded to an isolated
+    # per-task worktree so concurrent workers never share a checkout. Applies to
+    # both the ready and review lanes.
+    claimed = _maybe_upgrade_repo_scratch(conn, claimed, board=board)
     try:
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":
@@ -2098,8 +2282,15 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     ]
     # One `--skills X` pair per name: easier to read in `ps` and avoids quoting
     # ambiguity if a skill name contains unusual chars.
-    for sk in task.skills or ():
-        if sk:
+    # Git-verified completion skill (post-mortem 2026-09-07): force-loaded on
+    # every default-spawned worker so each one commits + pushes its repo edits
+    # before kanban_complete. The kernel gate rejects uncommitted/unpushed work;
+    # this teaches the worker to avoid that rejection in the first place.
+    skills = [DEFAULT_GIT_VERIFY_SKILL, *(task.skills or [])]
+    seen = set()
+    for sk in skills:
+        if sk and sk not in seen:
+            seen.add(sk)
             cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])

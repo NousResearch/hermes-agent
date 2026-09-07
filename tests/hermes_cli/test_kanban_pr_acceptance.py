@@ -118,7 +118,11 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
             run_id = owner.current_run_id
             def reclaim():
                 with connect() as rival:
-                    assert kb.block_task(rival, tid, reason="Reassigned during acceptance")
+                    # Deliberate operator reassign during acceptance: a live-run
+                    # task can only be blocked by its owner, or via force= (the
+                    # guard's explicit reclaim override — never an implicit
+                    # silent close of a live run).
+                    assert kb.block_task(rival, tid, reason="Reassigned during acceptance", force=True)
                     assert kb.unblock_task(rival, tid)
                     github["replacement"] = kb.claim_task(rival, tid).current_run_id
             github.update(conclusion=conclusion, race=reclaim)

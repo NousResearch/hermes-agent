@@ -11,6 +11,7 @@ import functools
 import json
 import logging
 import os
+import subprocess
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
@@ -155,10 +156,193 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return None
 
 
+def _resolve_expected_run_id(kb: Any, conn: Any, task_id: str) -> Optional[int]:
+    """Return the run id this caller must assert to own ``task_id``.
+
+    A dispatcher worker proves ownership with its own run id
+    (``HERMES_KANBAN_RUN_ID`` scoped to ``task_id``). A caller that is
+    *scoped to the task* (``HERMES_KANBAN_TASK == task_id``) but carries no
+    dispatcher run id — a legitimate interactive / origin caller, or the
+    gateway-woken interactive reviewer in the #19534 review-dedup flow —
+    resolves the task's OWN live run and asserts that, instead of tripping the
+    strict live-run ownership guard on a task it legitimately owns (this is the
+    regression fixed after commit 57dd9608b6).
+
+    Returns ``None`` for orchestrator / CLI callers that are not scoped to
+    ``task_id`` (``HERMES_KANBAN_TASK`` unset or pointing at another task), so
+    ``_reject_live_run_ownership`` still protects a LIVE run from a foreign
+    orchestrator close — see
+    ``tests/hermes_cli/test_kanban_review_lifecycle_complete.py``.
+    """
+    wid = _worker_run_id(task_id)
+    if wid is not None:
+        return wid
+    if os.environ.get("HERMES_KANBAN_TASK") == task_id:
+        # We own this task (env-scoped) but have no dispatcher run id: resolve
+        # our own live run so the CAS guard matches and ownership is proven,
+        # rather than over-blocking the interactive / origin caller.
+        current = kb._current_run_id(conn, task_id)
+        if current is not None:
+            return int(current)
+        return None
+    return None
+
+
 def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Optional[dict]:
     """Add trusted worker session id metadata for this worker's own task."""
     session_id = _own_task_env(task_id, "HERMES_SESSION_ID")
     return {**(metadata or {}), "worker_session_id": session_id} if session_id else metadata
+
+
+# ---------------------------------------------------------------------------
+# Git-verified completion gate (post-mortem 2026-09-07)
+#
+# Card t_6c39e36f was marked DONE while its working-tree edits (3 design docs
+# + 1 lessons file) were never committed: kanban_complete trusted the worker's
+# prose summary and nothing checked the tree was clean or that commits had
+# landed on the remote. The enabler was concurrent workers sharing one checkout.
+#
+# This gate closes that hole at the *worker tool* boundary. It only fires for
+# the worker path (the process has HERMES_KANBAN_WORKSPACE pointing into a git
+# repo); CLI / human / orchestrator completions do not carry that env and are
+# deliberately not gated (they don't edit files inside a task workspace).
+# ---------------------------------------------------------------------------
+
+def _git_toplevel_ws(path: str) -> Optional[str]:
+    """Return the git work-tree top level for ``path``, or ``None`` if not in a repo."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", path, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if r.returncode != 0:
+            return None
+        out = r.stdout.strip()
+        return out or None
+    except Exception:
+        return None
+
+
+def _git_porcelain(top: str) -> str:
+    """Return ``git status --porcelain`` output (empty string == a clean tree)."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", top, "status", "--porcelain"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        return r.stdout or ""
+    except Exception:
+        return ""
+
+
+def _git_origin_remote_exists(top: str) -> bool:
+    """True when the repo has an ``origin`` remote configured."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", top, "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        return r.returncode == 0 and bool(r.stdout.strip())
+    except Exception:
+        return False
+
+
+def _commit_on_remote(top: str, sha: str, branch: Optional[str]) -> Optional[str]:
+    """Return ``None`` if ``sha`` is on ``origin/<branch>``, else an actionable reason.
+
+    If the repo has no ``origin`` remote (nothing to push to), the pushed-commit
+    check is skipped — a clean tree is the invariant we can actually enforce.
+    When ``origin`` exists, the branch is fetched (best-effort, once) so a
+    freshly-pushed branch resolves locally before ``git log origin/<branch>``
+    is consulted.
+    """
+    if not branch:
+        return None
+    remote_ref = f"origin/{branch}"
+    try:
+        r = subprocess.run(
+            ["git", "-C", top, "rev-parse", "--verify", "--quiet", remote_ref],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if r.returncode != 0:
+            if not _git_origin_remote_exists(top):
+                return None  # no remote to push to -> nothing to verify
+            # Remote ref not known locally. Fetch it once so a just-pushed
+            # branch resolves; if it is genuinely absent from origin, fail.
+            subprocess.run(
+                ["git", "-C", top, "fetch", "origin", branch],
+                capture_output=True, text=True, timeout=60, check=False,
+            )
+            r2 = subprocess.run(
+                ["git", "-C", top, "rev-parse", "--verify", "--quiet", remote_ref],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            if r2.returncode != 0:
+                return (
+                    f"commit {sha} is not on origin/{branch} — push it before "
+                    f"completing (git push origin {branch})"
+                )
+    except Exception:
+        return None
+    # Confirm the commit (or anything the commit records) is reachable from
+    # origin/<branch>.
+    try:
+        r = subprocess.run(
+            ["git", "-C", top, "merge-base", "--is-ancestor", sha, remote_ref],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        if r.returncode == 0:
+            return None
+    except Exception:
+        pass
+    return (
+        f"commit {sha} is not on origin/{branch} — push it before completing "
+        f"(git push origin {branch})"
+    )
+
+
+def _git_verified_completion_rejection(
+    workspace: Optional[str],
+    branch: Optional[str],
+    metadata: Optional[dict],
+) -> Optional[str]:
+    """Return an actionable rejection message, or ``None`` to allow completion.
+
+    Enforced only when the worker's workspace is inside a git repo:
+      1. ``git status --porcelain`` must be empty (every change committed), and
+      2. any ``metadata.commits`` SHA must be present on ``origin/<branch>``.
+    """
+    if not workspace or not os.path.isdir(workspace):
+        return None
+    top = _git_toplevel_ws(workspace)
+    if top is None:
+        return None  # workspace is not in a git repo -> nothing to verify
+    porcelain = _git_porcelain(top)
+    if porcelain.strip():
+        dirty = porcelain.strip().splitlines()
+        preview = "\n  ".join(dirty[:20])
+        more = "" if len(dirty) <= 20 else f"\n  … and {len(dirty) - 20} more"
+        return (
+            "Git completion gate: working tree is not clean (uncommitted changes). "
+            "Commit (or stash/discard) every change before completing:\n"
+            f"  {preview}{more}\n"
+            "Every file you touched in this repo must be committed. If these are "
+            "intended artifacts, move them out of the repo or add them to "
+            ".gitignore and commit the rest; then push the branch."
+        )
+    commits = metadata.get("commits") if isinstance(metadata, dict) else None
+    if not commits:
+        return None
+    if isinstance(commits, str):
+        commits = [commits]
+    for c in commits:
+        sha = str(c).strip()
+        if not sha:
+            continue
+        reason = _commit_on_remote(top, sha, branch)
+        if reason:
+            return reason
+    return None
 
 
 def _enforce_worker_task_ownership(tid: str) -> None:
@@ -562,10 +746,29 @@ def _handle_complete(args: dict, **kw) -> str:
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+
+        # Git-verified completion gate (post-mortem 2026-09-07). A worker
+        # whose workspace is inside a git repo may not reach `done` with
+        # uncommitted edits or unpushed commits. The worker tool path is
+        # the only place with HERMES_KANBAN_WORKSPACE / _BRANCH set, so the
+        # gate leaves CLI / human / orchestrator completions untouched.
+        git_rejection = _git_verified_completion_rejection(
+            os.environ.get("HERMES_KANBAN_WORKSPACE"),
+            os.environ.get("HERMES_KANBAN_BRANCH"),
+            metadata,
+        )
+        if git_rejection is not None:
+            return tool_error(
+                f"kanban_complete rejected by the git-verified completion gate: "
+                f"{git_rejection} Your task is still in-flight (no state change). "
+                f"Fix the working tree / push the commits, then retry "
+                f"kanban_complete with the same summary/metadata."
+            )
+
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+                created_cards=created_cards, expected_run_id=_resolve_expected_run_id(kb, conn, tid))
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the
@@ -620,7 +823,7 @@ def _handle_block(args: dict, **kw) -> str:
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
-        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
+        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_resolve_expected_run_id(kb, conn, tid))
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
         return _ok_landed(kb, conn, tid, "blocked", block_kind=kind)
 
@@ -644,7 +847,7 @@ def _handle_request_review(args: dict, **kw) -> str:
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         ok, fail_reason = kb.request_review(
             conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
-            expected_run_id=_worker_run_id(tid), with_reason=True)
+            expected_run_id=_resolve_expected_run_id(kb, conn, tid), with_reason=True)
         _check(ok, f"could not request review for {tid}: "
                    f"{fail_reason or 'unknown id or not in running/ready'}")
         return _ok_landed(kb, conn, tid, "review")
@@ -658,7 +861,7 @@ def _handle_request_changes(args: dict, **kw) -> str:
         _require_text(args, "reason", "reason is required — describe the changes needed"))
     with _board(args.get("board")) as (kb, conn):
         ok, detail = kb.request_changes(
-            conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
+            conn, tid, reason=reason, expected_run_id=_resolve_expected_run_id(kb, conn, tid))
         _check(ok, f"could not request changes for {tid}: {detail or 'invalid review state'}")
         return _ok_landed(kb, conn, tid, "ready", implementer=detail)
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -162,6 +163,90 @@ def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
         assert kb.get_task(conn, worker_env).status == "done"
     finally:
         conn.close()
+
+
+def _make_git_repo(root: "os.PathLike") -> str:
+    """Create a git repo at ``root/repo`` and return its path."""
+    repo = os.path.join(str(root), "repo")
+    os.makedirs(repo, exist_ok=True)
+    def git(*args, **kw):
+        return subprocess.run(
+            ["git"] + list(args), cwd=repo, capture_output=True, text=True, **kw
+        )
+    git("init", "-q")
+    git("config", "user.email", "t@t.t")
+    git("config", "user.name", "t")
+    return repo
+
+
+def test_complete_rejected_when_workspace_dirty(worker_env, tmp_path, monkeypatch):
+    """Post-mortem 2026-09-07 (card t_6c39e36f): a worker whose HERMES_KANBAN_WORKSPACE
+    points into a git repo but whose working tree holds uncommitted edits MUST NOT
+    be able to reach kanban_complete. The task stays running, and the rejection
+    tells the worker to commit (or stash) the changes."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    repo = _make_git_repo(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", repo)
+    monkeypatch.setenv("HERMES_KANBAN_BRANCH", "wt/test")
+
+    with open(os.path.join(repo, "edited.txt"), "w") as fh:
+        fh.write("uncommitted change\n")
+
+    out = json.loads(kt._handle_complete({
+        "summary": "done with the work",
+        "metadata": {"files": 1},
+    }))
+    assert out.get("error"), "dirty-tree completion must be rejected"
+    assert "working tree is not clean" in out["error"]
+    # No state change: the task must still be running, not done.
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "running"
+    finally:
+        conn.close()
+
+
+def test_git_gate_allows_clean_repo(worker_env, tmp_path, monkeypatch):
+    """The gate must NOT over-block: a repo with a committed (clean) tree and a
+    confirmable commit is allowed through by the rejection helper."""
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    repo = _make_git_repo(tmp_path)
+    with open(os.path.join(repo, "base.txt"), "w") as fh:
+        fh.write("base\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "base"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    )
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True
+    ).stdout.strip()
+
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", repo)
+    monkeypatch.setenv("HERMES_KANBAN_BRANCH", "wt/test")
+
+    # Clean tree, no commits declared -> allowed.
+    assert kt._git_verified_completion_rejection(
+        os.environ.get("HERMES_KANBAN_WORKSPACE"),
+        os.environ.get("HERMES_KANBAN_BRANCH"),
+        {"files": 1},
+    ) is None
+    # Clean tree + a confirmable commit (no origin remote -> pushed check skipped)
+    # -> allowed.
+    assert kt._git_verified_completion_rejection(
+        os.environ.get("HERMES_KANBAN_WORKSPACE"),
+        os.environ.get("HERMES_KANBAN_BRANCH"),
+        {"commits": [sha]},
+    ) is None
+    # No workspace env (CLI / human / orchestrator completes) is never gated.
+    assert kt._git_verified_completion_rejection(None, None, {"files": 1}) is None
+    # A workspace that is not a git repo is never gated.
+    assert kt._git_verified_completion_rejection("/tmp/not-a-repo", "wt/x", {"files": 1}) is None
 
 
 def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):

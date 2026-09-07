@@ -45,6 +45,13 @@ def _running_task(conn, title="t"):
     return tid
 
 
+def _current_run_id(conn, tid):
+    """Return the task's live run id (the id a worker must present to close)."""
+    run_id = kb._current_run_id(conn, tid)
+    assert run_id is not None, "task must have a live run for ownership check"
+    return run_id
+
+
 def _make_running_again(conn, tid):
     with kb.write_txn(conn):
         conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
@@ -67,10 +74,10 @@ def _make_running_again(conn, tid):
 def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
     with kbc.connect_closing() as conn:
         tid = _running_task(conn)
-        kb.block_task(conn, tid, reason="x", kind="capability")
+        kb.block_task(conn, tid, reason="x", kind="capability", expected_run_id=_current_run_id(conn, tid))
         kb.unblock_task(conn, tid)
         _make_running_again(conn, tid)
-        kb.block_task(conn, tid, reason="x", kind="capability")
+        kb.block_task(conn, tid, reason="x", kind="capability", expected_run_id=_current_run_id(conn, tid))
         events = [e for e in kb.list_events(conn, tid)
                   if e.kind == "block_loop_detected"]
         assert events, "expected a block_loop_detected event"
@@ -90,13 +97,13 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
         parent = kb.create_task(conn, title="parent", assignee="worker")
         child = _running_task(conn, title="child")
         kb.link_tasks(conn, parent_id=parent, child_id=child)
-        kb.block_task(conn, child, reason="wait", kind="dependency")
+        kb.block_task(conn, child, reason="wait", kind="dependency", expected_run_id=_current_run_id(conn, child))
         assert kb.get_task(conn, child).status == "todo"
         # Finish the parent, then let recompute_ready run.
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
         kb.claim_task(conn, parent, claimer="worker")
-        kb.complete_task(conn, parent, result="done")
+        kb.complete_task(conn, parent, result="done", expected_run_id=_current_run_id(conn, parent))
         kb.recompute_ready(conn)
         assert kb.get_task(conn, child).status == "ready"
 

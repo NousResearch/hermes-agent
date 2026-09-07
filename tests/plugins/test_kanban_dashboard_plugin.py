@@ -981,9 +981,12 @@ def test_event_dict_includes_run_id(client):
     from hermes_cli import kanban_db_connect as kbc
     conn = kbc.connect()
     try:
-        kb.claim_task(conn, tid)
-        run_id = kb.latest_run(conn, tid).id
-        kb.complete_task(conn, tid, summary="wss")
+        claimed = kb.claim_task(conn, tid)
+        run_id = claimed.current_run_id
+        # A no-ownership close over a live run is rejected by the live-run
+        # ownership guard (commit 57dd9608b6): the session that claims the task
+        # must complete with `expected_run_id` to prove it holds the run.
+        kb.complete_task(conn, tid, summary="wss", expected_run_id=run_id)
     finally:
         conn.close()
 

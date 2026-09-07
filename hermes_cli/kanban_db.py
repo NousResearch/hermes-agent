@@ -1905,6 +1905,49 @@ def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
     return int(row["current_run_id"]) if row and row["current_run_id"] else None
 
 
+def _reject_live_run_ownership(
+    conn: sqlite3.Connection,
+    task_id: str,
+    expected_run_id: Optional[int],
+    *,
+    force: bool = False,
+    action: str = "close",
+) -> Optional[str]:
+    """Close the ``expected_run_id is None`` race on a run-closing write.
+
+    The worker paths always prove ownership by passing ``expected_run_id``
+    (their own run id via ``_worker_run_id``). The orchestrator / CLI path
+    passes ``None`` — and when it does, the run-closing UPDATE omits the
+    ``AND current_run_id = ?`` CAS guard entirely (see ``complete_task``,
+    ``block_task``). Two sessions of one profile can therefore race: a
+    dispatcher-spawned review run is live (``current_run_id`` set to the
+    reviewer's run) while a second session calls ``kanban_complete`` with
+    ``expected_run_id=None`` and silently clobbers the live run.
+
+    This mirrors ``request_review``'s live-claim guard (#19534 sibling):
+    a call that cannot prove ownership may only close a task when there is
+    NO live run. If a live run exists it must be reclaimed deliberately
+    (after heartbeat-timeout the reaper clears ``current_run_id``) — never
+    implicitly closed by another session. ``force=True`` is the explicit
+    operator override for a deliberate reclaim.
+
+    Returns ``None`` when the write is allowed, or a rejection reason string.
+    """
+    if force:
+        return None
+    if expected_run_id is not None:
+        return None
+    live = _current_run_id(conn, task_id)
+    if live is None:
+        return None
+    return (
+        f"task {task_id} has an active run (run {live}) held by another "
+        f"session; refusing to {action}. Pass expected_run_id to prove "
+        f"ownership, or reclaim the stale run first (heartbeat timeout clears "
+        f"it), or pass force=True for a deliberate override."
+    )
+
+
 def _end_or_synthesize_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, status: str,
     summary: Optional[str] = None, metadata: Optional[dict] = None, synthesize: bool,
@@ -2525,7 +2568,7 @@ def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True,
+    fire_lifecycle_hook: bool = True, force: bool = False,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2558,6 +2601,15 @@ def complete_task(
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         prior_status = _task_status(conn, task_id)
+        # Guard: a no-ownership (expected_run_id is None) orchestrator/CLI
+        # close must never clobber a LIVE run held by another session. When a
+        # run is active, only its owner (worker, expected_run_id) may close,
+        # or a deliberate force= override. See _reject_live_run_ownership.
+        own_rej = _reject_live_run_ownership(
+            conn, task_id, expected_run_id, force=force, action="complete",
+        )
+        if own_rej is not None:
+            raise ValueError(own_rej)
         sql = """
                 UPDATE tasks
                    SET status       = 'done',
@@ -2900,7 +2952,7 @@ def edit_completed_task_result(
 
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
-    kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    kind: Optional[str] = None, expected_run_id: Optional[int] = None, force: bool = False,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``transient`` still counts toward the loop breaker
@@ -2928,6 +2980,13 @@ def block_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """
+        # Guard: never let a no-ownership orchestrator/CLI block clobber a
+        # LIVE run held by another session. See _reject_live_run_ownership.
+        own_rej = _reject_live_run_ownership(
+            conn, task_id, expected_run_id, force=force, action="block",
+        )
+        if own_rej is not None:
+            raise ValueError(own_rej)
         params = (*params, task_id)
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
@@ -3103,6 +3162,7 @@ def _nonblank_str(value: Any) -> Optional[str]:
 
 def request_changes(
     conn: sqlite3.Connection, task_id: str, *, reason: str, expected_run_id: Optional[int] = None,
+    force: bool = False,
 ) -> tuple[bool, Optional[str]]:
     """Close an active reviewer run (claimed from ``review``) and hand the task
     back to the implementer from the latest ``review_requested`` event, parent
@@ -3120,6 +3180,14 @@ def request_changes(
         current_run_id = task_row["current_run_id"]
         if task_row["status"] != "running" or current_run_id is None:
             return False, "task is not in an active review run"
+        # Guard: a no-ownership (expected_run_id is None) caller must never
+        # route changes on a review run it does not hold. A second session
+        # must not clobber a live reviewer run. See _reject_live_run_ownership.
+        own_rej = _reject_live_run_ownership(
+            conn, task_id, expected_run_id, force=force, action="request_changes",
+        )
+        if own_rej is not None:
+            return False, own_rej
         if expected_run_id is not None and int(current_run_id) != int(expected_run_id):
             return False, "run_id mismatch"
 

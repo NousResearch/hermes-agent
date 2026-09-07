@@ -23,9 +23,11 @@ class SessionOwner(BaseModel):
     stored_session_id: str | None = None
 
 
-def resolve_owner(service, identity):
+def resolve_owner(service, identity, *, allow_missing=False):
     try:
-        return service.owners.resolve(**identity)
+        if any(value == "" for value in identity.values()):
+            raise OwnerError("Invalid session identity")
+        return service.owners.resolve(allow_missing=allow_missing, **identity)
     except OwnerError:
         raise HTTPException(403, "Session ownership mismatch") from None
 
@@ -40,7 +42,11 @@ def list_realms(
     identity = dict(
         runtime_session_id=runtime_session_id, stored_session_id=stored_session_id
     )
-    owner = resolve_owner(service, identity)
+    owner = resolve_owner(service, identity, allow_missing=True)
+    if owner is None:
+        # Historical sessions may predate trusted ownership registration.
+        # A read must neither bind aliases nor inspect another owner's realms.
+        return {"mode": service.manager.config.default_mode, "realms": []}
     result = service.status(owner)
     for row in result["realms"]:
         row.update(identity)

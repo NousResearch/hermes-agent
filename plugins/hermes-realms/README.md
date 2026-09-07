@@ -15,6 +15,13 @@ The implementation is adopted from [hermes-realms](https://github.com/Zeus-Deus/
 - The dashboard API follows the same opt-in gate, including revocation of already-mounted routes. Enabling the Python plugin does **not** enable the desktop UI, or vice versa.
 - The desktop half appears in Settings → Plugins, with `defaultEnabled: false`; its decision persists using the native plugin inventory. Backend activation is per profile, with no config inheritance from other profiles.
 
+The two settings are separate layers, not alternative global/profile switches:
+
+- **Desktop plugins → Realms** loads viewing controls throughout this desktop app. It does not enable tools, change any gateway's configuration, or start a desktop.
+- **Agent plugins → Applies to → hermes-realms** enables the runtime for the selected profile on the connected gateway. Enable it only for the profiles that should use Realms; leave it off elsewhere.
+
+Session badges appear only after a successful lookup confirms an owned realm. A missing or disabled backend does not label ordinary sessions as unavailable. During a temporary read failure, an existing badge keeps its last-known count and marks the status as unavailable on hover.
+
 ## Enable and prepare (Linux only)
 
 The runtime needs labwc, Xwayland, WayVNC, grim, wlr-randr, bubblewrap, D-Bus, the AT-SPI bus launcher/registry, a working systemd **user** manager and a render node. Install these explicitly with your distribution's package manager. This plugin does not install system packages, services, or alter/reload Hyprland configuration.

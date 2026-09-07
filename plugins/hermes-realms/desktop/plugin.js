@@ -73,7 +73,7 @@ export default {
   id: 'hermes-realms',
   defaultEnabled: false,
   name: 'Realms',
-  description: 'Session-owned private desktops, live Watch and passive native viewers.',
+  description: 'Desktop viewing controls only. Enable hermes-realms under Agent plugins for each profile that should use private desktops.',
   register(ctx) {
     function StatusRow({ session }) {
       const result = useQuery(realmQueryOptions(ctx, session));
@@ -98,11 +98,11 @@ export default {
         } finally { pending.current = false; }
       }
       if (!validSession(session)) return null;
-      if (result.isError) return jsxs('div', { role: 'status', style: { fontSize: 12 }, children: [
+      const realms = ownedRealms(result.data, session);
+      if (result.isError && realms.length) return jsxs('div', { role: 'status', style: { fontSize: 12 }, children: [
         'Realm status unavailable · ',
         jsx(Button, { size: 'micro', variant: 'ghost', disabled: result.isFetching, onClick: () => void result.refetch(), children: 'Retry' })
       ] });
-      const realms = ownedRealms(result.data, session);
       const mode = result.data?.mode;
       if (!realms.length) return modeLabel(mode) ? jsx('div', { style: { color: 'var(--ui-text-secondary)', fontSize: 12 }, children: modeLabel(mode) }) : null;
       return jsxs('div', { 'data-realms-status': '', style: { display: 'flex', flexDirection: 'column', gap: 4 }, children: [
@@ -120,10 +120,11 @@ export default {
     function RealmBadge({ session }) {
       const result = useQuery(realmQueryOptions(ctx, session));
       if (!validSession(session)) return null;
-      if (result.isError) return jsx(Badge, { size: 'xs', title: 'Realm status unavailable', children: 'Realm unavailable' });
+      // A failed lookup is not evidence that this session has a realm. Keep
+      // ordinary rows quiet and known badges stable while polling retries.
       const realms = ownedRealms(result.data, session);
       if (!realms.length) return null;
-      const label = realms.map(realmLabel).join('; ');
+      const label = `${result.isError ? 'Realm status unavailable · Last known: ' : ''}${realms.map(realmLabel).join('; ')}`;
       const knownCount = realms.every(realm => Number.isSafeInteger(realm.window_count) && realm.window_count >= 0);
       const compact = knownCount ? `Realm · ${realms.reduce((sum, realm) => sum + realm.window_count, 0)}` : 'Realm';
       return jsx(Badge, { size: 'xs', title: label, 'aria-label': label, children: compact });

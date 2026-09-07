@@ -936,3 +936,48 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
             adapter.handle_message.assert_awaited_once()
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("available", [False, True])
+def test_completion_profile_transport_never_falls_back(monkeypatch, isolated_registry, available):
+    primary = SimpleNamespace(handle_message=AsyncMock(), send=AsyncMock())
+    secondary = SimpleNamespace(handle_message=AsyncMock(), send=AsyncMock())
+    runner = _runner(primary)
+    runner._profile_adapters = {"research": {Platform.TELEGRAM: secondary}} if available else {}
+    evt = dict(_completion_event(started_at=1), session_key="agent:research:telegram:dm:12345")
+    result = asyncio.run(runner._inject_watch_notification("private result", evt))
+    assert result is available
+    asyncio.run(runner._send_watcher_message("telegram", "12345", None, "raw result", evt))
+    primary.send.assert_not_awaited()
+    assert secondary.send.await_count == int(available)
+    primary.handle_message.assert_not_awaited()
+    assert secondary.handle_message.await_count == int(available)
+    if available:
+        assert secondary.handle_message.await_args.args[0].source.profile == "research"
+
+
+@pytest.mark.parametrize("event_type", ["watch_match", "watch_disabled"])
+@pytest.mark.parametrize("mode", ["concise", "off"])
+def test_idle_watch_drain_respects_notify_mode(monkeypatch, isolated_registry, event_type, mode):
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    runner._load_background_notifications_mode = lambda: mode
+    evt = dict(_completion_event(started_at=1), type=event_type,
+               pattern="READY", output="READY", message="Watch patterns disabled")
+    isolated_registry.completion_queue.put(evt)
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+    assert adapter.handle_message.await_count == (0 if mode == "off" else 1)
+    assert isolated_registry.completion_queue.empty()
+
+
+def test_watch_drain_retries_transport_failure(monkeypatch, isolated_registry):
+    adapter = SimpleNamespace(handle_message=AsyncMock(side_effect=[RuntimeError("offline"), None]))
+    runner = _runner(adapter)
+    runner._load_background_notifications_mode = lambda: "concise"
+    evt = dict(_completion_event(started_at=1), type="watch_match", pattern="READY", output="READY")
+    isolated_registry.completion_queue.put(evt)
+    _stop_after_sleeps(monkeypatch, runner, count=3)
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+    assert adapter.handle_message.await_count == 2
+    assert isolated_registry.completion_queue.empty()

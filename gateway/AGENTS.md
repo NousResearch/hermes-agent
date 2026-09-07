@@ -64,6 +64,13 @@ completion and triggers a new agent turn. Verbosity: `display.background_process
 tail), `all` (running updates + final raw output), `result` (final raw output only), `error`
 (final raw output only on non-zero exit), `off`.
 
+The idle completion watcher also drains `watch_match` / `watch_disabled`; no user follow-up is
+required. Notify-off drains these without waking. Transport failures are retried; unavailable
+durable completion owners/transports do not spend delivery attempts. Profile-namespaced process
+events keep their owning adapter, including raw progress/final notices. Adapter acceptance is
+at-least-once admission, not proof that a model turn or final outbound reply completed. API-server
+async completions remain durable delivery rows, never autonomous new model turns.
+
 Cron deliveries are NOT mirrored into the target gateway session — they land in their own cron
 session with a header/footer frame so the main conversation's role alternation stays intact
 (`cron/AGENTS.md`).

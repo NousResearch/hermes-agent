@@ -33,6 +33,86 @@ _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
 
+#: Mirrors ``hermes_state``'s ``HERMES_STATE_DB_GUARD_BYPASS``.
+_KANBAN_DB_GUARD_BYPASS_ENV = "HERMES_KANBAN_DB_GUARD_BYPASS"
+
+
+def _guard_in_test_context() -> bool:
+    """True when this process is a test run, for live-board guard purposes.
+
+    Broader than ``hermes_state_guard._in_test_context()``, which reads
+    ``PYTEST_*`` env vars and process ancestry and so misses a shim that fakes
+    ``pytest`` in ``sys.modules``. Checking ``sys.modules`` is safe only while
+    no module under ``hermes_cli/``, ``agent/``, ``gateway/`` or ``tools/``
+    imports pytest at top level. See PR #101997.
+    """
+    import os
+    import sys
+
+    if os.environ.get(_KANBAN_DB_GUARD_BYPASS_ENV):
+        return False
+    if "pytest" in sys.modules:
+        return True
+    try:
+        from hermes_state_guard import _in_test_context
+        return bool(_in_test_context())
+    except Exception:
+        # The guard must not be the reason a real run fails.
+        return False
+
+
+def _real_kanban_roots() -> list[Path]:
+    """Candidate real Hermes roots that a test must never write a board into.
+
+    Delegates to ``hermes_state_guard._real_platform_state_roots`` so the
+    kanban and state.db guards share one platform-root rule, including the
+    Windows ``%LOCALAPPDATA%`` layout and the profile-mode ``HOME`` mapping.
+    """
+    try:
+        from hermes_state_guard import _real_platform_state_roots
+        return list(_real_platform_state_roots())
+    except Exception:
+        return []
+
+
+def _is_production_kanban_db(resolved: Path, root: Path) -> bool:
+    """True when *resolved* is a real board file under Hermes root *root*.
+
+    Matches only the two shapes ``kanban_db_path`` produces, so a scratch
+    board under ``<root>/kanban/workspaces/<task>/`` stays writable.
+    """
+    try:
+        rel = resolved.relative_to(root)
+    except ValueError:
+        return False
+    parts = rel.parts
+    if parts == ("kanban.db",):
+        return True
+    return len(parts) == 4 and parts[0] == "kanban" and parts[1] == "boards" and parts[3] == "kanban.db"
+
+
+def _ensure_not_live_board(path: Path) -> None:
+    """Raise when a test-context process resolves the live kanban board.
+
+    Called before any ``mkdir``, connection, or schema write. No-op outside a
+    test context and for sandboxed paths.
+    """
+    if not _guard_in_test_context():
+        return
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except Exception:
+        return
+    for root in _real_kanban_roots():
+        if _is_production_kanban_db(resolved, root):
+            raise RuntimeError(
+                "live-board guard: a test attempted to open the production "
+                f"kanban board at {resolved} (under real Hermes root {root}). "
+                "Tasks created there are dispatchable. Set HERMES_KANBAN_DB "
+                "to a tmp path (it outranks HERMES_HOME) or pass an explicit "
+                f"tmp db_path. To opt out, set {_KANBAN_DB_GUARD_BYPASS_ENV}=1."
+            )
+
 # Cap on ``<db>.corrupt.<hash>.bak`` quarantines per board: content-addressing
 # dedupes identical bytes, but mutating corruption mints a new fingerprint each
 # time (one user hit 124). Oldest-by-mtime beyond the cap are pruned after each
@@ -672,6 +752,8 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
     ``<root>/kanban/current`` -> ``default``)."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    # Before the mkdir: creating the directory is already a live write.
+    _ensure_not_live_board(path)
     from agent.delegation_context import is_delegated_child_process_context
     if is_delegated_child_process_context():
         # Reads must not enter schema/backfill write transactions. Never create a
@@ -756,6 +838,7 @@ def init_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> P
     migration pass — callers that know the on-disk schema may have drifted
     (tests writing legacy event kinds, external upgrades) use it to force it."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    _ensure_not_live_board(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Clear the cache entry so connect() re-runs schema + migrations.
     with _INIT_LOCK:

@@ -30,7 +30,7 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
-from utils import atomic_replace, atomic_yaml_write, fast_safe_load
+from utils import atomic_replace, atomic_roundtrip_yaml_save, atomic_yaml_write, fast_safe_load
 
 logger = logging.getLogger(__name__)
 
@@ -2340,7 +2340,14 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
+        if os.path.exists(config_path):
+            # Round-trip so hand-written comments survive. config.yaml is where the rationale for
+            # deliberate settings lives, and a migration rewrites the WHOLE file through this
+            # function -- with the PyYAML dumper that silently erases every comment in it.
+            # New files still go through atomic_yaml_write so the commented example blocks land.
+            atomic_roundtrip_yaml_save(config_path, normalized)
+        else:
+            atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)

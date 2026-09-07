@@ -437,8 +437,36 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     # DOES resolve through the provider: the gateway provisions the browser server-side and returns its CDP URL.
     provider_key = str(getattr(provider, "name", "") or "").strip().lower()
     if provider_key == _BACKEND_KEY and not _use_gateway(_read_browser_cfg()):
-        env[_PRIVATE_BROWSER_SENTINEL] = "1"  # named BU cloud browsers are exclusive to their daemon
-        return None
+        # Hosted / managed gateway: a BrowserUse provider resolved via autodetect
+        # (no explicit `use_gateway: true` in config, no BROWSER_USE_API_KEY) is
+        # still *managed* — its config comes from the Nous tool gateway, not the
+        # direct Browser Use API. The CLI has no direct credentials in that case
+        # and would fall back to local Chrome discovery → chrome-not-running.
+        # Detect the managed path and route through the provider's CDP instead.
+        try:
+            cfg = provider._get_config_or_none(refresh_token=False) if hasattr(provider, "_get_config_or_none") else None
+            if isinstance(cfg, dict) and cfg.get("managed_mode"):
+                pass  # managed — fall through to _export_session_cdp
+            elif not (os.getenv("BROWSER_USE_API_KEY") or "").strip():
+                # No direct key and not explicitly managed: probe the gateway. If a
+                # managed gateway is actually reachable, prefer it over the dead-end
+                # direct-API path (harness would otherwise need local Chrome).
+                try:
+                    from tools.managed_tool_gateway import is_managed_tool_gateway_ready
+                    if is_managed_tool_gateway_ready("browser-use"):
+                        pass  # fall through to gateway-backed session
+                    else:
+                        env[_PRIVATE_BROWSER_SENTINEL] = "1"
+                        return None
+                except Exception:
+                    env[_PRIVATE_BROWSER_SENTINEL] = "1"
+                    return None
+            else:
+                env[_PRIVATE_BROWSER_SENTINEL] = "1"  # direct API — CLI owns the cloud session
+                return None
+        except Exception:
+            env[_PRIVATE_BROWSER_SENTINEL] = "1"
+            return None
 
     provider_name = type(provider).__name__
     err = _export_session_cdp(

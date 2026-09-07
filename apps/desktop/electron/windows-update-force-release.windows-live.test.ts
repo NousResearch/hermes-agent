@@ -636,15 +636,30 @@ describe('termination cancellation hard boundary (live)', () => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-force-tree-'))
       const sentinel = path.join(tmp, 'sentinel.txt')
       const writerPidPath = path.join(tmp, 'writer.pid')
+      const writerArmedPath = path.join(tmp, 'writer.armed')
+      const releasePath = path.join(tmp, 'release')
 
-      // Root spawns a descendant writer that records its PID then would write sentinel later.
+      // Root spawns a descendant writer that announces itself, then waits for a
+      // gate this test opens only AFTER the tree is confirmed dead.
+      //
+      // The descendant used to mutate on a 1.5 s timer, which made the proof a
+      // stopwatch: the abort fires ~0.4 s in and the kill has to land inside
+      // the remaining ~1.1 s. Measured on this host the kill normally lands
+      // well inside that, but under load it does not, and the arm then failed
+      // with the sentinel present while BOTH identities were confirmed gone --
+      // a lost race, not an escape. Nothing here is timed now.
       const longScript = `
 $ErrorActionPreference = 'Stop'
 $sentinel = ${JSON.stringify(sentinel)}
 $writerPidPath = ${JSON.stringify(writerPidPath)}
+$writerArmedPath = ${JSON.stringify(writerArmedPath)}
+$releasePath = ${JSON.stringify(releasePath)}
 $writer = Start-Process -FilePath ${JSON.stringify(ps)} -ArgumentList @(
   '-NoLogo','-NoProfile','-NonInteractive','-Command',
-  ('Start-Sleep -Milliseconds 1500; Set-Content -LiteralPath ''' + $sentinel + ''' -Value LATE_MUTATION')
+  ('Set-Content -LiteralPath ''' + $writerArmedPath + ''' -Value ([string]$PID); ' +
+   '$deadline = (Get-Date).AddSeconds(180); ' +
+   'while (-not (Test-Path -LiteralPath ''' + $releasePath + ''') -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 25 }; ' +
+   'if (Test-Path -LiteralPath ''' + $releasePath + ''') { Set-Content -LiteralPath ''' + $sentinel + ''' -Value LATE_MUTATION }')
 ) -PassThru -WindowStyle Hidden
 Set-Content -LiteralPath $writerPidPath -Value ([string]$writer.Id)
 Start-Sleep -Seconds 20
@@ -685,14 +700,18 @@ Write-Output ('ROOT=' + $PID + ';CHILD=' + $writer.Id)
               treeSnapshot = [{ pid: childPid, createdAt: Date.now() / 1000 }]
             }
 
+            // Abort only once the tree is observably UP and ARMED: the root
+            // published the descendant's PID and the descendant reached its
+            // wait loop. Killing before that proves nothing about descendants.
             const pollUntil = Date.now() + LIVE_STATE_TIMEOUT_MS
 
             while (Date.now() < pollUntil) {
               try {
-                if (fs.existsSync(writerPidPath)) {
+                if (fs.existsSync(writerPidPath) && fs.existsSync(writerArmedPath)) {
                   const writerPid = Number(fs.readFileSync(writerPidPath, 'utf8').trim())
+                  const armedPid = Number(fs.readFileSync(writerArmedPath, 'utf8').trim())
 
-                  if (Number.isInteger(writerPid) && writerPid > 0) {
+                  if (Number.isInteger(writerPid) && writerPid > 0 && armedPid === writerPid) {
                     treeSnapshot.push({ pid: writerPid, createdAt: Date.now() / 1000 })
 
                     break
@@ -759,8 +778,10 @@ Write-Output ('ROOT=' + $PID + ';CHILD=' + $writer.Id)
 
       assert.deepEqual(await awaitIdentitiesGone(treeSnapshot), [])
 
-      // Delayed descendant write would have landed by now if the tree survived.
-      await new Promise(resolve => setTimeout(resolve, 1_800))
+      // Causal, not timed: open the gate the descendant was waiting on. A tree
+      // that survived would mutate now; a dead one can never observe the gate.
+      fs.writeFileSync(releasePath, 'release')
+      await delay(1_000)
       assert.deepEqual(await awaitIdentitiesGone(treeSnapshot), [])
       assert.equal(fs.existsSync(sentinel), false)
 

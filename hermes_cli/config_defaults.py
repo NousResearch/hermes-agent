@@ -351,7 +351,7 @@ DEFAULT_CONFIG = {
         "extract_char_limit": 15000,
         # Keyless free-tier ring: with NO web backend configured or keyed, web_search/web_extract
         # rotate round-robin across exa, parallel, firecrawl, keenable public free tiers, failing
-        # over on rate limits. Never pre-empts a configured/keyed backend. false = disable.
+        # over on rate limits or transport failures. Never pre-empts a configured/keyed backend. false = disable.
         "keyless_fallback": True,
         # One-shot rescue: when the chosen/keyed backend fails a call, THAT call retries once on the
         # keyless ring; the next call tries the chosen backend again (no sticky failover). Off when

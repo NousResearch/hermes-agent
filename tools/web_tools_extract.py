@@ -163,9 +163,7 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     # Cache each successful fetch's full clean text (best-effort; oversized skipped).
     for url, fetched in zip(fetch_urls, results):
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
-        metadata = fetched.get("metadata") or {}
-        if (_content and not fetched.get("error")
-                and not metadata.get("served_by") and not metadata.get("failover_errors")):
+        if _content and not fetched.get("error"):
             extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
     return results
 

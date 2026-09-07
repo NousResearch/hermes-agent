@@ -328,7 +328,7 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
             return _rescue_search(provider.name, str(exc), query, fetch_limit), True
         if not resp.get("success") and _rescue_eligible(provider):
             return _rescue_search(provider.name, str(resp.get("error", "")), query, fetch_limit), True
-        return resp, bool((resp.get("data") or {}).get("failover_errors"))
+        return resp, False
 
     response_data = search_memo.lookup(provider.name, query, limit)
     if response_data is None:
@@ -391,14 +391,8 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
         debug_call_data["processing_applied"].append("truncate_and_store")
         _truncate_results(results, _effective_char_limit(char_limit), debug_call_data)
         trimmed = _trim_results(results)
-        evidence = next((r.get("metadata") or {} for r in results
-                         if (r.get("metadata") or {}).get("failover_errors")), {})
-        payload = {"results": trimmed}
-        for key in ("served_by", "failover_errors", "all_providers_unavailable"):
-            if key in evidence:
-                payload[key] = evidence[key]
         result_json = (
-            json.dumps(payload, indent=2, ensure_ascii=False) if trimmed
+            json.dumps({"results": trimmed}, indent=2, ensure_ascii=False) if trimmed
             else tool_error("Content was inaccessible or not found")
         )
         # Belt-and-suspenders sweep of the serialized JSON: a provider may tuck a base64 blob in metadata.

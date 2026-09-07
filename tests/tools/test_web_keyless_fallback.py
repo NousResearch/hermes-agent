@@ -473,16 +473,17 @@ class TestKeylessFailover:
         assert out["success"] is False
         assert not called  # peer never tried
 
-    def test_search_all_throttled_reports_ring(self, monkeypatch):
+    @pytest.mark.parametrize("error", ["rate limit", "request failed: timed out", "HTTP 503: unavailable"])
+    def test_search_all_throttled_reports_ring(self, monkeypatch, error):
         self._pin(monkeypatch, "exa")
         for vendor in keyless_mcp._KEYLESS_RING:
             monkeypatch.setitem(
                 keyless_mcp._KEYLESS_SEARCHERS, vendor,
-                lambda q, l, v=vendor: self._throttled(v),
+                lambda q, l: {"success": False, "error": error},
             )
         out = keyless_mcp.search_with_failover("exa", "q")
         assert out["success"] is False
-        assert "all keyless vendors unavailable" in out["error"]
+        assert all(v in out["error"] for v in keyless_mcp._KEYLESS_RING)
 
     def test_search_walks_ring_past_multiple_throttles(self, monkeypatch):
         # exa -> parallel all throttled; firecrawl serves.
@@ -522,11 +523,12 @@ class TestKeylessFailover:
         assert out["success"] is False
         assert not called  # exa pinned paid: its free tier is opted out
 
-    def test_extract_fails_over_when_all_urls_throttled(self, monkeypatch):
+    @pytest.mark.parametrize("error", ["rate limit", "request failed: timed out", "HTTP 408: timeout", "HTTP 503: unavailable"])
+    def test_extract_fails_over_when_all_urls_throttled(self, monkeypatch, error):
         self._pin(monkeypatch, "exa")
         throttled = [
-            {"url": "https://a", "title": "", "content": "", "error": "rate limit hit"},
-            {"url": "https://b", "title": "", "content": "", "error": "429 too many requests"},
+            {"url": "https://a", "title": "", "content": "", "error": error},
+            {"url": "https://b", "title": "", "content": "", "error": error},
         ]
         good = [
             {"url": "https://a", "title": "A", "content": "x"},
@@ -551,96 +553,59 @@ class TestKeylessFailover:
         )
         out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
         assert out == partial
-        assert all("metadata" not in item for item in out)
         assert not called
 
 
-@pytest.mark.parametrize("error,recover", [
-    ("HTTP 429: too many requests", True),
-    ("request failed: connection timed out", True),
-    ("HTTP 503: Service Unavailable", True),
-    ("HTTP 403: forbidden", False),
-    ("blocked by website policy; quota exceeded", False),
-    ("Invalid query", False),
-])
-def test_service_failover_evidence_and_primary_recovery(monkeypatch, error, recover):
-    monkeypatch.setattr(keyless_mcp, "provider_tier", lambda _: "free")
-    monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda _: True)
-    calls = []
-    def primary(query, limit):
-        calls.append("exa")
-        return {"success": False, "error": error}
-    def backup(query, limit):
-        calls.append("parallel")
-        return {"success": True, "data": {"web": [{"url": "https://example.org"}]}}
-    monkeypatch.setattr(keyless_mcp, "exa_search_keyless", primary)
-    monkeypatch.setattr(keyless_mcp, "parallel_search_keyless", backup)
-    provider = ExaWebSearchProvider()
-    query = "failover-contract-" + error
-    for _ in range(2):
-        result = web_tools._memoized_search(provider, query, 1)
-        assert result["success"] is recover
-        assert result["data"]["failover_errors"][0] == {"provider": "exa", "error": error}
-        if recover:
-            assert result["data"]["served_by"] == "parallel"
-    assert calls == (["exa", "parallel"] * 2 if recover else ["exa"] * 2)
-
-
-def test_extract_service_failover_preserves_origin_and_serving_provider(monkeypatch):
-    monkeypatch.setattr(keyless_mcp, "provider_tier", lambda _: "free")
-    monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda _: True)
-    monkeypatch.setattr(keyless_mcp, "exa_extract_keyless", lambda urls: [
-        {"url": url, "error": "HTTP 503: Service Unavailable"} for url in urls])
-    monkeypatch.setattr(keyless_mcp, "parallel_extract_keyless", lambda urls: [
-        {"url": url, "content": "page text"} for url in urls])
-    result = ExaWebSearchProvider().extract(["https://example.org"])[0]
-    assert result["content"] == "page text"
-    assert result["metadata"]["served_by"] == "parallel"
-    assert result["metadata"]["failover_errors"][0]["provider"] == "exa"
-
-
-@pytest.mark.parametrize("status", [503, 524, 403])
-def test_httpx_transport_errors_keep_status_for_ring(status):
+@pytest.mark.parametrize("vendor", ["exa", "parallel", "firecrawl", "keenable"])
+@pytest.mark.parametrize("failure", ["timeout", 408, 503, 400])
+def test_transport_failure_uses_next_provider(monkeypatch, vendor, failure):
+    """Exercise the real provider wrapper and ring, replacing only HTTP I/O."""
     import httpx
-    response = httpx.Response(status, request=httpx.Request("GET", "https://example.org"))
-    error = httpx.HTTPStatusError("service response", request=response.request, response=response)
-    message = keyless_mcp._fail_msg("firecrawl", "search", error)
-    assert keyless_mcp._is_provider_failure(message) is (status != 403)
-
-
-def test_httpx_timeout_is_retryable():
-    import httpx
-    message = keyless_mcp._fail_msg("firecrawl", "search", httpx.ConnectTimeout(""))
-    assert keyless_mcp._is_provider_failure(message)
-
-
-def test_keenable_search_timeout_uses_transport_normalization(monkeypatch):
     import requests
-    def timeout(*args, **kwargs):
-        raise requests.exceptions.ConnectTimeout("connection timed out")
-    monkeypatch.setattr(requests, "post", timeout)
-    result = keyless_mcp.keenable_search_keyless("public query")
-    assert result["success"] is False
-    assert keyless_mcp._is_provider_failure(result["error"])
-
-
-@pytest.mark.asyncio
-async def test_extract_tool_exposes_failover_and_does_not_cache_backup(monkeypatch):
-    from unittest.mock import AsyncMock, Mock
-    from tools import web_result_cache
-    monkeypatch.setattr(keyless_mcp, "provider_tier", lambda _: "free")
+    calls = []
     monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda _: True)
-    monkeypatch.setattr(keyless_mcp, "exa_extract_keyless", lambda urls: [
-        {"url": u, "error": "HTTP 503: Service Unavailable"} for u in urls])
-    monkeypatch.setattr(keyless_mcp, "parallel_extract_keyless", lambda urls: [
-        {"url": u, "title": "Page", "content": "backup content"} for u in urls])
-    monkeypatch.setattr(web_tools, "async_is_safe_url", AsyncMock(return_value=True))
-    monkeypatch.setattr(web_tools, "_resolve_extract_provider", lambda _: (ExaWebSearchProvider(), None))
-    monkeypatch.setattr(web_result_cache, "extract_cache_get", lambda *a, **kw: None)
-    put = Mock()
-    monkeypatch.setattr(web_result_cache, "extract_cache_put", put)
-    result = json.loads(await web_tools.web_extract_tool(["https://example.org/page"]))
-    assert result["served_by"] == "parallel"
-    assert result["failover_errors"][0]["provider"] == "exa"
-    assert result["results"][0]["content"] == "backup content"
-    put.assert_not_called()
+    monkeypatch.setattr(keyless_mcp, "provider_tier", lambda _: "free")
+    order = keyless_mcp._ring_order(vendor)
+
+    def failed_post(*args, **kwargs):
+        calls.append(vendor)
+        if vendor == "firecrawl":
+            if failure == "timeout":
+                raise httpx.ConnectTimeout("")
+            response = httpx.Response(failure, request=httpx.Request("POST", args[0]),
+                                      text="service response mentioning policy and HTTP 503")
+            return response
+        if failure == "timeout":
+            raise requests.exceptions.ConnectTimeout("")
+        response = requests.Response()
+        response.status_code = failure
+        response._content = b"service response mentioning policy and HTTP 503"
+        return response
+
+    def backup(query, limit):
+        calls.append(order[1])
+        return {"success": True, "data": {"web": [{"url": "https://example.org"}]}}
+
+    monkeypatch.setattr(httpx, "post", failed_post)
+    monkeypatch.setattr(requests, "post", failed_post)
+    monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, order[1], backup)
+    result = keyless_mcp.search_with_failover(vendor, "public query")
+    assert result["success"] is (failure != 400)
+    assert calls == ([vendor] if failure == 400 else [vendor, order[1]])
+    if failure != 400:
+        assert result["data"]["served_by"] == order[1]
+
+
+def test_transport_failover_exhaustion_calls_each_provider_once(monkeypatch):
+    monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda _: True)
+    monkeypatch.setattr(keyless_mcp, "provider_tier", lambda _: "free")
+    calls = []
+    for vendor in keyless_mcp._KEYLESS_RING:
+        def unavailable(query, limit, name=vendor):
+            calls.append(name)
+            return {"success": False, "error": "HTTP 503: unavailable"}
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, vendor, unavailable)
+    result = keyless_mcp.search_with_failover("exa", "public query")
+    assert calls == list(keyless_mcp._KEYLESS_RING)
+    assert result["success"] is False
+    assert all(vendor in result["error"] for vendor in calls)

@@ -155,6 +155,24 @@ def test_explanation_persistence_corrupt_cause_never_says_free_space():
     assert "full disk" not in lower
 
 
+def test_explanation_persistence_corrupt_backups_dir_follows_hermes_home(monkeypatch, tmp_path):
+    """Step 3 must name the backups dir under the ACTIVE home, not ~/.hermes (#104250).
+
+    Pre-update backups live at ``<hermes_root>/backups`` (``hermes_cli/backup.py``), so a
+    custom-HERMES_HOME deployment told to restore from ``~/.hermes/backups/`` is misdirected
+    mid data-loss incident: that directory may not exist at all, or may hold an unrelated
+    install's backups.
+    """
+    custom_home = tmp_path / "custom-hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(custom_home))
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "corrupt"
+    )
+    assert f"{custom_home / 'backups'}" in out
+    assert "~/.hermes/backups" not in out
+    assert "{backups_dir}" not in out
+
+
 def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "replaced"

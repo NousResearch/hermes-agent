@@ -905,9 +905,12 @@ def test_unreadable_argv_falls_back_to_the_captured_prefix(monkeypatch):
 # when every concurrent hermes.exe is a gateway runtime — the pause
 # machinery (_pause_windows_gateways_for_update) stops those before any
 # file mutation and the post-update restart phase brings them back.
-# Classification delegates to _is_pausable_gateway → the canonical
-# gateway.status.looks_like_gateway_command_line matcher, so the gate's
-# exemption and the pause discovery cannot drift apart.
+# Classification delegates straight to
+# gateway.status.looks_like_gateway_runtime_command_line — the matcher the
+# pause machinery itself uses (``run`` OR ``restart``, every launcher shape) —
+# so the gate's exemption and the pause discovery cannot drift apart. It
+# deliberately does NOT route through _scan_venv_blockers._is_pausable_gateway:
+# that is the venv-scan exemption and covers a strictly smaller set.
 # ---------------------------------------------------------------------------
 
 

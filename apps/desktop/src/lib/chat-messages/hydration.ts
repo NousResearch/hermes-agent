@@ -26,7 +26,16 @@ const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'
  * (codex_responses_adapter `_OutputScan._message`); the remaining phases are the reply.
  */
 function codexMessageItemText(message: SessionMessage): string {
-  const items = message.codex_message_items
+  let items = message.codex_message_items
+
+  // REST carries SQLite JSON text; RPC history carries the decoded list.
+  if (typeof items === 'string') {
+    try {
+      items = JSON.parse(items)
+    } catch {
+      return ''
+    }
+  }
 
   if (!Array.isArray(items)) {
     return ''
@@ -296,21 +305,20 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       )
     }
 
-    if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
-      parts.push(
-        ...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex, message.timestamp))
-      )
-    }
-
-    // #68321: Responses-API turns can persist with `content` empty while the reply the
-    // user saw lives only in codex_message_items; without this the rehydrated bubble
-    // blanks and reconcileResumeMessages then strips the cached row at that ordinal.
-    if (message.role === 'assistant' && !displayContent && !parts.length) {
+    // Reply text can live only in the sidecar alongside reasoning or tool parts.
+    // Those parts are not a substitute for the answer; canonical content still wins.
+    if (message.role === 'assistant' && message.display_kind !== 'hidden' && !displayContent) {
       const codexText = codexMessageItemText(message)
 
       if (codexText) {
         parts.push(assistantTextPart(codexText, message.timestamp))
       }
+    }
+
+    if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
+      parts.push(
+        ...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex, message.timestamp))
+      )
     }
 
     if (!parts.length && !extractedAttachmentRefs?.length) {

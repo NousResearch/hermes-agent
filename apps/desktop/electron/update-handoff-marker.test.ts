@@ -201,7 +201,10 @@ test.skipIf(process.platform !== 'win32')(
     assert.equal(ack[0], NONCE)
     assert.equal(Number.parseInt(ack[1], 10), ownerPid)
     assert.equal(Number.parseInt(ack[2], 10), startedAt)
-  }
+  },
+  // Each PowerShell spawn costs ~1-2s; the 5s default trips under the
+  // parallel full-project run, which is how this file looked broken.
+  60_000
 )
 
 test.skipIf(process.platform !== 'win32')(
@@ -225,7 +228,10 @@ test.skipIf(process.platform !== 'win32')(
       assert.equal(fs.readFileSync(box.marker, 'utf8'), body, `${label}: a refused claim leaves the marker alone`)
       assert.equal(fs.existsSync(`${box.marker}.ack`), false, `${label}: nothing was acknowledged`)
     }
-  }
+  },
+  // Each PowerShell spawn costs ~1-2s; the 5s default trips under the
+  // parallel full-project run, which is how this file looked broken.
+  60_000
 )
 
 test.skipIf(process.platform !== 'win32')(
@@ -242,5 +248,8 @@ test.skipIf(process.platform !== 'win32')(
 
     assert.equal(result.status, 8, String(result.stderr || result.stdout))
     assert.equal(fs.readFileSync(box.marker, 'utf8'), foreign, 'a foreign owner keeps its claim')
-  }
+  },
+  // Each PowerShell spawn costs ~1-2s; the 5s default trips under the
+  // parallel full-project run, which is how this file looked broken.
+  60_000
 )

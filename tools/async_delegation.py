@@ -451,12 +451,15 @@ def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
 
 # ── In-memory registry queries ──────────────────────────────────────────────
 def _get_executor(max_workers: int) -> ThreadPoolExecutor:
-    """Lazily create (or grow, never shrink) the shared daemon executor; in-flight
-    futures keep running on a replaced pool until it is collected."""
+    """Lazily create (or grow in place, never shrink) the shared daemon executor. Raising
+    ``_max_workers`` is enough: the next ``submit`` spawns threads up to the new cap."""
     global _executor, _executor_max_workers
     with _executor_lock:
-        if _executor is None or max_workers > _executor_max_workers:
+        if _executor is None:
             _executor = DaemonThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="async-delegate")
+            _executor_max_workers = max_workers
+        elif max_workers > _executor_max_workers:
+            _executor._max_workers = max_workers
             _executor_max_workers = max_workers
         return _executor
 
@@ -576,12 +579,20 @@ def _dispatch(
         if record["slot_key"] not in active_slots and len(active_slots) >= max_async_children:
             return {"status": "rejected", "error": capacity_error}
         _records[delegation_id] = record
+        live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
     _persist_dispatch(record)
-    executor = _get_executor(max_async_children)
+    # Units of one call share a slot, so live units can exceed slots: size the pool by units or a
+    # unit queues behind a full pool and the stale monitor kills it before its child ever starts.
+    executor = _get_executor(max(max_async_children, live_units))
 
     def _worker() -> None:
         result: Dict[str, Any] = {}
         status = "error"
+        with _records_lock:
+            rec = _records.get(delegation_id)
+            if rec is not None:
+                # The stall clock starts when the runner starts; a unit queued behind a full pool is not stalled.
+                rec.update(_started=True, _progress_ts=time.time())
         try:
             result = runner() or {}
             status = classify(result)
@@ -804,6 +815,8 @@ def _sweep_stale_locked(now: float):
         if status != "running" or progress_fn is None:
             continue
         any_monitorable = True
+        if not record.get("_started"):
+            continue  # queued behind a full pool: not stalled, but keep the monitor alive for when it starts
         try:
             token, in_tool = progress_fn()
         except Exception:

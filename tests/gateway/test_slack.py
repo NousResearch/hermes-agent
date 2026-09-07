@@ -2987,9 +2987,16 @@ class TestThreadReplyHandling:
         self, adapter_with_session_store, mock_session_store
     ):
         """Thread replies without mention should be processed if there's an active session."""
-        # Simulate an active session for this thread
+        from gateway.session import SessionEntry
+
+        # Deserialize a legacy routing entry so lifecycle flags have real defaults.
         session_key = "agent:main:slack:group:T_TEAM:C123:123.000:U_USER"
-        mock_session_store._entries = {session_key: MagicMock()}
+        mock_session_store._entries = {session_key: SessionEntry.from_dict({
+            "session_key": session_key,
+            "session_id": "slack-thread-session",
+            "created_at": "2024-01-01T00:00:00",
+            "updated_at": "2024-01-01T00:00:00",
+        })}
 
         event = {
             "text": "Follow-up question",

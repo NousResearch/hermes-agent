@@ -347,12 +347,21 @@ def _attach_worker(sid: str, session: dict, worker) -> None:
     worker.close()
 
 
+# Wall-clock timestamps, like session last_active; retained after close/reap.
+_closed_session_activity: dict[str, float] = {}
+
+
 def _pop_session_by_id(sid: str) -> dict | None:
     """Atomically detach one live session from the registry — the ownership claim for teardown (a concurrent
     close/reaper no-ops). Separate from ``_teardown_session``: slow finalization must not run under the resume lock."""
     with _sessions_lock:
         session = _sessions.pop(sid, None)
         if session is not None:
+            from hermes_constants import get_hermes_home
+
+            home = str(Path(session.get("profile_home") or get_hermes_home()).resolve())
+            last_active = time.time() if session.get("running") else float(session.get("last_active") or 0)
+            _closed_session_activity[home] = max(_closed_session_activity.get(home, 0), last_active)
             session["_closing"] = True
             session["_sid"] = sid  # out of _sessions now, so teardown can't recover the live id by scanning
     return session
@@ -547,7 +556,16 @@ def _schedule_ws_orphan_reap(
             if _pending_ws_reaps.get(sid) is not timer:
                 return
             current = _sessions.get(sid)
-            if current is None or not _ws_session_is_detached(current):
+            if current is None:
+                _pending_ws_reaps.pop(sid, None)
+                return
+            if not _ws_session_is_detached(current):
+                # This Timer is abandoning the interrupt claim because another
+                # writer moved the live record off the detached transport.
+                # Do not leave reattach RPCs fenced with 4009, or let this
+                # generation's settlement polls shorten a later detachment.
+                current.pop("_client_gone_interrupt_requested", None)
+                current.pop("_client_gone_interrupt_polls", None)
                 _pending_ws_reaps.pop(sid, None)
                 return
             if _session_has_active_delegations(sid, current):
@@ -642,6 +660,7 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
                 else:
                     current["transport"] = _detached_ws_transport
                     current.pop("_client_gone_interrupt_requested", None)
+                    current.pop("_client_gone_interrupt_polls", None)
                     should_schedule_reap = True
                     # Register before releasing the detachment claim: an old disconnect
                     # must not arm its first timer over a reconnect's newer detachment.

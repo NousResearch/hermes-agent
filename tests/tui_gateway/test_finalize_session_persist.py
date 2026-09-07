@@ -12,10 +12,8 @@ Scenarios:
 """
 
 import threading
-import time
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -177,7 +175,7 @@ class TestFinalizeSessionPersistE2E:
         agent._cached_system_prompt = None
         agent._session_init_model_config = None
         agent._parent_session_id = None
-        agent._session_json_enabled = False
+
         agent.quiet_mode = True
         # commit_memory_session runs heavy machinery we don't exercise here.
         agent.commit_memory_session = lambda *a, **k: None
@@ -268,4 +266,5 @@ class TestOnSessionEndHook:
         expected = dict(session_id="hook_test_001", completed=False, interrupted=True,
                         model="claude-sonnet-4", platform="tui")
         assert expected.items() <= ends[-1].items()
+
 

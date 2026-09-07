@@ -22,6 +22,7 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.model_metadata import (
@@ -954,10 +955,6 @@ def _collect_protected_skill_names(messages: List[Dict[str, Any]], prune_boundar
 
 
 _CHARS_PER_TOKEN = 4
-# Flat per-image token estimate (realistic ceiling; matches Claude Code's constant).
-_IMAGE_TOKEN_ESTIMATE = 1600
-# Same figure in char-budget currency.
-_IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
 # Fallback handoff preserves continuity anchors only, not a transcript copy.
@@ -1072,14 +1069,18 @@ def _bullets(items: list[str], limit: int = 8) -> str:
 
 
 def _content_length_for_budget(raw_content: Any) -> int:
-    """Effective char-length of message content for budgeting: text by length plus ``_IMAGE_CHAR_EQUIVALENT`` per image."""
+    """Effective char-length of message content for budgeting: text by length plus the learned
+    per-image price (``agent.image_token_cost``, same figure the trigger estimator uses) per image."""
     if isinstance(raw_content, str):
         return len(raw_content)
     if not isinstance(raw_content, list):
         return len(str(raw_content or ""))
+    from agent.image_token_cost import current_image_token_cost
+
+    image_chars = current_image_token_cost() * _CHARS_PER_TOKEN
     # Any text-bearing part counts its text; image_url payload size is irrelevant.
     return sum(
-        (_IMAGE_CHAR_EQUIVALENT if _is_image_part(p) else len(p.get("text", "") or "")) if isinstance(p, dict) else len(str(p))
+        (image_chars if _is_image_part(p) else len(p.get("text", "") or "")) if isinstance(p, dict) else len(str(p))
         for p in raw_content
     )
 
@@ -1128,7 +1129,9 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
     and always-replayed provider fields. Always-replayed fields are charged because the preflight estimator sees
     the full shape; a mismatched size class protects blob-heavy rows as "small" and compaction re-fires.
     ``charge_stale_thinking=False`` skips newest-turn-only thinking keys. Accounting only; never mutates."""
-    content = msg.get("content") or ""
+    # Charge the wire substitute, not both it and the clean display content.
+    sidecar = msg.get("api_content")
+    content = sidecar if isinstance(sidecar, str) and sidecar and msg.get("role") in ("user", "assistant") else msg.get("content") or ""
     text_tokens = estimate_tokens_rough(content) if isinstance(content, str) else _content_length_for_budget(content) // _CHARS_PER_TOKEN
     tokens = text_tokens + 10  # +10 for role/key overhead
     tokens += sum(estimate_tokens_rough(str(tc)) for tc in msg.get("tool_calls") or [] if isinstance(tc, dict))
@@ -1635,7 +1638,7 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 }
 
 
-class ContextCompressor(MicroCompactionMixin, ContextEngine):
+class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngine):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
 
@@ -4666,23 +4669,6 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
         return self._finalize_compressed(compressed, messages, n_messages)
-
-    def _summarize_window(
-        self, messages: List[Dict[str, Any]], turns_to_summarize: List[Dict[str, Any]], scan: "_HandoffScan",
-        focus_topic: Optional[str], memory_context: str, bypass_cooldown: bool,
-    ) -> Optional[str]:
-        """Run the summary LLM; a cancellation rolls back the handoff scan's self-heal mutation first."""
-        # Focus-topic derivation scans user turns; only pay when a summary is generated.
-        try:
-            return self._generate_summary(
-                turns_to_summarize, focus_topic=focus_topic or self._derive_auto_focus_topic(messages),
-                memory_context=memory_context, bypass_cooldown=bypass_cooldown,
-            )
-        except AuxiliaryExplicitCancellation:
-            # Cancellation is a true no-op: restore the scan's mutation before the exception escapes.
-            self._previous_summary = scan.previous_summary_before
-            self._summary_has_user_turn = scan.has_user_turn_before
-            raise
 
     def _assemble_compressed(
         self, messages: List[Dict[str, Any]], compress_start: int, compress_end: int, scan: "_HandoffScan", summary: str,

@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30  # seconds per HTTP request
 _SNAPSHOT_MAX_CHARS = 80_000  # camofox paginates at this limit
-_vnc_url: Optional[str] = None  # cached from /health response
+_vnc_url: Optional[str] = None  # cached from /vnc/status response
 _vnc_url_checked = False  # only probe once per process
 
 
@@ -69,14 +69,16 @@ def check_camofox_available() -> bool:
         resp = requests.get(f"{url}/health", timeout=5)
         if resp.status_code == 200 and not _vnc_url_checked:
             try:
-                data = resp.json()
-                vnc_port = data.get("vncPort")
-                if isinstance(vnc_port, int) and 1 <= vnc_port <= 65535:
-                    from urllib.parse import urlparse
-                    parsed = urlparse(url)
-                    host = parsed.hostname or "localhost"
-                    _vnc_url = f"http://{host}:{vnc_port}"
-            except (ValueError, KeyError):
+                vnc_resp = requests.get(f"{url}/vnc/status", timeout=5)
+                if vnc_resp.status_code == 200:
+                    vnc_data = vnc_resp.json()
+                    vnc_port = vnc_data.get("vncPort")
+                    if vnc_data.get("running") and isinstance(vnc_port, int) and 1 <= vnc_port <= 65535:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(url)
+                        host = parsed.hostname or "localhost"
+                        _vnc_url = f"http://{host}:{vnc_port}"
+            except (ValueError, KeyError, requests.RequestException):
                 pass
             _vnc_url_checked = True
         return resp.status_code == 200

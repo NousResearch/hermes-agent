@@ -15,6 +15,8 @@ const startManualLocalEndpoint = vi.fn()
 const onboarding = atom({ manual: false })
 
 vi.mock('@/hermes', () => ({
+  setApiRequestProfile: vi.fn(),
+  getProfiles: async () => ({ profiles: (await import('@/store/profile')).$profiles.get() }),
   disconnectOAuthProvider: (providerId: string) => disconnectOAuthProvider(providerId),
   getEnvVars: (profile?: string) => getEnvVars(profile),
   setEnvVar: (key: string, value: string, profile?: string) => setEnvVar(key, value, profile),
@@ -100,15 +102,26 @@ describe('ProvidersSettings', () => {
     const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
     $activeGatewayProfile.set('profile-a')
     $settingsScopeOverride.set('profile-b')
-    $profiles.set([{ name: 'profile-a' }, { name: 'profile-b' }] as never)
+    $profiles.set(
+      ['profile-a', 'profile-b'].map(name => ({
+        name,
+        has_env: false,
+        is_default: false,
+        model: null,
+        path: '',
+        provider: null,
+        skill_count: 0
+      }))
+    )
     getEnvVars.mockResolvedValue({ WIDGET_API_KEY: keyVar({ provider: 'widget', provider_label: 'Widget' }) })
     const { ProvidersSettings } = await import('./providers-settings')
+
     try {
-      render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+      const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
       await screen.findByText('Widget')
       expect(getEnvVars).toHaveBeenLastCalledWith('profile-b')
       expect(screen.getByText('Applies to')).toBeTruthy()
-      const input = document.querySelector('input[type="password"]')!
+      const input = container.querySelector('input[type="password"]')!
       fireEvent.focus(input)
       fireEvent.change(input, { target: { value: 'fixture-key' } })
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))

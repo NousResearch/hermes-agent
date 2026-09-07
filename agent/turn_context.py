@@ -728,27 +728,81 @@ def _stamp_api_content_sidecar(
     """api_content sidecar — persist what you send: injected context lives only in the
     API copy, so stamp the exact sent bytes on the live dict for replay."""
     _turn_user_msg = messages[current_turn_user_idx]
+    live_content = _turn_user_msg.get("content")
     _api_content = compose_user_api_content(
-        _turn_user_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
+        live_content or "", ext_prefetch_cache, plugin_user_context
     )
-    if _api_content is None or _api_content == _turn_user_msg.get("content"):
+
+    durable_content = live_content
+    override = getattr(agent, "_persist_user_message_override", None)
+    from agent.session_persistence import _override_replaces_content
+    if _override_replaces_content(_turn_user_msg, durable_content, override):
+        # When an override replaces content in SQLite (e.g. voice prefix or
+        # model-switch note), live content is what the API sends while the
+        # override is the clean transcript stored in the DB row.
+        # If no memory/plugin context was injected, the API-only wire content
+        # itself is the sidecar.
+        if _api_content is None and isinstance(durable_content, str) and durable_content != override:
+            _api_content = durable_content
+        durable_content = override
+
+    if _api_content is None or _api_content == durable_content:
         return
     _turn_user_msg["api_content"] = _api_content
-    # In-place preflight compaction already inserted this turn's user row and the
-    # crash persist identity-skips compacted dicts, so backfill the stamp onto the row
-    # directly. Rotation mode flushes to the child session later.
-    if not (preflight_compressed and getattr(agent, "_last_compaction_in_place", False)):
+
+    # When this turn's user row was ALREADY materialized before the
+    # sidecar could be composed, the crash persist below skips the
+    # message (marker/identity) and the stamp would never reach the
+    # DB — the next turn then replays clean content and the request
+    # prefix diverges at this message. Two writers get there first:
+    # in-place preflight compaction (archive_and_compact runs before
+    # prefetch/pre_llm_call) and a close/early flush that raced the
+    # prologue on the CLI path (#102194). Both stamp ``_row_id`` on
+    # the live dict when they write it (``_insert_message_rows``
+    # directly, ``sync_flushed_message_markers`` after the batch
+    # commit), so that id is at once the proof a row exists and the
+    # address to update — no positional guess, and no extra write on
+    # the normal path where the row does not exist yet.
+    #
+    # Do NOT widen this to an unconditional backfill: without a row
+    # id the store can only target the newest active user row, and a
+    # repeated user turn ("ok", "y", "continue") makes the PREVIOUS
+    # turn's row compare equal — this turn's bytes would overwrite
+    # its sidecar and be replayed as that turn forever.
+    #
+    # Rotation mode needs nothing here: its compacted copies flush to
+    # the child session after this stamp.
+    _row_id = _turn_user_msg.get("_row_id")
+    _has_valid_row_id = (
+        isinstance(_row_id, int)
+        and not isinstance(_row_id, bool)
+        and _row_id > 0
+    )
+    _in_place_compacted = preflight_compressed and bool(
+        getattr(agent, "_last_compaction_in_place", False)
+    )
+    if not (_has_valid_row_id or _in_place_compacted):
         return
+
     _db = getattr(agent, "_session_db", None)
     if _db is not None:
         try:
-            _db.set_latest_user_api_content(
-                agent.session_id, _turn_user_msg.get("content"), _api_content
-            )
+            if _has_valid_row_id:
+                if hasattr(_db, "set_message_api_content"):
+                    _db.set_message_api_content(
+                        agent.session_id, _row_id, durable_content, _api_content
+                    )
+            elif hasattr(_db, "set_latest_user_api_content"):
+                # Compacted copy that carries no row id: fall back
+                # to the positional backfill, which is safe here
+                # because archive_and_compact just made this
+                # message the newest active user row.
+                _db.set_latest_user_api_content(
+                    agent.session_id, durable_content, _api_content
+                )
         except Exception:
             logger.warning(
-                "in-place compaction api_content backfill failed "
-                "for session=%s",
+                "api_content backfill failed for session=%s",
                 agent.session_id or "none",
                 exc_info=True,
             )

@@ -97,7 +97,7 @@ def test_agent_init_anthropic_url_implies_provider_and_api_mode():
     from run_agent import AIAgent
 
     with patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()), patch(
-        "agent.anthropic_adapter._is_oauth_token", return_value=False
+        "agent.anthropic_credentials._is_oauth_token", return_value=False
     ):
         agent = AIAgent(
             provider=None,
@@ -127,7 +127,7 @@ def test_agent_init_anthropic_url_preserves_credential_pool():
     pool = SimpleNamespace(provider="anthropic")
 
     with patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()), patch(
-        "agent.anthropic_adapter._is_oauth_token", return_value=False
+        "agent.anthropic_credentials._is_oauth_token", return_value=False
     ):
         agent = AIAgent(
             provider=None,

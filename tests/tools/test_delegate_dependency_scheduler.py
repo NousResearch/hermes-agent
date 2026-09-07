@@ -13,8 +13,10 @@ from unittest.mock import MagicMock
 import pytest
 
 import tools.delegate_tool as delegate_tool
+from tools import delegate_tool_dispatch, delegate_tool_results
 from tools import async_delegation as ad
-from tools.process_registry import format_process_notification, process_registry
+from tools.process_registry import process_registry
+from tools.process_registry_notifications import format_process_notification
 
 
 @pytest.fixture(autouse=True)
@@ -86,7 +88,7 @@ def _install_fake_children(monkeypatch, *, mock_finalization=True):
     )
     if mock_finalization:
         monkeypatch.setattr(
-            delegate_tool,
+            delegate_tool_dispatch,
             "_finalize_child_results",
             lambda *_args, **_kwargs: None,
         )
@@ -202,10 +204,13 @@ def test_failed_prerequisite_blocks_descendant_without_model_call(monkeypatch):
     children[1].close.assert_called_once()
 
 
-def test_background_graph_dispatches_independent_components(monkeypatch):
+@pytest.mark.parametrize("transcripts_available", [False, True])
+def test_background_graph_dispatches_independent_components(monkeypatch, transcripts_available):
     children = _install_fake_children(monkeypatch)
     parent = _parent()
     captured = {}
+    if not transcripts_available:
+        monkeypatch.setattr("tools.delegation_live_log.create_live_transcripts", lambda *args, **kwargs: (None, [], []))
 
     def dispatch_group(*, batches, max_async_children, graph_id):
         assert parent._active_children == children
@@ -217,7 +222,7 @@ def test_background_graph_dispatches_independent_components(monkeypatch):
             "delegation_id": graph_id,
             "delegations": [
                 {
-                    "delegation_id": f"deleg_component_{index}",
+                    "delegation_id": batch["delegation_id"],
                     "count": len(batch["goals"]),
                     "batch_metadata": batch["batch_metadata"],
                 }
@@ -249,10 +254,8 @@ def test_background_graph_dispatches_independent_components(monkeypatch):
     assert parent._active_children == []
     assert output["cluster_count"] == 2
     assert output["delegation_id"] == output["graph_id"] == captured["graph_id"]
-    assert output["delegation_ids"] == [
-        "deleg_component_1",
-        "deleg_component_2",
-    ]
+    assert output["delegation_ids"] == [batch["delegation_id"] for batch in captured["batches"]]
+    assert all(child._delegation_id == output["graph_id"] for child in children)
     assert len(captured["batches"]) == 2
     assert [
         batch["batch_metadata"]["task_ids"] for batch in captured["batches"]
@@ -275,7 +278,7 @@ def test_independent_delivery_auto_disables_when_group_submission_is_unavailable
 
     def dispatch_single(**kwargs):
         captured.update(kwargs)
-        return {"status": "dispatched", "delegation_id": "deleg_consolidated"}
+        return {"status": "dispatched", "delegation_id": kwargs["delegation_id"]}
 
     monkeypatch.setattr(
         "tools.async_delegation.dispatch_async_delegation_batch", dispatch_single
@@ -297,17 +300,14 @@ def test_independent_delivery_auto_disables_when_group_submission_is_unavailable
         )
     )
 
-    assert output["mode"] == "dependency_background"
-    assert output["delegation_id"] == "deleg_consolidated"
-    assert "automatically disabled" in output["note"]
-    assert (
-        captured["batch_metadata"]["split_auto_disabled_reason"]
-        == "component executor unavailable"
-    )
+    assert output["mode"] == "background"
+    assert output["delegation_id"] == captured["delegation_id"]
+    assert output["independent_delivery_disabled_reason"] == "component executor unavailable"
+    assert captured["batch_metadata"]["adaptive_scheduling"] is True
 
 
 @pytest.mark.parametrize("metadata", [{"id": "label"}, {"depends_on": []}, {"depends_on": None}])
-def test_labelled_or_empty_dependency_batches_keep_one_flat_completion(monkeypatch, metadata):
+def test_labelled_or_empty_dependency_batches_keep_upstream_completion_units(monkeypatch, metadata):
     _install_fake_children(monkeypatch)
     gate = threading.Event()
 
@@ -324,21 +324,21 @@ def test_labelled_or_empty_dependency_batches_keep_one_flat_completion(monkeypat
         ))
         assert output["mode"] == "background"
         assert "cluster_count" not in output
-        assert ad.active_count() == 1
-        assert len(ad.list_async_delegations()) == 1
+        assert ad.active_count() == 3
+        assert len(ad.list_async_delegations()) == 3
     finally:
         gate.set()
-    event = process_registry.completion_queue.get(timeout=5)
-    assert event["delegation_id"] == output["delegation_id"]
-    assert len(event["results"]) == 3
+    events = [process_registry.completion_queue.get(timeout=5) for _ in range(3)]
+    assert {event["delegation_id"] for event in events} == {unit["delegation_id"] for unit in output["units"]}
+    assert all(len(event["results"]) == 1 for event in events)
 
 
 def test_real_graph_delivery_uses_global_budget_and_transcript_identity(monkeypatch):
     children = _install_fake_children(monkeypatch, mock_finalization=False)
     parent = _parent()
     parent.context_compressor = SimpleNamespace(context_length=50_000, max_tokens=8_000)
-    parent.session_prompt_tokens = 20_000
-    cap = delegate_tool._parent_summary_char_budget(parent, 3)
+    parent._last_prompt_size_tokens = 20_000
+    cap = delegate_tool_results._parent_summary_char_budget(parent, 3)
     gate = threading.Event()
     summary = "¶" * 100_000
 
@@ -391,6 +391,38 @@ def _cancellation_tasks(split):
     if split:
         tasks.append({"id": "independent", "goal": "Return an independent result"})
     return tasks
+
+
+def test_dependency_and_completion_groups_share_delivery_but_not_readiness(monkeypatch):
+    from tools.registry import registry
+    _install_fake_children(monkeypatch)
+    monkeypatch.setattr(delegate_tool, "_get_max_concurrent_children", lambda: 4)
+    monkeypatch.setattr("gateway.session_context.async_delivery_supported", lambda: True)
+    source_gate, reviewer_started = threading.Event(), threading.Event()
+
+    def run_child(task_index, goal, **kwargs):
+        if task_index == 0:
+            assert source_gate.wait(10)
+        elif task_index == 2:
+            reviewer_started.set()
+        return {"task_index": task_index, "status": "completed", "summary": f"result {task_index}"}
+
+    monkeypatch.setattr(delegate_tool, "_run_single_child", run_child)
+    try:
+        output = json.loads(registry.dispatch("delegate_task", {"tasks": [
+            {"id": "source", "goal": "Produce source input"},
+            {"id": "consumer", "goal": "Consume source input", "depends_on": ["source"], "group": "review"},
+            {"id": "reviewer", "goal": "Review independent input", "group": "review"},
+            {"id": "unrelated", "goal": "Return unrelated result"},
+        ]}, parent_agent=_parent()))
+        assert output["cluster_count"] == 2
+        assert reviewer_started.wait(5)  # group membership must not serialize roots
+        first = process_registry.completion_queue.get(timeout=5)
+        assert [r["task_id"] for r in first["results"]] == ["unrelated"]
+    finally:
+        source_gate.set()
+    joined = process_registry.completion_queue.get(timeout=5)
+    assert [r["task_id"] for r in joined["results"]] == ["source", "consumer", "reviewer"]
 
 
 @pytest.mark.parametrize("split", [False, True])
@@ -452,7 +484,7 @@ def test_cancel_skips_queued_root_and_dependent_but_keeps_running_result(monkeyp
 
     # Force B to queue behind A within the actual component scheduler.
     # The registry retains its original executor class.
-    monkeypatch.setattr("tools.daemon_pool.DaemonThreadPoolExecutor", OneWorkerPool)
+    monkeypatch.setattr("tools.delegate_tool_dependency.DaemonThreadPoolExecutor", OneWorkerPool)
     monkeypatch.setattr(delegate_tool, "_get_max_concurrent_children", lambda: 4)
     monkeypatch.setattr("gateway.session_context.async_delivery_supported", lambda: True)
 

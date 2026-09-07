@@ -697,23 +697,15 @@ def test_review_model_auxiliary_curator_partial_override_falls_back(curator_env)
         "model": dict(base_main),
         "auxiliary": {"curator": {"provider": "openrouter", "model": ""}},
     }
-    assert curator._resolve_review_model(cfg_provider_only) == (
-        "openrouter", "openai/gpt-5.5",
-    )
+    b = curator._resolve_review_runtime(cfg_provider_only)
+    assert (b.provider, b.model) == ("openrouter", "openai/gpt-5.5")
 
     cfg_model_only = {
         "model": dict(base_main),
         "auxiliary": {"curator": {"provider": "auto", "model": "gpt-5.4-mini"}},
     }
-    assert curator._resolve_review_model(cfg_model_only) == (
-        "openrouter", "openai/gpt-5.5",
-    )
-
-
-
-
-
-
+    b = curator._resolve_review_runtime(cfg_model_only)
+    assert (b.provider, b.model) == ("openrouter", "openai/gpt-5.5")
 
 
 def test_curator_slot_is_canonical_aux_task():
@@ -724,8 +716,8 @@ def test_curator_slot_is_canonical_aux_task():
     specifically so the unification doesn't silently regress.
     """
     from hermes_cli.config import DEFAULT_CONFIG
-    from hermes_cli.main import _AUX_TASKS
-    from hermes_cli.web_server import _AUX_TASK_SLOTS
+    from hermes_cli.main_provider_setup import _AUX_TASKS
+    from hermes_cli.web_server_config import _AUX_TASK_SLOTS
 
     # 1. DEFAULT_CONFIG.auxiliary — schema source
     assert "curator" in DEFAULT_CONFIG["auxiliary"], \

@@ -43,12 +43,23 @@ def _flat_plan(task_count: int) -> DependencyPlan:
 
 def _connected_components(
     dependencies: Sequence[Sequence[int]],
+    tasks: Sequence[Dict[str, Any]],
 ) -> Tuple[Tuple[int, ...], ...]:
     adjacency = [set() for _ in dependencies]
     for child, parents in enumerate(dependencies):
         for parent in parents:
             adjacency[child].add(parent)
             adjacency[parent].add(child)
+
+    # Upstream completion groups are delivery constraints, not prerequisites.
+    # Join their components without adding edges to the execution DAG.
+    groups: Dict[str, int] = {}
+    for index, task in enumerate(tasks):
+        group = task.get("group")
+        if group not in (None, ""):
+            first = groups.setdefault(str(group), index)
+            adjacency[first].add(index)
+            adjacency[index].add(first)
 
     unseen = set(range(len(dependencies)))
     components: List[Tuple[int, ...]] = []
@@ -172,5 +183,5 @@ def build_dependency_plan(
         enabled=True,
         task_ids=tuple(task_ids),
         dependencies=dependency_tuple,
-        components=_connected_components(dependency_tuple),
+        components=_connected_components(dependency_tuple, tasks),
     ), None

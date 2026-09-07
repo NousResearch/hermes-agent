@@ -11,6 +11,12 @@ from contextlib import contextmanager
 
 import pytest
 import yaml
+import gateway.status as _gw_status
+import hermes_cli.config as _cfg_mod
+import hermes_cli.web_server_chat as _web_server_chat
+import hermes_cli.web_server_gateway as _web_server_gateway
+import hermes_cli.web_server_messaging as _web_server_messaging
+import hermes_cli.web_server_profiles as _web_server_profiles
 
 
 @pytest.fixture
@@ -378,9 +384,9 @@ class TestProfileScopedModel:
             yield object()
 
         monkeypatch.setattr(
-            web_server, "_config_profile_scope", _recording_config_scope
+            _web_server_profiles, "_config_profile_scope", _recording_config_scope
         )
-        monkeypatch.setattr(web_server, "_profile_scope", _recording_profile_scope)
+        monkeypatch.setattr(_web_server_profiles, "_profile_scope", _recording_profile_scope)
         monkeypatch.setattr(
             "hermes_cli.inventory.load_picker_context", lambda: object()
         )
@@ -417,7 +423,7 @@ class TestProfileScopedPostSetup:
             pid = 777
 
         monkeypatch.setattr(
-            web_server,
+            _web_server_gateway,
             "_spawn_hermes_action",
             lambda subcommand, name: calls.append(list(subcommand)) or _FakeProc(),
         )
@@ -445,7 +451,7 @@ class TestProfileScopedPostSetup:
             pid = 777
 
         monkeypatch.setattr(
-            web_server,
+            _web_server_gateway,
             "_spawn_hermes_action",
             lambda subcommand, name: calls.append(list(subcommand)) or _FakeProc(),
         )
@@ -477,12 +483,12 @@ class TestProfileScopedGateway:
             seen_homes.append(str(get_hermes_home()))
             return None
 
-        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(_cfg_mod, "check_config_version", lambda: (1, 1))
         # get_status probes via the TTL-cached wrapper (PR #53511 salvage);
         # patch the cached name so the fake still intercepts the probe.
-        monkeypatch.setattr(web_server, "get_running_pid_cached", fake_get_running_pid)
+        monkeypatch.setattr(_gw_status, "get_running_pid_cached", fake_get_running_pid)
         monkeypatch.setattr(
-            web_server,
+            _gw_status,
             "read_runtime_status",
             lambda *a, **k: {"gateway_state": "startup_failed", "platforms": {}},
         )
@@ -514,13 +520,13 @@ class TestProfileScopedGateway:
             "exit_reason": None,
             "updated_at": "2026-06-17T00:00:00+00:00",
         }
-        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(_cfg_mod, "check_config_version", lambda: (1, 1))
         monkeypatch.setattr(
-            web_server, "get_running_pid_cached", lambda *a, **k: None
+            _gw_status, "get_running_pid_cached", lambda *a, **k: None
         )
-        monkeypatch.setattr(web_server, "read_runtime_status", lambda *a, **k: runtime)
+        monkeypatch.setattr(_gw_status, "read_runtime_status", lambda *a, **k: runtime)
         monkeypatch.setattr(
-            web_server,
+            _gw_status,
             "get_runtime_status_running_pid",
             lambda payload, **k: 4242,
         )
@@ -568,15 +574,15 @@ class TestProfileScopedGateway:
             "exit_reason": "telegram: token rejected",
             "updated_at": "2026-06-17T00:00:00+00:00",
         }
-        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(_cfg_mod, "check_config_version", lambda: (1, 1))
         monkeypatch.setattr(
-            web_server, "get_running_pid_cached", lambda *a, **k: None
+            _gw_status, "get_running_pid_cached", lambda *a, **k: None
         )
-        monkeypatch.setattr(web_server, "read_runtime_status", lambda *a, **k: runtime)
+        monkeypatch.setattr(_gw_status, "read_runtime_status", lambda *a, **k: runtime)
         # Bare platform keys are checked against the configured set (fail
         # closed) — mirror a host that actually has telegram configured.
         monkeypatch.setattr(
-            web_server, "_load_configured_gateway_platforms", lambda: {"telegram"}
+            _web_server_gateway, "_load_configured_gateway_platforms", lambda: {"telegram"}
         )
         monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
 
@@ -604,11 +610,11 @@ class TestProfileScopedGateway:
             "exit_reason": None,
             "updated_at": "2026-06-17T00:00:00+00:00",
         }
-        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(_cfg_mod, "check_config_version", lambda: (1, 1))
         monkeypatch.setattr(
-            web_server, "get_running_pid_cached", lambda *a, **k: None
+            _gw_status, "get_running_pid_cached", lambda *a, **k: None
         )
-        monkeypatch.setattr(web_server, "read_runtime_status", lambda *a, **k: runtime)
+        monkeypatch.setattr(_gw_status, "read_runtime_status", lambda *a, **k: runtime)
         monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
 
         resp = client.get("/api/status", params={"profile": "worker_beta"})
@@ -626,10 +632,10 @@ class TestProfileScopedTelegramOnboarding:
         import time
         import hermes_cli.web_server as web_server
 
-        with web_server._telegram_onboarding_lock:
-            web_server._telegram_onboarding_pairings.clear()
-            web_server._telegram_onboarding_pairings["pair-worker"] = (
-                web_server._TelegramOnboardingPairing(
+        with _web_server_messaging._telegram_onboarding_lock:
+            _web_server_messaging._telegram_onboarding_pairings.clear()
+            _web_server_messaging._telegram_onboarding_pairings["pair-worker"] = (
+                _web_server_messaging._TelegramOnboardingPairing(
                     poll_token="poll-secret",
                     expires_at="2027-05-18T00:00:00.000Z",
                     expires_at_ts=time.time() + 600,
@@ -645,12 +651,12 @@ class TestProfileScopedTelegramOnboarding:
             pid = 889
 
         monkeypatch.setattr(
-            web_server,
+            _web_server_gateway,
             "_spawn_hermes_action",
             lambda subcommand, name: calls.append((list(subcommand), name)) or _FakeProc(),
         )
-        web_server._ACTION_PROCS.pop("gateway-restart", None)
-        web_server._ACTION_COMMANDS.pop("gateway-restart", None)
+        _web_server_gateway._ACTION_PROCS.pop("gateway-restart", None)
+        _web_server_gateway._ACTION_COMMANDS.pop("gateway-restart", None)
 
         resp = client.post(
             "/api/messaging/telegram/onboarding/pair-worker/apply",
@@ -682,11 +688,11 @@ class TestProfileScopedChatPty:
         import hermes_cli.web_server as web_server
 
         monkeypatch.setattr(
-            "hermes_cli.main._make_tui_argv",
+            "hermes_cli.main_tui_launch._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
-        argv, cwd, env = web_server._resolve_chat_argv(profile="worker_beta")
+        argv, cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
         assert env is not None
         assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
         # Scoped chat must NOT attach to the dashboard's in-memory gateway.
@@ -714,12 +720,12 @@ class TestProfileScopedChatPty:
         monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "launch-profile-image")
         monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
         monkeypatch.setattr(
-            "hermes_cli.main._make_tui_argv",
+            "hermes_cli.main_tui_launch._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
 
-        _argv, _cwd, env = web_server._resolve_chat_argv(profile="worker_beta")
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
 
         assert env is not None
         assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
@@ -741,12 +747,12 @@ class TestProfileScopedChatPty:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
         monkeypatch.setattr(
-            "hermes_cli.main._make_tui_argv",
+            "hermes_cli.main_tui_launch._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
 
-        _argv, _cwd, env = web_server._resolve_chat_argv()
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv()
 
         assert env is not None
         assert env["TERMINAL_ENV"] == "docker"
@@ -769,12 +775,12 @@ class TestProfileScopedChatPty:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("TERMINAL_CWD", "/operator/work")
         monkeypatch.setattr(
-            "hermes_cli.main._make_tui_argv",
+            "hermes_cli.main_tui_launch._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
 
-        _argv, _cwd, env = web_server._resolve_chat_argv(profile="worker_beta")
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
 
         assert env is not None
         assert env["TERMINAL_ENV"] == "ssh"
@@ -794,7 +800,7 @@ class TestProfileScopedChatPty:
         )
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setattr(
-            "hermes_cli.main._make_tui_argv",
+            "hermes_cli.main_tui_launch._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
@@ -805,7 +811,7 @@ class TestProfileScopedChatPty:
         )
 
         with caplog.at_level(logging.WARNING, logger=web_server._log.name):
-            _argv, _cwd, env = web_server._resolve_chat_argv(profile="worker_beta")
+            _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
 
         assert env is not None
         assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])

@@ -2,6 +2,19 @@
 
 import pytest
 
+
+def test_explicit_groups_join_delivery_without_adding_execution_dependencies():
+    from tools.delegation_graph import build_dependency_plan
+    plan, error = build_dependency_plan([
+        {"id": "source"},
+        {"id": "consumer", "depends_on": ["source"], "group": "review"},
+        {"id": "reviewer", "group": "review"},
+        {"id": "unrelated"},
+    ])
+    assert error is None
+    assert plan.dependencies == ((), (0,), (), ())
+    assert plan.components == ((0, 1, 2), (3,))
+
 from tools.delegation_graph import build_dependency_plan
 
 

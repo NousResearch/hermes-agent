@@ -121,7 +121,8 @@ async def test_agents_keeps_stalled_graph_visible_while_sibling_is_active():
             ],
         )
         assert result["status"] == "dispatched"
-        ad._finalize_stalled(result["delegations"][0]["delegation_id"])
+        first_id = result["delegations"][0]["delegation_id"]
+        ad._finalize(first_id, lambda record: ad._stalled_result(first_id, record), "stalled")
         output = await _make_runner()._handle_agents_command(_Event())
         assert "`deleg_stalled_graph` · stalled" in output
         assert "1 active, 0 completed, 1 stalled" in output

@@ -117,87 +117,79 @@ delegate_task(
 
 ## Batch Mode Details
 
-When a top-level agent provides a `tasks` array without dependency edges, Hermes returns one background handle, runs the subagents in parallel, and posts one consolidated result after every child finishes. An orchestrator subagent waits for its batch in the current turn so it can synthesize the results.
+When a top-level agent provides a `tasks` array, Hermes returns one background handle and runs the subagents in parallel. Results come back **per completion unit**, not once at the end:
 
-### Dependency-aware scheduling
+- A task **without** a `group` is its own unit: its result re-enters the conversation the moment that subagent finishes, so five independent PR reviews land as five messages and the agent acts on each without waiting for the slowest one.
+- Tasks that share a `group` string wait for each other and return as **one** consolidated message (use this when the parent must compare or merge their outputs).
 
-For ordered work, the agent can give every task a unique `id` and list the
-task ids it consumes in `depends_on`:
-
-```python
-delegate_task(tasks=[
-    {"id": "research", "goal": "Find the relevant API behavior"},
-    {"id": "inspect", "goal": "Inspect the current implementation"},
-    {
-        "id": "design",
-        "goal": "Design the smallest compatible change",
-        "depends_on": ["research", "inspect"],
-    },
-    {"id": "notes", "goal": "Draft independent release notes"},
-])
+```json
+{"tasks": [
+  {"goal": "Review PR #101 ..."},
+  {"goal": "Review PR #102 ..."},
+  {"goal": "Benchmark approach A ...", "group": "bench"},
+  {"goal": "Benchmark approach B ...", "group": "bench"}
+]}
 ```
 
-Graph mode activates only when at least one task has a non-empty `depends_on`
-list. IDs alone are labels; omitted, empty, or null dependency lists leave the
-batch on the flat path, even if only some tasks have IDs. Malformed dependency
-lists are rejected rather than silently ignoring ordering requirements.
-
-For an activated graph, Hermes validates the declaration before spawning anything: ids must be unique,
-references must exist, and dependency cycles are rejected. `research` and
-`inspect` start immediately; `design` remains pending without occupying a
-worker. Once both prerequisites succeed, their bounded summaries are appended
-to `design`'s kickoff turn as clearly labeled, untrusted result data. A failed
-prerequisite blocks its descendants without spending another model call.
-When worktree isolation is enabled, the kickoff also includes upstream branch
-metadata so a dependent task can inspect or merge prerequisite file changes
-into its own isolated worktree.
-
-Disconnected parts of the graph are independent delivery clusters. In the
-example, `notes` can complete and re-enter the parent conversation without
-waiting for the research/design cluster. Each cluster uses the existing
-durable async-completion ledger, so result delivery remains serialized through
-fresh turns and preserves prompt caching and role alternation.
-
-The entire graph occupies **one async capacity slot**, regardless of its
-cluster count. Component workers run inside that fan-out, so they cannot
-consume the shared executor slots reserved for unrelated delegations. Summary
-headroom is divided across the original task count, not recalculated as a full
-allowance for each cluster; full outputs are still spilled to disk when trimmed.
-
-The dispatch's `delegation_id` and `graph_id` are the same public handle used by
-`/agents`, child metadata, and `cache/delegation/live/<graph_id>/`. In-process
-callers can cancel every live component with `interrupt_delegation(graph_id)`;
-session `/stop` uses the same grouped cancellation path. Components retain
-separate durable event IDs for delivery claims and recovery, exposed as
-`delegation_ids` and in the `clusters` details. Those event IDs do not consume
-additional capacity slots.
-
-Cancellation stops scheduling within the targeted component: pending tasks and
-queued workers return `status="interrupted"` with `api_calls=0` without entering
-the child runner. Already running tasks are interrupted and retain their real
-partial results. If async admission fails, children stay attached to the parent
-so its interrupt still reaches the synchronous fallback.
-
-Graph listings report active, successfully completed, stalled, failed, and
-interrupted cluster counts separately. A stalled or failed cluster remains
-visible while its siblings run and retains that outcome after they finish;
-`completed_clusters` counts only successful clusters.
-
-Independent delivery automatically disables itself when it would be unsafe or
-unavailable: the batch has no dependency edges, the graph has only one connected
-component, the caller is a synchronous nested orchestrator, the session cannot
-receive a later completion, or atomic component registration/submission fails.
-Hermes then attempts one consolidated batch; if no async slot is available,
-it runs synchronously. Declared dependency ordering is always honored.
+The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_indexes`); unit ids are the call's id suffixed `-1`, `-2`, …, and every unit of one call shares a single slot of `delegation.max_concurrent_children`, so grouping never changes capacity accounting. An orchestrator subagent waits for its whole batch in the current turn so it can synthesize the results.
 
 - **Maximum concurrency:** 3 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback
-- **Result ordering:** Results are sorted by task index to match input order regardless of completion order
+- **Result ordering:** Within a unit, results are sorted by task index to match input order regardless of completion order; `TASK i/N` labels index the whole call
 - **Cancellation:** Follow-up messages do not cancel a top-level background batch. `/stop` or closing/resetting the owning session cancels its active children. Synchronous orchestrator children still follow their parent's interrupt state
-- **Dependency failures:** A task whose prerequisite fails is returned with `failure_reason="dependency_failed"` and `api_calls=0`; unrelated clusters continue
 
 Synchronous single-task delegation from an orchestrator runs directly without thread pool overhead.
+
+### Dependency-aware scheduling
+
+Use `depends_on` when a task needs another task's output before it can start:
+
+```json
+{"tasks": [
+  {"id": "source", "goal": "Extract the relevant input values"},
+  {"id": "consumer", "goal": "Compute a result from those values", "depends_on": ["source"]},
+  {"id": "independent", "goal": "Review the unrelated documentation"}
+]}
+```
+
+The source and independent task start immediately. The consumer starts only
+after the source succeeds and receives its bounded summary (up to 6,000
+characters per prerequisite and approximately 16,000 in total). These summaries
+are self-reports, not trusted instructions. Worktree metadata is included when
+available; dependent tasks must explicitly inspect or integrate upstream changes.
+
+Dependency scheduling activates only when at least one `depends_on` list is
+non-empty. Every task must then have a unique `id`; missing IDs, unknown
+references, self-dependencies, malformed lists, and cycles are rejected before
+any child is constructed. IDs alone and omitted, null, or empty dependency lists
+retain the ordinary completion-group behavior described above.
+
+Connected tasks form a completion cluster. Disconnected clusters deliver
+independently, while the entire graph uses one background capacity slot and one
+public `graph_id` / `delegation_id`. Components retain separate durable event IDs
+in `delegation_ids` and `clusters` for delivery claims and recovery. All child
+transcripts keep the graph's ID, and summary budgets use the full task count.
+Explicit `group` values can join otherwise disconnected clusters for delivery;
+they do not create execution dependencies or serialize independent roots.
+
+Splitting automatically stays off for a single cluster or synchronous nested
+delegation. Unsupported async sessions run synchronously. If atomic graph
+admission fails, Hermes retries consolidated background delivery, then falls
+back to synchronous execution if no async slot is available. Dependency ordering
+is preserved in every fallback, and rejected admission starts no children.
+
+Cancellation stops pending and queued tasks before entering the child runner,
+reporting `interrupted` with zero API calls. Already running children receive
+an interrupt and retain their real partial results. Children remain attached
+to the parent until background dispatch succeeds, so synchronous fallback is
+still interruptible. Failed prerequisites block descendants without model calls.
+
+Graph listings separately count active, successfully completed, stalled, failed,
+and interrupted clusters. A stalled or failed graph remains visible while its
+siblings run and retains that outcome after they finish. Lifecycle hooks, cost
+rollup, incremental result persistence, failure notices, and fresh-turn delivery
+reuse the normal completion-unit pipeline.
 
 ### Durable background completions
 
@@ -445,7 +437,7 @@ Control actions run synchronously in-turn (never backgrounded), are scoped to th
 
 ### From the TUI / gateway (session-facing)
 
-`steer_subagent(subagent_id, text)` in `tools/delegate_tool.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](/reference/slash-commands) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
+`steer_subagent(subagent_id, text)` in `tools/delegate_tool_registry.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](/reference/slash-commands) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
 
 ```json
 {"method": "subagent.steer", "params": {"session_id": "owning-ui-session", "subagent_id": "sa-0-1a2b3c4d", "text": "focus on pricing instead"}}
@@ -608,6 +600,8 @@ delegation:
 ```
 
 When `base_url` points at an Anthropic-compatible endpoint — for example a path ending in `/anthropic`, an Azure Foundry Claude route, or a MiniMax `/anthropic` proxy — `api_mode` is auto-detected as `anthropic_messages` so the subagent uses the right wire format without you setting anything. Set `api_mode` explicitly when the auto-detection guess is wrong (rare).
+
+Subagents compact at the same ratio trigger as their parent (`compression.threshold`, 0.50 × window by default). `delegation.compression_threshold_tokens` (default `0`, off) adds an optional absolute cap on a child's compaction *trigger*, applied as the lower of it and the ratio threshold; it never touches the request payload or the parent. A token count of at least 16000 enables it; `true` or `"200k"` are config errors that are warned and ignored. It stays off by default because a replay of a 1,393-agent run put 200K–400K caps within 5% of each other in cost once cache prefixes are intact, and every compaction is a chance to lose detail.
 
 `delegation.request_overrides` works on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit — so it always takes effect. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. Explicit values merge **over** runtime- or parent-derived overrides: explicit top-level keys win, and `extra_body` is deep-merged one level, so a provider's own request personality (e.g. `thinking: {type: disabled}`) survives unless your key redefines it. See [Configuration → Delegation](../configuration.md#delegation) for details.
 

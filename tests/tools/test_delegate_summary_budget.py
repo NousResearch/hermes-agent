@@ -13,6 +13,7 @@ import tempfile
 import pytest
 
 import tools.delegate_tool as dt
+from tools.delegate_tool_results import _MIN_SUMMARY_CHARS, _parent_summary_char_budget
 
 
 class _FakeCompressor:
@@ -22,9 +23,11 @@ class _FakeCompressor:
 
 
 class _FakeParent:
-    def __init__(self, context_length, used_tokens, max_tokens):
+    def __init__(self, context_length, used_tokens, max_tokens, session_total=None):
         self.context_compressor = _FakeCompressor(context_length, max_tokens)
-        self.session_prompt_tokens = used_tokens
+        # Current prompt size (last call) drives the budget; the cumulative session counter must not.
+        self._last_turn_usage = {"prompt_tokens": used_tokens}
+        self.session_prompt_tokens = session_total if session_total is not None else used_tokens
 
 
 def test_small_summaries_pass_through_untouched():
@@ -78,24 +81,30 @@ def test_empty_results_is_noop():
     )
 
 
-@pytest.mark.parametrize("sizes", [(1, 1, 1), (2, 1)])
-def test_independent_components_share_the_original_batch_budget(sizes, monkeypatch):
-    parent = _FakeParent(context_length=50_000, used_tokens=20_000, max_tokens=8_000)
-    monkeypatch.setattr(dt, "_load_config", lambda: {"max_summary_chars": 0})
-    batch_size = sum(sizes)
-    cap = dt._parent_summary_char_budget(parent, batch_size)
-    summary = "¶" * 100_000
-    summaries = []
-    for size in sizes:
-        results = [
-            {"task_index": len(summaries) + i, "status": "completed", "summary": summary}
-            for i in range(size)
-        ]
-        dt._apply_summary_budget(results, parent, batch_size=batch_size)
-        summaries.extend(results)
-    # The content allowance is divided across the entire graph, even when
-    # separate completions arrive in one gateway drain. Footers are overhead.
-    assert sum(r["summary"].count("¶") for r in summaries) == cap * batch_size
-    for result in summaries:
-        with open(result["summary_full_path"], encoding="utf-8") as stream:
-            assert stream.read() == summary
+def test_budget_uses_current_prompt_size_not_the_session_sum():
+    """A long-lived parent has a session sum far past any window while its current prompt is small; the
+    budget must follow the current prompt, otherwise every summary collapses to the floor."""
+    long_lived = _FakeParent(context_length=200_000, used_tokens=30_000, max_tokens=8_000, session_total=25_000_000)
+    fresh = _FakeParent(context_length=200_000, used_tokens=30_000, max_tokens=8_000)
+    assert _parent_summary_char_budget(long_lived, 1) == _parent_summary_char_budget(fresh, 1)
+    assert _parent_summary_char_budget(long_lived, 1) > _MIN_SUMMARY_CHARS
+
+
+def test_unknown_parent_usage_means_static_ceiling_not_zero_context():
+    """Independent-review witness: a parent with no usage yet was treated as 0 tokens used, so a 190K/200K
+    prompt got a 384K-char summary budget instead of ~4K."""
+    from types import SimpleNamespace
+    from tools.delegate_tool_results import _parent_summary_char_budget
+    parent = SimpleNamespace(context_compressor=SimpleNamespace(context_length=200_000, max_tokens=0),
+                             _last_turn_usage=None)
+    assert _parent_summary_char_budget(parent, 1) is None
+
+
+def test_moa_fold_does_not_inflate_the_parents_prompt_size():
+    """MoA folds advisor prompts into reported usage; the parent's context holds only the aggregator's."""
+    from types import SimpleNamespace
+    from tools.delegate_tool_results import _parent_summary_char_budget
+    cc = SimpleNamespace(context_length=200_000, max_tokens=0)
+    folded = SimpleNamespace(context_compressor=cc, _last_turn_usage={"prompt_tokens": 190_000}, _last_prompt_size_tokens=50_000)
+    unfolded = SimpleNamespace(context_compressor=cc, _last_turn_usage={"prompt_tokens": 50_000})
+    assert _parent_summary_char_budget(folded, 1) == _parent_summary_char_budget(unfolded, 1)

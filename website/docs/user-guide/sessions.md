@@ -663,6 +663,14 @@ the id plus a ready-to-paste `hermes --resume <id>` command.
 `--resume @claude` / `--resume @codex` show the same picker and drop you
 straight into the imported conversation.
 
+**Hermes Desktop** has the same importer under **Import session** in the
+sidebar (also in the command palette). It lists the logs on the machine the
+connected backend runs on — not the computer running the app — shows a
+read-only preview, and **Continue in Hermes** copies the conversation into the
+selected profile. Browsing never writes to your session store, importing never
+touches the source file, and importing the same log twice opens the existing
+copy instead of making another.
+
 What carries over: the ordered user/assistant conversation, with tool
 activity condensed to short `[ran tool: …]` notes inside assistant turns.
 System prompts, injected context, reasoning traces, and raw tool output are

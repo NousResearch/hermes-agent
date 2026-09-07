@@ -134,7 +134,7 @@ class DeliveryTarget:
         """Convert back to string format."""
         if self.is_origin:
             return "origin"
-        if self.unknown_platform:
+        if self.unknown_platform is not None:
             return self.unknown_platform
         if self.platform == Platform.LOCAL:
             return "local"
@@ -168,7 +168,7 @@ class DeliveryRouter:
         """Deliver content to all targets; returns per-target results keyed by target string."""
         results = {}
         for target in targets:
-            if target.unknown_platform:
+            if target.unknown_platform is not None:
                 results[target.to_string()] = {
                     "success": False, "error": f"unknown_platform: {target.unknown_platform}"}
                 continue

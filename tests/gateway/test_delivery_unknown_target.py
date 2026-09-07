@@ -9,11 +9,13 @@ from gateway.delivery import DeliveryRouter, DeliveryTarget
 
 
 @pytest.mark.asyncio
-async def test_unknown_destination_fails_without_writing_and_local_still_works(tmp_path, monkeypatch):
+@pytest.mark.parametrize("raw", ["MisspelledPlatform:ChatID:ThreadID", "", "   "])
+async def test_unknown_destination_fails_without_writing_and_local_still_works(tmp_path, monkeypatch, raw):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     router = DeliveryRouter(GatewayConfig())
-    raw = "MisspelledPlatform:ChatID:ThreadID"
-    result = await router.deliver("must not save", [DeliveryTarget.parse(raw)], job_id="bad")
+    target = DeliveryTarget.parse(raw)
+    raw = raw.strip()
+    result = await router.deliver("must not save", [target], job_id="bad")
     assert not any(receipt["success"] for receipt in result.values()), result
     assert raw in result
     assert result[raw]["error"] == f"unknown_platform: {raw}"

@@ -1977,6 +1977,7 @@ export const zhHant = defineLocale({
     shiftClickHint: 'Shift + 點擊聊天以釘選 · 拖曳以重新排序',
     noWorkspace: '無工作區',
     projectEmpty: '尚無工作階段',
+    projectLoadFailed: '會話載入失敗',
     noSessions: '尚無工作階段',
     noFilterMatches: '沒有工作階段符合這些篩選條件',
     projects: {

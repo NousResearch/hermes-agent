@@ -2946,9 +2946,10 @@ def complete_task(
     task = get_task(conn, task_id)
     if task is None:
         return False
+    policy_summary = redact_review_value(summary or result or "")
     enforce_completion_policies(
         task_id=task_id, board=_lifecycle_board(conn, board), assignee=task.assignee,
-        summary=summary or result or "",
+        summary=policy_summary,
     )
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     metadata = _merge_completion_prose_artifacts(

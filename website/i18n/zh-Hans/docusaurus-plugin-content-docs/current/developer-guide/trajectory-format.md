@@ -11,13 +11,26 @@ Hermes Agent 以 ShareGPT 兼容的 JSONL 格式保存对话轨迹，用于训�
 
 | 文件 | 时机 |
 |------|------|
-| `trajectory_samples.jsonl` | 成功完成的对话（`completed=True`） |
-| `failed_trajectories.jsonl` | 失败或被中断的对话（`completed=False`） |
+| `trajectory_samples.jsonl.gz` | gzip 压缩的成功完成对话（`completed=True`） |
+| `failed_trajectories.jsonl.gz` | gzip 压缩的失败或被中断对话（`completed=False`） |
 
 批量运行器（`batch_runner.py`）按批次写入自定义输出文件
 （例如 `batch_001_output.jsonl`），并附带额外的元数据字段。
 
 可通过 `save_trajectory()` 的 `filename` 参数覆盖文件名。
+显式使用 `.jsonl` 文件名时仍保留旧的纯文本格式。
+
+每次 gzip 追加都会写入一个完整的 gzip member。只有在完整 member 已写入、
+刷新并同步到文件系统后，`save_trajectory()` 才返回 `True`；序列化、
+加锁、写入或同步失败时返回 `False` 并记录警告。若捕获到部分写入，
+会先把文件截断到先前有效的字节长度，再释放锁。如果回滚本身也失败，Hermes
+会记录回滚错误并仍返回 `False`；调用方必须把 `False` 视为“不保证已保存”，
+而不能盲目重试。
+
+写入方通过进程内 inode 锁以及轨迹数据文件本身的操作系统锁进行串行化，因此
+符号链接和硬链接别名会共享同一个临界区。加锁等待上限为 10 秒；若新建文件的
+加锁失败，可能留下一个空数据文件，但不会报告轨迹已保存。旧版
+`<trajectory>.lock` sidecar 不会造成阻塞，会被安全忽略。
 
 
 ## JSONL 条目格式
@@ -174,9 +187,11 @@ API 格式的工具调用（含 `tool_call_id`、函数名、JSON 字符串形�
 import json
 
 def load_trajectories(path: str):
-    """Load trajectory entries from a JSONL file."""
+    """Load trajectory entries from plain or gzip-compressed JSONL."""
+    import gzip
     entries = []
-    with open(path, "r", encoding="utf-8") as f:
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -184,7 +199,7 @@ def load_trajectories(path: str):
     return entries
 
 # Filter to successful completions only
-successful = [e for e in load_trajectories("trajectory_samples.jsonl")
+successful = [e for e in load_trajectories("trajectory_samples.jsonl.gz")
               if e.get("completed")]
 
 # Extract just the conversations for training
@@ -196,24 +211,39 @@ training_data = [e["conversations"] for e in successful]
 ```python
 from datasets import load_dataset
 
-ds = load_dataset("json", data_files="trajectory_samples.jsonl")
+ds = load_dataset("json", data_files="trajectory_samples.jsonl.gz")
 ```
 
 规范化的 `tool_stats` schema 确保所有条目具有相同的列，
 防止数据集加载时出现 Arrow schema 不匹配错误。
 
+Python 的 gzip 读取器和 Hermes 的 `_open_jsonl()` 都能读取串联的 gzip
+member。如果进程在写入最后一个 member 时终止，两个读取器都会保留此前完整的
+记录，但可能先产出不完整 member 中已解压的字节，然后在下一次读取时抛出
+`EOFError`。出现此异常时应把整个读取视为失败；只有数据流正常到达 EOF 时，
+才能接受最后一条记录。
+
+每次追加 gzip 前，Hermes 都会在持有数据文件锁期间验证所有现有的串联 member。
+如果任一 member 被截断或无效，追加会以失败关闭方式停止，保持现有字节不变，
+记录警告并返回 `False`。Hermes 不会猜测截断位置，也不会自动修复损坏的最终
+member。
+
+`trajectory_compressor.py` 可处理同时包含 `.jsonl` 和 `.jsonl.gz`
+的目录，对发现的路径去重，并在目录输出中保留各输入文件的后缀。单文件输出名以
+`.jsonl.gz` 结尾时写入 gzip；显式使用 `.jsonl` 时保持纯文本。
+`scripts/sample_and_compress.py` 合并输出时遵循相同规则。
+
 
 ## 控制轨迹保存
 
-在 CLI 中，轨迹保存通过以下方式控制：
+轨迹保存是 `run_agent.py` / 库级别的开关，`hermes` CLI 不提供对应的配置键或标志：
 
-```yaml
-# config.yaml
-agent:
-  save_trajectories: true  # default: false
+```bash
+python run_agent.py --save_trajectories --query='your question here'
 ```
 
-或通过 `--save-trajectories` 标志。当 agent 以 `save_trajectories=True` 初始化时，
+也可以通过程序方式设置：`AIAgent(..., save_trajectories=True)` /
+`initialize_agent(..., save_trajectories=True)`。启用后，
 `_save_trajectory()` 方法在每次对话轮次结束时调用。
 
 批量运行器始终保存轨迹（这是其主要用途）。

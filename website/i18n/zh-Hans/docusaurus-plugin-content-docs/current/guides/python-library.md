@@ -151,10 +151,12 @@ agent = AIAgent(
 )
 
 agent.chat("Write a Python function to sort a list")
-# 以 ShareGPT 格式保存到 trajectory_samples.jsonl
+# 以 ShareGPT 格式保存到 trajectory_samples.jsonl.gz
 ```
 
-每次对话以单行 JSONL 的形式追加写入，便于从自动化运行中收集数据集。
+每次对话以一个完整 gzip member（包含一行 JSONL）的形式追加写入。并发进程会被
+串行化，且仅在写入完成同步后才报告保存成功。显式传入 `.jsonl` 文件名可保留
+旧的纯文本格式。
 
 ---
 

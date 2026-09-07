@@ -293,19 +293,20 @@ def merge_output_to_single_jsonl(input_dir: Path, output_file: Path):
         output_file: Output JSONL file path
     """
     print(f"\n📦 Merging output files into {output_file.name}...")
+    from trajectory_compressor import _discover_jsonl_files, _open_jsonl
     
     all_entries = []
-    for jsonl_file in sorted(input_dir.glob("*.jsonl")):
-        if jsonl_file.name == output_file.name:
+    for jsonl_file in _discover_jsonl_files(input_dir):
+        if jsonl_file.resolve() == output_file.resolve():
             continue
-        with open(jsonl_file, 'r', encoding='utf-8') as f:
+        with _open_jsonl(jsonl_file, "rt") as f:
             for line in f:
                 line = line.strip()
                 if line:
                     all_entries.append(json.loads(line))
     
     # Write merged file
-    with open(output_file, 'w', encoding='utf-8') as f:
+    with _open_jsonl(output_file, "wt") as f:
         for entry in all_entries:
             f.write(json.dumps(entry, ensure_ascii=False) + '\n')
     

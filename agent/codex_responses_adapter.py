@@ -277,6 +277,11 @@ def _derive_responses_function_call_id(call_id: str, response_item_id: Optional[
     return f"fc_{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:24]}"
 
 
+def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
+    """Compatibility wrapper for callers importing the adapter-local helper."""
+    return deterministic_call_id(fn_name, arguments, index)
+
+
 # --- Schema conversion --------------------------------------------------------
 
 def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:

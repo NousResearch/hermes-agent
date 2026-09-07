@@ -340,6 +340,46 @@ def _is_stale_copilot_credential_error(status_code: Optional[int], error_message
     ))
 
 
+def _image_error_max_count(error: Exception) -> Optional[int]:
+    """Extract a provider-reported per-prompt image *count* ceiling.
+
+    Confirmed local-engine wordings:
+      vLLM:   ``"At most 2 image(s) may be provided in one prompt."`` → 2
+      SGLang: ``"Image count 5 exceeds limit 2 per request."`` → 2
+
+    Returns the parsed integer when it is sane (1–64), else ``None`` so the
+    caller falls back to the default keep-window.
+    """
+    parts = []
+    for value in (
+        error,
+        getattr(error, "message", None),
+        getattr(error, "body", None),
+    ):
+        if value:
+            try:
+                parts.append(str(value))
+            except Exception:
+                pass
+    text = " ".join(parts).lower()
+    if "image" not in text:
+        return None
+    match = re.search(
+        r"(?:at most|no more than|maximum of|maximum number of|too many)\s+(\d+)\s+image",
+        text,
+    ) or re.search(r"(\d+)\s+image\(s\)\s+may be provided", text) \
+        or re.search(r"exceeds limit\s+(\d+)", text)
+    if not match:
+        return None
+    try:
+        count = int(match.group(1))
+    except ValueError:
+        return None
+    if 1 <= count <= 64:
+        return count
+    return None
+
+
 def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:
     """Floor the ROUGH pre-API pressure estimate at the last REAL prompt size.
 

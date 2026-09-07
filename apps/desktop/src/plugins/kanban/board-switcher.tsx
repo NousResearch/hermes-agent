@@ -26,6 +26,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Switch,
   useI18n,
   useMutation,
   useQuery,
@@ -264,6 +265,17 @@ function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onCl
   // drops the mirrored default_workdir on the backend.
   const save = useBoardWrite(() => updateBoard(slug, { project_id: project }), onClose)
 
+  // Each toggle writes immediately (its own mutation) rather than batching
+  // into the Save button below, matching how the switcher's other per-item
+  // state (e.g. orchestration's auto-decompose switch) commits on change —
+  // there is no "unsaved toggle" state to lose if the dialog is dismissed.
+  const qc = useQueryClient()
+  const toggle = useMutation({
+    mutationFn: (patch: Record<string, unknown>) => updateBoard(slug, patch),
+    onError: err => host.notify({ kind: 'error', message: errText(err) }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+  })
+
   return (
     <BoardDialog
       confirmLabel={k.save}
@@ -274,6 +286,36 @@ function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onCl
       title={board ? k.boardSettingsFor(board.name || board.slug) : k.settingsDots}
     >
       <ProjectPicker onChange={setProject} value={project} />
+      <div className="flex flex-col gap-1.5 border-t border-(--ui-stroke-tertiary) pt-3">
+        <label className="flex cursor-pointer items-center gap-2 text-[0.75rem] text-(--ui-text-secondary)">
+          <Switch
+            aria-label={k.boardDispatchEnabled}
+            checked={board?.dispatch_enabled ?? true}
+            onCheckedChange={checked => toggle.mutate({ dispatch_enabled: checked })}
+            size="xs"
+          />
+          {k.boardDispatchEnabled}
+        </label>
+        <label className="flex cursor-pointer items-center gap-2 text-[0.75rem] text-(--ui-text-secondary)">
+          <Switch
+            aria-label={k.boardAutoDecomposeEnabled}
+            checked={board?.auto_decompose_enabled ?? true}
+            onCheckedChange={checked => toggle.mutate({ auto_decompose_enabled: checked })}
+            size="xs"
+          />
+          {k.boardAutoDecomposeEnabled}
+        </label>
+        <label className="flex cursor-pointer items-center gap-2 text-[0.75rem] text-(--ui-text-secondary)">
+          <Switch
+            aria-label={k.boardReviewDispatchEnabled}
+            checked={board?.review_dispatch_enabled ?? true}
+            onCheckedChange={checked => toggle.mutate({ review_dispatch_enabled: checked })}
+            size="xs"
+          />
+          {k.boardReviewDispatchEnabled}
+        </label>
+        <p className="text-[0.6875rem] text-(--ui-text-quaternary)">{k.boardOverrideHint}</p>
+      </div>
     </BoardDialog>
   )
 }
@@ -401,7 +443,10 @@ export function BoardSwitcher() {
       </DropdownMenu>
       <NewBoardDialog onClose={() => setAdding(false)} open={adding} />
       <RenameBoardDialog board={renameFor} onClose={() => setRenameFor(null)} />
-      <BoardSettingsDialog board={settingsFor} onClose={() => setSettingsFor(null)} />
+      <BoardSettingsDialog
+        board={(settingsFor && boards.boards.find(meta => meta.slug === settingsFor.slug)) || settingsFor}
+        onClose={() => setSettingsFor(null)}
+      />
       <ConfirmDialog
         confirmLabel={t.common.delete}
         description={k.deleteBoardConfirm}

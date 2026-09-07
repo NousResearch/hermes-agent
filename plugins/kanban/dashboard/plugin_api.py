@@ -1259,6 +1259,11 @@ class RenameBoardBody(BaseModel):
     # For both fields: ``None`` = leave unchanged; "" = clear; value = validate/resolve + set.
     default_workdir: Optional[str] = None
     project_id: Optional[str] = None
+    # Per-board narrowing-only overrides of the global kanban.dispatch_in_gateway /
+    # kanban.auto_decompose / kanban.review_dispatch switches. None = leave unchanged.
+    dispatch_enabled: Optional[bool] = None
+    auto_decompose_enabled: Optional[bool] = None
+    review_dispatch_enabled: Optional[bool] = None
 
 
 # Board transfer exchanges filesystem PATHS, not bytes (same contract as profile export/import):
@@ -1412,7 +1417,9 @@ def rename_board(slug: str, payload: RenameBoardBody):
         else:
             project_id = ""  # clear the scope
     meta = kanban_db.write_board_metadata(
-        normed, default_workdir=default_workdir, project_id=project_id, **_board_display_kwargs(payload))
+        normed, default_workdir=default_workdir, project_id=project_id,
+        dispatch_enabled=payload.dispatch_enabled, auto_decompose_enabled=payload.auto_decompose_enabled,
+        review_dispatch_enabled=payload.review_dispatch_enabled, **_board_display_kwargs(payload))
     return {"board": _annotate_board_meta(meta)}
 
 

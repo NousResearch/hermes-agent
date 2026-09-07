@@ -26,6 +26,12 @@ and included in `compression_metrics.json`. Retain that report with the dataset.
 For a local tokenizer directory, retain the tokenizer files as well; there is no
 Hub revision identifying those files.
 
+If tokenizer revision resolution fails with a configuration or I/O error, the
+sampling command logs the tokenizer name and underlying reason, then exits with
+status 1 before sampling or compression. Check the tokenizer name and revision,
+Hub access, or use a local tokenizer directory. Unexpected programming errors
+still propagate rather than being reported as configuration failures.
+
 Counts include the whole conversation serialized by the selected tokenizer's
 chat template (`tokenize=True`, `add_generation_prompt=False`). ShareGPT
 `from`/`value` turns are mapped to `role`/`content` messages (`human` → `user`,

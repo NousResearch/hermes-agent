@@ -373,9 +373,13 @@ def main(
         print(f"❌ Config not found: {config_path}")
         return
     compression_config = CompressionConfig.from_yaml(str(config_path))
-    compression_config.tokenizer_revision = resolve_tokenizer_revision(
-        compression_config.tokenizer_name, compression_config.tokenizer_revision,
-    )
+    try:
+        compression_config.tokenizer_revision = resolve_tokenizer_revision(
+            compression_config.tokenizer_name, compression_config.tokenizer_revision,
+        )
+    except (ValueError, OSError) as exc:
+        logger.error("Cannot resolve tokenizer %r: %s", compression_config.tokenizer_name, exc)
+        raise SystemExit(1) from None
     
     if not skip_download:
         # Step 1: Download, filter by token count, and sample from combined pool

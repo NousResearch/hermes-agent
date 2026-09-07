@@ -3652,8 +3652,13 @@ class BasePlatformAdapter(ABC):
             if not await asyncio.to_thread(ledger_enabled):
                 return None
             source = event.source
+            # ``ledger_message_id`` wins when set: a queued chain's final answers the last message
+            # of the chain, not the event that opened it (see ``MessageEvent.ledger_message_id``).
+            _ledger_id = getattr(event, "ledger_message_id", None)
+            if _ledger_id is None:
+                _ledger_id = getattr(event, "message_id", "")
             obligation_id = compute_obligation_id(
-                session_key, str(getattr(event, "message_id", "") or ""), text_content)
+                session_key, str(_ledger_id or ""), text_content)
             await asyncio.to_thread(
                 record_obligation, obligation_id=obligation_id, session_key=session_key,
                 platform=str(getattr(source.platform, "value", source.platform)),

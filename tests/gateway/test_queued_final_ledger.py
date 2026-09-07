@@ -336,3 +336,112 @@ async def test_a_chained_queued_turn_carries_its_own_inbound_id():
     runner._run_agent.assert_awaited_once()
     assert runner._run_agent.await_args.kwargs["inbound_message_id"] == "6002"
     assert runner._run_agent.await_args.kwargs["event_message_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# A chain's terminal reply must not overwrite an earlier turn's row.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_the_terminal_turn_of_a_chain_is_ledgered_under_its_own_inbound_id():
+    """Two turns of one queued chain answering with the SAME text must keep two ledger rows.
+
+    The outer final send is bracketed by the adapter against the event that OPENED the chain. Keyed
+    on that event's id, a terminal reply carrying the same text as an earlier refused reply computes
+    the earlier row's obligation id, replaces its outstanding row and marks it delivered, so the
+    refused reply is never redelivered. ``MessageEvent.ledger_message_id`` carries the terminal
+    turn's own inbound id so the rows stay distinct. ``_send_with_retry`` is stubbed here because
+    the retry ladder is covered elsewhere and this pins the ledger identity only.
+    """
+    from gateway.platforms.base import MessageEvent
+
+    same_text = "Done."
+    adapter = _telegram_adapter()
+    # Turn A (inbound 101): its queued final is refused by flood control and stays outstanding.
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=False, error="flood_control:30.0"))
+    await _deliver(adapter, text=same_text, anchor="101", inbound_id="101")
+
+    first = _rows()
+    assert len(first) == 1
+    assert first[0]["state"] == "failed"
+    turn_a_id = first[0]["obligation_id"]
+
+    # Turn B is the chain's TERMINAL turn (inbound 102). The adapter still holds turn A's event, so
+    # only the ledger override distinguishes the row.
+    adapter._send_with_retry = AsyncMock(return_value=SendResult(success=True, message_id="901"))
+    event = MessageEvent(text="hi again", source=_source(), message_id="101",
+                         ledger_message_id="102")
+    await adapter._send_final_text(event, SESSION_KEY, same_text, {}, False, 0, lambda _r: None)
+
+    rows = {r["obligation_id"]: r for r in _rows()}
+    assert len(rows) == 2, "the terminal reply reused the earlier turn's obligation id"
+    assert rows[turn_a_id]["state"] == "failed", \
+        "turn A's refused reply was overwritten and would never be redelivered"
+    assert rows[dl.compute_obligation_id(SESSION_KEY, "102", same_text)]["state"] == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_an_unchained_turn_still_keys_on_its_own_event_id():
+    """No override means no behaviour change: the event's own id keys the row, as before."""
+    from gateway.platforms.base import MessageEvent
+
+    adapter = _telegram_adapter()
+    adapter._send_with_retry = AsyncMock(return_value=SendResult(success=True, message_id="902"))
+    event = MessageEvent(text="hi", source=_source(), message_id=INBOUND_ID)
+
+    assert event.ledger_message_id is None
+    await adapter._send_final_text(event, SESSION_KEY, TEXT, {}, False, 0, lambda _r: None)
+
+    assert _rows()[0]["obligation_id"] == dl.compute_obligation_id(SESSION_KEY, INBOUND_ID, TEXT)
+
+
+def _chain_runner_and_ctx(followup_return):
+    """A runner whose recursive ``_run_agent`` returns ``followup_return``, plus a topic turn."""
+    from gateway.run import GatewayRunner
+
+    runner = _runner()
+    runner._MAX_INTERRUPT_DEPTH = 8
+    runner._run_agent = AsyncMock(return_value=followup_return)
+    runner._run_agent_deliver_first_response = AsyncMock()
+    runner._is_goal_continuation_event = MagicMock(return_value=False)
+    runner._session_key_for_source = MagicMock(return_value=TOPIC_SESSION_KEY)
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="the follow-up")
+    runner._reply_anchor_for_event = MagicMock(return_value=None)
+    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    topic = _source(chat_id="-1001", thread_id="7", chat_type="supergroup")
+    turn_ctx = SimpleNamespace(
+        source=topic, session_id="sid", session_key=TOPIC_SESSION_KEY, run_generation=1,
+        _interrupt_depth=0, history=[], _status_thread_metadata={"thread_id": "7"},
+        context_prompt=None, result_holder=[None])
+    pending_event = SimpleNamespace(
+        source=topic, message_id="6002", channel_prompt=None, message_type=None)
+    return GatewayRunner, runner, turn_ctx, pending_event
+
+
+@pytest.mark.asyncio
+async def test_the_chain_returns_the_terminal_inbound_id_to_the_outer_bracket():
+    """The outer handler needs the terminal turn's id to ledger the final send under it."""
+    GatewayRunner, runner, turn_ctx, pending_event = _chain_runner_and_ctx(
+        {"final_response": "done", "messages": []})
+
+    merged = await GatewayRunner._run_agent_queued_followup(
+        runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,
+        response="resp", result={"interrupted": True, "messages": []}, stream_task=None)
+
+    assert merged["queued_terminal_inbound_id"] == "6002"
+
+
+@pytest.mark.asyncio
+async def test_a_deeper_chain_keeps_the_innermost_inbound_id():
+    """Chained follow-ups nest, and the LAST message answered owns the ledger identity, so an id
+    already set by a deeper recursion must not be overwritten on the way out."""
+    GatewayRunner, runner, turn_ctx, pending_event = _chain_runner_and_ctx(
+        {"final_response": "done", "messages": [], "queued_terminal_inbound_id": "6003"})
+
+    merged = await GatewayRunner._run_agent_queued_followup(
+        runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,
+        response="resp", result={"interrupted": True, "messages": []}, stream_task=None)
+
+    assert merged["queued_terminal_inbound_id"] == "6003"

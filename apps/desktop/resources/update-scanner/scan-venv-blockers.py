@@ -1,23 +1,35 @@
 """Candidate-owned target-root scanner for safe native-Windows updates.
 
-This file is ``hermes_cli/_scan_venv_blockers.py`` as shipped inside the Desktop
+GENERATED FILE -- do not edit. Regenerate with::
+
+    python scripts/desktop-update/sync_scan_venv_blockers.py --write
+
+Source: ``hermes_cli/_scan_venv_blockers.py``.  Parity is enforced by
+``tests/hermes_cli/test_scan_venv_blockers_parity.py``.
+
+This is ``hermes_cli/_scan_venv_blockers.py`` as shipped inside the Desktop
 build (``extraResources``). The Desktop runs it with ``python -I <this file>
 --root <install>`` under the target venv interpreter so the scan logic comes
 from the candidate build, never from the mutable checkout being updated; it
-therefore imports nothing from that checkout. Five deliberate substitutions
-separate it from the module copy (``tests/hermes_cli/test_scan_venv_blockers_parity.py``
-asserts everything else is byte-identical):
+therefore imports nothing from that checkout. Exactly six deliberate
+substitutions separate it from the module copy:
 
+* this docstring;
 * the MCP argv classifier is inlined instead of imported from
   ``hermes_mcp_update_gate``;
+* ``_validated_root``'s docstring drops the provenance wording;
 * ``_validated_root`` does not require the scanner to live inside the target
   root (the carrier lives in the Desktop's resources);
-* ``_redact_sensitive_cmdline`` returns ``"<redacted>"`` unconditionally rather
-  than importing the checkout's redactor; the Desktop classifies holders from
-  the structured fields, never from ``cmdline``;
 * ``_updater_owned_backend_entry`` never consults the checkout's spawn ledger,
   so no serve/dashboard backend is deferred and ``deferred_backend_evidence``
-  is always empty.
+  is always empty;
+* ``venv_bin_dir`` is not imported from ``hermes_constants``; the Windows
+  ``Scripts`` layout is spelled out instead.
+
+Everything else is byte-identical to the module copy. In particular
+``_redact_sensitive_cmdline`` is *not* substituted: it is self-contained in
+both copies, so the packaged scanner reports the same diagnostic command line
+the module does rather than a blanket ``"<redacted>"``.
 
 The external interface always writes exactly one JSON document to stdout.
 Valid clear and blocked scans exit zero. Invalid roots and probe failures exit

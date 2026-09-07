@@ -9,11 +9,13 @@ Two copies of this scanner exist on purpose. The Desktop never runs this
 module: it ships ``apps/desktop/resources/update-scanner/scan-venv-blockers.py``
 (the "carrier") and runs it with ``python -I <carrier> --root <root>`` under
 the target venv interpreter, so the scan bytes come from the candidate build
-and never from the mutable checkout being updated. The carrier is this file
-with five deliberate substitutions (inlined MCP argv classifier, no
-provenance check, cmdline redaction stubbed, no spawn-ledger deferral);
-Behavioral tests cover both copies, including the packaged subprocess output
-consumed by the desktop parser.
+and never from the mutable checkout being updated.
+
+This file is the single source. The carrier is *generated* from it by
+``scripts/desktop-update/sync_scan_venv_blockers.py``, whose ``SUBSTITUTIONS``
+list is the authoritative description of how the two copies differ; never
+hand-edit the carrier. ``tests/hermes_cli/test_scan_venv_blockers_parity.py``
+fails when the committed carrier is not what that generator produces.
 """
 
 from __future__ import annotations

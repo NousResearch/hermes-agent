@@ -8498,6 +8498,21 @@ async def _standalone_is_forum(aiohttp, chat_id: str, json_headers: dict, sess_k
 # (defined adjacent above); the cron media-batch path below reuses the multipart retry helper.
 
 
+def _standalone_close_handles(handles):
+    """Best-effort close of file handles opened for a multipart form.
+
+    Called after every POST attempt (success, 429, error) so that no file
+    handle survives into the next retry form. Exceptions are logged but never
+    propagated — a failed close on a consumed stream must not mask the real
+    POST result.
+    """
+    for _fh in handles:
+        try:
+            _fh.close()
+        except Exception as _e:
+            logger.debug("failed to close multipart file handle: %s", _e)
+
+
 async def _standalone_post_multipart_with_429_retry(
     session, url: str, *, headers: dict, form_factory, req_kw: dict, error_label: str,
 ):
@@ -8686,7 +8701,14 @@ async def _standalone_send(
                     await asyncio.sleep(_INTER_BATCH_DELAY)
                 batch = valid_media_paths[batch_idx:batch_idx + _MEDIA_CHUNK]
 
-                def _build_form(_batch=batch):
+                # Snapshot the caption flag *outside* the closure: assigning
+                # caption_pending inside _build_form would make it a closure
+                # local and raise UnboundLocalError on read. If the batch
+                # POST fails, caption_pending stays True so the next batch
+                # (or the missing-media fallback) still delivers the caption.
+                _include_caption = caption_pending
+
+                def _build_form(_batch=batch, _include_caption=_include_caption):
                     # Open a fresh file handle per attachment and pass the
                     # *open* handle directly to add_field so aiohttp streams
                     # the bytes instead of buffering them in memory. The
@@ -8695,16 +8717,15 @@ async def _standalone_send(
                     # reuses a consumed stream.
                     form = aiohttp.FormData()
                     handles = []
-                    if caption_pending:
+                    if _include_caption:
                         form.add_field(
                             "payload_json", json.dumps({"content": caption}),
                             content_type="application/json",
                         )
-                        caption_pending = False
-                    for media_path in _batch:
+                    for _idx, media_path in enumerate(_batch):
                         f = open(media_path, "rb")
                         handles.append(f)
-                        form.add_field("files[0]", f, filename=os.path.basename(media_path))
+                        form.add_field(f"files[{_idx}]", f, filename=os.path.basename(media_path))
                     return form, handles
 
                 try:

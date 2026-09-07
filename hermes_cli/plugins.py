@@ -1152,10 +1152,12 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._event_worker: Optional[threading.Thread] = None
         self._emit_depth = threading.local()
         # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb)). Each value is
-        # (identity token, start time), allowing bounded retries without letting a stuck policy hook
-        # spawn a new abandoned thread on every fire.
+        # (identity token, start time). A stale worker gets one replacement; if that replacement is
+        # also stale, the callback is quarantined until plugins are reloaded.
         self._hook_running_callbacks: Dict[tuple, Tuple[object, float]] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
+        self._hook_stale_retries: Set[tuple] = set()
+        self._hook_quarantined_callbacks: Set[tuple] = set()
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
         # Ledger per plugin (ownership) plus global order (reverse teardown across plugins). Process-

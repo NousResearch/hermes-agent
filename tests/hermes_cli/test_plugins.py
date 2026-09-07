@@ -1215,6 +1215,54 @@ class TestForceReloadSymmetry:
         assert "remained running for 60.2s; abandoning stale worker token and retrying" in caplog.text
         release_first.set()
 
+    def test_pre_tool_call_quarantines_repeated_hung_workers(self, monkeypatch, caplog):
+        """Repeated permanent hangs get one retry, then stay fail closed without more workers."""
+        from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+        import hermes_cli.plugins_dispatch as dispatch_mod
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+        )
+        now = 0.0
+        monkeypatch.setattr(dispatch_mod.time, "monotonic", lambda: now)
+
+        releases = [threading.Event(), threading.Event()]
+        first_finished = threading.Event()
+        starts = []
+
+        def policy(**_kwargs):
+            generation = len(starts)
+            starts.append(generation + 1)
+            releases[generation].wait(timeout=10.0)
+            if generation == 0:
+                first_finished.set()
+            return None
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call"] = [policy]
+        blocked = [{"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}]
+
+        try:
+            assert mgr.invoke_hook("pre_tool_call") == blocked
+            now = 60.2
+            assert mgr.invoke_hook("pre_tool_call") == blocked
+            assert starts == [1, 2]
+
+            now = 120.3
+            assert mgr.invoke_hook("pre_tool_call") == blocked
+            now = 180.4
+            assert mgr.invoke_hook("pre_tool_call") == blocked
+            assert starts == [1, 2]
+            assert "quarantining until plugins are reloaded" in caplog.text
+
+            releases[0].set()
+            assert first_finished.wait(timeout=2.0)
+            assert mgr.invoke_hook("pre_tool_call") == blocked
+            assert starts == [1, 2]
+        finally:
+            for release in releases:
+                release.set()
+
     def test_pre_tool_call_worker_start_failure_fails_closed_without_sticking(
         self, monkeypatch
     ):

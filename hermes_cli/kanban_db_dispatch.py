@@ -2114,7 +2114,30 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
-    cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
+    # Give the worker the actual assignment on its first turn. Historically the
+    # dispatcher sent only ``work kanban task <id>`` and expected the model to
+    # discover the body through Kanban tools. Larger hosted models often did;
+    # small local tool-capable models frequently treated that phrase as a CLI
+    # usage question and exited without doing any work. Keep the canonical
+    # prefix for session detection/image routing, but inline a bounded copy of
+    # the trusted task title/body plus the completion contract.
+    task_title = str(task.title or "").strip()
+    task_body = str(task.body or "").strip()
+    if len(task_body) > 20_000:
+        task_body = task_body[:20_000] + "\n[task body truncated at 20,000 characters]"
+    prompt_parts = [
+        f"work kanban task {task.id}",
+        "The task ID above is already valid. Execute the assignment now; do not explain how to start it and do not ask for the task ID.",
+    ]
+    if task_title:
+        prompt_parts.append(f"Task title: {task_title}")
+    if task_body:
+        prompt_parts.extend(["Task instructions:", task_body])
+    prompt_parts.append(
+        "Use the available tools to perform and verify the work. Finish by calling kanban_complete with a concise summary and artifact paths, or kanban_block with the precise blocker. Do not claim completion without evidence."
+    )
+    prompt = "\n\n".join(prompt_parts)
+    cmd.extend(["chat", "-q", prompt])
     if task.goal_mode:
         # The kanban goal-loop hook only runs in cli.py's fully-quiet branch.
         # Without -Q the worker gets one turn, prints text, exits rc=0, and the

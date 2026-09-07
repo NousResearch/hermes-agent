@@ -65,7 +65,7 @@ def _invoke(path, action, home, *, revision=""):
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             if os.name != "nt":
-                os.killpg(process.pid, signal.SIGKILL)
+                os.killpg(process.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only branch
             else:
                 process.kill()
             process.wait()

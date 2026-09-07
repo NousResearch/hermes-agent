@@ -740,7 +740,9 @@ def wait_for_promotion(
     *cancelled* is an optional hook a surface passes to stop an attempt it no longer wants (a newer
     sign-in replaced it, the user cancelled, the process is shutting down). It is polled at the top
     of every iteration and on a <= 1 s tick while sleeping; once it has fired this call returns
-    ``{"status": "cancelled"}`` and never reports a completion. Passing nothing is today's behaviour.
+    ``{"status": "cancelled"}`` for every outcome except a ``completed`` transfer already in hand,
+    which is reported so the caller's ``cancel_wins_after_promotion`` ruling can decide it.
+    Passing nothing is today's behaviour.
     """
     deadline = time.monotonic() + max(1, int(expires_in))
     wait = max(0, int(interval))
@@ -757,8 +759,12 @@ def wait_for_promotion(
                 return {"status": "cancelled"}
             continue
         payload = _raise_for_anon_status(response, action="sign-in")
-        if str(payload.get("status") or "unknown") != "pending":
-            if cancelled is not None and cancelled():
+        status = str(payload.get("status") or "unknown")
+        if status != "pending":
+            # A completed transfer is already committed on the account service; report it even when
+            # the hook fired during this request. run_sign_in's cancel_wins_after_promotion
+            # rules what each surface does with it. Every other terminal outcome loses to a cancel.
+            if status != "completed" and cancelled is not None and cancelled():
                 return {"status": "cancelled"}
             return payload
         if _sleep_until(time.monotonic() + wait, cancelled):
@@ -914,36 +920,42 @@ def run_sign_in(
     # Preconditions and the mint run inside the scope; the state they produce is yielded outside
     # it, because a scope must never be held across a ``yield``.
     precondition_state: Optional[SignInState] = None
-    with open_scope():
-        state = current_nous_state()
-        if state and not is_guest_state(state):
-            precondition_state = AlreadySignedIn()
-        elif not state:
-            if not guest_enabled():
-                precondition_state = Unavailable()
-            else:
-                try:
-                    state = ensure_portal_identity(blocking=True, timeout_seconds=timeout_seconds)
-                except AuthError as exc:
-                    precondition_state = Unavailable(detail=str(exc))
+    state: Optional[Dict[str, Any]] = None
+    try:
+        with open_scope():
+            state = current_nous_state()
+            if state and not is_guest_state(state):
+                precondition_state = AlreadySignedIn()
+            elif not state:
+                if not guest_enabled():
+                    precondition_state = Unavailable()
                 else:
+                    state = ensure_portal_identity(blocking=True, timeout_seconds=timeout_seconds)
                     if not is_guest_state(state):
                         # The free tier is off, or an account appeared mid-flight.
                         precondition_state = Unavailable()
+    except Exception as exc:
+        # An AuthError (gate closed, rate limited) and an ordinary failure -- a cold install whose
+        # mint cannot reach the portal, an unreadable auth store -- mean the same thing here: there
+        # is no free tier to sign in from. Both become the one precondition state, so nothing
+        # escapes ``next()``. KeyboardInterrupt and GeneratorExit are not Exceptions: they still
+        # propagate.
+        precondition_state = Unavailable(detail=str(exc))
     if precondition_state is not None:
         yield precondition_state
         return
 
     anon_token = str(state.get("anon_token") or "")
     portal = (state.get("portal_base_url") or _portal_base_url()).rstrip("/")
-    pconfig = PROVIDER_REGISTRY["nous"]
-    client_id, scope_str = pconfig.client_id, pconfig.scope
-    verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)
-    open_client = client_factory or _nous_http_client
 
     outcome: Dict[str, Any] = {}
     account_state: Optional[Dict[str, Any]] = None
     try:
+        pconfig = PROVIDER_REGISTRY["nous"]
+        client_id, scope_str = pconfig.client_id, pconfig.scope
+        # A malformed CA bundle raises here, before the wire: inside the try, so it lands on Failed.
+        verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)
+        open_client = client_factory or _nous_http_client
         with open_client(timeout_seconds, verify) as client:
             device = _request_device_code(client, portal, client_id, scope_str)
             intent = register_promotion_intent(
@@ -993,8 +1005,12 @@ def run_sign_in(
             token_data, portal_base_url=portal, client_id=client_id, scope=scope_str,
             verify=verify, timeout_seconds=timeout_seconds)
     except AnonCredentialDead:
-        with open_scope():
-            clear_dead_guest("retired", dead_token=anon_token or None)
+        # Best effort: the credential is provably dead at the account service, so the outcome is
+        # Retired whatever the local write does. A clear that fails (locked or read-only store)
+        # self-heals on the next rejection, and must not cost this run its terminal state.
+        with contextlib.suppress(Exception):
+            with open_scope():
+                clear_dead_guest("retired", dead_token=anon_token or None)
         yield Retired()
         return
     except TimeoutError as exc:
@@ -1040,12 +1056,19 @@ def render_sign_in_cli_code(
     printer(f"  {state.copy_with_wait if chat else state.copy}")
 
 
-def drain_sign_in_copy(gen: Iterator[SignInState], *, chat: bool = True) -> str:
-    """Iterate *gen* to its terminal state, discarding ``Waiting``, and return that state's copy."""
+def drain_sign_in_copy(gen: Iterator[SignInState], *, chat: bool = True, on_terminal=None) -> str:
+    """Iterate *gen* to its terminal state, discarding ``Waiting``, and return that state's copy.
+
+    ``on_terminal`` is called with each terminal state — the CLI uses it to move the running
+    session off the free tier's model. A raising hook never costs the caller its copy.
+    """
     copy = ""
     for state in gen:
         if state.terminal:
             copy = state.copy if chat else state.copy_terminal
+            if on_terminal is not None:
+                with contextlib.suppress(Exception):
+                    on_terminal(state)
     return copy
 
 

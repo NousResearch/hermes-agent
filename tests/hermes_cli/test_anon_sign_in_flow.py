@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 import time
 
+import httpx
 import pytest
 
 from hermes_cli import anon_auth
@@ -132,6 +133,23 @@ def test_a_server_superseded_outcome_yields_superseded(portal, tmp_path):
     assert _auth_file_path().read_bytes() == before
 
 
+def test_a_retired_identity_yields_retired_even_when_cleanup_fails(portal, monkeypatch):
+    _seed_free_tier()
+
+    def _retired(*args, **kwargs):
+        raise anon_auth.AnonCredentialDead("retired")
+
+    def _read_only(*args, **kwargs):
+        raise OSError("read-only store")
+
+    monkeypatch.setattr(anon_auth, "register_promotion_intent", _retired)
+    monkeypatch.setattr(anon_auth, "clear_dead_guest", _read_only)
+
+    states = _drain()
+
+    assert [s.kind for s in states] == ["retired"]
+
+
 @pytest.mark.parametrize(
     "reason,expected",
     [("account_busy", anon_auth.UPGRADE_REASON_COPY["account_busy"]),
@@ -243,6 +261,32 @@ def test_an_auth_error_while_provisioning_names_the_cause_in_the_terminal_form_o
     assert state.copy == anon_auth.UPGRADE_UNAVAILABLE_CHAT
 
 
+def test_a_transport_failure_while_provisioning_yields_unavailable_rather_than_raising(portal, monkeypatch):
+    def _offline(**kwargs):
+        raise httpx.ConnectError("connection refused")
+    monkeypatch.setattr(anon_auth, "ensure_portal_identity", _offline)
+
+    states = _drain()
+
+    assert [s.kind for s in states] == ["unavailable"]
+    assert states[-1].copy_terminal == f"{anon_auth.UPGRADE_UNAVAILABLE} (connection refused)"
+    assert states[-1].copy == anon_auth.UPGRADE_UNAVAILABLE_CHAT
+
+
+def test_a_transport_failure_while_minting_yields_unavailable(portal, monkeypatch):
+    # ``mint_guest`` is called positionally from inside the store lock, so the stub takes *args:
+    # the failure under test must be the transport error, not a signature mismatch.
+    def _offline(*args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+    monkeypatch.setattr(anon_auth, "mint_guest", _offline)
+
+    states = _drain()
+
+    assert [s.kind for s in states] == ["unavailable"]
+    assert states[-1].copy_terminal == f"{anon_auth.UPGRADE_UNAVAILABLE} (connection refused)"
+    assert states[-1].copy == anon_auth.UPGRADE_UNAVAILABLE_CHAT
+
+
 def test_cancelling_before_the_wait_persists_nothing(portal, tmp_path):
     _seed_free_tier()
     before = _auth_file_path().read_bytes()
@@ -292,6 +336,26 @@ def test_cancelling_during_the_wait_ends_it_within_a_second(portal, tmp_path):
     assert [s.kind for s in rest] == ["waiting", "superseded"]
     assert portal.token_grants == 0
     assert _auth_file_path().read_bytes() == before
+
+
+@pytest.mark.parametrize("cancel_wins", [False, True])
+def test_cancelling_during_a_completed_status_request_obeys_the_surface_policy(
+        portal, free_account, cancel_wins):
+    _seed_free_tier()
+    calls = 0
+
+    def _cancelled():
+        nonlocal calls
+        calls += 1
+        return calls > 2
+
+    states = _drain(cancelled=_cancelled, cancel_wins_after_promotion=cancel_wins)
+
+    assert states[-1].kind == ("superseded" if cancel_wins else "completed")
+    assert portal.token_grants == (0 if cancel_wins else 1)
+    from hermes_cli.auth import _load_auth_store
+    state = _load_auth_store()["providers"]["nous"]
+    assert anon_auth.is_guest_state(state) is cancel_wins
 
 
 def _cancel_after_a_completed_promotion(portal, monkeypatch, *, cancel_wins: bool):

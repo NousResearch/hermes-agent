@@ -64,10 +64,10 @@ You can pick the free tier explicitly from `hermes model` (or `/model`) like any
 
 ### From a chat
 
-Run `/signin` in a Hermes DM on Telegram, Discord, Slack, or another supported messaging platform,
-or in a CLI chat session. It must be a paired direct message: elsewhere Hermes replies `Sign in
-from a direct message with Hermes.` Broadcast-shaped platforms such as ntfy are refused for the
-same reason.
+Run `/signin` in a Hermes DM on Telegram, Discord, or another supported messaging platform (on
+Slack use `/hermes signin`), or in a CLI chat session. It must be a paired direct message:
+elsewhere Hermes replies `Sign in from a direct message with Hermes.` Broadcast-shaped platforms
+such as ntfy are refused for the same reason.
 
 The DM gets an acknowledgement, followed by three messages: the consent link, the sign-in code on
 its own line, then `Do not share this code. Waiting for sign-in, up to N minutes.` You can keep

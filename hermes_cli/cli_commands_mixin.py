@@ -2018,7 +2018,10 @@ class CLICommandsMixin:
     def _handle_signin_command(self, cmd_original: str) -> None:
         """Start an in-chat sign-in without blocking the input loop while approval is pending."""
         from hermes_cli import anon_auth
-        console = getattr(self, "console", None)
+        # Pin the output target now. Under the live TUI ``self.console`` writes straight to
+        # patch_stdout's StdoutProxy, which mangles Rich's escapes — there ``None`` keeps the
+        # panel on the ``_cprint`` path. Only the slash worker (``_app`` is None) swaps the console.
+        console = None if getattr(self, "_app", None) else getattr(self, "console", None)
         _cp(f"  {anon_auth.SIGNIN_STARTING}")
         gen = anon_auth.run_sign_in(timeout_seconds=8.0)
         try:
@@ -2032,8 +2035,25 @@ class CLICommandsMixin:
         if first.terminal:
             return _cp(f"  {first.copy}")
         anon_auth.render_sign_in_cli_code(first, chat=True, printer=_cp)
+
+        def _settle_session_model(state) -> None:
+            """A completed sign-in moved this profile onto the account: the welcome host is gone and
+            the portal serves ``nous/welcome`` as a paid model, so a session still carrying it must
+            move too — the CLI counterpart of the gateway's on-``Completed`` sweep. Only the free
+            tier's own model is replaced; a model the user picked while the sign-in was pending
+            stands. Writing ``self.model`` is enough: ``chat()`` compares the turn-route signature
+            and rebuilds the agent on the next turn, so a turn already in flight keeps the agent it
+            started with. ``getattr``: tests drive this handler with minimal shells.
+            """
+            if state.kind != "completed" or not getattr(state, "model_changed", False):
+                return
+            if str(getattr(self, "model", "") or "") == anon_auth.GUEST_MODEL:
+                # "" when the settle cleared the default: _ensure_runtime_credentials then applies
+                # the provider's silent default, which is what settle_after_upgrade documents.
+                self.model = state.model or ""
+
         thread = self._side_worker(
-            lambda: anon_auth.drain_sign_in_copy(gen, chat=True),
+            lambda: anon_auth.drain_sign_in_copy(gen, chat=True, on_terminal=_settle_session_model),
             name="signin", fail_label="Sign-in", header_lines=["  Sign-in"],
             title_suffix="(sign-in)", empty_note="  (No result)", console=console)
         thread.start()

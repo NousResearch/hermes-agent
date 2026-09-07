@@ -3,6 +3,7 @@ from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from rich.console import Console
 
 from hermes_cli import anon_auth
@@ -59,6 +60,31 @@ def test_the_cli_handler_prints_the_code_then_drains_off_thread(monkeypatch):
     assert workers[0][0].started is True
     assert workers[0][0].target() == (
         "Signed in as person@example.test. Your connectors are kept.\nDefault model is now model-1.")
+
+
+@pytest.mark.parametrize(
+    "terminal,initial_model,expected_model",
+    [
+        (anon_auth.Completed(model="model-1", model_changed=True), anon_auth.GUEST_MODEL, "model-1"),
+        (anon_auth.Completed(model="model-1", model_changed=True),
+         "openrouter/some-model", "openrouter/some-model"),
+        (anon_auth.Declined(), anon_auth.GUEST_MODEL, anon_auth.GUEST_MODEL),
+    ],
+)
+def test_the_drain_only_moves_the_free_tier_model_on_completion(
+        monkeypatch, terminal, initial_model, expected_model):
+    cli, workers, _output = _cli(monkeypatch)
+    cli.model = initial_model
+    monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: iter([
+        anon_auth.Code("https://example.test/sign-in", "CODE-1", 900, 5),
+        terminal,
+    ]))
+    monkeypatch.setattr(anon_auth, "render_sign_in_cli_code", lambda *_args, **_kwargs: None)
+
+    cli._handle_signin_command("/signin")
+    workers[0][0].join()
+
+    assert cli.model == expected_model
 
 
 def test_a_precondition_prints_without_starting_a_thread(monkeypatch):
@@ -154,6 +180,52 @@ def test_the_drain_writes_to_the_console_captured_at_start(monkeypatch):
 
     assert "Signed in as person@example.test. Your connectors are kept." in old_buf.getvalue()
     assert new_buf.getvalue() == ""
+
+
+def test_the_live_tui_drain_prints_through_cprint_instead_of_the_captured_console(monkeypatch):
+    import cli as cli_module
+
+    old_buf, new_buf = StringIO(), StringIO()
+    gate = threading.Event()
+    threads = []
+    output = []
+    cli = SimpleNamespace(
+        console=Console(file=old_buf, force_terminal=False, width=100),
+        _app=SimpleNamespace(invalidate=lambda: None),
+        bell_on_complete=False,
+        final_response_markdown=False,
+        _scrollback_box_width=lambda: 80,
+        _invalidate=lambda **_kwargs: None,
+    )
+    real_side_worker = commands.CLICommandsMixin._side_worker.__get__(cli)
+
+    def side_worker(*args, **kwargs):
+        thread = real_side_worker(*args, **kwargs)
+        threads.append(thread)
+        return thread
+
+    cli._side_worker = side_worker
+    cli._handle_signin_command = commands.CLICommandsMixin._handle_signin_command.__get__(cli)
+    monkeypatch.setattr(commands, "_cp", lambda *lines: output.extend(lines))
+    monkeypatch.setattr(cli_module, "_cprint", lambda *lines, **_kwargs: output.extend(lines))
+    monkeypatch.setattr(anon_auth, "render_sign_in_cli_code", lambda *_args, **_kwargs: None)
+
+    def flow(**_kwargs):
+        yield anon_auth.Code("https://example.test/sign-in", "CODE", 60, 1)
+        gate.wait()
+        yield anon_auth.Completed(email="person@example.test")
+
+    monkeypatch.setattr(anon_auth, "run_sign_in", flow)
+    cli._handle_signin_command("/signin")
+    cli.console = Console(file=new_buf, force_terminal=False, width=100)
+    gate.set()
+    threads[0].join(timeout=2)
+
+    assert not threads[0].is_alive()
+    assert old_buf.getvalue() == ""
+    assert new_buf.getvalue() == ""
+    assert "  Sign-in" in output
+    assert any("Signed in as person@example.test. Your connectors are kept." in line for line in output)
 
 
 def test_upgrade_guest_keeps_the_terminal_timeout(monkeypatch):

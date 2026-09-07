@@ -78,7 +78,9 @@ def test_exact_plan_is_private_and_repeated_consent_applies_once(consent):
         )
 
 
-def test_requested_consent_is_not_gated_as_an_unsolicited_recommendation(consent, monkeypatch):
+def test_requested_consent_is_not_gated_as_an_unsolicited_recommendation(
+    consent, monkeypatch
+):
     from tools import wisdom_tool
 
     instance, actor, _, _ = consent
@@ -91,15 +93,28 @@ def test_requested_consent_is_not_gated_as_an_unsolicited_recommendation(consent
         "HERMES_SESSION_THREAD_ID": actor.thread_id,
     }
     monkeypatch.setattr(wisdom_tool, "available", lambda: True)
-    monkeypatch.setattr("gateway.session_context.get_session_env", lambda key: env.get(key, ""))
+    monkeypatch.setattr(
+        "gateway.session_context.get_session_env", lambda key: env.get(key, "")
+    )
     monkeypatch.setattr("hermes_wisdom.service.WisdomService", lambda: instance.service)
-    result = json.loads(wisdom_tool.present({
-        "kind": "skill", "identity": "skill", "version": 1,
-        "title": "Requested skill", "explanation": "You asked to review this skill.",
-    }))
-    jobs = [j for j in instance.queue.assessments("org") if j["event_key"].startswith("request:")]
+    result = json.loads(
+        wisdom_tool.present({
+            "kind": "skill",
+            "identity": "skill",
+            "version": 1,
+            "title": "Requested skill",
+            "explanation": "You asked to review this skill.",
+        })
+    )
+    jobs = [
+        j
+        for j in instance.queue.assessments("org")
+        if j["event_key"].startswith("request:")
+    ]
     assert len(jobs) == 1 and jobs[0]["reference"]["user_requested"] is True
-    policy = Mock(side_effect=AssertionError("manual review must not load proactive policy"))
+    policy = Mock(
+        side_effect=AssertionError("manual review must not load proactive policy")
+    )
     monkeypatch.setattr("hermes_wisdom.agent_led.policy.load_policy", policy)
     assert WisdomMediation(instance.service)._eligible_jobs("org", jobs) == jobs
     assert result["status"] == "pending"
@@ -448,7 +463,13 @@ def test_provider_failure_eventually_delivers_one_deterministic_fallback(consent
     event = mediation.queue.enqueue(
         "org",
         "feed:failing",
-        {"kind": "notice", "notification": {"summary": "A team arrival"}},
+        {
+            "kind": "notice",
+            "notification": {
+                "editorial_name": "Team Handoff",
+                "skill_name": "team-handoff",
+            },
+        },
     )
     assessor = Mock(side_effect=TimeoutError)
     for _ in range(3):
@@ -472,6 +493,11 @@ def test_provider_failure_eventually_delivers_one_deterministic_fallback(consent
     )
     assert len(fallback) == 1 and fallback[0]["assessment"]["id"] == event
     assert "could not assess" in fallback[0]["advice"]["explanation"]
+    assert fallback[0]["advice"]["title"] == "Team Handoff"
+    assert fallback[0]["advice"]["assessment_status"] == "unavailable"
+    view = advice_view(fallback)
+    assert view.summary == "Assessment unavailable"
+    assert "recommendation" not in view.to_text().lower()
     assert assessor.call_count == 3
     job = fallback[0]["assessment"]
     assert mediation.queue.begin_delivery("org", event, job["lease_token"])
@@ -491,6 +517,53 @@ def test_provider_failure_eventually_delivers_one_deterministic_fallback(consent
     assert (
         mediation.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
     )
+
+
+def test_unavailable_assessment_offers_review_not_install(consent):
+    instance, actor, identity, _ = consent
+    shown = instance.present("org", identity, actor)
+    view = advice_view([
+        {
+            "advice": {
+                "title": "Team Handoff",
+                "explanation": "Review this skill manually.",
+                "relevance": "recommend",
+                "assessment_status": "unavailable",
+            },
+            "interaction": shown,
+        }
+    ])
+    assert view.summary == "Assessment unavailable"
+    assert "Security: pass" in view.to_text()
+    assert "recommendation" not in view.to_text().lower()
+    assert [action.label for action in view.items[0].actions] == [
+        "Not Now",
+        "Review skill",
+    ]
+    assert view.items[0].actions[-1].primary
+    assert view.items[0].actions[-1].callback_data == f"wi:agent:inspect:{shown['id']}"
+    # The existing explicit confirmation remains available after opening review.
+    assert interaction_view(shown).actions[-1].label == "Install"
+
+
+def test_digest_preserves_individual_skills_without_recommendation_heading():
+    items = [
+        {
+            "advice": {
+                "title": title,
+                "explanation": "Overlaps an existing local skill.",
+                "relevance": "digest",
+            }
+        }
+        for title in ("Team Handoff", "Release Notes")
+    ]
+    view = advice_view(items)
+    assert view.summary == "Team skill activity"
+    assert [item.title for item in view.items] == ["Team Handoff", "Release Notes"]
+    assert "Also received" not in view.to_text()
+    assert "recommendation" not in view.to_text().lower()
+    assert "/wisdom notifications" in view.notice
+    assert all(not item.actions for item in view.items)
 
 
 @pytest.mark.parametrize("failure", ["policy", "mute", "suppression", "network"])

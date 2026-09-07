@@ -16,6 +16,14 @@ def delivery_groups(items: list[dict]) -> list[list[dict]]:
 
 
 def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
+    has_recommendation = any(
+        item["advice"]["relevance"] == "recommend"
+        and item["advice"].get("assessment_status") != "unavailable"
+        for item in items
+    )
+    unavailable_only = bool(items) and all(
+        item["advice"].get("assessment_status") == "unavailable" for item in items
+    )
     view = WisdomView(
         title="Collective Wisdom",
         summary=(
@@ -24,16 +32,29 @@ def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
             "new installations require your approval."
         )
         if introduction
-        else "Hermes recommendations for your setup",
+        else "Hermes recommendations for your setup"
+        if has_recommendation
+        else "Assessment unavailable"
+        if unavailable_only
+        else "Team skill activity",
     )
-    digest = []
+    has_digest = False
     for item in items:
         advice = item["advice"]
         if advice["relevance"] == "digest":
-            digest.append(f"{advice['title']}: {advice['explanation']}")
+            has_digest = True
+            view.items.append(
+                WisdomItem(
+                    title=advice["title"],
+                    detail="Hermes assessment: " + advice["explanation"],
+                )
+            )
             continue
+        unavailable = advice.get("assessment_status") == "unavailable"
         interaction = item.get("interaction")
-        detail = "Hermes recommendation: " + advice["explanation"]
+        detail = (
+            "Assessment unavailable: " if unavailable else "Hermes recommendation: "
+        ) + advice["explanation"]
         actions = []
         if interaction:
             facts = interaction["facts"]
@@ -59,7 +80,11 @@ def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
             ):
                 check = facts.get(key) or {}
                 detail += f"\n{label}: {check.get('status') or 'unavailable'}"
-            detail += "\nNothing is changed by this recommendation."
+            detail += (
+                "\nNothing changes until you review and confirm."
+                if unavailable
+                else "\nNothing is changed by this recommendation."
+            )
             if interaction["operation"] == "share":
                 detail += "\nShare prepares a local handoff package. You will review it and approve separately before anything is uploaded or published."
             labels = {
@@ -73,11 +98,15 @@ def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
                 }[interaction["operation"]],
             }
             for action in interaction["actions"]:
+                if unavailable and action == "confirm":
+                    continue
                 actions.append(
                     WisdomAction(
-                        label=labels[action],
+                        label="Review skill"
+                        if unavailable and action == "inspect"
+                        else labels[action],
                         callback_data=f"wi:agent:{action}:{interaction['id']}",
-                        primary=action == "confirm",
+                        primary=action == ("inspect" if unavailable else "confirm"),
                     )
                 )
         else:
@@ -85,8 +114,8 @@ def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
         view.items.append(
             WisdomItem(title=advice["title"], detail=detail, actions=actions)
         )
-    if digest:
-        view.items.append(WisdomItem(title="Also received", detail="\n\n".join(digest)))
+    if has_digest:
+        view.notice = "Nothing has been changed. Use /wisdom notifications to review these skills."
     return view
 
 

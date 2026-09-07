@@ -24,6 +24,85 @@ def _adapter() -> TelegramAdapter:
     return adapter
 
 
+@pytest.mark.asyncio
+async def test_mediation_rich_digest_preserves_each_complete_assessment():
+    from hermes_wisdom.mediation_view import advice_view
+    from plugins.platforms.slack.wisdom_blocks import (
+        render_wisdom_blocks,
+        wisdom_fallback_text,
+    )
+
+    items = [
+        {
+            "advice": {
+                "title": f"Skill {index}",
+                "relevance": "digest",
+                "explanation": "Existing workflow overlap. " * 15
+                + f"Final assessment {index}: no installation needed.",
+            }
+        }
+        for index in range(3)
+    ]
+    view = advice_view(items)
+    adapter = _adapter()
+    adapter._bot.do_api_request = AsyncMock(
+        return_value={"message_id": 123, "chat": {"id": 42}}
+    )
+    await adapter.send_wisdom_mediation(
+        view, source=SimpleNamespace(chat_id="42", thread_id=None)
+    )
+    html = adapter._bot.do_api_request.call_args.kwargs["api_kwargs"]["rich_message"][
+        "html"
+    ]
+    slack = str(render_wisdom_blocks(view))
+    for index in range(3):
+        ending = f"Final assessment {index}: no installation needed."
+        assert ending in html
+        assert ending in slack
+        assert ending in wisdom_fallback_text(view)
+    assert len(html) <= 4096
+    assert "Team skill activity" in html
+    assert html.count("Hermes assessment:") == 3
+    assert "Also received" not in html
+
+
+def test_mediation_full_details_still_escape_untrusted_content():
+    view = WisdomView(
+        title="Collective Wisdom",
+        items=[WisdomItem(title="<skill>", detail="<script>untrusted & text</script>")],
+    )
+    html = TelegramAdapter._wisdom_command_html(view, full_details=True)
+    assert "<script>" not in html
+    assert "&lt;script&gt;untrusted &amp; text&lt;/script&gt;" in html
+
+
+@pytest.mark.asyncio
+async def test_mediation_oversized_html_uses_text_without_dropping_items():
+    from hermes_wisdom.mediation_view import advice_view
+
+    view = advice_view([
+        {
+            "advice": {
+                "title": f"Skill {index}",
+                "relevance": "digest",
+                "explanation": "&" * 500 + f" final assessment {index}",
+            }
+        }
+        for index in range(3)
+    ])
+    adapter = _adapter()
+    adapter._send_message_with_thread_fallback = AsyncMock(
+        return_value={"message_id": 124, "chat": {"id": 42}}
+    )
+    await adapter.send_wisdom_mediation(
+        view, source=SimpleNamespace(chat_id="42", thread_id=None)
+    )
+    adapter._bot.do_api_request.assert_not_called()
+    text = adapter._send_message_with_thread_fallback.call_args.kwargs["text"]
+    for index in range(3):
+        assert f"final assessment {index}" in text
+
+
 class _Runner:
     def __init__(self, slash_error: str | None = None) -> None:
         self.slash_error = slash_error
@@ -57,7 +136,9 @@ def test_wisdom_callback_obeys_command_allowlist():
 def test_wisdom_callback_fails_closed_when_slash_policy_check_errors():
     adapter = _adapter()
     runner = _Runner()
-    runner._check_slash_access = MagicMock(side_effect=RuntimeError("policy unavailable"))
+    runner._check_slash_access = MagicMock(
+        side_effect=RuntimeError("policy unavailable")
+    )
     adapter._message_handler = runner._handle_message
 
     assert not adapter._is_callback_user_authorized(
@@ -215,9 +296,7 @@ async def test_group_continuation_is_always_rendered_as_dm_deep_link():
     continuation = view.actions[0]
     assert continuation.operation is None
     assert continuation.callback_data is None
-    assert continuation.url.startswith(
-        "https://t.me/HermesTestBot?start=wisdom_"
-    )
+    assert continuation.url.startswith("https://t.me/HermesTestBot?start=wisdom_")
     assert view.actions[1].callback_data.startswith("wi:cmd:")
 
 

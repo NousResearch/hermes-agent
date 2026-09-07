@@ -614,10 +614,18 @@ class WisdomMediation:
         for job in jobs:
             if job["state"] not in {"ready", "fallback"}:
                 continue
+            reference = job["reference"]
+            notification = reference.get("notification") or {}
             advice = job.get("advice") or {
-                "title": "Collective Wisdom activity",
+                "title": (
+                    notification.get("editorial_name")
+                    or notification.get("skill_name")
+                    or reference.get("local_skill_id")
+                    or "Team skill activity"
+                ),
                 "relevance": "recommend",
-                "explanation": "Hermes could not assess this arrival. Review its verified details before acting.",
+                "assessment_status": "unavailable",
+                "explanation": "Hermes could not assess this skill's relevance to your setup. You can still review its details manually. Nothing has been changed.",
             }
             interaction = None
             if (

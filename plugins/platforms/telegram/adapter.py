@@ -8326,7 +8326,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return await asyncio.to_thread(scoped)
 
     @staticmethod
-    def _wisdom_command_html(view) -> str:
+    def _wisdom_command_html(view, *, full_details: bool = False) -> str:
         """Render a presentation-neutral Wisdom view as one compact rich card."""
         def compact(value: Any, limit: int) -> str:
             text = str(value or "")
@@ -8367,11 +8367,11 @@ class TelegramAdapter(BasePlatformAdapter):
         for item in view.items[:5]:
             candidate = (
                 f"<p><b>{_html.escape(compact(item.title, 140))}</b>"
-                f"<br/>{_html.escape(compact(item.detail, 300)).replace(chr(10), '<br/>')}"
+                f"<br/>{_html.escape(item.detail if full_details else compact(item.detail, 300)).replace(chr(10), '<br/>')}"
                 "</p>"
                 f"{button_row(item.actions)}"
             )
-            if sum(map(len, item_html)) + len(candidate) > 2600:
+            if not full_details and sum(map(len, item_html)) + len(candidate) > 2600:
                 break
             item_html.append(candidate)
         summary = (
@@ -8811,11 +8811,14 @@ class TelegramAdapter(BasePlatformAdapter):
             {}, reply_to_mode=self._reply_to_mode,
         )
         raw_request = getattr(getattr(self, "_bot", None), "do_api_request", None)
-        if callable(raw_request):
+        # Assessment batches are already bounded. Do not clip their advice or
+        # canonical warnings using the catalog's compact preview limits.
+        rich_html = self._wisdom_command_html(view, full_details=True)
+        if callable(raw_request) and len(rich_html) <= 4096:
             try:
                 response = await raw_request("sendRichMessage", api_kwargs={
                     "chat_id": normalize_telegram_chat_id(source.chat_id),
-                    "rich_message": {"html": self._wisdom_command_html(view)},
+                    "rich_message": {"html": rich_html},
                     "link_preview_options": {"is_disabled": True},
                     **{key: value for key, value in kwargs.items() if value is not None},
                 })

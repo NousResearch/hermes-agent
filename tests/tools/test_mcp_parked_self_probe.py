@@ -17,6 +17,7 @@ import pytest
 def test_revival_discovery_registers_tools_while_ready_is_cleared(monkeypatch):
     """A managed server revival must publish tools before readiness is reset."""
     from tools import mcp_tool
+    from tools import mcp_tool_registration as _mcp_registration
     from tools.mcp_tool import MCPServerTask
 
     server = MCPServerTask("srv")
@@ -33,7 +34,7 @@ def test_revival_discovery_registers_tools_while_ready_is_cleared(monkeypatch):
     monkeypatch.setitem(mcp_tool._servers, server.name, server)
 
     register = MagicMock(return_value=["srv__send_message"])
-    monkeypatch.setattr(mcp_tool, "_register_server_tools", register)
+    monkeypatch.setattr(_mcp_registration, "_register_server_tools", register)
 
     asyncio.run(server._discover_tools())
 
@@ -88,6 +89,7 @@ def test_parked_server_self_probes_and_revives(monkeypatch, tmp_path):
                     # First connect succeeds (sets _ready), then dies.
                     self.session = object()
                     self._ready.set()
+                    self._ever_connected = True
                     self.session = None
                     raise RuntimeError("backend outage begins")
                 if not state["backend_up"]:

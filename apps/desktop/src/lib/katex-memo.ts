@@ -45,6 +45,8 @@ import type { Pluggable } from 'unified'
 import { SKIP, visitParents } from 'unist-util-visit-parents'
 import type { VFile } from 'vfile'
 
+import { LruCache } from '@/lib/lru-cache'
+
 interface KatexMemoOptions {
   /**
    * Color used for KaTeX errors when we fall back to the lenient parser.
@@ -69,40 +71,7 @@ type CachedRender = ElementContent[]
 
 const CACHE_LIMIT = 512
 
-class LruCache<K, V> {
-  private readonly map = new Map<K, V>()
-
-  get(key: K): undefined | V {
-    const value = this.map.get(key)
-
-    if (value === undefined) {
-      return undefined
-    }
-
-    // Refresh recency by re-inserting at the tail. Map iteration order is
-    // insertion order, so the oldest entry is at the head.
-    this.map.delete(key)
-    this.map.set(key, value)
-
-    return value
-  }
-
-  set(key: K, value: V): void {
-    if (this.map.has(key)) {
-      this.map.delete(key)
-    } else if (this.map.size >= CACHE_LIMIT) {
-      const oldest = this.map.keys().next().value
-
-      if (oldest !== undefined) {
-        this.map.delete(oldest)
-      }
-    }
-
-    this.map.set(key, value)
-  }
-}
-
-const cache = new LruCache<string, CachedRender>()
+const cache = new LruCache<string, CachedRender>(CACHE_LIMIT)
 
 function cacheKey(displayMode: boolean, value: string): string {
   // `\u0001` is a control character that (a) won't appear in normal

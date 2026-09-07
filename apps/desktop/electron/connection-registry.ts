@@ -73,6 +73,22 @@ export interface RegistryConnection {
   remoteProfile?: string
 }
 
+/**
+ * A registry entry that failed normalization (#94246). The raw entry is USER
+ * DATA — it is preserved verbatim here (and re-persisted on every write)
+ * instead of being silently dropped, so a malformed/corrupt entry never
+ * requires "delete connections.json" recovery and never loses the user's
+ * connection material.
+ */
+export interface QuarantinedRegistryEntry {
+  reason: string
+  entry: unknown
+}
+
+/** Upper bound on preserved quarantine entries so a pathological file cannot
+ * grow the registry without limit. Oldest-first within one load pass. */
+export const REGISTRY_QUARANTINE_CAP = 20
+
 export interface ConnectionRegistry {
   version: typeof REGISTRY_VERSION
   /** id of the connection that owns the window/primary backend. */
@@ -83,6 +99,8 @@ export interface ConnectionRegistry {
    * so registries written before multi-source switching still normalize. */
   lastUsed: string
   connections: RegistryConnection[]
+  /** Entries preserved from a malformed load — absent when empty. */
+  quarantined?: QuarantinedRegistryEntry[]
 }
 
 // ── Labels and ids ──────────────────────────────────────────────────────────
@@ -169,6 +187,24 @@ export function backendScopeKey(connectionId: null | string | undefined, profile
   }
 
   return `conn:${connection}::${profileKey}`
+}
+
+/**
+ * Inverse of backendScopeKey(): recover (connectionId, profile) from a pool
+ * key. A bare profile key (the local/primary scope) maps to a null
+ * connectionId. Used by the post-resume rebuild path (#93910) to re-dial a
+ * retired pool entry through the same claim-guarded ensure path a renderer
+ * would use.
+ */
+export function parseBackendScopeKey(key: string): { connectionId: null | string; profile: string } {
+  const value = String(key ?? '').trim()
+  const match = /^conn:(.+?)::(.+)$/.exec(value)
+
+  if (!match) {
+    return { connectionId: null, profile: value || 'default' }
+  }
+
+  return { connectionId: match[1], profile: match[2] }
 }
 
 /** All pool keys owned by a connection share this prefix (used to stop them on remove). */
@@ -457,7 +493,17 @@ export function resolveRegistryLocalRoute(
 ): RegistryLocalRoute {
   const profileKey = String(profile ?? '').trim() || 'default'
 
-  if (opts.globalRemote || opts.profileRemoteOverride) {
+  // A per-profile SSH/remote override is an explicit per-profile routing
+  // decision: the override owns this profile's backend, so the 'local' entry
+  // must delegate to the legacy profile route (which resolves the override),
+  // not spawn a forced-local child. Forcing local here is the #90477 split:
+  // the roster lists the profile via its override, but opening the thread
+  // spawned a local backend that fails when the profile doesn't exist locally.
+  if (opts.profileRemoteOverride) {
+    return { delegate: true, poolKey: profileKey }
+  }
+
+  if (opts.globalRemote) {
     return { delegate: false, poolKey: `${backendScopePrefix(LOCAL_CONNECTION_ID)}${profileKey}` }
   }
 
@@ -860,7 +906,16 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
       throw new Error(`A connection to this SSH host already exists ("${sshDupe.label}").`)
     }
 
-    return { id, kind: 'ssh', label, ...sshFields }
+    const entry: RegistryConnection = { id, kind: 'ssh', label, ...sshFields }
+
+    // Carry the adopted session-token envelope across edits (mirrors the remote
+    // branch): dropping it made a label rename wipe the backend's reuse
+    // credential and force the reap-and-respawn loop of #103795.
+    if (input.token !== undefined) {
+      entry.token = input.token
+    }
+
+    return entry
   }
 
   if (kind === 'remote' || kind === 'cloud') {
@@ -1025,82 +1080,140 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
   const seenLabels = new Set<string>()
   const seenIds = new Set<string>()
   const connections: RegistryConnection[] = []
+  const quarantined: QuarantinedRegistryEntry[] = []
+
+  const quarantine = (reason: string, entry: unknown) => {
+    if (quarantined.length < REGISTRY_QUARANTINE_CAP) {
+      quarantined.push({ reason, entry })
+    }
+  }
+
+  // Entries quarantined by a previous load are user data too — carry them
+  // through every subsequent normalize/write cycle rather than dropping them
+  // the first time the file is rewritten.
+  if (Array.isArray(parsed.quarantined)) {
+    for (const item of parsed.quarantined) {
+      if (item && typeof item === 'object' && 'entry' in (item as Record<string, unknown>)) {
+        quarantine(
+          String((item as Record<string, unknown>).reason || 'unknown'),
+          (item as Record<string, unknown>).entry
+        )
+      }
+    }
+  }
+
+  // Best-effort plain-data copy for entries that blew up mid-normalization —
+  // the raw object may carry whatever poisoned it, so never persist it as-is.
+  const safeEntryCopy = (item: unknown) => {
+    try {
+      return JSON.parse(JSON.stringify(item))
+    } catch {
+      return { unserializable: true }
+    }
+  }
 
   for (const item of rawConnections) {
-    if (!item || typeof item !== 'object') {
+    if (!item) {
+      continue // null/false/'' carry no user data
+    }
+
+    if (typeof item !== 'object') {
+      // A string/number here is usually a mangled hand-edit — still user data.
+      quarantine('entry-malformed', item)
+
       continue
     }
 
-    const entry = item as Record<string, unknown>
-    const kind = entry.kind
+    // One bad entry must never abort the whole registry load (#94246): any
+    // unexpected throw quarantines THIS entry and the loop moves on.
+    try {
+      const entry = item as Record<string, unknown>
+      const kind = entry.kind
 
-    if (kind !== 'local' && kind !== 'remote' && kind !== 'cloud' && kind !== 'ssh') {
-      continue
-    }
+      if (kind !== 'local' && kind !== 'remote' && kind !== 'cloud' && kind !== 'ssh') {
+        quarantine('entry-unrecognized-kind', item)
 
-    let label = String(entry.label || '').trim()
-
-    if (!label) {
-      // Defensive: registry entries are always written with labels, but a
-      // hand-edited file may drop one. Derive rather than discard.
-      label =
-        kind === 'ssh' ? String(entry.host || 'ssh') : hostLabelFromBaseUrl(String(entry.url || '')) || String(kind)
-    }
-
-    label = uniqueLabel(label, seenLabels)
-
-    let id = kind === 'local' ? LOCAL_CONNECTION_ID : String(entry.id || '').trim()
-
-    if (!id || (seenIds.has(id) && kind !== 'local')) {
-      id = connectionIdForLabel(label, seenIds)
-    }
-
-    if (seenIds.has(id)) {
-      continue // second 'local' entry — first one wins
-    }
-
-    seenLabels.add(labelKey(label))
-    seenIds.add(id)
-
-    const clean: RegistryConnection = { id, kind, label }
-
-    if (kind === 'remote' || kind === 'cloud') {
-      const url = String(entry.url || '').trim()
-
-      if (!url) {
         continue
       }
 
-      clean.url = url
-      clean.authMode = normAuthMode(entry.authMode)
+      let label = String(entry.label || '').trim()
 
-      if (entry.token !== undefined) {
-        clean.token = entry.token
+      if (!label) {
+        // Defensive: registry entries are always written with labels, but a
+        // hand-edited file may drop one. Derive rather than discard.
+        label =
+          kind === 'ssh' ? String(entry.host || 'ssh') : hostLabelFromBaseUrl(String(entry.url || '')) || String(kind)
       }
 
-      const storedHeaders = normalizeRemoteHeaders(entry.headers)
+      label = uniqueLabel(label, seenLabels)
 
-      if (Object.keys(storedHeaders).length > 0) {
-        clean.headers = storedHeaders
+      let id = kind === 'local' ? LOCAL_CONNECTION_ID : String(entry.id || '').trim()
+
+      if (!id || (seenIds.has(id) && kind !== 'local')) {
+        id = connectionIdForLabel(label, seenIds)
       }
 
-      const org = String(entry.org || '').trim()
-
-      if (kind === 'cloud' && org) {
-        clean.org = org
-      }
-    } else if (kind === 'ssh') {
-      const ssh = normalizeSshConfig({ ...entry, mode: 'ssh' })
-
-      if (!ssh) {
-        continue
+      if (seenIds.has(id)) {
+        continue // second 'local' entry — first one wins
       }
 
-      const { mode: _mode, ...sshFields } = ssh
-      Object.assign(clean, sshFields)
+      seenLabels.add(labelKey(label))
+      seenIds.add(id)
+
+      const clean: RegistryConnection = { id, kind, label }
+
+      if (kind === 'remote' || kind === 'cloud') {
+        const url = String(entry.url || '').trim()
+
+        if (!url) {
+          quarantine('entry-missing-url', item)
+
+          continue
+        }
+
+        clean.url = url
+        clean.authMode = normAuthMode(entry.authMode)
+
+        if (entry.token !== undefined) {
+          clean.token = entry.token
+        }
+
+        const storedHeaders = normalizeRemoteHeaders(entry.headers)
+
+        if (Object.keys(storedHeaders).length > 0) {
+          clean.headers = storedHeaders
+        }
+
+        const org = String(entry.org || '').trim()
+
+        if (kind === 'cloud' && org) {
+          clean.org = org
+        }
+      } else if (kind === 'ssh') {
+        const ssh = normalizeSshConfig({ ...entry, mode: 'ssh' })
+
+        if (!ssh) {
+          quarantine('entry-missing-ssh-host', item)
+
+          continue
+        }
+
+        const { mode: _mode, ...sshFields } = ssh
+        Object.assign(clean, sshFields)
+
+        // normalizeSshConfig describes only the dial, so the token
+        // persistSshConnectionToken() adopted must be carried explicitly (as the
+        // remote/cloud branch does). Losing it on a cold read fails the
+        // remote-lifecycle reuse gate and reaps a healthy backend (#103795).
+        if (entry.token !== undefined) {
+          clean.token = entry.token
+        }
+      }
+
+      connections.push(clean)
+    } catch {
+      quarantine('entry-normalization-failed', safeEntryCopy(item))
     }
-
-    connections.push(clean)
   }
 
   if (!connections.some(c => c.kind === 'local')) {
@@ -1111,13 +1224,19 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
   const primary = connections.some(c => c.id === storedPrimary) ? storedPrimary : LOCAL_CONNECTION_ID
   const storedLastUsed = String(parsed.lastUsed || '').trim()
 
-  return {
+  const normalized: ConnectionRegistry = {
     version: REGISTRY_VERSION,
     primary,
     launchMode: parsed.launchMode === 'last-used' ? 'last-used' : 'primary',
     lastUsed: connections.some(c => c.id === storedLastUsed) ? storedLastUsed : primary,
     connections
   }
+
+  if (quarantined.length > 0) {
+    normalized.quarantined = quarantined
+  }
+
+  return normalized
 }
 
 /**
@@ -1404,6 +1523,13 @@ export function reconcileAppliedGlobalConnection(
  * registry entry at all. That is the drift state and nothing else. If the
  * route is already registered but `primary` names another source, the user
  * chose that in the Connections panel and we leave it alone.
+ *
+ * SSH drifts the same way remote does: a v1 global `mode:'ssh'` route (host,
+ * no url) written by Settings after the one-shot migration has no registry
+ * identity, so `resolvedConnectionId` returns null, `primary` stays `local`,
+ * and every launch re-homes the window onto a local backend — and because the
+ * heal used to skip SSH entirely, the two files re-drifted after every update
+ * relaunch instead of converging once.
  */
 export function reconcileRegistryDrift(
   registry: ConnectionRegistry,
@@ -1411,6 +1537,60 @@ export function reconcileRegistryDrift(
 ): { changed: boolean; registry: ConnectionRegistry } {
   const config = v1 && typeof v1 === 'object' ? (v1 as Record<string, any>) : {}
   const unchanged = { changed: false, registry }
+
+  if (config.mode === 'ssh') {
+    const ssh = normalizeSshConfig({
+      ...(config.remote && typeof config.remote === 'object' ? config.remote : {}),
+      mode: 'ssh'
+    })
+
+    if (!ssh) {
+      // A v1 SSH route without a usable host is not a route we can register.
+      return unchanged
+    }
+
+    const target = normalizedSshTarget(ssh)
+
+    const alreadyRegistered = registry.connections.some(
+      connection =>
+        connection.kind === 'ssh' &&
+        normalizedSshTarget(connection) === target &&
+        (connection.port ?? 22) === (ssh.port ?? 22)
+    )
+
+    if (alreadyRegistered) {
+      // Route is known; if primary names another source, that is the user's
+      // Connections-panel choice, not drift.
+      return unchanged
+    }
+
+    const { mode: _mode, ...sshFields } = ssh
+
+    let entry: RegistryConnection
+
+    try {
+      entry = normalizeConnectionInput(
+        {
+          kind: 'ssh',
+          label: uniqueLabel(
+            ssh.host,
+            registry.connections.map(connection => connection.label)
+          ),
+          ...sshFields
+        },
+        registry
+      )
+    } catch {
+      // Validation failure (e.g. a crafted collision) must not corrupt the
+      // registry; the v1 path keeps failing the way it already does.
+      return unchanged
+    }
+
+    return {
+      changed: true,
+      registry: { ...upsertConnection(registry, entry), primary: entry.id, lastUsed: entry.id }
+    }
+  }
 
   if (!modeIsRemoteLike(config.mode)) {
     return unchanged

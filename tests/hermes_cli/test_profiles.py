@@ -40,7 +40,6 @@ from hermes_cli.profiles import (
     _get_profiles_root,
     _get_default_hermes_home,
     seed_profile_skills,
-    has_bundled_skills_opt_out,
     NO_BUNDLED_SKILLS_MARKER,
     backfill_profile_envs,
     profiles_to_serve,
@@ -133,6 +132,46 @@ class TestCreateProfile:
         assert mode == 0o600
 
 
+    def test_fresh_profile_inherits_a_usable_model(self, profile_env):
+        """A profile created without a clone source still resolves a provider.
+
+        Without this it gets no config.yaml at all, so its very first turn dies
+        with "No LLM provider configured" — created, but unable to run. Fresh
+        means fresh skills and SOUL, not unreachable.
+        """
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "model:\n  provider: nous\n  default: some/model\n"
+        )
+
+        profile_dir = create_profile("coder", no_alias=True)
+
+        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cfg["model"]["provider"] == "nous"
+        assert cfg["model"]["default"] == "some/model"
+
+
+    def test_fresh_profile_model_is_copied_not_linked(self, profile_env):
+        """Profiles stay independent islands.
+
+        The model block is copied at creation, so later edits to the source
+        profile never reach one already created from it.
+        """
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "model:\n  provider: nous\n  default: some/model\n"
+        )
+        profile_dir = create_profile("coder", no_alias=True)
+
+        (default_home / "config.yaml").write_text(
+            "model:\n  provider: other\n  default: changed/model\n"
+        )
+
+        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cfg["model"]["provider"] == "nous"
+        assert cfg["model"]["default"] == "some/model"
+
+
 
 
     def test_clone_config_copies_files(self, profile_env):
@@ -170,9 +209,6 @@ class TestNoSkillsOptOut:
         assert marker.is_file(), "expected .no-bundled-skills marker in profile root"
         assert "--no-skills" in marker.read_text()
 
-        # has_bundled_skills_opt_out() agrees
-        assert has_bundled_skills_opt_out(profile_dir) is True
-
         # skills/ dir exists (profile bootstrapping still creates the dir) but
         # contains nothing yet because create_profile itself doesn't seed.
         assert (profile_dir / "skills").is_dir()
@@ -191,7 +227,7 @@ class TestNoSkillsOptOut:
         import subprocess as _sp
 
         profile_dir = create_profile("orchestrator", no_alias=True, no_skills=True)
-        assert has_bundled_skills_opt_out(profile_dir) is True
+        assert (profile_dir / NO_BUNDLED_SKILLS_MARKER).is_file()
 
         # Marker present: the subprocess still runs (essential-only seeding
         # happens inside sync_skills) and its skipped_opt_out flag surfaces.
@@ -214,7 +250,6 @@ class TestNoSkillsOptOut:
 
         # Delete marker → next call is a normal full sync.
         (profile_dir / NO_BUNDLED_SKILLS_MARKER).unlink()
-        assert has_bundled_skills_opt_out(profile_dir) is False
         r2 = seed_profile_skills(profile_dir, quiet=True)
         assert r2 == {"copied": []}
         assert len(called) == 2

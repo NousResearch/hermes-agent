@@ -1,276 +1,349 @@
-"""Stable macOS TCC anchor for the uv-managed Python interpreter (issue #85345).
+"""Stable macOS TCC anchor for the uv-managed Python interpreter.
 
-macOS keys TCC grants (Files & Folders, Photos, Media Library, Automation,
-...) to the *resolved absolute path* of the client binary.  Hermes' interpreter
-is managed by uv and lives at ``~/.local/share/uv/python/cpython-<ver>-macos-*/
-bin/python*``; every patch bump materializes a NEW versioned directory, so the
-TCC client string changes and every prior grant is orphaned — macOS re-prompts
-for all permissions after each update.
-
-Symlinks do not help: TCC resolves through them to the versioned store path
-before matching (the venv's ``bin/python`` -> store symlink is exactly why the
-client is reported as ``.../cpython-3.11.15-macos-.../bin/python3.11``).
-
-The anchor: replace the venv's ``bin/python`` symlink with a *real-file copy*
-of the interpreter binary.  The venv path (``<checkout>/venv/bin/python``) is
-stable across ``hermes update``, and because it is a regular file there is no
-symlink for TCC to resolve — so the TCC client path stays constant across
-interpreter patch bumps.  ``pyvenv.cfg`` keeps pointing at the uv store (``home``),
-which still provides the stdlib exactly as it does today.
-
-The anchor self-heals: when ``hermes update`` / ``hermes doctor`` runs and the
-venv python is a symlink again (uv re-created it) or the recorded source no
-longer matches the current interpreter (patch bump), the copy is refreshed.
-Versioned alias symlinks (``python3``, ``python3.11``, ...) inside the venv bin
-dir are re-pointed at the anchor so no alias resolves back into the versioned
-store.
-
-All functions are no-ops on non-macOS and for interpreters that are not
-uv-managed (Homebrew/system Python has a stable path already).  This module is
-pure/best-effort: it never raises to callers (update/doctor must never break
-because of it).
+macOS TCC grants are keyed to the interpreter binary's path; a venv ``bin/python`` that symlinks
+into uv's store changes identity on every interpreter upgrade. The anchor replaces it with a
+signed real-file copy, gated on a real boot, with uv's alias names (``python3``,
+``python3.N``) materialized as real-file copies too (never symlinks — the #95541 crash shape)
+and the store's ``libpython*`` hardlinked into ``venv/lib/`` (existing ``LC_RPATH`` already points
+at ``@executable_path/../lib``). All functions are no-ops off macOS and for non-uv interpreters,
+and never raise to callers.
 """
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import logging
 import os
 import platform
+import re
 import shutil
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 from hermes_constants import venv_python_path
+from hermes_cli.managed_uv import _RUNTIME_DIR_NAME
+from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
-# Marker file (inside the venv bin dir) recording the uv-store interpreter
-# file the anchor copy was taken from.  Used to detect patch-bump staleness.
 _MARKER_NAME = ".tcc-anchor-source"
 
+_STORE_COMMON_MARKERS = ("cpython-", "-macos-")
+# Derived from managed_uv so a rename of the repair-generation directory cannot silently stop
+# the anchor from matching.
+_STORE_ROOT_MARKERS = ("/uv/python/", f"/{_RUNTIME_DIR_NAME}/python/")
 
-def _sibling_names() -> tuple[str, ...]:
-    """Alias symlinks uv creates inside the venv bin dir.
-
-    Derived from the RUNNING interpreter's version rather than a hardcoded
-    minor-version list, so a future Python bump can't silently leave an alias
-    resolving back into the versioned store.
-    """
-    import sys as _sys
-
-    return ("python3", f"python3.{_sys.version_info.minor}")
+_ALIAS_NAMES = ("python3", f"python3.{sys.version_info.minor}")
+_STORE_BIN_NAMES = (f"python3.{sys.version_info.minor}", "python3", "python")
 
 
-def _store_bin_names() -> tuple[str, ...]:
-    """Preferred interpreter file names inside a store ``bin`` dir.
-
-    Versioned name first (from the running interpreter) so the real binary is
-    picked over the ``python3`` alias; generic fallbacks after.
-    """
-    import sys as _sys
-
-    return (f"python3.{_sys.version_info.minor}", "python3", "python")
+class _BootGateFailed(Exception):
+    """Staged copy refused to boot; the live venv must stay untouched."""
 
 
-# Path fragments that identify a uv-managed macOS CPython store layout:
-# ``.../uv/python/cpython-<version>-macos-<arch>/bin/python*``.
-_UV_STORE_MARKERS = ("/uv/python/", "cpython-", "-macos-")
+def _marker_value(source_file: Path) -> str:
+    """Fully resolved so symlinked spellings of the same store binary compare equal."""
+    return os.path.realpath(str(source_file))
 
 
 def is_macos() -> bool:
-    """True on macOS (the only platform with TCC)."""
     return platform.system() == "Darwin"
 
 
-def _is_uv_macos_store(path: str | Path) -> bool:
-    """True when *path* lives inside a uv-managed macOS CPython store."""
-    text = str(path).replace("\\", "/")
-    return all(marker in text for marker in _UV_STORE_MARKERS)
+def _is_uv_macos_store(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    if not all(marker in normalized for marker in _STORE_COMMON_MARKERS):
+        return False
+    return any(marker in normalized for marker in _STORE_ROOT_MARKERS)
 
 
 def _venv_dir(project_root: Path | None = None) -> Path | None:
-    """Return the checkout's venv dir, mirroring ``managed_uv``'s probing.
+    root = Path(project_root) if project_root is not None else Path(__file__).resolve().parents[1]
+    return next((root / n for n in ("venv", ".venv") if _present(venv_python_path(root / n))), None)
 
-    ``venv`` wins when it holds an interpreter (managed layout takes
-    precedence); otherwise fall back to ``.venv`` (uv-default/dev checkouts).
-    Returns None when neither holds an interpreter.
-    """
-    root = (
-        Path(project_root)
-        if project_root is not None
-        else Path(__file__).resolve().parents[1]
-    )
-    for name in ("venv", ".venv"):
-        candidate = root / name
-        venv_py = venv_python_path(candidate)
-        if venv_py.is_file() or venv_py.is_symlink():
-            return candidate
-    return None
+
+def _present(path: Path) -> bool:
+    return path.is_file() or path.is_symlink()
 
 
 def _interpreter_file(src: str | Path) -> Path | None:
-    """Return the interpreter binary file at/inside *src*.
-
-    *src* is either a resolved store binary path (symlinked venv layout) or a
-    store ``bin`` dir read from ``pyvenv.cfg`` ``home`` (anchored layout).
-    """
+    """Return the interpreter binary file at/inside *src*."""
     p = Path(src)
     if p.is_file():
         return p
     if not p.is_dir():
         return None
-    for name in _store_bin_names():
-        candidate = p / name
-        try:
-            if candidate.is_file():
-                return candidate
-        except OSError:
-            continue
-    # Any other versioned binary on disk (store built by a different Python
-    # minor than the one running this code — e.g. after a major bump, or in
-    # fixtures). Sorted for determinism; versioned names only, so the
-    # ``python3`` alias never shadows the real binary here.
     try:
-        for candidate in sorted(p.glob("python3.*")):
-            if candidate.is_file() and not candidate.name.endswith((".dSYM", ".txt")):
-                return candidate
+        candidates = [p / n for n in _STORE_BIN_NAMES] + sorted(
+            c for c in p.glob("python3.*") if not c.name.endswith((".dSYM", ".txt"))
+        )
+        return next((c for c in candidates if c.is_file()), None)
     except OSError:
-        pass
-    return None
+        return None
 
 
 def _interpreter_source(venv_dir: Path) -> str | None:
-    """Return the interpreter file the venv currently resolves to.
-
-    A symlinked ``bin/python`` (uv's layout) resolves to the versioned store
-    binary.  A regular-file anchor instead reads ``pyvenv.cfg`` ``home`` (the
-    base interpreter's bin dir) — that is what the anchor copy was taken from
-    and where the stdlib still comes from.
-    """
+    """Return the interpreter file the venv currently resolves to (symlink target or pyvenv.cfg home)."""
     venv_py = venv_python_path(venv_dir)
     if venv_py.is_symlink():
         try:
-            resolved = venv_py.resolve(strict=False)
+            return str(venv_py.resolve(strict=False))
         except OSError:
             return None
-        if resolved.is_file():
-            return str(resolved)
-        return None
     cfg = venv_dir / "pyvenv.cfg"
+    if not cfg.is_file():
+        return None
     try:
-        text = cfg.read_text(encoding="utf-8", errors="replace")
+        lines = cfg.read_text(encoding="utf-8").splitlines()
     except OSError:
         return None
-    for line in text.splitlines():
-        if line.strip().lower().startswith("home"):
-            _, _, value = line.partition("=")
-            home = value.strip()
-            if home:
-                return str(_interpreter_file(Path(home)))
-    return None
+    home = next((l.partition("=")[2].strip() for l in lines if l.lower().startswith("home")), "")
+    interp = _interpreter_file(home) if home else None
+    return str(interp) if interp is not None else None
+
+
+def _managed_venv(project_root: Path | None) -> tuple[Path, Path, str] | str:
+    """``(venv_dir, venv_py, source)`` for a uv-managed macOS venv, else the skip reason."""
+    if not is_macos():
+        return "not macOS"
+    venv_dir = _venv_dir(project_root)
+    if venv_dir is None:
+        return "no venv interpreter"
+    source = _interpreter_source(venv_dir)
+    if source is None or not _is_uv_macos_store(source):
+        return "interpreter not uv-managed (stable path)"
+    return venv_dir, venv_python_path(venv_dir), source
 
 
 def _anchor_marker(venv_bin: Path) -> Path:
     return venv_bin / _MARKER_NAME
 
 
-def _repoint_aliases(venv_bin: Path, anchor: Path) -> None:
-    """Re-point uv alias symlinks at the stable anchor.
-
-    ``python3`` / ``python3.11`` inside the venv bin dir currently resolve into
-    the versioned store; anything spawned through them would still churn TCC.
-    Only symlinks that resolve into the uv store are touched.
-    """
-    # Union of the running interpreter's expected aliases and every versioned
-    # alias actually on disk — a store built by a different Python minor than
-    # the one running this code must still get its aliases repointed.
-    names = set(_sibling_names())
+def _marker_matches(venv_bin: Path, expected: str) -> bool:
+    marker = _anchor_marker(venv_bin)
     try:
-        names.update(p.name for p in venv_bin.glob("python3.*") if p.is_symlink())
+        return marker.is_file() and marker.read_text(encoding="utf-8").strip() == expected
     except OSError:
-        pass
-    for name in sorted(names):
-        alias = venv_bin / name
-        try:
-            if not alias.is_symlink():
+        return False
+
+
+def _write_marker(venv_bin: Path, source_file: Path) -> None:
+    """Atomic: a concurrent ensure (update + doctor --fix) must never read a torn marker, which
+    would compare unequal and trigger a spurious reinstall."""
+    atomic_write_text(
+        _anchor_marker(venv_bin),
+        _marker_value(source_file),
+        tmp_prefix=f"{_MARKER_NAME}.",
+    )
+
+
+def _store_root(source_file: Path) -> Path:
+    # .../cpython-<ver>-macos-*/bin/python3.N → store root
+    return source_file.resolve(strict=False).parent.parent
+
+
+def _provision_libpython(venv_dir: Path, source_file: Path, *, refresh: bool = False) -> None:
+    """Hardlink (else copy) store ``libpython*`` into ``venv/lib/``.
+
+    Provision-if-present: a surplus hardlink on a statically-linked build is free; a missed
+    detection is the only way the dylib-not-found crash returns.
+
+    See #95425.
+    """
+    src_lib = _store_root(source_file) / "lib"
+    if not src_lib.is_dir():
+        return
+    dst_lib = venv_dir / "lib"
+    try:
+        dst_lib.mkdir(parents=True, exist_ok=True)
+        for src in src_lib.glob("libpython*"):
+            if not src.is_file():
                 continue
-            if not _is_uv_macos_store(str(alias.resolve(strict=False))):
-                continue
-            tmp = venv_bin / f".{name}.tcc-tmp"
+            dst = dst_lib / src.name
+            if dst.exists() or dst.is_symlink():
+                if not refresh:
+                    continue
+                try:
+                    dst.unlink()
+                except OSError:
+                    continue
             try:
-                os.symlink(anchor.name, tmp)
-                os.replace(tmp, alias)
+                os.link(src, dst)
             except OSError:
                 try:
-                    tmp.unlink(missing_ok=True)
+                    shutil.copy2(src, dst)
                 except OSError:
-                    pass
-        except OSError:
-            continue
+                    logger.debug("libpython provision failed for %s", src, exc_info=True)
+    except OSError:
+        logger.debug("libpython provision skipped", exc_info=True)
 
 
-def _install_anchor(venv_dir: Path, source_file: Path) -> None:
-    """Replace ``bin/python`` with a real-file copy of *source_file*.
+def _stage_copy(venv_bin: Path, prefix: str, source: Path) -> Path:
+    """Copy *source* to a unique (mkstemp) executable staging file in *venv_bin*.
 
-    Atomic (temp file + rename) so a crash mid-copy cannot leave the venv
-    interpreter half-written.  Writes the source marker and re-points alias
-    symlinks so the whole venv bin dir resolves to stable paths.
+    Unique names mean a concurrent ensure cannot promote another run's truncated interim copy.
     """
-    venv_py = venv_python_path(venv_dir)
-    venv_bin = venv_py.parent
-    venv_bin.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=".python-tcc-", dir=str(venv_bin))
+    fd, tmp_name = tempfile.mkstemp(prefix=prefix, dir=str(venv_bin))
     os.close(fd)
     tmp_path = Path(tmp_name)
     try:
-        shutil.copy2(source_file, tmp_path)
-        os.chmod(tmp_path, source_file.stat().st_mode | 0o111)
-        os.replace(tmp_path, venv_py)
-        _anchor_marker(venv_bin).write_text(str(source_file), encoding="utf-8")
-        _repoint_aliases(venv_bin, venv_py)
-    except Exception:
-        try:
+        shutil.copy2(source, tmp_path)
+        os.chmod(tmp_path, source.stat().st_mode | 0o111)
+    except BaseException:
+        _discard(tmp_path)
+        raise
+    return tmp_path
+
+
+def _discard(tmp_path: Path | None) -> None:
+    if tmp_path is not None:
+        with contextlib.suppress(OSError):
             tmp_path.unlink(missing_ok=True)
+
+
+def _copy_alias(venv_bin: Path, name: str, anchor: Path) -> bool:
+    """Materialize *name* as a real-file copy of *anchor* (atomic rename).
+
+    Returns False (and warns) on failure: a leftover alias *symlink* to the anchor is the exact
+    crash shape, so callers must know when the alias set is incomplete.
+    """
+    tmp_path: Path | None = None
+    try:
+        tmp_path = _stage_copy(venv_bin, f".{name}.tcc-", anchor)
+        os.replace(tmp_path, venv_bin / name)
+        return True
+    except OSError as exc:
+        logger.warning("TCC anchor alias %s not materialized: %s", name, exc)
+        _discard(tmp_path)
+        return False
+
+
+def _materialize_aliases(venv_bin: Path, anchor: Path, *, refresh: bool = False) -> bool:
+    """Materialize uv alias names as real-file copies; True only if every needed one succeeded."""
+    names = set(_ALIAS_NAMES)
+    try:
+        names.update(
+            p.name for p in venv_bin.glob("python3*") if re.fullmatch(r"python3(\.\d+)?", p.name)
+        )
+    except OSError:
+        pass
+    ok = True
+    for name in sorted(names):
+        alias = venv_bin / name
+        try:
+            if refresh or alias.is_symlink() or not alias.exists():
+                ok = _copy_alias(venv_bin, name, anchor) and ok
         except OSError:
-            pass
+            ok = False
+    return ok
+
+
+def _passes_boot_gate(staged: Path, venv_dir: Path) -> bool:
+    """Launch *staged* and demand encodings + the venv prefix.
+
+    Runs with ``PYTHONHOME``/``PYTHONPATH`` scrubbed: an inherited PYTHONHOME papers over the very
+    prefix failure this gate exists to catch. ``ENOENT``/``ENOEXEC`` (fixture binaries, foreign
+    arch) mean the binary can't run here at all, so the symlinked venv was equally dead: skip.
+    Anything else (notably ``EACCES`` after our own chmod) is a broken install going live: refuse.
+    """
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "__PYVENV_LAUNCHER__")
+    }
+    try:
+        proc = subprocess.run(
+            [str(staged), "-c", "import encodings, sys; print(sys.prefix)"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOEXEC):
+            logger.debug("boot gate skipped: cannot execute %s (%s)", staged, exc)
+            return True
+        logger.warning("boot gate: staged copy not executable: %s", exc)
+        return False
+    except subprocess.TimeoutExpired:
+        return False
+    if proc.returncode != 0:
+        return False
+    printed = (proc.stdout or "").strip().splitlines()
+    if not printed:
+        return False
+    try:
+        return Path(printed[-1]).resolve() == venv_dir.resolve()
+    except OSError:
+        return str(venv_dir) in printed[-1]
+
+
+def _install_anchor(venv_dir: Path, source_file: Path) -> None:
+    """Replace ``bin/python`` with a signed copy, gated on a real boot."""
+    venv_py = venv_python_path(venv_dir)
+    venv_bin = venv_py.parent
+    venv_bin.mkdir(parents=True, exist_ok=True)
+
+    _provision_libpython(venv_dir, source_file, refresh=True)
+
+    tmp_path = _stage_copy(venv_bin, ".python-tcc-", source_file)
+    try:
+        try:
+            from hermes_cli.managed_uv import _macos_sign_managed_python
+
+            _macos_sign_managed_python(tmp_path)
+        except Exception:  # pragma: no cover - never block the anchor
+            logger.debug("anchor copy signing skipped", exc_info=True)
+        if not _passes_boot_gate(tmp_path, venv_dir):
+            raise _BootGateFailed(f"staged copy at {tmp_path} failed encodings/prefix probe")
+        os.replace(tmp_path, venv_py)
+        if _materialize_aliases(venv_bin, venv_py, refresh=True):
+            # Marker last, atomically: it asserts the WHOLE layout (anchor + aliases) is complete.
+            # A partial alias set must not read "active" in doctor; an absent marker makes the
+            # next ensure retry the install.
+            _write_marker(venv_bin, source_file)
+        else:
+            logger.warning(
+                "TCC anchor installed but alias materialization was "
+                "incomplete; leaving anchor unmarked so the next run retries"
+            )
+    except Exception:
+        _discard(tmp_path)
         raise
 
 
 def ensure_tcc_anchor(project_root: Path | None = None) -> Path | None:
-    """Pin a stable interpreter anchor for macOS TCC (issue #85345).
+    """Pin a dylib-complete interpreter anchor for macOS TCC.
 
-    No-op (returns None) on non-macOS, when no venv interpreter exists, or when
-    the interpreter is not uv-managed.  Otherwise makes the venv's ``bin/python``
-    a real-file copy of the current uv-store interpreter and returns its path.
-    Idempotent: a fresh anchor is returned unchanged.  Best-effort — returns
-    None (and logs) if the copy fails; callers must never depend on success.
+    No-op (None) on non-macOS, without a venv interpreter, or when the interpreter is not
+    uv-managed. Idempotent. Best-effort — None (and logs) if the copy or boot-gate fails; callers
+    must never depend on success.
+
+    See #95596.
     """
-    if not is_macos():
+    found = _managed_venv(project_root)
+    if isinstance(found, str):
         return None
-    venv_dir = _venv_dir(project_root)
-    if venv_dir is None:
-        return None
-    venv_py = venv_python_path(venv_dir)
-    if not (venv_py.is_file() or venv_py.is_symlink()):
-        return None
-    source = _interpreter_source(venv_dir)
-    if source is None or not _is_uv_macos_store(source):
-        return None
+    venv_dir, venv_py, source = found
     source_file = _interpreter_file(source)
     if source_file is None:
         return None
-    if not venv_py.is_symlink():
-        # Already anchored — refresh only when the interpreter changed.
-        marker = _anchor_marker(venv_py.parent)
+    if not venv_py.is_symlink() and _marker_matches(venv_py.parent, _marker_value(source_file)):
         try:
-            if marker.is_file() and marker.read_text(encoding="utf-8").strip() == str(
-                source_file
-            ):
+            _provision_libpython(venv_dir, source_file, refresh=False)
+            if _passes_boot_gate(venv_py, venv_dir):
+                _materialize_aliases(venv_py.parent, venv_py)
                 return venv_py
         except OSError:
             pass
     try:
         _install_anchor(venv_dir, source_file)
+    except _BootGateFailed as exc:
+        logger.warning("macOS TCC anchor boot-gate refused install: %s", exc)
+        return None
     except Exception as exc:  # best-effort: never break update/doctor
         logger.warning("macOS TCC anchor install failed: %s", exc)
         return None
@@ -278,34 +351,18 @@ def ensure_tcc_anchor(project_root: Path | None = None) -> Path | None:
 
 
 def tcc_anchor_state(project_root: Path | None = None) -> tuple[str, str]:
-    """Report the anchor state for ``hermes doctor``.
+    """Report the anchor state for ``hermes doctor`` as ``(status, detail)``.
 
-    Returns ``(status, detail)`` with status one of:
-
-    - ``"skip"``    — not applicable (non-macOS, no venv, or not uv-managed)
-    - ``"active"``  — venv interpreter is pinned at a stable real-file anchor
-    - ``"stale"``   — pinned but the interpreter changed since the last copy
-    - ``"missing"`` — uv-managed interpreter with no stable anchor installed
+    ``skip`` = not applicable; ``active`` = pinned at a stable real-file anchor; ``stale`` = pinned
+    but the interpreter changed since the last copy; ``missing`` = uv-managed with no anchor.
     """
-    if not is_macos():
-        return "skip", "not macOS"
-    venv_dir = _venv_dir(project_root)
-    if venv_dir is None:
-        return "skip", "no venv interpreter"
-    venv_py = venv_python_path(venv_dir)
-    if not (venv_py.is_file() or venv_py.is_symlink()):
-        return "skip", "no venv interpreter"
-    source = _interpreter_source(venv_dir)
-    if source is None or not _is_uv_macos_store(source):
-        return "skip", "interpreter not uv-managed (stable path)"
-    if not venv_py.is_symlink():
-        marker = _anchor_marker(venv_py.parent)
-        try:
-            if marker.is_file() and marker.read_text(encoding="utf-8").strip() == str(
-                source
-            ):
-                return "active", str(venv_py)
-        except OSError:
-            pass
-        return "stale", str(venv_py)
-    return "missing", str(venv_py)
+    found = _managed_venv(project_root)
+    if isinstance(found, str):
+        return "skip", found
+    _venv, venv_py, source = found
+    if venv_py.is_symlink():
+        return "missing", str(venv_py)
+    source_file = _interpreter_file(source)
+    expected = _marker_value(source_file) if source_file is not None else source
+    status = "active" if _marker_matches(venv_py.parent, expected) else "stale"
+    return status, str(venv_py)

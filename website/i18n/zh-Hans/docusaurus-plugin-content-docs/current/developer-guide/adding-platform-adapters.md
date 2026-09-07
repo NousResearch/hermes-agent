@@ -537,9 +537,9 @@ await self.handle_message(event)
 
 ### 4. Gateway Runner（`gateway/run.py`）
 
-五个接触点：
+六个接触点：
 
-1. **`_create_adapter()`** — 添加 `elif platform == Platform.NEWPLAT:` 分支
+1. **`_instantiate_adapter()`** — 添加 `elif platform == Platform.NEWPLAT:` 分支。`_create_adapter()` 包装器会将每个成功创建的适配器绑定到其网关运行器。
 2. **`_is_user_authorized()` allowed_users 映射** — `Platform.NEWPLAT: "NEWPLAT_ALLOWED_USERS"`
 3. **`_is_user_authorized()` allow_all 映射** — `Platform.NEWPLAT: "NEWPLAT_ALLOW_ALL_USERS"`
 4. **早期环境检查 `_any_allowlist` 元组** — 添加 `"NEWPLAT_ALLOWED_USERS"`

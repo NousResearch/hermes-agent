@@ -14,6 +14,7 @@ export type GatewayEventName =
   | 'tool.progress'
   | 'tool.complete'
   | 'tool.generating'
+  | 'todo.updated'
   | 'clarify.request'
   | 'approval.request'
   | 'sudo.request'

@@ -511,7 +511,7 @@ _DESCRIPTION_HEAD = (
     "the conversation as a new message when its subagents finish (one message per call by default; with "
     "delegation.independent_completions each ungrouped task / `group` returns on its own). Results are delivered only "
     "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
-    "poll transcripts, artifact files, or CI to wait for a child. "
+    "wait or poll on transcripts, artifact files, or CI for a child. "
     "While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
     "child drifting.\n\n"
     "USE FOR: reasoning-heavy subtasks, work that would flood your context with intermediate data, or independent "

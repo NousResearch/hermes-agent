@@ -133,8 +133,11 @@ export interface InstallLockGateProbeDeps {
  *
  *  - the exclusive-open sweep, which visited the whole mutation set (~270
  *    synchronous openSync calls on a real install: ~27 ms median on the main
- *    thread, seconds when a filter driver is cold). One definite lock is a
- *    complete answer, so it stops there (~0.3 ms while the install is held).
+ *    thread, seconds when a filter driver is cold). One lock is a complete
+ *    answer for this question, so the sweep stops at the first one (~0.3 ms
+ *    while the install is held). If that first hit is a uv-shared hard link,
+ *    the separately budgeted attribution below decides whether it belongs to
+ *    a process holding this install.
  *  - the Restart Manager attribution, a PowerShell child with a 12 s budget,
  *    which ran on EVERY poll that saw only uv-shared hard links: up to 50
  *    spawns inside a 15 s gate, each able to outlive the gate itself. It now

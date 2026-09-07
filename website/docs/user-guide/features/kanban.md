@@ -952,6 +952,21 @@ bot> ✓ t_9fc1a3 completed by transcriber
 
 Subscriptions survive a task reaching `done` — completion is reversible (a reviewer or controller can reopen a done task), so the origin session keeps getting notified through reopen cycles. They auto-remove on `archived` (the irreversible end state). On boards that never archive, a GC sweep purges subscriptions for tasks that have sat in `done` or `blocked` with no new activity for `kanban.done_sub_retention_days` days (default 30; set 0 to disable), so stale rows don't accumulate forever. If you script a create with `--json` (machine output) the auto-subscribe is skipped — the assumption is that scripted callers want to manage subscriptions explicitly via `/kanban notify-subscribe`.
 
+Dispatcher workers creating tasks through `kanban_create` or `hermes kanban create`
+copy the owning task's durable notification subscriptions even without `parents`
+dependency links. Destinations, route anchors, and delivery modes are preserved;
+a passive subscription is not upgraded to a wake by auto-subscribe. This copies
+existing subscriptions independently of `auto_subscribe_on_create`, which controls
+adding the current conversation as a new destination. No destination is invented
+for a bare CLI session or a worker whose owning task has no subscriptions.
+
+For `kanban_create`, session lineage resolves in this order: explicit `session_id`,
+the owning worker task's durable session, request-scoped API origin, then the
+current process session. Built-in decomposition also inherits its root's durable
+session. Session lineage is not itself a notification destination: changing
+`session_id` does not replace existing subscriptions; use `notify-subscribe` and
+`notify-unsubscribe` to change where events are delivered.
+
 A chat-originated auto-subscribe is created in `notify+wake` mode: on a terminal event the destination agent both receives the passive message **and** takes a real turn, so it can read the board context and reply in its own voice. See [Delivery modes](#delivery-modes) below.
 
 ### Output truncation in messaging

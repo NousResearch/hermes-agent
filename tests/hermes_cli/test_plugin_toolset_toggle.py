@@ -116,3 +116,34 @@ def test_plugin_without_tools_leaves_toolset_config_untouched(plugin_home):
     for enabled in (True, False):
         plugins_cmd._toggle_plugin_toolset("nonexistent-no-tools-plugin", enable=enabled)
         assert config_module.read_raw_config() == before
+
+
+@pytest.mark.parametrize("credentials", [False, True])
+@pytest.mark.parametrize("initial", [{}, {"platform_toolsets": {"cli": ["hermes-cli"]}}])
+def test_plugin_round_trip_preserves_credential_defaults(plugin_home, monkeypatch, credentials, initial):
+    # Only exercise the offline credential-presence check, never an xAI request.
+    if credentials:
+        monkeypatch.setenv("XAI_API_KEY", "nonfunctional-test-fixture")
+    config_module.save_config(initial)
+    before = _get_platform_tools(config_module.load_config(), "cli")
+    assert ("x_search" in before) is credentials
+    for enabled in (True, False, True, False):
+        assert plugins_cmd.dashboard_set_agent_plugin_enabled("spotify", enabled=enabled)["ok"]
+        selected = _get_platform_tools(config_module.load_config(), "cli")
+        assert selected - {"spotify"} == before
+        assert ("spotify" in selected) is enabled
+
+
+@pytest.mark.parametrize("initial", [
+    {"platform_toolsets": {"cli": []}},
+    {"platform_toolsets": {"cli": ["file"]}},
+    {"agent": {"disabled_toolsets": ["x_search"]}},
+    {"platform_toolsets": {"cli": ["hermes-cli"]}, "agent": {"disabled_toolsets": ["x_search"]}},
+])
+def test_plugin_round_trip_respects_x_search_opt_out(plugin_home, monkeypatch, initial):
+    monkeypatch.setenv("XAI_API_KEY", "nonfunctional-test-fixture")
+    config_module.save_config(initial)
+    assert "x_search" not in _get_platform_tools(config_module.load_config(), "cli")
+    for enabled in (True, False):
+        assert plugins_cmd.dashboard_set_agent_plugin_enabled("spotify", enabled=enabled)["ok"]
+        assert "x_search" not in _get_platform_tools(config_module.load_config(), "cli")

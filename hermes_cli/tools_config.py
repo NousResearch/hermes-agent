@@ -504,28 +504,26 @@ def _explicit_toolsets(
     explicitly_configured: bool) -> Set[str]:
     """Enabled set when the saved list names configurable/plugin keys directly (subset inference over
     ``hermes-cli`` would re-enable disabled toolsets). A mixed list (``[hermes-cli, spotify]``) still expands the
-    composite; _DEFAULT_OFF_TOOLSETS applies to that implicit expansion only."""
-    from toolsets import resolve_toolset, TOOLSETS
+    composite through the same resolver as inherited defaults, including credential-enabled tools."""
+    from toolsets import TOOLSETS
 
     enabled = {ts for ts in toolset_names if ts in explicit_known_keys and _toolset_allowed_for_platform(ts, platform)}
-    composite_tools = {
-        t for ts_name in toolset_names if ts_name not in explicit_known_keys and ts_name in TOOLSETS
-        for t in resolve_toolset(ts_name)}
-    if composite_tools:
-        enabled |= _configurable_subset_of(composite_tools, platform) - _default_off_toolsets(platform, explicitly_configured)
+    composites = [ts for ts in toolset_names if ts not in explicit_known_keys and ts in TOOLSETS]
+    if composites:
+        enabled |= _composite_toolsets(composites, platform, explicitly_configured)
     _enable_recently_shipped_toolsets(enabled, config, platform)
     return enabled
 
 
 def _composite_toolsets(toolset_names: List[str], platform: str, explicitly_configured: bool) -> Set[str]:
-    """Enabled set inferred from composite names by reverse-mapping tool names (only while no explicit list is
-    saved). ``x_search`` is not in any composite, so inject it when xAI creds exist and exempt it from default-off."""
+    """Expand composites, whether inherited or mixed with explicit plugin/toolset entries.
+    Credential defaults extend real composites, never empty or unresolvable selections."""
     from toolsets import resolve_toolset
 
     all_tool_names = {t for ts_name in toolset_names for t in resolve_toolset(ts_name)}
     enabled = _configurable_subset_of(all_tool_names, platform)
     default_off = _default_off_toolsets(platform, explicitly_configured)
-    if _toolset_allowed_for_platform("x_search", platform) and _xai_credentials_present():
+    if all_tool_names and _toolset_allowed_for_platform("x_search", platform) and _xai_credentials_present():
         enabled.add("x_search")
         default_off.discard("x_search")
     return enabled - default_off

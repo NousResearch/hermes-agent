@@ -1298,7 +1298,11 @@ def _on_server_started(
     def _loop_heartbeat(expected: float) -> None:
         now = _hb_loop.time()
         drift = now - expected
-        if drift > _hb_stall_threshold:
+        # Sleep/resume: drift >> expected -> idle log + reanchor, not GIL stall.
+        # Real stalls (seconds-scale) surface correctly.
+        if drift > _hb_interval * 10:
+            _log.info("event loop idle %.1fs during sleep", drift)
+        elif drift > _hb_stall_threshold:
             _log.warning("event loop stalled %.1fs (GIL pressure suspected)", drift)
         _hb_loop.call_later(_hb_interval, _loop_heartbeat, now + _hb_interval)
 

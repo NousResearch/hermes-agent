@@ -146,6 +146,8 @@ trigger within 300ms opens instantly. The cooldown starts on close, so a
 hover a second later waits again. Close is immediate. `OverflowTip` stays
 on its own longer delay (list titles must not trail while scanning).
 
+**Slash descriptions.** Keep autocomplete rows single-line and ellipsized, but reveal the complete catalog description in the shared themed tooltip when hovering anywhere on a slash row. Size that tooltip to the window with collision padding and word wrapping; it must not intercept row selection. Catalog and completion producers preserve the full author-supplied description.
+
 **Keybind hints in tooltips.** On a tipped button bound to a rebindable hotkey,
 use `<TipKeybindLabel actionId="..." />` — it reads the i18n label and the
 current combo from `$bindings`. Pass `text={...}` only when the label is

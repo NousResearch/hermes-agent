@@ -2669,9 +2669,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         # A ``moa:<preset>`` model string selects the MoA virtual provider in one shot (parity with
         # interactive ``/moa`` and the model picker). See #56828.
         _moa_provider_override, self.model = _normalize_moa_model(self.model)
-        _env_mt = os.environ.get("HERMES_MAX_TOKENS")
-        _mt = _model_config.get("max_tokens")
-        self.max_tokens = _int_or(_env_mt, None) if _env_mt else (_mt if isinstance(_mt, int) else None)
+
         if self.model == "":  # auto-detect from a local server
             _base_url = _model_config.get("base_url") or ""
             if base_url_hostname(_base_url) in ("localhost", "127.0.0.1"):

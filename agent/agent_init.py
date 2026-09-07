@@ -1684,18 +1684,8 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
     except (TypeError, ValueError):
         agent._aux_compression_context_length_config = None
 
-    # model.max_tokens from config when the caller did not pass one.
     _model_cfg = _agent_cfg.get("model", {})
     _model_section = _model_cfg if isinstance(_model_cfg, dict) else {}
-    _config_max_tokens = _model_section.get("max_tokens")
-    if agent.max_tokens is None and _config_max_tokens is not None:
-        agent.max_tokens = _positive_int(_config_max_tokens, reject=(bool,))
-        if agent.max_tokens is None:
-            _warn_invalid_config_int(
-                "model.max_tokens in config.yaml", _config_max_tokens,
-                "must be a positive integer (e.g. 4096)", "provider default",
-            )
-    agent._session_init_model_config["max_tokens"] = agent.max_tokens
 
     _config_context_length = _model_section.get("context_length")
     if _config_context_length is not None:

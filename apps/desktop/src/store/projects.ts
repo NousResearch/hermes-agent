@@ -513,9 +513,16 @@ let projectSessionsRefreshGeneration = 0
 
 export async function fetchProjectSessions(projectId: string): Promise<SidebarProjectTree | null> {
   const generation = ++projectSessionsRefreshGeneration
+  const profile = projectProfile()
+
+  if (!profile) {
+    return null
+  }
+
+  let context: ActiveProjectsContext | undefined
 
   try {
-    const context = await activeProjectsContext()
+    context = await activeProjectsContext()
 
     const res = await gatewayRequestOn<{ project: SidebarProjectTree | null }>(
       context.gateway,
@@ -528,8 +535,13 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
     }
 
     return res.project ?? null
-  } catch {
-    return null
+  } catch (error) {
+    if (generation !== projectSessionsRefreshGeneration || profile !== projectProfile() ||
+        (context && !stillOnProjectsContext(context))) {
+      return null
+    }
+
+    throw error
   }
 }
 

@@ -524,12 +524,7 @@ class CLIInfoMixin:
                     print(f"    ○ {name:<12} Not configured ({env_var})")
 
             print()
-            print("  Session Reset Policy:")
-            print("  " + "-" * 55)
-            policy = config.default_reset_policy
-            print(f"    Mode: {policy.mode}")
-            print(f"    Daily reset at: {policy.at_hour}:00")
-            print(f"    Idle timeout: {policy.idle_minutes} minutes")
+            print("  Conversations persist until /new or /reset.")
             print()
             print("  To start the gateway:")
             print("    python cli.py --gateway")

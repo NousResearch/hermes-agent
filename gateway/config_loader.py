@@ -69,7 +69,6 @@ def _presence(*keys: str) -> tuple:
 # (yaml key, gw_data key, mode, accept(value) -> bool, transform(value))
 _TOPLEVEL_BRIDGE: tuple = (
     ("stale_override_notice", "stale_override_notice", "presence", lambda v: isinstance(v, dict), None),
-    ("session_reset", "default_reset_policy", "presence", lambda v: bool(v) and isinstance(v, dict), None),
     ("quick_commands", "quick_commands", "none", _quick_commands_ok, None),
     ("stt", "stt", "presence", lambda v: isinstance(v, dict), None),
     *_presence("stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user"),
@@ -348,7 +347,7 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
         yaml_cfg = yaml.safe_load(f) or {}
 
     # Managed scope: overlay administrator-pinned values (this loader bypasses
-    # hermes_cli.config.load_config, so a managed session_reset / quick_commands / stt would otherwise be ignored).
+    # hermes_cli.config.load_config, so managed quick_commands / stt would otherwise be ignored).
     from hermes_cli import managed_scope
     yaml_cfg = managed_scope.apply_managed_overlay(yaml_cfg)
 

@@ -466,6 +466,7 @@ class ProfileInfo:
     description_auto: bool = False
     # Presentation-only display name; resolution/comparison/spawn always use ``name``.
     display_name: str = ""
+    bot_enabled: bool = True
 
 
 def _load_yaml_dict(path: Path) -> Optional[dict]:
@@ -610,17 +611,20 @@ def read_profile_meta(profile_dir: Path) -> dict:
     """Read ``profile.yaml`` -> ``{description, description_auto, display_name}`` (empty
     defaults when missing/unreadable). Never raises — a corrupt file on one profile must not
     break ``hermes profile list``."""
+    from hermes_cli.profile_bot_policy import read_bot_enabled
+
     data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
     return {
         "description": str(data.get("description") or "").strip(),
         "description_auto": bool(data.get("description_auto", False)),
         "display_name": str(data.get("display_name") or "").strip(),
+        "bot_enabled": read_bot_enabled(profile_dir),
     }
 
 
 def write_profile_meta(
     profile_dir: Path, *, description: Optional[str] = None, description_auto: Optional[bool] = None,
-    display_name: Optional[str] = None,
+    display_name: Optional[str] = None, bot_enabled: Optional[bool] = None,
 ) -> None:
     """Update ``profile.yaml`` in place: only passed fields are overwritten; the file is
     created if missing. The profile directory itself must exist."""
@@ -630,6 +634,11 @@ def write_profile_meta(
     existing: dict = _load_yaml_dict(path) or {}
     if description is not None:
         existing["description"] = description.strip()
+    if bot_enabled is not None:
+        bot = existing.get("bot")
+        bot = dict(bot) if isinstance(bot, dict) else {}
+        bot["enabled"] = bool(bot_enabled)
+        existing["bot"] = bot
     if description_auto is not None:
         existing["description_auto"] = bool(description_auto)
     if display_name is not None:
@@ -1628,7 +1637,7 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
             print(f"✓ Honcho host updated: {source_host} → {new_host}")
 
 
-def rename_profile(old_name: str, new_name: str) -> Path:
+def rename_profile(old_name: str, new_name: str, *, no_alias: bool = False) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile. The default
     profile's home IS the installation root, so "renaming" it sets a presentation-only
     ``display_name`` instead — the canonical id stays ``default``."""
@@ -1663,12 +1672,13 @@ def rename_profile(old_name: str, new_name: str) -> Path:
 
     # 4. Update wrapper script
     remove_wrapper_script(old_canon)
-    collision = check_alias_collision(new_canon)
-    if not collision:
-        create_wrapper_script(new_canon)
-        print(f"✓ Alias updated: {new_canon}")
-    else:
-        print(f"⚠ Cannot create alias '{new_canon}' — {collision}")
+    if not no_alias:
+        collision = check_alias_collision(new_canon)
+        if not collision:
+            create_wrapper_script(new_canon)
+            print(f"✓ Alias updated: {new_canon}")
+        else:
+            print(f"⚠ Cannot create alias '{new_canon}' — {collision}")
 
     # 5. Update active_profile if it pointed to old name
     _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")

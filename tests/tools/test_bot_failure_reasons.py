@@ -28,6 +28,7 @@ def test_closed_vocabulary_contains_every_code():
         "delivery_timeout",
         "agent_blocked",
         "cancelled",
+        "session_busy",
         "provider_auth_or_access",
         "provider_quota_limit",
         "provider_rate_limit",
@@ -63,6 +64,8 @@ def test_closed_vocabulary_contains_every_code():
         ("model_not_found", fr.MODEL_UNAVAILABLE),
         ("status: 401 unauthorized", fr.PROVIDER_AUTH_OR_ACCESS),
         ("upstream server error", fr.PROVIDER_SERVER_ERROR),
+        ("SESSION_NOT_OWNED", fr.SESSION_BUSY),
+        ("Session abc already has a live owner", fr.SESSION_BUSY),
         # bare numbers WITHOUT a status-code context must not classify —
         # they feed AUTO_RETRYABLE and a misfire could auto-retry a
         # permanent local failure (review finding on #93101).
@@ -96,6 +99,16 @@ def test_fixture_no_provider_configured_is_missing_config():
 
 def test_fixture_no_access_token_is_missing_config():
     assert fr.classify_agent_error(FIXTURE_NO_TOKEN) == fr.MISSING_CONFIG
+
+
+def test_machine_session_owner_reason_is_authoritative():
+    assert (
+        fr.classify_session_error(
+            "SESSION_NOT_OWNED",
+            "wording can change without breaking the client",
+        )
+        == fr.SESSION_BUSY
+    )
 
 
 def test_auto_retryable_set_and_predicate():

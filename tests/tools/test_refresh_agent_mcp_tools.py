@@ -391,14 +391,21 @@ def _assert_tool_snapshot_coherent(agent):
 
 
 @pytest.mark.parametrize("rebuild", ["compaction", "reload", "between_turns", "resume"])
+@pytest.mark.parametrize(
+    ("title", "platform"),
+    [("Bot Chat", "cli"), ("Project discussion", "cli"), ("Project discussion", "telegram")],
+)
 def test_authorized_message_agent_survives_every_snapshot_rebuild(
-    managed_bot_home, monkeypatch, rebuild
+    managed_bot_home, monkeypatch, rebuild, title, platform
 ):
     """Compaction, live refreshes and eviction/resume all preserve the guarded tool."""
     from tools.bot_mode_dm import ensure_message_agent_tool
     from tools import registry as registry_mod
 
-    agent = _bot_mode_agent(managed_bot_home)
+    agent = _bot_mode_agent(managed_bot_home, title=title)
+    agent.platform = platform
+    if platform == "telegram":
+        agent._gateway_session_key = "agent:main:telegram:dm:test"
     _serve(monkeypatch, [_tool("read_file")])
     entry = types.SimpleNamespace(name="read_file", schema=_tool("read_file")["function"])
     monkeypatch.setattr(registry_mod.registry, "get_all_entries", lambda: [entry], raising=False)
@@ -431,16 +438,24 @@ def test_authorized_message_agent_survives_every_snapshot_rebuild(
 
 
 @pytest.mark.parametrize(
-    ("title", "managed"),
-    [("Ordinary chat", True), ("Bot Chat", False)],
+    ("title", "managed", "platform"),
+    [
+        ("Ordinary chat", True, "desktop"),
+        ("Bot Chat", False, "cli"),
+        ("Bot Chat", True, "api_server"),
+        ("Bot Chat", True, "a2a"),
+        ("Bot Chain test", True, "cli"),
+        ("Project discussion", True, "telegram"),
+    ],
 )
 def test_snapshot_rebuild_never_grants_message_agent_to_unauthorized_sessions(
-    tmp_path, managed_bot_home, monkeypatch, title, managed
+    tmp_path, managed_bot_home, monkeypatch, title, managed, platform
 ):
     """Ordinary and unmanaged chats remain fail-closed across repeated rebuilds."""
     home = managed_bot_home if managed else tmp_path / "unmanaged"
     home.mkdir(exist_ok=True)
     agent = _bot_mode_agent(home, title=title)
+    agent.platform = platform
     # Even a stale/leaked dynamic capability is scrubbed unless the live gate re-authorizes it.
     agent.tools.append(_tool("message_agent"))
     agent.valid_tool_names.add("message_agent")

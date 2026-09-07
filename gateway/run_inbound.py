@@ -626,6 +626,13 @@ class GatewayInboundMixin:
                 if queue_during_drain
                 else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
             )
+        if (
+            getattr(running_agent, "_is_bot_chain_control", False) is True
+            and effective_busy_input_mode == "interrupt"
+        ):
+            running_agent.interrupt()
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return None
         if effective_busy_input_mode == "queue":
             logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
             self._queue_or_replace_pending_event(_quick_key, event)

@@ -116,12 +116,21 @@ class TestSingleQueryContextDetection:
         monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
         tokens = set_session_vars(cron_session="")
         try:
-            # Session context engaged: get_session_env returns "" because the
-            # single-query var lives outside _VAR_MAP — but the legacy env
-            # fallback route in _is_single_query_approval_context still sees it.
+            # The default tri-state leaves this marker unbound, preserving the
+            # legacy CLI env fallback.
             assert approval_module._is_single_query_approval_context() is True
         finally:
             clear_session_vars(tokens)
+
+    def test_explicit_session_marker_is_context_local(self, monkeypatch):
+        monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+        tokens = set_session_vars(single_query="1")
+        try:
+            assert approval_module._is_single_query_approval_context() is True
+        finally:
+            clear_session_vars(tokens)
+
+        assert approval_module._is_single_query_approval_context() is False
 
 
 # ---------------------------------------------------------------------------

@@ -127,6 +127,46 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
     )
 
 
+def test_bot_chat_reloads_external_history_after_immediate_lease(monkeypatch):
+    db = _DB()
+    db.get_session = lambda session_id: {
+        "id": session_id,
+        "title": "Bot Chat",
+        "message_count": 2,
+    }
+    agent = _agent_with_db(db, session_id="canonical")
+    observed = {}
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        observed["history"] = history
+        observed["session_id"] = _agent.session_id
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    result = AIAgent.run_conversation(
+        agent,
+        "new message",
+        conversation_history=[
+            {
+                "role": "assistant",
+                "content": "stale local copy",
+                "_db_persisted": True,
+            }
+        ],
+    )
+
+    assert result["final_response"] == "ok"
+    assert observed == {
+        "history": [{"role": "user", "content": "durable latest"}],
+        "session_id": "canonical",
+    }
+    assert [event[0] for event in db.events] == [
+        "acquire",
+        "reload",
+        "release",
+    ]
+
+
 def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
     """A locked / non-WAL get_session must not skip the durable lease."""
     db = _DB()

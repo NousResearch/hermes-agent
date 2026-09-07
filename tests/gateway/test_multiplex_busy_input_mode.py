@@ -451,3 +451,62 @@ async def test_effective_mode_uses_startup_snapshot_without_rereading_config(
     assert runner._effective_busy_input_mode(source) == "steer"
     assert runner._effective_busy_input_mode(source) == "steer"
     assert runner._effective_busy_text_mode(source) == "interrupt"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["steer", "interrupt"])
+@pytest.mark.parametrize("secondary_privacy", [True, False])
+async def test_primary_adapter_busy_origin_uses_routed_privacy(
+    tmp_path, monkeypatch, mode, secondary_privacy,
+):
+    """The primary busy callback bypasses the scoped normal-message handler."""
+    from dataclasses import asdict
+    from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results
+    from hermes_constants import get_hermes_home_override
+    from run_agent import AIAgent
+
+    home = tmp_path / ".hermes"
+    secondary = home / "profiles" / "research"
+    secondary.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("gateway.run._hermes_home", home)
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
+    for directory, privacy in ((home, not secondary_privacy), (secondary, secondary_privacy)):
+        (directory / "config.yaml").write_text(
+            f"privacy:\n  redact_pii: {str(privacy).lower()}\n", encoding="utf-8",
+        )
+    runner = _runner(default_mode=mode)
+    runner.config.profile_routes = [
+        ProfileRoute(name="research-chat", platform="telegram", profile="research", chat_id="chat-1"),
+    ]
+    adapter = _adapter()
+    runner.adapters[Platform.TELEGRAM] = adapter
+    runner._wire_adapter_handlers(adapter)
+    adapter.gateway_runner = runner
+    event = MessageEvent(
+        text="follow up", message_id="message-1",
+        source=adapter.build_source(chat_id="chat-1", user_id="user-1"),
+    )
+    assert event.source.profile == "research"
+    original = asdict(event.source)
+    key = runner._session_key_for_source(event.source)
+    agent = AIAgent(
+        api_key="offline-test", base_url="http://127.0.0.1:1/v1", provider="openai-compat",
+        model="test-model", enabled_toolsets=[], quiet_mode=True, skip_context_files=True,
+        skip_memory=True, save_trajectories=False, platform="cli",
+    )
+    agent._executing_tools = mode == "interrupt"
+    runner._session_state(key).turn.agent = agent
+    adapter._active_sessions[key] = asyncio.Event()
+    ambient = get_hermes_home_override()
+    await adapter._handle_message_while_active(event, key)
+    messages = [{"role": "tool", "tool_call_id": "probe", "content": "Tool completed."}]
+    apply_pending_steer_to_tool_results(agent, messages, 1)
+    output = messages[-1]["content"]
+    assert "follow up" in output
+    for value in (event.source.chat_id, event.source.user_id, event.message_id, "research"):
+        assert (value not in output) is secondary_privacy
+    assert asdict(event.source) == original
+    assert get_hermes_home_override() == ambient
+    assert key not in adapter._pending_messages

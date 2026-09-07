@@ -13,6 +13,7 @@ import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tools import browser_tool_lifecycle as bt_lifecycle
 
 
 def _make_runner():
@@ -650,8 +651,7 @@ class TestAgentCacheIdleResume:
     def test_release_clients_does_not_touch_terminal_or_browser(self, monkeypatch):
         """release_clients must not call cleanup_vm or cleanup_browser."""
         from run_agent import AIAgent
-        from tools import terminal_tool as _tt
-        from tools import browser_tool as _bt
+        from tools import terminal_tool_lifecycle as _tt
 
         agent = AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
@@ -664,14 +664,14 @@ class TestAgentCacheIdleResume:
         vm_calls: list = []
         browser_calls: list = []
         original_vm = _tt.cleanup_vm
-        original_browser = _bt.cleanup_browser
+        original_browser = bt_lifecycle.cleanup_browser
         _tt.cleanup_vm = lambda tid: vm_calls.append(tid)
-        _bt.cleanup_browser = lambda tid: browser_calls.append(tid)
+        bt_lifecycle.cleanup_browser = lambda tid: browser_calls.append(tid)
         try:
             agent.release_clients()
         finally:
             _tt.cleanup_vm = original_vm
-            _bt.cleanup_browser = original_browser
+            bt_lifecycle.cleanup_browser = original_browser
             try:
                 agent.close()
             except Exception:
@@ -716,7 +716,7 @@ class TestAgentCacheIdleResume:
 
         vm_calls: list = []
         # AIAgent.close() calls the ``cleanup_vm`` name bound into
-        # ``run_agent`` at import time, not ``tools.terminal_tool.cleanup_vm``
+        # ``run_agent`` at import time, not ``tools.terminal_tool_lifecycle.cleanup_vm``
         # directly — so patch the ``run_agent`` reference.
         original_vm = _ra.cleanup_vm
         _ra.cleanup_vm = lambda tid: vm_calls.append(tid)

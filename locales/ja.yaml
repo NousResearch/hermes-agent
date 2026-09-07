@@ -137,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\n現在のモード: `{mode}`\\n\\nオプションを選択:"
     choice_fast:           "fast — Priority Processing オン"
     choice_normal:         "normal — 標準処理"
+    choice_auto:           "auto — 各ターンの最初の数秒間だけ高速"
+    choice_cold:           "cold — セッションの最初のターンのみ高速"
 
   footer:
     status:                "📎 ランタイムフッター: **{state}**\nフィールド: `{fields}`\nプラットフォーム: `{platform}`"

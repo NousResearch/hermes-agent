@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli import process_identity as pi
+from hermes_cli import update_cmd
 
 
 class _FakeNoSuchProcess(Exception):

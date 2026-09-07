@@ -100,7 +100,9 @@ export function FireworksProviderRow({ onClick }: { onClick: () => void }) {
 export function LocalModelsProviderRow({ onClick }: { onClick: () => void }) {
   const { t } = useI18n()
 
-  return <KeyProviderRow onClick={onClick} pitch={t.onboarding.localModelsPitch} title={t.onboarding.localModelsTitle} />
+  return (
+    <KeyProviderRow onClick={onClick} pitch={t.onboarding.localModelsPitch} title={t.onboarding.localModelsTitle} />
+  )
 }
 
 export function OpenRouterProviderRow({ onClick }: { onClick: () => void }) {

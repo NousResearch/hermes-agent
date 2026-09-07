@@ -260,10 +260,25 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   const hasCoreSections = sections.length > 0 || Boolean(queue)
 
   if (sessionId && pluginRows.length > 0) {
+    // Every other section in the stack is self-delimiting: status groups carry
+    // a caret + icon + label header, the billing wall and session control have
+    // their own chrome. A plugin's contribution is raw content with none of
+    // that, so dropped straight under the section above it it reads as a
+    // footnote of that section rather than as its own status. One hairline
+    // gives it an edge — only when something actually precedes it, so a lone
+    // plugin row never carries a stray line above it, and two headered
+    // sections are never separated by a divider they don't need.
+    const followsSection = sections.length > 0
+
     sections.push({
       key: 'session-contributions',
       node: (
-        <div className="px-1 py-0.5 empty:hidden" data-session-contribution-content="">
+        // Matches a StatusSection header's inset, so the row shares the stack's
+        // gutter instead of sitting at its own left edge.
+        <div
+          className={cn('px-2 py-1 empty:hidden', followsSection && 'border-t border-(--ui-stroke-tertiary)')}
+          data-session-contribution-content=""
+        >
           <SessionContributions area={SESSION_AREAS.statusStack} runtimeSessionId={sessionId} />
         </div>
       )

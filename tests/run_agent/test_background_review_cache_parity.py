@@ -453,3 +453,43 @@ def test_review_fork_inherited_tools_survive_compaction_refresh():
         }
 
 
+def test_unrouted_review_fork_inherits_empty_tool_surface():
+    """Empty parent tools[] is a valid snapshot and must be copied and frozen (#103579).
+
+    If no tools pass availability when the parent is constructed (parent.tools = []),
+    the unrouted fork must inherit an empty list and freeze _tool_snapshot_generation.
+    This guarantees late MCP/plugin tools discovered during fork construction or
+    mid-review compaction do not break cache parity against the parent's empty surface.
+    """
+    import run_agent
+    from agent.background_review import build_cache_parity_fork
+    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent.tools = []
+
+    _BaseRecorder = _make_recorder_class()
+
+    class _RecorderWithLateTool(_BaseRecorder):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            # Simulate a late tool appearing in the constructor result before inheritance
+            self.tools = [{"type": "function", "function": {"name": "newly_available"}}]
+            self.valid_tool_names = {"newly_available"}
+
+    with patch.object(run_agent, "AIAgent", _RecorderWithLateTool):
+        fork, _rt, routed = build_cache_parity_fork(agent, max_iterations=5)
+        assert not routed
+        assert fork.tools == []
+        assert fork.tools is not agent.tools
+        assert fork.valid_tool_names == set()
+        assert fork._tool_snapshot_generation == 2_147_483_647
+
+        # Compaction refresh must refuse rebuild on frozen snapshot
+        added = refresh_agent_mcp_tools(fork, content_aware=True)
+        assert added == set()
+        assert fork.tools == []
+        assert fork.valid_tool_names == set()
+
+
+

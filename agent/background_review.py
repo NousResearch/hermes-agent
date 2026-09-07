@@ -864,7 +864,7 @@ def _inherit_parent_tool_surface(review_agent: Any, agent: Any) -> None:
     rebuild and do not clobber the inherited tools (#103579).
     """
     parent_tools = getattr(agent, "tools", None)
-    if not isinstance(parent_tools, (list, tuple)) or not parent_tools:
+    if not isinstance(parent_tools, (list, tuple)):
         return
     review_agent.tools = copy.deepcopy(list(parent_tools))
     review_agent.valid_tool_names = {

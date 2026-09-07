@@ -35,10 +35,6 @@ import { SessionControlSections } from './session-control'
 import { useSessionValue } from './session-control-utils'
 import { StatusItemRow } from './status-row'
 
-// Slow safety-net poll for silent exits (processes without notify_on_complete
-// emit no event when they die). Only armed while a running row is on screen.
-const BACKGROUND_POLL_MS = 5_000
-
 // A localhost/loopback preview is only meaningful while its dev server is up, so
 // we tie it to a live background process rather than persisting dismissals or
 // letting dead URLs pile up. File previews (a real on-disk artifact) stand alone.
@@ -137,16 +133,6 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // Drop localhost previews once no dev server is left running — that's what made
   // dead `localhost:5174` chips stick around. On-disk file previews are kept.
   const visiblePreviews = previews.filter(item => hasRunningBackground || !isLocalhostPreview(item.target))
-
-  useEffect(() => {
-    if (!sessionId || !hasRunningBackground) {
-      return
-    }
-
-    const timer = setInterval(() => void refreshBackgroundProcesses(sessionId), BACKGROUND_POLL_MS)
-
-    return () => clearInterval(timer)
-  }, [hasRunningBackground, sessionId])
 
   const openAgents = () => navigate(AGENTS_ROUTE)
 

@@ -86,6 +86,39 @@ export const $backgroundRunningSessionIds = computed(
   }
 )
 
+// Silent exits have no gateway event. The store, not a mounted composer,
+// owns one safety-net timer for all known running sessions. No idle scanning.
+const BACKGROUND_POLL_MS = 5_000
+let backgroundPollTimer: ReturnType<typeof setInterval> | undefined
+
+const stopBackgroundPolling = () => {
+  if (backgroundPollTimer !== undefined) {
+    clearInterval(backgroundPollTimer)
+    backgroundPollTimer = undefined
+  }
+}
+
+const offBackgroundPolling = $backgroundStatusBySession.listen(background => {
+  if (!Object.values(background).some(items => items.some(item => item.state === 'running'))) {
+    stopBackgroundPolling()
+  } else if (backgroundPollTimer === undefined) {
+    backgroundPollTimer = setInterval(() => {
+      for (const [sid, items] of Object.entries($backgroundStatusBySession.get())) {
+        if (!isSessionGone(sid) && items.some(item => item.state === 'running') && !backgroundRefreshes.has(sid)) {
+          void refreshBackgroundProcesses(sid)
+        }
+      }
+    }, BACKGROUND_POLL_MS)
+  }
+})
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    offBackgroundPolling()
+    clearAllSessionBackground()
+  })
+}
+
 // Rows the user X-ed away. The registry keeps finished processes around for a
 // while, so without this every refresh would resurrect a dismissed row.
 const dismissedBySession = new Map<string, Set<string>>()
@@ -96,6 +129,8 @@ const dismissedBySession = new Map<string, Set<string>>()
 const SUCCESS_LINGER_MS = 4_000
 const FAILURE_LINGER_MS = 12_000
 const autoClearTimers = new Map<string, Map<string, ReturnType<typeof setTimeout>>>()
+const backgroundRefreshes = new Map<string, { promise: Promise<void>; rerun: boolean }>()
+let backgroundEpoch = 0
 
 function scheduleAutoDismiss(sid: string, id: string, delayMs: number) {
   let timers = autoClearTimers.get(sid)
@@ -320,6 +355,12 @@ const sameItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
  * object identity so memoised rows skip re-rendering.
  */
 export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessEntry[]) {
+  // A newer authoritative snapshot supersedes any read already in flight.
+  backgroundRefreshes.delete(sid)
+  applyBackgroundProcesses(sid, procs)
+}
+
+function applyBackgroundProcesses(sid: string, procs: GatewayProcessEntry[]) {
   const dismissed = dismissedBySession.get(sid)
 
   const fresh = new Map(
@@ -394,36 +435,59 @@ export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessE
 }
 
 /** Pull the session's live process snapshot from the gateway. */
-export async function refreshBackgroundProcesses(sid: string): Promise<void> {
+export function refreshBackgroundProcesses(sid: string): Promise<void> {
   const gateway = $gateway.get()
 
   if (!sid || !gateway || isSessionGone(sid)) {
-    return
+    return Promise.resolve()
   }
 
-  try {
-    const result = await requestForOwnedSession<{ processes?: GatewayProcessEntry[] }>(
-      sid,
-      ambientRequestFor(gateway),
-      'process.list',
-      { session_id: sid }
-    )
+  const pending = backgroundRefreshes.get(sid)
 
-    reconcileBackgroundProcesses(sid, result?.processes ?? [])
-    // The binding answered, so it is healthy: refund the stored session's
-    // recovery budget (a heal that stuck must not count against the next one).
-    noteRuntimeAlive(sid)
-  } catch (error) {
-    // A gone session never comes back under this runtime id: stop polling it,
-    // or the 5s timer hammers the gateway with 4001s for the window's lifetime.
-    if (isSessionGoneForBackgroundPolling(error)) {
-      markSessionGone(sid)
+  if (pending) {
+    // A tool may have spawned work after the pending snapshot was taken. Keep
+    // one trailing read, even if that older snapshot reports no running work.
+    pending.rerun = true
 
-      return
+    return pending.promise
+  }
+
+  const refresh = { promise: Promise.resolve(), rerun: false }
+  backgroundRefreshes.set(sid, refresh)
+  refresh.promise = (async () => {
+    try {
+      const result = await requestForOwnedSession<{ processes?: GatewayProcessEntry[] }>(
+        sid,
+        ambientRequestFor(gateway),
+        'process.list',
+        { session_id: sid }
+      )
+
+      if (backgroundRefreshes.get(sid) === refresh) {
+        applyBackgroundProcesses(sid, result?.processes ?? [])
+        // A healthy binding refunds the stored session's recovery budget.
+        noteRuntimeAlive(sid)
+      }
+    } catch (error) {
+      // Obsolete reads must not latch or heal a runtime rebound after a wipe,
+      // rewind or newer snapshot, just as they must not publish stale rows.
+      if (backgroundRefreshes.get(sid) === refresh && isSessionGoneForBackgroundPolling(error)) {
+        markSessionGone(sid)
+      }
+
+      // Transient socket loss — the next trigger (event or poll) retries.
+    } finally {
+      if (backgroundRefreshes.get(sid) === refresh) {
+        backgroundRefreshes.delete(sid)
+
+        if (refresh.rerun) {
+          await refreshBackgroundProcesses(sid)
+        }
+      }
     }
+  })()
 
-    // Transient socket loss — the next trigger (event or poll) retries.
-  }
+  return refresh.promise
 }
 
 /** X on a finished row: drop it now and keep it dropped across refreshes. */
@@ -448,6 +512,7 @@ export function dismissBackgroundProcess(sid: string, id: string) {
  *  stays so the user can retry / see it didn't die. */
 export async function stopBackgroundProcess(sid: string, id: string): Promise<void> {
   const gateway = $gateway.get()
+  const epoch = backgroundEpoch
 
   if (isSessionGone(sid)) {
     // The backend has already declared this runtime gone, so there is no
@@ -466,8 +531,15 @@ export async function stopBackgroundProcess(sid: string, id: string): Promise<vo
 
   try {
     await requestForOwnedSession(sid, ambientRequestFor(gateway), 'process.kill', { process_id: id, session_id: sid })
-    dismissBackgroundProcess(sid, id)
+
+    if (epoch === backgroundEpoch) {
+      dismissBackgroundProcess(sid, id)
+    }
   } catch (err) {
+    if (epoch !== backgroundEpoch) {
+      return
+    }
+
     if (isSessionGoneForBackgroundPolling(err)) {
       dismissBackgroundProcess(sid, id)
       markSessionGone(sid)
@@ -477,6 +549,20 @@ export async function stopBackgroundProcess(sid: string, id: string): Promise<vo
 
     notifyError(err, 'Could not stop the process')
   }
+}
+
+/** Connection/mode re-home: drop only the renderer cache, never kill work. */
+export function clearAllSessionBackground() {
+  backgroundEpoch++
+  backgroundRefreshes.clear()
+  stopBackgroundPolling()
+
+  for (const sid of autoClearTimers.keys()) {
+    cancelAllAutoDismiss(sid)
+  }
+
+  dismissedBySession.clear()
+  $backgroundStatusBySession.set({})
 }
 
 /**
@@ -491,9 +577,11 @@ export function resetSessionBackground(sid: string) {
     return
   }
 
+  backgroundRefreshes.delete(sid)
   cancelAllAutoDismiss(sid)
 
   const gateway = $gateway.get()
+  const epoch = backgroundEpoch
   const list = $backgroundStatusBySession.get()[sid] ?? []
   const dismissed = dismissedBySession.get(sid) ?? new Set<string>()
 
@@ -506,7 +594,7 @@ export function resetSessionBackground(sid: string) {
           process_id: item.id,
           session_id: sid
         }).catch(error => {
-          if (isSessionGoneForBackgroundPolling(error)) {
+          if (epoch === backgroundEpoch && isSessionGoneForBackgroundPolling(error)) {
             markSessionGone(sid)
           }
         })

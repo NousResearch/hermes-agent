@@ -2650,6 +2650,7 @@ export const zh: Translations = {
       waitingForAnswer: '正在等待你的回答',
       finishedUnread: '已完成 — 未读',
       backgroundRunning: '后台任务运行中',
+      activity: '活动',
       draftSession: '草稿 — 尚未发送',
       handoffOrigin: platform => `从 ${platform} 转接`,
       ownedByProfile: profile => `配置档：${profile}`,

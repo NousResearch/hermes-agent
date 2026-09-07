@@ -8,6 +8,9 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
+import { $backgroundStatusBySession } from '@/store/composer-status'
+import { $sidebarRowMeta, resetSidebarView } from '@/store/layout'
+import { $pullRequestsByBranch, branchPrKey } from '@/store/pull-requests'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
@@ -171,6 +174,76 @@ const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
       unread={false}
     />
   )
+
+describe('session row activity integration', () => {
+  afterEach(() => {
+    clearAllSessionStates()
+    $backgroundStatusBySession.set({})
+    resetSidebarView()
+    $pullRequestsByBranch.set({})
+    vi.unstubAllGlobals()
+  })
+
+  it.each([false, true])('preserves the PR link and menu beside activity (age=%s)', showAge => {
+    const openExternal = vi.fn()
+    vi.stubGlobal('hermesDesktop', { openExternal })
+    publishSessionState('runtime', createClientSessionState('s1'))
+    $backgroundStatusBySession.set({
+      runtime: [{ id: 'watch', type: 'background', state: 'running', title: '# Watching CI' }]
+    })
+
+    const pr = {
+      branch: 'feature',
+      draft: false,
+      number: 42,
+      state: 'open',
+      title: 'Sidebar change',
+      url: 'https://example.com/pull/42'
+    }
+
+    $pullRequestsByBranch.set({ [branchPrKey('/repo', 'feature')]: pr })
+    $sidebarRowMeta.set(showAge ? ['activity', 'pr', 'updated'] : ['activity', 'pr'])
+    renderRow(makeSession({ title: 'Improve sidebar', git_repo_root: '/repo', git_branch: 'feature' }))
+    const icon = screen.getByRole('img', { name: 'Watching CI' })
+    const link = screen.getByRole('button', { name: 'Open pull request #42' })
+    expect(icon.closest('[data-row-actions]')).toBe(link.closest('[data-row-actions]'))
+    expect(screen.getByRole('button', { name: 'Session actions' })).toBeTruthy()
+    expect(Boolean(screen.queryByText('5m'))).toBe(showAge)
+    noop.mockClear()
+    fireEvent.click(link)
+    expect(openExternal).toHaveBeenCalledWith(pr.url)
+    expect(noop).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('keeps activity in the trailing actions, not the title stack (card=%s)', card => {
+    publishSessionState('runtime', createClientSessionState('s1'))
+    $backgroundStatusBySession.set({
+      runtime: [{ id: 'watch', type: 'background', state: 'running', title: '# Watching CI' }]
+    })
+    $sidebarRowMeta.set(['activity'])
+    renderRow(makeSession({ title: 'Improve sidebar' }), { card })
+    const activity = screen.getByRole('img', { name: 'Watching CI' })
+    expect(activity.closest('[data-row-actions]')).toBeTruthy()
+
+    if (!card) {
+      expect(activity.closest('button')).toBeNull()
+    }
+
+    expect(activity.textContent).toBe('')
+    expect(screen.queryByText('Watching CI')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Session actions' })).toBeTruthy()
+  })
+
+  it('keeps archived rows quiet even if their runtime still has cached work', () => {
+    publishSessionState('runtime', createClientSessionState('s1'))
+    $backgroundStatusBySession.set({
+      runtime: [{ id: 'watch', type: 'background', state: 'running', title: '# Watching CI' }]
+    })
+    $sidebarRowMeta.set(['activity'])
+    renderRow(makeSession({ title: 'Archived', archived: true }))
+    expect(screen.queryByRole('img', { name: 'Watching CI' })).toBeNull()
+  })
+})
 
 // The row no longer takes its running state as a prop, so this drives the real
 // store the way the app does. $workingSessionIds is the actual computed here

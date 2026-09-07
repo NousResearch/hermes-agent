@@ -1735,7 +1735,9 @@ export function closeSessionTile(storedSessionId: string) {
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
 
   // A settled session may never publish again, so the publish-time eviction
-  // in publishSessionState can't reach it — drop its cached state here. A
+  // in publishSessionState can't reach it — release its transcript here. Keep
+  // the same cheap identity projection as publish-time eviction: background
+  // processes and async children can outlive both the turn and its tile. A
   // BUSY one stays: its turn keeps streaming in the background, the sidebar
   // dot reads it, and settle evicts it. ⌘⇧T reopen re-publishes from the
   // wiring cache (resumeTile's warm path), so nothing is lost.
@@ -1743,7 +1745,7 @@ export function closeSessionTile(storedSessionId: string) {
   const state = runtimeId ? $sessionStates.get()[runtimeId] : undefined
 
   if (runtimeId && state && evictable(runtimeId, state)) {
-    dropSessionState(runtimeId)
+    releaseSessionTranscript(runtimeId, state)
   }
 }
 

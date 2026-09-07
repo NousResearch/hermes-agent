@@ -114,6 +114,7 @@ def _session_source_wire_keys() -> set[str]:
         user_id="u",
         user_name="un",
         thread_id="t",
+        thread_id_kind="direct_messages_topic",
         chat_topic="topic",
         user_id_alt="ua",
         chat_id_alt="ca",

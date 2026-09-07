@@ -99,12 +99,20 @@ def _float_env(name: str, default: float) -> float:
 
 
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
-    """Platform-aware thread metadata for adapter sends. Telegram DM topics route with
-    ``message_thread_id`` + a reply anchor; anchorless synthetic/resumed sends fall back to
-    ``direct_messages_topic_id`` when supported."""
+    """Platform-aware thread metadata for adapter sends. Telegram forum-style DM topics route
+    with ``message_thread_id`` + a reply anchor; native direct-message topics route with
+    ``direct_messages_topic_id``."""
     thread_id = getattr(source, "thread_id", None)
     platform = _platform_name(getattr(source, "platform", None))
-    metadata = {"thread_id": thread_id} if thread_id is not None else {}
+    is_telegram_direct_topic = (
+        platform == "telegram"
+        and getattr(source, "thread_id_kind", None) == "direct_messages_topic"
+    )
+    metadata = (
+        {"direct_messages_topic_id": thread_id}
+        if is_telegram_direct_topic and thread_id is not None
+        else ({"thread_id": thread_id} if thread_id is not None else {})
+    )
     # Slack workspace identity is routing state: carry it so a multi-workspace Socket Mode
     # gateway never falls back to its primary WebClient.
     scope_id = getattr(source, "scope_id", None) if platform == "slack" else None
@@ -112,7 +120,11 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         metadata["slack_team_id"] = str(scope_id)
     if not metadata:
         return None
-    if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
+    if (
+        platform == "telegram"
+        and getattr(source, "chat_type", None) == "dm"
+        and not is_telegram_direct_topic
+    ):
         metadata["telegram_dm_topic_reply_fallback"] = True
         if str(thread_id) not in {"", "1"}:
             metadata["direct_messages_topic_id"] = str(thread_id)
@@ -4157,7 +4169,8 @@ class BasePlatformAdapter(ABC):
     def build_source(
         self, chat_id: str, chat_name: Optional[str] = None, chat_type: str = "dm",
         user_id: Optional[str] = None, user_name: Optional[str] = None,
-        thread_id: Optional[str] = None, chat_topic: Optional[str] = None,
+        thread_id: Optional[str] = None, thread_id_kind: Optional[str] = None,
+        chat_topic: Optional[str] = None,
         user_id_alt: Optional[str] = None, chat_id_alt: Optional[str] = None, is_bot: bool = False,
         scope_id: Optional[str] = None, guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None, message_id: Optional[str] = None,
@@ -4170,6 +4183,7 @@ class BasePlatformAdapter(ABC):
         fields = dict(
             platform=self.platform, chat_id=str(chat_id), chat_name=chat_name, chat_type=chat_type,
             user_id=_opt(user_id), user_name=user_name, thread_id=_opt(thread_id),
+            thread_id_kind=_opt(thread_id_kind),
             chat_topic=(chat_topic or "").strip() or None, user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt, is_bot=is_bot, scope_id=_opt(scope_id),
             guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),

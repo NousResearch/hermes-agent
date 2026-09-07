@@ -1131,8 +1131,14 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
         and looks_like_telegram_private_chat_id(str(t.chat_id))
         and _looks_like_int(str(thread_id))
     )
-    if is_ambiguous_telegram_topic and _is_channel_dm_topic(
-        t.runtime_adapter, t.chat_id, t.loop, job["id"]):
+    is_origin_direct_topic = (
+        t.origin_target
+        and t.origin.get("thread_id_kind") == "direct_messages_topic"
+    )
+    if is_origin_direct_topic or (
+        is_ambiguous_telegram_topic
+        and _is_channel_dm_topic(t.runtime_adapter, t.chat_id, t.loop, job["id"])
+    ):
         # Channel DM topic: direct_messages_topic_id, no bare thread_id; media mirrors text.
         # See #22773.
         route_thread_id = None

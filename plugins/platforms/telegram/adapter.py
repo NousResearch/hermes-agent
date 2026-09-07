@@ -795,18 +795,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not user_name:
                     user_name = str(getattr(sender_chat, "title", "") or "").strip() or None
         chat_id = str(getattr(chat, "id", "")).strip() or user_id
+        direct_topic = getattr(message, "direct_messages_topic", None)
+        direct_topic_id = getattr(direct_topic, "topic_id", None)
         thread_id_raw = getattr(message, "message_thread_id", None)
         is_topic_message = bool(getattr(message, "is_topic_message", False))
         is_forum_group = getattr(chat, "is_forum", False) is True
         chat_type = self._normalize_chat_type(
             getattr(chat, "type", "dm"), is_forum=thread_id_raw is not None and (is_topic_message or is_forum_group))
         thread_id = None
-        if thread_id_raw is not None and (
+        if direct_topic_id is not None:
+            thread_id = str(direct_topic_id)
+        elif thread_id_raw is not None and (
             (chat_type == "forum" and (is_topic_message or is_forum_group)) or (chat_type == "dm" and is_topic_message)):
             thread_id = str(thread_id_raw)
         return SessionSource(
             platform=Platform.TELEGRAM, chat_id=chat_id or "", chat_type=chat_type, user_id=user_id,
-            user_name=user_name, thread_id=thread_id, is_bot=is_bot)
+            user_name=user_name, thread_id=thread_id,
+            thread_id_kind="direct_messages_topic" if direct_topic_id is not None else None,
+            is_bot=is_bot)
 
     def _source_from_reaction_for_auth(self, update):
         """SessionSource for a ``message_reaction`` update's actor (``user`` or ``actor_chat``).
@@ -5137,6 +5143,10 @@ class TelegramAdapter(BasePlatformAdapter):
         a routing id. Gating, skill binding and outbound routing must all agree on this value."""
         chat = getattr(message, "chat", None)
         chat_type = cls._chat_type_str(chat)
+        direct_topic = getattr(message, "direct_messages_topic", None)
+        direct_topic_id = getattr(direct_topic, "topic_id", None)
+        if direct_topic_id is not None:
+            return str(direct_topic_id)
         raw = getattr(message, "message_thread_id", None)
         is_topic_message = bool(getattr(message, "is_topic_message", False))
         is_group = chat_type in ("group", "supergroup")
@@ -6286,6 +6296,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # (message_thread_id=None) normalize to the General-topic id so replies route back to General
         # (#22423).
         thread_id_str = self._effective_message_thread_id(message)
+        thread_id_kind = (
+            "direct_messages_topic"
+            if getattr(getattr(message, "direct_messages_topic", None), "topic_id", None) is not None
+            else None
+        )
         chat_topic, topic_skill = self._resolve_topic_binding(message, chat_type, thread_id_str)
         has_full_name = hasattr(chat, "full_name")
         if user:
@@ -6297,7 +6312,8 @@ class TelegramAdapter(BasePlatformAdapter):
         source = self.build_source(
             chat_id=str(chat.id), chat_name=chat.title or (chat.full_name if has_full_name else None), chat_type=chat_type,
             user_id=(str(user.id) if user else (str(chat.id) if chat_type in {"dm", "channel"} else None)),
-            user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
+            user_name=user_name, thread_id=thread_id_str, thread_id_kind=thread_id_kind,
+            chat_topic=chat_topic, message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
         reply_to_id, reply_to_text = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt

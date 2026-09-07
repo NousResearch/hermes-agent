@@ -4084,6 +4084,7 @@ class GatewayRunner(
             chat_type=str(context.source.chat_type) if context.source.chat_type else "",
             chat_name=context.source.chat_name or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
+            thread_id_kind=str(context.source.thread_id_kind) if context.source.thread_id_kind else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_id_alt=str(context.source.user_id_alt) if context.source.user_id_alt else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",

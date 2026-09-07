@@ -108,6 +108,8 @@ $script:UiState = [hashtable]::Synchronized(@{
     status     = "running"      # running | done | manual | error
     message    = $script:UiStage
     clock      = $script:UiStopwatch
+    receipt    = $null
+    acknowledged_receipt = $null
 })
 $script:UiServer = $null     # @{ Listener; Runspace; PowerShell; Port; BrowserProc; Profile }
 
@@ -190,15 +192,26 @@ function Start-UiServer([string]$HtmlPath) {
                     $request = $reader.ReadLine()
                     # Drain headers so the client doesn't see a reset mid-send.
                     while ($true) { $h = $reader.ReadLine(); if ($null -eq $h -or $h -eq "") { break } }
-                    if ($request -match "^GET /progress") {
+                    if ($request -match "^GET /progress HTTP/1\.[01]$") {
                         $elapsed = [Math]::Floor($State.clock.Elapsed.TotalSeconds)
                         $snapshot = @{
                             status          = $State.status
                             message         = $State.message
                             elapsed_seconds = $elapsed
+                            receipt         = $State.receipt
                         } | ConvertTo-Json -Compress
                         Send-Response $stream "200 OK" "application/json; charset=utf-8" ([System.Text.Encoding]::UTF8.GetBytes($snapshot))
-                    } elseif ($request -match "^GET / ") {
+                    } elseif ($request -match "^POST /ack/([^ /?]+) HTTP/1\.[01]$") {
+                        $receipt = $Matches[1]
+                        if ($State.status -in @("done", "manual", "error") -and $State.receipt -and $receipt -ceq $State.receipt) {
+                            # Flush acceptance before waking the owner that will
+                            # close the listener. No request body is needed.
+                            Send-Response $stream "204 No Content" "text/plain" ([byte[]]@())
+                            $State.acknowledged_receipt = $receipt
+                        } else {
+                            Send-Response $stream "409 Conflict" "text/plain" ([System.Text.Encoding]::ASCII.GetBytes("unknown terminal receipt"))
+                        }
+                    } elseif ($request -match "^GET / HTTP/1\.[01]$") {
                         Send-Response $stream "200 OK" "text/html; charset=utf-8" $HtmlBytes
                     } else {
                         Send-Response $stream "404 Not Found" "text/plain" ([System.Text.Encoding]::ASCII.GetBytes("not found"))
@@ -211,6 +224,36 @@ function Start-UiServer([string]$HtmlPath) {
             }
         })
         [void]$ps.BeginInvoke()
+
+        # Readiness handshake. BeginInvoke returns before the runspace has
+        # opened its pipeline and JIT'd the script block — on a loaded machine
+        # that is seconds, during which the kernel ACCEPTS connections into
+        # the listener's backlog and nobody answers them. Anything that
+        # trusted "listener bound" as "server serving" (the browser window
+        # opening to a page that never loads; the -SelfTestUi URL that CI
+        # polls) raced that gap. Prove one /progress round-trip before
+        # handing the port out, so the URL means "serving", not "bound".
+        $ready = $false
+        $readyDeadline = [DateTime]::UtcNow.AddSeconds(15)
+        while (-not $ready -and [DateTime]::UtcNow -lt $readyDeadline) {
+            try {
+                $probe = [System.Net.HttpWebRequest]::Create("http://127.0.0.1:$port/progress")
+                $probe.Timeout = 1000
+                $probe.ReadWriteTimeout = 1000
+                $probe.KeepAlive = $false
+                $resp = $probe.GetResponse()
+                try { $ready = ([int]$resp.StatusCode -eq 200) } finally { $resp.Close() }
+            } catch {
+                Start-Sleep -Milliseconds 100
+            }
+        }
+        if (-not $ready) {
+            Write-HandoffLog "progress server did not answer /progress within 15s; continuing without UI"
+            try { $listener.Stop() } catch {}
+            try { $ps.Stop() } catch {}
+            try { $rs.Close() } catch {}
+            return $null
+        }
 
         return @{ Listener = $listener; Runspace = $rs; PowerShell = $ps; Port = $port; BrowserProc = $null; Profile = $null }
     } catch {
@@ -253,11 +296,25 @@ function Stop-UiServer([switch]$LeaveWindow) {
 }
 
 function Publish-UiEvent([string]$Status, [string]$Message) {
-    # The event the shim listens for. One beat of poll latency (400ms) before
-    # teardown so the page actually renders the terminal state.
+    # A background browser can miss a fixed 900ms delivery window. Retain the
+    # terminal event until the page acknowledges applying this exact receipt.
+    # Older/headless clients cannot acknowledge, so teardown remains bounded.
+    $receipt = [Guid]::NewGuid().ToString('N')
+    $script:UiState.receipt = $receipt
+    $script:UiState.acknowledged_receipt = $null
     $script:UiState.message = $Message
     $script:UiState.status = $Status
-    if ($script:UiServer) { Start-Sleep -Milliseconds 900 }
+    if ($script:UiServer) {
+        $deliveryWait = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($script:UiState.acknowledged_receipt -cne $receipt -and $deliveryWait.Elapsed.TotalSeconds -lt 10) {
+            Start-Sleep -Milliseconds 50
+        }
+        if ($script:UiState.acknowledged_receipt -ceq $receipt) {
+            Write-HandoffLog "shim: terminal state '$Status' acknowledged by the window"
+        } else {
+            Write-HandoffLog "shim: terminal state '$Status' was not acknowledged within 10s; closing the progress server"
+        }
+    }
 }
 
 function Get-UiElapsedText {
@@ -279,6 +336,8 @@ function Publish-UiProgress([string]$Message) {
     $script:UiStage = $Message
     $script:UiState.message = $Message
     $script:UiState.status = "running"
+    $script:UiState.receipt = $null
+    $script:UiState.acknowledged_receipt = $null
     if ($script:Ui) {
         try {
             $script:Ui.Sub.Text = Get-UiProgressLine

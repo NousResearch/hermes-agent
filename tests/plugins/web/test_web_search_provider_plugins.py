@@ -86,6 +86,7 @@ class TestBundledPluginsRegister:
             "keenable",
             "mrscraper",
             "parallel",
+            "perplexity",
             "searxng",
             "tavily",
             "xai",
@@ -101,6 +102,7 @@ class TestBundledPluginsRegister:
             ("parallel", True, True),
             ("keenable", True, True),
             ("tavily", True, True),
+            ("perplexity", True, True),
             ("firecrawl", True, True),
             ("mrscraper", True, True),
             # xai: search-only via Grok's agentic web_search tool.
@@ -130,6 +132,7 @@ class TestBundledPluginsRegister:
             "exa",
             "parallel",
             "tavily",
+            "perplexity",
             "firecrawl",
             "keenable",
             "mrscraper",

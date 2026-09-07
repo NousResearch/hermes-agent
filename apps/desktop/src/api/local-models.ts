@@ -1,9 +1,4 @@
-import type {
-  LocalCatalogModel,
-  LocalHardware,
-  LocalModelsStatus,
-  LocalRuntimeJob
-} from '@/types/hermes'
+import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 import { hermesApi, profileScoped } from './client'
 
@@ -147,7 +142,10 @@ export function listHFRepoFiles(repo: string): Promise<{ files: HFFileGroup[] }>
   })
 }
 
-export function downloadBrowsedModel(repo: string, paths: string[]): Promise<{ already_downloaded?: boolean; job_id: null | string; model_id: string }> {
+export function downloadBrowsedModel(
+  repo: string,
+  paths: string[]
+): Promise<{ already_downloaded?: boolean; job_id: null | string; model_id: string }> {
   return hermesApi<{ already_downloaded?: boolean; job_id: null | string; model_id: string }>({
     ...profileScoped(),
     body: { paths, repo },
@@ -156,7 +154,9 @@ export function downloadBrowsedModel(repo: string, paths: string[]): Promise<{ a
   })
 }
 
-export function sideloadLocalModel(path: string): Promise<{ already_present?: boolean; model_id: string; ok: boolean }> {
+export function sideloadLocalModel(
+  path: string
+): Promise<{ already_present?: boolean; model_id: string; ok: boolean }> {
   return hermesApi<{ already_present?: boolean; model_id: string; ok: boolean }>({
     ...profileScoped(),
     body: { path },

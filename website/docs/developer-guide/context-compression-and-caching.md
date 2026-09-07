@@ -4,7 +4,7 @@ Hermes Agent uses a dual compression system and Anthropic prompt caching to
 manage context window usage efficiently across long conversations.
 
 Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (default engine),
-`agent/prompt_caching.py`, `gateway/run.py` (session hygiene), `run_agent.py` (search for `_compress_context`)
+`agent/prompt_caching.py`, `gateway/run_turn.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
 
 
 ## Pluggable Context Engine
@@ -53,13 +53,15 @@ Hermes has two separate compression layers that operate independently:
 
 ### 1. Gateway Session Hygiene (85% threshold)
 
-Located in `gateway/run.py` (search for `Session hygiene: auto-compress`). This is a **safety net** that
+Located in `gateway/run_turn.py` (search for `Session hygiene`). This is a **safety net** that
 runs before the agent processes a message. It prevents API failures when sessions
 grow too large between turns (e.g., overnight accumulation in Telegram/Discord).
 
 - **Threshold**: Fixed at 85% of model context length
-- **Token source**: Prefers actual API-reported tokens from last turn; falls back
-  to rough character-based estimate (`estimate_messages_tokens_rough`)
+- **Token source**: Prefers actual API-reported tokens from last turn, then the
+  usage anchor persisted on the session row (real count + delta of what was
+  appended since; survives gateway restarts), and only then the rough
+  character-based estimate (`estimate_messages_tokens_rough`)
 - **Fires**: Only when `len(history) >= 4` and compression is enabled
 - **Purpose**: Catch sessions that escaped the agent's own compressor
 
@@ -72,6 +74,51 @@ in long gateway sessions.
 Located in `agent/context_compressor.py`. This is the **primary compression
 system** that runs inside the agent's tool loop with access to accurate,
 API-reported token counts.
+
+#### Token accounting: real usage decides, the estimate only decides whether to wait
+
+Every compaction gate (turn-start preflight, idle, pre-API pressure, post-tool)
+asks the **usage anchor** first (`agent/usage_anchor.py`): the provider's last
+`usage.prompt_tokens` plus a rough estimate of ONLY the messages appended since
+that response. The anchor identifies the priced transcript by a content
+fingerprint, so it survives the gateway re-reading history from the DB every
+turn, and it is persisted on the session row so a fresh process (`--resume`,
+desktop per-turn `serve`) restores it while the durable transcript still
+matches. Compaction, session reset and codex-native compaction clear it.
+
+Without an anchor (first request, rewind/edit-resend) a whole-context rough
+estimate over threshold **waits one request** for the provider's real count
+instead of compressing on a guess (`should_defer_preflight_to_real_usage`).
+The wait is one request, never a disable: a provider that omits usage, a real
+reading already over threshold, a rough figure past the whole window, or a
+provider-proven overflow all compress immediately.
+
+Opaque provider blobs (`encrypted_content` on Codex reasoning / compaction
+items) contribute 0 to every local estimate; only real usage ever prices them.
+
+Images are priced at the per-image cost **learned from the provider's usage**
+(`agent/image_token_cost.py`), not a vendor formula: on a response whose delta
+since the previous anchor introduced N images, the residual between the real
+`prompt_tokens` and the text-only projection is N × the provider's price. The
+value is kept per `model@host` in `~/.hermes/cache/image_token_costs.json` and
+bound per turn so the trigger estimator, the tail-budget walk and gateway
+hygiene all use the same figure. Before the first vision turn a flat 1,500
+default applies.
+
+#### Failure cooldown and provider-proven overflow
+
+A failed or stalled summary attempt arms a per-session **failure cooldown**
+(escalating 60s → 300s → 900s, persisted in `state.db`). While it is armed,
+ordinary threshold-triggered compaction is deferred so a broken summary backend
+does not re-fire every turn. Two paths run a real attempt anyway:
+
+- Manual `/compress` (`force=True`) — clears the cooldown and retries.
+- **Provider-proven overflow** — when the provider itself rejects the request
+  with a context-length error, the recovery pass ignores the cooldown for one
+  bounded attempt (`max_compression_attempts`) without clearing it. Deferring
+  here would wedge the session: every turn would bounce off the provider and
+  the next failure would extend the ladder (#100661). If that attempt fails,
+  the cooldown is recorded normally.
 
 
 ## Configuration
@@ -116,7 +163,7 @@ auxiliary:
 | `min_tail_user_messages` | `1` | ≥1 | Minimum number of REAL (actionable) user messages guaranteed to survive in the uncompressed tail. `1` = the existing single last-user anchor (behavior-preserving default). Raise to e.g. `3` to keep the last 3 real user turns verbatim even when bulky tool outputs fill the tail token budget. Blank platform echoes, compaction handoffs, and synthetic continuation rows never count toward N. The guarantee wins over the tail token budget — the tail may exceed the budget when the anchor pulls the cut back |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
 | `idle_compact_after_seconds` | `0` | ≥0 seconds | Opt-in: compact up front when a session resumes after this many seconds idle (0 = disabled). Skips when context ≤ threshold × target_ratio; honors cooldown/anti-thrash/lock guards |
-| `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
+| `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.4/5.5/5.6 and gpt-6 Astra on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
 | `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
 | `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
 | `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages only for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription (see below) |
@@ -167,19 +214,21 @@ Plugin context engines can reuse the same resolution logic via
 override `update_model()` own their own compaction policy and may ignore the
 map.
 
-### Codex gpt-5.5 threshold autoraise
+### Codex gpt-5.x / Astra threshold autoraise
 
-The ChatGPT Codex OAuth backend hard-caps gpt-5.5 at a **272K** context window
+The ChatGPT Codex OAuth backend hard-caps gpt-5.4/5.5/5.6 and gpt-6 Astra at a **272K** context window
 (the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and 400K on
 GitHub Copilot). At the default 50% trigger, compaction would fire at ~136K —
 half the window the model can actually use. When the active route is Codex
-OAuth (`provider: openai-codex`) and the model is gpt-5.5, Hermes raises the
+OAuth (`provider: openai-codex`) and the model is one of those families (Astra
+matches any slug containing `astra`; the opt-in `-900k` picker variants are
+excluded because they already unlock the wider window), Hermes raises the
 trigger to **85%** (~231K) and shows a notice with the opt-out command. The
 notice is shown once per profile — a marker under `$HERMES_HOME`
 (`.codex_gpt55_autoraise_notice`) records that it ran, so repeated agent/session
 inits (e.g. every inbound gateway message) don't re-emit it; if the raised
 threshold later changes it re-notifies once. Only this exact route is affected;
-gpt-5.5 on any other provider keeps your global `threshold`. To opt back down to
+the same models on any other provider keep your global `threshold`. To opt back down to
 the global value:
 
 ```bash
@@ -536,4 +585,4 @@ The CLI shows caching status at startup:
 
 ## Context Pressure Warnings
 
-Intermediate context-pressure warnings have been removed (see the iteration-budget block in `run_agent.py`, which notes: "No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"). Compression fires when prompt tokens reach the configured `compression.threshold` (default 50%) with no prior warning step; gateway session hygiene fires as the secondary safety net at 85% of the model's context window.
+Intermediate context-pressure warnings have been removed (see the iteration-budget block in `agent/turn_iteration_prep.py`, which notes: "No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"). Compression fires when prompt tokens reach the configured `compression.threshold` (default 50%) with no prior warning step; gateway session hygiene fires as the secondary safety net at 85% of the model's context window.

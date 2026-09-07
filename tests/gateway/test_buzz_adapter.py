@@ -1134,8 +1134,8 @@ class TestInboundAttachments:
         )
         monkeypatch.setattr(
             _buzz_mod,
-            "cache_media_bytes",
-            MagicMock(side_effect=OSError(36, "File name too long")),
+            "cache_media_bytes_async",
+            AsyncMock(side_effect=OSError(36, "File name too long")),
         )
         adapter = _make_adapter()
 

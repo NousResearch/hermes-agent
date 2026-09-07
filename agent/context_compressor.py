@@ -3077,13 +3077,20 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         messages: List[Dict[str, Any]], start: int, end: int,
     ) -> Optional[str]:
         """Return the newest current-task Kanban projection inside a soon-to-be-dropped window."""
-        from agent.context_compressor_kanban import newest_assignment_summary
+        from agent.context_compressor_kanban import assignment_summary_from_handoff, newest_assignment_summary
 
         call_id_to_tool = _tool_calls_by_id(messages)
         for index in range(min(end, len(messages)) - 1, max(0, start) - 1, -1):
             summary = newest_assignment_summary(messages, index, call_id_to_tool)
             if summary is not None:
                 return summary
+            message = messages[index]
+            if message.get(COMPRESSED_SUMMARY_METADATA_KEY) or ContextCompressor._is_context_summary_message(message):
+                summary = assignment_summary_from_handoff(
+                    _content_text_for_contains(message.get("content")),
+                )
+                if summary is not None:
+                    return summary
         return None
 
     @staticmethod

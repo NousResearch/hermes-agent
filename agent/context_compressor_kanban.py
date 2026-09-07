@@ -59,3 +59,44 @@ def newest_assignment_summary(messages, index, calls):
             "body": _bounded(spec["body"], 8 * 1024),
         }
     return json.dumps(summary, ensure_ascii=False)
+
+
+def assignment_summary_from_handoff(content):
+    """Extract the bounded current-task projection from a prior compression handoff."""
+    marker = "[CURRENT KANBAN ASSIGNMENT]"
+    if not isinstance(content, str):
+        return None
+    marker_index = content.rfind(marker)
+    if marker_index < 0:
+        return None
+    try:
+        payload, _ = json.JSONDecoder().raw_decode(content[marker_index + len(marker):].lstrip())
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    task = payload.get("task")
+    worker_task_id = os.environ.get("HERMES_KANBAN_TASK")
+    if (
+        not isinstance(task, dict)
+        or not isinstance(worker_task_id, str)
+        or not worker_task_id
+        or task.get("id") != worker_task_id
+        or not isinstance(task.get("title"), str)
+        or not isinstance(task.get("body"), str)
+    ):
+        return None
+    projected = {"id": worker_task_id, "title": _bounded(task["title"], 1024),
+                 "body": _bounded(task["body"], 8 * 1024)}
+    for key in ("status", "workspace_access"):
+        if isinstance(task.get(key), str):
+            projected[key] = _bounded(task[key], 128)
+    summary = {"task": projected}
+    spec = payload.get("protected_task_spec")
+    if (isinstance(spec, dict) and spec.get("version") == "v1"
+            and isinstance(spec.get("title"), str) and isinstance(spec.get("body"), str)):
+        summary["protected_task_spec"] = {
+            "version": "v1", "title": _bounded(spec["title"], 1024),
+            "body": _bounded(spec["body"], 8 * 1024),
+        }
+    return json.dumps(summary, ensure_ascii=False)

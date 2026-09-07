@@ -4882,6 +4882,152 @@ class TestThreadImageContext:
         assert msg_event.message_type == MessageType.TEXT
         assert "[image: chart.png]" in msg_event.channel_context
 
+    # -- images in earlier replies, not only the root ----------------------
+
+    @staticmethod
+    def _png(name):
+        return {
+            "id": "F_" + name,
+            "name": name,
+            "mimetype": "image/png",
+            "url_private_download": f"https://files.slack.com/T1/{name}",
+        }
+
+    def _prep_named_downloads(self, adapter_with_session_store):
+        a = self._prep(adapter_with_session_store)
+        a._download_slack_file = AsyncMock(
+            side_effect=lambda url, ext, team_id="": "/tmp/" + url.rsplit("/", 1)[-1]
+        )
+        return a
+
+    @pytest.mark.asyncio
+    async def test_cold_start_delivers_reply_image(self, adapter_with_session_store):
+        """An image attached to an earlier *reply* (e.g. posted for another bot) is
+        delivered when this bot is mentioned later in the thread without an
+        attachment — previously it reached the model as a text marker only."""
+        a = self._prep(adapter_with_session_store)
+        a._app.client.conversations_replies = self._replies(mid_files=[self._png("shot.png")])
+
+        await a._handle_slack_message(self._thread_event("<@U_BOT> can you see the image?"))
+
+        a.handle_message.assert_awaited_once()
+        msg_event = a.handle_message.call_args[0][0]
+        assert msg_event.media_urls == ["/tmp/hermes-cached.png"]
+        assert msg_event.media_types == ["image/png"]
+        assert msg_event.message_type == MessageType.PHOTO
+        assert "[image: shot.png]" in msg_event.channel_context
+        a._download_slack_file.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cold_start_root_and_reply_images_chronological(
+        self, adapter_with_session_store
+    ):
+        a = self._prep_named_downloads(adapter_with_session_store)
+        a._app.client.conversations_replies = self._replies(
+            root_files=[self._png("root.png")], mid_files=[self._png("reply.png")]
+        )
+
+        await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.call_args[0][0]
+        assert msg_event.media_urls == ["/tmp/root.png", "/tmp/reply.png"]
+        assert msg_event.message_type == MessageType.PHOTO
+
+    @pytest.mark.asyncio
+    async def test_thread_images_cap_keeps_newest_in_order(self, adapter_with_session_store):
+        a = self._prep_named_downloads(adapter_with_session_store)
+        messages = [{"ts": "123.000", "user": "U_ALICE", "text": "root", "files": [self._png("r0.png")]}]
+        for i in range(1, 7):
+            messages.append({
+                "ts": f"123.{i:03d}", "user": "U_ALICE", "text": f"reply {i}",
+                "files": [self._png(f"p{i}.png")],
+            })
+        messages.append({"ts": "123.456", "user": "U_USER", "text": "<@U_BOT> summarize"})
+        a._app.client.conversations_replies = AsyncMock(return_value={"messages": messages})
+
+        await a._handle_slack_message(self._thread_event("<@U_BOT> summarize"))
+
+        msg_event = a.handle_message.call_args[0][0]
+        assert msg_event.media_urls == ["/tmp/p3.png", "/tmp/p4.png", "/tmp/p5.png", "/tmp/p6.png"]
+
+    @pytest.mark.asyncio
+    async def test_own_bot_images_and_trigger_files_are_not_recollected(
+        self, adapter_with_session_store
+    ):
+        """Our own earlier posts are skipped, and the trigger message's files are
+        delivered once (via event["files"]), not again from the cached thread."""
+        a = self._prep_named_downloads(adapter_with_session_store)
+        a._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {"ts": "123.000", "user": "U_ALICE", "text": "hi"},
+                    {"ts": "123.100", "user": "U_BOT", "text": "my chart", "files": [self._png("mine.png")]},
+                    {"ts": "123.200", "user": "U_ALICE", "text": "theirs", "files": [self._png("theirs.png")]},
+                    {"ts": "123.456", "user": "U_USER", "text": "<@U_BOT> look", "files": [self._png("now.png")]},
+                ]
+            }
+        )
+        event = self._thread_event("<@U_BOT> look")
+        event["files"] = [self._png("now.png")]
+
+        await a._handle_slack_message(event)
+
+        msg_event = a.handle_message.call_args[0][0]
+        assert msg_event.media_urls == ["/tmp/theirs.png", "/tmp/now.png"]
+        assert a._download_slack_file.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_active_thread_mention_delivers_only_post_watermark_images(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Explicit @mention on an active thread (#23918 refresh): only images from
+        replies past the watermark are delivered, never ones the session already saw."""
+        a = self._prep_named_downloads(adapter_with_session_store)
+        mock_session_store._entries = {"any": MagicMock()}
+        a._has_active_session_for_thread = MagicMock(return_value=True)
+        metadata = {"slack_thread_watermark:C123:123.000": "123.100"}
+        mock_session_store.get_session_metadata = MagicMock(
+            side_effect=lambda sk, k, d=None: metadata.get(k, d)
+        )
+        mock_session_store.set_session_metadata = MagicMock(
+            side_effect=lambda sk, k, v: metadata.__setitem__(k, v) or True
+        )
+        a._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {"ts": "123.000", "user": "U_ALICE", "text": "root", "files": [self._png("root.png")]},
+                    {"ts": "123.050", "user": "U_ALICE", "text": "old", "files": [self._png("old.png")]},
+                    {"ts": "123.200", "user": "U_ALICE", "text": "fresh", "files": [self._png("new.png")]},
+                    {"ts": "123.456", "user": "U_USER", "text": "<@U_BOT> what changed?"},
+                ]
+            }
+        )
+
+        await a._handle_slack_message(self._thread_event("<@U_BOT> what changed?"))
+
+        msg_event = a.handle_message.call_args[0][0]
+        assert msg_event.media_urls == ["/tmp/new.png"]
+        assert msg_event.message_type == MessageType.PHOTO
+        assert "fresh" in msg_event.channel_context
+        assert "old" not in msg_event.channel_context
+        a._download_slack_file.assert_awaited_once()
+        assert metadata["slack_thread_watermark:C123:123.000"] == "123.456"
+
+    @pytest.mark.asyncio
+    async def test_reply_image_download_failure_degrades_to_marker(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        a._download_slack_file = AsyncMock(side_effect=RuntimeError("boom"))
+        a._app.client.conversations_replies = self._replies(mid_files=[self._png("shot.png")])
+
+        await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.call_args[0][0]
+        assert msg_event.media_urls == []
+        assert msg_event.message_type == MessageType.TEXT
+        assert "[image: shot.png]" in msg_event.channel_context
+
 
 # =========================================================================
 # Markdown table preprocessing (Slack mrkdwn does not render GFM tables)

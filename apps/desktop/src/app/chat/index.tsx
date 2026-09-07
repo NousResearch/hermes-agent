@@ -472,6 +472,15 @@ const ChatViewContent = memo(function ChatViewContent({
     return resolveComposerSessionKey(effectiveSelectedSessionId, sessions)
   }, [isPrimary, location.pathname, selectedSessionId, sessions])
 
+  // The automation composer scopes its run to the current conversation; show
+  // its title so the user knows which chat the automation will drive.
+  const conversationTitle = useMemo(() => {
+    const activeStoredSession =
+      (selectedSessionId && sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))) || null
+
+    return activeStoredSession ? sessionTitle(activeStoredSession) : NEW_SESSION_TITLE
+  }, [selectedSessionId, sessions])
+
   // When the tip row arrives after compression, migrate any tip-keyed stash onto
   // the durable lineage key before the composer remounts onto that key.
   //
@@ -746,6 +755,7 @@ const ChatViewContent = memo(function ChatViewContent({
           <Suspense fallback={<ChatBarFallback />}>
             <ChatBar
               busy={busy}
+              conversationTitle={conversationTitle}
               cwd={currentCwd}
               disabled={!gatewayOpen}
               focusKey={activeSessionId}

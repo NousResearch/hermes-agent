@@ -188,6 +188,79 @@ async def test_group_only_gating_leaves_dm_unrestricted():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command_name", ["rozmilo-override", "rozmilo_override"])
+async def test_non_admin_runs_idle_plugin_command_by_canonical_name(
+    monkeypatch, command_name
+):
+    from hermes_cli import plugins as plugins_module
+
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": ["rozmilo-override"],
+        }
+    )
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("plugin command leaked to the agent")
+    )
+    access_check = MagicMock(wraps=runner._check_slash_access)
+    runner._check_slash_access = access_check
+    handler = MagicMock(return_value="override card-528")
+    monkeypatch.setattr(
+        plugins_module,
+        "get_plugin_commands",
+        lambda: {"rozmilo-override": {"description": "Override the active run"}},
+    )
+    monkeypatch.setattr(
+        plugins_module,
+        "get_plugin_command_handler",
+        lambda name: handler if name == "rozmilo-override" else None,
+    )
+    source = _make_source(user_id="999")
+
+    result = await runner._handle_message(
+        _make_event(f"/{command_name} card-528", source)
+    )
+
+    assert result == "override card-528"
+    access_check.assert_called_once_with(source, "rozmilo-override")
+    runner.hooks.emit_collect.assert_awaited_once()
+    hook_name, hook_context = runner.hooks.emit_collect.await_args.args
+    assert hook_name == "command:rozmilo-override"
+    assert hook_context["command"] == "rozmilo-override"
+    assert hook_context["raw_command"] == command_name
+    handler.assert_called_once_with("card-528")
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_non_admin_is_denied_unlisted_idle_plugin_command(monkeypatch):
+    from hermes_cli import plugins as plugins_module
+
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": [],
+        }
+    )
+    handler = MagicMock(return_value="must not run")
+    monkeypatch.setattr(
+        plugins_module,
+        "get_plugin_commands",
+        lambda: {"rozmilo-override": {"description": "Override the active run"}},
+    )
+    monkeypatch.setattr(plugins_module, "get_plugin_command_handler", lambda _name: handler)
+
+    result = await runner._handle_message(
+        _make_event("/rozmilo_override card-528", _make_source(user_id="999"))
+    )
+
+    assert result is not None
+    assert "⛔ /rozmilo-override is admin-only here" in result
+    handler.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_non_admin_denied_for_unlisted_quick_command_exec():
     """A non-admin must not reach the quick_commands exec sink for a command
     that isn't in user_allowed_commands. Regression for #44727 — quick

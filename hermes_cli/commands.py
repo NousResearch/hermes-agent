@@ -378,16 +378,21 @@ GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
     for name in (cmd.name, *cmd.aliases))
 
 
+def resolve_plugin_command(name: str | None) -> str | None:
+    """Return the registered plugin command matching a gateway command name."""
+    if not name:
+        return None
+    registered_names = [entry[0] for entry in _iter_plugin_command_entries()]
+    if name in registered_names:
+        return name
+    plugin_name = name.replace("_", "-")
+    return plugin_name if plugin_name in registered_names else None
+
+
 def is_gateway_known_command(name: str | None) -> bool:
     """True if ``name`` is a built-in or plugin gateway slash command (plugins looked
     up lazily); decides whether the gateway emits ``command:<name>`` hooks."""
-    if not name:
-        return False
-    plugin_name = name.replace("_", "-")
-    return name in GATEWAY_KNOWN_COMMANDS or any(
-        registered_name == name or registered_name == plugin_name
-        for registered_name, _d, _h in _iter_plugin_command_entries()
-    )
+    return bool(name and (name in GATEWAY_KNOWN_COMMANDS or resolve_plugin_command(name)))
 
 
 # Commands with explicit mid-run handling (busy_policy != "reject"). Kept

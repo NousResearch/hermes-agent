@@ -497,7 +497,7 @@ class GatewayInboundMixin:
         """Slash-command / photo-burst handling on the busy fast-path → ``(handled, result)``.
         Built-ins follow their CommandDef busy policy; registered plugin commands dispatch inline."""
         from hermes_cli.commands import (
-            is_gateway_known_command as _is_gateway_known_command,
+            resolve_plugin_command as _resolve_plugin_command,
             resolve_command as _resolve_cmd_inner,
         )
         _evt_cmd = event.get_command()
@@ -510,10 +510,8 @@ class GatewayInboundMixin:
             if _cmd_def_inner.name == "context":
                 return True, await self._handle_context_command(event)
             canonical_command = _cmd_def_inner.name
-        elif _evt_cmd and _is_gateway_known_command(_evt_cmd):
-            canonical_command = _evt_cmd.replace("_", "-")
         else:
-            canonical_command = None
+            canonical_command = _resolve_plugin_command(_evt_cmd)
 
         if canonical_command:
             # Slash access control mirrors the cold-path gate so non-admins can't bypass gating
@@ -736,12 +734,16 @@ class GatewayInboundMixin:
     ) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
         """Resolve the slash command (aliases, access gate, hooks) → ``(handled, result, command,
         canonical)``; when ``handled`` the caller returns ``result`` as-is (may be None)."""
-        from hermes_cli.commands import is_gateway_known_command, resolve_command as _resolve_cmd
+        from hermes_cli.commands import (
+            is_gateway_known_command,
+            resolve_command as _resolve_cmd,
+            resolve_plugin_command as _resolve_plugin_command,
+        )
 
         def _canon(cmd):
             # Aliases resolve to the canonical name so dispatch and hook names don't depend on them.
             _def = _resolve_cmd(cmd) if cmd else None
-            return _def, (_def.name if _def else cmd)
+            return _def, (_def.name if _def else _resolve_plugin_command(cmd) or cmd)
 
         command = event.get_command()
         _cmd_def, canonical = _canon(command)

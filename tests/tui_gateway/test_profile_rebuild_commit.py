@@ -32,6 +32,16 @@ def test_tools_configure_uses_live_session_profile(tmp_path, monkeypatch, explic
     assert "terminal" not in yaml.safe_load((profile / "config.yaml").read_text())["platform_toolsets"]["cli"]
     assert seen == [profile]
     assert get_hermes_home() == home
+    worker_before = (profile / "config.yaml").read_bytes()
+    monkeypatch.delitem(server._sessions, "profile-tools")
+    response = server._methods["tools.configure"](2, params)
+    assert response["error"]["code"] == 4001
+    assert (home / "config.yaml").read_bytes() == launch_before
+    assert (profile / "config.yaml").read_bytes() == worker_before
+    response = server._methods["tools.configure"](3, {"action": "disable", "names": ["terminal"]})
+    assert "error" not in response and not response["result"]["reset"]
+    assert (home / "config.yaml").read_bytes() != launch_before
+    assert (profile / "config.yaml").read_bytes() == worker_before
 
 
 @pytest.mark.parametrize("path", ["reset", "capabilities"])

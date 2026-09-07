@@ -981,7 +981,11 @@ def _(rid, params: dict) -> dict:
 @_rpc("tools.configure", 5035)
 def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
-    session = _sessions.get(sid)
+    session = None
+    if sid:
+        session, err = _sess_nowait(params, rid)
+        if err:
+            return err
     # The client sends session_id, not profile; the live session is authoritative.
     home = (session or {}).get("profile_home")
     scopes = _bind_build_profile_scopes(home) if home else None

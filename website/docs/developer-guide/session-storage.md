@@ -17,6 +17,10 @@ Releasing the outgoing agent must not close the handle inherited by its replacem
 even when the client supplies only `session_id`. Rebuilds prepare model configuration
 before allocating a replacement, then install the agent and transfer ownership
 together; preparation failure leaves the existing agent responsible for teardown.
+Explicit profiles that cannot be resolved or whose directory has disappeared fail
+before accessing launch configuration or history. A stale `tools.configure`
+session ID likewise returns `session not found` without changing configuration;
+omitting the session ID still supports the global settings operation.
 
 In-place compaction archives old rows with `active=0` and inserts the retained
 context as `active=1` rows. A protected message can therefore legitimately appear

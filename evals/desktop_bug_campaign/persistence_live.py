@@ -18,6 +18,7 @@ def main():
     parser.add_argument('--repo', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--port', type=int, default=18020)
+    parser.add_argument('--invalid-targets', action='store_true')
     parser.add_argument('--compress', action='store_true')
     parser.add_argument('--reset', action='store_true')
     parser.add_argument('--failure', action='store_true', help='inject one model-config preparation failure')
@@ -94,7 +95,7 @@ def main():
                     receipt.write(json.dumps(row) + '\n')
                 print(str(row)[:250], flush=True)
                 return row
-            def rpc(method, params):
+            def rpc(method, params, allow_error=False):
                 nonlocal counter
                 counter += 1
                 ws.send(json.dumps({'jsonrpc': '2.0', 'id': counter, 'method': method, 'params': params}))
@@ -102,6 +103,8 @@ def main():
                     row = receive()
                     if row.get('id') == counter:
                         if 'error' in row:
+                            if allow_error:
+                                return row
                             raise RuntimeError(row)
                         return row['result']
             def turn(sid, text):
@@ -137,7 +140,9 @@ def main():
                         raise
                     result['expected_failure'] = str(exc)
                 result['launch_config_unchanged'] = (home / 'config.yaml').read_bytes() == launch_before
-                result['worker_tools'] = yaml.safe_load((profile / 'config.yaml').read_text())['platform_toolsets']['cli']
+                sys.path.insert(0, str(args.repo))
+                from hermes_cli.config import read_user_config_raw
+                result['worker_tools'] = read_user_config_raw(profile / 'config.yaml')['platform_toolsets']['cli']
             else:
                 (profile / 'SOUL.md').write_text('Capabilities changed for the worker.\n')
             if observe and args.reset:
@@ -150,6 +155,16 @@ def main():
                 with sqlite3.connect(p / 'state.db') as db:
                     result['stores'][name] = db.execute('SELECT role, content, active FROM messages WHERE session_id=? ORDER BY id', (key,)).fetchall()
             result['wrong_profile_writes'] = any('PERSISTENCE_AFTER_REBUILD' in str(row) for row in result['stores']['launch'])
+            if args.invalid_targets:
+                result['target_controls'] = {str(p): rpc('session.list', {'profile': p}) for p in (None, 'default', 'worker')}
+                rpc('session.close', {'session_id': sid})
+                before = (home / 'config.yaml').read_bytes()
+                result['stale_session'] = rpc('tools.configure', {'session_id': sid, 'action': 'enable', 'names': ['terminal']}, allow_error=True)
+                profile.rename(home / 'removed-worker')
+                result['invalid_profiles'] = {name: {method: rpc(method, dict(params, profile=name), allow_error=True) for method, params in [('session.list', {}), ('config.get', {'key': 'full'}), ('config.set', {'key': 'busy', 'value': 'steer'})]} for name in ('worker', 'unknown')}
+                result['invalid_config_unchanged'] = before == (home / 'config.yaml').read_bytes()
+                result['global_tools'] = rpc('tools.configure', {'action': 'enable', 'names': ['terminal']})
+                result['global_config_changed'] = before != (home / 'config.yaml').read_bytes()
             if observe:
                 rpc('session.close', {'session_id': sid})
                 result['ownership_after_close'] = rpc('probe.ownership', {'session_id': sid})
@@ -169,6 +184,11 @@ def main():
         print(json.dumps({k: result[k] for k in ('sha', 'home', 'wrong_profile_writes', 'duplicate_active_groups') if k in result}, indent=2))
     assert not result['wrong_profile_writes'], 'rebuild wrote the next turn to launch state.db'
     assert any('PERSISTENCE_AFTER_REBUILD' in str(row) for row in result['stores']['worker'])
+    if args.invalid_targets:
+        assert 'error' in result['stale_session'], 'stale session changed launch config'
+        assert all('error' in reply for replies in result['invalid_profiles'].values() for reply in replies.values())
+        assert result['invalid_config_unchanged']
+        assert result['global_config_changed'] and not result['global_tools']['reset']
     if args.reset:
         assert result['launch_config_unchanged'], 'tools.configure changed launch config'
         assert 'web' in result['worker_tools'], 'tools.configure did not change worker config'

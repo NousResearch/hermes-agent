@@ -7,7 +7,8 @@ import logging
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional
-from tools.mcp_tool_common import _parse_boolish, _core, _resolve_tool_timeout, mcp_field
+from tools.mcp_tool_common import _parse_boolish, _core, _resolve_tool_timeout, mcp_field, _exc_str, _sanitize_error
+from tools.mcp_tool_config import _mcp_redaction_values
 from tools import mcp_tool_handlers as _handlers
 from tools import mcp_tool_schema as _schema
 from tools.mcp_tool_handlers import (
@@ -35,8 +36,7 @@ def _normalize_server_trust(value: Any) -> str:
     text = str(value).strip().lower()
     if text in (_core._TRUST_FULL, _core._TRUST_UNTRUSTED):
         return text
-    logger.warning("MCP trust: unrecognized trust value %r — treating as 'untrusted' (valid values: full, untrusted)",
-                   value)
+    logger.warning("MCP trust: unrecognized trust value — treating as 'untrusted' (valid values: full, untrusted)")
     return _core._TRUST_UNTRUSTED
 
 
@@ -151,17 +151,18 @@ class _Candidate:
 
 
 def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[[str], bool],
-                     tool_timeout) -> List[_Candidate]:
+                     tool_timeout, redaction_values=()) -> List[_Candidate]:
     """Native tools (live SDK objects or cache stand-ins) -> candidates. The injection scan runs on
     BOTH paths: the cache file is user-writable JSON."""
     out: List[_Candidate] = []
     for t in tools:
         if not should_register(t.name):
-            logger.debug("MCP server '%s': skipping tool '%s' (filtered by config)", name, t.name)
+            logger.debug("MCP server '%s': skipping tool '%s' (filtered by config)", name,
+                         _sanitize_error(t.name, redaction_values))
             continue
-        _schema._scan_mcp_description(name, t.name, t.description or "")
+        _schema._scan_mcp_description(name, t.name, t.description or "", redaction_values)
         schema = _schema._convert_mcp_schema(name, t)
-        handler = _handlers._make_tool_handler(name, t.name, tool_timeout)
+        handler = _handlers._make_tool_handler(name, t.name, tool_timeout, redaction_values)
         out.append(_Candidate(schema["name"], f"tool {t.name!r}", schema, handler))
     return out
 
@@ -177,7 +178,7 @@ def _utility_candidates(name: str, entries: Iterable[Any], tool_timeout) -> List
     return out
 
 
-def _resolve_name_collisions(name: str, candidates: List[_Candidate]) -> List[_Candidate]:
+def _resolve_name_collisions(name: str, candidates: List[_Candidate], redaction_values=()) -> List[_Candidate]:
     """Preflight name collisions: exact duplicates dropped silently; a utility normalizing onto
     a native tool's name is shadowed (native wins); any other multi-origin collision skips every
     colliding entry (fail closed). Returns survivors in order."""
@@ -186,8 +187,8 @@ def _resolve_name_collisions(name: str, candidates: List[_Candidate]) -> List[_C
     for c in candidates:
         origins = origins_by_name.setdefault(c.registry_name, set())
         if c.origin in origins:
-            logger.debug("MCP server '%s': duplicate registration candidate %s for '%s'; keeping one",
-                         name, c.origin, c.registry_name)
+            logger.debug("MCP server '%s': duplicate registration candidate %s; keeping one",
+                         name, _sanitize_error(c.origin, redaction_values))
             continue
         origins.add(c.origin)
         unique.append(c)
@@ -211,17 +212,20 @@ def _resolve_name_collisions(name: str, candidates: List[_Candidate]) -> List[_C
             logger.info(
                 "MCP server '%s': generated utility %s normalizes onto server-native %s — keeping the native tool "
                 "and dropping the utility (the utility only applies when the server has no such tool of its own)",
-                name, ", ".join(utility_origins), native_origins[0])
+                name, _sanitize_error(", ".join(utility_origins), redaction_values),
+                _sanitize_error(native_origins[0], redaction_values))
         else:
             ambiguous[registry_name] = sorted(origins)
     for registry_name, origins in sorted(ambiguous.items()):
-        logger.error("MCP server '%s': name normalization collision for '%s' from %s; skipping every colliding "
-                     "entry instead of choosing an arbitrary handler", name, registry_name, ", ".join(origins))
+        # Normalized names may have changed credential bytes; log only original origins.
+        logger.error("MCP server '%s': name normalization collision from %s; skipping every colliding "
+                     "entry instead of choosing an arbitrary handler", name,
+                     _sanitize_error(", ".join(origins), redaction_values))
     return [c for c in unique if c.registry_name not in ambiguous and (c.registry_name, c.origin) not in shadowed]
 
 
 def _register_candidates(name: str, candidates: List[_Candidate], *, check_fn: Callable,
-                         scope: Callable[[], Optional[str]], lazy: bool) -> List[str]:
+                         scope: Callable[[], Optional[str]], lazy: bool, redaction_values=()) -> List[str]:
     """Register candidates under toolset ``mcp-{name}``; returns the names that landed. The
     ownership pre-check is advisory (servers connect in parallel): ``registry.register()`` is
     the atomic gate and its verdict is re-read after every call."""
@@ -233,14 +237,14 @@ def _register_candidates(name: str, candidates: List[_Candidate], *, check_fn: C
         if existing_toolset and existing_toolset != toolset_name:  # foreign owner: skip, preserve it
             if lazy:
                 if not c.is_utility:
-                    logger.warning("MCP server '%s' (lazy): cached tool '%s' collides with toolset '%s' — skipping",
-                                   name, c.registry_name, existing_toolset)
+                    logger.warning("MCP server '%s' (lazy): cached %s collides with another toolset — skipping",
+                                   name, _sanitize_error(c.origin, redaction_values))
             elif existing_toolset.startswith("mcp-"):
-                logger.error("MCP server '%s': %s normalizes to '%s', already owned by MCP toolset '%s' — skipping to "
-                             "preserve the existing owner", name, c.origin, c.registry_name, existing_toolset)
+                logger.error("MCP server '%s': %s normalizes to a name already owned by another MCP toolset — skipping to "
+                             "preserve the existing owner", name, _sanitize_error(c.origin, redaction_values))
             else:
-                logger.warning("MCP server '%s': %s (→ '%s') collides with built-in tool in toolset '%s' — skipping to "
-                               "preserve built-in", name, c.origin, c.registry_name, existing_toolset)
+                logger.warning("MCP server '%s': %s collides with a built-in tool — skipping to "
+                               "preserve built-in", name, _sanitize_error(c.origin, redaction_values))
             continue
         registry.register(
             name=c.registry_name, toolset=toolset_name, schema=c.schema, handler=c.handler, check_fn=check_fn,
@@ -249,8 +253,8 @@ def _register_candidates(name: str, candidates: List[_Candidate], *, check_fn: C
             _track_mcp_tool_server(c.registry_name, name)
             registered.append(c.registry_name)
         elif not lazy:
-            logger.error("MCP server '%s': registration of %s as '%s' was rejected by the registry; "
-                         "skipping provenance/count updates", name, c.origin, c.registry_name)
+            logger.error("MCP server '%s': registration of %s was rejected by the registry; "
+                         "skipping provenance/count updates", name, _sanitize_error(c.origin, redaction_values))
     if registered:
         registry.register_toolset_alias(name, toolset_name)
     return registered
@@ -283,7 +287,8 @@ def _write_schema_cache(name: str, server: "MCPServerTask", config: dict, should
         write_cache_entry(name, config_fingerprint(config), tools=tools_payload, utility_tools=utility_payload,
                           ttl_ms=cache_meta.get("ttl_ms"), cache_scope=cache_meta.get("cache_scope"))
     except Exception as exc:
-        logger.debug("MCP schema cache write failed for '%s': %s", name, exc)
+        logger.debug("MCP schema cache write failed for '%s': %s", name,
+                     _sanitize_error(_exc_str(exc), _mcp_redaction_values(config)))
 
 
 def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> List[str]:
@@ -292,11 +297,13 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     ``toolsets.TOOLSETS``; lossy normalization collisions (``read-file``/``read_file``) fail closed."""
     should_register = _make_tool_filter(name, config)
     _record_tool_trust_metadata(name, config, server._tools)
-    candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout)
+    redaction_values = _mcp_redaction_values(config)
+    candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout, redaction_values)
     candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout)
     registered = _register_candidates(
-        name, _resolve_name_collisions(name, candidates),
-        check_fn=_make_check_fn(name), scope=lambda: _core._server_registry_scope(name), lazy=False)
+        name, _resolve_name_collisions(name, candidates, redaction_values),
+        check_fn=_make_check_fn(name), scope=lambda: _core._server_registry_scope(name), lazy=False,
+        redaction_values=redaction_values)
     if registered:
         _write_schema_cache(name, server, config, should_register)
     return registered
@@ -314,10 +321,12 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
     tool_timeout = _resolve_tool_timeout(config)
     cached_tools = _cached_tools(tools_from_cache_entry(entry))
     _record_tool_trust_metadata(name, config, cached_tools)
-    candidates = _tool_candidates(name, cached_tools, _make_tool_filter(name, config), tool_timeout)
+    redaction_values = _mcp_redaction_values(config)
+    candidates = _tool_candidates(name, cached_tools, _make_tool_filter(name, config), tool_timeout, redaction_values)
     candidates += _utility_candidates(name, utility_tools_from_cache_entry(entry), tool_timeout)
     registered = _register_candidates(
-        name, candidates, check_fn=_make_check_fn(name), scope=_core._mcp_registry_scope, lazy=True)
+        name, candidates, check_fn=_make_check_fn(name), scope=_core._mcp_registry_scope, lazy=True,
+        redaction_values=redaction_values)
     if registered:
         with _core._lock:
             # Preserve the resolving snapshot until first use, even across env-file rotation.

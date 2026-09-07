@@ -35,7 +35,7 @@ _STDIO_DIED_AGAIN_MSG = (
     "cleanly — do NOT retry this tool; ask the user to check the server's command and its stderr log.")
 
 
-def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
+def _trust_gate_check(server_name: str, tool_name: str, redaction_values=()) -> Optional[str]:
     """Approval gate for write-capable tools on ``trust: untrusted`` servers. None to proceed,
     else a ``tool_error``. Fail-closed: approval-system errors block."""
     if (_core._server_trust_levels.get(server_name, _core._TRUST_FULL) != _core._TRUST_UNTRUSTED
@@ -50,15 +50,19 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
             f"Approve to run '{tool_name}' once, or deny to block it.",
             surface=f"mcp-trust/{server_name}")
     except Exception as exc:
-        logger.error("MCP trust gate: approval check failed for %s.%s: %s", server_name, tool_name, exc, exc_info=True)
-        return tool_error(f"MCP tool '{tool_name}' on untrusted server '{server_name}' was blocked: the approval "
-                          f"system was unavailable (fail-closed).")
+        logger.error("MCP trust gate: approval check failed for %s.%s (%s): %s", server_name,
+                     _sanitize_error(tool_name, redaction_values), type(exc).__name__,
+                     _sanitize_error(_exc_str(exc), redaction_values))
+        return tool_error(_sanitize_error(
+            f"MCP tool '{tool_name}' on untrusted server '{server_name}' was blocked: the approval "
+            f"system was unavailable (fail-closed).", redaction_values))
     if answer == "accept":
         return None
     logger.info("MCP trust gate: user %s '%s' on untrusted server '%s'",
-                "cancelled" if answer == "cancel" else "denied", tool_name, server_name)
-    return tool_error(f"The user did not approve running write-capable MCP tool '{tool_name}' on untrusted server "
-                      f"'{server_name}'. The command was NOT run. Do not retry without explicit user direction.")
+                "cancelled" if answer == "cancel" else "denied", _sanitize_error(tool_name, redaction_values), server_name)
+    return tool_error(_sanitize_error(
+        f"The user did not approve running write-capable MCP tool '{tool_name}' on untrusted server "
+        f"'{server_name}'. The command was NOT run. Do not retry without explicit user direction.", redaction_values))
 
 
 def _check_circuit_breaker(server_name: str) -> Optional[str]:
@@ -123,22 +127,25 @@ def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
     return srv if ok else None
 
 
-def _recovery_error(server_name: str, exc: BaseException) -> str:
-    """Recovery callbacks only carry a name; redact using its registered server."""
+def _call_redaction_values(server_name: str, fallback=()) -> tuple[str, ...]:
+    """Capture before the call/approval; recovery must not re-read a replaced server."""
+    from tools.mcp_tool_config import _mcp_redaction_values
     with _core._lock:
         server = _core._servers.get(server_name)
-        values = getattr(server, "_redaction_values", ())
-    return _sanitize_error(_exc_str(exc), values)
+        lazy_config = _core._lazy_server_configs.get(server_name, {})
+        return tuple(fallback) + (getattr(server, "_redaction_values", ()) if server is not None
+                                  else _mcp_redaction_values(lazy_config))
 
 
-def _retry_once(server_name: str, retry_call, op_description: str, what: str):
+def _retry_once(server_name: str, retry_call, op_description: str, what: str, redaction_values=None):
     """Re-run ``retry_call`` after a recovery step. Returns the result (closing the breaker)
     when it is not an error payload; None when the retry raised or errored (caller falls through)."""
+    values = _call_redaction_values(server_name) if redaction_values is None else redaction_values
     try:
         result = retry_call()
     except Exception as retry_exc:
-        logger.warning("MCP %s/%s retry after %s failed: %s", server_name, op_description, what,
-                       _recovery_error(server_name, retry_exc))
+        logger.warning("MCP %s/%s retry after %s failed: %s", server_name,
+                       _sanitize_error(op_description, values), what, _sanitize_error(_exc_str(retry_exc), values))
         return None
     if _result_is_error(result):
         return None
@@ -146,18 +153,21 @@ def _retry_once(server_name: str, retry_call, op_description: str, what: str):
     return result
 
 
-def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):
+def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str,
+                                  redaction_values=None):
     """OAuth recovery + one retry; None when *exc* is not an auth error. ``handle_401`` decides
     viability; if viable, signal a reconnect (fresh credentials), wait ready, retry once. Any
     failure returns the structured ``needs_reauth`` error so the model stops refreshing."""
     if not _is_auth_error(exc):
         return None
+    values = _call_redaction_values(server_name) if redaction_values is None else redaction_values
+    op_description = _sanitize_error(op_description, values)
     from tools.mcp_oauth_manager import get_manager
     try:
         recovered = _loop._run_on_mcp_loop(lambda: get_manager().handle_401(server_name, None), timeout=10)
     except Exception as rec_exc:
         logger.warning("MCP OAuth '%s': recovery attempt failed: %s", server_name,
-                       _recovery_error(server_name, rec_exc))
+                       _sanitize_error(_exc_str(rec_exc), values))
         recovered = False
     if recovered:
         srv = _lookup_reconnectable_server(server_name)
@@ -166,13 +176,14 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
         if srv is not None and _loop._signal_reconnect_and_wait(
                 server_name, srv, op_description=f"{op_description} after OAuth recovery", timeout=15):
             _core._reset_server_error(server_name)
-        result = _retry_once(server_name, retry_call, op_description, "auth recovery")
+        result = _retry_once(server_name, retry_call, op_description, "auth recovery", values)
         if result is not None:
             return result
     return _strike(server_name, _NEEDS_REAUTH_MSG.format(s=server_name), needs_reauth=True, server=server_name)
 
 
-def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):
+def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str,
+                                     redaction_values=None):
     """Transport reconnect + one retry on session expiry; None to fall through. Skips
     ``handle_401``: the token is valid, only the server-side session is stale.
 
@@ -185,20 +196,23 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
     srv = _lookup_reconnectable_server(server_name, require_loop=True) if _is_session_expired_error(exc) else None
     if srv is None:
         return None
+    values = _call_redaction_values(server_name) if redaction_values is None else redaction_values
+    op_description = _sanitize_error(op_description, values)
     logger.info("MCP server '%s': %s failed with session-expired error (%s); signalling transport reconnect "
-                "and retrying once.", server_name, op_description, _recovery_error(server_name, exc))
+                "and retrying once.", server_name, op_description, _sanitize_error(_exc_str(exc), values))
     if not _loop._signal_reconnect_and_wait(server_name, srv, op_description=op_description, timeout=15):
         logger.warning("MCP server '%s': reconnect did not ready within 15s after session-expired error; "
                        "falling through to error response.", server_name)
         return None
-    return _retry_once(server_name, retry_call, op_description, "session reconnect")
+    return _retry_once(server_name, retry_call, op_description, "session reconnect", values)
 
 
 class _StdioChildExited(RuntimeError):
     """Stdio subprocess gone when (or while) a call ran. Deliberately NOT a TimeoutError."""
 
 
-def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry_call, op_description: str):
+def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry_call, op_description: str,
+                                        redaction_values=None):
     """Respawn a dead stdio child and retry once; None if not our error. Never spawns itself: it
     sets ``_reconnect_event`` and waits, so spawn frequency stays governed by ``run()``'s
     rapid-drop budget. Single-shot: a child that dies again reports and stops.
@@ -210,11 +224,13 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
     """
     if not isinstance(exc, _StdioChildExited):
         return None
+    values = _call_redaction_values(server_name) if redaction_values is None else redaction_values
+    op_description = _sanitize_error(op_description, values)
     reconnected = False
     srv = _lookup_reconnectable_server(server_name)
     if srv is not None:
         logger.info("MCP server '%s': %s found the stdio subprocess dead (%s); respawning and retrying once.",
-                    server_name, op_description, _recovery_error(server_name, exc))
+                    server_name, op_description, _sanitize_error(_exc_str(exc), values))
         if _mcp_loop_running():
             reconnected = _loop._signal_reconnect_and_wait(
                 server_name, srv, op_description=op_description, timeout=_core._STDIO_RESPAWN_WAIT_SEC)
@@ -227,22 +243,24 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
     except _StdioChildExited as retry_exc:
         # Died again right after respawn: broken server; run()'s budget takes it to the park.
         logger.warning("MCP server '%s': %s stdio subprocess exited again right after respawn (%s); not retrying "
-                       "further.", server_name, op_description, _recovery_error(server_name, retry_exc))
+                       "further.", server_name, op_description, _sanitize_error(_exc_str(retry_exc), values))
         return _strike(server_name, _STDIO_DIED_AGAIN_MSG.format(s=server_name))
     except Exception as retry_exc:
         logger.warning("MCP %s/%s retry after stdio respawn failed: %s", server_name, op_description,
-                       _recovery_error(server_name, retry_exc))
+                       _sanitize_error(_exc_str(retry_exc), values))
         return _strike(server_name, _sanitize_error(
             f"MCP call failed after respawning the stdio subprocess for '{server_name}': "
-            f"{type(retry_exc).__name__}: {_recovery_error(server_name, retry_exc)}"))
+            f"{type(retry_exc).__name__}: {_exc_str(retry_exc)}", values))
 
 
 def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float, recoverers,
-              on_final_failure: Callable[[BaseException], None], record_outcome: bool = False) -> str:
+              on_final_failure: Callable[[BaseException], None], record_outcome: bool = False,
+              redaction_values=None) -> str:
     """Mark the call started on *server* (doubles may lack ``mark_tool_call``), run coroutine function *call*
     on the MCP loop and, on failure, walk ``recoverers`` (``(server_name, exc, retry_call, op) -> Optional[str]``,
     None = not its kind; order matters). Unrecovered exceptions go through ``on_final_failure`` and become the
     generic call-failed error. ``record_outcome`` applies breaker bookkeeping to the FIRST attempt only."""
+    values = tuple(getattr(server, "_redaction_values", ()) if redaction_values is None else redaction_values)
     if callable(getattr(server, "mark_tool_call", None)):
         server.mark_tool_call()
 
@@ -256,11 +274,11 @@ def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float,
         return tool_error("MCP call interrupted: user sent a new message")
     except Exception as exc:
         for recover in recoverers:
-            recovered = recover(server_name, exc, call_once, op)
+            recovered = recover(server_name, exc, call_once, op, redaction_values=values)
             if recovered is not None:
                 return recovered
         on_final_failure(exc)
-        return tool_error(_sanitize_error(f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}", getattr(server, "_redaction_values", ())))
+        return tool_error(_sanitize_error(f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}", values))
 
 
 @asynccontextmanager
@@ -428,18 +446,21 @@ def _render_call_tool_result(result, server_name: str, redaction_values=()) -> s
         return json.dumps({"result": text_result}, ensure_ascii=False)
 
 
-def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
+def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, redaction_values=()):
     """Sync registry handler (``handler(args_dict, **kwargs) -> str``) calling an MCP tool via the background loop."""
     op = f"tools/call {tool_name}"
+    registration_values = tuple(redaction_values)
 
     def _handler(args: dict, **kwargs) -> str:
         # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
-        error = _trust_gate_check(server_name, tool_name) or _check_circuit_breaker(server_name)
+        values = _call_redaction_values(server_name, registration_values)
+        error = _trust_gate_check(server_name, tool_name, values) or _check_circuit_breaker(server_name)
         if error is not None:
             return error
         server, error = _acquire_call_server(server_name, tool_timeout)
         if server is None:
             return error
+        values = registration_values + tuple(getattr(server, "_redaction_values", ()))
 
         async def _call():
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op):
@@ -450,16 +471,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
-            return _render_call_tool_result(result, server_name, getattr(server, "_redaction_values", ()))
+            return _render_call_tool_result(result, server_name, values)
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)
-            logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name,
-                         _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())))
+            logger.error("MCP tool %s/%s call failed: %s", server_name, _sanitize_error(tool_name, values),
+                         _sanitize_error(_exc_str(exc), values))
         return _dispatch(
             server_name, server, op, _call, tool_timeout,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, _handle_session_expired_and_retry),
-            _on_failure, record_outcome=True)
+            _on_failure, record_outcome=True, redaction_values=values)
     return _handler
 
 
@@ -475,6 +496,7 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
                 return tool_error(f"MCP server '{server_name}' is not connected")
             if required and not args.get(required):
                 return tool_error(f"Missing required parameter '{required}'")
+            values = tuple(getattr(server, "_redaction_values", ()))
 
             async def _call():
                 async with server._rpc_lock:
@@ -484,7 +506,7 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
                 server_name, server, op, _call, tool_timeout,
                 (_handle_auth_error_and_retry, _handle_session_expired_and_retry),
                 lambda exc: logger.error("MCP %s/%s failed: %s", server_name, log_label,
-                                         _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ()))))
+                                         _sanitize_error(_exc_str(exc), values)), redaction_values=values)
         return _handler
     return _factory
 

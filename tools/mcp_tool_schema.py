@@ -7,7 +7,7 @@ import fnmatch
 import re
 from typing import Any, List
 from tools.ansi_strip import strip_unicode_tags
-from tools.mcp_tool_common import mcp_field
+from tools.mcp_tool_common import mcp_field, _sanitize_error
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -28,7 +28,7 @@ _MCP_INJECTION_PATTERNS = [
         (r"import\s+(subprocess|os|shutil|socket)", "dangerous import reference"))]
 
 
-def _scan_mcp_description(server_name: str, tool_name: str, description: str) -> List[str]:
+def _scan_mcp_description(server_name: str, tool_name: str, description: str, redaction_values=()) -> List[str]:
     """Scan a tool description for injection patterns; returns finding strings (empty =
     clean) and logs a warning when any match."""
     if not description:
@@ -36,7 +36,8 @@ def _scan_mcp_description(server_name: str, tool_name: str, description: str) ->
     findings = [reason for pattern, reason in _MCP_INJECTION_PATTERNS if pattern.search(description)]
     if findings:
         logger.warning("MCP server '%s' tool '%s': suspicious description content — %s. Description: %.200s",
-                       server_name, tool_name, "; ".join(findings), description)
+                       server_name, _sanitize_error(tool_name, redaction_values), "; ".join(findings),
+                       _sanitize_error(description, redaction_values))
     return findings
 
 
@@ -193,7 +194,7 @@ def _normalize_name_filter(value: Any, label: str) -> set[str]:
         return {value}
     if isinstance(value, (list, tuple, set)):
         return {str(item) for item in value}
-    logger.warning("MCP config %s must be a string or list of strings; ignoring %r", label, value)
+    logger.warning("MCP config %s must be a string or list of strings; ignoring invalid value", label)
     return set()
 
 

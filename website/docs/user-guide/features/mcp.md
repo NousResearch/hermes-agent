@@ -195,6 +195,11 @@ and dashboard probe errors, catalog probes, and runtime discovery logs redact
 exact values from the same file read that resolved the server configuration. This
 redaction snapshot stays with that connection attempt, even if the file is later
 rotated, deleted, or becomes unreadable; error handling does not reopen the file.
+The same snapshot protects Hermes-owned MCP log notifications, transport and
+recovery diagnostics, and sampling/elicitation diagnostics before truncation.
+Exact values are also recognized in Python-repr and JSON-escaped error text.
+Successful tool payloads, tool identifiers, and consent requests remain unchanged;
+this is not a filter for arbitrary third-party subprocess stderr (`mcp-stderr.log`).
 
 Relative paths resolve from `TERMINAL_CWD` when it points to a valid directory,
 otherwise from the Hermes process working directory. Prefer an absolute path

@@ -285,7 +285,9 @@ def _probe_single_server(
     redaction_values = _mcp_redaction_values(config)
     resolved_issues = validate_mcp_server_entry(name, config)
     if resolved_issues:
-        raise ValueError("; ".join(resolved_issues))
+        error = ValueError("; ".join(resolved_issues))
+        error._mcp_redaction_values = redaction_values
+        raise error
     if connect_timeout is None:
         try:
             connect_timeout = max(1.0, float(config.get("connect_timeout", 30)))

@@ -37,6 +37,7 @@ def _make_task(name: str = "probe_srv") -> MCPServerTask:
     """Minimal MCPServerTask without running the heavy __init__."""
     task = MCPServerTask.__new__(MCPServerTask)
     task.name = name
+    task._redaction_values = ()
     return task
 
 

@@ -7,9 +7,9 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _make_redirect_header_stripper, _resolve_client_cert
+from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _format_connect_error, _handshake_rejected_as_modern, _make_redirect_header_stripper, _resolve_client_cert
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
-from tools.mcp_tool_common import _core
+from tools.mcp_tool_common import _core, _exc_str, _sanitize_error
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_registration as _registration
@@ -88,9 +88,10 @@ class MCPServerTransportMixin:
             except Exception as exc:
                 if isinstance(exc, asyncio.TimeoutError) or not should_fallback(exc):
                     raise
-                logger.info(log_fmt, self.name, exc, *log_extra)
+                logger.info(log_fmt, self.name, _sanitize_error(_exc_str(exc), self._redaction_values), *log_extra)
                 return await call(fallback)
-        mode = str((self._config or {}).get("protocol", "auto")).lower().strip()
+        raw_mode = str((self._config or {}).get("protocol", "auto"))
+        mode = raw_mode.lower().strip()
         if mode in ("stateless", "modern", "2026-07-28"):
             return await attempt("discover", "initialize", lambda exc: True,
                                  "MCP server '%s': server/discover rejected (%s) despite "
@@ -99,7 +100,8 @@ class MCPServerTransportMixin:
             return await call("initialize")
         if mode != "auto":
             logger.warning("MCP server '%s': unknown protocol=%r — treating as 'auto' "
-                           "(valid: auto, stateless, legacy)", self.name, mode)
+                           "(valid: auto, stateless, legacy)", self.name,
+                           _sanitize_error(raw_mode, self._redaction_values))
         # mcp 1.x has no server/discover client — nothing to fall back to.
         return await attempt(
             "initialize", "discover", lambda exc: _handshake_rejected_as_modern(exc) and hasattr(session, "discover"),
@@ -290,8 +292,10 @@ class MCPServerTransportMixin:
             return  # DNS/connect/timeout/transport error — let the SDK try.
         if not _non_mcp_2xx(resp):
             return
-        ct_base = _content_type_base(resp)
-        raise NonMcpEndpointError(f"MCP server '{self.name}' at the configured URL returned Content-Type '{ct_base}', not an MCP "
+        # Protocol decisions use normalized types; diagnostics must redact the raw
+        # header before split/strip/lower can destroy an exact configured value.
+        ct_display = _sanitize_error(resp.headers.get("content-type", ""), self._redaction_values)
+        raise NonMcpEndpointError(f"MCP server '{self.name}' at the configured URL returned Content-Type '{ct_display}', not an MCP "
             f"response (expected one of: {', '.join(self._MCP_CONTENT_TYPES)}). The URL most likely "
             "points at a web page rather than an MCP endpoint — check it resolves to a Streamable "
             "HTTP / SSE endpoint (e.g. https://host/mcp, not https://host/).")
@@ -321,7 +325,8 @@ class MCPServerTransportMixin:
                 or not self._ready.is_set()):
             raise eg
         logger.debug("MCP server '%s': transport TaskGroup exited after a live session "
-                     "(%r) — reconnecting immediately instead of backing off", self.name, eg)
+                     "(%s: %s) — reconnecting immediately instead of backing off", self.name,
+                     type(eg).__name__, _format_connect_error(eg, self._redaction_values))
         return "reconnect"
 
     def _build_oauth_auth(self, url: str, config: dict):
@@ -333,7 +338,8 @@ class MCPServerTransportMixin:
             from tools.mcp_oauth_manager import get_manager
             return get_manager().get_or_build_provider(self.name, url, config.get("oauth"))
         except Exception as exc:
-            logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
+            logger.warning("MCP OAuth setup failed for '%s' (%s): %s", self.name,
+                           type(exc).__name__, _sanitize_error(_exc_str(exc), self._redaction_values))
             raise
 
     def _sse_transport(self, url: str, headers: dict, connect_timeout: float,

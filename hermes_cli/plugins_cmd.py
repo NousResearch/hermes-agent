@@ -1767,9 +1767,15 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
         if isinstance(ts_list, list) and enable != (toolset_key in ts_list):
             (ts_list.append if enable else ts_list.remove)(toolset_key)
             changed = True
-    # Enabling with no platform lists yet: seed "cli" at minimum.
+    # A new CLI selection replaces, rather than extends, the inherited default.
+    # Keep the composite so enabling a plugin does not discard core tools, and
+    # disabling it later leaves the default instead of an explicit empty list.
+    # Existing lists (including []) above remain deliberate user selections.
+
     if enable and not changed and not platform_toolsets:
-        platform_toolsets["cli"] = [toolset_key]
+        from hermes_cli.tools_config import PLATFORMS
+
+        platform_toolsets["cli"] = [PLATFORMS["cli"]["default_toolset"], toolset_key]
         changed = True
     if changed:
         save_config(config)

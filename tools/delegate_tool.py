@@ -14,6 +14,7 @@ tool calls or reasoning.
 import logging
 import time
 import weakref
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb  # noqa: F401  (used via _ChildRun.await_child)
@@ -111,6 +112,44 @@ def _open_child_session_db(parent_agent) -> Any:
         return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
     return None
 
+
+def _profile_home_for_content(profile: Optional[str], profile_content: Optional[Dict[str, Any]]) -> Optional[Path]:
+    """Resolve a target profile home without falling back to the parent's home silently."""
+    if not profile:
+        return None
+    content = profile_content if isinstance(profile_content, dict) else {}
+    explicit_home = content.get("hermes_home") or content.get("home")
+    if explicit_home:
+        return Path(explicit_home)
+    try:
+        from hermes_constants import get_hermes_home
+        candidate = get_hermes_home() / "profiles" / str(profile)
+        return candidate if candidate.is_dir() else None
+    except Exception:
+        return None
+
+
+def _profile_scope_or_null(profile: Optional[str], profile_content: Optional[Dict[str, Any]]):
+    """Return the shared profile scope for a real target profile, else a no-op for pre-resolved test fixtures."""
+    from contextlib import nullcontext
+
+    home = _profile_home_for_content(profile, profile_content)
+    if not home:
+        return nullcontext()
+    from agent.profile_runtime_scope import profile_runtime_scope
+    return profile_runtime_scope(home)
+
+
+def _child_profile_scope(child):
+    """Re-enter a child's target scope for its complete run, including cleanup."""
+    from contextlib import nullcontext
+
+    home = getattr(child, "_delegate_profile_home", None)
+    if not home:
+        return nullcontext()
+    from agent.profile_runtime_scope import profile_runtime_scope
+    return profile_runtime_scope(home)
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -132,6 +171,9 @@ def _build_child_agent(
     override_acp_args: Optional[List[str]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    profile: Optional[str] = None,
+    profile_content: Optional[Dict[str, Any]] = None,
+    isolate_profile_credentials: bool = False,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -171,7 +213,7 @@ def _build_child_agent(
         parent_agent, delegation_cfg, parent_api_key, model=model, override_provider=override_provider,
         override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
         override_max_tokens=override_max_tokens, override_acp_command=override_acp_command,
-        override_acp_args=override_acp_args,
+        override_acp_args=override_acp_args, isolate_profile_credentials=isolate_profile_credentials,
     )
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
@@ -212,6 +254,9 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    if profile:
+        setattr(child, "_delegate_profile_name", profile)
+        setattr(child, "_delegate_profile_home", _profile_home_for_content(profile, profile_content))
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
     try:
@@ -242,6 +287,19 @@ def _build_child_agent(
     return child
 
 def _run_single_child(
+    task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
+    owner_transport: Any = None, owner_session_record: Any = None, **_kwargs,
+) -> Dict[str, Any]:
+    """Run a child inside its target profile runtime scope when one is attached."""
+    with _child_profile_scope(child):
+        return _run_single_child_impl(
+            task_index, goal, child, parent_agent,
+            owner_session_id=owner_session_id, owner_transport=owner_transport,
+            owner_session_record=owner_session_record, **_kwargs,
+        )
+
+
+def _run_single_child_impl(
     task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
     owner_transport: Any = None, owner_session_record: Any = None, **_kwargs,
 ) -> Dict[str, Any]:
@@ -371,6 +429,7 @@ def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, live_deleg_id: Optional[str], live_writers: list,
     profile: Optional[str] = None, profile_content: Optional[Dict[str, Any]] = None,
+    profile_explicit_pin: bool = False,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
@@ -385,12 +444,13 @@ def _build_children(
     if loaded_profile_cfg is None and profile:
         import yaml as _yaml
         import os as _os
-        _pdir = _os.path.expanduser(f"~/.hermes/profiles/{profile}")
+        from hermes_constants import get_hermes_home
+        _pdir = _os.fspath(get_hermes_home() / "profiles" / profile)
         _config_path = _os.path.join(_pdir, "config.yaml")
         _soul_path = _os.path.join(_pdir, "SOUL.md")
         if not _os.path.isdir(_pdir):
             return [], f"Profile '{profile}' not found at {_pdir}"
-        loaded_profile_cfg = {"name": profile, "config": {}, "soul_md": None, "skills": []}
+        loaded_profile_cfg = {"name": profile, "config": {}, "soul_md": None, "skills": [], "home": _pdir}
         try:
             with open(_config_path, encoding="utf-8") as _f:
                 loaded_profile_cfg["config"] = _yaml.safe_load(_f) or {}
@@ -420,6 +480,21 @@ def _build_children(
                     )
     # ── END KENSEI CUSTOM ──
 
+    _profile_cfg = (loaded_profile_cfg or {}).get("config") or {}
+    _profile_model_values = _profile_model_cfg(_profile_cfg)
+    _profile_credentials = _profile_cfg.get("credentials")
+    if not isinstance(_profile_credentials, dict):
+        _profile_credentials = {}
+    _profile_provider = _profile_cfg.get("provider") or _profile_model_values.get("provider") or _profile_credentials.get("provider")
+    _profile_base_url = _profile_cfg.get("base_url") or _profile_model_values.get("base_url") or _profile_credentials.get("base_url")
+    _profile_api_key = _profile_cfg.get("api_key") or _profile_model_values.get("api_key") or _profile_credentials.get("api_key")
+    _profile_api_mode = _profile_cfg.get("api_mode") or _profile_credentials.get("api_mode")
+    _profile_request_overrides = _profile_cfg.get("request_overrides")
+    _profile_toolsets = (
+        _profile_cfg.get("toolsets")
+        or (loaded_profile_cfg or {}).get("toolsets")
+        or (loaded_profile_cfg or {}).get("skills")
+    )
     overrides = {
         "override_provider": creds["provider"], "override_base_url": creds["base_url"],
         "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
@@ -427,6 +502,18 @@ def _build_children(
         "override_max_tokens": creds.get("max_output_tokens"), "override_acp_command": creds.get("command"),
         "override_acp_args": creds.get("args"),
     }
+    if loaded_profile_cfg and not profile_explicit_pin:
+        if _profile_provider:
+            overrides["override_provider"] = _profile_provider
+        if _profile_base_url is not None:
+            overrides["override_base_url"] = _profile_base_url
+        if _profile_api_key is not None:
+            overrides["override_api_key"] = _profile_api_key
+        if _profile_api_mode is not None:
+            overrides["override_api_mode"] = _profile_api_mode
+        if isinstance(_profile_request_overrides, dict):
+            overrides["override_request_overrides"] = dict(_profile_request_overrides)
+    _profile_home = _profile_home_for_content(profile, loaded_profile_cfg)
     children = []
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
@@ -456,17 +543,23 @@ def _build_children(
         _effective_context = _child_prompt_extra if _child_prompt_extra is not None else _child_context
         # ── END KENSEI CUSTOM ──
         try:
-            child = _build_child_preserving_parent_tools(
-                task_index=i, goal=t["goal"], context=_effective_context,
-                toolsets=None,  # always inherit the parent's toolsets
-                model=_child_model, max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
-            )
+            with _profile_scope_or_null(profile, loaded_profile_cfg):
+                child = _build_child_preserving_parent_tools(
+                    task_index=i, goal=t["goal"], context=_effective_context,
+                    toolsets=_profile_toolsets if loaded_profile_cfg else None,
+                    model=_child_model, max_iterations=max_iterations, task_count=len(task_list),
+                    parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                    profile=profile, profile_content=loaded_profile_cfg,
+                    isolate_profile_credentials=bool(profile and loaded_profile_cfg and not profile_explicit_pin),
+                    **overrides,
+                )
         except ValueError as exc:
             return [], str(exc)
         # ── KENSEI CUSTOM — stamp profile name for cycle detection ──
         if profile:
-            child._delegate_profile_name = loaded_profile_cfg.get("name") or profile
+            setattr(child, "_delegate_profile_name", (loaded_profile_cfg or {}).get("name") or profile)
+            if _profile_home is not None:
+                setattr(child, "_delegate_profile_home", _profile_home)
         # ── END KENSEI CUSTOM ──
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
@@ -547,6 +640,13 @@ def delegate_task(
         # Explicit-pin preflight failures (e.g. pinned delegation.command missing from PATH) refuse the
         # spawn loudly (#80450).
         return tool_error(str(exc))
+    _pin_cfg = credentials_cfg if credentials_cfg is not None else cfg
+    _profile_explicit_pin = bool(
+        profile and isinstance(_pin_cfg, dict) and any(
+            _pin_cfg.get(_key) not in (None, "")
+            for _key in ("provider", "base_url", "api_key", "api_mode", "model", "command", "args")
+        )
+    )
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
@@ -586,7 +686,7 @@ def delegate_task(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         live_deleg_id=live_deleg_id, live_writers=live_writers,
         # ── KENSEI CUSTOM — profile flow (ported) ──
-        profile=profile, profile_content=profile_content,
+        profile=profile, profile_content=profile_content, profile_explicit_pin=_profile_explicit_pin,
     )
     if err:
         return tool_error(err)
@@ -738,16 +838,21 @@ DELEGATE_TASK_SCHEMA = {
                             "fields you will read.",
                         ),
                     },
+                    "required": ["goal"],
+                },
+                "description": "(rebuilt at get_definitions() time)",
+            },
             "profile": {
-            "type": "string",
-            "description": (
-            "Profile name to load config, SOUL.md, and always_skills "
-            "from for the subagent. When set, the subagent uses the "
-            "profile's model, provider, toolsets, and identity instead "
-            "of inheriting the parent's. The profile must exist under "
-            "~/.hermes/profiles/<name>/."
-            ),
-            },            "synthesize": {
+                "type": "string",
+                "description": (
+                    "Profile name to load config, SOUL.md, and always_skills "
+                    "from for the subagent. When set, the subagent uses the "
+                    "profile's model, provider, toolsets, and identity instead "
+                    "of inheriting the parent's. The profile must exist under "
+                    "~/.hermes/profiles/<name>/."
+                ),
+            },
+            "synthesize": {
                 "type": "boolean",
                 "description": (
                     "KENSEI CUSTOM. After all children complete in batch mode, "
@@ -774,11 +879,6 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Custom rubric for the skeptic when verify=true."
                 ),
-            },
-
-                    "required": ["goal"],
-                },
-                "description": "(rebuilt at get_definitions() time)",
             },
             # `background` (bool) is also accepted — DEPRECATED, ignored: top-level
             # delegations always run in the background. Unadvertised; do not re-add.

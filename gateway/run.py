@@ -1632,58 +1632,28 @@ def _terminal_scope_cwd(default: str = "") -> str:
 
 
 def _load_profile_secret_scope(profile_home: "Path") -> dict:
-    """Hydrate and load one profile's secrets under its home override."""
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    # Caller already hydrated external sources off-loop (#99519).
-    from agent.secret_scope import build_profile_secret_scope
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
-
-    home_token = set_hermes_home_override(str(profile_home))
-    try:
-        hydrate_profile_secret_sources(Path(profile_home))
-        return build_profile_secret_scope(Path(profile_home))
-    finally:
-        reset_hermes_home_override(home_token)
+    """Compatibility wrapper for the neutral profile-scope secret loader."""
+    from agent.profile_runtime_scope import load_profile_secret_scope
+    return load_profile_secret_scope(Path(profile_home))
 
 
 @_contextmanager
 def _profile_runtime_scope(
     profile_home: "Path", prepared_secret_scope: Optional[dict] = None, *,
     hydrate_secrets: bool = True):
-    """Scope config/skills/memory AND credentials to a profile for one turn (multiplexed path only).
-    ``set_hermes_home_override`` is a contextvar (reaches the agent worker via ``copy_context()``);
-    ``set_secret_scope`` makes the profile ``.env`` the credential source without mutating
-    ``os.environ``, so subprocesses never inherit cross-profile secrets."""
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from agent.secret_scope import set_secret_scope, reset_secret_scope
-
-    home_token = set_hermes_home_override(str(profile_home))
-    if prepared_secret_scope is not None:
-        secrets = prepared_secret_scope
-    elif hydrate_secrets:
-        secrets = _load_profile_secret_scope(Path(profile_home))
-    else:
-        from agent.secret_scope import build_profile_secret_scope  # caller already hydrated off-loop
-        secrets = build_profile_secret_scope(Path(profile_home))
-    secret_token = set_secret_scope(secrets)
-    # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
-    # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
-    # pinned (first-writer-wins backend leak; #68559).
-    from tools.terminal_scope import install_and_reset_profile_terminal_scope
-
-    with install_and_reset_profile_terminal_scope(Path(profile_home)):
-        try:
-            yield
-        finally:
-            reset_secret_scope(secret_token)
-            reset_hermes_home_override(home_token)
+    """Compatibility wrapper around the neutral context-local profile scope."""
+    from agent.profile_runtime_scope import profile_runtime_scope
+    with profile_runtime_scope(
+        Path(profile_home), prepared_secret_scope, hydrate_secrets=hydrate_secrets
+    ):
+        yield
 
 
 @_asynccontextmanager
 async def _async_profile_runtime_scope(profile_home: "Path"):
     """Enter a profile scope without loading secret files on the event loop."""
     secrets = await asyncio.to_thread(_load_profile_secret_scope, Path(profile_home))
-    with _profile_runtime_scope(Path(profile_home), secrets):
+    with _profile_runtime_scope(Path(profile_home), secrets, hydrate_secrets=False):
         yield
 
 

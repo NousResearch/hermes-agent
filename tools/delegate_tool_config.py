@@ -413,6 +413,7 @@ def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_max_tokens: Optional[int], override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
+    isolate_profile_credentials: bool = False,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -421,7 +422,11 @@ def _resolve_child_runtime(
     pinned provider is actually honoured."""
     effective_model = model or parent_agent.model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
-    effective_base_url = override_base_url or _inherit_parent_base_url(parent_agent, parent_agent.base_url)
+    effective_base_url = (
+        override_base_url
+        if override_base_url is not None
+        else (None if isolate_profile_credentials else _inherit_parent_base_url(parent_agent, parent_agent.base_url))
+    )
     # api_mode: each provider has its own wire, so a different provider re-derives (None) instead of inheriting (404s
     # otherwise). Nous Portal is dual-wire within one provider (anthropic/* → Messages, else chat_completions), so
     # same-provider inheritance would pin the child on the wrong wire — re-derive.
@@ -481,7 +486,8 @@ def _resolve_child_runtime(
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
     kwargs: Dict[str, Any] = {
-        "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
+        "base_url": effective_base_url,
+        "api_key": override_api_key if override_api_key is not None else (None if isolate_profile_credentials else parent_api_key),
         "provider": effective_provider,
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,

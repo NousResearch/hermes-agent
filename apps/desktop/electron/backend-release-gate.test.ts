@@ -12,7 +12,13 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { RELEASE_GATE_POLL_MS, type ReleaseGateDeps, waitForBackendRelease } from './backend-release-gate'
+import {
+  createInstallLockGateProbe,
+  RELEASE_GATE_DEADLINE_MS,
+  RELEASE_GATE_POLL_MS,
+  type ReleaseGateDeps,
+  waitForBackendRelease
+} from './backend-release-gate'
 
 /** A fake clock where sleep() advances time instantly. */
 function fakeClock() {
@@ -160,5 +166,104 @@ describe('waitForBackendRelease (#74805 first-attempt race)', () => {
 
     expect(result.unlocked).toBe(true)
     expect(deps.kills).toEqual([])
+  })
+})
+
+
+describe('install lock probe the gate polls', () => {
+  function makeProbe(overrides: { shared?: string[]; definite?: string[] } = {}) {
+    const probeCalls: number[] = []
+    const attributionBudgets: number[] = []
+    let holders = 1
+    let t = 0
+
+    const probe = createInstallLockGateProbe({
+      now: () => t,
+      probeLocks: limit => {
+        probeCalls.push(limit)
+
+        return { definite: overrides.definite ?? [], shared: overrides.shared ?? ['C:\\i\\venv\\shared.pyd'] }
+      },
+      countAttributedHolders: async budgetMs => {
+        attributionBudgets.push(budgetMs)
+
+        return holders
+      }
+    })
+
+    return {
+      probe,
+      probeCalls,
+      attributionBudgets,
+      advance: (ms: number) => {
+        t += ms
+      },
+      setHolders: (next: number) => {
+        holders = next
+      }
+    }
+  }
+
+  it('asks the sweep to stop at the first definite lock', async () => {
+    const gate = makeProbe({ definite: ['C:\\i\\venv\\held.pyd'] })
+
+    expect(await gate.probe()).toBe(true)
+    // Not the whole ~270-file mutation set: one finding answers the question.
+    expect(gate.probeCalls).toEqual([1])
+    expect(gate.attributionBudgets).toEqual([])
+  })
+
+  it('attributes shared hard links once per gate run, not once per poll', async () => {
+    const gate = makeProbe()
+
+    // 50 polls is what a 15 s gate does at RELEASE_GATE_POLL_MS. Each one used
+    // to spawn a PowerShell attribution with a 12 s budget.
+    for (let poll = 0; poll < 50; poll++) {
+      expect(await gate.probe()).toBe(true)
+      gate.advance(RELEASE_GATE_POLL_MS)
+    }
+
+    expect(gate.attributionBudgets.length).toBe(1)
+    expect(gate.attributionBudgets[0]).toBeLessThan(RELEASE_GATE_DEADLINE_MS)
+    expect(gate.probeCalls.length).toBe(50)
+  })
+
+  it('re-attributes after the cooldown so the deadline check is not stuck on a stale answer', async () => {
+    const gate = makeProbe()
+
+    expect(await gate.probe()).toBe(true)
+    gate.advance(RELEASE_GATE_DEADLINE_MS)
+    gate.setHolders(0)
+
+    expect(await gate.probe()).toBe(false)
+    expect(gate.attributionBudgets.length).toBe(2)
+  })
+
+  it('stays locked when attribution fails', async () => {
+    let t = 0
+    const probe = createInstallLockGateProbe({
+      now: () => t,
+      probeLocks: () => ({ definite: [], shared: ['C:\\i\\venv\\shared.pyd'] }),
+      countAttributedHolders: async () => {
+        throw new Error('powershell timed out')
+      }
+    })
+
+    expect(await probe()).toBe(true)
+  })
+
+  it('reports unlocked without attribution when nothing is locked', async () => {
+    const attributions: number[] = []
+    const probe = createInstallLockGateProbe({
+      probeLocks: () => ({ definite: [], shared: [] }),
+      countAttributedHolders: async budgetMs => {
+        attributions.push(budgetMs)
+
+        return 1
+      }
+    })
+
+    expect(await probe()).toBe(false)
+    expect(attributions).toEqual([])
   })
 })

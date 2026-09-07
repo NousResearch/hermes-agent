@@ -66,7 +66,6 @@ afterEach(() => {
 })
 
 async function renderModal(open = true) {
-  const { ProviderConfigModal } = await import('./provider-config-modal')
   const onOpenChange = vi.fn()
   const onSaved = vi.fn().mockResolvedValue(undefined)
 
@@ -82,6 +81,10 @@ async function renderModal(open = true) {
 
   return { ...result, onOpenChange, onSaved }
 }
+
+// Load stable modules during collection, after mock fixtures are initialized.
+// Cold transforms must not consume a behavioral test or hook deadline.
+const { ProviderConfigModal } = await import('./provider-config-modal')
 
 describe('ProviderConfigModal', () => {
   it('renders every field grouped, including inline ones, with kind-specific controls', async () => {

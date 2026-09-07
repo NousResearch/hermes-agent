@@ -78,6 +78,10 @@ import {
 
 const session = (over: Partial<SessionInfo>): SessionInfo => makeSessionInfo({ id: 'live', ...over })
 
+// Load stable modules during collection, after mock fixtures are initialized.
+// Cold transforms must not consume a behavioral test or hook deadline.
+const { openSession } = await import('@/app/open-session')
+
 describe('composer model persistence scope', () => {
   const local = { baseUrl: '', connectionId: 'local', mode: 'local' } as never
 
@@ -1201,7 +1205,6 @@ describe('unread finished sessions', () => {
 
     // A no-op navigate — openSession with 'in-place' against the already
     // selected session hits focusOpenSession and returns without loading.
-    const { openSession } = await import('@/app/open-session')
     openSession('s1', () => {}, 'in-place')
 
     expect($unreadFinishedSessionIds.get()).toEqual([])

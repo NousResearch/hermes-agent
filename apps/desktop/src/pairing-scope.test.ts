@@ -10,11 +10,14 @@ const api = vi.fn().mockResolvedValue({ ok: true })
 
 vi.stubGlobal('window', { hermesDesktop: { api } })
 
+// Load stable modules during collection, after mock fixtures are initialized.
+// Cold transforms must not consume a behavioral test or hook deadline.
+const mod = await import('@/hermes')
+
 describe('pairing requests carry the active profile', () => {
   beforeEach(() => api.mockClear())
 
   it('scopes approve and revoke by body, and the listing by query', async () => {
-    const mod = await import('@/hermes')
     mod.setApiRequestProfile('work')
 
     await mod.approvePairing('telegram', 'a'.repeat(16))
@@ -29,7 +32,6 @@ describe('pairing requests carry the active profile', () => {
   })
 
   it('omits the profile entirely for single-profile users', async () => {
-    const mod = await import('@/hermes')
     mod.setApiRequestProfile(null)
 
     await mod.approvePairing('telegram', 'a'.repeat(16))

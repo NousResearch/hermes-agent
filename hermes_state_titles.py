@@ -123,7 +123,8 @@ class SessionTitlesMixin:
 
     def set_auto_title(self, session_id: str, title: str, *, source: str) -> bool:
         """Set an automatic title; False (untouched) when a higher-authority title holds the row."""
-        if source not in (self.TITLE_SOURCE_DERIVED, self.TITLE_SOURCE_LLM):
+        if source not in (self.TITLE_SOURCE_BRANCH, self.TITLE_SOURCE_BRANCH_FALLBACK,
+                          self.TITLE_SOURCE_DERIVED, self.TITLE_SOURCE_LLM):
             raise ValueError(f"invalid automatic title source: {source!r}")
         return self._set_session_title(session_id, title, source=source)
 

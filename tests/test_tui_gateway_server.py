@@ -15600,8 +15600,8 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
         def append_messages_batch(self, session_id, messages, **kwargs):
             seen["messages"] = list(messages)
 
-        def set_session_title(self, key, title):
-            seen["title"] = title
+        def set_auto_title(self, key, title, *, source):
+            seen["title"] = (key, title, source)
             return True
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
@@ -15643,7 +15643,7 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     assert seen.get("created") == key
     assert seen.get("parent") == "20260823_084113_6de211"
     assert seen.get("branched_from") == "20260823_084113_6de211"
-    assert seen.get("title") == "My Parent Session #2"
+    assert seen.get("title") == (key, "My Parent Session #2", "branch")
 
     # Seeded transcript copied into the durable row so REST prefetch and
     # defer_history hydration both find it immediately.
@@ -15724,6 +15724,7 @@ def test_session_create_seed_failure_after_row_compensates(monkeypatch):
             seen["created"] = key
 
         def append_messages_batch(self, session_id, messages, **kwargs):
+            seen["transcript_attempt"] = session_id
             raise RuntimeError("transcript write failed")
 
         def delete_session(self, session_id):
@@ -15760,6 +15761,7 @@ def test_session_create_seed_failure_after_row_compensates(monkeypatch):
     key = resp["result"]["stored_session_id"]
     # The half-written child was rolled back — no durable empty row left to
     # shadow the lazy seed path.
+    assert seen.get("transcript_attempt") == key
     assert seen.get("deleted") == key
     # pending_title survived: it still lands via the lazy post-turn apply.
     runtime_sid = resp["result"]["session_id"]
@@ -15832,7 +15834,13 @@ def test_session_create_seed_disk_full_keeps_row_for_retry(monkeypatch):
     assert "result" in resp
     # The failure surfaced at WARNING (observable), not buried at debug.
     warnings = [r for r in records if r.levelno >= _logging.WARNING]
-    assert any("seeded-branch persistence failed" in r.getMessage() for r in warnings)
+    persistence_warning = next(
+        r for r in warnings if "seeded-branch persistence failed" in r.getMessage()
+    )
+    assert persistence_warning.exc_info is not None
+    error = persistence_warning.exc_info[1]
+    assert isinstance(error, OSError)
+    assert error.errno == 28
 
     server._sessions.pop(resp["result"]["stored_session_id"], None)
 
@@ -16027,7 +16035,8 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
                 seen["msgs"].append(dict(message, session_id=session_id))
             return list(range(1, len(messages) + 1))
 
-        def set_session_title(self, _key, _title):
+        def set_auto_title(self, key, title, *, source):
+            seen["title"] = (key, title, source)
             return True
 
         def get_session(self, key):
@@ -16084,6 +16093,9 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         )
 
         assert "result" in response, response
+        child = server._sessions[response["result"]["session_id"]]
+        assert child is not None
+        assert seen.get("title") == (child["session_key"], "parent (branch)", "branch")
         assert [message["content"] for message in seen["msgs"]] == [
             "first question",
             "first answer",

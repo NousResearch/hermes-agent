@@ -113,7 +113,7 @@ def test_duplicate_async_queue_replay_injects_once(monkeypatch, isolated_registr
     adapter.handle_message.assert_awaited_once()
 
 
-def test_unroutable_async_event_is_not_requeued_forever(
+def test_unroutable_async_event_remains_retryable(
     monkeypatch, isolated_registry,
 ):
     isolated = queue.Queue()
@@ -129,7 +129,7 @@ def test_unroutable_async_event_is_not_requeued_forever(
     asyncio.run(runner._async_delegation_watcher(interval=0))
 
     adapter.handle_message.assert_not_awaited()
-    assert isolated.empty()
+    assert not isolated.empty()
 
 
 def test_concurrent_claims_share_the_same_narrow_delivery_seam():
@@ -884,3 +884,55 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
     assert "Result for deleg_owned_1" not in delivered.text
     row = async_delegation.get_durable_delegation(events[1]["delegation_id"])
     assert row["delivery_state"] == "pending"
+
+
+@pytest.mark.parametrize("unavailable", ["raw_adapter", "transport", "owner_db", "api_db"])
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavailable, batch_size):
+    """Unavailable owners/transports cannot consume any sibling's durable attempts."""
+    from hermes_state import SessionDB
+    from tools import async_delegation
+
+    events = [_async_event(f"deleg_unavailable_{i}") for i in range(batch_size)]
+    raw = unavailable in {"raw_adapter", "api_db"}
+    for event in events:
+        if raw:
+            event["session_key"] = "opaque-client-session"
+        if unavailable == "owner_db":
+            event["parent_session_id"] = "parent-session"
+        _persist_pending_completion(event)
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    api = SimpleNamespace(supports_async_delivery=False, _ensure_session_db=lambda: None)
+    for _restart in range(10):
+        runner = _runner(adapter)
+        runner.adapters = {Platform.API_SERVER: api} if unavailable == "api_db" else {}
+        if unavailable == "owner_db":
+            runner.adapters = {Platform.TELEGRAM: adapter}
+        assert asyncio.run(runner._deliver_async_delegation_group(events)) is False
+        for event in events:
+            row = async_delegation.get_durable_delegation(event["delegation_id"])
+            assert (row["delivery_state"], row["delivery_attempts"]) == ("pending", 0)
+
+    runner = _runner(adapter)
+    db = SessionDB(tmp_path / "owner.db")
+    try:
+        if raw:
+            db.create_session("opaque-client-session", "api_server")
+            api._ensure_session_db = lambda: db
+            runner.adapters = {Platform.API_SERVER: api}
+        if unavailable == "owner_db":
+            runner._session_db = SimpleNamespace(get_session=AsyncMock(return_value={"ended_at": None}))
+        assert asyncio.run(runner._deliver_async_delegation_group(events)) is True
+        for event in events:
+            row = async_delegation.get_durable_delegation(event["delegation_id"])
+            assert (row["delivery_state"], row["delivery_attempts"]) == ("delivered", 1)
+        if raw:
+            rows = db.get_messages("opaque-client-session")
+            assert len(rows) == 1
+            assert rows[0]["display_kind"] == "async_delegation_complete"
+            adapter.handle_message.assert_not_awaited()
+        else:
+            adapter.handle_message.assert_awaited_once()
+    finally:
+        db.close()

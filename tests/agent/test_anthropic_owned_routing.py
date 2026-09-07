@@ -1,8 +1,11 @@
 """Owned OAuth must win without rotating an unrelated borrowed grant."""
 import json
 import time
+from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import AuthenticationError
 
 from agent import anthropic_credentials as ac
 from agent import auxiliary_client as aux
@@ -46,5 +49,13 @@ def test_auxiliary_owned_refresh_does_not_spend_borrowed_rotation(tmp_path, monk
         pytest.fail("Auxiliary refreshed an unrelated borrowed grant")
     monkeypatch.setattr(ac, "refresh_anthropic_oauth_pure", refresh)
     monkeypatch.setattr(ac, "_refresh_oauth_token", forbidden)
-    assert aux._refresh_anthropic_credentials("owned-token")
+    error = AuthenticationError("Invalid API key", response=httpx.Response(
+        401, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")), body={})
+    route = SimpleNamespace(client=SimpleNamespace(api_key="owned-token"), task="compression", tag="",
+        resolved_provider="anthropic", base_info="https://api.anthropic.com", resolved_model="fixture",
+        final_model="fixture", main_runtime=None)
+    retry = aux._ladder_credential_rungs(error, route, {}, False)
+    assert next(retry).kind == "retry_same_provider"
+    retry.close()
     assert borrowed.read_bytes() == before
+    assert aux._refresh_anthropic_credentials("unrelated-api-key") is False

@@ -21,7 +21,7 @@ They look similar but serve different jobs:
 | | `/heartbeat` | [`hermes cron`](./cron) |
 |---|---|---|
 | Runs in | **This conversation** — full context, memory of the discussion | A fresh isolated session per tick |
-| Survives process restart | State survives (SessionDB); firing resumes next time the session is driven | Yes — fully durable scheduler |
+| Survives process restart | State survives (SessionDB); gateway watches resume automatically after restart | Yes — fully durable scheduler |
 | How many | One per session | Unlimited jobs |
 | Best for | "Keep an eye on X *in this thread* while we work" | Standing jobs, reports, watchdogs, deliveries |
 
@@ -45,6 +45,7 @@ Rule of thumb: if the recurring prompt needs the conversation's context, use `/h
 - **Missed ticks coalesce.** If the session was busy (or the process wasn't running) through several intervals, you get **one** heartbeat turn, not a backlog. The timer re-anchors on every fire.
 - **User messages win.** A queued user message always takes priority; the heartbeat waits for the input queue to drain.
 - **Cache-safe.** The injected prompt is an ordinary user message. No system-prompt mutation, no toolset change.
+- **Gateway recovery.** Startup restores active heartbeats using the current persisted conversation and thread routing, in the owning profile. Each poll retries recovery after temporary storage failures or adapter downtime; paused and cleared heartbeats do not restart. No new chat message is required.
 - **Persistence.** State lives in `SessionDB.state_meta` keyed by `heartbeat:<session_id>` — it survives `/resume` and rides across context-compression session rotations. Firing requires the owning process (CLI session or gateway) to be running; for schedules that must survive anything, use cron.
 - **Don't-invent-work guard.** The injected prompt tells the agent to reply briefly and stop when nothing meaningful changed, so an idle heartbeat doesn't generate busywork.
 

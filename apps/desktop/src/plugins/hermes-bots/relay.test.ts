@@ -399,6 +399,79 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     stopBotRelay()
   })
 
+  it('never publishes a bot that went private, to any peer', async () => {
+    // `private` takes a bot out of the agent-to-agent mesh. The publisher must drop it
+    // so no other machine ever learns it exists — and it must NOT be confused with
+    // `hidden`, which only hides a bot in this desktop's own roster pane.
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list') {
+        return call.connectionId === 'a'
+          ? { profiles: [{ name: 'default' }] }
+          : {
+              profiles: [
+                { name: 'ops' },
+                { name: 'lucky', ui_meta: { 'hermes-bots': { private: true } } },
+                { name: 'shy', ui_meta: { 'hermes-bots': { hidden: true } } }
+              ]
+            }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const toA = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'a')!
+    const handles = (toA.params as { agents: { handle: string }[] }).agents.map(row => row.handle).sort()
+
+    // ops and the merely-hidden bot are advertised; the private one never is.
+    expect(handles).toEqual(['ops', 'shy'])
+    expect(handles).not.toContain('lucky')
+
+    stopBotRelay()
+  })
+
+  it('withholds a private bot however YAML spelled the flag', async () => {
+    // The gateway reads this flag with `_boolish`, which accepts true / 1 / "yes" / "on". A
+    // strict `!== true` here published those anyway, leaving the invariant "private is never
+    // advertised" to rest on the consuming gateway's filter alone — which an older peer does
+    // not have. Both sides of the relay must agree on what counts as private.
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list') {
+        return call.connectionId === 'a'
+          ? { profiles: [{ name: 'default' }] }
+          : {
+              profiles: [
+                { name: 'ops' },
+                { name: 'one', ui_meta: { 'hermes-bots': { private: 1 } } },
+                { name: 'yes', ui_meta: { 'hermes-bots': { private: 'yes' } } },
+                { name: 'onn', ui_meta: { 'hermes-bots': { private: ' ON ' } } },
+                // Unrecognised values fail OPEN: a typo must not remove a working teammate.
+                { name: 'nope', ui_meta: { 'hermes-bots': { private: 'no' } } },
+                { name: 'zero', ui_meta: { 'hermes-bots': { private: 0 } } }
+              ]
+            }
+      }
+    
+      return {}
+    })
+    
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    
+    const toA = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'a')!
+    const handles = (toA.params as { agents: { handle: string }[] }).agents.map(row => row.handle).sort()
+    
+    expect(handles).toEqual(['nope', 'ops', 'zero'])
+    
+    stopBotRelay()
+  })
+
   it('never conflates a transient fetch failure with an empty connection', async () => {
     // A live machine whose profiles.list blips must not be pushed as absent:
     // the gateway-side liveness check reads "absent from a fresh roster" as

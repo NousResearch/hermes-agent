@@ -966,6 +966,25 @@ class BuzzAdapter(BasePlatformAdapter):
             self._remember_event_meta(str(chat_id), result.message_id, self._self_pubkey, content)
         return result
 
+    async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
+        """Create a fresh Buzz thread root for a continuable cron handoff.
+
+        Buzz threads are NIP-10 reply trees rather than server-side objects.  A top-level
+        seed event therefore *is* the thread: return its verified event id so the cron
+        delivery can reply to it and seed the matching Hermes session.
+        """
+        if self._reply_to_mode == "off":
+            return None
+        seed = f"🧵 {(str(name or '').strip() or 'Hermes session')[:100]}"
+        result = await self.send(str(parent_chat_id), seed)
+        if not result.success or not result.message_id:
+            logger.warning(
+                "Buzz handoff thread: seed-post failed for channel %s: %s",
+                parent_chat_id, result.error or "missing event id",
+            )
+            return None
+        return str(result.message_id)
+
     def _reply_args(self, anchor: Optional[str]) -> List[str]:
         """``--reply-to`` CLI args for *anchor*, honoring ``reply_to_mode``."""
         reply_target = self._resolve_reply_anchor(anchor)

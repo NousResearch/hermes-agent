@@ -158,6 +158,31 @@ class TestBuzzAdapterInit:
         assert adapter.relay_url == "https://env.relay"
 
 
+class TestBuzzHandoffThread:
+    @pytest.mark.asyncio
+    async def test_creates_top_level_seed_and_returns_event_id(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        event_id = "c" * 64
+        cli.script("messages", "send", {"event_id": event_id, "accepted": True})
+        adapter._run_cli = cli
+
+        result = await adapter.create_handoff_thread(CHANNEL, "Hermes — interview")
+
+        assert result == event_id
+        args, content = cli.calls[-1]
+        assert args == ["messages", "send", "--channel", CHANNEL, "--content", "-"]
+        assert content == "🧵 Hermes — interview"
+
+    @pytest.mark.asyncio
+    async def test_disabled_threading_does_not_post_seed(self):
+        adapter = _make_adapter({"reply_in_thread": False})
+        adapter._run_cli = AsyncMock()
+
+        assert await adapter.create_handoff_thread(CHANNEL, "Hermes — interview") is None
+        adapter._run_cli.assert_not_awaited()
+
+
 # ── Multiplex secondary-profile scope (#98738) ─────────────────────────────
 
 

@@ -238,21 +238,7 @@ async def _resolve_container_fallback(
     cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {shlex.quote(str(p))} | base64 | tr -d '\\n'"
     last_res: dict = {"returncode": 1, "output": ""}
     for attempt in range(2):
-        try:
-            last_res = await asyncio.to_thread(env.execute, cmd)
-        except Exception as exc:
-            from tools.environments.base import EnvironmentConnectionError
-
-            if not isinstance(exc, EnvironmentConnectionError):
-                raise
-            from tools.terminal_tool import _evict_environment_for_task
-
-            _evict_environment_for_task(ctx.task_id)
-            raise SourceNotFound(
-                f"sandbox connection lost while reading '{p}': {exc.reason}",
-                src=src,
-                origin="container",
-            ) from exc
+        last_res = await asyncio.to_thread(env.execute, cmd)
         if last_res.get("returncode", 1) == 0:
             break
         if attempt == 0:

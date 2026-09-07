@@ -23,7 +23,7 @@ import tempfile
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Collection, Dict, List, Optional, Tuple
 
 from tools.thread_context import propagate_context_to_thread
 from tools.registry import registry, tool_error
@@ -36,10 +36,16 @@ logger = logging.getLogger(__name__)
 # Loopback TCP replaces AF_UNIX on Windows, so execute_code runs on every platform Hermes does.
 SANDBOX_AVAILABLE = True
 
-# Tools allowed inside the sandbox; ∩ the session's enabled tools decides which stubs are generated.
-SANDBOX_ALLOWED_TOOLS = frozenset([
+# The direct helpers form execute_code's umbrella capability. Tool Search
+# bridges are session-scoped and are exposed only when the final local session
+# surface contains them.
+DEFERRED_BRIDGE_TOOLS = frozenset([
+    "tool_search", "tool_describe", "tool_call",
+])
+DIRECT_SANDBOX_TOOLS = frozenset([
     "web_search", "web_extract", "read_file", "write_file", "search_files", "patch", "terminal",
 ])
+SANDBOX_ALLOWED_TOOLS = DIRECT_SANDBOX_TOOLS
 
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
 DEFAULT_TIMEOUT = 300        # 5 minutes
@@ -138,6 +144,15 @@ _TOOL_STUBS = {
     "terminal": ("command: str, timeout: int = None, workdir: str = None",
         '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
         '{"command": command, "timeout": timeout, "workdir": workdir}'),
+    "tool_search": ("queries: list[str] | str, limit: int = 5",
+        '"""Search deferred MCP and plugin tools by capability."""',
+        '{"queries": queries, "limit": limit}'),
+    "tool_describe": ("names: list[str] | str",
+        '"""Load full schemas for deferred tools returned by tool_search."""',
+        '{"names": names}'),
+    "tool_call": ("name: str, arguments: dict = None",
+        '"""Invoke one deferred tool with normal policy, hooks, and approvals."""',
+        '{"name": name, "arguments": arguments or {}}'),
 }
 
 
@@ -548,14 +563,21 @@ def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
     return json.dumps(result, ensure_ascii=False)
 
 
-def _sandbox_tools_for(enabled_tools: Optional[List[str]]) -> frozenset:
-    """Enabled ∩ SANDBOX_ALLOWED_TOOLS, or every sandbox tool when the intersection is empty."""
-    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or ())) or SANDBOX_ALLOWED_TOOLS
+def _sandbox_tools_for(
+    enabled_tools: Optional[List[str]], *, allow_deferred_bridges: bool = False,
+) -> frozenset:
+    """Return direct umbrella helpers plus explicitly authorized bridges."""
+    tools = set(DIRECT_SANDBOX_TOOLS)
+    if allow_deferred_bridges:
+        tools.update(DEFERRED_BRIDGE_TOOLS & set(enabled_tools or ()))
+    return frozenset(tools)
 
 
 def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
                          sandbox_tools: frozenset, *, timeout: int, max_tool_calls: int,
-                         exec_start: float) -> str:
+                         exec_start: float, session_id: Optional[str] = None,
+                         enabled_toolsets: Optional[List[str]] = None,
+                         disabled_toolsets: Optional[List[str]] = None) -> str:
     """Per-call script ship: stage hermes_tools.py + script.py in a fresh remote sandbox dir,
     serve file-RPC from a polling thread, run, clean up."""
     sandbox_dir = f"{_env_temp_dir(env)}/hermes_exec_{uuid.uuid4().hex[:12]}"
@@ -574,7 +596,8 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         rpc_thread = threading.Thread(
             target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
             args=(env, f"{sandbox_dir}/rpc", effective_task_id, [], tool_call_counter,
-                  max_tool_calls, sandbox_tools, stop_event, rpc_token))
+                  max_tool_calls, sandbox_tools, stop_event, rpc_token, session_id,
+                  enabled_toolsets, disabled_toolsets))
         rpc_thread.start()
         env_prefix = (f"HERMES_RPC_DIR={quoted_rpc_dir} HERMES_RPC_TOKEN={shlex.quote(rpc_token)} "
                       "PYTHONDONTWRITEBYTECODE=1")
@@ -613,6 +636,9 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
 
 
 def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[List[str]],
+                    *, session_id: Optional[str] = None,
+                    enabled_toolsets: Optional[List[str]] = None,
+                    disabled_toolsets: Optional[List[str]] = None,
                     reset: bool = False) -> str:
     """Run code on the remote terminal backend: the owner's persistent remote session kernel
     (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
@@ -639,6 +665,8 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
                 code, env=env, env_type=env_type, task_env_id=effective_task_id,
                 sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
                 max_tool_calls=max_tool_calls, reset=bool(reset),
+                session_id=session_id, enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
                 idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
             )
         except Exception:
@@ -650,7 +678,9 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
     except Exception as exc:
         return _remote_failure(exc, exec_start, 0)
     return _run_remote_per_call(env, env_type, code, effective_task_id, sandbox_tools,
-                                timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start)
+                                timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start,
+                                session_id=session_id, enabled_toolsets=enabled_toolsets,
+                                disabled_toolsets=disabled_toolsets)
 
 
 # ---- Main entry point ----
@@ -659,7 +689,10 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
 def execute_code(
     code: str,
     task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
     reset: bool = False,
 ) -> str:
     """Run Python in the session's persistent kernel (local) or on the remote terminal backend,
@@ -715,8 +748,21 @@ def execute_code(
     if _guard.get("user_approved"):
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
+    has_explicit_toolset_scope = enabled_toolsets is not None or disabled_toolsets is not None
+    sandbox_tools = _sandbox_tools_for(
+        enabled_tools,
+        allow_deferred_bridges=env_type == "local" and has_explicit_toolset_scope,
+    )
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
+        return _execute_remote(
+            code,
+            task_id,
+            enabled_tools,
+            session_id=session_id,
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            reset=bool(reset),
+        )
     from tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above
     # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
@@ -726,7 +772,8 @@ def execute_code(
     return execute_in_session_kernel(
         code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
         child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
-        sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
+        sandbox_tools=frozenset(sandbox_tools), session_id=session_id,
+        enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
         reset=bool(reset), is_interrupted=_is_interrupted,
@@ -808,16 +855,43 @@ _TOOL_DOC_LINES = [
      "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
 ]
 
+_DEFERRED_TOOL_DOC_LINES = [
+    ("tool_search", "  tool_search(queries: list[str] | str, limit: int = 5) -> dict\n"
+     "    Search deferred MCP and plugin tools by capability."),
+    ("tool_describe", "  tool_describe(names: list[str] | str) -> dict\n"
+     "    Load full schemas for deferred tools returned by tool_search."),
+    ("tool_call", "  tool_call(name: str, arguments: dict = None) -> dict\n"
+     "    Invoke one deferred tool. Policy, hooks, and approvals still apply."),
+]
 
-def build_execute_code_schema(enabled_sandbox_tools: set = None,
-                              mode: str = None) -> dict:
+
+def build_execute_code_schema(
+    enabled_sandbox_tools: Optional[Collection[str]] = None,
+    mode: Optional[str] = None,
+    *,
+    allow_deferred_bridges: Optional[bool] = None,
+) -> dict:
     """execute_code schema listing only *enabled_sandbox_tools* — a disabled tool (e.g. web off)
     must not appear or the model keeps trying it. ``mode`` (None → config) picks the cwd sentence."""
     if enabled_sandbox_tools is None:
-        enabled_sandbox_tools = SANDBOX_ALLOWED_TOOLS
+        enabled_sandbox_tools = set(DIRECT_SANDBOX_TOOLS)
+    else:
+        enabled_sandbox_tools = set(enabled_sandbox_tools)
+    if allow_deferred_bridges is None:
+        try:
+            from tools.terminal_tool import _get_env_config
+            allow_deferred_bridges = _get_env_config().get("env_type") == "local"
+        except Exception:
+            allow_deferred_bridges = False
+    if not allow_deferred_bridges:
+        enabled_sandbox_tools -= DEFERRED_BRIDGE_TOOLS
     if mode is None:
         mode = _get_execution_mode()
-    tool_lines = "\n".join(doc for name, doc in _TOOL_DOC_LINES if name in enabled_sandbox_tools)
+    tool_lines = "\n".join(
+        doc
+        for name, doc in (*_TOOL_DOC_LINES, *_DEFERRED_TOOL_DOC_LINES)
+        if name in enabled_sandbox_tools
+    )
     import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
     import_examples = import_examples or sorted(enabled_sandbox_tools)[:2]
     import_str = ", ".join(import_examples) + ", ..." if import_examples else "..."
@@ -875,8 +949,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     }
 
 
-# Registration-time schema (all sandbox tools, configured mode); model_tools.py rebuilds per-session.
-EXECUTE_CODE_SCHEMA = build_execute_code_schema()
+# Registration stays conservative; model_tools rebuilds from the final session surface.
+EXECUTE_CODE_SCHEMA = build_execute_code_schema(allow_deferred_bridges=False)
 
 
 def _execute_code_handler(args: dict, **kwargs) -> str:
@@ -891,8 +965,15 @@ def _execute_code_handler(args: dict, **kwargs) -> str:
     if code is not None and not isinstance(code, str):
         return tool_error(f"execute_code received a {type(code).__name__} in 'code', but it "
                           "requires Python source as a string. Retry as execute_code(code=\"...\").")
-    return execute_code(code=code or "", task_id=kwargs.get("task_id"),
-                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)))
+    return execute_code(
+        code=code or "",
+        task_id=kwargs.get("task_id"),
+        session_id=kwargs.get("session_id"),
+        enabled_tools=kwargs.get("enabled_tools"),
+        enabled_toolsets=kwargs.get("enabled_toolsets"),
+        disabled_toolsets=kwargs.get("disabled_toolsets"),
+        reset=bool(args.get("reset", False)),
+    )
 
 
 registry.register(

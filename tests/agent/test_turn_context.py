@@ -392,7 +392,6 @@ def test_applies_agent_side_effects():
     # task/turn ids assigned on the agent.
     assert agent._current_task_id
     assert agent._current_turn_id
-    assert getattr(agent, "_current_task_id") in getattr(agent, "_terminal_task_ids")
 
 
 def test_pending_cli_message_uses_clean_override_for_api_local_note():

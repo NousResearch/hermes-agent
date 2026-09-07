@@ -236,9 +236,14 @@ class CellAuthority:
     refused instead of running under a stale approval/session/turn identity.
     """
 
-    def __init__(self, task_id: str):
+    def __init__(self, task_id: str, session_id: Optional[str] = None,
+                 enabled_toolsets: Optional[List[str]] = None,
+                 disabled_toolsets: Optional[List[str]] = None):
         import contextvars
         self.task_id = task_id
+        self.session_id = session_id
+        self.enabled_toolsets = enabled_toolsets
+        self.disabled_toolsets = disabled_toolsets
         self.ctx = contextvars.copy_context()
         self.active = True
         # ((getter, setter), captured value) per thread-local prompt callback (approval, sudo, vault unlock…)
@@ -272,7 +277,15 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            kwargs = {"task_id": self.task_id}
+            if self.session_id is not None:
+                kwargs["session_id"] = self.session_id
+            from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+
+            if tool_name in BRIDGE_TOOL_NAMES:
+                kwargs["enabled_toolsets"] = self.enabled_toolsets
+                kwargs["disabled_toolsets"] = self.disabled_toolsets
+            return handle_function_call(tool_name, tool_args, **kwargs)
         finally:
             if previous is not None:
                 try:
@@ -743,6 +756,8 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
 def execute_in_session_kernel(
     code: str, *, task_id: str, mode: str, child_python: str, child_cwd: str,
     sandbox_tools: frozenset, timeout: int, max_tool_calls: int, reset: bool, is_interrupted,
+    session_id: Optional[str] = None, enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
 ) -> str:
     """Run one cell in the (owner, mode, python, cwd, tools) session kernel. The owner is the
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
@@ -752,7 +767,9 @@ def execute_in_session_kernel(
     try:
         return _run_cell(kernel, key, code, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
                          sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
-                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset)
+                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset,
+                         session_id=session_id, enabled_toolsets=enabled_toolsets,
+                         disabled_toolsets=disabled_toolsets)
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1
@@ -766,11 +783,18 @@ def execute_in_session_kernel(
 
 def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, child_python: str,
               child_cwd: str, sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
-              is_interrupted, exec_start: float, state_reset: bool) -> str:
+              is_interrupted, exec_start: float, state_reset: bool,
+              session_id: Optional[str] = None, enabled_toolsets: Optional[List[str]] = None,
+              disabled_toolsets: Optional[List[str]] = None) -> str:
     reused = kernel.proc is not None
     # Captured on the calling thread BEFORE the cell runs (the snapshot a per-call RPC thread
     # would get) and installed on the kernel so RPC dispatches under THIS cell's identity.
-    authority = CellAuthority(task_id)
+    authority = CellAuthority(
+        task_id,
+        session_id=session_id,
+        enabled_toolsets=enabled_toolsets,
+        disabled_toolsets=disabled_toolsets,
+    )
     with kernel.lock:
         try:
             if kernel.proc is None:

@@ -264,11 +264,9 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
         settled one goes instead, even if the busy one is older."""
         import threading
 
-        entered = threading.Event()
         gate = threading.Event()
 
         def slow_cat(command):
-            entered.set()
             gate.wait(10)
             return {"output": json.dumps(_cell()), "returncode": 0}
 
@@ -280,7 +278,8 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
         with patch("tools.code_kernel._lifecycle_limits", return_value=(1, 1800)):
             worker = threading.Thread(target=_run, args=(busy_env,), kwargs={"task": "busy"})
             worker.start()
-            self.assertTrue(entered.wait(10), "busy cell never reached result polling")
+            while not any(k.attached for k in _REMOTE_KERNELS.values()):
+                pass
             env = ScriptedEnv(_spawn_ok_handlers([_cell()]))
             _run(env, task="settled")
             owners = {key[0] for key in _REMOTE_KERNELS}

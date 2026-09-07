@@ -222,6 +222,7 @@ import {
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
+import { decideHealedBranch } from './healed-branch'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
 import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
@@ -3112,7 +3113,10 @@ function emitUpdateProgress(payload) {
 // every later check/apply follows main — no manual flip, even for already-
 // installed clients. Read-only ls-remote probe; only flips on a definitive
 // "ref absent" (exit 2), never on a transient network error, so a flaky
-// connection can't strand a user on the wrong branch.
+// connection can't strand a user on the wrong branch. Exit 2 also fires for
+// branches that were never pushed, so before re-pinning we consult the local
+// facts (remote-tracking ref, commits beyond main) — a local-only branch is
+// the only place those commits exist and must keep its pin.
 async function resolveHealedBranch(updateRoot, branch) {
   if (!branch || branch === 'main') {
     return branch || 'main'
@@ -3123,6 +3127,24 @@ async function resolveHealedBranch(updateRoot, branch) {
   const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
 
   if (probe.code !== 2) {
+    return branch
+  }
+
+  // The probe may target the HTTPS URL directly (official SSH installs), but
+  // local remote-tracking refs always live under the origin/ namespace — the
+  // two lookups below are local-only and never touch the network.
+  const trackingRef = await runGit(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`], { cwd: updateRoot })
+  const beyondMain = await runGit(['rev-list', '--count', `origin/main..${branch}`], { cwd: updateRoot })
+  const commitsBeyondMain = beyondMain.code === 0 ? Number.parseInt((beyondMain.stdout || '').trim(), 10) : null
+
+  const decision = decideHealedBranch(branch, {
+    remoteTrackingRefExists: trackingRef.code === 0,
+    commitsBeyondMain: Number.isFinite(commitsBeyondMain as number) ? commitsBeyondMain : null
+  })
+
+  if (decision.reason === 'kept-local-branch') {
+    rememberLog(`[updates] origin/${branch} is gone but the branch is local-only or ahead of main; keeping the pin on ${branch}`)
+
     return branch
   }
 

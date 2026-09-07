@@ -95,6 +95,17 @@ _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
+# A recurring job delivered locally has no external consumer and no external
+# stop signal, so an unbounded local recurrence can never terminate. It must
+# carry a reachable finite repeat bound. 2016 = 7 days at a 5-minute cadence.
+LOCAL_RECURRING_MAX_REPEAT = 2016
+
+
+def _is_reachable_local_bound(times: Any) -> bool:
+    """True iff ``times`` is a reachable finite bound for a recurring
+    deliver=local job: a real int in ``[1, LOCAL_RECURRING_MAX_REPEAT]``."""
+    return type(times) is int and 0 < times <= LOCAL_RECURRING_MAX_REPEAT
+
 
 @dataclass(frozen=True)
 class _CronStorePaths:
@@ -1724,11 +1735,36 @@ def create_job(
     # Normalize repeat: treat 0 or negative values as None (infinite). String forms
     # ('forever'/'once'/numeric) coerce via normalize_repeat_value — the shared chokepoint with update paths
     # (#66824/#64520/#7142/#71987/#95706).
+    _repeat_raw = repeat  # caller intent before coercion (bounded-stop guard)
     repeat = normalize_repeat_value(repeat)
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
     if deliver is None:
         deliver = "origin" if origin else "local"
+
+    # Bounded-stop invariant: a recurring locally-delivered job has no
+    # external stop condition, so it must carry a reachable finite bound.
+    # An omitted repeat defaults to the ceiling (create contract preserved);
+    # an explicit unbounded request, or a bound above the ceiling, is refused.
+    if parsed_schedule["kind"] != "once" and str(deliver or "").strip().lower() in ("", "local"):
+        if _repeat_raw is None:
+            if repeat is None:
+                repeat = LOCAL_RECURRING_MAX_REPEAT
+        elif repeat is None:
+            raise ValueError(
+                "recurring deliver=local cron jobs must carry a reachable finite "
+                f"repeat bound (1..{LOCAL_RECURRING_MAX_REPEAT}); an explicit "
+                "'forever' repeat is refused because a locally-delivered job has "
+                "no external stop condition. Pass an explicit repeat in that "
+                "range, or deliver to an external channel (origin/discord/"
+                "telegram) that can terminate the job."
+            )
+        elif not _is_reachable_local_bound(repeat):
+            raise ValueError(
+                "recurring deliver=local cron jobs may repeat at most "
+                f"{LOCAL_RECURRING_MAX_REPEAT} times; got repeat={repeat}. Lower "
+                "the bound, or deliver to an external channel."
+            )
     job_id = uuid.uuid4().hex[:12]
     now = _hermes_now().isoformat()
 
@@ -1964,6 +2000,21 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         _fill_missing_next_run(updated)
         _reject_terminal_activation(job, updated, job_id)
         jobs[i] = updated
+        # Bounded-stop invariant (update door): keep the create-time rule
+        # closed. Evaluate only when this update (re)defines delivery,
+        # repeat, or schedule, so unrelated edits are never retro-refused.
+        if {"deliver", "repeat", "schedule"}.intersection(updates):
+            _kind = (updated.get("schedule") or {}).get("kind")
+            _dl = str(updated.get("deliver") or "").strip().lower()
+            _times = (updated.get("repeat") or {}).get("times")
+            if _kind != "once" and _dl in ("", "local") and not _is_reachable_local_bound(_times):
+                raise ValueError(
+                    "recurring deliver=local cron jobs must carry a reachable "
+                    f"finite repeat bound (1..{LOCAL_RECURRING_MAX_REPEAT}); this "
+                    "update would leave the job unbounded or above the local "
+                    "ceiling. Set an explicit repeat, or deliver to an external "
+                    "channel."
+                )
         save_jobs(jobs)
         return _normalize_job_record(updated)
 

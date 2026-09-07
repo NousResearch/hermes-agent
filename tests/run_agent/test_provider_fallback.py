@@ -17,9 +17,9 @@ from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 def _make_agent(fallback_model=None):
     """Create a minimal AIAgent with optional fallback config."""
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -215,13 +215,16 @@ class TestFallbackChainAdvancement:
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
 
-    def test_nous_anthropic_fallback_uses_the_messages_wire(self):
-        """Portal Claude fallbacks must not stay on chat_completions.
+    def test_nous_anthropic_fallback_uses_the_messages_wire(self, monkeypatch):
+        """Portal Claude fallbacks must not stay on chat_completions when the native wire is selected.
 
         ``resolve_provider_client`` still returns an OpenAI client for Nous;
         activation has to re-derive api_mode from the model and rebuild the
-        Anthropic client — otherwise the turn POSTs /chat/completions.
+        Anthropic client — otherwise the turn POSTs /chat/completions. The wire
+        is opt-in since 2026-09-06 (``nous.anthropic_wire``, see ``nous_api_mode``).
         """
+        from hermes_cli import providers as _providers
+        monkeypatch.setattr(_providers, "_nous_anthropic_wire", lambda: "native")
         portal = "https://inference-api.nousresearch.com/v1"
         fbs = [
             {

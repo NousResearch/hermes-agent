@@ -940,9 +940,16 @@ def test_recovery_module_reports_serve_units_in_a_real_process():
 # ---------------------------------------------------------------------------
 
 
+def _stub_dashboard_helpers(monkeypatch, **helpers):
+    """Stub the ``hermes_cli.main_dashboard`` helpers the dashboard-cleanup path reads at call time."""
+    from hermes_cli import main_dashboard
+
+    for name, value in helpers.items():
+        monkeypatch.setattr(main_dashboard, name, value)
+
+
 def _dashboard_main_stub(scan_calls, *, restart_result=True):
-    """A ``_m()`` stand-in for the dashboard-cleanup path."""
-    return SimpleNamespace(
+    return dict(
         _DASHBOARD_SYSTEMD_UNIT="hermes-dashboard.service",
         _restart_managed_dashboard_service=lambda reason, *a, **k: restart_result,
         _find_stale_dashboard_pids=lambda **kwargs: scan_calls.append(kwargs) or [],
@@ -960,9 +967,7 @@ def test_managed_dashboard_restart_still_scans_for_serve_backends(monkeypatch):
     from hermes_cli import dashboard_procs
 
     scan_calls: list[dict] = []
-    monkeypatch.setattr(
-        dashboard_procs, "_m", lambda: _dashboard_main_stub(scan_calls)
-    )
+    _stub_dashboard_helpers(monkeypatch, **_dashboard_main_stub(scan_calls))
     monkeypatch.setattr(dashboard_procs, "_lock_owned_serve_pids", lambda: set())
 
     dashboard_procs._kill_stale_dashboard_processes(restart_managed=True)
@@ -975,7 +980,8 @@ def test_restarted_dashboard_unit_is_not_killed_by_the_continued_scan(monkeypatc
     from hermes_cli import dashboard_procs
 
     killed: list[int] = []
-    main = SimpleNamespace(
+    _stub_dashboard_helpers(
+        monkeypatch,
         _DASHBOARD_SYSTEMD_UNIT="hermes-dashboard.service",
         _restart_managed_dashboard_service=lambda reason, *a, **k: True,
         _find_stale_dashboard_pids=lambda **kwargs: [4242],
@@ -983,7 +989,6 @@ def test_restarted_dashboard_unit_is_not_killed_by_the_continued_scan(monkeypatc
         _get_systemd_service_for_pid=lambda pid: "hermes-dashboard.service",
         _dashboard_cmdline_for_pid=lambda pid: None,
     )
-    monkeypatch.setattr(dashboard_procs, "_m", lambda: main)
     monkeypatch.setattr(dashboard_procs, "_lock_owned_serve_pids", lambda: set())
     monkeypatch.setattr(dashboard_procs.sys, "platform", "linux")
     monkeypatch.setattr(
@@ -1002,7 +1007,8 @@ def test_serve_backend_survives_selection_when_the_dashboard_unit_restarts(monke
 
     signalled: list[int] = []
     restarted: list[str] = []
-    main = SimpleNamespace(
+    _stub_dashboard_helpers(
+        monkeypatch,
         _DASHBOARD_SYSTEMD_UNIT="hermes-dashboard.service",
         _restart_managed_dashboard_service=lambda reason, *a, **k: True,
         _find_stale_dashboard_pids=lambda **kwargs: [7001],
@@ -1012,7 +1018,6 @@ def test_serve_backend_survives_selection_when_the_dashboard_unit_restarts(monke
         _try_restart_systemd_service=lambda svc, cg: restarted.append(svc) or True,
         _respawn_dashboard_processes=lambda cmds: [],
     )
-    monkeypatch.setattr(dashboard_procs, "_m", lambda: main)
     monkeypatch.setattr(dashboard_procs, "_lock_owned_serve_pids", lambda: set())
     monkeypatch.setattr(dashboard_procs.sys, "platform", "linux")
 

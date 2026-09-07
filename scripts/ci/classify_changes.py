@@ -25,6 +25,12 @@ Lanes:
   must not run it.
 * ``npm_lock``    — semantic package-lock.json diff PR comment.
 * ``installer``   — PowerShell installer tests (Windows runner).
+* ``desktop_updater`` — the Windows desktop-update hand-off script and the
+  tests that drive the REAL ``windows.ps1`` (``-SelfTestUi`` / pipe drain /
+  retry policy). These are integration tests of a PowerShell process on a
+  shared runner; running them on every Python PR made their timing noise
+  everyone's problem. They still run on push (fail-open) and whenever the
+  script, its siblings, or their tests change.
 * ``rust``        — ``cargo test`` for the Tauri bootstrap installer. ``.rs``
   lives under ``apps/``, so without this lane a Rust change matched ``frontend``
   and only the TypeScript matrix ran.
@@ -61,6 +67,8 @@ import subprocess
 import sys
 
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
+# Shipped page outside those packages, exercised by the desktop Electron suite.
+_FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
 _DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
 _NIX_PATHS = ("nix/",) # nix files
@@ -109,6 +117,17 @@ _MCP_CATALOG_FILES = {"hermes_cli/mcp_catalog.py"}
 # so they get their own lane rather than riding along with ``python``.
 _INSTALLER_PATHS = ("scripts/tests/",)
 _INSTALLER_FILES = {"scripts/install.ps1", "scripts/install.cmd"}
+
+# Windows desktop-update hand-off (scripts/desktop-update/windows.ps1 + the
+# Electron side that launches it) and the pytest files that spawn it.
+_DESKTOP_UPDATER_PATHS = ("scripts/desktop-update/",)
+_DESKTOP_UPDATER_TEST_PREFIX = "tests/test_desktop_update_"
+_DESKTOP_UPDATER_FILES = {
+    "apps/desktop/electron/updater-process.ts",
+    "apps/desktop/electron/managed-ssh-update.ts",
+    "tests/conftest.py",
+    "pyproject.toml",
+}
 
 # Rust crates — currently just the Tauri bootstrap installer (Hermes-Setup).
 # These live under ``apps/``, so before this lane existed a ``.rs`` edit matched
@@ -163,6 +182,14 @@ def _is_installer(p: str) -> bool:
     return p.startswith(_INSTALLER_PATHS) or p in _INSTALLER_FILES
 
 
+def _is_desktop_updater(p: str) -> bool:
+    return (
+        p.startswith(_DESKTOP_UPDATER_PATHS)
+        or p.startswith(_DESKTOP_UPDATER_TEST_PREFIX)
+        or p in _DESKTOP_UPDATER_FILES
+    )
+
+
 def _is_rust(p: str) -> bool:
     return (
         p.endswith(".rs")
@@ -189,7 +216,10 @@ def classify(files: list[str]) -> dict[str, bool]:
     files = [f.strip() for f in files if f.strip()]
     python = any(not _py_irrelevant(f) for f in files)
     python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in files)
-    frontend = any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files)
+    frontend = any(
+        f.startswith(_FRONTEND) or f in _ROOT_NPM or f in _FRONTEND_FILES
+        for f in files
+    )
     deps = any(f == "pyproject.toml" for f in files)
     npm_lock = any(f.split("/")[-1] == "package-lock.json" for f in files)
     docker_meta = any(f.startswith(_DOCKER_META) for f in files)
@@ -206,6 +236,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         "uv_lock": any(f in ("pyproject.toml", "uv.lock") for f in files),
         "npm_lock": npm_lock,
         "installer": any(_is_installer(f) for f in files),
+        "desktop_updater": any(_is_desktop_updater(f) for f in files),
         "rust": any(_is_rust(f) for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
         "ci_review": any(_is_ci_review(f) for f in files),
@@ -223,6 +254,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["uv_lock"] = True
         ret["npm_lock"] = True
         ret["installer"] = True
+        ret["desktop_updater"] = True
         ret["rust"] = True
         ret["nix"] = True
         ret["ci_review"] = True

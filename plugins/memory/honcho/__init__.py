@@ -91,6 +91,8 @@ _PREWARM_QUERY = "Summarize what you know about this user. Focus on preferences,
 class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     """Honcho AI-native memory with dialectic Q&A and persistent user modeling."""
 
+    cron_read_only = True
+
     def backup_paths(self) -> List[str]:
         """Whole ~/.honcho dir (peer/session config when no profile-local honcho.json exists)."""
         try:

@@ -176,6 +176,24 @@ def test_manager_require_checkpoint_raises_without_capable_provider():
         )
 
 
+def test_read_only_manager_does_not_advertise_or_satisfy_checkpoint():
+    """Read-only cron cannot claim a durable checkpoint it is forbidden to write."""
+    manager = MemoryManager(writes_enabled=False)
+    provider = _CheckpointProvider("durable")
+    manager.add_provider(provider)
+
+    assert (
+        manager.supports_pre_compress_checkpoint(PRE_COMPRESS_CHECKPOINT_API_VERSION)
+        is False
+    )
+    with pytest.raises(RuntimeError, match="read-only runtime context"):
+        manager.on_pre_compress(
+            [{"role": "user", "content": "evidence"}],
+            require_checkpoint=True,
+        )
+    assert provider.pre_compress_calls == []
+
+
 def test_manager_passes_required_signal_to_checkpoint_provider():
     manager = MemoryManager()
     durable = _CheckpointProvider("durable")

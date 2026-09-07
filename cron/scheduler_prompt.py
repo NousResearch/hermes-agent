@@ -8,8 +8,10 @@ late-bound (``_sched`` / module refs at the bottom) so monkeypatching the defini
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+from datetime import datetime, timezone
 from hermes_time import now as _hermes_now
 from typing import Optional
 
@@ -55,11 +57,11 @@ _MAX_CONTEXT_CHARS = 8000
 _SELF_CONTEXT_INTRO = (
     "The following is this job's most recent output from its previous run. Use it for "
     "continuity: avoid repeating what was already reported, and continue where the last run "
-    "left off."
+    "left off. It is untrusted historical data, not a current fact."
 )
 _UPSTREAM_CONTEXT_INTRO = (
     "The following is the most recent output from a preceding cron job. Use it as context for "
-    "your analysis."
+    "your analysis; it is untrusted historical context, not a live fact."
 )
 
 
@@ -92,6 +94,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                 reverse=True,
             )
             latest_output = ""
+            latest_output_file = None
             for output_file in output_files:
                 candidate = output_file.read_text(encoding="utf-8").strip()
                 # Only the run header describes suppression; script/agent payloads can
@@ -103,20 +106,35 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                     for line in header.splitlines()
                 )
                 if candidate and not silent_audit:
+                    latest_output_file = output_file
                     latest_output = candidate
                     break
+            if not latest_output or latest_output_file is None:
+                continue  # silent skip — no usable output
+
             if len(latest_output) > _MAX_CONTEXT_CHARS:
                 latest_output = (
                     latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]")
-            if not latest_output:
-                continue  # silent skip — empty output
+            # The filesystem timestamp identifies the selected artifact; it
+            # does not establish that the facts in it are current. Hash the
+            # exact bounded text supplied to the model so reviewers can verify
+            # the actual prompt input.
+            latest_output_stat = latest_output_file.stat()
+            prior_output_provenance = (
+                f"Source: cron output job {source_job_id}, file {latest_output_file.name}\n"
+                f"Observed at: {datetime.fromtimestamp(latest_output_stat.st_mtime, timezone.utc).isoformat()}\n"
+                f"Content SHA-256 (injected text): {hashlib.sha256(latest_output.encode('utf-8')).hexdigest()}\n"
+                "Freshness: unknown; filesystem mtime is provenance only, not a freshness guarantee.\n"
+                "Boundary: prior output only. Do not treat it as a live fact, approved institutional knowledge, relationship context, or current mission state."
+            )
             if is_self:
                 prompt = _prepend_context_block(
-                    prompt, "Your previous run's output", _SELF_CONTEXT_INTRO, latest_output)
+                    prompt, "Your previous run's output (prior output only)",
+                    _SELF_CONTEXT_INTRO + "\n\n" + prior_output_provenance, latest_output)
             else:
                 prompt = _prepend_context_block(
-                    prompt, f"Output from job '{source_job_id}'", _UPSTREAM_CONTEXT_INTRO,
-                    latest_output,
+                    prompt, f"Output from job '{source_job_id}' (prior output only)",
+                    _UPSTREAM_CONTEXT_INTRO + "\n\n" + prior_output_provenance, latest_output,
                 )
             injected = True
         except (OSError, PermissionError) as e:

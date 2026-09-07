@@ -2354,6 +2354,17 @@ def run_job(
         agent = _construct_cron_agent(
             AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
             session_db=_session_db)
+        _cron_memory_query = str(job.get("prompt") or "").strip()
+        if extra_prompt:
+            _cron_memory_query = (
+                f"{_cron_memory_query}\n\n{str(extra_prompt).strip()}"
+                if _cron_memory_query
+                else str(extra_prompt).strip()
+            )
+        if _cron_memory_query:
+            # Keep provider recall keyed to the mission text, not the
+            # scheduler's delivery/silence preamble in ``prompt``.
+            agent._cron_memory_query = _cron_memory_query
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(

@@ -18,7 +18,10 @@ Hardening invariants — each guards a real failure; don't weaken without answer
 - **3-minute hard interrupt** on cron sessions: runaway loops cannot monopolise the scheduler.
 - Catch-up window = half the period, clamped to 120s–2h; 120s grace for missed one-shots.
 - File lock `~/.hermes/cron/.tick.lock` prevents duplicate ticks across processes.
-- Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
+- Cron sessions pass `skip_memory=False` so the existing profile-scoped `MEMORY.md` and `USER.md`
+  files can be read. The built-in memory store is read-only, and only external providers explicitly
+  certified with the cron read-only contract are initialized; those providers receive `platform=cron`
+  and `agent_context=cron`. Their write hooks/tools remain disabled. See `docs/cron-context-contract.md`.
 - Deliveries are **not mirrored** into the target gateway session — they land in their own cron
   session with a header/footer frame so the main conversation's role alternation stays intact.
 - The cron ticker runs in the desktop-spawned backend when `HERMES_DESKTOP=1` — that env var means

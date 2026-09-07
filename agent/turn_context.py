@@ -705,6 +705,13 @@ def _memory_turn_start_and_prefetch(agent: Any, original_user_message: Any) -> s
     if not agent._memory_manager:
         return ""
     _query = original_user_message if isinstance(original_user_message, str) else ""
+    # Cron's user-facing prompt begins with delivery/silence instructions. The
+    # scheduler supplies the underlying job text separately so provider recall
+    # is keyed by the mission, not by the constant scheduler preamble.
+    if str(getattr(agent, "platform", "") or "").strip().lower() == "cron":
+        _cron_query = getattr(agent, "_cron_memory_query", None)
+        if isinstance(_cron_query, str) and _cron_query.strip():
+            _query = _cron_query.strip()
     with suppress(Exception):
         agent._memory_manager.on_turn_start(agent._user_turn_count, _query)
     ext_prefetch_cache = ""

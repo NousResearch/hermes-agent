@@ -338,3 +338,66 @@ def test_start_server_treats_windows_fallback_keyboardinterrupt_as_clean_shutdow
             "start_server must treat serve-time KeyboardInterrupt as a clean "
             "shutdown on the Windows pre-0.36 fallback, not propagate it"
         )
+
+
+def test_start_server_bounds_graceful_shutdown_within_desktop_kill_budget(monkeypatch):
+    """uvicorn's default timeout_graceful_shutdown=None waits on lingering
+    ASGI tasks forever, so the single SIGTERM Desktop sends (no second signal
+    to force-exit) hangs the backend until it is orphaned past the desktop's
+    ~5s SIGKILL budget (#76244). The configured bound must be positive and
+    stay under that kill budget.
+    """
+    captured = _stub_uvicorn(monkeypatch)
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert 0 < captured["timeout_graceful_shutdown"] < 5
+
+
+def test_shutdown_returns_when_lingering_task_never_completes(monkeypatch):
+    """Behavior-level #76244 regression: with the production Config kwargs, a
+    live ASGI task that never finishes (a mid-turn request) must not make
+    Server.shutdown() hang — the orphan forensics (sockets closed, worker
+    threads parked, event loop never returning) is exactly that unbounded
+    task wait. shutdown() must honour the grace window, then cancel the
+    lingerer and return instead of waiting forever.
+    """
+    # Real classes grabbed before the stub replaces them (monkeypatch patches
+    # uvicorn.Config/Server for the whole test, which is exactly how the
+    # production kwargs get captured without binding a port).
+    real_config, real_server = uvicorn.Config, uvicorn.Server
+    captured = _stub_uvicorn(monkeypatch)
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+    bound = captured.get("timeout_graceful_shutdown")
+    assert bound is not None, "graceful shutdown must be bounded (#76244)"
+
+    async def _linger():
+        await asyncio.Event().wait()
+
+    async def scenario():
+        # Real uvicorn objects built from the production kwargs. The ASGI app
+        # is unused on the task-wait path and lifespan="off" isolates the
+        # lifespan handshake (which needs a started server), keeping the test
+        # focused on the task-wait bound.
+        config = real_config(None, lifespan="off", **captured)
+        server = real_server(config)
+        # startup() owns the servers list; empty mirrors the #76244 forensic
+        # state (sockets already closed, only the lingering task remains).
+        # LifespanOff makes the lifespan shutdown a no-op: its handshake needs
+        # a started server and is not what this test is about.
+        from uvicorn.lifespan.off import LifespanOff
+
+        server.servers = []
+        server.lifespan = LifespanOff(config)
+        lingerer = asyncio.ensure_future(_linger())
+        server.server_state.tasks.add(lingerer)
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        # Pre-fix this never returns (timeout=None) until wait_for aborts.
+        await asyncio.wait_for(server.shutdown(), timeout=bound + 5)
+        elapsed = loop.time() - start
+        assert elapsed >= bound, "the grace window must be honoured, not skipped"
+        assert elapsed < bound + 5, "shutdown must be bounded by the grace timeout"
+        assert lingerer.cancelled(), "the lingering task must be cancelled, not leaked"
+
+    asyncio.run(scenario())

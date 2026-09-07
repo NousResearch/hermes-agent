@@ -116,6 +116,28 @@ agent:
   bot_mode_protocol: true   # inject the bot-to-bot messaging protocol into canonical Bot Chats
 ```
 
+### What actually makes a chat a Bot Chat
+
+`agent.bot_mode_protocol` is only the master switch. Before the protocol section — or the `message_agent` tool — is injected, two further conditions must hold, and on a desktop install the Bots pane satisfies both for you the moment it creates a Bot:
+
+1. **The session is titled exactly `Bot Chat`.** That exact title is the canonical chat's identity (it is what the desktop plugin's createCanonicalChat uses and what `hermes -p <bot> chat -c "Bot Chat"` resumes); any other title, or an untitled scratch session, gets neither the section nor the tool.
+2. **At least one profile on the install carries a `ui_meta: { hermes-bots: … }` block in its `profile.yaml`.** This is the "Bot-Mode-managed" marker the desktop plugin writes for every Bot it owns; the gate scans every profile, so one marked profile marks the whole install. There is no CLI command that writes it.
+
+The practical consequence: on a **headless install with no desktop app** (gateway plus Telegram, say) nothing ever writes either marker, so `message_agent` is unreachable even though the docs-level switch is on — bots message each other fine over the messaging platform, but the agent-side `message_agent` tool never appears. To enable it headless, satisfy both conditions by hand:
+
+```bash
+# the canonical forever-chat, created once per Bot (later runs resume it)
+hermes -p <bot> chat -c "Bot Chat" --create-if-missing
+```
+
+```yaml
+# ~/.hermes/profiles/<any-bot>/profile.yaml — an empty block is enough to mark the install
+ui_meta:
+  hermes-bots: {}
+```
+
+From the next turn in that Bot Chat the teammate roster, the protocol section, and `message_agent` are all picked up — including over `hermes -p <bot> chat` on a purely terminal box.
+
 :::note
 Bot-to-bot delivery is per-invocation: the receiving Bot picks the message up when it next runs. Live interrupt of a Bot mid-conversation is future work.
 :::

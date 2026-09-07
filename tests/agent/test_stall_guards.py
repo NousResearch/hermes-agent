@@ -377,6 +377,7 @@ def test_ignores_japanese_answers_without_immediate_action_intent():
         "テストはすべて成功しました。",
         "必要なら後で確認します。",
         "この関数はAPIに接続して、ログを確認します。",
+        "これからは設定を更新します。",
     )
     assert not any(trailing_continue_intent(reply) for reply in replies)
 

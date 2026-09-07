@@ -770,6 +770,7 @@ def _reauth_device_flow(name: str, server_config: dict) -> bool:
             interval=authorization.interval,
             expires_in=authorization.expires_in,
             timeout=timeout,
+            resource=endpoints["resource"],
         )
         persist_device_state(name, client_info, token_payload)
     except Exception as exc:

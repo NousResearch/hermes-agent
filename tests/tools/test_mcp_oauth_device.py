@@ -153,6 +153,32 @@ class TestPollDeviceToken:
                 http_post=lambda u, d: {"error": "server_broke"},
                 sleep=lambda s: None)
 
+    def test_resource_sent_when_provided(self):
+        seen = {}
+
+        def fake_post(url, data):
+            seen.update(data)
+            return {"access_token": "at_4"}
+
+        poll_device_token(
+            "https://auth.example/token", "c", "dc_123",
+            resource="https://mcp.example/mcp",
+            http_post=fake_post, sleep=lambda s: None)
+        assert seen["resource"] == "https://mcp.example/mcp"
+        assert seen["grant_type"] == DEVICE_CODE_GRANT
+
+    def test_resource_omitted_when_absent(self):
+        seen = {}
+
+        def fake_post(url, data):
+            seen.update(data)
+            return {"access_token": "at_5"}
+
+        poll_device_token(
+            "https://auth.example/token", "c", "dc_123",
+            http_post=fake_post, sleep=lambda s: None)
+        assert "resource" not in seen
+
 
 # ---------------------------------------------------------------------------
 # register_device_client
@@ -180,6 +206,28 @@ class TestRegisterDeviceClient:
             register_device_client(
                 "https://auth.example/register",
                 http_post=lambda u, p: {"oops": True})
+
+    def test_default_loopback_redirect_sent(self):
+        seen = {}
+
+        def fake_post(url, payload):
+            seen.update(payload)
+            return {"client_id": "c2", "redirect_uris": payload["redirect_uris"]}
+
+        register_device_client("https://auth.example/register", http_post=fake_post)
+        assert seen["redirect_uris"] == ["http://127.0.0.1:8420/callback"]
+
+    def test_explicit_redirect_uris_win(self):
+        seen = {}
+
+        def fake_post(url, payload):
+            seen.update(payload)
+            return {"client_id": "c3"}
+
+        register_device_client(
+            "https://auth.example/register",
+            redirect_uris=["https://app.example/cb"], http_post=fake_post)
+        assert seen["redirect_uris"] == ["https://app.example/cb"]
 
 
 # ---------------------------------------------------------------------------

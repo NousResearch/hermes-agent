@@ -31,6 +31,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -44,6 +45,10 @@ DEFAULT_POLL_INTERVAL = 5.0
 
 #: RFC 8628 §3.5: ``slow_down`` adds five seconds between polls.
 SLOW_DOWN_INCREMENT = 5.0
+
+#: Loopback redirect sent at registration when the caller provides none. The device flow
+#: never redirects there, but servers routinely reject a registration without redirect_uris.
+DEFAULT_DEVICE_REDIRECT_URI = "http://127.0.0.1:8420/callback"
 
 #: Failure modes that end polling immediately (RFC 8628 §3.5).
 _TERMINAL_TOKEN_ERRORS = frozenset({"access_denied", "expired_token"})
@@ -70,6 +75,16 @@ def _default_http_post(url: str, data: dict[str, str], *, timeout: float = 30.0)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        # OAuth endpoints return the diagnosable error *as* the 4xx body (error +
+        # error_description, no secrets) — surface it instead of a bare status.
+        try:
+            payload = json.loads(exc.read().decode("utf-8", "replace"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            payload = {}
+        if isinstance(payload, dict) and payload.get("error"):
+            return payload
+        raise DeviceFlowError(f"device flow request to {url} failed: {exc}") from exc
     except OSError as exc:
         raise DeviceFlowError(f"device flow request to {url} failed: {exc}") from exc
     try:
@@ -137,6 +152,7 @@ def poll_device_token(
     interval: float = DEFAULT_POLL_INTERVAL,
     expires_in: int = 1800,
     timeout: float | None = None,
+    resource: str | None = None,
     http_post: Callable[..., dict] | None = None,
     sleep: Callable[[float], None] | None = None,
 ) -> dict:
@@ -144,19 +160,19 @@ def poll_device_token(
 
     Returns the token payload (access_token + optional refresh_token/expires_in).
     ``sleep``/``http_post`` are injectable so tests never wait on a clock or a socket.
+    ``resource`` (RFC 8707) is required by servers that bind the grant to the MCP endpoint.
     """
     post = http_post or _default_http_post
     do_sleep = sleep or time.sleep
     deadline = time.monotonic() + min(expires_in, timeout if timeout is not None else expires_in)
     current_interval = max(interval, 1.0)
+    request_fields = {"grant_type": DEVICE_CODE_GRANT, "device_code": device_code, "client_id": client_id}
+    if resource:
+        request_fields["resource"] = resource
     while True:
         if time.monotonic() >= deadline:
             raise DeviceFlowError("device authorization expired before approval")
-        response = post(token_endpoint, {
-            "grant_type": DEVICE_CODE_GRANT,
-            "device_code": device_code,
-            "client_id": client_id,
-        })
+        response = post(token_endpoint, dict(request_fields))
         if response.get("access_token"):
             return response
         error = str(response.get("error", ""))
@@ -195,8 +211,7 @@ def register_device_client(
     }
     if scope:
         payload["scope"] = scope
-    if redirect_uris:
-        payload["redirect_uris"] = redirect_uris
+    payload["redirect_uris"] = redirect_uris or [DEFAULT_DEVICE_REDIRECT_URI]
     post = http_post or _default_http_post
     # Registration speaks JSON while the device/token endpoints speak form-encoded.
     body = json.dumps(payload).encode("utf-8")
@@ -208,6 +223,13 @@ def register_device_client(
         try:
             with urllib.request.urlopen(request, timeout=30.0) as response:
                 parsed = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:300]
+            except (OSError, ValueError):
+                detail = ""
+            raise DeviceFlowError(
+                f"client registration at {registration_endpoint} failed: {detail or exc}") from exc
         except OSError as exc:
             raise DeviceFlowError(f"client registration at {registration_endpoint} failed: {exc}") from exc
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:

@@ -20,6 +20,7 @@ from agent.models_dev import (
     get_model_info,
     get_provider_info,
     lookup_models_dev_context,
+    lookup_model_max_output_tokens,
 )
 
 
@@ -840,6 +841,18 @@ class TestModelOverrides:
         return patch.object(md, "_load_model_overrides", return_value=overrides_dict)
 
     # --- override resolution ---
+
+    @pytest.mark.parametrize("model, overrides, expected", [
+        ("deepseek-chat", {"deepseek": {"deepseek-chat": {"max_output_tokens": 25000}}}, 25000),
+        ("deepseek-chat", {"deepseek": {"_default": {"max_output_tokens": 25000}}}, None),
+        ("uncataloged", {"deepseek": {"_default": {"max_output_tokens": 25000}}}, 25000),
+        ("uncataloged", {"_default": {"max_output_tokens": 25000}}, 25000),
+        ("uncataloged", {"deepseek": {"uncataloged": {"supports_vision": True}}}, None),
+    ])
+    def test_request_output_override_preserves_metadata_precedence(self, model, overrides, expected):
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
+            assert lookup_model_max_output_tokens("deepseek", model) == expected
 
     def test_per_provider_model_override(self):
         """Per-provider+model override is found first."""

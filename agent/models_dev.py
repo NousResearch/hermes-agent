@@ -516,6 +516,7 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
 # catalog. ``<provider>._default`` / top-level ``_default`` are FILL-GAP defaults: they apply ONLY to
 # models the catalog does not know and never displace catalog data. Provider keys accept the Hermes
 # or models.dev id; model ids match exactly, then case-insensitively (mirroring catalog lookup).
+# Named custom routes prefer their configured name, with "custom" as a fallback.
 # Resolution semantics: 1. 2. See #84482, #8731.
 _OVERRIDE_WARNED_KEYS: set = set()
 # Safe defaults for models absent from the catalog (tools on, vision/reasoning off, 200K context);
@@ -530,21 +531,41 @@ def _load_model_overrides() -> Dict[str, Any]:
     return _dict_or_empty(_cfg_get("model_overrides", default={}))
 
 
-def _provider_override_section(provider: str) -> Optional[Dict[str, Any]]:
-    """Override section for *provider* (keyed by Hermes OR models.dev id), or None."""
+def _provider_override_section(provider: str, *, base_url: str = "", warn_missing: bool = False) -> Optional[Dict[str, Any]]:
+    """Resolve a provider section, recovering custom names from the active route.
+
+    Request callers opt into warnings; catalog scans also query unrelated
+    providers, where an absent section is normal rather than a dropped setting.
+    """
     overrides = _load_model_overrides()
     provider_key = (provider or "").strip()
     if not overrides or not provider_key:
         return None
+    # Runtime canonicalization loses the configured name; recover it from the
+    # active endpoint, never from the global default (which may be another route).
+    if provider_key == "custom" and base_url:
+        from hermes_cli.runtime_provider_custom import find_custom_provider_identity
+        provider_key = find_custom_provider_identity(base_url) or provider_key
     # Forward (Hermes → models.dev id) and reverse (caller passed a models.dev id, config keyed by Hermes id) aliases.
     candidates = [provider_key, PROVIDER_TO_MODELS_DEV.get(provider_key), *_models_dev_to_hermes_ids(provider_key)]
-    return next((section for section in (overrides.get(key) if key else None for key in candidates) if isinstance(section, dict)), None)
+    if provider_key.startswith("custom:"):
+        candidates = [provider_key.removeprefix("custom:"), provider_key, "custom"]
+    section = next((section for section in (overrides.get(key) if key else None for key in candidates) if isinstance(section, dict)), None)
+    if section is None and warn_missing and any(key != "_default" for key in overrides):
+        warn_key = ("section", provider_key, tuple(overrides))
+        if warn_key not in _OVERRIDE_WARNED_KEYS:
+            _OVERRIDE_WARNED_KEYS.add(warn_key)
+            logger.warning(
+                "model_overrides: no matching provider section for %r; tried %s; configured sections: %s",
+                provider, [key for key in candidates if key], list(overrides),
+            )
+    return section
 
 
-def _explicit_model_override(provider: str, model: str) -> Optional[Dict[str, Any]]:
+def _explicit_model_override(provider: str, model: str, *, base_url: str = "", warn_missing: bool = False) -> Optional[Dict[str, Any]]:
     """Explicit per-provider+model override dict (exact, then case-insensitive skipping the ``_default`` sentinel), or None."""
     model_key = (model or "").strip()
-    section = _provider_override_section(provider) if model_key else None
+    section = _provider_override_section(provider, base_url=base_url, warn_missing=warn_missing) if model_key else None
     if section is None:
         return None
     entry = section.get(model_key)
@@ -554,9 +575,9 @@ def _explicit_model_override(provider: str, model: str) -> Optional[Dict[str, An
     return next((mdata for mid, mdata in section.items() if mid != "_default" and mid.lower() == model_lower and isinstance(mdata, dict)), None)
 
 
-def _default_model_override(provider: str) -> Optional[Dict[str, Any]]:
+def _default_model_override(provider: str, *, base_url: str = "") -> Optional[Dict[str, Any]]:
     """Fill-gap ``_default`` override: per-provider first, then global; or None."""
-    section = _provider_override_section(provider)
+    section = _provider_override_section(provider, base_url=base_url)
     if section is not None and isinstance(section.get("_default"), dict):
         return section["_default"]
     global_default = _load_model_overrides().get("_default")
@@ -591,6 +612,20 @@ def _override_context_window(provider: str, model: str) -> Optional[int]:
     ``_default`` must not preempt more specific sources; fill-gap defaults apply in ``lookup_models_dev_context``."""
     ov = _explicit_model_override(provider, model)
     return _override_int(ov, "context_window") if ov is not None else None
+
+
+def lookup_model_max_output_tokens(provider: str, model: str, *, base_url: str = "") -> Optional[int]:
+    """Configured output ceiling, not the catalog's or unknown-model fallback.
+
+    A capability-only override must not inject an unrelated output default into
+    requests. As with metadata, _default only fills catalog misses.
+    """
+    override = _explicit_model_override(provider, model, base_url=base_url, warn_missing=True)
+    if override is None:
+        models = _get_provider_models(provider, allow_network=False)
+        if models is None or _find_model_entry(models, model) is None:
+            override = _default_model_override(provider, base_url=base_url)
+    return _override_int(override, "max_output_tokens") if override is not None else None
 
 
 # Catalog miss — a _default override may fill the gap (#84482).

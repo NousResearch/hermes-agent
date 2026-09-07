@@ -1,0 +1,140 @@
+commit 12871bd01ede1c6eaf3bf456066d1e010034185f
+Author:     Teknium <127238744+teknium1@users.noreply.github.com>
+AuthorDate: Sun Sep 6 02:09:47 2026 -0700
+Commit:     Teknium <127238744+teknium1@users.noreply.github.com>
+CommitDate: Sun Sep 6 02:18:14 2026 -0700
+
+    feat(openrouter): per-model provider_routing.models.<id> overrides
+    
+    `provider_routing.models.<model-id>` now takes the same only/ignore/order/sort/
+    require_parameters/data_collection keys and overlays the flat provider_routing
+    values whenever the agent is on that model. Resolution lives in the one
+    chokepoint every request path already uses (_provider_preferences_for_agent),
+    so CLI, gateway, TUI/Desktop, cron, /model switches, fallback activation and
+    delegated children on another model all honour it with no per-surface plumbing.
+    Matching is spelling-tolerant, sharing _canonical_model_variants with
+    agent.reasoning_overrides.
+    
+    The OpenRouter profile's speed-tier pin no longer overwrites an explicit user
+    `only` on the BASE gpt-6-astra slug: the pin exists to keep default routing off
+    flex/fast, and a user pin is the stronger intent (only: [openai] stays [openai]
+    instead of becoming [openai, azure, azure/us]). Tier slugs (-fast/-flex) keep
+    owning `only`.
+    
+    Live A/B (config only: {gpt-6-astra: [openai], claude-fable-5.1: [anthropic]}):
+    main sent {"sort":"price"} for fable and OpenRouter served it from Azure; with
+    this change it sends {"only":["anthropic"],"sort":"price"} and Anthropic serves it.
+    
+    Schema proposed in #24495 (samplesabotage) and #100711 (Artemonim); this is a
+    slim chokepoint implementation of that design.
+    
+    Co-authored-by: samplesabotage <samplesabotage@users.noreply.github.com>
+
+diff --git a/agent/chat_completion_helpers.py b/agent/chat_completion_helpers.py
+index 98f4f25677..f3952ae1cf 100644
+--- a/agent/chat_completion_helpers.py
++++ b/agent/chat_completion_helpers.py
+@@ -378,15 +378,24 @@ def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
+ 
+ 
+ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
+-    """Build the validated provider-routing object shared by request paths."""
+-    preferences: Dict[str, Any] = {}
+-    for key, value in (("only", agent.providers_allowed), ("ignore", agent.providers_ignored),
+-        ("order", agent.providers_order), ("sort", _validated_openrouter_provider_sort(agent.provider_sort)),
+-        ("require_parameters", True if agent.provider_require_parameters else None),
+-        ("data_collection", agent.provider_data_collection)):
+-        if value:
+-            preferences[key] = value
+-    return preferences
++    """Build the validated provider-routing object shared by request paths.
++
++    ``provider_routing.models.<id>`` overlays the flat constructor values for the CURRENT
++    ``agent.model`` (so ``/model`` switches, fallbacks, and delegated children on another
++    model each get their own pins without any surface re-plumbing the kwargs)."""
++    flat = {"only": agent.providers_allowed, "ignore": agent.providers_ignored, "order": agent.providers_order,
++        "sort": agent.provider_sort, "require_parameters": agent.provider_require_parameters,
++        "data_collection": agent.provider_data_collection}
++    per_model = {}
++    with contextlib.suppress(Exception):
++        from hermes_cli.config import load_config_readonly
++        from hermes_constants import resolve_per_model_provider_routing
++        _pr = load_config_readonly().get("provider_routing")
++        per_model = resolve_per_model_provider_routing(agent.model, (_pr or {}).get("models") if isinstance(_pr, dict) else None)
++    merged = {**flat, **{k: v for k, v in per_model.items() if k in flat}}
++    merged["sort"] = _validated_openrouter_provider_sort(merged["sort"])
++    merged["require_parameters"] = True if merged["require_parameters"] else None
++    return {key: value for key, value in merged.items() if value}
+ 
+ 
+ def _prompt_cache_scope_for_agent(agent) -> "str | None":
+diff --git a/hermes_constants.py b/hermes_constants.py
+index 4dc3cd33e7..353764b6ea 100644
+--- a/hermes_constants.py
++++ b/hermes_constants.py
+@@ -941,6 +941,19 @@ def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> di
+     return None
+ 
+ 
++def resolve_per_model_provider_routing(model: str, models: dict | None) -> dict:
++    """``provider_routing.models.<id>`` entry for *model*, spelling-tolerant like
++    ``reasoning_overrides``; ``{}`` when none matches. Only the keys a user sets per model
++    are returned so unset ones fall through to the flat ``provider_routing`` values."""
++    if not model or not isinstance(models, dict):
++        return {}
++    for variant in _canonical_model_variants(model):
++        entry = models.get(variant)
++        if isinstance(entry, dict):
++            return entry
++    return {}
++
++
+ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
+     """Effective reasoning config for *model*: per-model override, then global ``agent.reasoning_effort``.
+ 
+diff --git a/tests/agent/test_per_model_provider_routing.py b/tests/agent/test_per_model_provider_routing.py
+new file mode 100644
+index 0000000000..37339f3f33
+--- /dev/null
++++ b/tests/agent/test_per_model_provider_routing.py
+@@ -0,0 +1,40 @@
++"""``provider_routing.models.<id>`` overlays the flat OpenRouter routing for the CURRENT agent.model."""
++from types import SimpleNamespace
++
++import pytest
++
++from agent import chat_completion_helpers as cch
++
++
++def _agent(model, **flat):
++    base = dict(providers_allowed=None, providers_ignored=None, providers_order=None, provider_sort="price",
++                provider_require_parameters=False, provider_data_collection=None)
++    base.update(flat)
++    return SimpleNamespace(model=model, **base)
++
++
++@pytest.fixture
++def routing_cfg(monkeypatch):
++    cfg = {"provider_routing": {"sort": "price", "models": {
++        "openai/gpt-6-astra": {"only": ["openai"]},
++        "anthropic/claude-fable-5.1": {"only": ["anthropic"], "sort": "throughput"},
++    }}}
++    import hermes_cli.config as config_mod
++    monkeypatch.setattr(config_mod, "load_config_readonly", lambda: cfg)
++    return cfg
++
++
++def test_per_model_entry_overlays_flat_routing_for_that_model_only(routing_cfg):
++    assert cch._provider_preferences_for_agent(_agent("openai/gpt-6-astra")) == {"only": ["openai"], "sort": "price"}
++    # A per-model key wins over the flat one; unset keys fall through.
++    assert cch._provider_preferences_for_agent(_agent("anthropic/claude-fable-5.1")) == {
++        "only": ["anthropic"], "sort": "throughput"}
++    # Unlisted model keeps the flat behaviour; no pin leaks across models.
++    assert cch._provider_preferences_for_agent(_agent("moonshotai/kimi-k2.6")) == {"sort": "price"}
++
++
++def test_per_model_match_is_spelling_tolerant_and_follows_model_switch(routing_cfg):
++    agent = _agent("openrouter/openai/gpt-6-astra", providers_allowed=["together"])
++    assert cch._provider_preferences_for_agent(agent)["only"] == ["openai"]
++    agent.model = "claude-fable-5-1"
++    assert cch._provider_preferences_for_agent(agent)["only"] == ["anthropic"]

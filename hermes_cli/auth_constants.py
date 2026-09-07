@@ -74,6 +74,10 @@ MINIMAX_OAUTH_GLOBAL_INFERENCE = "https://api.minimax.io/anthropic"
 MINIMAX_OAUTH_CN_INFERENCE = "https://api.minimaxi.com/anthropic"
 MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
+DEFAULT_COMMANDCODE_BASE_URL = "https://api.commandcode.ai/provider/v1"
+COMMANDCODE_STUDIO_URL = "https://commandcode.ai"
+COMMANDCODE_WHOAMI_URL = "https://api.commandcode.ai/alpha/whoami"
+COMMANDCODE_CALLBACK_PORT = 5959
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
@@ -152,6 +156,7 @@ _codex_err = _provider_error_factory("openai-codex")
 _spotify_err = _provider_error_factory("spotify")
 _qwen_err = _provider_error_factory("qwen-oauth")
 _minimax_err = _provider_error_factory("minimax-oauth")
+_commandcode_err = _provider_error_factory("commandcode")
 
 
 def _decode_jwt_claims(token: Any) -> Dict[str, Any]:

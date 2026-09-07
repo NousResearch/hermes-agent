@@ -89,6 +89,11 @@ from hermes_cli.auth_qwen import (  # noqa: F401  re-exported
     _qwen_access_token_is_expiring, _qwen_cli_auth_path, _read_qwen_cli_tokens,
     _refresh_qwen_cli_tokens, _save_qwen_cli_tokens, get_qwen_auth_status,
     resolve_qwen_runtime_credentials)
+from hermes_cli.auth_commandcode import (  # noqa: F401  re-exported
+    _commandcode_cli_auth_path, _read_commandcode_cli_tokens,
+    _save_commandcode_cli_tokens, _commandcode_oauth_login,
+    resolve_commandcode_runtime_credentials, get_commandcode_auth_status,
+    validate_commandcode_api_key)
 from hermes_cli.auth_constants import (  # noqa: F401  re-exported
     _decode_jwt_claims, AUTH_STORE_VERSION, AUTH_LOCK_TIMEOUT_SECONDS, DEFAULT_NOUS_PORTAL_URL,
     DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_CLIENT_ID, NOUS_BILLING_MANAGE_SCOPE,
@@ -97,6 +102,7 @@ from hermes_cli.auth_constants import (  # noqa: F401  re-exported
     DEFAULT_XAI_OAUTH_BASE_URL, MINIMAX_OAUTH_CLIENT_ID, MINIMAX_OAUTH_SCOPE,
     MINIMAX_OAUTH_GLOBAL_BASE, MINIMAX_OAUTH_CN_BASE, MINIMAX_OAUTH_GLOBAL_INFERENCE,
     MINIMAX_OAUTH_CN_INFERENCE, MINIMAX_OAUTH_REFRESH_SKEW_SECONDS, DEFAULT_QWEN_BASE_URL,
+    DEFAULT_COMMANDCODE_BASE_URL, COMMANDCODE_STUDIO_URL, COMMANDCODE_WHOAMI_URL,
     DEFAULT_GITHUB_MODELS_BASE_URL, DEFAULT_COPILOT_ACP_BASE_URL, DEFAULT_OLLAMA_CLOUD_BASE_URL,
     DEFAULT_ACTUAL_BASE_URL, DEFAULT_ACTUAL_LOCAL_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_CN_BASE_URL, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,

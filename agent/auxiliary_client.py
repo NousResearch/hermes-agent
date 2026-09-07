@@ -8,6 +8,7 @@ in neither chain (undocumented, shifting allow-list): main provider or explicit
 ``auxiliary.<task>.provider`` only. HTTP 402 in call_llm() falls through the chain.
 """
 
+import asyncio
 import contextlib
 import contextvars
 import functools
@@ -3570,6 +3571,164 @@ def _replan_synchronous_cache_sections(
     )
 
 
+# Request-local deadline: async tasks and copied relay contexts stay isolated.
+_AUX_FALLBACK_DEADLINE: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "auxiliary_fallback_deadline", default=None,
+)
+
+
+def _remaining_fallback_timeout(timeout: float) -> float:
+    deadline = _AUX_FALLBACK_DEADLINE.get()
+    if deadline is None:
+        return timeout
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("configured auxiliary fallback budget exhausted")
+    return min(timeout, remaining)
+
+
+def _is_recoverable_aux_request_error(exc: Exception) -> bool:
+    """Capacity/deployment failures only; request policy errors are not routing hints."""
+    return (
+        _is_payment_error(exc)
+        or _is_rate_limit_error(exc)
+        or _is_transient_transport_error(exc)
+        or _is_model_not_found_error(exc)
+        or _is_model_incompatible_error(exc)
+        or _is_invalid_aux_response_error(exc)
+    )
+
+
+class _ConfiguredFallbackWalk:
+    """One monotonic walk of the configured list, with request-scoped exclusions."""
+
+    def __init__(self, task, label, timeout, failed_provider, failed_model):
+        from agent.backend_identity import BackendIdentity, FailureScope
+        self.task = task
+        self.timeout = timeout
+        config = _get_auxiliary_task_config(task) if task else {}
+        self.chain = [dict(e) if isinstance(e, dict) else e for e in (config.get("fallback_chain") or [])]
+        match = re.fullmatch(r"fallback_chain\[(\d+)\]\([^)]+\)", label or "")
+        self.index = int(match.group(1)) if match else -1
+        self.enabled = 0 <= self.index < len(self.chain)
+        self.failed_provider = failed_provider
+        self.failed_model = failed_model
+        self.excluded = []
+        self.last_error = None
+        self.reason = "request failure"
+        budget = config.get("fallback_total_timeout")
+        if budget is None:
+            # Preserve independently tuned entry timeouts by default. An
+            # explicit total budget may tighten these per-entry ceilings.
+            budget = sum(_aux_stream_total_ceiling(
+                _positive_fallback_timeout(e.get("timeout"), timeout)
+            ) for e in self.chain[self.index:] if isinstance(e, dict)) or _aux_stream_total_ceiling(timeout)
+        budget = float(budget)
+        if not (0 < budget < float("inf")):
+            raise ValueError("auxiliary fallback_total_timeout must be finite and positive")
+        self.deadline = time.monotonic() + budget
+        inherited = _AUX_FALLBACK_DEADLINE.get()
+        if inherited is not None:
+            self.deadline = min(self.deadline, inherited)
+        self.excluded.append((BackendIdentity.build(provider=failed_provider, model=failed_model),
+                              FailureScope.MODEL if failed_model else FailureScope.CREDENTIAL))
+
+    def attempted(self, client, model, label):
+        from agent.backend_identity import BackendIdentity, FailureScope
+        ident = BackendIdentity.build(
+            provider=_fallback_provider_from_label(label), model=model,
+            base_url=str(getattr(client, "base_url", "") or ""),
+        )
+        self.excluded.append((ident, FailureScope.MODEL))
+        return ident
+
+    def failed(self, ident, exc):
+        from agent.backend_identity import FailureScope
+        self.last_error = exc
+        if exc is None or _is_auth_error(exc) or _is_payment_error(exc):
+            self.excluded.append((ident, FailureScope.CREDENTIAL))
+            self.reason = "auth error" if exc is None or _is_auth_error(exc) else "payment error"
+        else:
+            self.reason = "request failure"
+
+    def next(self):
+        _remaining_fallback_timeout(self.timeout)
+        client, model, label = _try_configured_fallback_chain(
+            self.task, self.failed_provider, reason=self.reason,
+            failed_model=self.failed_model, start_index=self.index + 1,
+            excluded_backends=self.excluded, chain_snapshot=self.chain,
+        )
+        if client is not None:
+            self.index = int(re.fullmatch(r"fallback_chain\[(\d+)\]\([^)]+\)", label).group(1))
+        return client, model, label
+
+
+def _positive_fallback_timeout(value, default):
+    try:
+        parsed = float(value)
+        return parsed if 0 < parsed < float("inf") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _call_fallback_walk_sync(client, model, label, *, failed_provider, failed_model, route_info=None, **kwargs):
+    walk = _ConfiguredFallbackWalk(kwargs.get("task"), label, kwargs["effective_timeout"], failed_provider, failed_model)
+    if not walk.enabled:
+        return _call_fallback_candidate_sync(client, model, label, **kwargs)
+    token = _AUX_FALLBACK_DEADLINE.set(walk.deadline)
+    try:
+        while client is not None:
+            _remaining_fallback_timeout(kwargs["effective_timeout"])
+            ident = walk.attempted(client, model, label)
+            _record_route_info(route_info, _fallback_provider_from_label(label), model)
+            try:
+                result = _call_fallback_candidate_sync(client, model, label, **kwargs)
+                if result is not None:
+                    return result
+                walk.failed(ident, None)
+            except Exception as exc:
+                if not _is_recoverable_aux_request_error(exc):
+                    raise
+                walk.failed(ident, exc)
+            client, model, label = walk.next()
+        if walk.last_error is not None:
+            logger.warning("Auxiliary %s: configured fallback requests exhausted", kwargs.get("task"))
+            raise walk.last_error
+        return None
+    finally:
+        _AUX_FALLBACK_DEADLINE.reset(token)
+
+
+async def _call_fallback_walk_async(client, model, label, *, failed_provider, failed_model, route_info=None, **kwargs):
+    walk = _ConfiguredFallbackWalk(kwargs.get("task"), label, kwargs["effective_timeout"], failed_provider, failed_model)
+    if not walk.enabled:
+        async_client, async_model = _to_async_client(client, model or "", is_vision=kwargs.get("task") == "vision")
+        return await _call_fallback_candidate_async(async_client, async_model or model, label, **kwargs)
+    token = _AUX_FALLBACK_DEADLINE.set(walk.deadline)
+    try:
+        while client is not None:
+            _remaining_fallback_timeout(kwargs["effective_timeout"])
+            ident = walk.attempted(client, model, label)
+            async_client, async_model = _to_async_client(client, model or "", is_vision=kwargs.get("task") == "vision")
+            _record_route_info(route_info, _fallback_provider_from_label(label), async_model or model)
+            try:
+                result = await _call_fallback_candidate_async(async_client, async_model or model, label, **kwargs)
+                if result is not None:
+                    return result
+                walk.failed(ident, None)
+            except Exception as exc:
+                if not _is_recoverable_aux_request_error(exc):
+                    raise
+                walk.failed(ident, exc)
+            client, model, label = await asyncio.to_thread(walk.next)
+        if walk.last_error is not None:
+            logger.warning("Auxiliary %s: configured fallback requests exhausted", kwargs.get("task"))
+            raise walk.last_error
+        return None
+    finally:
+        _AUX_FALLBACK_DEADLINE.reset(token)
+
+
 def _fallback_request_kwargs(
     destination: _FallbackDestination, *, task: Optional[str], messages: list,
     tools: Optional[list], temperature: Optional[float], max_tokens: Optional[int],
@@ -3588,7 +3747,7 @@ def _fallback_request_kwargs(
     fallback_messages, fallback_tools = _replan_synchronous_cache_sections(messages, tools, destination=destination)
     fb_kwargs = _build_call_kwargs(
         destination.provider, destination.model, fallback_messages,
-        temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=effective_timeout,
+        temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=_remaining_fallback_timeout(effective_timeout),
         extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task)
     if apply_fast_lane and fallback_max_tokens is not None and max_tokens is None:
         fb_kwargs.update(auxiliary_max_tokens_param(fallback_max_tokens, model=destination.model))
@@ -3871,27 +4030,37 @@ def _context_too_small(
 
 
 def _try_configured_fallback_chain(
-    task: str, failed_provider: str, reason: str = "error", failed_model: Optional[str] = None
+    task: str, failed_provider: str, reason: str = "error", failed_model: Optional[str] = None,
+    *, start_index: int = 0, excluded_backends: Optional[list] = None,
+    chain_snapshot: Optional[list] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try auxiliary.<task>.fallback_chain entries in order (each needs ``provider``; model/base_url/api_key optional).
     ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still
     run after a model-scoped failure). Returns (client, model, provider_label) or (None, None, "")."""
     if not task:
         return None, None, ""
-    chain = _get_auxiliary_task_config(task).get("fallback_chain")
+    chain = chain_snapshot if chain_snapshot is not None else _get_auxiliary_task_config(task).get("fallback_chain")
     if not chain or not isinstance(chain, list):
         return None, None, ""
+    from agent.backend_identity import BackendIdentity, should_skip_candidate
+
+    def excluded(provider, model, base_url):
+        identity = BackendIdentity.build(provider=provider, model=model, base_url=base_url)
+        return any(should_skip_candidate(identity, prior, scope) for prior, scope in (excluded_backends or []))
+
     skip = _failed_backend_skip(failed_provider, failed_model)
     tried = []
     min_ctx = _task_minimum_context_length(task)
     for i, entry in enumerate(chain):
-        if not isinstance(entry, dict):
+        if i < start_index or not isinstance(entry, dict):
             continue
         fb_provider = str(entry.get("provider", "")).strip()
         if not fb_provider:
             continue
         fb_model_raw = str(entry.get("model", "")).strip()
         if skip(fb_provider, fb_model_raw, str(entry.get("base_url") or "")):
+            continue
+        if excluded(fb_provider, fb_model_raw, str(entry.get("base_url") or "")):
             continue
         fb_model = fb_model_raw or None
         label = f"fallback_chain[{i}]({fb_provider})"
@@ -3900,6 +4069,8 @@ def _try_configured_fallback_chain(
         except Exception:
             fb_client, resolved_model = None, None
         if fb_client is not None:
+            if excluded(fb_provider, resolved_model or fb_model, str(entry.get("base_url") or getattr(fb_client, "base_url", "") or "")):
+                continue
             too_small = _context_too_small(
                 entry, fb_provider, resolved_model, min_ctx, task=task, label=label, name_model=True,
             ) if resolved_model else None
@@ -6074,7 +6245,7 @@ def _aux_stream_total_ceiling(effective_timeout: Optional[float]) -> float:
         timeout = float(effective_timeout) if effective_timeout is not None else 0.0
     except (TypeError, ValueError):
         timeout = 0.0
-    return max(_AUX_STREAM_CEILING_FLOOR_SECONDS, _AUX_STREAM_CEILING_MULTIPLIER * timeout)
+    return _remaining_fallback_timeout(max(_AUX_STREAM_CEILING_FLOOR_SECONDS, _AUX_STREAM_CEILING_MULTIPLIER * timeout))
 
 
 def _client_streams_internally(client: Any) -> bool:
@@ -6585,7 +6756,8 @@ _RERAISE_ORIGINAL = object()
 _FALLBACK_REASONS: Tuple[Tuple[Callable[[Exception], bool], str], ...] = (
     (_is_auth_error, "auth error"), (_is_payment_error, "payment error"),
     (_is_rate_limit_error, "rate limit"), (_is_model_incompatible_error, "model incompatible with route"),
-    (_is_invalid_aux_response_error, "invalid provider response"), (_is_connection_error, "connection error"),
+    (_is_invalid_aux_response_error, "invalid provider response"),
+    (_is_transient_transport_error, "transport error"), (_is_model_not_found_error, "model not found"),
 )
 
 
@@ -7142,7 +7314,10 @@ def _call_llm_impl(
                 return _validate_llm_response(_relay_sync_completion(*args, **kw), task)
             if kind == "retry":
                 return _retry_same_provider_sync(**kw)
-            return _call_fallback_candidate_sync(*args, **kw)
+            return _call_fallback_walk_sync(
+                *args, failed_provider=req.resolved_provider or "auto",
+                failed_model=None if _is_auth_error(first_err) or _is_payment_error(first_err) else req.final_model,
+                route_info=route_info, **kw)
         result = _drive_ladder(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
             _perform)
@@ -7296,9 +7471,10 @@ async def _async_call_llm_impl(
                 return _validate_llm_response(await _relay_async_completion(*args, **kw), task)
             if kind == "retry":
                 return await _retry_same_provider_async(**kw)
-            fb_client, fb_model, fb_label = args
-            fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task == "vision"))
-            return await _call_fallback_candidate_async(fb_client, fb_model, fb_label, **kw)
+            return await _call_fallback_walk_async(
+                *args, failed_provider=req.resolved_provider or "auto",
+                failed_model=None if _is_auth_error(first_err) or _is_payment_error(first_err) else req.final_model,
+                route_info=route_info, **kw)
         result = await _drive_ladder_async(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),
             _perform)

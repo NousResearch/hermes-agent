@@ -7,8 +7,7 @@ import {
   authorizeUpdateMutation,
   runAuthorizedUpdateMutation,
   runWindowsUpdatePreflight,
-  type UpdatePreflightDeps,
-  type UpdatePreflightPurpose
+  type UpdatePreflightDeps
 } from './update-preflight'
 import type {
   DesktopPluginServiceProcess,
@@ -16,8 +15,6 @@ import type {
   ScanOutcome,
   VenvBlockerScanResult
 } from './venv-blocker-scan'
-
-const PURPOSES: UpdatePreflightPurpose[] = ['normal-update', 'bootstrap-recovery']
 
 const claim: UpdateMarkerClaim = { pid: 777, startedAt: 100 }
 
@@ -122,7 +119,7 @@ function makeDeps(scans: ScanOutcome[], overrides: Partial<UpdatePreflightDeps> 
   return { calls, deps }
 }
 
-describe.each(PURPOSES)('runWindowsUpdatePreflight (%s)', purpose => {
+describe('runWindowsUpdatePreflight', () => {
   it('stops force-release retries when a generic holder keeps respawning', async () => {
     let clock = 0
     let scans = 0
@@ -147,7 +144,7 @@ describe.each(PURPOSES)('runWindowsUpdatePreflight (%s)', purpose => {
       },
     })
 
-    const outcome = await runWindowsUpdatePreflight(purpose, deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       genericHolderTimeoutMs: 15,
       respawnIntervalMs: 5,
@@ -169,7 +166,7 @@ describe.each(PURPOSES)('runWindowsUpdatePreflight (%s)', purpose => {
       }
     })
 
-    const outcome = await runWindowsUpdatePreflight(purpose, deps)
+    const outcome = await runWindowsUpdatePreflight(deps)
 
     assert.equal(outcome.kind, 'blocked')
     assert.equal(outcome.reason, 'unlock-failed')
@@ -190,7 +187,7 @@ describe.each(PURPOSES)('runWindowsUpdatePreflight (%s)', purpose => {
       }
     })
 
-    const outcome = await runWindowsUpdatePreflight(purpose, deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       respawnIntervalMs: 0,
       terminationSettleMs: 0
@@ -219,7 +216,7 @@ describe.each(PURPOSES)('runWindowsUpdatePreflight (%s)', purpose => {
       })
     })
 
-    const outcome = await runWindowsUpdatePreflight(purpose, deps)
+    const outcome = await runWindowsUpdatePreflight(deps)
     assert.equal(outcome.kind, 'blocked')
 
     if (outcome.kind === 'blocked') {
@@ -255,7 +252,7 @@ describe.each(PURPOSES)('runWindowsUpdatePreflight (%s)', purpose => {
       }
     })
 
-    const outcome = await runWindowsUpdatePreflight(purpose, deps)
+    const outcome = await runWindowsUpdatePreflight(deps)
 
     assert.equal(outcome.kind, 'blocked')
     assert.deepEqual(calls, ['release', 'force-release'])
@@ -279,7 +276,7 @@ describe.each(PURPOSES)('runWindowsUpdatePreflight (%s)', purpose => {
   it('mints a permit only after the clear production preflight and runs both handoff mutations', async () => {
     const { deps } = makeDeps([clear(), clear(), clear()])
 
-    const outcome = await runWindowsUpdatePreflight(purpose, deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       respawnIntervalMs: 0,
       terminationSettleMs: 0
@@ -319,7 +316,7 @@ describe.each(PURPOSES)('runWindowsUpdatePreflight (%s)', purpose => {
       }) as any
     })
 
-    const outcome = await runWindowsUpdatePreflight(purpose, deps)
+    const outcome = await runWindowsUpdatePreflight(deps)
 
     assert.equal(outcome.kind, 'blocked')
     assert.equal(outcome.reason, 'unlock-failed')
@@ -329,7 +326,7 @@ describe.each(PURPOSES)('runWindowsUpdatePreflight (%s)', purpose => {
   it('returns a typed probe failure while retaining the caller-owned marker', async () => {
     const { calls, deps } = makeDeps([{ kind: 'probe-failure', error: 'scanner crashed' }])
 
-    const outcome = await runWindowsUpdatePreflight(purpose, deps)
+    const outcome = await runWindowsUpdatePreflight(deps)
 
     assert.equal(outcome.kind, 'probe-failure')
     assert.equal(outcome.error, 'scanner crashed')
@@ -344,7 +341,7 @@ describe.each(PURPOSES)('runWindowsUpdatePreflight (%s)', purpose => {
 
     const { calls, deps } = makeDeps([{ kind: 'blocked', result: generic }])
 
-    const outcome = await runWindowsUpdatePreflight(purpose, deps)
+    const outcome = await runWindowsUpdatePreflight(deps)
 
     assert.equal(outcome.kind, 'blocked')
     assert.equal(outcome.reason, 'holders')
@@ -372,7 +369,7 @@ describe.each(PURPOSES)('runWindowsUpdatePreflight (%s)', purpose => {
       }
     })
 
-    const outcome = await runWindowsUpdatePreflight(purpose, deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       respawnIntervalMs: 0,
       terminationSettleMs: 0
@@ -387,7 +384,7 @@ describe.each(PURPOSES)('runWindowsUpdatePreflight (%s)', purpose => {
     const unproven = blockedByBridges([bridge({ owner: 'unknown' })])
     const { calls, deps } = makeDeps([unproven])
 
-    const outcome = await runWindowsUpdatePreflight(purpose, deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       respawnIntervalMs: 0,
       terminationSettleMs: 0
@@ -418,7 +415,7 @@ describe('MCP bridge drain', () => {
       }
     })
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       respawnIntervalMs: 0,
       terminationSettleMs: 0
@@ -431,7 +428,7 @@ describe('MCP bridge drain', () => {
   it('lets cooperative exit under the update marker win', async () => {
     const { calls, deps } = makeDeps([blockedByBridges(), clear(), clear()])
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 900,
       respawnIntervalMs: 1_100,
       terminationSettleMs: 700
@@ -452,7 +449,7 @@ describe('MCP bridge drain', () => {
 
     const { calls, deps } = makeDeps([blockedByBridges(), clear(), genericOnly, clear(), clear()])
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       genericHolderPollMs: 5,
       genericHolderTimeoutMs: 10,
@@ -480,7 +477,7 @@ describe('MCP bridge drain', () => {
     const stillRunning = blockedByBridges([wrapper, worker])
     const { calls, deps } = makeDeps([stillRunning, stillRunning, clear(), clear()])
 
-    const outcome = await runWindowsUpdatePreflight('bootstrap-recovery', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 900,
       respawnIntervalMs: 1_100,
       terminationSettleMs: 700
@@ -518,7 +515,7 @@ describe('MCP bridge drain', () => {
 
     const { calls, deps } = makeDeps([stillRunning, stillRunning, clear(), clear()])
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       respawnIntervalMs: 0,
       terminationSettleMs: 0
@@ -557,7 +554,7 @@ describe('MCP bridge drain', () => {
   ])('fails closed when an exact $label termination reports false', async ({ outcome: blocked, override }) => {
     const { calls, deps } = makeDeps([blocked, blocked], override)
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       terminationSettleMs: 0
     })
@@ -576,7 +573,7 @@ describe('MCP bridge drain', () => {
 
     const { calls, deps } = makeDeps([blockedByBridges(), genericOnly, clear(), clear()])
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       genericHolderPollMs: 5,
       genericHolderTimeoutMs: 10,
@@ -612,7 +609,7 @@ describe('MCP bridge drain', () => {
 
     const { calls, deps } = makeDeps([blockedByBridges(), mixed, genericOnly, clear(), clear()])
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 900,
       genericHolderPollMs: 250,
       genericHolderTimeoutMs: 2_000,
@@ -651,7 +648,7 @@ describe('MCP bridge drain', () => {
 
     const { calls, deps } = makeDeps([blockedByBridges(), mixed, genericOnly, genericOnly, genericOnly])
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       genericHolderPollMs: 5,
       genericHolderTimeoutMs: 10,
@@ -723,7 +720,7 @@ describe('MCP bridge drain', () => {
     async ({ scans, expectedCalls }) => {
       const { calls, deps } = makeDeps(scans)
 
-      const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+      const outcome = await runWindowsUpdatePreflight(deps, {
         cooperativeExitMs: 0,
         genericHolderPollMs: 5,
         genericHolderTimeoutMs: 10,
@@ -759,7 +756,7 @@ describe('MCP bridge drain', () => {
 
     const { calls, deps } = makeDeps([blockedByBridges(), mixed, genericOnly, clear(), clear()])
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       genericHolderPollMs: 0,
       genericHolderTimeoutMs: 1,
@@ -776,7 +773,7 @@ describe('MCP bridge drain', () => {
     const bridges = Array.from({ length: 33 }, (_, index) => bridge({ pid: 1_000 + index, createdAt: 2_000 + index }))
     const { calls, deps } = makeDeps([blockedByBridges(), blockedByBridges(bridges)])
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, { cooperativeExitMs: 0 })
+    const outcome = await runWindowsUpdatePreflight(deps, { cooperativeExitMs: 0 })
 
     assert.equal(outcome.kind, 'blocked')
     assert.equal(outcome.reason, 'quiesce-incomplete')
@@ -798,7 +795,7 @@ describe('MCP bridge drain', () => {
       }
     })
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       respawnIntervalMs: 0,
       terminationSettleMs: 0
@@ -824,7 +821,7 @@ describe('MCP bridge drain', () => {
 
     const { calls, deps } = makeDeps([blockedByBridges(), blockedByBridges(bridges)])
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, { cooperativeExitMs: 0 })
+    const outcome = await runWindowsUpdatePreflight(deps, { cooperativeExitMs: 0 })
 
     assert.equal(outcome.kind, 'blocked')
     assert.equal(outcome.reason, 'quiesce-incomplete')
@@ -838,7 +835,7 @@ describe('MCP bridge drain', () => {
     const bridges = pairedBridgeGroups(33)
     const { calls, deps } = makeDeps([blockedByBridges(), blockedByBridges(bridges)])
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, { cooperativeExitMs: 0 })
+    const outcome = await runWindowsUpdatePreflight(deps, { cooperativeExitMs: 0 })
 
     assert.equal(outcome.kind, 'blocked')
     assert.equal(outcome.reason, 'quiesce-incomplete')
@@ -884,7 +881,7 @@ describe('MCP bridge drain', () => {
       }
     })
 
-    const outcomePromise = runWindowsUpdatePreflight('normal-update', deps)
+    const outcomePromise = runWindowsUpdatePreflight(deps)
     await workerStartedPromise
 
     assert.equal(calls.includes('terminate-start:101'), false)
@@ -926,7 +923,7 @@ describe('MCP bridge drain', () => {
     async ({ outcome: blocker }) => {
       const { calls, deps } = makeDeps([blockedByBridges(), clear(), blocker])
 
-      const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+      const outcome = await runWindowsUpdatePreflight(deps, {
         cooperativeExitMs: 900,
         respawnIntervalMs: 1_100
       })
@@ -944,7 +941,7 @@ describe('MCP bridge drain', () => {
       { kind: 'probe-failure', error: 'stability probe failed' }
     ])
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       respawnIntervalMs: 7
     })
@@ -977,7 +974,7 @@ describe('MCP bridge drain', () => {
       { kind: 'probe-failure', error: 'stability poll failed' }
     ])
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       genericHolderPollMs: 5,
       genericHolderTimeoutMs: 10,
@@ -1008,7 +1005,7 @@ describe('MCP bridge drain', () => {
 
     const { calls, deps } = makeDeps([blockedByBridges(), clear(), genericOnly, genericOnly, genericOnly])
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 0,
       genericHolderPollMs: 5,
       genericHolderTimeoutMs: 10,
@@ -1035,7 +1032,7 @@ describe('MCP bridge drain', () => {
   it('catches a bridge spawned after a clear observation', async () => {
     const { calls, deps } = makeDeps([clear(), blockedByBridges(), clear(), clear()])
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, {
+    const outcome = await runWindowsUpdatePreflight(deps, {
       cooperativeExitMs: 900,
       respawnIntervalMs: 1_100
     })
@@ -1061,7 +1058,7 @@ describe('MCP bridge drain', () => {
 describe('preflight uses the caller-owned update marker', () => {
   it('refuses before releasing any process when the claim cannot be verified', async () => {
     const { calls, deps } = makeDeps([], { ownsUpdateMarker: () => false })
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps)
+    const outcome = await runWindowsUpdatePreflight(deps)
     assert.equal(outcome.kind, 'blocked')
 
     if (outcome.kind !== 'blocked') { throw new Error('expected refusal') }
@@ -1088,7 +1085,7 @@ describe('preflight uses the caller-owned update marker', () => {
       }
     })
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps)
+    const outcome = await runWindowsUpdatePreflight(deps)
     assert.equal(outcome.kind, 'probe-failure')
     assert.equal(forced, false)
     assert.equal(authorizeUpdateMutation(outcome), null)
@@ -1102,7 +1099,7 @@ describe('preflight uses the caller-owned update marker', () => {
       ownsUpdateMarker: candidate => owned && candidate.pid === claim.pid && candidate.startedAt === claim.startedAt
     })
 
-    const outcome = await runWindowsUpdatePreflight('normal-update', deps, { cooperativeExitMs: 0, respawnIntervalMs: 0 })
+    const outcome = await runWindowsUpdatePreflight(deps, { cooperativeExitMs: 0, respawnIntervalMs: 0 })
     const permit = authorizeUpdateMutation(outcome)
     assert.ok(permit)
     owned = false

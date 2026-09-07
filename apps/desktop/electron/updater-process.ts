@@ -1,14 +1,16 @@
 import { spawn, type SpawnOptions } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 import { hiddenWindowsChildOptions } from './windows-child-options'
 import { queryWindowsProcessCreatedAt } from './windows-process-identity'
 
-const WINDOWS_HANDOFF_ENV = {
+export const WINDOWS_HANDOFF_ENV = {
   branch: 'HERMES_UPDATE_HANDOFF_BRANCH',
   desktopPid: 'HERMES_UPDATE_HANDOFF_DESKTOP_PID',
   installRoot: 'HERMES_UPDATE_HANDOFF_INSTALL_ROOT',
+  nonce: 'HERMES_UPDATE_HANDOFF_NONCE',
   relaunchAppPath: 'HERMES_UPDATE_HANDOFF_RELAUNCH_APP_PATH',
   relaunchExe: 'HERMES_UPDATE_HANDOFF_RELAUNCH_EXE',
   script: 'HERMES_UPDATE_HANDOFF_SCRIPT'
@@ -16,17 +18,32 @@ const WINDOWS_HANDOFF_ENV = {
 
 const WINDOWS_HANDOFF_LAUNCHER = String.raw`
 $ErrorActionPreference = 'Stop'
-$required = @('HERMES_UPDATE_HANDOFF_SCRIPT','HERMES_UPDATE_HANDOFF_INSTALL_ROOT','HERMES_UPDATE_HANDOFF_BRANCH','HERMES_UPDATE_HANDOFF_DESKTOP_PID','HERMES_UPDATE_HANDOFF_RELAUNCH_EXE')
+$required = @('HERMES_UPDATE_HANDOFF_SCRIPT','HERMES_UPDATE_HANDOFF_INSTALL_ROOT','HERMES_UPDATE_HANDOFF_BRANCH','HERMES_UPDATE_HANDOFF_DESKTOP_PID','HERMES_UPDATE_HANDOFF_RELAUNCH_EXE','HERMES_UPDATE_HANDOFF_NONCE')
 foreach ($name in $required) { if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name, 'Process'))) { throw "Missing required update handoff value: $name" } }
 $desktopPid = 0
 if (-not [int]::TryParse($env:HERMES_UPDATE_HANDOFF_DESKTOP_PID, [ref]$desktopPid) -or $desktopPid -le 0) { throw 'Invalid update handoff desktop PID' }
 if (-not (Test-Path -LiteralPath $env:HERMES_UPDATE_HANDOFF_SCRIPT -PathType Leaf)) { throw 'Update handoff script is missing' }
-$scriptArgs = @{ InstallRoot=$env:HERMES_UPDATE_HANDOFF_INSTALL_ROOT; Branch=$env:HERMES_UPDATE_HANDOFF_BRANCH; DesktopPid=$desktopPid; RelaunchExe=$env:HERMES_UPDATE_HANDOFF_RELAUNCH_EXE }
+$scriptArgs = @{ InstallRoot=$env:HERMES_UPDATE_HANDOFF_INSTALL_ROOT; Branch=$env:HERMES_UPDATE_HANDOFF_BRANCH; DesktopPid=$desktopPid; RelaunchExe=$env:HERMES_UPDATE_HANDOFF_RELAUNCH_EXE; HandoffNonce=$env:HERMES_UPDATE_HANDOFF_NONCE }
 if (-not [string]::IsNullOrWhiteSpace($env:HERMES_UPDATE_HANDOFF_RELAUNCH_APP_PATH)) { $scriptArgs.RelaunchAppPath=$env:HERMES_UPDATE_HANDOFF_RELAUNCH_APP_PATH }
 & $env:HERMES_UPDATE_HANDOFF_SCRIPT @scriptArgs
 if ($null -eq $LASTEXITCODE) { exit 1 }
 exit $LASTEXITCODE
 `.trim()
+
+/**
+ * Per-handoff shared secret proving a marker claim came from the updater we
+ * actually spawned (#B4).
+ *
+ * Before this, "authentication" only required that SOME process the Desktop
+ * had not itself excluded wrote a plausible `<pid>\n<createdAt>` body into the
+ * marker inside a ten-second window. Any same-user process satisfied it and
+ * the Desktop then exited with no update running. The nonce travels to the
+ * updater through the private handoff env block and comes back in an ack
+ * sidecar, binding the claim to the exact child we started.
+ */
+export function createUpdateHandoffNonce(): string {
+  return randomBytes(24).toString('hex')
+}
 
 const WINDOWS_HANDOFF_ENCODED_COMMAND = Buffer.from(WINDOWS_HANDOFF_LAUNCHER, 'utf16le').toString('base64')
 
@@ -76,6 +93,8 @@ export interface WindowsUpdateHandoffValues {
   branch: string
   desktopPid: number
   installRoot: string
+  /** Secret from createUpdateHandoffNonce; the script echoes it in the ack. */
+  nonce: string
   relaunchAppPath?: string
   relaunchExe: string
 }
@@ -227,7 +246,8 @@ export function wrapHandoffForDetachedConsole(
     throw new Error('Windows update handoff requires a positive desktop PID')
   }
 
-  if ([handoff.scriptPath, extraArgsOrValues.installRoot, extraArgsOrValues.branch, extraArgsOrValues.relaunchExe]
+  if ([handoff.scriptPath, extraArgsOrValues.installRoot, extraArgsOrValues.branch, extraArgsOrValues.relaunchExe,
+    extraArgsOrValues.nonce]
     .some(value => typeof value !== 'string' || value.trim().length === 0)) {
     throw new Error('Windows update handoff requires every environment value')
   }
@@ -253,6 +273,7 @@ export function wrapHandoffForDetachedConsole(
       [WINDOWS_HANDOFF_ENV.branch]: extraArgsOrValues.branch,
       [WINDOWS_HANDOFF_ENV.desktopPid]: String(extraArgsOrValues.desktopPid),
       [WINDOWS_HANDOFF_ENV.installRoot]: extraArgsOrValues.installRoot,
+      [WINDOWS_HANDOFF_ENV.nonce]: extraArgsOrValues.nonce,
       [WINDOWS_HANDOFF_ENV.relaunchAppPath]: extraArgsOrValues.relaunchAppPath ?? '',
       [WINDOWS_HANDOFF_ENV.relaunchExe]: extraArgsOrValues.relaunchExe,
       [WINDOWS_HANDOFF_ENV.script]: handoff.scriptPath
@@ -444,18 +465,6 @@ export function isSpawnedUpdaterGenerationActive(child: UpdaterChild): boolean {
   } catch {
     return false
   }
-}
-
-/** Rust markers record acquisition time, which can be later than process birth. */
-export function isStagedUpdaterMarkerOwner(
-  marker: { pid: number; startedAt: number },
-  child: { pid: number; createdAt: number },
-  currentCreatedAt: number | null,
-  active: boolean
-): boolean {
-  return active && marker.pid === child.pid &&
-    Number.isFinite(child.createdAt) && child.createdAt > 0 &&
-    currentCreatedAt === child.createdAt && marker.startedAt >= child.createdAt - 1
 }
 
 export async function terminateSpawnedUpdaterIfExact(

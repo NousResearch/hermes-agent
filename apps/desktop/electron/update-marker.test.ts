@@ -177,7 +177,7 @@ test('future-dated marker self-heals on the same dwell rule', () => {
   const home = tmpHome('future')
   let now = 1_000_000_000_000
   writeMarker(home, 4242, Math.floor(now / 1000) + 3_600)
-  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now })?.reason, 'future')
+  assert.equal((readLiveUpdateMarker(home, { kill: ALIVE, now: () => now }) as { reason?: string } | null)?.reason, 'future')
 
   now += UPDATE_MARKER_DWELL_MS
   assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now }), null)
@@ -188,7 +188,7 @@ test('an empty marker -- a torn write with no attacker -- self-heals', () => {
   const home = tmpHome('empty')
   let now = 1_000_000_000_000
   fs.writeFileSync(markerPath(home), '')
-  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now })?.reason, 'malformed')
+  assert.equal((readLiveUpdateMarker(home, { kill: ALIVE, now: () => now }) as { reason?: string } | null)?.reason, 'malformed')
 
   now += UPDATE_MARKER_DWELL_MS
   assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now }), null)

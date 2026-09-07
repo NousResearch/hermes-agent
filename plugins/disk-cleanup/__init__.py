@@ -62,9 +62,14 @@ def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = Non
     for path_str in extractor(args, result if isinstance(result, str) else ""):
         try:
             p = Path(path_str).expanduser()
+            category = dg.guess_category(p) if p.exists() else None
         except Exception:
+            # "Never raises" contract: candidate extraction is best-effort and
+            # filesystem-touching calls can legitimately fail for garbage
+            # candidates — e.g. Path.exists() raises ENAMETOOLONG for a single
+            # component over NAME_MAX (quoted terminal args embedding \n
+            # escapes produce one such token via shlex). Skip and move on.
             continue
-        category = dg.guess_category(p) if p.exists() else None
         if category is not None and dg.track(str(p), category, silent=True) and category == "test":
             with _lock:
                 _recent_test_tracks.setdefault(task_id or session_id or "default", set()).add(str(p))

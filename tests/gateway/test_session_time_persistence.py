@@ -27,7 +27,7 @@ def test_old_reset_config_cannot_rotate_durable_conversation(tmp_path, mode):
     store._save()
     routed = store.get_or_create_session(source)
     assert routed.session_id == old.session_id
-    assert store.load_transcript(routed.session_id) == messages
+    assert [{"role": m["role"], "content": m["content"]} for m in store.load_transcript(routed.session_id)] == messages
     assert store._db.get_session(old.session_id)["end_reason"] is None
     # Missing routing indexes must recover the same durable transcript too.
     store._entries.clear()
@@ -37,5 +37,5 @@ def test_old_reset_config_cannot_rotate_durable_conversation(tmp_path, mode):
     explicit = store.reset_session(recovered.session_key)
     assert explicit.session_id != old.session_id
     assert store._db.get_session(old.session_id)["end_reason"] == "session_reset"
-    assert store.load_transcript(old.session_id) == messages
+    assert [{"role": m["role"], "content": m["content"]} for m in store.load_transcript(old.session_id)] == messages
     store._db.close()

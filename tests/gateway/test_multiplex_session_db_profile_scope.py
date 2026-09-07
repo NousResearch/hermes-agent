@@ -531,13 +531,8 @@ def test_scoped_inbound_turn_lands_in_profile_store(multiplex_homes):
 def test_unscoped_background_finalize_reaches_the_key_owner_store(multiplex_homes):
     """Background work carries no scope but owns every profile's keys.
 
-    ``_session_expiry_watcher`` walks the process-wide ``_entries`` dict and
-    finalizes expired sessions without entering ``_profile_runtime_scope``, so
-    resolving from the ambient home wrote the flag to the ROOT store while the
-    row lives under ``profiles/<name>/``.  Two copies of one session then drift
-    apart until the #54878 guard drops a live conversation.
-
-    Fails before this change with ``expiry_finalized`` still 0 on the profile row.
+    Background lifecycle work must resolve the routing key owner profile,
+    not the default profile database.
     """
     root, profile = multiplex_homes
     store = _multiplex_store(root)

@@ -574,6 +574,11 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
         if now - last_kanban_poll >= _KANBAN_POLL_SECONDS:
             last_kanban_poll = now
             _notif_poll_kanban(sid, session)
+            try:
+                from tui_gateway.session_notification_replies import poll_replies
+                poll_replies(sid, session, _session_home(session), _run_prompt_submit)
+            except Exception as reply_exc:
+                _notif_log_failure("notification reply poll failed", reply_exc)
         try:
             evt = queue.get(timeout=0.5)
         except Exception:

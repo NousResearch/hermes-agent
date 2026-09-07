@@ -252,17 +252,22 @@ def _handle_send(args):
     if _relay_denial:
         return tool_error(_relay_denial)
 
+    from gateway.notification_replies import capture_origin, prepare_send, record_sent
     try:
+        origin = capture_origin(platform_name)
+        prepare_send(origin, chat_id, cleaned_message, media_files, _platform_max_length(platform))
         from model_tools import _run_async
         # Only custom plugin handlers receive the complete typed request.
         handler_args = {"args": args} if entry is not None and entry.send_message_handler is not None else {}
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
                                               **handler_args))
+        if isinstance(result, dict):
+            record_sent(origin, chat_id, result)
         if isinstance(result, dict) and result.get("success"):
             if used_home_channel:
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
-            if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
+            if not origin and mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
                 result["mirrored"] = True
         if isinstance(result, dict) and "error" in result:
             result["error"] = _sanitize_error_text(result["error"])

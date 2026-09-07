@@ -680,6 +680,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             print(f"[{self.name}] {bridge_exit}")
         return bool(bridge_exit)
 
+    async def handle_message(self, event: MessageEvent) -> None:
+        from gateway.notification_replies import is_reply_candidate
+        if self._message_handler and is_reply_candidate(event):
+            await self._dispatch_inline_reply(event)
+            return
+        await super().handle_message(event)
+
     async def _poll_messages(self) -> None:
         while self._running:
             if not self._http_session or await self._report_bridge_exit():
@@ -692,7 +699,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             if event:
                                 # Fire-and-forget: a slow bridge /read must not delay dispatch.
                                 asyncio.create_task(self._send_read_receipt(msg_data))
-                                if event.message_type == MessageType.TEXT:
+                                from gateway.notification_replies import is_reply_candidate
+                                if event.message_type == MessageType.TEXT and not is_reply_candidate(event):
                                     self._enqueue_text_event(event)
                                 else:
                                     await self.handle_message(event)

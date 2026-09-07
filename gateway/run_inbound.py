@@ -1197,6 +1197,11 @@ class GatewayInboundMixin:
         if _paused_notice is not None:
             return _paused_notice
 
+        from gateway.notification_replies import accept_reply
+        _notification_reply = accept_reply(event)
+        if _notification_reply is not None:
+            return _notification_reply
+
         _quick_key = self._session_key_for_source(source)
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:

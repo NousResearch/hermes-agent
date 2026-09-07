@@ -258,7 +258,10 @@ class GatewayTurnMixin:
         the event."""
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's last-active topic so a
         # cross-topic Reply doesn't fragment the conversation.
-        recovered = await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
+        event_metadata = getattr(event, "metadata", None) or {}
+        expected_session_key = str(event_metadata.get("gateway_session_key") or "").strip()
+        recovered = (await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
+                     if not expected_session_key else None)
         if recovered is not None:
             logger.info(
                 "telegram topic recovery: chat=%s user=%s %r -> %s",
@@ -268,8 +271,6 @@ class GatewayTurnMixin:
             with suppress(Exception):
                 event.source = source
 
-        event_metadata = getattr(event, "metadata", None) or {}
-        expected_session_key = str(event_metadata.get("gateway_session_key") or "").strip()
         if expected_session_key:
             derived_session_key = self._session_key_for_source(source)
             if derived_session_key != expected_session_key:

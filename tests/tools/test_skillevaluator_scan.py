@@ -7,6 +7,7 @@ The adapter (tools/skillevaluator_scan.py) must:
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,7 @@ from tools.skillevaluator_scan import (  # noqa: E402
     _parse_skillspector_report,
     format_tier1_report,
     run_tier1_scan,
+    should_allow_tier1,
     tier1_advisory_enabled,
 )
 
@@ -55,6 +57,27 @@ class TestParseReport:
         assert report.available
         assert report.passed
         assert report.findings == []
+
+    def test_security_validator_findings_are_attributed_to_skillspector(self):
+        raw = {
+            "overall_passed": False,
+            "results": [{
+                "validator": "Security Scan",
+                "passed": False,
+                "findings": [_finding("tool_poisoning", severity="high")],
+            }],
+        }
+        report = _parse_report(raw)
+        assert report.findings[0].scanner == "skillspector"
+
+        with mock.patch(
+            "hermes_cli.config.load_config",
+            return_value={"security": {"external_scanner": {
+                "mode": "block_high", "fail_on_incomplete": False,
+            }}},
+        ):
+            allowed, _ = should_allow_tier1(report)
+        assert not allowed
 
     def test_pii_email_is_advisory_not_secrets(self):
         report = _parse_report(_report_json([
@@ -167,12 +190,14 @@ class TestRunTier1Scan:
         assert not report.available
         assert report.findings == []
 
-    def test_scanner_timeout_degrades(self, tmp_path):
+    def test_scanner_timeout_degrades_without_resetting_budget(self, tmp_path):
         with mock.patch("tools.skillevaluator_scan.shutil.which", return_value="/usr/bin/skillevaluator"), \
              mock.patch("tools.skillevaluator_scan.subprocess.run",
-                        side_effect=subprocess.TimeoutExpired(cmd="x", timeout=1)):
+                        side_effect=subprocess.TimeoutExpired(cmd="x", timeout=1)) as runner:
             report = run_tier1_scan(tmp_path)
         assert not report.available
+        assert "timed out" in report.error
+        assert runner.call_count == 1
 
     def test_scanner_launch_failure_degrades(self, tmp_path):
         with mock.patch("tools.skillevaluator_scan.shutil.which", return_value="/usr/bin/skillevaluator"), \
@@ -203,6 +228,50 @@ class TestRunTier1Scan:
         assert not report.passed
         assert len(report.findings) == 1
         assert report.findings[0].check == "emails"
+
+    def test_real_subprocess_report_and_policy_chain(
+        self, tmp_path, monkeypatch,
+    ):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        payload = {
+            "risk_assessment": {"score": 8, "severity": "HIGH"},
+            "analysis_completeness": {"is_complete": True},
+            "issues": [{
+                "id": "data-exfiltration-001",
+                "category": "Data Exfiltration",
+                "severity": "HIGH",
+                "finding": "Reads a credential and sends it remotely",
+            }],
+        }
+        scanner = bin_dir / "skillspector"
+        scanner.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            f"payload = {payload!r}\n"
+            "flag = '--output' if '--output' in sys.argv else '-o'\n"
+            "out = Path(sys.argv[sys.argv.index(flag) + 1])\n"
+            "out.write_text(json.dumps(payload))\n"
+        )
+        os.chmod(scanner, 0o755)
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# test\n")
+        monkeypatch.setenv("PATH", str(bin_dir))
+
+        report = run_tier1_scan(skill_dir)
+        monkeypatch.setitem(
+            should_allow_tier1.__globals__, "_external_scanner_config",
+            lambda: {"mode": "block_high", "fail_on_incomplete": False},
+        )
+        allowed, reason = should_allow_tier1(report)
+
+        assert report.scanner == "skillspector"
+        assert report.findings[0].scanner == "skillspector"
+        assert not allowed, reason
+        assert "high/critical" in reason
 
 
 class TestFormatReport:
@@ -277,9 +346,11 @@ class TestInstallPathHelper:
     def test_helper_silent_when_unavailable(self, tmp_path):
         from hermes_cli.skills_hub import _print_tier1_advisory
         console = mock.MagicMock()
+        report = Tier1Report(available=False)
         with mock.patch("tools.skillevaluator_scan.run_tier1_scan",
-                        return_value=Tier1Report(available=False)):
-            _print_tier1_advisory(tmp_path, console)
+                        return_value=report):
+            returned = _print_tier1_advisory(tmp_path, console)
+        assert returned is report
         console.print.assert_not_called()
 
     def test_helper_silent_when_disabled(self, tmp_path):

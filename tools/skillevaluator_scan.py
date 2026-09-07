@@ -160,7 +160,8 @@ def _parse_report(report: dict) -> Tier1Report:
         findings.extend(Tier1Finding(
             check=str(f.get("check_name", "")), validator=validator, severity=str(f.get("severity", "info")).lower(),
             message=str(f.get("message", ""))[:200], file=str(f.get("file_path", "")),
-            line=int(f.get("line_number") or 0), suggestion=str(f.get("suggestion", ""))[:200])
+            line=int(f.get("line_number") or 0), suggestion=str(f.get("suggestion", ""))[:200],
+            scanner="skillspector" if validator.casefold() == "security scan" else "skillevaluator")
             for f in res.get("findings", []) or [] if isinstance(f, dict))
     return Tier1Report(available=True, passed=not failed and not findings, findings=findings,
                        incomplete_checks=incomplete)
@@ -215,14 +216,7 @@ def _parse_skillspector_report(report: dict) -> Tier1Report:
 
 def _configured_baseline() -> str:
     """Return the operator-controlled SkillSpector baseline path, if configured."""
-    try:
-        from hermes_cli.config import load_config
-        security = load_config().get("security") or {}
-        scanner = security.get("external_scanner") or {} if isinstance(security, dict) else {}
-        value = scanner.get("baseline", "") if isinstance(scanner, dict) else ""
-        return str(value).strip()
-    except Exception:
-        return ""
+    return str(_external_scanner_config().get("baseline", "")).strip()
 
 
 def _run_skillspector(skill_dir: Path, timeout: int) -> Tier1Report:
@@ -285,7 +279,7 @@ def run_tier1_scan(skill_dir: Path, timeout: int = SCAN_TIMEOUT_SECONDS) -> Tier
                             "-r", "json", "-o", outdir], capture_output=True, text=True, encoding="utf-8", errors="replace",
                            stdin=subprocess.DEVNULL, timeout=timeout)
         except subprocess.TimeoutExpired:
-            return _run_skillspector(skill_dir, timeout)
+            return unavailable(f"scan timed out after {timeout}s")
         except OSError as exc:
             fallback = _run_skillspector(skill_dir, timeout)
             return fallback if fallback.available else unavailable(f"scanner failed to launch: {exc}")

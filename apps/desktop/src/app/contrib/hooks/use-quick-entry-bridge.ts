@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 
+import { sessionTitle } from '@/lib/chat-runtime'
 import {
   initQuickEntryBridge,
   QUICK_TARGET_CURRENT,
@@ -27,7 +28,11 @@ function sessionOptions(): QuickEntrySessionOption[] {
     .slice(0, QUICK_ENTRY_SESSION_OPTIONS)
     .map(session => ({
       id: session.id,
-      title: session.title?.trim() || session.preview?.trim() || session.id
+      title: (() => {
+        const t = sessionTitle(session)
+
+        return t === 'Untitled session' ? session.id : t
+      })()
     }))
 }
 

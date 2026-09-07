@@ -1,3 +1,4 @@
+import { sessionTitle } from '@/lib/chat-runtime'
 import { mediaExternalUrl, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
@@ -51,7 +52,7 @@ const PRODUCER_TOOL_ARTIFACT_KEY_RE =
 const SCREENSHOT_PATH_RE = /Screenshot path:\s*([^\r\n<>]+)/gi
 
 function artifactSessionTitle(session: SessionInfo): string {
-  return session.title?.trim() || session.preview?.trim() || 'Untitled session'
+  return sessionTitle(session)
 }
 
 function normalizeValue(value: string): string {

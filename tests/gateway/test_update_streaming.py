@@ -78,7 +78,7 @@ class TestGatewayPrompt:
         thread.start()
 
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            from hermes_cli.main import _gateway_prompt
+            from hermes_cli.update_cmd import _gateway_prompt
             result = _gateway_prompt("Restore? [Y/n]", "y", timeout=5.0)
 
         thread.join()
@@ -98,7 +98,7 @@ class TestRestoreStashWithInputFn:
 
     def test_uses_input_fn_when_provided(self, tmp_path):
         """When input_fn is provided, it's called instead of input()."""
-        from hermes_cli.main import _restore_stashed_changes
+        from hermes_cli.update_cmd import _restore_stashed_changes
 
         captured_args = []
 
@@ -378,7 +378,7 @@ class TestCmdUpdateGatewayMode:
 
     def test_gateway_flag_enables_gateway_prompt_for_stash(self, tmp_path):
         """With --gateway, stash restore uses _gateway_prompt instead of input()."""
-        from hermes_cli.main import _restore_stashed_changes
+        from hermes_cli.update_cmd import _restore_stashed_changes
 
         # Use input_fn to verify the gateway path is taken
         calls = []

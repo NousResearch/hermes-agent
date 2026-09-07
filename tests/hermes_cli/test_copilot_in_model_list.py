@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli.model_switch import list_authenticated_providers
+from hermes_cli import model_switch_providers
 
 
 @patch.dict(os.environ, {"GH_TOKEN": "test-key"}, clear=False)
@@ -48,7 +49,7 @@ def _no_other_copilot_creds(monkeypatch):
     import hermes_cli.model_switch as model_switch
 
     monkeypatch.setattr(auth, "_load_auth_store", lambda: {})
-    monkeypatch.setattr(model_switch, "_credential_pool_is_usable", lambda *a, **k: False)
+    monkeypatch.setattr(model_switch_providers, "_credential_pool_is_usable", lambda *a, **k: False)
 
 
 def test_copilot_acp_listed_when_executable_resolves(tmp_path, monkeypatch, _no_other_copilot_creds):

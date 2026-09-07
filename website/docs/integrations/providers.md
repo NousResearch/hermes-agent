@@ -1558,9 +1558,12 @@ provider_routing:
   # order: ["anthropic", "google"]  # Try providers in this order
   # require_parameters: true  # Only use providers that support all request params
   # data_collection: "deny"   # Exclude providers that may store/train on data
+  # models:                   # Per-model pins (same keys; unset keys fall through)
+  #   "openai/gpt-6-astra": {only: ["openai"]}
+  #   "anthropic/claude-fable-5.1": {only: ["anthropic"]}
 ```
 
-**Shortcuts:** Append `:nitro` to any model name for throughput sorting (e.g., `anthropic/claude-sonnet-4:nitro`), or `:floor` for price sorting.
+**Shortcuts:** Append `:nitro` to any model name for throughput sorting (e.g., `anthropic/claude-sonnet-4:nitro`), or `:floor` for price sorting. Per-model details: [Provider Routing](/user-guide/features/provider-routing#per-model-overrides-models).
 
 ## OpenRouter Pareto Code Router
 

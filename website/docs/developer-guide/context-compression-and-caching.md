@@ -4,7 +4,7 @@ Hermes Agent uses a dual compression system and Anthropic prompt caching to
 manage context window usage efficiently across long conversations.
 
 Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (default engine),
-`agent/prompt_caching.py`, `gateway/run.py` (session hygiene), `run_agent.py` (search for `_compress_context`)
+`agent/prompt_caching.py`, `gateway/run_turn.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
 
 
 ## Pluggable Context Engine
@@ -53,13 +53,15 @@ Hermes has two separate compression layers that operate independently:
 
 ### 1. Gateway Session Hygiene (85% threshold)
 
-Located in `gateway/run.py` (search for `Session hygiene: auto-compress`). This is a **safety net** that
+Located in `gateway/run_turn.py` (search for `Session hygiene`). This is a **safety net** that
 runs before the agent processes a message. It prevents API failures when sessions
 grow too large between turns (e.g., overnight accumulation in Telegram/Discord).
 
 - **Threshold**: Fixed at 85% of model context length
-- **Token source**: Prefers actual API-reported tokens from last turn; falls back
-  to rough character-based estimate (`estimate_messages_tokens_rough`)
+- **Token source**: Prefers actual API-reported tokens from last turn, then the
+  usage anchor persisted on the session row (real count + delta of what was
+  appended since; survives gateway restarts), and only then the rough
+  character-based estimate (`estimate_messages_tokens_rough`)
 - **Fires**: Only when `len(history) >= 4` and compression is enabled
 - **Purpose**: Catch sessions that escaped the agent's own compressor
 
@@ -72,6 +74,36 @@ in long gateway sessions.
 Located in `agent/context_compressor.py`. This is the **primary compression
 system** that runs inside the agent's tool loop with access to accurate,
 API-reported token counts.
+
+#### Token accounting: real usage decides, the estimate only decides whether to wait
+
+Every compaction gate (turn-start preflight, idle, pre-API pressure, post-tool)
+asks the **usage anchor** first (`agent/usage_anchor.py`): the provider's last
+`usage.prompt_tokens` plus a rough estimate of ONLY the messages appended since
+that response. The anchor identifies the priced transcript by a content
+fingerprint, so it survives the gateway re-reading history from the DB every
+turn, and it is persisted on the session row so a fresh process (`--resume`,
+desktop per-turn `serve`) restores it while the durable transcript still
+matches. Compaction, session reset and codex-native compaction clear it.
+
+Without an anchor (first request, rewind/edit-resend) a whole-context rough
+estimate over threshold **waits one request** for the provider's real count
+instead of compressing on a guess (`should_defer_preflight_to_real_usage`).
+The wait is one request, never a disable: a provider that omits usage, a real
+reading already over threshold, a rough figure past the whole window, or a
+provider-proven overflow all compress immediately.
+
+Opaque provider blobs (`encrypted_content` on Codex reasoning / compaction
+items) contribute 0 to every local estimate; only real usage ever prices them.
+
+Images are priced at the per-image cost **learned from the provider's usage**
+(`agent/image_token_cost.py`), not a vendor formula: on a response whose delta
+since the previous anchor introduced N images, the residual between the real
+`prompt_tokens` and the text-only projection is N × the provider's price. The
+value is kept per `model@host` in `~/.hermes/cache/image_token_costs.json` and
+bound per turn so the trigger estimator, the tail-budget walk and gateway
+hygiene all use the same figure. Before the first vision turn a flat 1,500
+default applies.
 
 #### Failure cooldown and provider-proven overflow
 
@@ -551,4 +583,4 @@ The CLI shows caching status at startup:
 
 ## Context Pressure Warnings
 
-Intermediate context-pressure warnings have been removed (see the iteration-budget block in `run_agent.py`, which notes: "No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"). Compression fires when prompt tokens reach the configured `compression.threshold` (default 50%) with no prior warning step; gateway session hygiene fires as the secondary safety net at 85% of the model's context window.
+Intermediate context-pressure warnings have been removed (see the iteration-budget block in `agent/turn_iteration_prep.py`, which notes: "No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"). Compression fires when prompt tokens reach the configured `compression.threshold` (default 50%) with no prior warning step; gateway session hygiene fires as the secondary safety net at 85% of the model's context window.

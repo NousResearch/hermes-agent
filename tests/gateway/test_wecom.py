@@ -920,7 +920,7 @@ class TestWeComNativeStreamingCapability:
         assert WeComAdapter.MAX_STREAM_CONTENT_LENGTH == 20480
 
     def test_stream_expired_errcode_constant(self):
-        from plugins.platforms.wecom.adapter import STREAM_EXPIRED_ERRCODE
+        from plugins.platforms.wecom.streaming import STREAM_EXPIRED_ERRCODE
 
         assert STREAM_EXPIRED_ERRCODE == 846608
 
@@ -1078,7 +1078,8 @@ class TestSendStreamFrame:
     @pytest.mark.asyncio
     async def test_intermediate_frame_cap_drops_excess(self):
         """After MAX_INTERMEDIATE_FRAMES, further intermediate frames are dropped."""
-        from plugins.platforms.wecom.adapter import WeComAdapter, MAX_INTERMEDIATE_FRAMES
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from plugins.platforms.wecom.streaming import MAX_INTERMEDIATE_FRAMES
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1179,9 +1180,8 @@ class TestSendStreamFrameFailures:
     @pytest.mark.asyncio
     async def test_846608_marks_chat_expired_and_returns_false(self):
         """846608 on finalize frame marks the chat expired and returns False."""
-        from plugins.platforms.wecom.adapter import (
-            STREAM_EXPIRED_ERRCODE, WeComAdapter,
-        )
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from plugins.platforms.wecom.streaming import STREAM_EXPIRED_ERRCODE
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1392,7 +1392,8 @@ class TestSendClosesActiveStream:
 
     @pytest.mark.asyncio
     async def test_send_falls_through_when_stream_expired(self):
-        from plugins.platforms.wecom.adapter import STREAM_EXPIRED_ERRCODE, WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from plugins.platforms.wecom.streaming import STREAM_EXPIRED_ERRCODE
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"

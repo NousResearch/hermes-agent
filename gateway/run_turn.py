@@ -387,9 +387,9 @@ class GatewayTurnMixin:
 
     async def _hmwa_deliver_auto_reset_notice(self, session_entry, source, turn_sidecar_notes):
         """Stage the auto-reset sidecar note for the agent and notify the user (policy-gated)."""
-        from gateway.run import _AUTO_RESET_CONTEXT_NOTES, _auto_reset_reason_text
-        reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
-        context_note = _AUTO_RESET_CONTEXT_NOTES.get(reset_reason, _AUTO_RESET_CONTEXT_NOTES["idle"])
+        from gateway.run import _AUTO_RESET_CONTEXT_NOTES
+        reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'suspended'
+        context_note = _AUTO_RESET_CONTEXT_NOTES.get(reset_reason, _AUTO_RESET_CONTEXT_NOTES["suspended"])
         # Long-lived channels: point the agent at the prior same-channel session for session_search.
         try:
             # Returns None (appends nothing) for other platforms or when there's no prior activity to
@@ -402,34 +402,13 @@ class GatewayTurnMixin:
         turn_sidecar_notes.append(context_note)
 
         try:
-            policy = self.session_store.config.get_reset_policy(
-                platform=source.platform, session_type=getattr(source, 'chat_type', 'dm'),
-            )
-            # Check pairing store. A pairing entry is a first-class authorization grant, created only by a
-            # trusted operator approving a pairing code (hermes gateway pairing approve / the authenticated
-            # dashboard) — an inbound sender can never reach approve_code, so this is not an
-            # attacker-controlled path. Honored as a UNION with the allowlist: a paired user is authorized
-            # regardless of the allowlist, and when an allowlist IS configured, operator approval also
-            # writes the user into that allowlist (see PairingStore._approve_user), keeping a single
-            # operator-visible source of truth. (#23778: the original bypass was the inbound
-            # message/approval-button gate, not this gate; that gate is fixed separately.) In multiplex
-            # gateways, route to the per-profile PairingStore so each profile's whitelist is isolated; falls
-            # back to the global store when the source has no profile or the profile isn't registered.
-            platform_name = source.platform.value if source.platform else ""
-            # Suspended / restart-recovery-expired sessions always notify (the user must learn they
-            # can /resume); idle/daily resets respect policy.notify + excluded platforms + activity.
-            should_notify = reset_reason in {"suspended", "resume_pending_expired"} or (
-                policy.notify
-                and getattr(session_entry, 'reset_had_activity', False)
-                and platform_name not in policy.notify_exclude_platforms
-            )
+            should_notify = reset_reason == "suspended"
             adapter = self._adapter_for_source(source) if should_notify else None
             if adapter:
                 notice = (
-                    f"◐ Session automatically reset ({_auto_reset_reason_text(reset_reason, policy)}). "
+                    "◐ Session reset after being stopped. "
                     f"Conversation history cleared.\n"
                     f"Use /resume to browse and restore a previous session.\n"
-                    f"Adjust reset timing in config.yaml under session_reset."
                 )
                 with suppress(Exception):
                     session_info = await asyncio.to_thread(self._reset_notice_session_info, source)

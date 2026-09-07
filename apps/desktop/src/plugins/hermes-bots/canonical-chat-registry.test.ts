@@ -31,18 +31,31 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RosterRow } from './types'
 
 const { hostMock, persistMock, requestForBotMock, saveBotMetaMock } = vi.hoisted(() => ({
-  hostMock: { openSession: vi.fn(), request: vi.fn() },
+  hostMock: { agents: vi.fn(), openSession: vi.fn(), request: vi.fn() },
   persistMock: vi.fn(),
   requestForBotMock: vi.fn(),
   saveBotMetaMock: vi.fn()
 }))
 
+// test-only: loads the REAL shared resolver module and re-exports its own
+// exact behavior as the `vi.mock('@hermes/plugin-sdk', ...)` fixture below,
+// so the mock can never silently drift from the module the plugin fence
+// forbids importing at runtime.
+// eslint-disable-next-line no-restricted-imports
+import { CANONICAL_AGENT_CHAT_TITLE, isAuthorizedCanonicalChatTarget, isCanonicalAgentChatRow, isTitleConflictError, resolveCanonicalAgentChat } from '../../lib/canonical-agent-chat'
+
 vi.mock('@hermes/plugin-sdk', () => ({
+  CANONICAL_AGENT_CHAT_TITLE,
+  isAuthorizedCanonicalChatTarget,
+  isCanonicalAgentChatRow,
+  isTitleConflictError,
+  resolveCanonicalAgentChat,
   BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS: 15_000,
   host: hostMock
 }))
 
 vi.mock('./routing', () => ({
+  aliasIdentityFor: () => null,
   backendTargetProfile: (route: { targetProfile?: string } | null, name: string) => route?.targetProfile ?? name,
   botConnectionRoute: () => null,
   botRosterMeta: () => ({}),
@@ -88,6 +101,16 @@ async function loadModule() {
 beforeEach(() => {
   vi.clearAllMocks()
   hostMock.openSession.mockResolvedValue(undefined)
+  // Existing tests exercise registry/lookup/open behavior, not authorization
+  // — default the roster to authorize whatever profile string the test uses
+  // ('ops', 'newbie', ...) so the new roster-admission gate (Architect
+  // corrective, 2026-09-02) doesn't fail closed on unrelated assertions.
+  hostMock.agents.mockImplementation(async () => ({
+    agents: [
+      { connectionId: null, profile: 'ops', targetProfile: 'ops' },
+      { connectionId: null, profile: 'newbie', targetProfile: 'newbie' }
+    ]
+  }))
 })
 
 describe('the registry row wins, always', () => {
@@ -304,5 +327,134 @@ describe('a failed lookup fails CLOSED — never "no chat exists"', () => {
     await expect(openBotCanonicalChat(bot)).rejects.toThrow(/Bot Chat registry/)
     expect(calls.some(call => call.method === 'session.create')).toBe(false)
     expect(hostMock.openSession).not.toHaveBeenCalled()
+  })
+})
+
+describe('roster admission runs BEFORE any canonical resolution (Architect corrective, 2026-09-02)', () => {
+  it('performs current-roster admission before any session.list/create/title/open RPC', async () => {
+    const calls = respondWith(() => ({}))
+    let rosterCheckedAt = -1
+
+    hostMock.agents.mockImplementation(async () => {
+      rosterCheckedAt = calls.length
+
+      return { agents: [{ connectionId: null, profile: 'ops', targetProfile: 'ops' }] }
+    })
+
+    const { openBotCanonicalChat } = await loadModule()
+    await openBotCanonicalChat('ops')
+
+    // The roster check ran before ANY RPC was recorded — i.e. before the
+    // canonical lookup, not interleaved with or after it.
+    expect(rosterCheckedAt).toBe(0)
+    expect(hostMock.agents).toHaveBeenCalledTimes(1)
+  })
+
+  it('an arbitrary profile string absent from the roster reaches no session RPC and does not open', async () => {
+    const calls = respondWith(() => ({}))
+    hostMock.agents.mockResolvedValue({ agents: [{ connectionId: null, profile: 'someone-else', targetProfile: 'someone-else' }] })
+
+    const { openBotCanonicalChat } = await loadModule()
+
+    await expect(openBotCanonicalChat('ops')).rejects.toThrow(/authorized agent roster/)
+    expect(calls.some(call => ['session.list', 'session.create', 'session.title'].includes(call.method))).toBe(false)
+    expect(hostMock.openSession).not.toHaveBeenCalled()
+  })
+
+  it('rejects a mismatched backend targetProfile even when connectionId/profile look valid', async () => {
+    const calls = respondWith(() => ({}))
+    hostMock.agents.mockResolvedValue({
+      agents: [{ connectionId: null, profile: 'ops', targetProfile: 'some-other-backend-identity' }]
+    })
+
+    const { openBotCanonicalChat } = await loadModule()
+
+    await expect(openBotCanonicalChat('ops')).rejects.toThrow(/authorized agent roster/)
+    expect(calls.length).toBe(0)
+  })
+
+  it('rejects a mismatched displayed profile even when connectionId/targetProfile look valid', async () => {
+    const calls = respondWith(() => ({}))
+    // The roster entry's OWN reported profile diverges from the target's
+    // displayed profile despite a matching targetProfile — must still fail
+    // closed; targetProfile alone is never sufficient authorization.
+    hostMock.agents.mockResolvedValue({
+      agents: [{ connectionId: null, profile: 'some-other-display-name', targetProfile: 'ops' }]
+    })
+
+    const { openBotCanonicalChat } = await loadModule()
+
+    await expect(openBotCanonicalChat('ops')).rejects.toThrow(/authorized agent roster/)
+    expect(calls.length).toBe(0)
+  })
+
+  it('fails closed before any session operation when the roster fetch itself fails', async () => {
+    const calls = respondWith(() => ({}))
+    hostMock.agents.mockRejectedValue(new Error('roster RPC timed out'))
+
+    const { openBotCanonicalChat } = await loadModule()
+
+    await expect(openBotCanonicalChat('ops')).rejects.toThrow(/roster/i)
+    expect(calls.length).toBe(0)
+  })
+
+  it('newAgentBirth polls the SAME live host.agents() roster until it admits the target — never trusts a caller-supplied claim (Architect corrective, 2026-09-02, second pass)', async () => {
+    respondWith(method => {
+      if (method === 'session.create') {
+        return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
+      }
+
+      return {}
+    })
+
+    // The FIRST few live roster reads genuinely do not have 'newbie' yet
+    // (profiles.create just fired and enumeration hasn't caught up); the
+    // Nth read does. newAgentBirth must observe the REAL roster transition,
+    // not a caller-asserted shortcut.
+    let rosterReads = 0
+    hostMock.agents.mockImplementation(async () => {
+      rosterReads += 1
+
+      return {
+        agents:
+          rosterReads < 3
+            ? [{ connectionId: null, profile: 'ops', targetProfile: 'ops' }]
+            : [
+                { connectionId: null, profile: 'ops', targetProfile: 'ops' },
+                { connectionId: null, profile: 'newbie', targetProfile: 'newbie' }
+              ]
+      }
+    })
+
+    const { createCanonicalChat } = await loadModule()
+
+    await expect(createCanonicalChat('newbie', { newAgentBirth: true, kickoff: true, rosterAdmissionPoll: { attempts: 5, delayMs: 1 } })).resolves.toBe('stored-1')
+    // At least the polling reads plus the subsequent assertAuthorizedTarget
+    // read — every admission came from a REAL host.agents() call, never a
+    // client-side object.
+    expect(rosterReads).toBeGreaterThanOrEqual(3)
+  })
+
+  it('newAgentBirth fails closed when the live roster never admits the target within the bound — no bypass, no silent open', async () => {
+    const calls = respondWith(() => ({}))
+    // The roster NEVER admits 'newbie' — a genuinely stuck/failed creation.
+    hostMock.agents.mockResolvedValue({ agents: [{ connectionId: null, profile: 'ops', targetProfile: 'ops' }] })
+
+    const { createCanonicalChat } = await loadModule()
+
+    await expect(
+      createCanonicalChat('newbie', { newAgentBirth: true, kickoff: true, rosterAdmissionPoll: { attempts: 3, delayMs: 1 } })
+    ).rejects.toThrow(/did not appear in the current authorized agent roster/)
+    expect(calls.some(call => ['session.list', 'session.create', 'session.title'].includes(call.method))).toBe(false)
+  })
+
+  it('a target absent from the roster is rejected even with kickoff/newAgentBirth unset — no other flag substitutes for admission', async () => {
+    const calls = respondWith(() => ({}))
+    hostMock.agents.mockResolvedValue({ agents: [] })
+
+    const { createCanonicalChat } = await loadModule()
+
+    await expect(createCanonicalChat('newbie')).rejects.toThrow(/authorized agent roster/)
+    expect(calls.length).toBe(0)
   })
 })

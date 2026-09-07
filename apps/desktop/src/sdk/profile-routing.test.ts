@@ -1486,3 +1486,167 @@ describe('shared-remote hydration gate (#89843)', () => {
     expect($hydrationSyncProfile.get()).toBe('zephyr')
   })
 })
+
+describe('openCanonicalAgentChat', () => {
+  it('rejects when no profile is given', async () => {
+    await expect(host.openCanonicalAgentChat({ profile: '', targetProfile: '' })).rejects.toThrow(/requires a full source-qualified target/)
+  })
+
+  it('rejects when profile is given but targetProfile is omitted — never silently defaults it to profile', async () => {
+    // @ts-expect-error — targetProfile is a required field on the public seam;
+    // this call intentionally omits it to prove the runtime also rejects a
+    // caller that bypasses the type check (e.g. plain JS consumer).
+    await expect(host.openCanonicalAgentChat({ profile: 'architect' })).rejects.toThrow(/requires a full source-qualified target/)
+  })
+
+  it('adopts an existing canonical row via requestProfile + openSession, local (no connectionId)', async () => {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getAgentRoster: vi.fn(async () => ({
+        agents: [{ connectionId: null, profile: 'architect', targetProfile: 'architect' }],
+        sources: [{ connectionId: 'local', kind: 'local', label: 'This device' }],
+      }))
+    }
+    vi.mocked(requestGatewayForProfile).mockImplementation(async (_profile: string, method: string) => {
+      if (method === 'session.list') {
+        return { sessions: [{ id: 'forever-chat', message_count: 12, title: 'Bot Chat' }] }
+      }
+
+      return {}
+    })
+
+    const opened = await host.openCanonicalAgentChat({ profile: 'architect', targetProfile: 'architect' })
+
+    expect(opened).toEqual({ registryId: 'forever-chat', openedId: 'forever-chat' })
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'architect',
+      'session.list',
+      expect.objectContaining({ title: 'Bot Chat', include_hidden: true })
+    )
+    expect(openSessionCore).toHaveBeenCalled()
+    const [id, , , options] = vi.mocked(openSessionCore).mock.calls[0]
+    expect(id).toBe('forever-chat')
+    expect(options).toMatchObject({ workspaceMode: 'bots', workspaceOwnerKey: 'bot:architect' })
+  })
+
+  it('creates a hidden canonical session when none exists', async () => {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getAgentRoster: vi.fn(async () => ({
+        agents: [{ connectionId: null, profile: 'newbie', targetProfile: 'newbie' }],
+        sources: [{ connectionId: 'local', kind: 'local', label: 'This device' }],
+      }))
+    }
+    vi.mocked(requestGatewayForProfile).mockImplementation(async (_profile: string, method: string) => {
+      if (method === 'session.list') {return { sessions: [] }}
+
+      if (method === 'session.create') {return { session_id: 'rt-1', stored_session_id: 'fresh-1' }}
+
+      return {}
+    })
+
+    const opened = await host.openCanonicalAgentChat({ profile: 'newbie', targetProfile: 'newbie' })
+
+    expect(opened).toEqual({ registryId: 'fresh-1', openedId: 'fresh-1' })
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'newbie',
+      'session.create',
+      expect.objectContaining({ hidden: true, title: 'Bot Chat' })
+    )
+  })
+
+  it('fails closed and never opens a session on a lookup failure', async () => {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getAgentRoster: vi.fn(async () => ({
+        agents: [{ connectionId: null, profile: 'architect', targetProfile: 'architect' }],
+        sources: [{ connectionId: 'local', kind: 'local', label: 'This device' }],
+      }))
+    }
+    vi.mocked(requestGatewayForProfile).mockImplementation(async () => {
+      throw new Error('gateway not ready')
+    })
+
+    await expect(host.openCanonicalAgentChat({ profile: 'architect', targetProfile: 'architect' })).rejects.toThrow(/Bot Chat registry/)
+    expect(openSessionCore).not.toHaveBeenCalled()
+  })
+
+  it('fails closed and performs no lookup/create/open when the target is absent from the current authorized roster', async () => {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getAgentRoster: vi.fn(async () => ({
+        agents: [{ connectionId: null, profile: 'someone-else', targetProfile: 'someone-else' }],
+        sources: [{ connectionId: 'local', kind: 'local', label: 'This device' }],
+      }))
+    }
+
+    await expect(host.openCanonicalAgentChat({ profile: 'architect', targetProfile: 'architect' })).rejects.toThrow(/not present in the current authorized/)
+    expect(requestGatewayForProfile).not.toHaveBeenCalled()
+    expect(openSessionCore).not.toHaveBeenCalled()
+  })
+
+  it('fails closed and performs no lookup/create/open when the target\u2019s targetProfile diverges from the authorized entry, even though profile matches', async () => {
+    // A caller that supplies the wrong backend targetProfile for an
+    // otherwise-valid displayed profile must not be silently corrected —
+    // this is the exact defect Architect flagged: targetProfile must never
+    // be treated as optional/defaultable on this public seam.
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getAgentRoster: vi.fn(async () => ({
+        agents: [{ connectionId: null, profile: 'architect', targetProfile: 'architect' }],
+        sources: [{ connectionId: 'local', kind: 'local', label: 'This device' }],
+      }))
+    }
+
+    await expect(
+      host.openCanonicalAgentChat({ profile: 'architect', targetProfile: 'a-different-backend-identity' })
+    ).rejects.toThrow(/not present in the current authorized/)
+    expect(requestGatewayForProfile).not.toHaveBeenCalled()
+    expect(openSessionCore).not.toHaveBeenCalled()
+  })
+
+  it('acquires the roster through the public host.agents() seam, and fails closed BEFORE the resolver when that seam fails (Architect corrective, 2026-09-02, fifth pass)', async () => {
+    // Exercises the PUBLIC SDK path end-to-end, not the underlying bridge
+    // directly: host.agents() is the one public roster-admission capability
+    // every caller (this SDK path, Bot Mode) must go through — no direct
+    // window.hermesDesktop.getAgentRoster() call should live inside
+    // openCanonicalAgentChat. Simulating the bridge itself being entirely
+    // ABSENT proves host.agents() is genuinely on the call path: if
+    // openCanonicalAgentChat still reached in and called the bridge
+    // directly, this absence would produce a different (or no) failure.
+    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+
+    await expect(
+      host.openCanonicalAgentChat({ profile: 'architect', targetProfile: 'architect' })
+    ).rejects.toThrow(/cannot enumerate multi-source agents/)
+    // Fails closed BEFORE the resolver: no session lookup, create, title, or
+    // open RPC of any kind is ever attempted.
+    expect(requestGatewayForProfile).not.toHaveBeenCalled()
+    expect(requestGatewayForAgent).not.toHaveBeenCalled()
+    expect(openSessionCore).not.toHaveBeenCalled()
+  })
+
+  it('routes a source-qualified (connectionId) target through requestProfile with a descriptor, never a bare label', async () => {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getAgentRoster: vi.fn(async () => ({
+        agents: [{ connectionId: 'mac-mini', profile: 'architect', targetProfile: 'architect' }],
+        sources: [{ connectionId: 'mac-mini', kind: 'remote', label: 'Mac mini' }]
+      }))
+    }
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (connectionId: string | null, profile: string, method: string) => {
+      if (method === 'session.list') {
+        return { sessions: [{ id: 'remote-chat', title: 'Bot Chat' }] }
+      }
+
+      return { connectionId, profile }
+    })
+
+    const opened = await host.openCanonicalAgentChat({ connectionId: 'mac-mini', profile: 'architect', targetProfile: 'architect' })
+
+    expect(opened).toEqual({ registryId: 'remote-chat', openedId: 'remote-chat' })
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'mac-mini',
+      'architect',
+      'session.list',
+      expect.objectContaining({ title: 'Bot Chat' })
+    )
+    // Never falls back to the ambiguous bare-profile string overload once a
+    // connectionId is known — requestGatewayForProfile must not fire.
+    expect(requestGatewayForProfile).not.toHaveBeenCalled()
+  })
+})

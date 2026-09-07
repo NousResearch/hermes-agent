@@ -9,10 +9,27 @@
  */
 
 import * as sdk from '@hermes/plugin-sdk'
-import { host } from '@hermes/plugin-sdk'
+import {
+  type AuthorizedRosterEntry,
+  CANONICAL_AGENT_CHAT_TITLE,
+  type CanonicalAgentChatCallbacks,
+  type CanonicalAgentChatTarget,
+  host,
+  isAuthorizedCanonicalChatTarget,
+  isCanonicalAgentChatRow,
+  isTitleConflictError,
+  resolveCanonicalAgentChat,
+} from '@hermes/plugin-sdk'
 
 import { $botMeta, botMetaKey, botOwner, persistBotMetaSnapshot } from './data'
-import { backendTargetProfile, botConnectionRoute, botRosterMeta, botWorkspaceOwnerKey, requestForBot } from './routing'
+import {
+  aliasIdentityFor,
+  backendTargetProfile,
+  botConnectionRoute,
+  botRosterMeta,
+  botWorkspaceOwnerKey,
+  requestForBot,
+} from './routing'
 import type { RpcErrorLike } from './routing'
 import { getPluginCtx } from './shared'
 import type { BotMeta, CanonicalSession, RosterRow } from './types'
@@ -26,16 +43,11 @@ import type { BotMeta, CanonicalSession, RosterRow } from './types'
 // the previous identity and are REMOVED: every lost-chat incident traced to a
 // dangled or stolen pointer that later guards then welded in. Legacy
 // ui_meta.chat keys are simply ignored.
-
-interface CanonicalCreation {
-  /** Null only between the holder literal and the assignment two statements
-   *  later; a flight is published to the map already carrying its promise. */
-  run: null | Promise<null | string>
-}
-
-// In-flight creations, keyed by bot name — double-clicking a row must not
-// mint two canonical chats.
-const canonicalCreations = new Map<string, CanonicalCreation>()
+//
+// Concurrency protection (double-clicking a row must not mint two canonical
+// chats) is owned by the shared `resolveCanonicalAgentChat` core, keyed by
+// (connectionId, targetProfile) — this module no longer keeps its own
+// in-flight-creation map.
 
 /** Upper bound for per-profile session.list scans (hide sweep, canonical-chat
  *  adoption, stored-session lookups). */
@@ -44,8 +56,12 @@ export const PROFILE_SESSION_LIST_LIMIT = 200
 /** The one canonical title. (profile, CANONICAL_CHAT_TITLE) IS the bot's
  *  forever-chat identity — see the header above. Exported for the roster
  *  click path's tile-staleness probe (hermes-agent#90102), which must
- *  recognize canonical-titled tabs without restating the literal. */
-export const CANONICAL_CHAT_TITLE = 'Bot Chat'
+ *  recognize canonical-titled tabs without restating the literal. Aliases
+ *  the shared identity contract's constant (`@hermes/plugin-sdk`'s
+ *  `CANONICAL_AGENT_CHAT_TITLE`) rather than restating the literal — Bot
+ *  Mode and the SDK's `host.openCanonicalAgentChat` must never disagree on
+ *  the title they resolve by. */
+export const CANONICAL_CHAT_TITLE = CANONICAL_AGENT_CHAT_TITLE
 
 /** A `session.list` row as the registry lookup reads it. CanonicalSession
  *  models the roster's `canonical_session` field, which carries no
@@ -76,6 +92,24 @@ export function isCanonicalChatOnScreen(
   }
 
   return [canonical.id, canonical.resolved_id].filter(Boolean).map(String).includes(String(storedSessionId))
+}
+
+/** Builds the complete source-qualified target the shared resolver requires
+ *  from a Bot Mode owner. Never collapses to a bare `{connectionId, profile}`
+ *  — `targetProfile` (backendTargetProfile) is carried explicitly and can
+ *  diverge from the displayed `profile` for an aliased or remote row. */
+function botOwnerToTarget(owner: RosterRow | string): { target: CanonicalAgentChatTarget; bot: RosterRow; route: ReturnType<typeof botOwner>['route'] } {
+  const { bot, name, route } = botOwner(owner)
+
+  return {
+    target: {
+      connectionId: route?.connectionId ?? null,
+      profile: name,
+      targetProfile: backendTargetProfile(route, name),
+    },
+    bot,
+    route,
+  }
 }
 
 async function openStoredBotChat(
@@ -141,20 +175,147 @@ async function openStoredBotChat(
   return storedId
 }
 
-/** True when a session summary IS the canonical registry row. root_title is
- *  the durable lineage-root title reported by exact-lookup gateways; plain
- *  title covers windowed listings. */
+/** True when a session summary IS the canonical registry row. Delegates to
+ *  the shared identity contract's predicate (see `@hermes/plugin-sdk`'s
+ *  `isCanonicalAgentChatRow`) rather than re-implementing the same
+ *  root_title/title match — Bot Mode and the SDK's
+ *  `host.openCanonicalAgentChat` must agree on what counts as canonical. */
 function isCanonicalBotChatHistory(history: CanonicalChatRow) {
-  const rootTitle = String(history?.root_title || '').trim()
-  const title = String(history?.title || '').trim()
-
-  return rootTitle === CANONICAL_CHAT_TITLE || (!rootTitle && title === CANONICAL_CHAT_TITLE)
+  return isCanonicalAgentChatRow(history)
 }
 
 function botModeGatewayNeedsUpdate(error: unknown) {
   const message = String((error as RpcErrorLike)?.message || error || '')
 
   return /(?:method not found|no handler for|unknown method|unsupported rpc)/i.test(message)
+}
+
+/** Fetches the CURRENT live roster and reports whether `target` is present,
+ *  full-descriptor, via the shared `isAuthorizedCanonicalChatTarget` — the
+ *  ONE check both assertAuthorizedTarget (below) and waitForRosterAdmission (above) share. Never throws on a roster-fetch failure — callers that need
+ *  fail-closed-on-fetch-failure semantics (assertAuthorizedTarget) check the
+ *  fetch outcome themselves; a poll loop treats a fetch failure as "not yet
+ *  admitted" and retries within its own bound instead of aborting on one
+ *  transient hiccup. */
+async function isTargetInLiveRoster(target: CanonicalAgentChatTarget): Promise<boolean> {
+  if (typeof host.agents !== 'function') {
+    return false
+  }
+
+  let rosterResult: { agents?: Array<{ connectionId?: null | string; profile: string; targetProfile?: string }> }
+
+  try {
+    rosterResult = await host.agents()
+  } catch {
+    return false
+  }
+
+  // Project each backend row's DISPLAYED identity through the established
+  // alias index before the strict full-descriptor check — host.agents()
+  // reports a remote row's own backend profile, never a Desktop-local
+  // alias's configured display name (see routing.ts's alias-identity
+  // section). Without this projection, a legitimately routed alias target
+  // (whose `profile` is the alias name) would never full-descriptor-match
+  // the raw backend row and would incorrectly fail closed.
+  const projectedAgents: AuthorizedRosterEntry[] = (rosterResult?.agents ?? []).map(entry => {
+    // No fallback to `entry.profile`: a row that omits its own backend
+    // targetProfile cannot vouch for any target — pass an explicit blank
+    // through so isAuthorizedCanonicalChatTarget's own required-field
+    // check (never a caller-side substitution) is what rejects it
+    // (Architect corrective, 2026-09-02, sixth pass). The alias-identity
+    // lookup below is a SEPARATE, non-authorizing use of targetProfile
+    // (resolving a display alias), so it may still read the raw value —
+    // only the AUTHORIZATION entry itself must never substitute profile.
+    const entryTargetProfile = (entry.targetProfile ?? '').trim()
+
+    const alias = aliasIdentityFor({
+      connectionId: entry.connectionId ?? null,
+      name: entry.profile,
+      remoteSource: Boolean(entry.connectionId),
+      sourceScoped: Boolean(entry.connectionId),
+      targetProfile: entry.targetProfile ?? entry.profile,
+    } as Partial<RosterRow>)
+
+    return {
+      connectionId: entry.connectionId ?? null,
+      profile: alias ? alias.name : entry.profile,
+      targetProfile: entryTargetProfile,
+    }
+  })
+
+  return isAuthorizedCanonicalChatTarget(target, { agents: projectedAgents })
+}
+
+async function assertAuthorizedTarget(target: CanonicalAgentChatTarget): Promise<void> {
+  // Every caller — including one joining an already-in-flight creation for
+  // the identical target — must read the CURRENT authorized roster before
+  // any lookup/create/title/open reaches the shared resolver (Architect
+  // corrective, 2026-09-02, fourth pass). A prior caller's roster read,
+  // however recent, is not a current admission for THIS caller: it proves
+  // nothing about what the live roster says right now, and short-circuiting
+  // on it was rejected as a design that trades a real authorization read
+  // for an unverifiable inference. Deduplicating concurrent creation of the
+  // SAME target remains entirely `resolveCanonicalAgentChat`'s own
+  // `inflightCreations` singleflight — a joiner still performs its own full
+  // roster check here, then joins the resolver's flight (or, if that flight
+  // has already settled by the time this check completes, its own
+  // `callbacks.lookup` inside the resolver adopts the now-existing
+  // canonical row rather than minting a second one — the same
+  // adopt-before-mint protection that already defends every other
+  // concurrent-open path in this file).
+  if (typeof host.agents !== 'function') {
+    throw new Error(`${target.profile} could not be authorized — this Desktop build cannot enumerate the agent roster`)
+  }
+
+  let rosterFetchFailed = false
+  let admitted: boolean
+
+  try {
+    admitted = await isTargetInLiveRoster(target)
+  } catch {
+    // isTargetInLiveRoster never throws itself, but keep the fail-closed
+    // shape explicit in case that changes.
+    rosterFetchFailed = true
+    admitted = false
+  }
+
+  if (rosterFetchFailed) {
+    throw new Error(`Could not confirm ${target.profile} against the current authorized roster — not proceeding`)
+  }
+
+  if (!admitted) {
+    throw new Error(`${target.profile} is not present in the current authorized agent roster — refusing to open`)
+  }
+}
+
+/** Polls the SAME live `host.agents()` roster `isTargetInLiveRoster` reads,
+ *  for a brand-new profile whose roster enumeration has not caught up with a
+ *  `profiles.create` this exact window just issued (Architect corrective,
+ *  2026-09-02, second pass): the earlier `freshlyCreatedRosterEntry`
+ *  caller-supplied bypass was rejected because a client-side object is never
+ *  itself authorization. This function asserts nothing on its own — it only
+ *  waits for the ACTUAL roster (the one authority) to admit the target, then
+ *  returns normally so the caller proceeds through the ordinary
+ *  `assertAuthorizedTarget` → resolver path. If the roster still hasn't
+ *  caught up after the bound, it throws — the caller must not open a chat
+ *  for a target the live roster has never confirmed. */
+async function waitForRosterAdmission(
+  target: CanonicalAgentChatTarget,
+  { attempts = 10, delayMs = 300 }: { attempts?: number; delayMs?: number } = {}
+): Promise<void> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (await isTargetInLiveRoster(target)) {
+      return
+    }
+
+    if (attempt < attempts - 1) {
+      await new Promise(resolve => window.setTimeout(resolve, delayMs))
+    }
+  }
+
+  throw new Error(
+    `${target.profile} did not appear in the current authorized agent roster in time — refusing to open a chat for an unconfirmed profile`
+  )
 }
 
 export function notifyBotOpenFailure(error: unknown, bot: RosterRow, fallbackMessage: string) {
@@ -237,6 +398,20 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
 interface CreateCanonicalChatOptions {
   kickoff?: boolean
   openingStillCurrent?: (() => boolean) | null
+  /** Genuine New Agent creation (Architect corrective, 2026-09-02, second
+   *  pass): rather than trusting a caller-supplied roster entry (rejected as
+   *  a client-side bypass — a local object is never itself authorization),
+   *  this flag makes `createCanonicalChat` poll the SAME live
+   *  `host.agents()` roster via `waitForRosterAdmission` until the ACTUAL
+   *  roster admits the target, before proceeding through the ordinary
+   *  authorization → resolver path. Only `create-dialog.tsx`'s New Agent
+   *  flow, immediately after its own successful `profiles.create`, sets
+   *  this — it does not weaken authorization for any other caller. */
+  newAgentBirth?: boolean
+  /** Test-only override of the poll bound `waitForRosterAdmission` uses when
+   *  `newAgentBirth` is set. Production callers should never need this —
+   *  defaults are tuned for a real roster refresh interval. */
+  rosterAdmissionPoll?: { attempts?: number; delayMs?: number }
 }
 
 /** The self-introduction a brand-new bot is born with (#91827).
@@ -254,6 +429,126 @@ interface CreateCanonicalChatOptions {
  *  narrows is who has to read it in English. */
 function kickoffText(): string {
   return getPluginCtx()?.i18n?.t('bot.kickoff') ?? 'Hey, tell me about yourself!'
+}
+
+/** Bot Mode's callback set for the shared resolver. Every RPC/navigation
+ *  behavior documented on `createCanonicalChat`/`openBotCanonicalChat` below
+ *  is preserved here verbatim — this module supplies HOW Bot Mode performs
+ *  each step; `resolveCanonicalAgentChat` owns WHEN/WHETHER each step runs
+ *  (lookup, create, title, conflict-adopt, fail-closed). */
+function botModeCallbacks(owner: RosterRow | string, kickoff: boolean): CanonicalAgentChatCallbacks {
+  const { bot, name, route } = botOwner(owner)
+  // Set true by titleSession on a successful eager write. openFresh reads
+  // it to decide whether the compat persistence prompt (submitIntro when
+  // !titled) is required — mirrors the original single-function contract
+  // exactly, just split across the two callbacks the resolver now owns.
+  let titled = false
+
+  return {
+    lookup: async () => findExistingCanonicalChat(owner),
+
+    create: async () => {
+      titled = false
+
+      const res = await requestForBot<{ session_id?: string; stored_session_id?: string }>(bot, 'session.create', {
+        profile: backendTargetProfile(route, name),
+        title: CANONICAL_CHAT_TITLE,
+        // Always born hidden from the global sidebar — Bot Mode sessions are
+        // plugin-owned. Core applies this via the generic `hidden` flag
+        // (deferred as pending_hidden until the row exists); older gateways
+        // ignore the unknown param and it stays visible.
+        hidden: true,
+        // Explicit contract (PR #97008): this session's runtime always
+        // follows the member profile's CURRENT config. Resume must NOT
+        // restore the stored model/provider pin from an old row — that left
+        // bot DMs stuck on a stale/dead provider after a profile switch.
+        // Older gateways ignore the unknown param; the server's exact-title
+        // backfill then covers the legacy path.
+        follow_profile_config: true
+      })
+
+      return { runtimeId: res?.session_id ?? null, storedId: res?.stored_session_id ?? null }
+    },
+
+    titleSession: async (_target, runtimeId) => {
+      await requestForBot(bot, 'session.title', { session_id: runtimeId, title: CANONICAL_CHAT_TITLE })
+      titled = true
+    },
+
+    openExisting: async (_target, openedId, row, canNavigateNow) => {
+      if (canNavigateNow && typeof host.openSession === 'function') {
+        await openStoredBotChat(owner, openedId, row as CanonicalChatRow)
+      }
+    },
+
+    openFresh: async (_target, storedId, canNavigateNow) => {
+      // Mount the session view FIRST, then send the kickoff — submitting
+      // into an unmounted session left the intro reply invisible until
+      // reopen. The workspace fields ride every open unconditionally: they
+      // say this row is a bot's chat, true of a freshly minted one no
+      // matter who asked for it.
+      const openFreshCanonical = () =>
+        host.openSession!(storedId, {
+          ...(route
+            ? {
+                route
+              }
+            : {}),
+          profile: name,
+          intent: 'main',
+          keepAllProfilesScope: route ? true : false,
+          workspaceMode: 'bots',
+          workspaceOwnerKey: botWorkspaceOwnerKey(bot),
+          tabTitle: CANONICAL_CHAT_TITLE
+        })
+
+      let opened = false
+
+      if (canNavigateNow && typeof host.openSession === 'function') {
+        try {
+          await openFreshCanonical()
+          opened = true
+        } catch {
+          // The stored row may not exist until the kickoff persists it.
+          // Retry after prompt.submit below instead of leaving the chat
+          // off-screen.
+        }
+      }
+
+      // Intro turn: on genuine New Agent creation (`kickoff`), OR as the
+      // COMPAT persistence write when the eager title failed (`!titled`) —
+      // an old gateway prunes the zero-message lazy session, so without
+      // some first prompt the chat never survives its own creation. A
+      // titled row needs neither: the user speaks first.
+      const submitIntro = kickoff || !titled
+
+      if (submitIntro) {
+        await new Promise(resolve => window.setTimeout(resolve, 400))
+
+        try {
+          await requestForBot(bot, 'prompt.submit', {
+            session_id: storedId,
+            text: kickoffText()
+          })
+
+          if (!opened && canNavigateNow && typeof host.openSession === 'function') {
+            await openFreshCanonical()
+          }
+        } catch {
+          // The chat already exists under the canonical title — the next
+          // click finds it by name instead of making a second Bot Chat.
+        }
+      } else if (!opened && canNavigateNow && typeof host.openSession === 'function') {
+        // No intro turn: still finish mounting the chat when the first open
+        // raced the (now titled) row.
+        try {
+          await openFreshCanonical()
+        } catch {
+          /* row is titled and persistent — the next click opens it by name */
+        }
+      }
+    },
+  }
 }
 
 /** Create the bot's ONE forever chat: a real session titled "Bot Chat".
@@ -280,198 +575,36 @@ function kickoffText(): string {
  *  group, clicked another bot), the create still completes registry-side
  *  but never steals the workspace (#89834 family).
  *
- *  It gates WHETHER to navigate, never WHAT the session is. The bots
- *  workspace fields below ride every open unconditionally: they say this row
- *  is a bot's chat, which is true of a freshly minted one no matter who asked
- *  for it. Spreading them only when a probe was passed is how the create path
- *  — the one caller with no probe — opened its chat unscoped, and the
- *  composer, reading that scope to stand the branch rail down, showed the
- *  rail in a bot chat until the next click re-opened it scoped. */
+ *  Delegates the actual resolution (lookup, creation-flight/concurrency
+ *  protection, title materialization, title-conflict recovery, fail-closed
+ *  behavior) to the shared `resolveCanonicalAgentChat` — the one identity-
+ *  resolution flow shared with the SDK's `host.openCanonicalAgentChat`.
+ *  This function supplies only Bot Mode's RPC/navigation behavior via
+ *  `botModeCallbacks`, and the legacy-gateway untitled-compat opt-in below,
+ *  which is Bot Mode's documented fallback (never authorized generically). */
 export function createCanonicalChat(
   owner: RosterRow | string,
-  { kickoff = false, openingStillCurrent = null }: CreateCanonicalChatOptions = {}
+  { kickoff = false, openingStillCurrent = null, newAgentBirth = false, rosterAdmissionPoll }: CreateCanonicalChatOptions = {}
 ): Promise<null | string> {
-  const { bot, name, key, route } = botOwner(owner)
-  const inflight = canonicalCreations.get(key)
+  const { target } = botOwnerToTarget(owner)
 
-  // Every open of a just-minted row is the same call — adopting a concurrent
-  // flight's result, the retry after a failed eager title, the retry after the
-  // compat kickoff. Only WHEN differs, so WHAT lives in one place.
-  const openFreshCanonical = (sid: string) =>
-    host.openSession!(sid, {
-      ...(route
-        ? {
-            route
-          }
-        : {}),
-      profile: name,
-      intent: 'main',
-      keepAllProfilesScope: route ? true : false,
-      workspaceMode: 'bots',
-      workspaceOwnerKey: botWorkspaceOwnerKey(bot),
-      tabTitle: CANONICAL_CHAT_TITLE
-    })
-
-  if (inflight) {
-    if (!openingStillCurrent) {
-      return inflight.run!
-    }
-
-    return inflight.run!.then(async sid => {
-      if (sid && openingStillCurrent() && typeof host.openSession === 'function') {
-        await openFreshCanonical(sid)
-      }
-
-      return sid
-    })
-  }
-
-  const flight: CanonicalCreation = {
-    run: null
-  }
-
-  const canNavigate = () => !openingStillCurrent || openingStillCurrent()
-
-  const run = (async () => {
-    const existing = await findExistingCanonicalChat(owner)
-
-    if (existing?.id) {
-      if (typeof host.openSession === 'function' && canNavigate()) {
-        // The exact-lookup gateway reports the compression-lineage tip as
-        // resolved_id; open the tip, the registry row stays the identity.
-        await openStoredBotChat(owner, existing.resolved_id || existing.id, existing)
-      }
-
-      return existing.id
-    }
-
-    const res = await requestForBot<{ session_id?: string; stored_session_id?: string }>(bot, 'session.create', {
-      profile: backendTargetProfile(route, name),
-      title: CANONICAL_CHAT_TITLE,
-      // Always born hidden from the global sidebar — Bot Mode sessions are
-      // plugin-owned. Core applies this via the generic `hidden` flag
-      // (deferred as pending_hidden until the row exists); older gateways
-      // ignore the unknown param and it stays visible.
-      hidden: true,
-      // Explicit contract (PR #97008): this session's runtime always follows
-      // the member profile's CURRENT config. Resume must NOT restore the
-      // stored model/provider pin from an old row — that left bot DMs stuck
-      // on a stale/dead provider after a profile switch. Older gateways
-      // ignore the unknown param; the server's exact-title backfill then
-      // covers the legacy path.
-      follow_profile_config: true
-    })
-
-    const sid = res?.stored_session_id
-    const runtime = res?.session_id
-
-    // session.create is intentionally lazy: its stored row does not exist until
-    // the first prompt. Mounting `sid` immediately therefore emits a noisy REST
-    // 404 ("Session not found"), and the turn-start auto-titler can win the race
-    // against the deferred `title: 'Bot Chat'` — under name-identity that is an
-    // identity outage: until the row is titled, the registry has no "Bot Chat"
-    // entry, so a second click during the intro turn mints a duplicate.
-    // session.title materializes the row now and records a user-authority title
-    // before either the open or kickoff, closing both the 404 race and the
-    // untitled window. Older gateways may not support the eager write; retain
-    // the kickoff-and-retry fallback below.
-    let titled = false
-
-    if (runtime) {
-      try {
-        await requestForBot(bot, 'session.title', {
-          session_id: runtime,
-          title: CANONICAL_CHAT_TITLE
-        })
-        titled = true
-      } catch (error) {
-        // ADOPT-BEFORE-MINT: a title-uniqueness rejection is not an old
-        // gateway — it means another writer took the canonical title between
-        // our registry miss and this write (peer dm minting server-side, a
-        // second machine, cross-connection sync). Falling through to the
-        // compat path would prompt into OUR stray session and fork the
-        // forever chat. Re-consult the registry and adopt the winner; the
-        // stray lazy session holds zero messages and is simply abandoned
-        // (the gateway prunes it).
-        if (/already in use/i.test(String((error as RpcErrorLike)?.message || ''))) {
-          const winner = await findExistingCanonicalChat(owner)
-
-          if (winner?.id) {
-            // Adopting the winner settles IDENTITY, which is always correct to
-            // return. Navigating to it is not: this path can land a full
-            // round-trip after the user clicked another bot, and every sibling
-            // open here is staleness-probed for exactly that reason.
-            if (typeof host.openSession === 'function' && canNavigate()) {
-              await openStoredBotChat(owner, winner.resolved_id || winner.id, winner)
-            }
-
-            return winner.id
-          }
-        }
-        /* compatibility fallback: prompt.submit will persist the lazy row */
-      }
-    }
-
-    // Mount the session view FIRST, then send the kickoff — submitting into
-    // an unmounted session left the intro reply invisible until reopen.
-    let opened = false
-
-    if (sid && typeof host.openSession === 'function' && canNavigate()) {
-      try {
-        await openFreshCanonical(sid)
-        opened = true
-      } catch {
-        // The stored row may not exist until the kickoff persists it. Retry
-        // after prompt.submit below instead of leaving the chat off-screen.
-      }
-    }
-
-    if (runtime) {
-      // Intro turn: only on genuine New Agent creation (`kickoff`), or as the
-      // COMPAT persistence write when the eager title failed — an old gateway
-      // prunes the zero-message lazy session, so without some first prompt
-      // the chat never survives its own creation. A titled row needs neither:
-      // the user speaks first.
-      const submitIntro = kickoff || !titled
-
-      if (submitIntro) {
-        await new Promise(resolve => window.setTimeout(resolve, 400))
-
-        try {
-          await requestForBot(bot, 'prompt.submit', {
-            session_id: runtime,
-            text: kickoffText()
-          })
-
-          if (!opened && sid && typeof host.openSession === 'function' && canNavigate()) {
-            await openFreshCanonical(sid)
-          }
-        } catch {
-          // The chat already exists under the canonical title — the next click
-          // finds it by name instead of making a second Bot Chat.
-        }
-      } else if (!opened && sid && typeof host.openSession === 'function' && canNavigate()) {
-        // No intro turn: still finish mounting the chat when the first open
-        // raced the (now titled) row.
-        try {
-          await openFreshCanonical(sid)
-        } catch {
-          /* row is titled and persistent — the next click opens it by name */
-        }
-      }
-    }
-
-    return sid || null
-  })().finally(() => {
-    if (canonicalCreations.get(key) === flight) {
-      canonicalCreations.delete(key)
-    }
-  })
-
-  flight.run = run
-  canonicalCreations.set(key, flight)
-
-  return run
+  return (newAgentBirth ? waitForRosterAdmission(target, rosterAdmissionPoll) : Promise.resolve())
+    .then(() => assertAuthorizedTarget(target))
+    .then(() =>
+      resolveCanonicalAgentChat(target, botModeCallbacks(owner, kickoff), {
+        openingStillCurrent,
+        isTitleConflict: isTitleConflictError,
+        // Bot Mode's documented compat path applies ONLY to the recognized
+        // legacy-gateway case — an eager session.title rejection that means
+        // the write is simply UNSUPPORTED by this gateway (matched the same
+        // way notifyBotOpenFailure classifies it). Any other non-conflict
+        // failure (network, authorization, routing, ownership, unknown RPC
+        // errors) now falls through and fails closed, per the Architect
+        // corrective: the compat path is not a general swallow.
+        allowUntitledCompat: (_target, error) => botModeGatewayNeedsUpdate(error),
+      })
+    )
+    .then(result => result?.registryId ?? null)
 }
 
 /** Open the bot's ONE forever chat and return the opened registry id.
@@ -481,41 +614,25 @@ export function createCanonicalChat(
  *  (lineage tip); it doesn't → create it. No id pointer is read or written
  *  anywhere in this path — remote bots included. The owner route rides
  *  every RPC (requestForBot) and the open (openStoredBotChat), so a remote
- *  bot's chat opens without re-homing Desktop's chrome. */
+ *  bot's chat opens without re-homing Desktop's chrome.
+ *
+ *  Delegates to the shared `resolveCanonicalAgentChat` via `createCanonicalChat`
+ *  (which itself delegates) — one implementation, shared with the SDK. */
 export async function openBotCanonicalChat(
   owner: RosterRow | string,
   openingStillCurrent: (() => boolean) | null = null
 ): Promise<{ openedId: string; registryId: string } | null> {
-  const existing = await findExistingCanonicalChat(owner)
+  const { target } = botOwnerToTarget(owner)
 
-  if (existing?.id && typeof host.openSession === 'function') {
-    if (openingStillCurrent && !openingStillCurrent()) {
-      return null
-    }
+  await assertAuthorizedTarget(target)
 
-    const openedId = existing.resolved_id || existing.id
-    await openStoredBotChat(owner, openedId, existing)
-
-    // Both identities matter downstream: the durable registry row names the
-    // chat; the resolved lineage tip is what actually takes session focus.
-    // Callers matching focus against only the registry id mistook every
-    // compressed Bot Chat for a stale open (first click bounced to the home).
-    return {
-      registryId: String(existing.id),
-      openedId: String(openedId)
-    }
-  }
-
-  const created = await createCanonicalChat(owner, {
-    openingStillCurrent
+  const result = await resolveCanonicalAgentChat(target, botModeCallbacks(owner, false), {
+    openingStillCurrent,
+    isTitleConflict: isTitleConflictError,
+    allowUntitledCompat: (_target, error) => botModeGatewayNeedsUpdate(error),
   })
 
-  return created
-    ? {
-        registryId: String(created),
-        openedId: String(created)
-      }
-    : null
+  return result ? { openedId: result.openedId, registryId: result.registryId } : null
 }
 
 export async function prepareBotSource(bot: RosterRow) {

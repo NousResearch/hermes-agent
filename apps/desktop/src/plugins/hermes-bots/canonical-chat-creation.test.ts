@@ -22,7 +22,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RosterRow } from './types'
 
 const { hostMock, persistMock, pluginCtx, requestForBotMock, saveBotMetaMock } = vi.hoisted(() => ({
-  hostMock: { openSession: vi.fn(), request: vi.fn() },
+  hostMock: { agents: vi.fn(), openSession: vi.fn(), request: vi.fn() },
   persistMock: vi.fn(),
   // Null unless a test installs one — the plugin ctx is genuinely absent until
   // register() runs, which is why every read of it carries an English floor.
@@ -31,12 +31,25 @@ const { hostMock, persistMock, pluginCtx, requestForBotMock, saveBotMetaMock } =
   saveBotMetaMock: vi.fn()
 }))
 
+// test-only: loads the REAL shared resolver module and re-exports its own
+// exact behavior as the `vi.mock('@hermes/plugin-sdk', ...)` fixture below,
+// so the mock can never silently drift from the module the plugin fence
+// forbids importing at runtime.
+// eslint-disable-next-line no-restricted-imports
+import { CANONICAL_AGENT_CHAT_TITLE, isAuthorizedCanonicalChatTarget, isCanonicalAgentChatRow, isTitleConflictError, resolveCanonicalAgentChat } from '../../lib/canonical-agent-chat'
+
 vi.mock('@hermes/plugin-sdk', () => ({
+  CANONICAL_AGENT_CHAT_TITLE,
+  isAuthorizedCanonicalChatTarget,
+  isCanonicalAgentChatRow,
+  isTitleConflictError,
+  resolveCanonicalAgentChat,
   BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS: 15_000,
   host: hostMock
 }))
 
 vi.mock('./routing', () => ({
+  aliasIdentityFor: () => null,
   backendTargetProfile: (route: { targetProfile?: string } | null, name: string) => route?.targetProfile ?? name,
   botConnectionRoute: () => null,
   botRosterMeta: () => ({}),
@@ -82,6 +95,15 @@ beforeEach(() => {
   hostMock.openSession.mockImplementation(async (id: string) => {
     events.push(`open:${id}`)
   })
+  // Roster admission (Architect corrective, 2026-09-02) runs before every
+  // canonical resolution — authorize every profile string this suite uses.
+  hostMock.agents.mockImplementation(async () => ({
+    agents: [
+      { connectionId: null, profile: 'ops', targetProfile: 'ops' },
+      { connectionId: null, profile: 'alpha', targetProfile: 'alpha' },
+      { connectionId: null, profile: 'newbie', targetProfile: 'newbie' }
+    ]
+  }))
 })
 
 /** Runs a kickoff creation and hands back the text the intro turn submitted. */
@@ -292,21 +314,54 @@ describe('a superseded click completes registry-side but never navigates', () =>
   })
 
   it('lets a newer same-bot open take over the in-flight creation navigation', async () => {
+    // Post-corrective (Architect, 2026-09-02, fourth pass): every caller now
+    // performs its OWN current-roster admission read before reaching the
+    // shared resolver — there is no bypass for a caller joining an
+    // already-in-flight creation. That async admission hop means a second
+    // caller arriving shortly after the first can legitimately land AFTER
+    // the first flight has already fully settled and removed itself from
+    // the in-process singleflight map — so it independently issues its own
+    // `session.create`/`session.title`, exactly like two genuinely
+    // sequential opens would. The pre-existing, separately-tested
+    // adopt-before-mint conflict path (a title-uniqueness rejection means
+    // someone else won the registry) is what reconciles the two into ONE
+    // canonical identity — the in-memory map is no longer relied on to
+    // prevent this from happening across an admission-check-sized gap; the
+    // backend's UNIQUE(title) index is the real, cross-process guarantee,
+    // and this test now exercises that path instead of assuming a shared
+    // flight the new corrective made non-guaranteed.
     let firstCurrent = true
-    let releaseCreate = () => undefined as void
-    let markCreateStarted = () => undefined as void
+    let createCalls = 0
+    let titled: { id: string } | null = null
+    const idBySessionId = new Map<string, string>()
 
-    const createStarted = new Promise<void>(resolve => {
-      markCreateStarted = resolve
-    })
+    respondWith((method, params) => {
+      if (method === 'session.list') {
+        // The registry read every caller performs first (adoption check)
+        // and the re-lookup after a title conflict.
+        return titled ? { sessions: [{ id: titled.id, resolved_id: titled.id, message_count: 0, title: 'Bot Chat' }] } : { sessions: [] }
+      }
 
-    respondWith(method => {
       if (method === 'session.create') {
-        markCreateStarted()
+        createCalls += 1
+        const runtimeId = `runtime-${createCalls}`
+        const storedId = `stored-${createCalls}`
 
-        return new Promise(resolve => {
-          releaseCreate = () => resolve({ session_id: 'shared-runtime', stored_session_id: 'shared-stored' })
-        })
+        idBySessionId.set(runtimeId, storedId)
+
+        return { session_id: runtimeId, stored_session_id: storedId }
+      }
+
+      if (method === 'session.title') {
+        if (titled) {
+          throw new Error(`Title 'Bot Chat' is already in use by session ${titled.id}`)
+        }
+
+        const storedId = idBySessionId.get(String(params.session_id))!
+
+        titled = { id: storedId }
+
+        return {}
       }
 
       return {}
@@ -315,16 +370,92 @@ describe('a superseded click completes registry-side but never navigates', () =>
     const { createCanonicalChat } = await loadModule()
     const first = createCanonicalChat('ops', { openingStillCurrent: () => firstCurrent })
 
-    await createStarted
+    // Once the first call's own async admission read resolves, flip current
+    // — this models the click having moved on while the first open was
+    // still in progress — then fire the second, newer-and-current call.
     firstCurrent = false
-
     const second = createCanonicalChat('ops', { openingStillCurrent: () => true })
 
-    releaseCreate()
+    const [firstId, secondId] = await Promise.all([first, second])
 
-    expect(await first).toBe('shared-stored')
-    expect(await second).toBe('shared-stored')
-    // The newer current click owns the shared creation's one navigation.
+    // Both callers resolve to the SAME canonical identity — whichever one's
+    // session.title call actually won the race, the other adopted it via
+    // the conflict path, exactly as two genuinely sequential opens would.
+    expect(firstId).toBe(secondId)
+    // Only the CURRENT call navigates; the stale first click does not.
+    expect(hostMock.openSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('evaluates roster admission PER CALLER at the time that caller requests entry — Caller 2 revoked mid-flight is rejected on its OWN fresh read, before any session RPC (Architect corrective, 2026-09-02, fifth pass)', async () => {
+
+    // CALLER 1: fresh roster read authorizes 'ops'; enters canonical
+    // creation; creation is held in flight via a controlled session.create.
+    let releaseCreate = () => undefined as void
+    let markCreateStarted = () => undefined as void
+
+    const createStarted = new Promise<void>(resolve => {
+      markCreateStarted = resolve
+    })
+
+    let rosterReads = 0
+    hostMock.agents.mockImplementation(async () => {
+      rosterReads += 1
+
+      // CALLER 1's fresh read (the 1st call): 'ops' is authorized.
+      // CALLER 2's fresh read (every subsequent call): 'ops' has been
+      // revoked from the current roster — this is the exact "authorized
+      // then revoked mid-flight" scenario the corrective requires.
+      return rosterReads === 1
+        ? { agents: [{ connectionId: null, profile: 'ops', targetProfile: 'ops' }] }
+        : { agents: [] }
+    })
+
+    const rpcCalls: string[] = []
+
+    respondWith(method => {
+      rpcCalls.push(method)
+
+      if (method === 'session.create') {
+        markCreateStarted()
+
+        return new Promise(resolve => {
+          releaseCreate = () => resolve({ session_id: 'runtime-1', stored_session_id: 'stored-1' })
+        })
+      }
+
+      return {}
+    })
+
+    const { createCanonicalChat } = await loadModule()
+    const first = createCanonicalChat('ops')
+
+    // CALLER 1 is now in flight (past its own admission, inside
+    // session.create). CALLER 2 starts NOW, while Caller 1 is still
+    // in flight, and performs its OWN fresh roster read.
+    await createStarted
+    const rpcCallsBeforeSecond = rpcCalls.length
+    const second = createCanonicalChat('ops')
+
+    // CALLER 2 is rejected on its own fresh roster state — BEFORE reaching
+    // the shared resolver or issuing any session RPC. No admission
+    // shortcut based on Caller 1's in-flight state exists: Caller 2 does
+    // NOT inherit Caller 1's now-stale authorization.
+    await expect(second).rejects.toThrow(/not present in the current authorized agent roster/)
+
+    // The roster capability was called separately for each caller — not
+    // once and cached/shared.
+    expect(rosterReads).toBeGreaterThanOrEqual(2)
+
+    // Caller 2 performed NO session RPC of any kind — the RPC log gained
+    // zero new entries between Caller 2 starting and Caller 2's rejection.
+    expect(rpcCalls.length).toBe(rpcCallsBeforeSecond)
+    expect(rpcCalls).not.toContain('session.title')
+    expect(hostMock.openSession).not.toHaveBeenCalled()
+
+    // CALLER 1 completes normally — its own in-flight creation is
+    // unaffected by Caller 2's independent rejection.
+    releaseCreate()
+    await expect(first).resolves.toBe('stored-1')
     expect(hostMock.openSession).toHaveBeenCalledTimes(1)
   })
 })

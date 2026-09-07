@@ -44,6 +44,16 @@ import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import {
+  CANONICAL_AGENT_CHAT_TITLE,
+  type CanonicalAgentChatResult,
+  isAuthorizedCanonicalChatTarget,
+  isCanonicalAgentChatRow,
+  resolveCanonicalAgentChat as resolveCanonicalAgentChatCore,
+  type AuthorizedRoster as SharedAuthorizedRoster,
+  type CanonicalAgentChatRow as SharedCanonicalAgentChatRow,
+  type CanonicalAgentChatTarget as SharedCanonicalAgentChatTarget,
+} from '@/lib/canonical-agent-chat'
+import {
   $gateway,
   activeGatewayConnectionId,
   openGatewayForAgent,
@@ -799,6 +809,146 @@ export const host = {
     void openGatewayForAgent(connectionId ?? null, (profile ?? '').trim() || 'default').catch(() => undefined)
   },
 
+  /** Open the source-qualified agent's ONE canonical forever-chat: the
+   *  session titled exactly "Bot Chat" on that profile (`CANONICAL_AGENT_CHAT_TITLE`).
+   *  Adopts an existing row (opening its compression-lineage tip while
+   *  retaining the durable registry id); creates one only after a lookup
+   *  establishes absence; FAILS CLOSED — a lookup, routing, authorization, or
+   *  open failure rejects rather than silently falling back to a guessed
+   *  profile or minting a second chat. This is the SAME identity
+   *  resolution flow Bot Mode's own click path uses
+   *  (`resolveCanonicalAgentChat` in `@/lib/canonical-agent-chat`, shared by
+   *  both — not a parallel reimplementation). Opens without awaiting
+   *  hydration — the caller decides whether/how to observe hydration
+   *  progress, same as any other plain `host.openSession` navigation.
+   *
+   *  `target` must be a full source-qualified descriptor: `connectionId`,
+   *  the displayed `profile`, AND the backend `targetProfile` — never
+   *  collapsed to a bare `{connectionId, profile}`, since an aliased or
+   *  remote row's backend identity can diverge from its display name (see
+   *  `CanonicalAgentChatTarget`'s own doc comment). Before any lookup,
+   *  create, or open, the EXACT target is validated against the current
+   *  authorized `host.agents()` roster — an arbitrary non-blank target is
+   *  not itself authorization; a target absent from the live roster fails
+   *  closed and performs no lookup/create/open at all. Returns `null` only
+   *  when a create attempt genuinely produced no session id (extremely rare
+   *  backend condition); every other failure mode rejects. */
+  openCanonicalAgentChat: async (
+    target: { connectionId?: null | string; profile: string; targetProfile: string }
+  ): Promise<CanonicalAgentChatResult | null> => {
+    const profile = (target?.profile || '').trim()
+    const connectionId = (target?.connectionId ?? '').trim() || null
+    const targetProfile = (target?.targetProfile || '').trim()
+
+    if (!profile || !targetProfile) {
+      throw new Error('openCanonicalAgentChat requires a full source-qualified target: { connectionId, profile, targetProfile }')
+    }
+
+    const qualifiedTarget: SharedCanonicalAgentChatTarget = { connectionId, profile, targetProfile }
+
+    // Roster admission goes through the SAME public capability every other
+    // caller uses — `host.agents()` — not a direct `getAgentRoster()` call.
+    // `host.agents()` already fails closed with a clear error when the
+    // bridge is unavailable; that rejection propagates here and the
+    // operation fails BEFORE any lookup/create/open, exactly like every
+    // other roster-fetch failure on this path (Architect corrective,
+    // 2026-09-02, fifth pass: this is not currently an authorization
+    // bypass — both paths reach the same bridge — but it duplicated roster
+    // acquisition inside the public SDK seam instead of using the seam's
+    // own public capability).
+    const rosterResult = await host.agents()
+
+    const roster: SharedAuthorizedRoster = {
+      agents: Array.isArray(rosterResult?.agents)
+        ? rosterResult.agents.map((agent: { connectionId?: string; profile: string; targetProfile?: string }) => ({
+            connectionId: agent.connectionId ?? null,
+            profile: agent.profile,
+            // No fallback to `agent.profile`: a row that omits its own
+            // backend targetProfile cannot vouch for any target — pass an
+            // explicit blank through so isAuthorizedCanonicalChatTarget's
+            // own required-field check (never a caller-side substitution)
+            // is what rejects it (Architect corrective, 2026-09-02, sixth
+            // pass).
+            targetProfile: (agent.targetProfile ?? '').trim(),
+          }))
+        : [],
+    }
+
+    if (!isAuthorizedCanonicalChatTarget(qualifiedTarget, roster)) {
+      throw new Error(`${profile} is not present in the current authorized agent roster — refusing to open`)
+    }
+
+    const route: PluginProfileRoute | string = connectionId
+      ? { connectionId, mode: 'local', profile, targetProfile }
+      : targetProfile
+
+    const workspaceOwnerKey = `bot:${connectionId ? `${connectionId}::` : ''}${profile}`
+
+    return resolveCanonicalAgentChatCore(qualifiedTarget, {
+      lookup: async () => {
+        let result: { sessions?: SharedCanonicalAgentChatRow[] }
+
+        try {
+          result = (await host.requestProfile(route, 'session.list', {
+            profile: targetProfile,
+            title: CANONICAL_AGENT_CHAT_TITLE,
+            include_hidden: true,
+          })) as { sessions?: SharedCanonicalAgentChatRow[] }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error || '')
+          const detail = message ? ` (${message})` : ''
+
+          throw new Error(`Could not check ${profile}'s Bot Chat registry${detail} — not starting a new chat`)
+        }
+
+        return result?.sessions?.find(isCanonicalAgentChatRow) ?? null
+      },
+      create: async () => {
+        const created = (await host.requestProfile(route, 'session.create', {
+          profile: targetProfile,
+          title: CANONICAL_AGENT_CHAT_TITLE,
+          hidden: true,
+          follow_profile_config: true,
+        })) as { session_id?: string; stored_session_id?: string }
+
+        return { runtimeId: created?.session_id ?? null, storedId: created?.stored_session_id ?? null }
+      },
+      titleSession: async (_t, runtimeId) => {
+        await host.requestProfile(route, 'session.title', { session_id: runtimeId, title: CANONICAL_AGENT_CHAT_TITLE })
+      },
+      openExisting: async (_t, openedId, _row, canNavigateNow) => {
+        if (!canNavigateNow) {
+          return
+        }
+
+        await host.openSession(openedId, {
+          profile,
+          ...(connectionId ? { route: { connectionId, mode: 'local', profile, targetProfile } } : {}),
+          intent: 'in-place',
+          keepAllProfilesScope: true,
+          workspaceMode: 'bots',
+          workspaceOwnerKey,
+          tabTitle: CANONICAL_AGENT_CHAT_TITLE,
+        })
+      },
+      openFresh: async (_t, storedId, canNavigateNow) => {
+        if (!canNavigateNow) {
+          return
+        }
+
+        await host.openSession(storedId, {
+          profile,
+          ...(connectionId ? { route: { connectionId, mode: 'local', profile, targetProfile } } : {}),
+          intent: 'in-place',
+          keepAllProfilesScope: true,
+          workspaceMode: 'bots',
+          workspaceOwnerKey,
+          tabTitle: CANONICAL_AGENT_CHAT_TITLE,
+        })
+      },
+    })
+  },
+
   /** Activate an agent's gateway (dialing it if needed) so subsequent
    *  host.request calls hit that agent's backend. Goes through the store's
    *  serialized activation path so $connection / $activeGatewayProfile follow
@@ -1412,8 +1562,6 @@ export {
   type ComposerMiddleware
 } from '@/app/chat/composer/contrib'
 
-// -- ui: the design language --------------------------------------------------
-
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
  *  between surfaces. Pass the STORED session id and it resolves the rest
@@ -1422,6 +1570,9 @@ export {
  *  circle beside it — a plugin's own dot inverts core's color vocabulary the
  *  moment either side moves. */
 export { SessionStatusDot, type SessionStatusDotProps } from '@/app/chat/session-status-dot'
+
+// -- ui: the design language --------------------------------------------------
+
 /** The sidebar row's leading cell — the fixed box a dot, icon or handle sits in.
  *  Reserve it and your label starts on the same left edge as every session row
  *  above you; spell the classes yourself and the row drifts. The session row is
@@ -1460,12 +1611,12 @@ export {
   PanelSectionLabel
 } from '@/app/overlays/panel'
 export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
-
 /** THE full per-toolset config panel core Settings renders — provider picker,
  *  env vars / API keys, model catalog picker, and post-setup runners. Route-
  *  decoupled (the "manage keys" deep link is a no-op outside the router); pass
  *  `toolset`, optional `onConfiguredChange`, and an optional `profile`. */
 export { ToolsetConfigPanel } from '@/app/settings/toolset-config-panel'
+
 /** THE model catalog menu — the same searchable, provider-grouped, family-
  *  collapsing picker the chat composer uses, including the per-row
  *  thinking/effort/fast submenu. Drive it with a `ModelMenuController`: the
@@ -1591,10 +1742,10 @@ export type {
  *  `ctx.register` stays the door for permanent contributions. Namespace the
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
+export type { Contribution } from '@/contrib/types'
 
 // -- contracts ----------------------------------------------------------------
 
-export type { Contribution } from '@/contrib/types'
 /** The live gateway instance type — for typing the `gateway` prop `McpTab`
  *  takes; obtain the instance from `host.getGateway()`. */
 export type { HermesGateway } from '@/hermes'
@@ -1624,6 +1775,26 @@ export {
  *  Plugins must route animation clocks through this instead of raw rAF loops
  *  so a disabled plugin or an empty roster costs zero frames. */
 export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from '@/lib/budgeted-loop'
+// The shared canonical agent-chat identity contract: the constant, row
+// predicate, and the FULL resolution flow (`resolveCanonicalAgentChat`) that
+// `hermes-bots` and `host.openCanonicalAgentChat` above both call — one
+// implementation, not two. `isTitleConflictError` and
+// `isAuthorizedCanonicalChatTarget` are exported so any caller building its
+// own callback set (Bot Mode's `botModeCallbacks`) shares the exact same
+// conflict/authorization classification rather than re-deriving it.
+export {
+  type AuthorizedRoster,
+  type AuthorizedRosterEntry,
+  CANONICAL_AGENT_CHAT_TITLE,
+  type CanonicalAgentChatCallbacks,
+  type CanonicalAgentChatResult,
+  type CanonicalAgentChatRow,
+  type CanonicalAgentChatTarget,
+  isAuthorizedCanonicalChatTarget,
+  isCanonicalAgentChatRow,
+  isTitleConflictError,
+  resolveCanonicalAgentChat,
+} from '@/lib/canonical-agent-chat'
 /** The blank transcript as a contribution area: claim the sessions you own and
  *  render what stands in the gap. Core's own splash keeps a fresh draft. */
 export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from '@/lib/chat-empty'

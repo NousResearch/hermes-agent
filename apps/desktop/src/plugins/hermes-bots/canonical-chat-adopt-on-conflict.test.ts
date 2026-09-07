@@ -17,18 +17,37 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RosterRow } from './types'
 
 const { hostMock, persistMock, requestForBotMock, saveBotMetaMock } = vi.hoisted(() => ({
-  hostMock: { openSession: vi.fn(), request: vi.fn() },
+  hostMock: { agents: vi.fn(), openSession: vi.fn(), request: vi.fn() },
   persistMock: vi.fn(),
   requestForBotMock: vi.fn(),
   saveBotMetaMock: vi.fn()
 }))
 
+// test-only: this file loads the REAL shared resolver module and re-exports
+// its own exact behavior as the `vi.mock('@hermes/plugin-sdk', ...)` fixture
+// below, so the mock can never silently drift from the module the plugin
+// fence forbids importing at runtime.
+// eslint-disable-next-line no-restricted-imports
+import {
+  CANONICAL_AGENT_CHAT_TITLE,
+  isAuthorizedCanonicalChatTarget,
+  isCanonicalAgentChatRow,
+  isTitleConflictError,
+  resolveCanonicalAgentChat
+} from '../../lib/canonical-agent-chat'
+
 vi.mock('@hermes/plugin-sdk', () => ({
+  CANONICAL_AGENT_CHAT_TITLE,
+  isAuthorizedCanonicalChatTarget,
+  isCanonicalAgentChatRow,
+  isTitleConflictError,
+  resolveCanonicalAgentChat,
   BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS: 15_000,
   host: hostMock
 }))
 
 vi.mock('./routing', () => ({
+  aliasIdentityFor: () => null,
   backendTargetProfile: (route: { targetProfile?: string } | null, name: string) => route?.targetProfile ?? name,
   botConnectionRoute: () => null,
   botRosterMeta: () => ({}),
@@ -71,6 +90,9 @@ beforeEach(() => {
   hostMock.openSession.mockImplementation(async (id: string) => {
     events.push(`open:${id}`)
   })
+  hostMock.agents.mockImplementation(async () => ({
+    agents: [{ connectionId: null, profile: 'ops', targetProfile: 'ops' }]
+  }))
 })
 
 describe('a title-uniqueness rejection means someone else won the registry', () => {

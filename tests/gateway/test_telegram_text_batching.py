@@ -7,7 +7,7 @@ from the same session and aggregate them before dispatching.
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -36,6 +36,8 @@ def _make_adapter():
     adapter._pending_photo_batch_tasks = {}
     adapter._media_group_events = {}
     adapter._media_group_tasks = {}
+    adapter._media_inflight = {}
+    adapter._media_inflight_generation = 0
     adapter._polling_error_task = None
     adapter._polling_heartbeat_task = None
     adapter._app = None
@@ -43,6 +45,10 @@ def _make_adapter():
     adapter._set_status_indicator = AsyncMock()
     adapter._release_platform_lock = lambda: None
     adapter._text_batch_delay_seconds = 0.1  # fast for tests
+    # Existing tests assert dispatch at delay+ε; keep sibling-media hold off
+    # unless a test enables it explicitly.
+    adapter._TEXT_SIBLING_MEDIA_GRACE_S = 0
+    adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 0
     adapter._active_sessions = {}
     adapter._pending_messages = {}
     adapter._message_handler = AsyncMock()
@@ -54,11 +60,22 @@ def _make_adapter():
     return adapter
 
 
-def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
+def _make_event(
+    text: str,
+    chat_id: str = "12345",
+    user_id: str = "1",
+    chat_type: str = "dm",
+    message_type: MessageType = MessageType.TEXT,
+) -> MessageEvent:
     return MessageEvent(
         text=text,
-        message_type=MessageType.TEXT,
-        source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
+        message_type=message_type,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            user_id=user_id,
+        ),
     )
 
 
@@ -530,3 +547,254 @@ class TestHoldInboundAcrossReconnect:
         await adapter._redispatch_held_inbound()
         held_texts = [e.text for e in adapter._held_inbound_events]
         assert held_texts == ["boom", "after"]
+
+
+class TestSiblingMediaAbsorb:
+    def test_absorb_pending_text_prepends_comment_to_caption(self):
+        """Forward-with-comment: comment TEXT is merged into the media caption."""
+        adapter = _make_adapter()
+        comment = _make_event("Додай у календар")
+        media = _make_event("🔥 5 ВЕРЕСНЯ announcement", message_type=MessageType.VIDEO)
+        adapter._pending_text_batches[adapter._text_batch_key(comment)] = comment
+        adapter._mark_sibling_absorb_eligibility(media)
+
+        absorbed = adapter._absorb_pending_text_into_media_event(media)
+
+        assert absorbed is True
+        assert media.text.startswith("Додай у календар")
+        assert "🔥 5 ВЕРЕСНЯ announcement" in media.text
+        assert adapter._pending_text_batches == {}
+        assert adapter._pending_text_batch_tasks == {}
+
+    def test_absorb_refuses_without_admission_snapshot(self):
+        """A media event that never snapshotted must not steal a later comment."""
+        adapter = _make_adapter()
+        comment = _make_event("Додай у календар")
+        media = _make_event("forwarded caption", message_type=MessageType.VIDEO)
+        adapter._pending_text_batches[adapter._text_batch_key(comment)] = comment
+
+        assert adapter._absorb_pending_text_into_media_event(media) is False
+        assert adapter._pending_text_batches[adapter._text_batch_key(comment)] is comment
+
+    def test_absorb_refuses_different_sender(self):
+        adapter = _make_adapter()
+        adapter.config.extra["group_sessions_per_user"] = False
+        comment = _make_event("hello", user_id="1", chat_type="group", chat_id="-100")
+        media = _make_event("caption", user_id="2", chat_type="group", chat_id="-100")
+        assert adapter._text_batch_key(comment) == adapter._text_batch_key(media)
+        adapter._pending_text_batches[adapter._text_batch_key(comment)] = comment
+        adapter._mark_sibling_absorb_eligibility(media)
+
+        assert getattr(media, "_sibling_pending", None) is None
+        assert adapter._absorb_pending_text_into_media_event(media) is False
+        assert adapter._pending_text_batches[adapter._text_batch_key(comment)] is comment
+
+    def test_absorb_refuses_replacement_comment_after_snapshot(self):
+        """Inflight media may only consume the comment that was pending at admission."""
+        adapter = _make_adapter()
+        original = _make_event("first comment")
+        replacement = _make_event("second comment")
+        media = _make_event("forwarded caption", message_type=MessageType.VIDEO)
+        key = adapter._text_batch_key(original)
+        adapter._pending_text_batches[key] = original
+        adapter._mark_sibling_absorb_eligibility(media)
+        adapter._pending_text_batches[key] = replacement
+
+        assert adapter._absorb_pending_text_into_media_event(media) is False
+        assert adapter._pending_text_batches[key] is replacement
+
+    @pytest.mark.asyncio
+    async def test_mixed_sender_buffer_is_not_a_sibling_comment(self):
+        adapter = _make_adapter()
+        adapter.config.extra["group_sessions_per_user"] = False
+        first = _make_event("from-one", user_id="1", chat_type="group", chat_id="-100")
+        second = _make_event("from-two", user_id="2", chat_type="group", chat_id="-100")
+        assert adapter._text_batch_key(first) == adapter._text_batch_key(second)
+        try:
+            adapter._enqueue_text_event(first)
+            adapter._enqueue_text_event(second)
+            pending = adapter._pending_text_batches[adapter._text_batch_key(first)]
+            assert getattr(pending, "_sibling_media_mixed", False) is True
+            assert adapter._pending_text_is_sibling_comment(pending) is False
+        finally:
+            tasks = [t for t in adapter._pending_text_batch_tasks.values() if t is not None]
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_flush_skips_when_media_absorbs_comment(self):
+        """Comment must not start its own turn once sibling media absorbs it."""
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._TEXT_SIBLING_MEDIA_GRACE_S = 0.4
+        adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 2.0
+        comment = _make_event("Додай у календар")
+        media = _make_event("forwarded caption", message_type=MessageType.VIDEO)
+        adapter._enqueue_text_event(comment)
+        adapter._mark_sibling_absorb_eligibility(media)
+        adapter._begin_media_inflight(adapter._sibling_media_key(comment))
+
+        await asyncio.sleep(0.08)
+        adapter.handle_message.assert_not_called()
+
+        await adapter._dispatch_media_event(media)
+        adapter._end_media_inflight(adapter._sibling_media_key(comment))
+
+        await asyncio.sleep(0.2)
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert "Додай у календар" in dispatched.text
+        assert "forwarded caption" in dispatched.text
+
+    @pytest.mark.asyncio
+    async def test_short_text_still_flushes_when_no_sibling_media(self):
+        """Grace must not swallow a lone short message if no media arrives."""
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._TEXT_SIBLING_MEDIA_GRACE_S = 0.15
+        adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 0
+        adapter._enqueue_text_event(_make_event("ok"))
+        await asyncio.sleep(0.35)
+        adapter.handle_message.assert_called_once()
+        assert adapter.handle_message.call_args[0][0].text == "ok"
+
+    @pytest.mark.asyncio
+    async def test_inflight_hold_skips_unclaimed_replacement(self):
+        """A later short text must not sit behind a download that cannot absorb it."""
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._TEXT_SIBLING_MEDIA_GRACE_S = 0.05
+        adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 2.0
+        original = _make_event("first")
+        media = _make_event("caption", message_type=MessageType.VIDEO)
+        sibling_key = adapter._sibling_media_key(original)
+        adapter._pending_text_batches[adapter._text_batch_key(original)] = original
+        adapter._mark_sibling_absorb_eligibility(media)
+        adapter._pending_text_batches.pop(adapter._text_batch_key(original), None)
+        adapter._begin_media_inflight(sibling_key)
+
+        replacement = _make_event("second")
+        adapter._enqueue_text_event(replacement)
+        await asyncio.sleep(0.25)
+        adapter.handle_message.assert_called_once()
+        assert adapter.handle_message.call_args[0][0].text == "second"
+        adapter._end_media_inflight(sibling_key)
+
+    def test_observe_attribution_same_sender_still_pairs(self):
+        """Group-observe strips source.user_id; pairing falls back to raw_message.from_user."""
+        adapter = _make_adapter()
+        adapter.config.extra["group_sessions_per_user"] = False
+        comment = _make_event("hello", user_id="1", chat_type="group", chat_id="-100")
+        media = _make_event("caption", user_id="1", chat_type="group", chat_id="-100", message_type=MessageType.VIDEO)
+        comment.source.user_id = None
+        comment.source.user_name = None
+        media.source.user_id = None
+        media.source.user_name = None
+        comment.raw_message = SimpleNamespace(from_user=SimpleNamespace(id=1))
+        media.raw_message = SimpleNamespace(from_user=SimpleNamespace(id=1))
+        adapter._pending_text_batches[adapter._text_batch_key(comment)] = comment
+        adapter._mark_sibling_absorb_eligibility(media)
+
+        assert adapter._absorb_pending_text_into_media_event(media) is True
+        assert "hello" in media.text
+        assert adapter._pending_text_batches == {}
+
+    def test_observe_attribution_different_sender_does_not_pair(self):
+        adapter = _make_adapter()
+        adapter.config.extra["group_sessions_per_user"] = False
+        comment = _make_event("hello", user_id="1", chat_type="group", chat_id="-100")
+        media = _make_event("caption", user_id="2", chat_type="group", chat_id="-100", message_type=MessageType.VIDEO)
+        comment.source.user_id = None
+        media.source.user_id = None
+        comment.raw_message = SimpleNamespace(from_user=SimpleNamespace(id=1))
+        media.raw_message = SimpleNamespace(from_user=SimpleNamespace(id=2))
+        adapter._pending_text_batches[adapter._text_batch_key(comment)] = comment
+        adapter._mark_sibling_absorb_eligibility(media)
+
+        assert getattr(media, "_sibling_pending", None) is None
+        assert adapter._absorb_pending_text_into_media_event(media) is False
+        assert adapter._pending_text_batches[adapter._text_batch_key(comment)] is comment
+
+    @pytest.mark.asyncio
+    async def test_handle_media_absorbs_comment_before_flush(self):
+        """Real media handler: short TEXT then VIDEO become one turn (no forward_origin)."""
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        config = PlatformConfig(enabled=True, token="test-token")
+        adapter = TelegramAdapter(config)
+        adapter.handle_message = AsyncMock()
+        adapter._is_user_authorized_from_message = lambda _msg: True
+        adapter._should_process_message = lambda _msg, is_command=False: True
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._TEXT_SIBLING_MEDIA_GRACE_S = 0.4
+        adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 2.0
+
+        comment = _make_event("Додай у календар", chat_id="12345", user_id="1")
+        adapter._enqueue_text_event(comment)
+
+        file_obj = AsyncMock()
+        file_obj.download_as_bytearray = AsyncMock(return_value=bytearray(b"video-bytes"))
+        file_obj.file_path = "videos/file.mp4"
+        video = MagicMock()
+        video.get_file = AsyncMock(return_value=file_obj)
+        video.file_size = 1024
+        msg = MagicMock()
+        msg.message_id = 99
+        msg.text = ""
+        msg.caption = "forwarded caption"
+        msg.date = None
+        msg.photo = None
+        msg.video = video
+        msg.audio = None
+        msg.voice = None
+        msg.sticker = None
+        msg.document = None
+        msg.media_group_id = None
+        msg.forward_origin = None
+        msg.forward_date = None
+        msg.forward_from = None
+        msg.reply_to_message = None
+        msg.chat = MagicMock(id=12345, type="private", title=None, full_name="Test User", is_forum=False)
+        msg.from_user = MagicMock(id=1, full_name="Test User", username="test", is_bot=False)
+        msg.message_thread_id = None
+        msg.is_topic_message = False
+        msg.reply_text = AsyncMock()
+        update = MagicMock(message=msg, update_id=7)
+
+        entered = asyncio.Event()
+        released = asyncio.Event()
+
+        async def _slow_cache(*_a, **_k):
+            entered.set()
+            await released.wait()
+            return "/tmp/fake-video.mp4"
+
+        media_task = None
+        try:
+            with patch(
+                "plugins.platforms.telegram.adapter.cache_video_from_bytes_async",
+                _slow_cache,
+            ):
+                media_task = asyncio.create_task(adapter._handle_media_message(update, MagicMock()))
+                await asyncio.wait_for(entered.wait(), timeout=2)
+                await asyncio.sleep(0.12)
+                adapter.handle_message.assert_not_called()
+                released.set()
+                await asyncio.wait_for(media_task, timeout=2)
+            adapter.handle_message.assert_called_once()
+            dispatched = adapter.handle_message.call_args[0][0]
+            assert "Додай у календар" in dispatched.text
+            assert "forwarded caption" in dispatched.text
+            assert dispatched.media_urls == ["/tmp/fake-video.mp4"]
+        finally:
+            released.set()
+            if media_task is not None and not media_task.done():
+                media_task.cancel()
+                await asyncio.gather(media_task, return_exceptions=True)
+            tasks = [t for t in adapter._pending_text_batch_tasks.values() if t is not None]
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)

@@ -394,6 +394,16 @@ class TelegramAdapter(BasePlatformAdapter):
     _TEXT_BATCH_FAST_DELAY_S = 0.18
     _TEXT_BATCH_SHORT_LEN = 1024
     _TEXT_BATCH_SHORT_DELAY_S = 0.24
+    # Forward-with-comment arrives as a short TEXT update then a media update
+    # (caption = the forwarded post). The fast text flush (180ms) otherwise
+    # starts a turn on the comment alone; the video is queued after that turn.
+    # Wait this long after the normal text delay for a sibling media handler
+    # to start and absorb the pending comment. Same order of magnitude as
+    # photo-album debounce. Adds up to 0.5s latency for lone short texts.
+    _TEXT_SIBLING_MEDIA_GRACE_S = 0.5
+    # If media download is already in flight for this session+sender, wait up
+    # to this long for it to absorb the pending text instead of flushing.
+    _TEXT_MEDIA_INFLIGHT_CAP_S = 20.0
 
     @staticmethod
     def _env_float_clamped(name: str, default: float, *, min_value: Optional[float] = None, max_value: Optional[float] = None) -> float:
@@ -456,6 +466,11 @@ class TelegramAdapter(BasePlatformAdapter):
             "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", 1.0, min_value=self._text_batch_delay_seconds, max_value=4.0)
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # Session+sender → in-flight _handle_media_message count. Text flush
+        # waits on this so a comment is merged into the sibling media event
+        # instead of starting a turn without the attachment.
+        self._media_inflight: Dict[str, int] = {}
+        self._media_inflight_generation = 0
         self._drop_delayed_deliveries = False
         # Held across disconnect: PTB advances the offset before our drop-guard runs, so Telegram won't
         # redeliver — dropping is permanent loss (see _hold_inbound_event).
@@ -3063,6 +3078,10 @@ class TelegramAdapter(BasePlatformAdapter):
             self._media_group_tasks, self._media_group_events, self._pending_photo_batch_tasks,
             self._pending_photo_batches, self._pending_text_batch_tasks, self._pending_text_batches):
             d.clear()
+        inflight = getattr(self, "_media_inflight", None)
+        if inflight is not None:
+            inflight.clear()
+        self._media_inflight_generation = getattr(self, "_media_inflight_generation", 0) + 1
         self._clear_task_attrs_except(
             current_task, "_polling_error_task", "_polling_progress_verifier_task", "_held_inbound_redispatch_task")
 
@@ -5738,20 +5757,215 @@ class TelegramAdapter(BasePlatformAdapter):
         self._apply_topic_recovery(event)
         return super()._text_batch_key(event)
 
+    def _inbound_sender_id(self, event: MessageEvent) -> str:
+        """Stable per-message sender id for sibling-media pairing (not the session key).
+
+        Group-observe attribution strips ``source.user_id``; fall back to
+        ``raw_message.from_user`` so the same person still matches.
+        """
+        source = getattr(event, "source", None)
+        if source is not None:
+            sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
+            if sender:
+                return str(sender)
+        raw = getattr(event, "raw_message", None)
+        user = getattr(raw, "from_user", None) if raw is not None else None
+        uid = getattr(user, "id", None) if user is not None else None
+        if uid:
+            return str(uid)
+        if source is not None and getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
+            return f"dm:{source.chat_id}"
+        return ""
+
+    def _sibling_media_key(self, event: MessageEvent) -> str:
+        """Session+sender key so one user's in-flight media does not hold another's text."""
+        return f"{self._text_batch_key(event)}:{self._inbound_sender_id(event)}"
+
+    def _begin_media_inflight(self, key: str) -> int:
+        generation = getattr(self, "_media_inflight_generation", 0)
+        inflight = getattr(self, "_media_inflight", None)
+        if inflight is None:
+            self._media_inflight = {}
+            inflight = self._media_inflight
+        inflight[key] = inflight.get(key, 0) + 1
+        return generation
+
+    def _end_media_inflight(self, key: str, generation: Optional[int] = None) -> None:
+        if generation is not None and generation != getattr(self, "_media_inflight_generation", 0):
+            return
+        inflight = getattr(self, "_media_inflight", None)
+        if not inflight:
+            return
+        remaining = inflight.get(key, 0) - 1
+        if remaining <= 0:
+            inflight.pop(key, None)
+        else:
+            inflight[key] = remaining
+
+    def _absorb_pending_text_into_media_event(self, event: MessageEvent) -> bool:
+        """Merge a pending text-batch comment into a sibling media event.
+
+        Telegram forward-with-comment is two updates: the user's comment
+        (TEXT) and the forwarded post (media + caption). Absorb the comment
+        so one turn sees both. Returns True if a pending batch was consumed.
+        Same-sender only — a shared topic must not steal another user's text.
+
+        Lookup uses the admission-time batch key. Group-observe attribution
+        may rewrite ``event.source`` after we snapshotted; the pin is the
+        conversation the comment was already queued on.
+        """
+        snapshot = getattr(event, "_sibling_pending", None)
+        key = getattr(event, "_sibling_pending_key", None)
+        if snapshot is None or not key:
+            return False
+        pending = self._pending_text_batches.get(key)
+        if pending is not snapshot:
+            return False
+        # Re-check the pending object (it can grow / mix senders while media
+        # downloads). Do not re-check sender vs ``event``: group-observe
+        # attribution may have rewritten event.source after we snapshotted.
+        if not self._pending_text_is_sibling_comment(pending):
+            return False
+        pending = self._pending_text_batches.pop(key, None)
+        task = self._pending_text_batch_tasks.pop(key, None)
+        if task is not None and not task.done():
+            task.cancel()
+        if pending is None:
+            return False
+        comment = (pending.text or "").strip()
+        caption = (event.text or "").strip()
+        if comment and not caption:
+            event.text = comment
+        elif comment and caption:
+            # Comment is the user's instruction; caption is the forwarded post.
+            event.text = self._merge_caption(comment, caption)
+        logger.info(
+            "[Telegram] Merged pending text (%d chars) into media event %s",
+            len(comment),
+            key,
+        )
+        return True
+
+    def _mark_sibling_absorb_eligibility(self, event: MessageEvent) -> None:
+        """Snapshot the pending text batch this media event may consume.
+
+        Only the comment already buffered at media admission is eligible
+        (text-first, media-second). A later short text after the inflight
+        cap must start its own turn.
+        """
+        pending_key = self._text_batch_key(event)
+        pending = self._pending_text_batches.get(pending_key)
+        sender = self._inbound_sender_id(event)
+        if (
+            self._pending_text_is_sibling_comment(pending)
+            and sender
+            and sender == self._inbound_sender_id(pending)
+        ):
+            event._sibling_pending = pending  # type: ignore[attr-defined]
+            event._sibling_pending_key = pending_key  # type: ignore[attr-defined]
+            pending._sibling_media_claimed = True  # type: ignore[attr-defined]
+        else:
+            event._sibling_pending = None  # type: ignore[attr-defined]
+            event._sibling_pending_key = None  # type: ignore[attr-defined]
+
+    @staticmethod
+    def _copy_sibling_pending(src: MessageEvent, dest: MessageEvent) -> MessageEvent:
+        """Keep the admission snapshot if attribution replaced the event object."""
+        if dest is src:
+            return dest
+        dest._sibling_pending = getattr(src, "_sibling_pending", None)  # type: ignore[attr-defined]
+        dest._sibling_pending_key = getattr(src, "_sibling_pending_key", None)  # type: ignore[attr-defined]
+        return dest
+
+    async def _dispatch_media_event(self, event: MessageEvent) -> None:
+        """Absorb a sibling comment (if any) then dispatch. Media-path only."""
+        self._absorb_pending_text_into_media_event(event)
+        if self._should_drop_delayed_delivery():
+            self._hold_inbound_event(event, where="media-dispatch")
+            return
+        try:
+            await self.handle_message(event)
+        except asyncio.CancelledError:
+            self._hold_inbound_event(event, where="media-dispatch-cancelled")
+            raise
+
+    async def _wait_for_sibling_media(self, key: str) -> None:
+        """After the normal text delay, wait briefly (and while same-sender media is in flight)
+        so a forward-with-comment media update can absorb this batch."""
+        grace = float(getattr(self, "_TEXT_SIBLING_MEDIA_GRACE_S", 0) or 0)
+        inflight_cap = float(getattr(self, "_TEXT_MEDIA_INFLIGHT_CAP_S", 0) or 0)
+        pending = self._pending_text_batches.get(key)
+        if not self._pending_text_is_sibling_comment(pending):
+            return
+        sibling_key = self._sibling_media_key(pending)
+        inflight = getattr(self, "_media_inflight", {}) or {}
+        if grace > 0:
+            grace_deadline = time.monotonic() + grace
+            while time.monotonic() < grace_deadline:
+                if self._pending_text_batches.get(key) is None:
+                    return
+                if inflight.get(sibling_key, 0) > 0:
+                    break
+                await asyncio.sleep(0.05)
+                inflight = getattr(self, "_media_inflight", {}) or {}
+        pending = self._pending_text_batches.get(key)
+        inflight = getattr(self, "_media_inflight", {}) or {}
+        # Only the batch that in-flight media already claimed may wait on the
+        # download. A replacement short text from the same sender must flush
+        # instead of sitting behind a download that cannot absorb it.
+        if (
+            inflight.get(sibling_key, 0) > 0
+            and inflight_cap > 0
+            and getattr(pending, "_sibling_media_claimed", False)
+        ):
+            inflight_deadline = time.monotonic() + inflight_cap
+            while inflight.get(sibling_key, 0) > 0 and time.monotonic() < inflight_deadline:
+                if self._pending_text_batches.get(key) is None:
+                    return
+                await asyncio.sleep(0.05)
+                inflight = getattr(self, "_media_inflight", {}) or {}
+
+    def _pending_text_is_sibling_comment(self, pending: Optional[MessageEvent]) -> bool:
+        """True for a short text-only comment that sibling media may absorb."""
+        if pending is None:
+            return False
+        if pending.is_command() or (pending.media_urls or []):
+            return False
+        if len(pending.text or "") > self._TEXT_BATCH_SHORT_LEN:
+            return False
+        if getattr(pending, "_sibling_media_mixed", False):
+            return False
+        return True
+
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text chunk, or hold it while delayed delivery must be dropped."""
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="text-enqueue")
             return
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        if existing is not None and self._inbound_sender_id(existing) != self._inbound_sender_id(event):
+            # Base still concatenates same-session text; do not let sibling media
+            # steal another sender's words from that mixed buffer.
+            existing._sibling_media_mixed = True  # type: ignore[attr-defined]
         super()._enqueue_text_event(event)
 
-    async def _flush_buffered(self, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None) -> None:
-        """Shared delayed-flush body: sleep, pop, hold if teardown started, else dispatch. A cancel after
-        the pop but before durable dispatch re-holds the event (never lose it)."""
+    async def _flush_buffered(
+        self, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None,
+        hold: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> None:
+        """Shared delayed-flush body: sleep, optional hold, pop, re-hold if teardown started, else dispatch.
+        A cancel after the pop but before durable dispatch re-holds the event (never lose it).
+
+        ``hold`` is text-batch only (sibling-media grace). Photo/album callers omit it so their
+        timing stays byte-identical.
+        """
         current_task = asyncio.current_task()
         event = None
         try:
             await asyncio.sleep(delay)
+            if hold is not None:
+                await hold(key)
             event = pending.pop(key, None)
             if not event:
                 return
@@ -5788,7 +6002,8 @@ class TelegramAdapter(BasePlatformAdapter):
             delay = self._text_batch_delay_seconds
         await self._flush_buffered(
             self._pending_text_batches, self._pending_text_batch_tasks, key, delay, "text",
-            lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")))
+            lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")),
+            hold=self._wait_for_sibling_media)
 
     # -- Photo batching --
 
@@ -5821,6 +6036,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
+        self._absorb_pending_text_into_media_event(event)
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="photo-enqueue")
             return
@@ -5856,7 +6072,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if not allowed:
                 event.text = self._append_observed_note(event.text, note or "")
                 logger.info("[Telegram] Skipped oversized user %s (size=%s)", kind, getattr(source, "file_size", None))
-                await self.handle_message(event)
+                await self._dispatch_media_event(event)
                 return True
             file_obj = await source.get_file()
             data = await file_obj.download_as_bytearray()
@@ -5877,7 +6093,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _dispatch_with_text(self, event: MessageEvent, text: str) -> bool:
         """Replace the event text with a user-facing note and dispatch it; returns True (handled)."""
         event.text = text
-        await self.handle_message(event)
+        await self._dispatch_media_event(event)
         return True
 
     @staticmethod
@@ -5936,7 +6152,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._set_cached_media(
                     event, await cache_video_from_bytes_async(bytes(video_bytes), ext=ext), SUPPORTED_VIDEO_TYPES[ext], MessageType.VIDEO,
                     "[Telegram] Cached user video document at %s")
-                await self.handle_message(event)
+                await self._dispatch_media_event(event)
                 return True
             # Any file type is accepted (authorization is the gate, not the extension); unknown types get
             # application/octet-stream. Image documents already returned above.
@@ -5969,6 +6185,34 @@ class TelegramAdapter(BasePlatformAdapter):
         return False
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming media messages, downloading images to local cache.
+
+        Marks the session+sender in-flight so a pending text-batch comment
+        (Telegram forward-with-comment) waits and is merged into this media event.
+        """
+        if not update.message:
+            return
+        if not self._is_user_authorized_from_message(update.message):
+            self._log_blocked_user(update.message, level=logging.INFO, what="media from unauthorized user")
+            return
+        if not self._should_process_message(update.message):
+            await self._handle_media_message_unlocked(update, context)
+            return
+        msg = update.message
+        # Match text-batch keys: comments are attributed before enqueue.
+        probe = self._apply_telegram_group_observe_attribution(
+            self._build_message_event(
+                msg, self._media_message_type(msg), update_id=update.update_id,
+            )
+        )
+        key = self._sibling_media_key(probe)
+        generation = self._begin_media_inflight(key)
+        try:
+            await self._handle_media_message_unlocked(update, context)
+        finally:
+            self._end_media_inflight(key, generation)
+
+    async def _handle_media_message_unlocked(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
         msg = update.message
         if not msg:
@@ -5988,12 +6232,18 @@ class TelegramAdapter(BasePlatformAdapter):
         if msg.caption:
             from plugins.platforms.telegram.telegram_context import group_trigger_text
             event.text = group_trigger_text(self, msg, msg.caption)
-        # Stickers: _handle_sticker overwrites event.text with its vision description, so observe attribution must run after it.
+        # Text batches are attributed on enqueue. Attribute a view first so the
+        # snapshot key matches, then pin before any await. Stickers overwrite
+        # event.text and need the raw identity for a single later attribution.
+        attributed = self._apply_telegram_group_observe_attribution(event)
+        self._mark_sibling_absorb_eligibility(attributed)
         if msg.sticker:
             await self._handle_sticker(msg, event)
-            await self.handle_message(self._apply_telegram_group_observe_attribution(event))
+            event = self._copy_sibling_pending(
+                attributed, self._apply_telegram_group_observe_attribution(event))
+            await self._dispatch_media_event(event)
             return
-        event = self._apply_telegram_group_observe_attribution(event)
+        event = attributed
         # Cache photo locally: Telegram's file URLs expire (~1 hour) before vision may run.
         if msg.photo:
             try:
@@ -6024,11 +6274,12 @@ class TelegramAdapter(BasePlatformAdapter):
         if media_group_id:
             await self._queue_media_group_event(str(media_group_id), event)
             return
-        await self.handle_message(event)
+        await self._dispatch_media_event(event)
 
     async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
         """Debounce album items (shared media_group_id) into one MessageEvent so the second image isn't
         treated as a new message interrupting the first."""
+        self._absorb_pending_text_into_media_event(event)
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="media-group-enqueue")
             return

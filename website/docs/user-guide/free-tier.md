@@ -29,11 +29,11 @@ single model. Asking for another model on the free tier prints a pointer instead
 silently:
 
 ```text
-gpt-5 needs a Nous account or an API key. Run `hermes auth upgrade` or `hermes model`.
+gpt-5 needs a Nous account or an API key. Use /signin to sign in, or /model to pick another provider.
 ```
 
-Calling a paid tool prints `This tool requires a Nous account. Run hermes auth upgrade.` and the
-turn continues without it.
+Calling a paid tool says `This needs a Nous account. Use /signin to sign in.` inside a chat (and
+names `hermes auth upgrade` in the terminal); the turn continues without it.
 
 If `model.default` in `config.yaml` names something other than `nous/welcome` while the free tier
 is doing inference, Hermes uses `nous/welcome` anyway and says so in one line. The free tier
@@ -55,18 +55,38 @@ background on the next start so connectors have something to authenticate with, 
 one-time notice:
 
 ```text
-Free Nous inference and connectors are now available. `hermes model` to try them, `hermes auth upgrade` to sign in.
+Free Nous inference and connectors are now available. /model to try them, /signin to sign in.
 ```
 
 You can pick the free tier explicitly from `hermes model` (or `/model`) like any other provider.
 
-## Signing in
+## Signing in from a chat or terminal
+
+### From a chat
+
+Run `/signin` in a Hermes DM on Telegram, Discord, Slack, or another supported messaging platform,
+or in a CLI chat session. It must be a paired direct message: elsewhere Hermes replies `Sign in
+from a direct message with Hermes.` Broadcast-shaped platforms such as ntfy are refused for the
+same reason.
+
+The DM gets an acknowledgement, followed by three messages: the consent link, the sign-in code on
+its own line, then `Do not share this code. Waiting for sign-in, up to N minutes.` You can keep
+chatting while Hermes waits, and the result is pushed into the same DM. Running `/signin` again
+replaces the first code. Live sessions still on `nous/welcome` move to the settled model on their
+next message. In the Ink TUI the code appears but the confirmation does not; check `/status`.
+
+:::warning One account per install
+`/signin` binds this whole Hermes install to the account that approves the code: its inference, its
+connectors, every chat it serves. On a gateway several people can DM, set `allow_admin_from` for
+the platform (see the [slash-command access guide](/reference/slash-commands)) so only an operator
+can run it.
+:::
+
+### From a terminal
 
 ```bash
 hermes auth upgrade
 ```
-
-The command name is provisional and may change in a later release; the behaviour will not.
 
 1. Hermes prints a URL and a short code, and opens the browser unless you pass `--no-browser`
    or you are in an SSH session. Never share the code.
@@ -82,13 +102,14 @@ model for its plan (the same one a fresh `hermes model` pick would suggest), and
 you chose yourself is left alone. If no recommendation is available at that moment, no default is
 set and Hermes tells you to run `hermes model`.
 
-`hermes auth upgrade` is offered wherever the free tier is present, including installs that
-run inference on their own API key. Signing in still unlocks paid tools for those installs.
+`/signin` in a chat, or `hermes auth upgrade` in a terminal, is offered wherever the free tier is
+present, including installs that run inference on their own API key. Signing in still unlocks paid
+tools for those installs.
 
 :::note Plain login starts fresh
 `hermes auth add nous --type oauth` also signs you in, but it replaces the free tier outright and
-does not carry your connectors over. Use `hermes auth upgrade` when you have connectors you want
-to keep.
+does not carry your connectors over. Use `/signin`, or `hermes auth upgrade` in a terminal, when
+you have connectors you want to keep.
 :::
 
 ## On Hermes Desktop
@@ -153,7 +174,7 @@ itself.
 | First command prints `It looks like Hermes isn't configured yet` and offers `hermes setup` | The free tier could not be set up within a few seconds: you are offline, or the free tier is not open on the portal Hermes is pointed at, or it is rate limited. | Come back online and run the command again, or run `hermes setup` and add a provider of your own. Nothing is left half-configured. |
 | `Nous free tier is not open on this portal.` | The portal Hermes is pointed at is not offering the free tier right now. If you set `HERMES_PORTAL_BASE_URL`, that portal may not have it at all. | Sign in with an account, unset a portal override you no longer need, or add your own key with `hermes setup`. |
 | `Nous free tier is rate limited; try again shortly.` | The portal is throttling new free-tier setups at the moment. | Wait a few minutes and retry, or add your own key with `hermes setup`. |
-| `This tool requires a Nous account.` | You called a paid Tool Gateway tool on the free tier. | `hermes auth upgrade`, or configure that tool with your own key in `hermes tools`. |
+| `This needs a Nous account.` | You called a paid Tool Gateway tool on the free tier. | `/signin` in a chat, `hermes auth upgrade` in a terminal, or configure that tool with your own key in `hermes tools`. |
 | Model picker shows only `nous/welcome` under Nous | Expected on the free tier. | Sign in for the full catalog, or add an API key for another provider. |
 | The free tier stopped working after two weeks away | The free-tier identity expired (see below) and is replaced on next use. | Nothing; run any command. Connectors linked before the gap need to be linked again unless you had signed in. |
 
@@ -164,6 +185,6 @@ needs one and stores the credential in your Hermes directory, shared across the 
 that directory. That identity holds no email address, no name, and no other personal data; it
 exists so inference and connector calls can be authenticated and rate limited. It expires after
 14 days without use, at which point Hermes transparently creates a new one the next time you run
-a command. Signing in with `hermes auth upgrade` moves what that identity holds (your linked
-connectors) into your account. Turning the free tier off with `nous.guest: false` means no
-identity is created or used at all.
+a command. Signing in (`/signin`, or `hermes auth upgrade` in a terminal) moves what that identity
+holds (your linked connectors) into your account. Turning the free tier off with
+`nous.guest: false` means no identity is created or used at all.

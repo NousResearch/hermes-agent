@@ -9,16 +9,27 @@ rendering. The keepalive has nothing to keep alive for the free tier and must no
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import re
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from unittest.mock import AsyncMock, call
 
-from hermes_cli import anon_auth, auth_commands, nous_account, nous_auth_keepalive, portal_cli, status_auth
+from hermes_cli import (
+    anon_auth,
+    auth_commands,
+    model_setup_flows,
+    nous_account,
+    nous_auth_keepalive,
+    portal_cli,
+    status_auth,
+)
 from hermes_cli.auth import _load_auth_store  # noqa: F401  (store import name kept for parity with core tests)
 from hermes_constants import get_hermes_home
 
@@ -142,3 +153,135 @@ def test_keepalive_does_not_start_for_free_tier(isolated_store, monkeypatch):
     thread = nous_auth_keepalive.start_nous_auth_keepalive(interval_seconds=900)
     assert thread is not None and started == ["nous-auth-keepalive"]
     monkeypatch.setattr(nous_auth_keepalive, "_keepalive_thread", None)
+
+
+def test_every_in_chat_free_tier_string_names_the_slash_command(monkeypatch):
+    from gateway.run_notifications import GatewayNotificationsMixin
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda _requested: "nous")
+    monkeypatch.setattr(anon_auth, "guest_carries_inference", lambda: True)
+    startup = GatewayNotificationsMixin._free_tier_startup_line(object())
+    command_copy = (
+        anon_auth.FREE_TIER_AVAILABLE_NOTICE,
+        anon_auth.FREE_TIER_STATUS_LINE,
+        anon_auth.UPGRADE_UNAVAILABLE_CHAT,
+        anon_auth.FREE_TIER_RATE_LIMIT_CHAT,
+        nous_account.FREE_TIER_NEEDS_ACCOUNT_CHAT,
+        startup,
+    )
+    refusal_copy = (
+        anon_auth.SIGNIN_DM_ONLY,
+        anon_auth.SIGNIN_BUSY_ELSEWHERE,
+        anon_auth.SIGNIN_NOT_ALLOWED,
+    )
+    assert all("/signin" in text for text in command_copy)
+    for text in (*command_copy, *refusal_copy):
+        # The ruled refusal uses Hermes as the grammatical subject; only that exact product-name
+        # phrase is exempt from the broad top-level-command gate.
+        assert "hermes " not in text.replace("this Hermes can", "this product can").lower()
+
+
+def test_no_chat_copy_of_any_sign_in_state_leaks_a_terminal_verb_or_a_forbidden_word():
+    placeholders = {
+        "link": "https://example.test/sign-in",
+        "code": "code-1",
+        "expires_in": 900,
+        "interval": 1,
+        "email": "person@example.test",
+        "model": "model-1",
+        "model_changed": True,
+        "reason": "unknown",
+        "detail": "private detail",
+    }
+    forbidden = re.compile(r"claim|nous portal|anonymous|guest", re.IGNORECASE)
+    terminal_or_url = re.compile(r"hermes |https?://", re.IGNORECASE)
+
+    for state_type in anon_auth.SignInState.__subclasses__():
+        kwargs = {field.name: placeholders[field.name] for field in dataclasses.fields(state_type)}
+        copy = state_type(**kwargs).copy
+        assert _FORBIDDEN.search(copy) is None, state_type.__name__
+        assert forbidden.search(copy) is None, state_type.__name__
+        assert terminal_or_url.search(copy) is None, state_type.__name__
+
+
+def test_terminal_only_strings_keep_the_terminal_verb(monkeypatch, capsys):
+    assert "hermes " in nous_account.FREE_TIER_NEEDS_ACCOUNT
+    assert "hermes " in anon_auth.UPGRADE_UNAVAILABLE
+    assert "hermes " in anon_auth.FREE_TIER_NOT_SIGNED_IN
+
+    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda _provider: {"access_token": "token"})
+    monkeypatch.setattr("hermes_cli.model_switch_providers._free_tier_nous_row", lambda _provider: None)
+    model_setup_flows._model_flow_nous({})
+    assert "hermes " in capsys.readouterr().out
+
+
+def test_the_paid_tool_notice_switches_wording_inside_a_chat():
+    info = nous_account.NousPortalAccountInfo(
+        logged_in=True, source="token", fresh=True, account_tier="anonymous"
+    )
+    assert nous_account.format_nous_portal_entitlement_message(
+        info, in_chat=True
+    ) == nous_account.FREE_TIER_NEEDS_ACCOUNT_CHAT
+    assert nous_account.format_nous_portal_entitlement_message(
+        info, in_chat=False
+    ) == nous_account.FREE_TIER_NEEDS_ACCOUNT
+
+
+@pytest.mark.asyncio
+async def test_the_wait_line_is_only_composed_on_the_state(monkeypatch):
+    from gateway.slash_commands_signin import GatewaySignInCommandsMixin
+
+    state = anon_auth.Code(
+        link="https://example.test/sign-in", code="code-1", expires_in=900, interval=1
+    )
+    assert state.copy == anon_auth.UPGRADE_DO_NOT_SHARE
+    assert state.copy_with_wait == (
+        f"{anon_auth.UPGRADE_DO_NOT_SHARE} {anon_auth.format_wait_line(state.expires_in)}"
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.auth_device_flow._print_device_code_instructions", lambda *_args, **_kwargs: None
+    )
+    cli_copy = []
+    anon_auth.render_sign_in_cli_code(state, printer=cli_copy.append)
+    runner = SimpleNamespace(_push_signin=AsyncMock())
+    attempt = object()
+    await GatewaySignInCommandsMixin._render_signin_state(runner, attempt, state)
+
+    assert cli_copy == [f"  {state.copy_with_wait}"]
+    assert runner._push_signin.await_args_list == [
+        call(attempt, state.link),
+        call(attempt, state.code),
+        call(attempt, state.copy_with_wait),
+    ]
+
+    # The wait line is composed once, on the state. A renderer that called
+    # format_wait_line itself would emit the same text and pass the assertions
+    # above, so the renderers are checked by source instead.
+    repo = Path(anon_auth.__file__).resolve().parents[1]
+    for rel in ("gateway/slash_commands_signin.py", "hermes_cli/cli_commands_mixin.py"):
+        assert "format_wait_line" not in (repo / rel).read_text(encoding="utf-8"), rel
+
+
+def test_cli_chat_status_names_the_free_tier(isolated_store):
+    from hermes_cli.cli_session_mixin import CLISessionMixin
+
+    _write_auth(_guest_state())
+    rendered = []
+    cli = SimpleNamespace(
+        _session_db=None,
+        session_id="cli-free-tier-status",
+        session_start=datetime.now(),
+        agent=SimpleNamespace(session_total_tokens=0, reasoning_config=None),
+        provider="nous",
+        model=anon_auth.GUEST_MODEL,
+        _agent_running=False,
+        reasoning_config=None,
+        show_reasoning=None,
+        session_key="cli:free-tier-status",
+        _get_status_bar_snapshot=lambda: {},
+        _console_print=lambda text, **_kwargs: rendered.append(text),
+    )
+    CLISessionMixin._show_session_status(cli)
+
+    assert anon_auth.FREE_TIER_STATUS_LINE in rendered[0]

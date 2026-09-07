@@ -14,7 +14,7 @@ from hermes_cli import anon_auth
 from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
 from tests.gateway.restart_test_helpers import make_restart_runner
 
-FREE_TIER_LINE = "Inference: Nous free tier (nous/welcome). Sign in for more: hermes auth upgrade"
+FREE_TIER_LINE = "Inference: Nous free tier (nous/welcome). Sign in for more: /signin"
 
 
 def _jwt(**claims) -> str:

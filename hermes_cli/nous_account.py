@@ -70,6 +70,7 @@ class NousToolAccessInfo:
 _ANON_ACCOUNT_TIER = "anonymous"
 # Every billing / top-up / entitlement surface says exactly this for the free tier (R-USR-1).
 FREE_TIER_NEEDS_ACCOUNT = "This needs a Nous account. Run `hermes auth upgrade`."
+FREE_TIER_NEEDS_ACCOUNT_CHAT = "This needs a Nous account. Use /signin to sign in."
 
 
 def _is_anonymous_tier(account_info: Optional["NousPortalAccountInfo"]) -> bool:
@@ -161,6 +162,7 @@ def nous_portal_topup_url(account_info: Optional[NousPortalAccountInfo] = None) 
 def format_nous_portal_entitlement_message(
     account_info: Optional[NousPortalAccountInfo], *, capability: str = "this feature",
     include_refresh_hint: bool = True, coverage_category: Optional[str] = None,
+    in_chat: bool = False,
 ) -> Optional[str]:
     """User-facing guidance for a missing Nous tool-gateway entitlement; ``None`` when entitled.
 
@@ -171,7 +173,7 @@ def format_nous_portal_entitlement_message(
     pool-vs-paid distinction is never surfaced.
     """
     if _is_anonymous_tier(account_info):
-        return FREE_TIER_NEEDS_ACCOUNT
+        return FREE_TIER_NEEDS_ACCOUNT_CHAT if in_chat else FREE_TIER_NEEDS_ACCOUNT
     billing_url = nous_portal_billing_url(account_info)
 
     if account_info is not None:
@@ -216,7 +218,7 @@ def format_nous_portal_entitlement_message(
             f"is unavailable. Run `hermes model` to authenticate again; if the problem persists, contact Nous support."
         )
     if reason == "no_usable_credits" or account_info.paid_service_access is False:
-        message = _no_paid_access_message(account_info, capability, billing_url)
+        message = _no_paid_access_message(account_info, capability, billing_url, in_chat=in_chat)
         if include_refresh_hint and not account_info.fresh:
             message += " If you recently bought credits, run `hermes model` to refresh Hermes."
         return message
@@ -226,9 +228,11 @@ def format_nous_portal_entitlement_message(
     )
 
 
-def _no_paid_access_message(account_info: NousPortalAccountInfo, capability: str, billing_url: str) -> str:
+def _no_paid_access_message(
+    account_info: NousPortalAccountInfo, capability: str, billing_url: str, *, in_chat: bool = False,
+) -> str:
     if _is_anonymous_tier(account_info):
-        return FREE_TIER_NEEDS_ACCOUNT
+        return FREE_TIER_NEEDS_ACCOUNT_CHAT if in_chat else FREE_TIER_NEEDS_ACCOUNT
     access = account_info.paid_service_access_info or NousPaidServiceAccessInfo()
     active, paid = access.has_active_subscription, access.active_subscription_is_paid
     labelled = (

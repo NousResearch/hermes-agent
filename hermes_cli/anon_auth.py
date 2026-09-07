@@ -13,8 +13,8 @@ token acquisition (re-exchange the ``anon_`` credential; there is no refresh tok
 (the welcome inference host, single model ``nous/welcome``).
 
 Users are never shown the words guest / anonymous / account for this state: surfaces say
-"Nous · free tier". The one user-facing verb is ``hermes auth upgrade`` (sign in, keeping the
-identity's connectors).
+"Nous · free tier". Two user-facing verbs reach the same flow, both keeping the identity's
+connectors: ``hermes auth upgrade`` in a terminal and ``/signin`` inside a chat.
 
 Lifecycle lives in ONE primitive, :func:`ensure_portal_identity`: adopt what the shared store already
 holds, else mint under the shared-store lock. It is the only minter; nothing else calls
@@ -52,7 +52,7 @@ FORCE_GUEST_ENV = "HERMES_FORCE_GUEST"
 GUEST_MINT_TIMEOUT_SECONDS = 5.0
 # Copy shared by every surface that names the free tier (R-USR-1): never guest / anonymous / account.
 FREE_TIER_LABEL = "Nous · free tier"
-UPGRADE_HINT = "Run `hermes auth upgrade` to sign in with a Nous account."
+UPGRADE_HINT = "Run `hermes auth upgrade` to sign in with a Nous account, or /signin inside a chat."
 FREE_TIER_NOT_SIGNED_IN = (
     "You're not signed in. Free inference and connectors are always on. "
     "Run `hermes auth` to sign in with a Nous account.")
@@ -434,7 +434,7 @@ def clear_dead_guest(reason: str, *, dead_token: Optional[str] = None) -> None:
 GUEST_NOTICE_FLAG = "guest_notice_shown"
 FREE_TIER_AVAILABLE_NOTICE = (
     "Free Nous inference and connectors are now available. "
-    "`hermes model` to try them, `hermes auth upgrade` to sign in.")
+    "/model to try them, /signin to sign in.")
 
 
 def guest_notice_pending() -> bool:

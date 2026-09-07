@@ -445,7 +445,9 @@ def _nous_entitlement_message(capability: str) -> str:
             get_nous_portal_account_info,
         )
         account_info = get_nous_portal_account_info(force_fresh=True)
-        return format_nous_portal_entitlement_message(account_info, capability=capability) or ""
+        return format_nous_portal_entitlement_message(
+            account_info, capability=capability, in_chat=True
+        ) or ""
     except Exception:
         return ""
 

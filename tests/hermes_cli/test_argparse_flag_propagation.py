@@ -102,6 +102,60 @@ class TestChatVerboseArg:
         assert "verbose" not in captured
 
 
+class TestNoSkillsIndexFlag:
+    def test_flag_is_preserved_on_both_sides_of_chat(self):
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, _chat_parser = build_top_level_parser()
+        before = parser.parse_args(["--no-skills-index", "chat"])
+        after = parser.parse_args(["chat", "--no-skills-index"])
+
+        assert before.no_skills_index is True
+        assert after.no_skills_index is True
+
+    def test_flag_is_available_to_oneshot(self):
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, _chat_parser = build_top_level_parser()
+        args = parser.parse_args(["--no-skills-index", "-z", "hello"])
+
+        assert args.no_skills_index is True
+        assert args.oneshot == "hello"
+
+    def test_classic_chat_forwards_explicit_false_override(self, monkeypatch):
+        import types
+
+        import hermes_cli.main as main_mod
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, chat_parser = build_top_level_parser()
+        chat_parser.set_defaults(func=main_mod.cmd_chat)
+        args = parser.parse_args(["chat", "--cli", "--no-skills-index"])
+        captured = {}
+
+        monkeypatch.setitem(
+            sys.modules,
+            "cli",
+            types.SimpleNamespace(main=lambda **kwargs: captured.update(kwargs)),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_cli.banner",
+            types.SimpleNamespace(prefetch_update_check=lambda: None),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "tools.skills_sync",
+            types.SimpleNamespace(sync_skills=lambda quiet=True: None),
+        )
+        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+        monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
+
+        main_mod.cmd_chat(args)
+
+        assert captured["inject_skills_index"] is False
+
+
 class TestYoloEnvVar:
     """Verify --yolo sets HERMES_YOLO_MODE regardless of flag position.
 

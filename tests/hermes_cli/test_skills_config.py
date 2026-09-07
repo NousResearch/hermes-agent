@@ -1,6 +1,25 @@
 """Tests for hermes_cli/skills_config.py and skills_tool disabled filtering."""
 from unittest.mock import patch
 
+from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+
+def test_skill_index_injection_defaults_on():
+    assert DEFAULT_CONFIG["skills"]["inject_index"] is True
+
+
+def test_skill_index_setting_requires_a_boolean(caplog):
+    from agent.agent_init import _resolve_skills_index_injection
+
+    assert _resolve_skills_index_injection({"inject_index": "false"}) is True
+    assert "must be a boolean" in caplog.text
+
+
+def test_explicit_skill_index_override_wins_over_config():
+    from agent.agent_init import _resolve_skills_index_injection
+
+    assert _resolve_skills_index_injection({"inject_index": True}, False) is False
+
 
 # ---------------------------------------------------------------------------
 # get_disabled_skills

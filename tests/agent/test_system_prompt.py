@@ -526,6 +526,32 @@ class TestSkillsInVolatileBand:
         parts = _build(build_system_prompt_parts)
         assert parts["volatile"].startswith(_SKILLS)
 
+    def test_config_can_suppress_index_without_removing_skill_tools(self):
+        parts = _build(
+            build_system_prompt_parts,
+            _inject_skills_index=False,
+        )
+        assert _SKILLS not in parts["stable"]
+        assert _SKILLS not in parts["volatile"]
+
+    def test_real_config_value_reaches_prompt_policy(self, tmp_path, monkeypatch):
+        from agent.agent_init import _resolve_skills_index_injection
+        from hermes_cli.config import load_config_readonly
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  inject_index: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        skills_config = load_config_readonly()["skills"]
+        parts = _build(
+            build_system_prompt_parts,
+            _inject_skills_index=_resolve_skills_index_injection(skills_config),
+        )
+
+        assert _SKILLS not in parts["volatile"]
+
     def test_full_order_is_stable_context_then_skills(self):
         # build_system_prompt joins stable + context + volatile, so the skills
         # index renders after the context files and before the per-turn

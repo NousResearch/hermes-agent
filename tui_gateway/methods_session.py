@@ -97,6 +97,32 @@ def _profile_session_db(profile_home):
         from hermes_state_registry import acquire
         return acquire(Path(profile_home) / "state.db"), True
     return _get_db(), False
+def _profile_name_for_home(profile_home) -> str | None:
+    """Map a profile_home Path to its profile id without yielding ".hermes".
+
+    Path("~/.hermes").name is ".hermes" — not a valid profile id.
+    named_profile_home distinguishes the default home (→ "default") from
+    a named profile (→ its dir name). See #105228.
+    """
+    try:
+        from hermes_constants import named_profile_home
+        named = named_profile_home(str(profile_home))
+        if named is not None:
+            return named.name
+        s = str(profile_home)
+        if s.endswith(".hermes") or s.endswith("/.hermes"):
+            return None
+        from pathlib import Path as _P
+        return _P(s).name
+    except Exception:
+        try:
+            from hermes_cli.profiles import normalize_profile_name
+            from pathlib import Path as _P
+            canon = normalize_profile_name(str(_P(str(profile_home)).name))
+            return None if canon == "default" else canon
+        except Exception:
+            return None
+
 
 
 def _release_db(db) -> None:
@@ -268,7 +294,7 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
                 return
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
                             source=source, cwd=record["cwd"],
-                            profile_name=(Path(profile_home).name if profile_home else None), compensate=True)
+                            profile_name=(_profile_name_for_home(profile_home) if profile_home else None), compensate=True)
             record["pending_title"] = None
     except Exception:
         logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,

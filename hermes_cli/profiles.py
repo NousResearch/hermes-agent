@@ -178,8 +178,14 @@ def normalize_profile_name(name: str) -> str:
     stripped = name.strip()
     if not stripped:
         raise ValueError("profile name cannot be empty")
-    if stripped.casefold() == "default":
+    if stripped.casefold() in ("default", ".hermes"):
         return "default"
+    # Defensive: callers that derived a name via Path(profile_home).name get
+    # ".hermes" for the default home — treat it as the default profile.
+    if stripped.startswith("."):
+        maybe = stripped.lstrip(".").casefold()
+        if maybe in ("default", "hermes", ""):
+            return "default"
     return stripped.lower()
 
 

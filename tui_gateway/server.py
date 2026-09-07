@@ -1974,6 +1974,34 @@ def _current_profile_name() -> str:
     return "default"
 
 
+def _profile_name_for_session(session: dict | None) -> str:
+    """Profile name for a live session's ``profile_home``.
+
+    The previous implementation used ``Path(profile_home).name`` which yields
+    ``".hermes"`` for the default home (``~/.hermes``). That string is not a
+    valid profile id and trips ``_response_profile_name`` / ``resolve_profile_env``
+    into ``Profile '.hermes' does not exist`` (#105228). Use ``named_profile_home``
+    to distinguish the default home (→ ``"default"``) from a real named profile.
+    """
+    if not isinstance(session, dict) or not session.get("profile_home"):
+        return _current_profile_name()
+    try:
+        from hermes_constants import named_profile_home
+        home = session.get("profile_home")
+        named = named_profile_home(home)
+        if named is not None:
+            return named.name
+        # ``named_profile_home`` returns None for the default home and for
+        # custom paths — both map to ``"default"`` for display.
+        return "default"
+    except Exception:
+        # Fallback: Path.name then normalize (handles ".hermes" → "default").
+        with contextlib.suppress(Exception):
+            from hermes_cli.profiles import normalize_profile_name
+            return normalize_profile_name(str(Path(str(session.get("profile_home"))).name))
+        return "default"
+
+
 # Monotonic GUI<->backend contract version: the desktop refuses a backend reporting less (or none) with a
 # one-click "update to align" prompt; bump whenever the desktop's backend contract changes. v2 file.attach;
 # v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
@@ -2053,9 +2081,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "stored_session_id": session_key or "", "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "version": "", "release_date": "", "update_behind": None, "update_command": "",
         "usage": _session_usage_snapshot(session),
-        "profile_name": (
-            _response_profile_name(Path(session["profile_home"]).name)
-            if isinstance(session, dict) and session.get("profile_home") else _current_profile_name()),
+        "profile_name": _profile_name_for_session(session),
     }
     with contextlib.suppress(Exception):
         from hermes_cli import __version__, __release_date__

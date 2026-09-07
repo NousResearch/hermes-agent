@@ -581,7 +581,7 @@ class GatewayBusySessionMixin:
         demoted_for_subagents: bool, demoted_for_compression: bool,
     ) -> str:
         from gateway.run import (
-            _AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
+            _AGENT_PENDING_SENTINEL, _gateway_config_home, _hermes_home, _load_gateway_config, _platform_config_key
         )
         from gateway.display_config import resolve_display_setting
 
@@ -638,7 +638,7 @@ class GatewayBusySessionMixin:
                     else "interrupt"
                 )
                 message = f"{message}\n\n{busy_input_hint_gateway(_hint_mode)}"
-                mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
+                mark_seen(_gateway_config_home() / "config.yaml", BUSY_INPUT_FLAG)
         except Exception as _onb_err:
             logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
         return message

@@ -885,6 +885,10 @@ _TOKENS_SINGLETON_PROVIDERS: Dict[str, Tuple[str, str, str, str]] = {
     "xai-oauth": ("xAI OAuth", "xAI", "refresh_xai_oauth_pure", "_is_terminal_xai_oauth_refresh_error"),
 }
 
+# Providers whose pooled OAuth entries ``_refresh_entry_impl`` can actually refresh. Any other
+# provider is returned unchanged by that path, so callers must not report a refresh for them.
+REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON_PROVIDERS})
+
 # Providers whose refresh tokens are single-use: the sync -> POST -> write-back
 # sequence must be serialized across processes under the auth-store flock.
 _SINGLE_USE_REFRESH_PROVIDERS = ("openai-codex", "xai-oauth", "anthropic")
@@ -1592,7 +1596,10 @@ class CredentialPool(CredentialPoolAdminMixin):
 
         updated = replace(updated, **_MARK_OK)
         self._replace_entry(entry, updated)
-        self._persist()
+        # Declare the cleared id: a borrowed row carries no access_token on disk, so
+        # the merge's token-change bypass cannot apply and a plain persist would copy
+        # the still-binding cooldown back over this success.
+        self._persist(status_cleared_ids=[updated.id])
         # Sync back so _seed_from_singletons() on the next load_pool() sees
         # fresh state instead of re-seeding consumed tokens.
         self._sync_device_code_entry_to_auth_store(updated)

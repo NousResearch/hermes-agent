@@ -14,7 +14,7 @@ import uuid
 from agent.credential_pool import (
     AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE, STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
-    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, _exhausted_until,
+    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, REFRESHABLE_OAUTH_PROVIDERS, _exhausted_until,
     _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
     load_pool)
 import hermes_cli.auth as auth_mod
@@ -527,6 +527,52 @@ def auth_reset_command(args) -> None:
     print(f"Reset status on {provider} credential #{index} ({cleared.label})")
 
 
+def auth_refresh_command(args) -> None:
+    """`hermes auth refresh <provider> [target]`: force one pooled OAuth entry to refresh.
+
+    A successful refresh rotates the stored tokens and clears the entry's local
+    exhaustion block, returning it to rotation before its persisted
+    ``last_error_reset_at`` elapses. It proves the grant is alive, not that the
+    provider's quota is back: if the account is still capped, the next request
+    429s and benches it again. Failure leaves the pool's own verdict in place.
+    """
+    provider = _normalize_provider(getattr(args, "provider", ""))
+    target = getattr(args, "target", None)
+    pool = load_pool(provider)
+    entries = pool.entries()
+    if not entries:
+        raise SystemExit(f"No {provider} credentials in the pool.")
+    if target is None or not str(target).strip():
+        if len(entries) != 1:
+            raise SystemExit(
+                f"{provider} has {len(entries)} credentials; pass an index, entry id, or exact "
+                f"label (see `hermes auth list {provider}`).")
+        index, matched = 1, entries[0]
+    else:
+        index, matched, error = pool.resolve_target(target)
+        if matched is None or index is None:
+            raise SystemExit(f"{error} Provider: {provider}.")
+    if (provider not in REFRESHABLE_OAUTH_PROVIDERS or matched.auth_type != AUTH_TYPE_OAUTH
+            or not matched.refresh_token):
+        raise SystemExit(
+            f"{provider} credential #{index} ({matched.label}) is not a refreshable OAuth "
+            f"credential.")
+    refreshed = pool.try_refresh_matching(credential_id=matched.id)
+    if refreshed is None:
+        after = next((e for e in pool.entries() if e.id == matched.id), None)
+        state = "removed from pool" if after is None else (after.last_status or "unknown")
+        raise SystemExit(
+            f"Refresh failed for {provider} credential #{index} ({matched.label}); "
+            f"status now: {state}.")
+    status = refreshed.last_status or "ok"
+    if status == "ok":
+        print(f"Refreshed {provider} credential #{index} ({refreshed.label}); status: ok")
+    else:
+        # A peer already rotated this grant and the pool adopted it without clearing status.
+        print(f"Adopted current tokens for {provider} credential #{index} ({refreshed.label}); "
+              f"status still: {status}")
+
+
 def auth_status_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", "") or "")
     if not provider:
@@ -731,7 +777,7 @@ def _interactive_strategy() -> None:
 
 _AUTH_ACTIONS = {
     "add": auth_add_command, "list": auth_list_command, "remove": auth_remove_command,
-    "reset": auth_reset_command, "priority": auth_priority_command, "status": auth_status_command,
+    "reset": auth_reset_command, "priority": auth_priority_command, "refresh": auth_refresh_command, "status": auth_status_command,
     "logout": auth_logout_command,
     "spotify": auth_spotify_command}
 

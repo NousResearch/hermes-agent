@@ -121,6 +121,7 @@ Type [1/2]:
 | `hermes auth remove <provider> <index>` | Remove credential by 1-based index |
 | `hermes auth reset <provider>` | Clear all cooldowns/exhaustion status |
 | `hermes auth reset <provider> <target>` | Clear the cooldown on one credential by index, id, or label |
+| `hermes auth refresh <provider> [target]` | Refresh one OAuth credential's tokens and return it to rotation (proves the grant is alive; the next request re-checks quota) |
 
 ## Rotation Strategies
 

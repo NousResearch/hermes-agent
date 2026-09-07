@@ -1724,6 +1724,7 @@ class TestStaleFallbackCandidateSkip:
 
         stale_fb = MagicMock()
         stale_fb.base_url = "https://api.anthropic.com"
+        stale_fb.api_key = "expired-anthropic-token"
         stale_fb.chat.completions.create.side_effect = _AuxAuth401("Invalid bearer token")
 
         fresh_fb = MagicMock()
@@ -1752,7 +1753,7 @@ class TestStaleFallbackCandidateSkip:
             )
 
         assert result.choices[0].message.content == "fresh-fallback"
-        mock_refresh.assert_called_once_with("anthropic")
+        mock_refresh.assert_called_once_with("anthropic", failed_api_key=stale_fb.api_key)
         assert stale_fb.chat.completions.create.call_count == 1
         assert fresh_fb.chat.completions.create.call_count == 1
 

@@ -1,5 +1,5 @@
 """Gateway session management: message sources, the persisted routing index (SessionStore),
-reset policy and the dynamic "Current Session Context" system prompt section."""
+explicit resets and the dynamic "Current Session Context" system prompt section."""
 
 import asyncio
 import hashlib
@@ -483,20 +483,14 @@ class SessionEntry:
     estimated_cost_usd: float = 0.0
     cost_status: str = "unknown"
     last_prompt_tokens: int = 0  # last API-reported prompt tokens (compression pre-check)
-    # Created because the previous session expired; consumed once to inject a notice.
+    # Suspension replacement metadata; historical automatic-reset rows retain these fields.
     was_auto_reset: bool = False
-    auto_reset_reason: Optional[str] = None  # "idle" or "daily"
-    reset_had_activity: bool = False  # the expired session had messages
-    prev_session_id: Optional[str] = None  # replaced by auto-reset; feeds the continuity note
-    # Explicit /new or /reset; consumed once to re-inject topic/channel skills. Distinct from
-    # was_auto_reset, whose "expired due to inactivity" notice is wrong for a manual reset.
-    # Set by reset_session() when the user explicitly sends /new or /reset. Consumed once by
-    # _handle_message_with_agent to trigger topic/channel skill re-injection on the first message of the new
-    # session. We can't reuse was_auto_reset for this because that flag fires the "session expired due to
-    # inactivity" user-facing notice and a misleading context-note prepend — both wrong for an explicit
-    # manual reset. See issue #6508.
+    auto_reset_reason: Optional[str] = None
+    reset_had_activity: bool = False
+    prev_session_id: Optional[str] = None  # feeds the continuity note
+    # Explicit /new or /reset triggers topic/channel skill re-injection on the first turn.
     is_fresh_reset: bool = False
-    # Set by the expiry watcher after finalizing; persisted so restarts don't re-run finalization.
+    # Historical finalization fence; timers no longer write it.
     expiry_finalized: bool = False
     # Next get_or_create_session() auto-resets; set by /stop to break stuck-resume loops.
     # When True the next call to get_or_create_session() will auto-reset this session (create a new
@@ -895,7 +889,7 @@ class SessionStore(
         with self._lock:
             self._ensure_loaded_locked()
             observed = self._entries.get(session_key)
-        # Phase 1b (no lock): compression tip + stale check + reset policy.
+        # Phase 1b (no lock): compression tip + stale check + explicit suspension.
         checks = None
         if not force_new and observed is not None:
             sid = observed.session_id
@@ -960,7 +954,7 @@ class SessionStore(
                     session_key, entry.session_id,
                 )
             if stale_hit or reset_reason:
-                # Honour an expiry/reset decision instead of silently reopening via recovery.
+                # Honour an explicit suspension/reset decision instead of silently reopening via recovery.
                 if reset_reason:
                     decision.schedule_reset(reset_reason, entry, entry.last_prompt_tokens > 0)
                 self._entries.pop(session_key, None)
@@ -1043,9 +1037,8 @@ class SessionStore(
         """Persist a small JSON-serializable metadata value. Deliberately does NOT advance
         ``updated_at``: a background write must not make an idle session look fresh.
 
-        Metadata writes are internal bookkeeping and deliberately do NOT advance ``updated_at``: it is the
-        user-activity clock that drives idle/daily reset policy and the restart-resume freshness gate
-        (#85709), and a background write must not make an idle session look fresh.
+        Internal bookkeeping must not advance the user-activity clock used by housekeeping
+        and restart recovery.
         """
         return self._update_entry(session_key, lambda e: e.metadata.__setitem__(key, value))
 
@@ -1103,7 +1096,7 @@ class SessionStore(
         return new_entry
 
     # Compression repoint is store bookkeeping, not user activity — leave ``updated_at`` alone so a
-    # background compression on an idle session cannot make it look fresh to reset policy or the
+    # background compression on an idle session cannot make it look fresh to the
     # restart-resume freshness gate (#85709).
     def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
         """Point a session key at an existing session ID (``/resume``): ends the current row and

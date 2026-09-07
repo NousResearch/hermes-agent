@@ -571,7 +571,7 @@ state.db 后可安全删除。
 
 ### 自动清理
 
-- Gateway session 根据配置的重置策略自动重置
+- Gateway 会话会持续保留；请使用 `/new` 或 `/reset` 显式开始新会话
 - 重置前，agent 保存即将过期 session 中的记忆和技能
 - 可选自动清理：当 `sessions.auto_prune` 为 `true` 时，在 CLI/gateway 启动时清理早于 `sessions.retention_days`（默认 90）天的已结束 session
 - 实际删除了行的清理操作完成后，如果距离上次成功执行 `VACUUM` 已达到 `sessions.min_vacuum_interval_days`（默认 30）天，`state.db` 会执行 `VACUUM` 以回收磁盘空间（SQLite 在普通 DELETE 后不会缩小文件）

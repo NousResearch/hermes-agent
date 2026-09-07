@@ -248,8 +248,8 @@ When a session is reset, resumed, or expires:
 The gateway runs periodic maintenance alongside message handling:
 
 - **Cron ticking** — checks job schedules and fires due jobs
-- **Session expiry** — cleans up abandoned sessions after timeout
-- **Memory flush** — proactively flushes memory before session expiry
+- **Session housekeeping** — reclaims cached resources without ending transcripts
+- **Memory flush** — commits memory before soft cache eviction
 - **Cache refresh** — refreshes model lists and provider status
 
 ## Process Management

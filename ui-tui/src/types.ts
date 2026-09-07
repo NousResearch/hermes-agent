@@ -222,6 +222,8 @@ export interface Usage {
   compressions?: number
   context_max?: number
   context_percent?: number
+  context_estimated?: boolean
+  context_source?: string
   context_used?: number
   cost_status?: string
   cost_usd?: number

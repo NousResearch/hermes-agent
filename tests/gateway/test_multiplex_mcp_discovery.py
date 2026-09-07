@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from hermes_constants import get_hermes_home, hermes_home_key
 

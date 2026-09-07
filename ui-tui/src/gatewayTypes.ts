@@ -286,6 +286,8 @@ export interface SessionUsageResponse {
   compressions?: number
   context_max?: number
   context_percent?: number
+  context_estimated?: boolean
+  context_source?: string
   context_used?: number
   cost_status?: 'estimated' | 'exact'
   cost_usd?: number

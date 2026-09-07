@@ -770,7 +770,7 @@ _PREFLIGHT_OPTIONAL_FIELDS: tuple[tuple[str, Callable[[Any], bool], Optional[Cal
     # Cache routing/retention and tool-dispatch hints pass through as-is.
     *(
         (key, lambda v: v is not None, None)
-        for key in ("tool_choice", "parallel_tool_calls", "prompt_cache_key", "prompt_cache_retention", "prompt_cache_options")
+        for key in ("tool_choice", "parallel_tool_calls", "prompt_cache_key", "prompt_cache_retention")
     ),
     # Native compaction directive; eligibility is resolved in agent/native_compaction.py.
     ("context_management", lambda v: isinstance(v, list) and bool(v), None),

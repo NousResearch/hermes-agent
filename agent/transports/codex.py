@@ -12,7 +12,7 @@ from typing import Any, Callable, Optional
 
 from agent.reasoning_effort import (
     ACTUAL_RELAY_EFFORTS, CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
-    XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort,
+    XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
     # per-model — "max" is gpt-5.6-only, "minimal"/"ultra" always rejected (live-verified, #68365).
     codex_supported_efforts,
@@ -265,24 +265,19 @@ def _default_prompt_cache_retention_for_request(model: str, base_url: Any) -> Op
     return "24h" if _EXTENDED_PROMPT_CACHE_MODEL_RE.search(normalized) else None
 
 
-def _is_astra_model(model: Any) -> bool:
-    return str(model or "").strip().lower().rsplit("/", 1)[-1] in ("gpt-6-astra", "gpt-6-astra-900k")
-
-
 def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
-    """Astra cache semantics apply only to the official OpenAI API host."""
-    if not _is_astra_model(model):
+    """Astra on the canonical API origin only — exact host, so a Responses-compatible proxy or a
+    lookalike subdomain keeps the generic contract."""
+    if not is_astra_model(model):
         return False
     from utils import base_url_hostname
 
-    # Astra's account-gated cache contract is for the canonical API origin only.
-    # Do not extend it to subdomains (or lookalike hosts) by suffix matching.
     return base_url_hostname(str(base_url or "")).lower() == "api.openai.com"
 
 
 def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: bool = False) -> tuple[str, ...]:
     """Keep Astra's new vocabulary off unrelated Responses-compatible endpoints."""
-    if _is_astra_model(model) and not (
+    if is_astra_model(model) and not (
         is_codex_backend or _is_official_openai_responses_route(model, base_url)
     ):
         return CODEX_LEGACY_EFFORTS
@@ -290,27 +285,22 @@ def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: boo
 
 
 def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url: Any) -> None:
-    """Apply Astra's model-specific restrictions after all request overrides are merged."""
-    if not _is_astra_model(model):
-        return
+    """Astra's official-API contract, applied AFTER ``request_overrides`` so an override can't put a
+    rejected field back on the wire: ``reasoning.effort`` is ``low..max`` only (``none``/``minimal``
+    400), sampling and logprob knobs are rejected, and cache lifetime is fixed server-side
+    (``prompt_cache_options.ttl`` accepts only its ``30m`` default, so nothing is sent for it and the
+    pre-5.6 ``prompt_cache_retention`` knob is dropped)."""
     if not _is_official_openai_responses_route(model, base_url):
-        kwargs.pop("prompt_cache_options", None)
         return
     reasoning = kwargs.get("reasoning")
-    requested = reasoning.get("effort") if isinstance(reasoning, dict) else None
-    normalized = str(requested or "").strip().lower()
-    effort = "low" if normalized in {"", "none", "minimal", "disabled", "off"} else clamp_effort(
-        requested, CODEX_ASTRA_EFFORTS
-    )
-    kwargs["reasoning"] = {**(reasoning if isinstance(reasoning, dict) else {}), "effort": effort}
-    kwargs["reasoning"].setdefault("summary", "auto")
-    for key in ("temperature", "top_p", "top_logprobs", "logprobs"):
+    if isinstance(reasoning, dict):
+        requested = str(reasoning.get("effort") or "").strip().lower()
+        reasoning["effort"] = clamp_effort(requested, CODEX_ASTRA_EFFORTS) if requested else "low"
+    for key in ("temperature", "top_p", "top_logprobs", "logprobs", "prompt_cache_retention"):
         kwargs.pop(key, None)
     include = kwargs.get("include")
     if isinstance(include, list):
         kwargs["include"] = [item for item in include if "logprob" not in str(item).lower()]
-    kwargs["prompt_cache_options"] = {"ttl": "30m"}
-    kwargs.pop("prompt_cache_retention", None)
 
 
 def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]], scope_id: str = "") -> Optional[str]:

@@ -198,6 +198,28 @@ class MemoryStore:
                    "ORDER BY trust_score DESC LIMIT ?")
             return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
 
+    def bump_retrieval(self, fact_ids: list[int]) -> None:
+        """Increment retrieval_count for the given facts (advisory usage telemetry).
+
+        Called from the tool-handler layer after explicit agent retrievals. Counting lives
+        here, on the shared connection under the shared lock, so it cannot race sibling
+        store instances (main agent + subagents share one connection per DB).
+        """
+        if not fact_ids:
+            return
+        # Batch the UPDATE so an oversized id list can never hit SQLite's
+        # "too many SQL variables" limit (the advisory path must stay safe
+        # for any input size; the caller does not cap limit itself).
+        batch_size = 500
+        with self._lock:
+            for i in range(0, len(fact_ids), batch_size):
+                batch = list(fact_ids[i:i + batch_size])
+                placeholders = ",".join("?" * len(batch))
+                self._write(
+                    f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                    batch,
+                )
+
     def record_feedback(self, fact_id: int, helpful: bool) -> dict:
         """Adjust trust asymmetrically: helpful -> +0.05 and helpful_count += 1; unhelpful -> -0.10.
         Returns {fact_id, old_trust, new_trust, helpful_count}. Raises KeyError if fact_id is unknown."""

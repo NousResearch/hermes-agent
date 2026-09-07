@@ -210,17 +210,37 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def _entity_query(self, method: str, a: dict) -> str:
         """'probe' / 'related': single-entity retriever queries."""
-        return _results(getattr(self._retriever, method)(a["entity"], category=a.get("category"), limit=_limit(a)))
+        results = getattr(self._retriever, method)(a["entity"], category=a.get("category"), limit=_limit(a))
+        return _results(self._track_retrieval(results))
+
+    def _track_retrieval(self, results: list) -> list:
+        """Bump retrieval_count for facts returned by an explicit agent retrieval.
+
+        Advisory bookkeeping: a failing bump must never break the retrieval result
+        (the counter is usage telemetry, not a retrieval dependency). Auto-prefetch
+        calls retriever.search() directly and bypasses this, so it is intentionally
+        not counted; contradict/list return diagnostics/browse data and are not
+        retrieval recalls."""
+        if not self._store:  # never called before initialize(); guard mirrors system_prompt_block
+            return results
+        try:
+            ids = list(dict.fromkeys(r.get("fact_id") for r in results if r.get("fact_id")))
+            if ids:
+                self._store.bump_retrieval(ids)
+        except Exception as exc:
+            logger.warning("retrieval_count bump failed (advisory, retrieval unaffected): %s", exc, exc_info=True)
+        return results
 
     _TOOL_HANDLERS = {
         "fact_store": _tool_handler({
             "add": lambda self, a: json.dumps({"fact_id": self._store.add_fact(
                 a["content"], category=a.get("category", "general"), tags=a.get("tags", "")), "status": "added"}),
-            "search": lambda self, a: _results(self._retriever.search(
-                a["query"], category=a.get("category"), min_trust=float(a.get("min_trust", self._min_trust)), limit=_limit(a))),
+            "search": lambda self, a: _results(self._track_retrieval(self._retriever.search(
+                a["query"], category=a.get("category"), min_trust=float(a.get("min_trust", self._min_trust)), limit=_limit(a)))),
             "probe": lambda self, a: self._entity_query("probe", a),
             "related": lambda self, a: self._entity_query("related", a),
-            "reason": lambda self, a: _results(self._retriever.reason(a["entities"], category=a.get("category"), limit=_limit(a)))
+            "reason": lambda self, a: _results(self._track_retrieval(self._retriever.reason(
+                a["entities"], category=a.get("category"), limit=_limit(a))))
             if a.get("entities") else tool_error("reason requires 'entities' list"),
             "contradict": lambda self, a: _results(self._retriever.contradict(category=a.get("category"), limit=_limit(a))),
             "update": lambda self, a: json.dumps({"updated": self._store.update_fact(

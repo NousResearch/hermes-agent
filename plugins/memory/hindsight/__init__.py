@@ -218,8 +218,13 @@ RECALL_SCHEMA = {
         "Search long-term memory. Returns memories ranked by relevance using "
         "semantic search, keyword matching, entity graph traversal, and reranking."
     ),
-    "parameters": {"type": "object", "required": ["query"],
-                   "properties": {"query": {"type": "string", "description": "What to search for."}}},
+    "parameters": {"type": "object", "required": ["query"], "properties": {
+        "query": {"type": "string", "description": "What to search for."},
+        "bank": {"type": "string", "description": (
+            "Optional memory bank to search instead of the configured bank. "
+            "The deployment may restrict this with recall_bank_allowlist."
+        )},
+    }},
 }
 
 REFLECT_SCHEMA = {
@@ -228,8 +233,13 @@ REFLECT_SCHEMA = {
         "Synthesize a reasoned answer from long-term memories. Unlike recall, "
         "this reasons across all stored memories to produce a coherent response."
     ),
-    "parameters": {"type": "object", "required": ["query"],
-                   "properties": {"query": {"type": "string", "description": "The question to reflect on."}}},
+    "parameters": {"type": "object", "required": ["query"], "properties": {
+        "query": {"type": "string", "description": "The question to reflect on."},
+        "bank": {"type": "string", "description": (
+            "Optional memory bank to reflect on instead of the configured bank. "
+            "The deployment may restrict this with recall_bank_allowlist."
+        )},
+    }},
 }
 
 
@@ -343,6 +353,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
         self._last_recall_returned, self._last_recall_count = False, 0
+        self._recall_bank_allowlist: set[str] = set()
         self._apply_recall_settings({})
 
     @property
@@ -422,6 +433,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_tags", "description": "Tags to filter when searching memories (comma-separated)", "default": ""},
             {"key": "recall_tags_match", "description": "Tag matching mode for recall", "default": "any", "choices": ["any", "all", "any_strict", "all_strict"]},
             {"key": "recall_types", "description": "Fact types to surface on recall — applies to both auto-recall and the hindsight_recall tool (comma-separated or list). Defaults to observation-only — observations are Hindsight's consolidated, deduplicated, evidence-grounded knowledge layer; raw world/experience facts are the supporting evidence observations already summarize. Set to e.g. 'observation,world,experience' to also include raw facts.", "default": "observation"},
+            {"key": "recall_bank_allowlist", "description": "Optional comma-separated list of banks that hindsight_recall and hindsight_reflect may target per call. Empty allows any bank.", "default": ""},
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
             {"key": "recall_sync", "description": "Recall synchronously against the current message before each turn (higher relevance, adds recall latency to the turn). Default off: recall runs in the background and is injected on the next turn.", "default": False},
             {"key": "recall_indicator", "description": "Show a '👁️ Hindsight — recalled N memories' status line when auto-recall injects memory (turn off for customer-facing agents)", "default": True},
@@ -777,6 +789,12 @@ class HindsightMemoryProvider(MemoryProvider):
             self._recall_types = list([] if configured_types is None else configured_types) or ["observation"]
         self._recall_prompt_preamble = cfg.get("recall_prompt_preamble", "")
         self._recall_indicator = bool(cfg.get("recall_indicator", True))
+        configured_banks = cfg.get("recall_bank_allowlist") or []
+        if isinstance(configured_banks, str):
+            configured_banks = configured_banks.split(",")
+        self._recall_bank_allowlist = {
+            str(bank).strip() for bank in configured_banks if str(bank).strip()
+        }
 
     def _start_embedded_daemon(self) -> None:
         """Start the embedded daemon on a background thread (Rich output -> log file)."""
@@ -841,8 +859,8 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("Prefetch: skipped (%s)", why)
         return why is not None
 
-    def _recall(self, query: str) -> list:
-        kwargs: dict = {"bank_id": self._bank_id, "query": query, "budget": self._budget, "max_tokens": self._recall_max_tokens}
+    def _recall(self, query: str, *, bank_id: str | None = None) -> list:
+        kwargs: dict = {"bank_id": bank_id or self._bank_id, "query": query, "budget": self._budget, "max_tokens": self._recall_max_tokens}
         if self._recall_tags:
             kwargs.update(tags=self._recall_tags, tags_match=self._recall_tags_match)
         if self._recall_types:
@@ -850,11 +868,18 @@ class HindsightMemoryProvider(MemoryProvider):
         resp = self._run_hindsight_operation(lambda client: client.arecall(**kwargs))
         return resp.results or []
 
-    def _reflect(self, query: str) -> str | None:
+    def _reflect(self, query: str, *, bank_id: str | None = None) -> str | None:
         resp = self._run_hindsight_operation(
-            lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget)
+            lambda client: client.areflect(bank_id=bank_id or self._bank_id, query=query, budget=self._budget)
         )
         return resp.text
+
+    @staticmethod
+    def _recall_provenance(result: Any, bank_id: str) -> str:
+        metadata = getattr(result, "metadata", None) or {}
+        document_id = getattr(result, "document_id", None) or "unknown"
+        source = getattr(result, "source", None) or metadata.get("source") or "unknown"
+        return f"[bank={bank_id}; document_id={document_id}; source={source}]"
 
     def _do_recall(self, query: str) -> tuple[str, int]:
         """One recall/reflect for *query* (background prefetch and ``recall_sync`` paths)
@@ -869,7 +894,10 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id, len(query), self._budget)
             results = self._recall(query)
             logger.debug("Recall: returned %d results", len(results))
-            return "\n".join(f"- {r.text}" for r in results if r.text), len(results)
+            return "\n".join(
+                f"- {result.text} {self._recall_provenance(result, self._bank_id)}"
+                for result in results if result.text
+            ), len(results)
         except Exception as e:
             logger.debug("Hindsight recall failed: %s", e, exc_info=True)
             return "", 0
@@ -1066,19 +1094,36 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _tool_recall(self, args: dict) -> str:
         query = args["query"]
+        bank_id = self._tool_bank_id(args)
         logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
-                     self._bank_id, len(query), self._budget)
-        results = self._recall(query)
+                     bank_id, len(query), self._budget)
+        results = self._recall(query, bank_id=bank_id)
         logger.debug("Tool hindsight_recall: %d results", len(results))
-        return "\n".join(f"{i}. {r.text}" for i, r in enumerate(results, 1)) or "No relevant memories found."
+        lines = [
+            f"{i}. {result.text} {self._recall_provenance(result, bank_id)}"
+            for i, result in enumerate(results, 1)
+        ]
+        return "\n".join(lines) or "No relevant memories found."
 
     def _tool_reflect(self, args: dict) -> str:
         query = args["query"]
+        bank_id = self._tool_bank_id(args)
         logger.debug("Tool hindsight_reflect: bank=%s, query_len=%d, budget=%s",
-                     self._bank_id, len(query), self._budget)
-        text = self._reflect(query) or ""
+                     bank_id, len(query), self._budget)
+        text = self._reflect(query, bank_id=bank_id) or ""
         logger.debug("Tool hindsight_reflect: response_len=%d", len(text))
         return text or "No relevant memories found."
+
+    def _tool_bank_id(self, args: dict) -> str:
+        if "bank" not in args:
+            return self._bank_id
+        bank_id = str(args["bank"] or "").strip()
+        if not bank_id:
+            raise ValueError("bank must not be blank")
+        if self._recall_bank_allowlist and bank_id not in self._recall_bank_allowlist:
+            allowed = ", ".join(sorted(self._recall_bank_allowlist))
+            raise ValueError(f"bank {bank_id!r} is not allowed; allowed banks: {allowed}")
+        return bank_id
 
     # tool name -> (required arg, handler, user-facing failure prefix)
     _TOOL_HANDLERS = {

@@ -111,6 +111,67 @@ export async function waitForBackendRelease(
   return { unlocked: false, lingeringPids: lingering }
 }
 
+/** Restart Manager attribution budget for the gate; discovery keeps its own, larger one. */
+export const RELEASE_GATE_ATTRIBUTION_BUDGET_MS = 4_000
+
+export interface InstallLockGateProbeDeps {
+  /** Exclusive-open sweep over the mutation set, stopping after `limit` findings. */
+  probeLocks: (limit: number) => { definite: readonly string[]; shared: readonly string[] }
+  /** Per-process module attribution for uv-shared hard links; resolves to the holder count. */
+  countAttributedHolders: (budgetMs: number) => Promise<number>
+  now?: () => number
+  attributionBudgetMs?: number
+  /** Minimum interval between attributions; defaults to one per gate run. */
+  attributionCooldownMs?: number
+}
+
+/**
+ * The lock probe `waitForBackendRelease` polls, bounded so it can be asked
+ * every RELEASE_GATE_POLL_MS.
+ *
+ * Two costs had to come off the poll:
+ *
+ *  - the exclusive-open sweep, which visited the whole mutation set (~270
+ *    synchronous openSync calls on a real install: ~27 ms median on the main
+ *    thread, seconds when a filter driver is cold). One definite lock is a
+ *    complete answer, so it stops there (~0.3 ms while the install is held).
+ *  - the Restart Manager attribution, a PowerShell child with a 12 s budget,
+ *    which ran on EVERY poll that saw only uv-shared hard links: up to 50
+ *    spawns inside a 15 s gate, each able to outlive the gate itself. It now
+ *    runs at most once per cooldown, which defaults to the gate deadline, so
+ *    the polling loop attributes once and the post-deadline check may refresh.
+ *
+ * Until attribution has answered, a shared lock counts as locked (fail
+ * closed), and an attribution that throws leaves it locked.
+ */
+export function createInstallLockGateProbe(deps: InstallLockGateProbeDeps): () => Promise<boolean> {
+  const now = deps.now ?? Date.now
+  const budgetMs = deps.attributionBudgetMs ?? RELEASE_GATE_ATTRIBUTION_BUDGET_MS
+  const cooldownMs = deps.attributionCooldownMs ?? RELEASE_GATE_DEADLINE_MS
+  let attributedAt: number | null = null
+  let attributedLocked = true
+
+  return async () => {
+    const locks = deps.probeLocks(1)
+
+    if (locks.definite.length > 0) {return true}
+
+    if (locks.shared.length === 0) {return false}
+
+    if (attributedAt !== null && now() - attributedAt < cooldownMs) {return attributedLocked}
+
+    attributedAt = now()
+
+    try {
+      attributedLocked = (await deps.countAttributedHolders(budgetMs)) > 0
+    } catch {
+      attributedLocked = true
+    }
+
+    return attributedLocked
+  }
+}
+
 /**
  * Liveness probe for a PID on Windows. `process.kill(pid, 0)` delivers
  * nothing; it only probes existence: EPERM ⇒ exists but inaccessible (still

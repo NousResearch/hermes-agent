@@ -155,6 +155,12 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
     return GoalCommandResult(output, goals.goal_kick_prompt(state.goal, last_user_message), kickoff=True)
 
 
+def is_goal_control(arg: str) -> bool:
+    """Whether this command controls an existing goal rather than replacing it."""
+    normalized = arg.strip().lower()
+    return normalized in _EXACT_HANDLERS or normalized.split(None, 1)[0] in {"wait", "gate"}
+
+
 def dispatch_goal_command(
     mgr: goals.GoalManager, arg: str, *, authorize_gate: Callable[[], str | None],
     last_user_message=None, render: Callable = _english,

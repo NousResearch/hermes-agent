@@ -23,8 +23,13 @@ def _surface(surface, mgr, monkeypatch, prompts=None):
                 prompts.append(cli._pending_input.get_nowait())
         return execute
     if surface == "gateway":
+        from gateway.run_busy import GatewayBusySessionMixin
         from gateway.slash_commands_goals import GatewayGoalCommandsMixin
-        runner = object.__new__(GatewayGoalCommandsMixin)
+
+        class Runner(GatewayBusySessionMixin, GatewayGoalCommandsMixin):
+            pass
+
+        runner = object.__new__(Runner)
         async def manager(event):
             return mgr, None
         async def execute(fn, *args):
@@ -34,8 +39,12 @@ def _surface(surface, mgr, monkeypatch, prompts=None):
         runner._adapter_and_key_for = lambda event: (None, None)
         runner._enqueue_goal_turn = lambda event, text, **kwargs: prompts.append(text)
         runner._resume_caller_is_admin = lambda source: True
-        return lambda arg: asyncio.run(runner._handle_goal_command(SimpleNamespace(
-            get_command_args=lambda: arg, source=None)))
+        def execute(arg):
+            event = SimpleNamespace(get_command_args=lambda: arg, source=None)
+            if arg == 'show':
+                return asyncio.run(runner._busy_goal_command(event, mgr.session_id, None))
+            return asyncio.run(runner._handle_goal_command(event))
+        return execute
     from tui_gateway import server
     server._sessions[mgr.session_id] = {'session_key': mgr.session_id}
     def execute(arg):
@@ -64,7 +73,9 @@ def test_surface_goal_state_matches_cli(surface, command, monkeypatch):
         mgr.set('original objective')
         mgr.add_gate('original gate')
         mgr.wait_on(os.getpid(), reason='existing barrier')
-        _surface(name, mgr, monkeypatch)(command)
+        result = _surface(name, mgr, monkeypatch)(command)
+        if name == 'gateway' and command == 'show':
+            assert mgr.state.goal in result
         state = goals.load_goal(mgr.session_id)
         if state:
             from dataclasses import asdict

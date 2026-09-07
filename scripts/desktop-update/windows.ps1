@@ -780,6 +780,22 @@ if ($env:HERMES_UPDATE_STEP_IDLE_SECONDS) {
     }
 }
 
+# Absolute wall-clock ceiling for any step. The idle watchdog above only
+# fires after StepIdleTimeoutSeconds of *silence*; a descendant that trickles
+# a byte every few minutes (or a gateway IPC hang that never writes at all
+# but keeps the parent python.exe alive) defeats it and strands the hand-off
+# forever — the exact #102283 failure where the log ends at `running: python
+# ... update` with no exit code, no result file, and a 16-day zombie holding
+# the venv shim. An absolute deadline guarantees the hand-off always reaches
+# its finally block (result file + relaunch + marker cleanup).
+$script:StepTotalTimeoutSeconds = 3600
+if ($env:HERMES_UPDATE_STEP_TOTAL_SECONDS) {
+    $parsedTotal = 0
+    if ([int]::TryParse($env:HERMES_UPDATE_STEP_TOTAL_SECONDS, [ref]$parsedTotal) -and $parsedTotal -gt 0) {
+        $script:StepTotalTimeoutSeconds = $parsedTotal
+    }
+}
+
 # Silence on the pipes is NOT silence in the update. `hermes update` captures
 # the (very loud) Electron/vite build into logs/update.log instead of its own
 # stdout (hermes_cli/update_cmd.py, the update-log tee), so a real update is
@@ -1087,6 +1103,8 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $lastProgressAt = Get-Date
     $progressLogStamp = Get-StepProgressLogStamp
     $stalled = $false
+    $stepStartedAt = Get-Date
+    $stepDeadline = $stepStartedAt.AddSeconds($script:StepTotalTimeoutSeconds)
     while ($true) {
         $moved = $false
         $outDone = Step-PipeDrain $stdoutReader ([ref]$outTask) $outBuffer $outSink ([ref]$moved)
@@ -1101,6 +1119,22 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
             } elseif ((Get-Date) -ge $abandonAt) {
                 $abandoned = $true
                 break
+            }
+        } elseif (-not $stalled -and (Get-Date) -ge $stepDeadline) {
+            # Absolute ceiling: even a step that trickles forever (one byte per
+            # idle window) would defeat the silence watchdog and strand the
+            # hand-off with no result file and a zombie python.exe holding the
+            # venv lock (#102283). Kill the whole job tree and fail the step so
+            # the finally block can write the result, run marker self-heal, and
+            # relaunch the Desktop.
+            $elapsedTotal = [Math]::Round(((Get-Date) - $stepStartedAt).TotalSeconds)
+            Write-HandoffLog ("{0}!| step exceeded absolute deadline ({1}s elapsed, budget {2}s); cancelling its process tree." -f $Tag, $elapsedTotal, $script:StepTotalTimeoutSeconds)
+            $stalled = [HermesUpdateJob]::TerminateAndWait($job, 124, 10000)
+            if (-not $stalled) {
+                Write-HandoffLog ("{0}!| process-tree cancellation could not prove quiescence; refusing the timeout retry." -f $Tag)
+                $script:TreeSafeToFinalize = $false
+                [HermesUpdateJob]::Close($job)
+                throw "Unable to quiesce stalled update process tree (total timeout)"
             }
         } elseif (-not $stalled -and $job -ne [IntPtr]::Zero -and ((Get-Date) - $lastProgressAt).TotalSeconds -ge $script:StepIdleTimeoutSeconds) {
             # Quiet pipes are how a healthy `hermes update` looks for 40+
@@ -1244,7 +1278,7 @@ if ($SelfTestPipeDrain) {
     $floodKb = 8192
     if ($env:HERMES_SELFTEST_FLOOD_KB) { $floodKb = [int]$env:HERMES_SELFTEST_FLOOD_KB }
     # $PSHOME is this interpreter's own directory -- no hardcoded system path.
-    $powershell = Join-Path $PSHOME "powershell.exe"
+    $powershell = (Get-Process -Id $PID).Path
     $stamp = [Guid]::NewGuid().ToString("N")
     $childPs1 = Join-Path $TempDir "hermes-pipe-drain-$stamp.ps1"
     $floodPs1 = Join-Path $TempDir "hermes-pipe-flood-$stamp.ps1"
@@ -1254,6 +1288,8 @@ if ($SelfTestPipeDrain) {
     $stallGrandchildPidFile = Join-Path $TempDir "hermes-step-stall-grandchild-$stamp.pid"
     $logStallPs1 = Join-Path $TempDir "hermes-step-logstall-$stamp.ps1"
     $logStallProgress = Join-Path $TempDir "hermes-step-logstall-$stamp.update.log"
+    $chatterPs1 = Join-Path $TempDir "hermes-step-chatter-$stamp.ps1"
+    $chatterPidFile = Join-Path $TempDir "hermes-step-chatter-$stamp.pid"
     # UseShellExecute=$false with no redirection is what makes the grandchild
     # inherit our stdout/stderr -- the whole point of the fixture. Anything
     # that redirects (Start-Process, subprocess with stdout=DEVNULL) would
@@ -1261,7 +1297,7 @@ if ($SelfTestPipeDrain) {
     $childSource = @'
 param([int]$Hold, [string]$PidFile)
 $psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = Join-Path $PSHOME "powershell.exe"
+$psi.FileName = (Get-Process -Id $PID).Path
 $psi.Arguments = "-NoProfile -Command Start-Sleep -Seconds $Hold"
 $psi.UseShellExecute = $false
 $psi.CreateNoWindow = $true
@@ -1288,7 +1324,7 @@ exit 5
 param([int]$Hold, [string]$PidFile, [string]$GrandchildPidFile)
 [System.IO.File]::WriteAllText($PidFile, [string]$PID)
 $psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = Join-Path $PSHOME "powershell.exe"
+$psi.FileName = (Get-Process -Id $PID).Path
 $psi.Arguments = "-NoProfile -Command Start-Sleep -Seconds $Hold"
 $psi.UseShellExecute = $false
 $psi.CreateNoWindow = $true
@@ -1313,6 +1349,28 @@ exit 3
     [System.IO.File]::WriteAllText($floodPs1, $floodSource)
     [System.IO.File]::WriteAllText($stallPs1, $stallSource)
     [System.IO.File]::WriteAllText($logStallPs1, $logStallSource)
+    # Credit: astraltrekkin's #102373 identifies live pipe chatter. Preserve
+    # legitimate stdout progress, but prove an absolute bound even when both
+    # pipes and the log stay active. The pid is a descendant in the private job.
+    $chatterSource = @'
+param([int]$Hold, [string]$PidFile, [string]$ProgressLog)
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = (Get-Process -Id $PID).Path
+$psi.Arguments = "-NoProfile -Command Start-Sleep -Seconds $Hold"
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+$grandchild = [System.Diagnostics.Process]::Start($psi)
+[System.IO.File]::WriteAllText($PidFile, [string]$grandchild.Id)
+for ($i = 0; $i -lt $Hold; $i++) {
+    Write-Output "live progress $i"
+    [Console]::Out.Flush()
+    if ($ProgressLog) { Add-Content -LiteralPath $ProgressLog -Value "build progress $i" }
+    Start-Sleep -Seconds 1
+}
+$grandchild.WaitForExit()
+exit 0
+'@
+    [System.IO.File]::WriteAllText($chatterPs1, $chatterSource)
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $res = Invoke-HermesStep $powershell @(
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $childPs1,
@@ -1365,6 +1423,10 @@ exit 3
     # for exactly this step, restore afterwards so the other arms' contract
     # (no update.log in play) is untouched.
     $savedProgressLogPath = $script:StepProgressLogPath
+    $savedIdle = $script:StepIdleTimeoutSeconds
+    # Allow scheduler jitter on a loaded native runner; the 45-second fixture
+    # still outlives this budget and therefore proves log growth is counted.
+    $script:StepIdleTimeoutSeconds = 10
     $script:StepProgressLogPath = $logStallProgress
     $logStallSw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
@@ -1374,11 +1436,48 @@ exit 3
         ) "logstall"
     } finally {
         $script:StepProgressLogPath = $savedProgressLogPath
+        $script:StepIdleTimeoutSeconds = $savedIdle
     }
     $logStallSw.Stop()
     $logStallElapsed = [Math]::Round($logStallSw.Elapsed.TotalSeconds, 2)
 
-    Remove-Item -LiteralPath $childPs1, $floodPs1, $stallPs1, $logStallPs1, $pidFile, $stallPidFile, $stallGrandchildPidFile, $logStallProgress -Force -ErrorAction SilentlyContinue
+    $savedTotal = $script:StepTotalTimeoutSeconds
+    try {
+        $script:StepTotalTimeoutSeconds = $hold + 30
+        $script:StepIdleTimeoutSeconds = 10
+        $healthy = Invoke-HermesStep $powershell @(
+            "-NoProfile", "-File", $chatterPs1, "-Hold", "15", "-PidFile", $chatterPidFile
+        ) "healthy-stdout"
+        # Each arm must publish its own witness. A slow PowerShell startup must
+        # not turn the deadline test into a silent timeout using the prior PID.
+        Remove-Item -LiteralPath $chatterPidFile, $logStallProgress -Force -ErrorAction SilentlyContinue
+        if ((Test-Path -LiteralPath $chatterPidFile) -or (Test-Path -LiteralPath $logStallProgress)) {
+            throw "could not clear prior deadline fixture witnesses"
+        }
+        $script:StepTotalTimeoutSeconds = 10
+        $script:StepProgressLogPath = $logStallProgress
+        $deadlineWatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $chatter = Invoke-HermesStep $powershell @(
+            "-NoProfile", "-File", $chatterPs1, "-Hold", [string]$hold,
+            "-PidFile", $chatterPidFile, "-ProgressLog", $logStallProgress
+        ) "deadline"
+        $deadlineWatch.Stop()
+        $chatterPid = 0
+        if (Test-Path -LiteralPath $chatterPidFile) {
+            $chatterPid = [int](Get-Content -LiteralPath $chatterPidFile -Raw)
+        }
+        $chatterAlive = $chatterPid -gt 0 -and [bool](Get-Process -Id $chatterPid -ErrorAction SilentlyContinue)
+        $chatterLog = if (Test-Path -LiteralPath $logStallProgress) {
+            Get-Content -LiteralPath $logStallProgress -Raw
+        } else { "" }
+        if ($chatterAlive) { Stop-Process -Id $chatterPid -Force -ErrorAction SilentlyContinue }
+    } finally {
+        $script:StepTotalTimeoutSeconds = $savedTotal
+        $script:StepIdleTimeoutSeconds = $savedIdle
+        $script:StepProgressLogPath = $savedProgressLogPath
+    }
+
+    Remove-Item -LiteralPath $childPs1, $floodPs1, $stallPs1, $logStallPs1, $pidFile, $stallPidFile, $stallGrandchildPidFile, $logStallProgress, $chatterPs1, $chatterPidFile -Force -ErrorAction SilentlyContinue
 
     # The grandchild still being alive at return is what makes this a proof
     # rather than a timing coincidence: the pipe was demonstrably still open.
@@ -1387,6 +1486,13 @@ exit 3
     # ~76s. Generous enough for a loaded CI runner, far under the trickle.
     $floodBudget = 25
     $problems = @()
+    if ($healthy.Code -ne 0) { $problems += "healthy stdout-only step was cancelled" }
+    if ($chatterPid -le 0 -or $chatter.Output -notmatch 'live progress' -or $chatterLog -notmatch 'build progress') {
+        $problems += "deadline fixture did not publish a fresh descendant and live pipe/log witnesses"
+    }
+    if ($chatter.Code -ne 124) { $problems += "live stdout/log chatter defeated the absolute deadline" }
+    if ($chatterAlive -or -not $chatter.TreeQuiesced) { $problems += "deadline returned with a live descendant" }
+    if ($deadlineWatch.Elapsed.TotalSeconds -ge ($hold - 5)) { $problems += "deadline did not bound the live step" }
     if (-not $leakAlive) { $problems += "handle-holding grandchild was not alive on return (fixture did not reproduce the leak)" }
     if ($elapsed -ge $budget) { $problems += "leak arm returned in ${elapsed}s, over the ${budget}s budget" }
     if ($res.Code -ne 7) { $problems += "leak arm exit code $($res.Code), expected 7" }

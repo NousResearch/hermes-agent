@@ -1,7 +1,7 @@
 """Tests for SIGHUP protection and stdout mirroring in ``hermes update``.
 
 Covers ``_UpdateOutputStream``, ``_install_hangup_protection``, and
-``_finalize_update_output`` in ``hermes_cli/main.py``.  These exist so
+``_finalize_update_output`` in ``hermes_cli/main_dashboard.py``.  These exist so
 that ``hermes update`` survives a terminal disconnect mid-install
 (SSH drop, shell close) without leaving the venv half-installed.
 """
@@ -14,8 +14,16 @@ import sys
 
 import pytest
 
-from hermes_cli.main_dashboard import _UpdateOutputStream, _finalize_update_output, _install_hangup_protection
-from hermes_cli.update_cmd import _log_only_write, _print_update_completion, _run_logged_subprocess
+from hermes_cli.main_dashboard import (
+    _UpdateOutputStream,
+    _finalize_update_output,
+    _install_hangup_protection,
+)
+from hermes_cli.update_cmd import (
+    _log_only_write,
+    _print_update_completion,
+    _run_logged_subprocess,
+)
 
 
 def test_update_completion_includes_bounded_action_identity(monkeypatch, capsys):
@@ -99,7 +107,6 @@ class TestUpdateOutputStream:
 
 class TestInstallHangupProtection:
 
-
     def test_wraps_stdout_and_stderr_with_mirror(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         # Nuke any cached home path
@@ -128,6 +135,31 @@ class TestInstallHangupProtection:
         finally:
             _finalize_update_output(state)
             # Sanity-check restoration
+            assert sys.stdout is prev_out
+            assert sys.stderr is prev_err
+
+    def test_gateway_mode_keeps_update_log_progress(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        prev_out, prev_err = sys.stdout, sys.stderr
+
+        state = _install_hangup_protection(gateway_mode=True)
+
+        try:
+            assert state["installed"] is True
+            assert isinstance(sys.stdout, _UpdateOutputStream)
+            assert isinstance(sys.stderr, _UpdateOutputStream)
+
+            sys.stdout.write("gateway progress\n")
+            _log_only_write("desktop build progress\n")
+            sys.stdout.flush()
+
+            contents = (tmp_path / "logs" / "update.log").read_text(
+                encoding="utf-8"
+            )
+            assert "gateway progress" in contents
+            assert "desktop build progress" in contents
+        finally:
+            _finalize_update_output(state)
             assert sys.stdout is prev_out
             assert sys.stderr is prev_err
 
@@ -199,13 +231,16 @@ class TestFinalizeUpdateOutput:
 
 class TestLogOnlyWrite:
 
-    def test_noop_without_update_stream(self, monkeypatch):
-        """When stdout isn't the mirroring update stream (no ``_log``), it must
-        be a silent no-op rather than crash."""
+    def test_unwrapped_stdout_still_appends_update_log(self, monkeypatch):
+        """Unwrapped stdout must still grow logs/update.log (Desktop watchdog)."""
+        from hermes_constants import get_hermes_home
+
         plain = io.StringIO()
         monkeypatch.setattr(sys, "stdout", plain)
-        _log_only_write("something")  # should not raise
+        _log_only_write("something")
         assert plain.getvalue() == ""
+        log_path = get_hermes_home() / "logs" / "update.log"
+        assert "something" in log_path.read_text(encoding="utf-8")
 
     def test_empty_text_is_noop(self, monkeypatch):
         terminal = io.StringIO()
@@ -230,3 +265,44 @@ class TestRunLoggedSubprocess:
         assert terminal.getvalue() == ""  # not echoed to terminal
         assert "LOUD BUILD OUTPUT" in log.getvalue()  # but kept in the log
 
+class TestUpdateProgressHeartbeat:
+    def test_emits_elapsed_line_while_work_runs(self, monkeypatch):
+        import threading
+
+        from hermes_cli.update_cmd import _update_progress_heartbeat
+
+        observed = threading.Event()
+
+        class Terminal(io.StringIO):
+            def write(self, text):
+                result = super().write(text)
+                if "still (" in text:
+                    observed.set()
+                return result
+
+        terminal = Terminal()
+        monkeypatch.setattr(sys, "stdout", terminal)
+        with _update_progress_heartbeat("still ({elapsed}s)", interval_seconds=.02):
+            assert observed.wait(3), "heartbeat never reached the terminal"
+        assert "still (" in terminal.getvalue()
+
+    def test_unwrapped_stdout_still_grows_update_log(self, monkeypatch, capsys):
+        """Observe the actual write instead of assuming a thread ran after a sleep."""
+        import threading
+
+        from hermes_constants import get_hermes_home
+        from hermes_cli import update_cmd
+
+        observed = threading.Event()
+        original = update_cmd._log_only_write
+
+        def witness(text):
+            original(text)
+            observed.set()
+
+        monkeypatch.setattr(update_cmd, "_log_only_write", witness)
+        with update_cmd._update_progress_heartbeat("still ({elapsed}s)", interval_seconds=.02):
+            assert observed.wait(3), "heartbeat never reached the progress log"
+        log_path = get_hermes_home() / "logs" / "update.log"
+        assert "still (" in log_path.read_text(encoding="utf-8")
+        assert "still (" in capsys.readouterr().out

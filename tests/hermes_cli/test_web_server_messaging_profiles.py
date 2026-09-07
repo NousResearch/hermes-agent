@@ -268,3 +268,43 @@ class TestMultiplexPortBindingGuard:
             )
             assert resp.status_code == 200
 
+
+class TestProfileDefaultOnDefaultHomeReportsEnvEnabled:
+    """``profile=default`` on a process whose HERMES_HOME IS the default home must
+    take the unscoped path, not the profile-scoped one.
+
+    The desktop app always sends ``profile=default``. ``_is_current_profile()`` only
+    recognized None/""/"current" — NOT "default" — so a single-profile install (the
+    standard ``hermes gateway setup`` flow: token in ``.env``, no ``platforms:``
+    section in ``config.yaml``) entered the scoped branch, which derives enablement
+    from ``config.yaml`` only and never calls ``load_gateway_config()``'s
+    env-override pass. Result: a platform connected via ``.env`` reported
+    ``enabled=false, state="disabled"`` while it was actually running. The unscoped
+    GET (no profile param) correctly reported ``enabled=true``. Issue #104614.
+    """
+
+    def test_default_profile_param_matches_unscoped_enablement(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        # Simulate the gateway having loaded .env into os.environ at startup
+        # (load_hermes_dotenv in gateway/run.py): the dashboard process shares
+        # that environment, so the unscoped load_gateway_config() env-override
+        # pass sees the token and enables the platform.
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
+
+        # config.yaml has NO platforms: section (isolated_profiles writes "{}"),
+        # so enablement can ONLY come from the env-override pass — exactly the
+        # standard setup flow the bug hits.
+
+        unscoped = client.get("/api/messaging/platforms")
+        assert unscoped.status_code == 200
+        telegram_unscoped = _telegram(unscoped.json())
+        assert telegram_unscoped["enabled"] is True
+
+        scoped_default = client.get(
+            "/api/messaging/platforms", params={"profile": "default"}
+        )
+        assert scoped_default.status_code == 200
+        telegram_scoped = _telegram(scoped_default.json())
+        assert telegram_scoped["enabled"] is True
+

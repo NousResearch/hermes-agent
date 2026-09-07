@@ -16,7 +16,9 @@ import {
   setCurrentBranch,
   setCurrentCwdTransient,
   setCurrentFastMode,
+  setCurrentModel,
   setCurrentPersonality,
+  setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
@@ -177,9 +179,11 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // composer atoms as the fallback for an uncached session) invalidates.
     const knownState = sessionId ? sessionStateByRuntimeIdRef.current.get(sessionId) : undefined
     const modelValueChanged = modelChanged && payload!.model !== (knownState?.model ?? $currentModel.get())
+    const modelComposerStale = isActiveEvent && payload!.model !== $currentModel.get()
 
     const providerValueChanged =
       providerChanged && payload!.provider !== (knownState?.provider ?? $currentProvider.get())
+    const providerComposerStale = isActiveEvent && payload!.provider !== $currentProvider.get()
 
     // Config is profile-scoped, but session.info also arrives for background
     // sessions. Only an active-session event from the currently active
@@ -412,6 +416,26 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // guarded or a composer/global pref. Background sessions' heartbeats
       // used to trigger it too (two REST calls each, every turn).
       ctx.scheduleConfigRefresh()
+    }
+
+    // Runtime model/provider drift must propagate to the composer atoms
+    // (which the model-pill dropdown reads) even when the per-session state
+    // patch was a no-op — e.g. the session cache already held the switched-to
+    // model after a resume, but $currentModel still carried the stale value
+    // from the previous session/model. applySessionInfoStatePatch's identity
+    // guard returns the same state reference in that case, so
+    // syncRuntimeMetadataToView never fires and the pill stays stale.
+    //
+    // modelComposerStale / providerComposerStale (computed above) detect this
+    // drift directly against the composer atoms, independent of the session
+    // cache — so a no-op patch still triggers the display sync. gated on
+    // isActiveEvent so background session heartbeats cannot clobber the
+    // foreground pill.
+    if (modelComposerStale) {
+      setCurrentModel(payload!.model)
+    }
+    if (providerComposerStale) {
+      setCurrentProvider(payload!.provider)
     }
 
     if (modelValueChanged || providerValueChanged) {

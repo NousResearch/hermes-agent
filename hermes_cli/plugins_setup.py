@@ -18,11 +18,18 @@ DESCRIBE_TIMEOUT = 15
 RUN_TIMEOUT = 300
 
 # run_path loads only the reviewed root setup.py, never the plugin __init__.py.
+# The run child checks revision in that same module instance, guarding a package
+# replacement between the host description and subprocess launch.
 _RUNNER = """
 import contextlib, json, pathlib, runpy, sys
 with contextlib.redirect_stdout(sys.stderr):
     module = runpy.run_path(sys.argv[1])
-    result = module[sys.argv[2]](pathlib.Path(sys.argv[3]))
+    home = pathlib.Path(sys.argv[3])
+    if sys.argv[2] == "run":
+        current = module["describe"](home)
+        if current.get("revision") != sys.argv[4]:
+            raise ValueError("Setup revision changed before execution; review and retry enable.")
+    result = module[sys.argv[2]](home)
 print(json.dumps(result if sys.argv[2] == "describe" else None))
 """
 
@@ -46,10 +53,10 @@ def _entrypoint(entry):
     return path
 
 
-def _invoke(path, action, home):
+def _invoke(path, action, home, *, revision=""):
     timeout = DESCRIBE_TIMEOUT if action == "describe" else RUN_TIMEOUT
     with subprocess.Popen(
-        [sys.executable, "-I", "-B", "-c", _RUNNER, str(path), action, str(home)],
+        [sys.executable, "-I", "-B", "-c", _RUNNER, str(path), action, str(home), revision],
         cwd=path.parent, env={**os.environ, "HERMES_HOME": str(home)},
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         start_new_session=os.name != "nt",
@@ -95,7 +102,7 @@ def prepare_plugin_setup(entry, *, setup_consent=None):
             return {"ok": False, "status": "consent_required", "name": key,
                     "error": "Review native setup and explicitly consent before enabling this plugin.",
                     "setup": description, "consent": consent}
-        _invoke(path, "run", home)
+        _invoke(path, "run", home, revision=description["revision"])
         after = _describe(path, home)
         if not after["ready"] or after["revision"] != description["revision"]:
             raise ValueError("Setup did not verify readiness at the reviewed revision. Review and retry enable.")

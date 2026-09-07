@@ -8,6 +8,59 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.4.1] — 2026-09-07 — hermes@421c72f3bc (333 behind upstream/main)
+
+Follow-up to `NF-v0.4.0` (`RUN-2026-09-07-003`). One deliberate loose end from
+`CHG-2026-09-07-007` closed by owner review: the seeded-persona auto-upgrade path
+now converges homes seeded in the `NF-v0.2.0`..`NF-v0.3.x` window onto the current
+North Forge `DEFAULT_SOUL_MD` instead of leaving them stuck on the old
+*"You are Hermes Agent, built by Nous Research."* line. **PATCH** — completes an
+already-decided rebrand's migration path; no new capability, no behaviour change
+beyond the persona text a non-customized SOUL.md converges to. `NF-v0.4.0` is now
+on `origin/main` (pushed this run); this block is pushed with it. Upstream has
+moved to `a7198a8855` — **333 behind**, not the "13 behind" the last handoff
+recorded (upstream is very active; the gap grew ~320 commits since `NF-v0.3.0`
+was cut). A mechanical sync attempt is tracked separately this run.
+
+### Changed
+
+- **CHG-2026-09-07-009** — `_LEGACY_TEMPLATE_SOULS` in `hermes_cli/default_soul.py`
+  gained the North Forge seeded persona line from `NF-v0.2.0`..`NF-v0.3.x` (the
+  text `CHG-2026-09-07-007` rebranded away from), so `is_legacy_template_soul()`
+  now recognizes a SOUL.md still carrying that line as non-customized and
+  `_ensure_default_soul_md()` upgrades it in place to the current `DEFAULT_SOUL_MD`
+  on next run. `CHG-2026-09-07-007` had **deliberately** withheld this — the list
+  carries a "never silently overwrite a user's SOUL.md" guarantee and the only
+  affected homes were disposable test installs — and flagged it for review; owner
+  review this run chose to close the gap now, before real recipient drives are
+  built.
+  - Two frozen literals added (NOT `DEFAULT_SOUL_MD`-derived, so a later edit to
+    the constant can't silently drop the coverage again): the **em-dash** form the
+    runtime `_ensure_default_soul_md()` seeds, and the **ASCII `--`** form
+    `scripts/install.ps1` writes verbatim (its `$soulContent` here-string, ~line
+    3396). The ASCII form was covered by the `DEFAULT_SOUL_MD.replace("—","--")`
+    entry until `NF-v0.4.0` repointed that constant at the North Forge text; it is
+    now spelled out explicitly.
+  - Inserted after the pre-`#95681` upstream text and before the `.replace(...)`
+    entry; `_SCAFFOLD_HEAD`/`_SCAFFOLD_TAIL` and list indices 0–2 are untouched
+    (they must stay Hermes-verbatim for detection, and `test_config.py` seeds
+    `_LEGACY_TEMPLATE_SOULS[0]`).
+  - **Not touched:** the persona text `scripts/install.ps1` itself seeds still
+    reads *"You are Hermes Agent, built by Nous Research."* (stale against its own
+    "MUST match DEFAULT_SOUL_MD" comment) — changing what the installer *seeds* is
+    an identity-surface edit of the same class `CHG-2026-09-07-007` deferred
+    (`BRANDING.md` category 3), out of this pass's named scope. With this change
+    such installs self-heal to the North Forge line on the next `hermes` run.
+  - **Tests** — `tests/hermes_cli/test_config.py`: hardcoded `_PRE_NF_V0_4_0_DEFAULT_SOUL`
+    fixture + `test_upgrades_pre_nf_v0_4_0_default_soul_md` (mirrors
+    `test_upgrades_pre_rewrite_default_soul_md`) and
+    `test_upgrades_pre_nf_v0_4_0_ascii_dashed_soul_md`. `TestEnsureHermesHome`
+    6/6; 210 passed / 1 skipped across `test_config` + `test_prompt_builder` +
+    `test_banner` + `test_startup_fast_guards` + `test_install_ps1_ascii_only`;
+    `ruff check` clean on both changed files.
+  - Paths: `hermes_cli/default_soul.py`, `tests/hermes_cli/test_config.py`. Ref:
+    `CHG-2026-09-07-007`, `DECISION-2026-09-06-001`. Run: RUN-2026-09-07-003.
+
 ## [NF-v0.4.0] — 2026-09-07 — hermes@61d30533f7 (13 behind upstream/main)
 
 First pass to touch **application code** for identity (`RUN-2026-09-07-002`). The

@@ -105,6 +105,55 @@ class TestEnsureHermesHome:
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
 
+    # The North Forge seeded persona from NF-v0.2.0..v0.3.x, before the NF-v0.4.0
+    # rebrand of the first sentence. Hardcoded (not read from the module) so it keeps
+    # testing the OLD text regardless of future changes to _LEGACY_TEMPLATE_SOULS.
+    _PRE_NF_V0_4_0_DEFAULT_SOUL = (
+        "You are Hermes Agent, built by Nous Research. Be direct: match the length "
+        "of your reply to the weight of the ask — a one-line question gets a "
+        "one-line answer, and finished work gets a short report of what changed, "
+        "what's verified, and what's left, never a replay of the process. No filler "
+        "(\"Great question,\" \"I'd be happy to\"), no restating the request back, no "
+        "re-summarizing what you already said, no narrating tool calls the user can "
+        "see. Plain claims over adjectives; when unsure, say so plainly. Agree "
+        "because it's right, not because the user said it. Depth is earned — give it "
+        "when the user asks for detail, teaches, or the stakes demand it, not by "
+        "default."
+    )
+
+    def test_upgrades_pre_nf_v0_4_0_default_soul_md(self, tmp_path):
+        # Homes seeded by North Forge between NF-v0.2.0 and the NF-v0.4.0 identity
+        # rewrite got the old "You are Hermes Agent, built by Nous Research." persona
+        # auto-written on first run (runtime _ensure_default_soul_md, em-dash form) —
+        # not user-authored, so it upgrades in place the same way the pre-#95681
+        # text above does. Regression test for that path.
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+        assert self._PRE_NF_V0_4_0_DEFAULT_SOUL != DEFAULT_SOUL_MD  # sanity: fixture predates the rewrite
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text(self._PRE_NF_V0_4_0_DEFAULT_SOUL, encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
+
+    def test_upgrades_pre_nf_v0_4_0_ascii_dashed_soul_md(self, tmp_path):
+        # scripts/install.ps1 seeds the same NF-v0.2.0..v0.3.x persona verbatim but
+        # with ASCII "--" instead of the em-dash. Until NF-v0.4.0 that form was
+        # covered by _LEGACY_TEMPLATE_SOULS' DEFAULT_SOUL_MD.replace(...) entry; now
+        # it is a frozen literal of its own and must still upgrade in place.
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+        seeded = self._PRE_NF_V0_4_0_DEFAULT_SOUL.replace("—", "--")
+        assert "--" in seeded and "—" not in seeded  # sanity: pure ASCII, matches install.ps1
+        assert seeded != DEFAULT_SOUL_MD
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text(seeded, encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
+
     def test_does_not_upgrade_user_customized_soul_md(self, tmp_path):
         # A SOUL.md that merely starts with the old default but was edited by
         # the user carries real intent and must never be silently overwritten.

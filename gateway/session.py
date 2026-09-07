@@ -84,6 +84,8 @@ class SessionSource:
     role_authorized: bool = False  # adapter granted access via role, not user ID
     # Multiplex profile this message routes to (None => active/default); namespaces the key.
     profile: Optional[str] = None
+    # Bot username or ID associated with this source/adapter
+    bot: Optional[str] = None
     # Transport-local fail-closed signal: explicit profile route whose target is not served.
     profile_route_rejected: bool = field(default=False, repr=False, compare=False)
     # Discord auto-thread metadata: explicit so pre-existing/renamed threads are never renamed.
@@ -123,7 +125,7 @@ class SessionSource:
     # optionals around the dual-written scope pair.
     _ALWAYS_FIELDS = ("chat_id", "chat_name", "chat_type", "user_id", "user_name", "thread_id", "chat_topic")
     _OPTIONAL_PRE_SCOPE = ("user_id_alt", "chat_id_alt")
-    _OPTIONAL_POST_SCOPE = ("parent_chat_id", "message_id", "profile")
+    _OPTIONAL_POST_SCOPE = ("parent_chat_id", "message_id", "profile", "bot")
     _OPTIONAL_TAIL = ("auto_thread_initial_name", "prospective_thread_id")
 
     def to_dict(self) -> Dict[str, Any]:

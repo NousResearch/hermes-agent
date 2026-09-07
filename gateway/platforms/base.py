@@ -2333,6 +2333,36 @@ class BasePlatformAdapter(ABC):
         :meth:`_session_key_profile` so adapter-level keys leave ``agent:main:``."""
         self._owner_profile = None if (name := (profile_name or "").strip() or None) == "default" else name
 
+    def bot_identifier(self) -> Optional[str]:
+        """Return the bot username or ID for this adapter, if discoverable."""
+        for attr in ("_current_bot_username", "current_bot_username"):
+            fn = getattr(self, attr, None)
+            if callable(fn):
+                with contextlib.suppress(Exception):
+                    val = fn()
+                    if val:
+                        return str(val).lstrip("@").strip()
+        for attr in (
+            "_bot_username", "bot_username", "_bot_username_observed",
+            "_bot_id", "bot_id", "_bot_user_id", "bot_user_id",
+        ):
+            val = getattr(self, attr, None)
+            if isinstance(val, (str, int)) and str(val).strip():
+                return str(val).lstrip("@").strip()
+        client = getattr(self, "_client", None)
+        if client is not None:
+            user = getattr(client, "user", None)
+            if user is not None:
+                val = getattr(user, "name", None) or getattr(user, "id", None)
+                if val:
+                    return str(val).lstrip("@").strip()
+        bot = getattr(self, "_bot", None)
+        if bot is not None:
+            val = getattr(bot, "username", None) or getattr(bot, "id", None)
+            if val:
+                return str(val).lstrip("@").strip()
+        return None
+
     def _session_key_profile(self, source: Optional[Any] = None) -> Optional[str]:
         """Profile namespace for an adapter-derived session key. Ingress runs BEFORE the runner
         stamps ``source.profile``, so without this every bot in a multiplexed gateway shares one
@@ -4162,28 +4192,36 @@ class BasePlatformAdapter(ABC):
         scope_id: Optional[str] = None, guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None, message_id: Optional[str] = None,
         role_authorized: bool = False, auto_thread_created: bool = False,
-        auto_thread_initial_name: Optional[str] = None) -> SessionSource:
+        auto_thread_initial_name: Optional[str] = None,
+        bot: Optional[str] = None) -> SessionSource:
         """Build a SessionSource; with ``gateway.profile_routes`` configured the matching
         profile is stamped on ``source.profile`` for per-profile HERMES_HOME isolation."""
         def _opt(value) -> Optional[str]:
             return str(value) if value else None
+        resolved_bot = bot or self.bot_identifier()
         fields = dict(
             platform=self.platform, chat_id=str(chat_id), chat_name=chat_name, chat_type=chat_type,
             user_id=_opt(user_id), user_name=user_name, thread_id=_opt(thread_id),
             chat_topic=(chat_topic or "").strip() or None, user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt, is_bot=is_bot, scope_id=_opt(scope_id),
             guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),
-            message_id=_opt(message_id))
+            message_id=_opt(message_id), bot=_opt(resolved_bot))
+        owner_profile = getattr(self, "_owner_profile", None)
         profile, profile_route_rejected = None, False  # profile from configured routes, if any
         if self.gateway_runner is not None:
             from gateway.profile_routing import ProfileRouteRejected
             try:
-                profile = self.gateway_runner._profile_name_for_source(SessionSource(**fields))
+                profile = self.gateway_runner._profile_name_for_source(
+                    SessionSource(**fields),
+                    adapter_profile=owner_profile,
+                )
             except ProfileRouteRejected:
                 profile_route_rejected = True
             except Exception:
                 logger.warning("Profile resolution failed for %s/%s, defaulting to active profile",
                                self.platform, chat_id, exc_info=True)
+        elif owner_profile:
+            profile = owner_profile
         source = SessionSource(**fields, profile=profile, role_authorized=role_authorized,
                                auto_thread_created=auto_thread_created,
                                auto_thread_initial_name=auto_thread_initial_name)

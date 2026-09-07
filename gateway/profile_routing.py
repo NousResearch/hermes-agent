@@ -57,23 +57,41 @@ class ProfileRoute:
     guild_id: Optional[str] = None
     chat_id: Optional[str] = None
     thread_id: Optional[str] = None
+    bot: Optional[str] = None
     enabled: bool = True
 
     @property
     def specificity(self) -> int:
         """Higher value = more specific match."""
-        return 2 * bool(self.guild_id) + 4 * bool(self.chat_id) + 8 * bool(self.thread_id)
+        return (
+            2 * bool(self.guild_id)
+            + 4 * bool(self.chat_id)
+            + 8 * bool(self.thread_id)
+            + 16 * bool(self.bot)
+        )
 
     def matches(
         self, platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
         thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
+        bot: Optional[str] = None, adapter_profile: Optional[str] = None,
     ) -> bool:
         """True if every discriminator the route declares holds (AND).
 
         ``chat_id`` matches the channel directly or as the parent of a thread/forum post; WhatsApp
         ``chat_id`` also matches across number/JID/LID after the exact check (groups/broadcasts stay exact-only).
+        If ``adapter_profile`` is set (dedicated secondary adapter), a generic route without an
+        explicit ``bot`` discriminator does not match so it cannot hijack the secondary adapter.
         """
         if not self.enabled or self.platform != platform:
+            return False
+        if self.bot:
+            if not bot:
+                return False
+            if self.bot.lstrip("@").lower() != str(bot).lstrip("@").lower():
+                return False
+        elif adapter_profile is not None:
+            # Generic route without explicit bot discriminator must not hijack
+            # messages arriving at a dedicated secondary profile's adapter.
             return False
         if self.thread_id and self.thread_id != thread_id:
             return False
@@ -133,11 +151,16 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
         except (ValueError, ImportError):
             logger.warning("Skipping profile route %s: invalid profile name %r", name, profile)
             continue
+        bot_raw = entry.get("bot") or entry.get("bot_id") or entry.get("bot_username")
+        bot_val = _coerce_route_id(bot_raw)
+        if bot_val is not None:
+            bot_val = str(bot_val).strip().lstrip("@") or None
         routes.append(ProfileRoute(
             name=name, platform=platform, profile=profile,
             guild_id=_coerce_route_id(entry.get("guild_id")),
             chat_id=_coerce_route_id(entry.get("chat_id")),
             thread_id=_coerce_route_id(entry.get("thread_id")),
+            bot=bot_val,
             enabled=entry.get("enabled", True),
         ))
     routes.sort(key=lambda r: r.specificity, reverse=True)
@@ -148,9 +171,13 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
 def match_profile_route(
     routes: List[ProfileRoute], platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
     thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
+    bot: Optional[str] = None, adapter_profile: Optional[str] = None,
 ) -> Optional[ProfileRoute]:
     """Return the first (most specific) matching route, or None."""
     for route in routes:
-        if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id, parent_chat_id=parent_chat_id):
+        if route.matches(
+            platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id,
+            parent_chat_id=parent_chat_id, bot=bot, adapter_profile=adapter_profile,
+        ):
             return route
     return None

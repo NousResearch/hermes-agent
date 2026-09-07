@@ -16,6 +16,10 @@ class TestProfileRoute:
                          guild_id="g", chat_id="c", thread_id="t")
         assert r.specificity == 14  # 2 + 4 + 8
 
+    def test_specificity_bot(self):
+        r = ProfileRoute(name="b", platform="telegram", profile="p",
+                         bot="my_bot", chat_id="c")
+        assert r.specificity == 20  # 4 + 16
 
     def test_frozen(self):
         r = ProfileRoute(name="x", platform="discord", profile="p")
@@ -45,6 +49,34 @@ class TestProfileRouteMatching:
         assert not r.matches("discord", guild_id="999", chat_id="222")
         # guild matches but chat differs -> NO match
         assert not r.matches("discord", guild_id="111", chat_id="333")
+
+    def test_bot_exact_and_case_insensitive_matching(self):
+        r = ProfileRoute(name="b", platform="telegram", profile="team_b", bot="my_bot")
+        # Exact match
+        assert r.matches("telegram", bot="my_bot")
+        # Case insensitive and ignores leading @
+        assert r.matches("telegram", bot="@MY_BOT")
+        assert r.matches("telegram", bot="My_Bot")
+        # Mismatch
+        assert not r.matches("telegram", bot="other_bot")
+        assert not r.matches("telegram", bot=None)
+
+    def test_adapter_profile_prevents_generic_route_hijack(self):
+        # Generic route with chat_id but no bot discriminator
+        r = ProfileRoute(name="admin_dm", platform="telegram", profile="ops", chat_id="72719239")
+        # Normal primary adapter (adapter_profile=None) matches
+        assert r.matches("telegram", chat_id="72719239", adapter_profile=None)
+        # Dedicated secondary adapter (adapter_profile="team_b") does NOT match (not hijacked)
+        assert not r.matches("telegram", chat_id="72719239", adapter_profile="team_b")
+
+    def test_adapter_profile_allows_explicit_bot_route(self):
+        # Explicit route with bot discriminator matches even if adapter_profile is set
+        r = ProfileRoute(
+            name="explicit_override", platform="telegram", profile="ops",
+            chat_id="72719239", bot="team_b_bot"
+        )
+        assert r.matches("telegram", chat_id="72719239", bot="team_b_bot", adapter_profile="team_b")
+        assert not r.matches("telegram", chat_id="72719239", bot="other_bot", adapter_profile="team_b")
 
 
 class TestParseProfileRoutes:
@@ -86,15 +118,37 @@ class TestParseProfileRoutes:
         assert match_profile_route(routes, "discord", chat_id="123") is None
         assert sum("can never match" in rec.message for rec in caplog.records) == 2
 
+    def test_parse_bot_variants(self):
+        routes = parse_profile_routes([
+            {"name": "b1", "platform": "telegram", "profile": "p1", "bot": "@my_bot"},
+            {"name": "b2", "platform": "telegram", "profile": "p2", "bot_id": 123456},
+            {"name": "b3", "platform": "telegram", "profile": "p3", "bot_username": "other_bot"},
+        ])
+        by_name = {r.name: r for r in routes}
+        assert by_name["b1"].bot == "my_bot"
+        assert by_name["b2"].bot == "123456"
+        assert by_name["b3"].bot == "other_bot"
+
 
 class TestMatchProfileRoute:
-
 
     def test_no_match_returns_none(self):
         routes = [
             ProfileRoute(name="r", platform="telegram", profile="p"),
         ]
         assert match_profile_route(routes, "discord") is None
+
+    def test_match_profile_route_bot_and_adapter_profile(self):
+        routes = [
+            ProfileRoute(name="generic_dm", platform="telegram", profile="ops", chat_id="12345"),
+            ProfileRoute(name="bot_specific", platform="telegram", profile="custom", bot="special_bot"),
+        ]
+        # Primary adapter matches generic
+        assert match_profile_route(routes, "telegram", chat_id="12345", adapter_profile=None).name == "generic_dm"
+        # Secondary adapter skips generic
+        assert match_profile_route(routes, "telegram", chat_id="12345", adapter_profile="team_b") is None
+        # Secondary adapter with matching bot matches
+        assert match_profile_route(routes, "telegram", chat_id="12345", bot="special_bot", adapter_profile="team_b").name == "bot_specific"
 
 
 class TestSessionKeyIntegration:

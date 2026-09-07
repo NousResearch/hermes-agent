@@ -236,6 +236,48 @@ class TestNonDiscordProfileRouting:
         source = adapter.build_source(chat_id="route-chat", chat_type="group")
         assert source.profile is None
 
+    def test_secondary_adapter_not_hijacked_by_generic_route(self, mock_runner):
+        """A generic chat_id route without a bot discriminator must NOT hijack messages
+        arriving at a dedicated secondary adapter (#104933)."""
+        mock_runner.config.multiplex_profiles = True
+        mock_runner.config.profile_routes = [
+            ProfileRoute(
+                name="admin-dm",
+                platform="telegram",
+                profile="ops",
+                chat_id="72719239",
+            )
+        ]
+        adapter = _stub_adapter(Platform.TELEGRAM, mock_runner)
+        adapter.set_owner_profile("team_b")
+        source = adapter.build_source(chat_id="72719239", chat_type="dm")
+        assert source.profile == "team_b"
+
+    def test_secondary_adapter_explicit_bot_route(self, mock_runner):
+        """An explicit route specifying the secondary bot matches even when arriving
+        at a dedicated secondary adapter."""
+        mock_runner.config.multiplex_profiles = True
+        mock_runner.config.profile_routes = [
+            ProfileRoute(
+                name="bot-dm",
+                platform="telegram",
+                profile="special",
+                chat_id="72719239",
+                bot="teamb_bot",
+            )
+        ]
+        adapter = _stub_adapter(Platform.TELEGRAM, mock_runner)
+        adapter.set_owner_profile("team_b")
+        adapter._bot_username = "teamb_bot"
+        with patch(
+            "hermes_cli.profiles.profiles_to_serve",
+            return_value=[("default", Path("/profiles/default")),
+                          ("team_b", Path("/profiles/team_b")),
+                          ("special", Path("/profiles/special"))],
+        ):
+            source = adapter.build_source(chat_id="72719239", chat_type="dm")
+            assert source.profile == "special"
+
 
 class TestGatewayRunnerInjection:
     """``BasePlatformAdapter`` declares ``gateway_runner`` so the gateway's

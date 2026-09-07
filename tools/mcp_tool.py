@@ -263,12 +263,27 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str,
             result = await list_method()
         else:
             # mcp 2.0 takes params=PaginatedRequestParams, 1.x takes cursor=.
+            # Inspect before awaiting: an internal TypeError is not a signature mismatch.
+            import inspect
+
             try:
+                signature = inspect.signature(list_method)
+            except (TypeError, ValueError):
+                accepts_params = True  # Opaque callables use the current SDK convention.
+            else:
+                accepts_params = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    or (p.name == "params" and p.kind != inspect.Parameter.POSITIONAL_ONLY)
+                    for p in signature.parameters.values()
+                )
+            if accepts_params:
                 import mcp.types as _types  # late: keeps the SDK import lazy
                 _params_cls = getattr(_types, "PaginatedRequestParams", None)
-                result = await (list_method(params=_params_cls(cursor=cursor)) if _params_cls is not None
-                                else list_method(cursor=cursor))
-            except TypeError:
+                if _params_cls is not None:
+                    result = await list_method(params=_params_cls(cursor=cursor))
+                else:
+                    result = await list_method(cursor=cursor)
+            else:
                 result = await list_method(cursor=cursor)
         if cache_meta_out is not None and not items:
             for key, snake, camel in (("ttl_ms", "ttl_ms", "ttlMs"), ("cache_scope", "cache_scope", "cacheScope")):

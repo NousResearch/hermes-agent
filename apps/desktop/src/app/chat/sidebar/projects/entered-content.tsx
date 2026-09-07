@@ -9,7 +9,7 @@ import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
-import { $dismissedWorktreeIds, dismissWorktree, setWorkspaceNodeOpen } from '@/store/layout'
+import { $dismissedWorktreeIds, $removedWorktreeIds, dismissWorktree, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { removeWorktreePath } from '@/store/projects'
 
@@ -101,6 +101,7 @@ function RepoFlatSection({
   const s = t.sidebar
   const [open, toggleOpen] = useWorkspaceNodeOpen(repo.id)
   const dismissedWorktrees = useStore($dismissedWorktreeIds)
+  const removedWorktrees = useStore($removedWorktreeIds)
 
   // The repo's session lanes already come fully built from the backend; this
   // only injects empty VISUAL lanes from a live `git worktree list`.
@@ -131,11 +132,11 @@ function RepoFlatSection({
   )
 
   // Main lanes are always visible; linked worktrees can be user-dismissed.
-  // A live `git worktree list` hit wins over an old dismissal: if git says the
-  // worktree exists again (or still exists after "hide from sidebar"), surface it.
+  // Discovery may resurrect a removed worktree, never an explicit sidebar hide.
   const ordered = overlaidGroups.filter(
     group =>
-      group.isMain || !dismissedWorktrees.includes(group.id) || (group.path && discoveredWorktreePaths.has(group.path))
+      group.isMain || !dismissedWorktrees.includes(group.id) ||
+      (removedWorktrees.includes(group.id) && group.path && discoveredWorktreePaths.has(group.path))
   )
 
   // Removal asks how: actually `git worktree remove` it, or just hide the lane
@@ -151,7 +152,7 @@ function RepoFlatSection({
 
     try {
       await removeWorktreePath(repo.path, group.path, { force })
-      dismissWorktree(group.id)
+      dismissWorktree(group.id, { removed: true })
     } catch (err) {
       // git refuses a non-force remove on a dirty/locked worktree — offer force
       // rather than dead-ending on an error toast.

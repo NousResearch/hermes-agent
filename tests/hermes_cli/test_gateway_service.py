@@ -258,6 +258,21 @@ class TestGeneratedSystemdUnits:
         unit = gateway_cli.generate_systemd_unit(system=False)
         assert "TimeoutStopSec=60" in unit
 
+    def test_restart_exit_code_is_also_declared_a_success_status(self):
+        """#104251: a planned restart (gateway/restart.py's exit 75) is force-restarted
+        via RestartForceExitStatus, but without SuccessExitStatus=75 too, systemd still
+        classifies the exit as a failure -- the unit flips to ``failed``/``Result=exit-code``
+        and any OnFailure= alert unit fires on every routine restart (hermes update,
+        hermes gateway restart, the in-app restart). SuccessExitStatus=75 keeps the same
+        force-restart behavior while letting the unit land back in ``active``/``success``,
+        so OnFailure= stays reserved for actual failures."""
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert f"SuccessExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
+        # Must still force an actual restart on that exit code -- SuccessExitStatus alone
+        # would otherwise let the process stay stopped instead of being relaunched.
+        assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
+        assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
+
     def test_unit_stop_budget_beats_drain_only_formula_with_real_loaders(
         self, monkeypatch
     ):

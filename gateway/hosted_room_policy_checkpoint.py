@@ -96,12 +96,16 @@ def _require_room(conn: sqlite3.Connection, room_id: str) -> None:
 
 def _settled_message(
     conn: sqlite3.Connection, room_id: str, discussion_event_id: str, message_event_id: Any) -> dict[str, Any] | None:
-    """Return the indexed member message a ``turn.settled`` event committed, if it is in the projection."""
-    rows = conn.execute(
-        "SELECT seq, event_json FROM hosted_room_policy_events WHERE room_id=? AND discussion_event_id=?",
-        (room_id, discussion_event_id)).fetchall()
-    return next(
-        (m for m in (json.loads(row["event_json"]) for row in rows) if m.get("event_id") == message_event_id), None)
+    """Read the committed message even after its active discussion was compacted."""
+    row = conn.execute(
+        f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND event_id=?",
+        (room_id, message_event_id)).fetchone()
+    if row is None:
+        return None
+    event = _event_from_room_row(row)
+    if event["kind"] != "message.member" or _text(event["payload"], "discussion_event_id") != discussion_event_id:
+        return None
+    return event
 
 
 class HostedRoomPolicyCheckpoint:
@@ -193,11 +197,15 @@ class HostedRoomPolicyCheckpoint:
             (room_id, discussion_event_id)).fetchone()
         if source is None and kind == "turn.settled" and payload.get("message_event_id"):
             source = self._restore_retry_discussion(conn, event, payload)
-        if source is None:
-            return
-        self._store_active_event(conn, event=event, thread_id=thread_id, discussion_event_id=discussion_event_id)
+        if source is not None:
+            self._store_active_event(conn, event=event, thread_id=thread_id, discussion_event_id=discussion_event_id)
+        # Keep late receipts even without an active projection. Only the guarded
+        # explicit-retry path above may reopen a still-current silent discussion.
         if kind not in _TERMINAL_KINDS:
             return
+        if source is None:
+            source = conn.execute("""SELECT seq FROM hosted_room_events
+                WHERE room_id=? AND event_id=? AND kind='message.user'""", (room_id, discussion_event_id)).fetchone()
         task_id = _text(payload, "task_id")
         execution_generation = int(payload.get("execution_generation") or 0) if kind == "turn.deferred" else 0
         if task_id:
@@ -210,7 +218,7 @@ class HostedRoomPolicyCheckpoint:
         if kind == "turn.settled" and payload.get("message_event_id"):
             committed = _settled_message(conn, room_id, discussion_event_id, payload["message_event_id"])
             if committed is not None:
-                if seen_through_seq >= int(source["seq"]):
+                if source is not None and seen_through_seq >= int(source["seq"]):
                     seen_through_seq = max(seen_through_seq, int(committed["seq"]))
                 self._store_transcript_event(conn, event=committed, thread_id=thread_id, settled_seq=seq)
         else:
@@ -421,15 +429,21 @@ class HostedRoomPolicyCheckpoint:
                 for event in published:
                     events[int(event["seq"])] = event
                 return [events[seq] for seq in sorted(events)]
-            source = conn.execute(
-                "SELECT discussion_event_id, thread_id FROM hosted_room_policy_events WHERE room_id=? AND seq=?",
+            row = conn.execute(
+                f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND seq=?",
                 (room_id, source_event_seq)).fetchone()
-            projection = [] if source is None else self._discussion_events(
-                conn, room_id=room_id, thread_id=str(source["thread_id"]),
-                discussion_event_id=str(source["discussion_event_id"]),
+            if row is None or row["kind"] != "message.user":
+                return []
+            source = _event_from_room_row(row)
+            projection = self._discussion_events(
+                conn, room_id=room_id, thread_id=_text(source["payload"], "thread_id"),
+                discussion_event_id=str(source["event_id"]),
                 bound_error="task policy projection exceeded its bound")
-            events = {int(event["seq"]): event for event in (*published, *projection)}
-            return [events[seq] for seq in sorted(events)]
+            # The source can age out of BOTH bounded projections while a
+            # deferred task remains retryable. Its frozen prompt lives in the task.
+            by_seq = {event["seq"]: event for event in (*published, *projection)}
+            by_seq[source_event_seq] = source
+            return [by_seq[seq] for seq in sorted(by_seq)]
 
     def compact_completed(self, *, room_id: str) -> None:
         """Drop any completed projections left by an interrupted sync."""

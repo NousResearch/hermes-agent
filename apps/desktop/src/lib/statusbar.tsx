@@ -43,7 +43,7 @@ export function contextBar(percent: number | undefined, width = 10): string {
 
 export function usageContextLabel(usage: UsageStats): string {
   if (usage.context_max) {
-    return `${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max)}`
+    return `${usage.context_estimated ? "~" : ""}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max)}`
   }
 
   return usage.total > 0 ? `${compactNumber(usage.total)} tok` : ''
@@ -56,7 +56,7 @@ export function contextBarLabel(usage: UsageStats): string {
 
   const pct = Math.max(0, Math.min(100, Math.round(usage.context_percent ?? 0)))
 
-  return `[${contextBar(usage.context_percent)}] ${pct}%`
+  return `[${contextBar(usage.context_percent)}] ${usage.context_estimated ? '~' : ''}${pct}%`
 }
 
 /** `87%` for a reported hit rate; '' when the backend omitted it (no cache

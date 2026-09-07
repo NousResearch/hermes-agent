@@ -571,7 +571,10 @@ def cron_create(args):
         action="create", schedule=args.schedule, prompt=args.prompt,
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
-        no_agent=getattr(args, "no_agent", False) or None, **_job_api_kwargs(args))
+        no_agent=getattr(args, "no_agent", False) or None,
+        **({"paused": args.paused, "paused_reason": getattr(args, "paused_reason", None)}
+           if getattr(args, "paused", False) or getattr(args, "paused_reason", None) is not None else {}),
+        **_job_api_kwargs(args))
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1
@@ -580,7 +583,10 @@ def cron_create(args):
     if result.get("skills"):
         print(f"  Skills: {', '.join(result['skills'])}")
     _print_job_details(result.get("job", {}))
-    print(f"  Next run: {result['next_run_at']}")
+    if not result.get("job", {}).get("enabled", True):
+        print("  Created PAUSED — resume to schedule, or explicitly run now.")
+    else:
+        print(f"  Next run: {result['next_run_at']}")
     _warn_if_gateway_not_running()
     return 0
 

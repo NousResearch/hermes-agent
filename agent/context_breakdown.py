@@ -97,7 +97,7 @@ def context_display_source(compressor: Any) -> str:
     """
     real = getattr(compressor, "last_real_prompt_tokens", None)
     shown = getattr(compressor, "last_prompt_tokens", 0) or 0
-    return "local_estimate" if isinstance(real, (int, float)) and shown != real else "provider_usage"
+    return "local_estimate" if isinstance(real, (int, float)) and shown > 0 and shown != real else "provider_usage"
 
 
 def context_usage_fields(compressor: Any) -> Dict[str, Any]:

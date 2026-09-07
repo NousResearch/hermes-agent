@@ -43,7 +43,7 @@ def test_gateway_corruption_banner_backups_dir_follows_hermes_home(monkeypatch, 
     import gateway.run as gateway_run
 
     custom_home = tmp_path / "custom-hermes-home"
-    monkeypatch.setenv("HERMES_HOME", str(custom_home))
+    monkeypatch.setenv("HERMES_HOME", str(custom_home / "profiles" / "research"))
 
     runner = object.__new__(gateway_run.GatewayRunner)
     runner._session_db_init_error = "database disk image is malformed"

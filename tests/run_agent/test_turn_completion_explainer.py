@@ -164,7 +164,7 @@ def test_explanation_persistence_corrupt_backups_dir_follows_hermes_home(monkeyp
     install's backups.
     """
     custom_home = tmp_path / "custom-hermes-home"
-    monkeypatch.setenv("HERMES_HOME", str(custom_home))
+    monkeypatch.setenv("HERMES_HOME", str(custom_home / "profiles" / "research"))
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "corrupt"
     )

@@ -478,10 +478,17 @@ export function clearComposerDraft() {
 export const addComposerAttachment = (attachment: ComposerAttachment) => mainComposerScope.add(attachment)
 export const removeComposerAttachment = (id: string) => mainComposerScope.remove(id)
 
-/** Stage a text snippet from a message as a composer attachment chip. */
-export function addComposerTextAttachment(text: string, sourceMessageId?: string): void {
+/** Stage a text snippet from a message as a composer attachment chip.
+ *  Pass the ambient scope so the chip lands in the composer that owns the
+ *  message's surface (a session tile's, not the main chat's); the default
+ *  keeps the main-composer routing for existing callers. */
+export function addComposerTextAttachment(
+  text: string,
+  sourceMessageId?: string,
+  scope: ComposerAttachmentScope = mainComposerScope
+): void {
   const preview = text.length > 100 ? text.slice(0, 100) + '\u2026' : text
-  addComposerAttachment({
+  scope.add({
     id: `text:${sourceMessageId ?? 'selection'}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
     kind: 'text',
     label: preview,

@@ -349,8 +349,13 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     )
     monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
 
+    # An empty PID scan is insufficient; both supervisor scopes must answer empty.
+    monkeypatch.setattr(update_cmd_fleet, "_systemd_gateway_unit_listings", lambda: [
+        (scope, cmd, SimpleNamespace(returncode=0, stdout=""))
+        for scope, cmd in update_cmd_fleet._SYSTEMD_SCOPES
+    ])
     assert update_cmd._run_pending_fleet_restart() is True
-    assert "nothing to restart" in capsys.readouterr().out
+    assert "Pending fleet restart completed" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

@@ -195,29 +195,36 @@ def _needs_sudo(scope: str) -> bool:
     )
 
 
-def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
+def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
     """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit."""
-    for scope, scope_cmd, result in _systemd_gateway_unit_listings():
+    answered = set()
+    for scope, scope_cmd, result in listings:
+        answered.add(scope)
         if result.returncode != 0:
+            failed.append(f"systemd-{scope} (listing failed)")
             continue
 
         def process_unit(svc_name: str, _scope=scope, _cmd=scope_cmd) -> None:
-            restart_cmd = list(_cmd) + ["--no-ask-password", "restart", svc_name]
+            manage_cmd = list(_cmd) + ["--no-ask-password"]
             if _needs_sudo(_scope):
-                restart_cmd = ["sudo", "-n"] + restart_cmd
-            _systemctl(restart_cmd, timeout=30)
+                manage_cmd = ["sudo", "-n"] + manage_cmd
+            result = _systemctl_reset_and_restart(manage_cmd, svc_name)
+            if result.returncode != 0 or not _wait_for_service_active(_cmd, svc_name):
+                failed.append(svc_name)
 
         _for_each_systemd_gateway_unit(
             result.stdout,
             process_unit=process_unit,
             on_unit_timeout=lambda svc_name, exc: failed.append(svc_name),
         )
+    # A timeout or missing executable is not an empty scope.
+    failed.extend(f"systemd-{scope} (listing unavailable)" for scope, _ in _SYSTEMD_SCOPES if scope not in answered)
 
 
 def _run_pending_fleet_restart() -> bool:
     """Catch-up restart for gateways left on pre-update code. Never raises.
 
-    True when the restart completed or nothing was running; False if incomplete.
+    True when all discovered targets recovered (or none exist); False if incomplete.
 
     See #95294.
     """
@@ -244,22 +251,30 @@ def _run_pending_fleet_restart() -> bool:
         logger.debug("Pending fleet restart: gateway probe failed: %s", exc)
         pids = None
 
-    if pids == []:
-        print("  ✓ No running gateways — nothing to restart.")
-        return True
-
     failed: list = []
     try:
+        # Snapshot before stopping: Restart=no units can disappear from list-units on a clean exit.
+        systemd_listings = list(_systemd_gateway_unit_listings()) if supports_systemd_services() else None
+        # Stop old processes before supervisor recovery, never its freshly verified workers.
+        if pids != []:
+            try:
+                leftover = list(find_gateway_pids(all_profiles=True))
+            except Exception:
+                leftover = list(pids or [])
+            if leftover:
+                with _best_effort('Pending fleet restart: PID stop failed: %s'):
+                    kill_gateway_processes(all_profiles=True)
+                    _wait_for_gateway_exit(timeout=5.0, force_after=None)
         # --- Systemd services (Linux) --- Discover all hermes-gateway* units (default + profiles) plus
         # hermes-serve* units (the Desktop app's backend, #83438).
-        if supports_systemd_services():
-            _restart_systemd_gateway_units_best_effort(failed)
+        if systemd_listings is not None:
+            _restart_systemd_gateway_units_best_effort(failed, systemd_listings)
         # --- Launchd services (macOS) --- Restart EVERY ai.hermes.gateway* LaunchAgent, not only the
         # invoking profile's — parity with the systemd branch above (#41403). Per-label TimeoutExpired
         # isolation happens inside.
         if is_macos():
             try:
-                _restart_macos_launchd_gateways([], failed, 45.0)
+                _restart_macos_launchd_gateways([], failed, 45.0, require_supervision=True)
             except Exception as exc:
                 logger.debug("Pending fleet restart: launchd failed: %s", exc)
                 failed.append("launchd")
@@ -271,14 +286,6 @@ def _run_pending_fleet_restart() -> bool:
             except Exception as exc:
                 logger.debug("Pending fleet restart: Windows failed: %s", exc)
                 failed.append("windows-gateway")
-        try:
-            leftover = list(find_gateway_pids(all_profiles=True))
-        except Exception:
-            leftover = list(pids or [])
-        if leftover:
-            with _best_effort('Pending fleet restart: PID stop failed: %s'):
-                kill_gateway_processes(all_profiles=True)
-                _wait_for_gateway_exit(timeout=5.0, force_after=None)
         if failed:
             _warn_incomplete_gateway_fleet_restart(failed)
             return False
@@ -465,7 +472,9 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
     return [], [current_label]
 
 
-def _restart_macos_launchd_gateways(restarted_services: list, failed_or_stale_units: list, drain_budget: float) -> None:
+def _restart_macos_launchd_gateways(
+    restarted_services: list, failed_or_stale_units: list, drain_budget: float, *, require_supervision: bool = False,
+) -> None:
     """Restart every launchd-managed gateway after an update (macOS).
 
     The pull is shared across profiles, so every ``ai.hermes.gateway*`` LaunchAgent
@@ -480,9 +489,14 @@ def _restart_macos_launchd_gateways(restarted_services: list, failed_or_stale_un
     cannot leave the rest of the fleet on old code (#68523).
     """
     from hermes_cli.gateway import (
-        get_launchd_label, launchd_gateway_labels_for_install, _graceful_restart_via_sigusr1, _launchd_kickstart,
+        get_launchd_label, get_launchd_plist_path, launchd_gateway_labels_for_install, _graceful_restart_via_sigusr1, _launchd_kickstart,
         _locate_launchd_gateway_service, _wait_for_launchd_service_pid,
     )
+    if require_supervision:
+        listing = subprocess.run(["launchctl", "list"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+        if listing.returncode != 0:
+            failed_or_stale_units.append("launchd (listing failed)")
+            return
     _restarted, _failed = _restart_launchd_gateway_after_update(supervision_verify=True)
     restarted_services.extend(_restarted)
     failed_or_stale_units.extend(_failed)
@@ -496,7 +510,9 @@ def _restart_macos_launchd_gateways(restarted_services: list, failed_or_stale_un
             # reuse that domain so a sibling is never probed in one and restarted in another.
             domain, old_pid = _locate_launchd_gateway_service(label)
             if domain is None:
-                continue  # installed but not bootstrapped — nothing running old code here
+                if require_supervision and get_launchd_plist_path().with_name(f"{label}.plist").exists():
+                    failed_or_stale_units.append(label)
+                continue  # A profile without an installed job has no restart target.
             graceful_ok = False
             if old_pid is not None and old_pid > 0:
                 print(f"  → {label}: draining (up to {int(drain_budget)}s)...")

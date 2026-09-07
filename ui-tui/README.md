@@ -187,7 +187,7 @@ Notes:
 
 - Plain text entered while the agent is busy is queued instead of sent immediately.
 - Slash commands and `!cmd` do not queue; they execute immediately even while a run is active.
-- Queue auto-drains after each assistant response, unless a queued item is currently being edited.
+- Queue auto-drains after each assistant response, unless a queued item is currently being edited **or the composer still has unsent text**.
 - `Up/Down` prioritizes queued-message editing over history. History only activates when there is no queue to edit.
 - Queued drafts keep their original `!cmd` and `{!cmd}` text while you edit them. Shell commands and interpolation run when the queued item is actually sent.
 - If you load a queued item into the input and resubmit plain text, that queue item is replaced, removed from the queue preview, and promoted to send next. If the agent is still busy, the edited item is moved to the front of the queue and sent after the current run completes.

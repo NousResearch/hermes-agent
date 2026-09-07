@@ -36,8 +36,8 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
         print("review stderr", file=sys.stderr)
         sys.exit(7)
     '''), encoding="utf-8")
-    argv = [sys.executable, str(child), str(release)]
-    command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+    # The local terminal backend uses bash, including Git Bash on Windows.
+    command = shlex.join(path.as_posix() for path in (Path(sys.executable), child, release))
     observed = []
 
     class Provider(http.server.BaseHTTPRequestHandler):
@@ -135,7 +135,7 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
 
     recovered = read_result(home)
     assert recovered["result"]["status"] == "exited", recovered
-    assert recovered["status"]["exit_code"] == 7
+    assert recovered["status"]["exit_code"] == 7, recovered
     assert "SYNTHETIC_REVIEW_COMPLETE" in recovered["result"]["output"]
     assert "review stderr" in recovered["result"]["output"]
     assert recovered["replayed"] is False
@@ -171,8 +171,10 @@ def test_receipts_are_bounded_redacted_and_session_scoped(tmp_path, monkeypatch)
     recovered = fresh.get(sessions[-1].id)
     assert recovered.owner_task_id == sessions[-1].owner_task_id
     assert len(recovered.output_buffer) <= MAX_OUTPUT_CHARS
-    assert [s["session_id"] for s in fresh.list_sessions(task_id="owner-2")] == [recovered.id]
-    assert fresh.list_sessions(task_id="unrelated", session_key="unrelated") == []
+    assert fresh.list_sessions() == []  # Status/liveness scans stay in memory.
+    assert [s["session_id"] for s in fresh.list_sessions(
+        task_id="owner-2", include_retained=True)] == [recovered.id]
+    assert fresh.list_sessions(task_id="unrelated", session_key="unrelated", include_retained=True) == []
     assert fresh.get("proc_0000") is None  # Ambiguous across durable results.
     assert fresh.completion_queue.empty()
     for path in paths:

@@ -439,7 +439,7 @@ _nous_caps_disk_checked = False
 _nous_caps_warm_started = False
 
 
-from agent.reasoning_effort import clamp_effort as _clamp_effort
+from agent.reasoning_effort import clamp_effort as _clamp_effort, is_astra_model
 
 
 def clamp_reasoning_effort_to_supported(
@@ -1204,7 +1204,11 @@ def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     curated = list(_PROVIDER_MODELS.get(normalized, []))
     # Curated order, only models the account has access to; an account serving none of them (rare)
     # falls back to curated so the picker still offers sane defaults.
-    return [m for m in curated if m.lower() in live_lower] or curated or live
+    discovered = [m for m in curated if m.lower() in live_lower]
+    # Astra is intentionally absent from offline/static catalogs: the official API's
+    # account-scoped /models response is the only source that may advertise it.
+    discovered.extend(m for m in live if is_astra_model(m))
+    return discovered or curated or live
 
 
 def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
@@ -1512,6 +1516,11 @@ def _normalized_cache_slug(provider: Optional[str]) -> str:
     return requested if requested == "ollama" else (normalize_provider(provider) or (provider or ""))
 
 
+def _model_requires_account_discovery(provider: Optional[str], model: str) -> bool:
+    """Astra names cannot confer API/OAuth entitlement through picker state."""
+    return _normalized_cache_slug(provider) in {"openai", "openai-api", "openai-codex"} and is_astra_model(model)
+
+
 def cached_provider_model_ids(
     provider: Optional[str], *, force_refresh: bool = False,
     ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL) -> list[str]:
@@ -1556,9 +1565,11 @@ def cached_provider_model_ids(
         if same_creds and isinstance(entry.get("models"), list) and entry["models"]:
             return list(entry["models"])
         return []
-    # Live returned nothing: a stale same-fingerprint entry beats an empty result.
+    # Live returned nothing: a stale same-fingerprint entry beats an empty result — minus account-gated
+    # models, which only a successful discovery may advertise (the entry itself is untouched, so the
+    # next successful fetch restores them).
     if _cache_entry_valid(entry, fp):
-        return list(entry["models"])
+        return [model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)]
     return []
 
 

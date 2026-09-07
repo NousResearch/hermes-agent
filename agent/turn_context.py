@@ -22,9 +22,9 @@ from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
-from agent.model_metadata import (
-    anchored_context_tokens, estimate_messages_tokens_rough, estimate_request_tokens_rough
-)
+from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
+from agent.image_token_cost import bind_image_token_cost
+from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ def _preflight_request_tokens(
     """Token estimate for automatic preflight compression: a valid provider usage anchor,
     else the checkpoint-pruned native wire payload, else the generic estimator."""
     anchored = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+    agent._request_pressure_anchored = anchored is not None
     if anchored is not None:
         return anchored
     tools = getattr(agent, "tools", None) or None
@@ -418,6 +419,7 @@ def _bind_turn_identity(
     # Unique task_id when not provided isolates VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
+    agent._process_owner_task_ids = {*getattr(agent, "_process_owner_task_ids", ()), effective_task_id}
     turn_id = str(getattr(agent, "_relay_pending_turn_id", "") or "") or (
         f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
     )
@@ -440,6 +442,7 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     ("_last_content_with_tools", None), ("_last_content_tools_all_housekeeping", False),
     ("_mute_post_response", False), ("_unicode_sanitization_passes", 0),
     ("_tool_guardrail_halt_decision", None), ("_vision_supported", True),
+    ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0),
 )
@@ -525,13 +528,40 @@ def _stage_turn_user_message(
 
 
 def _hydrate_from_history(agent: Any, conversation_history: Optional[List[Any]]) -> None:
-    """Hydrate the todo store and per-session nudge counters from persisted history."""
+    """Hydrate process-local state from persisted history on the first resumed turn."""
     if not conversation_history:
         return
     if not agent._todo_store.has_items():
         agent._hydrate_todo_store(conversation_history)
-    # Hydrate per-session nudge counters from persisted history.
+    # A live native checkpoint arms this latch while its response is captured.  A
+    # restarted agent must recover the same one-response deferral before turn-start
+    # compression can rewrite the restored opaque checkpoint.  Reuse the adapter's
+    # exact route/issuer/replay filtering and tolerate plugin compressors without the
+    # optional hook.
     if agent._user_turn_count == 0:
+        # A fresh process has no in-memory anchor; the persisted one is honored only while the
+        # restored transcript still carries the priced prefix (see agent/usage_anchor.py).
+        restore_usage_anchor(agent, conversation_history)
+        note_checkpoint = getattr(
+            getattr(agent, "context_compressor", None),
+            "note_native_compaction_checkpoint",
+            None,
+        )
+        if callable(note_checkpoint):
+            try:
+                from agent.codex_responses_adapter import (
+                    has_replayable_native_compaction_checkpoint,
+                )
+
+                if has_replayable_native_compaction_checkpoint(
+                    agent, conversation_history
+                ):
+                    note_checkpoint()
+            except Exception:
+                logger.debug(
+                    "restored native checkpoint hydration skipped", exc_info=True
+                )
+        # Hydrate per-session nudge counters from persisted history.
         prior_user_turns = sum(1 for m in conversation_history if m.get("role") == "user")
         if prior_user_turns > 0:
             agent._user_turn_count = prior_user_turns
@@ -680,7 +710,7 @@ def _memory_turn_start_and_prefetch(agent: Any, original_user_message: Any) -> s
     ext_prefetch_cache = ""
     with suppress(Exception):
         if not is_trivial_prompt(_query):
-            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query, session_id=agent.session_id) or ""
     # Deterministic recall indicator via _emit_status so the model can't silently
     # drop injected memory.
     if ext_prefetch_cache:
@@ -807,6 +837,8 @@ def build_turn_context(
         persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
     )
     _hydrate_from_history(agent, conversation_history)
+    # Every estimator this turn prices images at the cost learned from this model's real usage.
+    bind_image_token_cost(agent)
     # Append the user message now that close persistence is safe.
     append_message(messages, user_msg)
     current_turn_user_idx = len(messages) - 1

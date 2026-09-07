@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
 
@@ -722,10 +722,12 @@ class GatewayNotificationsMixin:
         error = getattr(self, "_session_db_init_error", None)
         if not error:
             return
+        from hermes_constants import get_default_hermes_root
         from hermes_state import _default_db_path, classify_persistence_error, format_session_db_unavailable
         if classify_persistence_error(error) == "corrupt":
             # Copy-pasteable, so name the real store (profiles / HERMES_HOME do not live under ~/.hermes).
             db_path = _default_db_path()
+            backups_dir = get_default_hermes_root() / "backups"
             message = (
                 "⚠️ Session database corruption detected. Messages may not be "
                 "persisted. Recovery options:\n"
@@ -738,7 +740,7 @@ class GatewayNotificationsMixin:
                 "   — recovery snapshots the damaged file first; do NOT run "
                 "`sqlite3 ... \".recover\"` against the live state.db, a "
                 "vulnerable sqlite3 CLI can corrupt it further\n"
-                "3. Restore from a backup in ~/.hermes/backups/\n"
+                f"3. Restore from a backup in {backups_dir}/\n"
                 "Run `hermes doctor` for sanitized diagnostics."
             )
         else:
@@ -950,7 +952,14 @@ class GatewayNotificationsMixin:
         evt_type = str(evt.get("type") or "")
         if evt_type == "async_delegation":
             producer_id = str(evt.get("delegation_id") or "")
-            return (evt_type, producer_id, "") if producer_id else None
+            if not producer_id:
+                return None
+            if evt.get("task_failure_notice"):
+                # An interim per-task notice is its own producer event: it must not mark the
+                # batch's final result as already delivered, nor a sibling's notice.
+                task_idx = ((evt.get("results") or [{}])[0] or {}).get("task_index", "")
+                return (evt_type, producer_id, f"task_failure:{task_idx}")
+            return (evt_type, producer_id, "")
         if evt_type == "completion":
             producer_id = str(evt.get("session_id") or "")
             started_at = evt.get("started_at")
@@ -1035,7 +1044,9 @@ class GatewayNotificationsMixin:
         """
         claim = self._CompletionClaim()
         evt_type = evt.get("type")
-        if evt_type == "async_delegation":
+        # An interim per-task notice shares the batch's delegation_id but is not the durable
+        # completion; claiming that row here would acknowledge the FINAL result before it exists.
+        if evt_type == "async_delegation" and not evt.get("task_failure_notice"):
             claim.delegation_id = str(evt.get("delegation_id") or "")
             if claim.delegation_id:
                 try:

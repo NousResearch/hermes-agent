@@ -43,7 +43,7 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
     if adapter_supports_push(adapter):
         if source is None:
             raise ValueError("deliver_wake: push-capable adapter requires a SessionSource")
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.event import MessageEvent, MessageType
         synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True)
         await adapter.handle_message(synth_event)
         return

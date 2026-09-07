@@ -3330,10 +3330,11 @@ def _local_ci_task(
         idempotency_key=f"{_receipt_idempotency_key(receipt)}:supervised-v4",
         evidence=evidence,
         evidence_heading="Canonical PR audit receipt (JSON)",
-        initial_status="running",
+        # The ledger binding is finalized before an opted-in card is promoted.
+        initial_status="blocked",
         max_retries=3,
-        # Local CI audits are always created dispatchable so the deterministic
-        # repository-owned lane can run even when feedback coding is gated.
+        # Auto-dispatch promotes the card after the ledger binding; otherwise
+        # the audit remains blocked for explicit operator dispatch.
         # A deterministic required lane may run for an hour. Its durable
         # exact-head CI lease prevents duplicate restarts while the real
         # supervisor PID is alive; give the full lane sequence an 8h envelope.

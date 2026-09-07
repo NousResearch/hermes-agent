@@ -1755,13 +1755,15 @@ def test_auto_dispatch_disabled_keeps_admitted_repair_blocked(
     ledger.close()
 
 
+@pytest.mark.parametrize("auto_dispatch", [False, True])
 def test_scan_dispatches_one_read_only_exact_head_ci_audit_when_actions_are_disabled(
-    tmp_path: Path,
+    tmp_path: Path, auto_dispatch: bool
 ) -> None:
     local_path, sha = initialized_repository(tmp_path)
     policy = configured_policy(
         local_path,
         not_before="2026-08-24T00:00:00Z",
+        auto_dispatch=auto_dispatch,
         local_ci_audit=True,
     )
     github = FakeGitHub(admitted_pull_request(sha), ())
@@ -1796,7 +1798,7 @@ def test_scan_dispatches_one_read_only_exact_head_ci_audit_when_actions_are_disa
     assert task.provider_override is None
     assert task.model_override is None
     assert task.reasoning_effort is None
-    assert task.initial_status == "running"
+    assert task.initial_status == "blocked"
     assert task.max_retries == 3
     assert task.max_runtime_seconds == 8 * 60 * 60
     assert task.idempotency_key.endswith(":supervised-v4")
@@ -1826,6 +1828,9 @@ def test_scan_dispatches_one_read_only_exact_head_ci_audit_when_actions_are_disa
         task.instructions
     )
     assert f"--head-sha {sha}" in task.instructions
+    assert kanban.promoted == (
+        [("repairs", "kanban-1")] if auto_dispatch else []
+    )
     ledger.close()
 
 

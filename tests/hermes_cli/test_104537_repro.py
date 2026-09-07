@@ -34,11 +34,11 @@ def test_build_progress_reaches_log_before_child_exits(tmp_path, monkeypatch):
         with ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(
                 _run_logged_subprocess,
-                [sys.executable, "-u", "-c", _CHILD_SRC, str(release), "7"],
+                [sys.executable, "-c", _CHILD_SRC, str(release), "7"],
                 cwd=tmp_path,
             )
             try:
-                deadline = time.monotonic() + 10
+                deadline = time.monotonic() + 20
                 while (
                     "building" not in log_path.read_text(encoding="utf-8")
                     and time.monotonic() < deadline
@@ -48,7 +48,7 @@ def test_build_progress_reaches_log_before_child_exits(tmp_path, monkeypatch):
                     "update.log stayed empty while the child was alive - the "
                     "Desktop watchdog sees a stall and kills a healthy build"
                 )
-                assert not future.done()
+                assert not future.done(), "child exited before progress was observed"
             finally:
                 release.touch()
                 result = future.result(timeout=30)

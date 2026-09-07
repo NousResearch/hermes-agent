@@ -130,6 +130,9 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
         "connection_label": str(row.get("connection_label") or "").strip()[:80],
         "title": str(row.get("title") or "").strip()[:120],
         "description": " ".join(str(row.get("description") or "").split())[:160],
+        # Mesh circle (see bot_mode_probe._circle_of); "" = the shared default circle.
+        # Same normalisation as _circle_of: trimmed, lower-cased, capped — so a peer's "Work" matches our "work".
+        "circle": str(row.get("circle") or "").strip().lower()[:64] if isinstance(row.get("circle"), str) else "",
     }
     # Liveness kept only when a real bool: absent == unknown == fail-open on enqueue.
     if isinstance(row.get("online"), bool):

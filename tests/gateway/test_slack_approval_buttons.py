@@ -481,6 +481,24 @@ class TestSlackThreadContext:
 # ===========================================================================
 
 
+def test_thread_suspension_requires_a_fresh_context(tmp_path):
+    """Stopping a Slack thread must re-enable first-turn history seeding."""
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+
+    adapter = _make_adapter()
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    adapter._session_store = store
+    source = adapter._thread_session_source("C1", "1000.0", "U123", "", "group")
+    entry = store.get_or_create_session(source)
+    try:
+        assert adapter._has_active_session_for_thread("C1", "1000.0", "U123")
+        store.suspend_session(entry.session_key)
+        assert not adapter._has_active_session_for_thread("C1", "1000.0", "U123")
+    finally:
+        store._db.close()
+
+
 class TestSessionKeyChatType:
     """Test that _has_active_session_for_thread passes event-derived chat_type.
 

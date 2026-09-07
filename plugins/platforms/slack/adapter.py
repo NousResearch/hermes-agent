@@ -5819,7 +5819,6 @@ class SlackAdapter(BasePlatformAdapter):
         if not session_store:
             return False
         try:
-            source = self._thread_session_source(channel_id, thread_ts, user_id, team_id, chat_type)
             session_key = self._build_thread_session_key(
                 channel_id, thread_ts, user_id, team_id=team_id, chat_type=chat_type)
             if not session_key:
@@ -5828,11 +5827,9 @@ class SlackAdapter(BasePlatformAdapter):
             entry = session_store._entries.get(session_key)
             if entry is None:
                 return False
-            # A key the reset policy (daily/idle/suspended) would roll is NOT active:
-            # treating it as such would suppress the first-turn thread-history reseed.
-            # See #55239.
-            should_reset = getattr(type(session_store), "_should_reset", None)
-            return not (callable(should_reset) and should_reset(session_store, entry, source))
+            # Explicit suspension starts a fresh conversation on the next turn and
+            # must not suppress thread-history reseeding. Elapsed time is not a boundary.
+            return not entry.suspended
         except Exception:
             return False
 

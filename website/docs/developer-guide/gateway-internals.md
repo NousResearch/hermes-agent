@@ -237,11 +237,9 @@ AIAgent._invoke_tool()
 
 ### Memory Flush Lifecycle
 
-When a session is reset, resumed, or expires:
-1. Built-in memories are flushed to disk
-2. Memory provider's `on_session_end()` hook fires
-3. A temporary `AIAgent` runs a memory-only conversation turn
-4. Context is then discarded or archived
+Explicit conversation boundaries (such as `/new`, `/reset`, or `/resume`) flush and finalize the outgoing session. Idle time and daily boundaries never finalize it.
+
+Resource-only TTL, LRU, and memory-pressure eviction commits the cached transcript to configured memory providers before releasing the agent's clients. It does not close the durable conversation: the next turn reloads the same transcript and identity.
 
 ## Background Maintenance
 

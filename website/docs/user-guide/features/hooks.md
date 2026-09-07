@@ -994,7 +994,7 @@ def register(ctx):
 
 ### `on_session_finalize`
 
-Fires when the CLI or gateway **tears down** an active session — for example, when the user runs `/new`, the gateway GC'd an idle session, or the CLI quit with an active agent. Use it to flush state tied to the outgoing session ID. On gateway reset, the replacement session already exists before this callback runs.
+Fires when the CLI or gateway **tears down** an active session — for example, when the user runs `/new` or the CLI quits with an active agent. Resource-only idle cache eviction does not finalize the durable conversation. Use it to flush state tied to the outgoing session ID. On gateway reset, the replacement session already exists before this callback runs.
 
 **Callback signature:**
 

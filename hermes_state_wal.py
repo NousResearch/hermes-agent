@@ -38,6 +38,8 @@ _delete_overridden_warned_paths: set[str] = set()
 _delete_overridden_warned_lock = threading.Lock()
 _journal_upgrade_warned_paths: set = set()
 _journal_upgrade_warned_lock = threading.Lock()
+_probe_unknown_warned_paths: set[str] = set()
+_probe_unknown_warned_lock = threading.Lock()
 
 _CANNOT_VERIFY_DELETE_MSG = ("could not verify journal mode before applying configured journal_mode=delete (database "
                              "is locked — possible concurrent openers); refusing to downgrade a database this process "
@@ -49,15 +51,18 @@ def _mode_from_row(row) -> str:
     return str(row[0]).strip().lower() if row and row[0] is not None else ""
 
 
-def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
+def _on_disk_journal_mode(conn: sqlite3.Connection, *, db_label: str = "state.db") -> Optional[str]:
     """Read the journal mode from the DB header; ``None`` if undeterminable (new DB, or PRAGMA failed) ->
     callers take their fail-closed "refuse to downgrade" branch. ``disk i/o error`` can be transient on
-    virtualized block devices (XFS on cloud hosts), so it is retried a few times first."""
+    virtualized block devices (XFS on cloud hosts), so it is retried a few times first. Failures warn once
+    per (process, db_label): a silent ``None`` used to make any following WAL-generation teardown
+    unattributable (#104596)."""
     for _ in range(4):
         try:
             row = conn.execute("PRAGMA journal_mode").fetchone()
         except sqlite3.OperationalError as exc:
             if "disk i/o error" not in str(exc).lower():
+                _log_once("probe_unknown", db_label, exc)
                 return None
             last_exc = exc
             time.sleep(0.05)
@@ -70,6 +75,7 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
                 return None
         return str(mode).strip().lower() if mode is not None else None
     logger.debug("_on_disk_journal_mode: retries exhausted on disk read (%s)", last_exc)
+    _log_once("probe_unknown", db_label, last_exc)
     return None
 
 
@@ -199,7 +205,7 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
     if is_sqlite_wal_reset_vulnerable():
         return _apply_delete_for_wal_reset_bug(conn, db_label=db_label, require_delete=configured == "delete")
     # Read-only probe (no flock/checkpoint/WAL-SHM unlink): WAL-init must not unlink files other connections hold.
-    current_mode = _on_disk_journal_mode(conn)
+    current_mode = _on_disk_journal_mode(conn, db_label=db_label)
     if current_mode == "wal":
         if configured == "delete":
             # Never-live-downgrade keeps WAL; tell the operator their delete did not apply.
@@ -308,7 +314,7 @@ def _apply_delete_for_wal_reset_bug(conn: sqlite3.Connection, *, db_label: str, 
     opener): not provably exclusive — leave it and warn; treating "could not read" as "not WAL" once flipped a live
     WAL state.db to DELETE under a writer, destroying its uncheckpointed commits. Otherwise set DELETE without
     waiting out openers and warn; an explicit operator request additionally verifies SQLite accepted DELETE."""
-    current = _on_disk_journal_mode(conn)
+    current = _on_disk_journal_mode(conn, db_label=db_label)
     if current == "wal":
         _log_wal_reset_bug_once(db_label, kept_wal=True)
         if require_delete:
@@ -389,6 +395,13 @@ _ONCE_LOGS = {
         "downgrade under open connections can corrupt the DB). To apply journal_mode=DELETE, stop all connections to "
         "this DB and run a one-time offline 'PRAGMA journal_mode=DELETE' on the file. This message fires once per "
         "process per database."),
+    "probe_unknown": (_probe_unknown_warned_lock, "_probe_unknown_warned_paths", logging.WARNING,
+        # An unreadable mode makes ownership unprovable: the DELETE branches refuse on it, but any WAL set-pragma
+        # reached with the mode unknown re-inits WAL and unlinks the -wal/-shm pair other connections still hold
+        # (#104596 split-brain). Probe failures were entirely silent, so the teardown that followed could never
+        # be attributed to anything.
+        "%s: on-disk journal-mode probe failed (%s) — mode unknown, ownership unprovable; the refuse-to-act "
+        "branches are the fail-safe here. This message fires once per process per database."),
 }
 
 

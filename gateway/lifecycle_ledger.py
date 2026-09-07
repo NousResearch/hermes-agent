@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+_integrity_ephemeral_warned = False
 
 
 def _process_hermes_home() -> Path:
@@ -175,6 +176,13 @@ def check_state_db_integrity(home: Optional[Path] = None) -> str:
     path = _home_path(home, "state.db")
     if not path.exists():
         return "absent"
+    global _integrity_ephemeral_warned
+    if not _integrity_ephemeral_warned:
+        _integrity_ephemeral_warned = True
+        # #104596 telemetry: same ephemeral connect+close hazard as the readiness probe — a close here
+        # can be treated as the last-connection close and unlink a live -wal/-shm generation.
+        logger.warning("state.db integrity check uses an ephemeral connection — a close here can unlink a live "
+                       "-wal/-shm generation; flagged so a teardown at this instant is attributable (#104596)")
     try:
         with closing(sqlite3.connect(str(path))) as conn:
             row = conn.execute("PRAGMA quick_check(1)").fetchone()

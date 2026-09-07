@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import sqlite3
 from contextlib import closing
@@ -13,8 +14,11 @@ import yaml
 from hermes_constants import get_hermes_home
 
 
+logger = logging.getLogger(__name__)
+
 _DISK_DEGRADED_PERCENT = 90.0
 _CONNECTED_STATES = {"connected", "running", "ok"}
+_ephemeral_probe_hazard_warned = False
 
 
 def _check(status: str, detail: str | None = None, **extra: Any) -> dict[str, Any]:
@@ -25,6 +29,14 @@ def _probe_state_db(home: Path) -> dict[str, Any]:
     path = home / "state.db"
     if not path.exists():
         return _check("ok", "not initialized")
+    global _ephemeral_probe_hazard_warned
+    if not _ephemeral_probe_hazard_warned:
+        _ephemeral_probe_hazard_warned = True
+        # #104596 telemetry: an ephemeral connect+close against a WAL store can be mistaken for the
+        # last-connection close, which unlinks the live -wal/-shm generation (same shape as the
+        # hosted-room poll, #103665/#104632; doctor's probe already needed a lock-cancel fix, #88260).
+        logger.warning("readiness probe uses an ephemeral connection to state.db — if -wal/-shm churn tracks "
+                       "readiness polls, this probe is the likely writer (#104596)")
     try:
         # Read-only schema query: catches unreadable/corrupt DBs without competing with
         # writers. ``closing`` is required — sqlite3's context manager only commits/rolls

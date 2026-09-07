@@ -973,6 +973,9 @@ def _repair_state_db_schema_locked(
 
 def _unlink_db_triple(path: Path) -> Optional[str]:
     """Remove *path* and every SQLite sidecar; return any cleanup failure."""
+    # #104596 telemetry: a sidecar removal next to a LIVE store is the split-brain event, and until now
+    # every removal was silent — log the target so teardowns are attributable.
+    logger.warning("unlinking SQLite db triple %s (+ -wal/-shm/-journal)", path)
     from hermes_state import _IS_WINDOWS
     failures: List[str] = []
     for victim in (path, *_sidecars(path)):

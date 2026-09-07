@@ -419,8 +419,14 @@ def _clear_stale_sqlite_sidecars(db_path: Path) -> None:
     image on next open (passes integrity_check while serving old contents). Safe because the
     caller has already declared that database corrupt.
     """
+    removed = []
     for suffix in ("-wal", "-shm", "-journal"):
-        db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
+        sidecar = db_path.with_name(db_path.name + suffix)
+        if sidecar.exists():
+            sidecar.unlink(missing_ok=True)
+            removed.append(sidecar.name)
+    # #104596 telemetry: sidecar teardown used to be invisible in the logs.
+    logger.warning("cleared stale SQLite sidecars next to %s: %s", db_path, ", ".join(removed) or "none present")
 
 
 def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_update_version: str | None) -> bool:

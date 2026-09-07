@@ -493,8 +493,15 @@ def _unlink_move_restore_db(src: Path, dst: Path) -> bool:
             # The snapshot owns no WAL, so any -wal/-shm here belongs to the DB just unlinked (a
             # killed gateway leaves them — exactly when a restore runs); SQLite would replay that
             # foreign WAL over the restored file: "malformed" or resurrected post-snapshot rows.
+            removed_sidecars = []
             for _sidecar_suffix in ("-wal", "-shm", "-journal"):
-                dst.with_name(dst.name + _sidecar_suffix).unlink(missing_ok=True)
+                sidecar = dst.with_name(dst.name + _sidecar_suffix)
+                if sidecar.exists():
+                    sidecar.unlink(missing_ok=True)
+                    removed_sidecars.append(sidecar.name)
+            if removed_sidecars:
+                # #104596 telemetry: log what went away so a teardown next to a live store is attributable.
+                logger.warning("unlink+move restore of %s removed sidecars: %s", dst, ", ".join(removed_sidecars))
             shutil.move(str(tmp), str(dst))
         return True
     except LiveConnectionError as exc2:

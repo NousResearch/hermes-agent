@@ -136,7 +136,8 @@ async def git_ship_info_route(path: str):
 
 @router.post("/api/git/review/pr-list")
 async def git_pr_list_route(body: GitPrListBody):
-    return await _git_op(_web_git.review_pr_list, _git_path(body.path), body.branches, body.numbers)
+    cwd = _git_path(body.path) if body.branches or body.numbers else ""
+    return await _git_op(_web_git.review_pr_list, cwd, body.branches, body.numbers, body.urls)
 
 
 @router.post("/api/git/review/stage")

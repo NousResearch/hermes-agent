@@ -172,6 +172,8 @@ class GitPrListBody(BaseModel):
     branches: List[str] = []
     # PRs a session recovered from its transcript — known by number, not branch.
     numbers: List[int] = []
+    # Explicit identities do not depend on a session checkout.
+    urls: List[str] = []
 
 class SessionPrScanBody(BaseModel):
     ids: List[str] = []

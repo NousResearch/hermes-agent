@@ -113,6 +113,23 @@ describe('desktop git facade', () => {
     })
   })
 
+  it('preserves URL-only PR identities and owning connection/profile over the remote facade', async () => {
+    const urls = ['https://github.com/other/repository/pull/42']
+
+    setApiRequestConnection('remote-owner')
+    $connection.set({ mode: 'remote', profile: 'pr-owner' } as never)
+    await desktopGit()?.review.prList('', [], [], urls)
+
+    expect(api).toHaveBeenCalledWith({
+      body: { branches: [], numbers: [], path: '', urls },
+      connectionId: 'remote-owner',
+      method: 'POST',
+      path: '/api/git/review/pr-list',
+      profile: 'pr-owner'
+    })
+    expect(repoStatus).not.toHaveBeenCalled()
+  })
+
   it('sends mutations as POST bodies on a remote gateway', async () => {
     $connection.set({ mode: 'remote' } as never)
 

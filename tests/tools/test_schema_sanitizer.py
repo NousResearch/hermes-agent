@@ -517,3 +517,64 @@ def test_collapse_is_deterministic():
     first = collapse_const_unions(copy.deepcopy(schema))
     second = collapse_const_unions(copy.deepcopy(schema))
     assert first == second == {"type": "string", "enum": ["b", "a"]}
+
+
+def test_boolean_required_flag_dropped_from_property_schemas():
+    # FastAPI/Pydantic-style MCP emitters (e.g. docling's document parser) write
+    # ``"required": true/false`` INSIDE property schemas. That is not valid JSON
+    # Schema and strict OpenAI-compatible providers 400 the whole request over it
+    # (#104796). Optionality is carried by the parent object's ``required`` array.
+    tools = [_tool("document_parser", {
+        "type": "object",
+        "required": ["sources"],
+        "properties": {
+            "options": {
+                "type": "object",
+                "properties": {
+                    "do_ocr": {"type": "boolean", "default": False, "required": False},
+                    "to_formats": {"type": "array", "items": {"type": "string"},
+                                   "required": False},
+                },
+            },
+            "sources": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "x (required)",
+                                "required": True},
+                        "kind": {"type": "string", "required": False},
+                    },
+                },
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)[0]["function"]["parameters"]
+    # top-level valid required array survives untouched
+    assert out["required"] == ["sources"]
+    # every boolean flag inside schema nodes is gone
+    props = out["properties"]
+    assert "required" not in props["options"]["properties"]["do_ocr"]
+    assert "required" not in props["options"]["properties"]["to_formats"]
+    item_props = props["sources"]["items"]["properties"]
+    assert "required" not in item_props["url"]
+    assert "required" not in item_props["kind"]
+    # unrelated keywords preserved
+    assert item_props["url"]["description"] == "x (required)"
+    assert props["options"]["properties"]["do_ocr"]["default"] is False
+
+
+def test_boolean_required_in_enum_example_data_is_preserved():
+    # Inside ``enum``/``examples`` payloads the values are DATA, not schemas:
+    # an object with a key named "required" holding a bool is legitimate and
+    # must not be touched.
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "cfg": {"type": "object", "enum": [{"required": True, "x": 1},
+                                               {"required": False}]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)[0]["function"]["parameters"]
+    assert out["properties"]["cfg"]["enum"][0]["required"] is True
+    assert out["properties"]["cfg"]["enum"][1]["required"] is False

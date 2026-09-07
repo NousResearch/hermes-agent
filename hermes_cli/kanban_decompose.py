@@ -102,8 +102,32 @@ Available profiles (assignees you may pick from):
 {roster}
 
 Default assignee (used when no profile fits a task): {default_assignee}
+{large_refactor_guard}
 """
 
+
+
+_LARGE_REFACTOR_KEYWORD_RE = re.compile(
+    r"\b(refactor|extract|rename|move|split|migrate|reorganize)\b",
+    re.IGNORECASE,
+)
+_FILE_REFERENCE_RE = re.compile(
+    r'(?:^|[\s`\'\"])(?:[A-Za-z0-9_.-]+/){1,}[A-Za-z0-9_.-]+\.[A-Za-z0-9_+-]+',
+    re.MULTILINE,
+)
+_LARGE_REFACTOR_FILE_THRESHOLD = 8
+_LARGE_REFACTOR_TOKEN_THRESHOLD = 12_000
+_CHARS_PER_TOKEN_ESTIMATE = 4
+_LARGE_REFACTOR_MIN_CHILDREN = 3
+_LARGE_REFACTOR_MAX_CHILDREN = 5
+_LARGE_REFACTOR_GUARD_TEMPLATE = """
+
+Large-refactor guard: ACTIVE ({signals}).
+This task looks too broad for a single worker turn and must be split before any
+worker is spawned. You MUST return fanout=true with 3-5 smaller child tasks. Each
+child must be independently executable and must avoid human-review/approval
+blockers. Do not return fanout=false for this task.
+"""
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
@@ -118,6 +142,42 @@ class DecomposeOutcome:
     fanout: bool = False
     child_ids: list[str] | None = None
     new_title: Optional[str] = None
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, (len(text or "") + _CHARS_PER_TOKEN_ESTIMATE - 1) // _CHARS_PER_TOKEN_ESTIMATE)
+
+
+def _large_refactor_signals(title: str, body: str) -> list[str]:
+    """Return deterministic reasons this card must be decomposed first."""
+    text = f"{title or ''}\n{body or ''}"
+    signals: list[str] = []
+    file_refs = _FILE_REFERENCE_RE.findall(text)
+    token_estimate = _estimate_tokens(text)
+    keyword_hits = sorted({m.group(1).lower() for m in _LARGE_REFACTOR_KEYWORD_RE.finditer(text)})
+    has_broad_file_scope = len(file_refs) > _LARGE_REFACTOR_FILE_THRESHOLD
+    has_large_prompt = token_estimate > _LARGE_REFACTOR_TOKEN_THRESHOLD
+    if not (has_broad_file_scope or has_large_prompt):
+        return signals
+    if keyword_hits:
+        signals.append("keywords=" + ",".join(keyword_hits[:5]))
+    if has_broad_file_scope:
+        signals.append(f"file_refs={len(file_refs)}")
+    if has_large_prompt:
+        signals.append(f"tokens≈{token_estimate}")
+    return signals
+
+
+def _large_refactor_guard_text(signals: list[str]) -> str:
+    if not signals:
+        return ""
+    return _LARGE_REFACTOR_GUARD_TEMPLATE.format(signals="; ".join(signals)).rstrip()
 
 
 def _profile_author() -> str:
@@ -266,10 +326,18 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
     return children, ""
 
 
-def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
+def _apply_fanout(
+    task_id: str, parsed: dict, routing: _Routing, author: str,
+    *, guard_signals: list[str] | None = None,
+) -> DecomposeOutcome:
     raw_tasks = parsed.get("tasks") or []
     if not isinstance(raw_tasks, list) or not raw_tasks:
         return DecomposeOutcome(task_id, False, "decomposer returned fanout=true with empty tasks list")
+    guard_signals = guard_signals or []
+    if guard_signals and not (
+        _LARGE_REFACTOR_MIN_CHILDREN <= len(raw_tasks) <= _LARGE_REFACTOR_MAX_CHILDREN
+    ):
+        return DecomposeOutcome(task_id, False, "large-refactor guard requires 3-5 child tasks")
     children, reason = _clean_children(task_id, raw_tasks, routing)
     if reason:
         return DecomposeOutcome(task_id, False, reason)
@@ -290,6 +358,16 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
         return DecomposeOutcome(task_id, False, f"DB error: {type(exc).__name__}")
     if child_ids is None:
         return DecomposeOutcome(task_id, False, "task moved out of triage before decomposition")
+    if guard_signals:
+        try:
+            with kbc.connect_closing() as conn:
+                kb.add_comment(
+                    conn, task_id, author,
+                    "Large-refactor guard split this card before worker spawn "
+                    f"({'; '.join(guard_signals)}).",
+                )
+        except Exception:
+            logger.debug("decompose: failed to add large-refactor guard comment for %s", task_id, exc_info=True)
     return DecomposeOutcome(
         task_id, True, f"decomposed into {len(child_ids)} children", fanout=True, child_ids=child_ids,
     )
@@ -309,12 +387,17 @@ def decompose_task(
         return DecomposeOutcome(task_id, False, reason)
 
     routing = _load_routing()
+    prompt_fields = _task_prompt_fields(task)
+    large_refactor_signals = _large_refactor_signals(
+        str(prompt_fields.get("title") or ""), str(prompt_fields.get("body") or ""),
+    )
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(
-            **_task_prompt_fields(task),
+            **prompt_fields,
             roster=_format_roster(routing.roster),
             default_assignee=routing.default_assignee,
+            large_refactor_guard=_large_refactor_guard_text(large_refactor_signals),
         ),
         max_tokens=4000, timeout=timeout or 180, log=logger,
     )
@@ -327,8 +410,12 @@ def decompose_task(
 
     audit_author = author or _profile_author()
     if not parsed.get("fanout"):
+        if large_refactor_signals:
+            return DecomposeOutcome(
+                task_id, False, "large-refactor guard requires fanout=true with 3-5 child tasks",
+            )
         return _apply_single(task, parsed, routing, audit_author)
-    return _apply_fanout(task_id, parsed, routing, audit_author)
+    return _apply_fanout(task_id, parsed, routing, audit_author, guard_signals=large_refactor_signals)
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:

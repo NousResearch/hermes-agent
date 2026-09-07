@@ -12,7 +12,7 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 import requests
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 from tools.skills_sync_client import (
     KIND_BLOB,
@@ -29,6 +29,13 @@ from tools.skills_sync_client import (
 
 from .contract import ContentFile, SystemSpecification, parse_manifest_bytes
 from .package import PackagePolicyError, verify_content_files
+from .client_delivery import (
+    ClientDeliveryClaim,
+    ClientDeliveryResponse,
+    Identifier,
+    receipt_projection,
+)
+from .delivery import DeliveryReceipt
 
 logger = logging.getLogger(__name__)
 
@@ -465,6 +472,65 @@ class WisdomClient:
                 "Recommendation policy does not match the active organization"
             )
         return policy
+
+    def _delivery_identity(self) -> tuple[str, str]:
+        org = self.display_org_id
+        user = self.identity.get("owner")
+        if not org or not isinstance(user, str) or not user or user == "unknown":
+            raise WisdomAuthError("Notification delivery requires an active account")
+        return org, user
+
+    def _delivery_response(self, response, identity, claim, *, event_id=None):
+        if (
+            self._delivery_identity() != identity
+            or (response.org_id, response.recipient_user_id) != identity
+            or response.request_id != claim.request_id
+            or response.reference != claim.reference
+            or (event_id is not None and response.event_id != event_id)
+        ):
+            raise WisdomError("Notification delivery response does not match the request")
+        return response
+
+    def claim_notification_delivery(self, request_id: str, reference: dict) -> ClientDeliveryResponse:
+        """Caller persists request_id first; a replay never extends the send lease."""
+        identity = self._delivery_identity()
+        try:
+            claim = ClientDeliveryClaim(request_id=request_id, reference=reference)
+        except ValidationError as exc:
+            raise WisdomValidationError("Invalid notification delivery reference") from exc
+        response = self._request(
+            "POST", "agent-led/deliveries/claim", model=ClientDeliveryResponse,
+            json_body=claim.model_dump(mode="json"),
+        )
+        return self._delivery_response(response, identity, claim)
+
+    def settle_notification_delivery(
+        self, event_id: str, request_id: str, reference: dict, *,
+        outcome: Literal["acknowledged", "not_sent", "uncertain"],
+        receipt: DeliveryReceipt | None = None,
+    ) -> ClientDeliveryResponse:
+        """Reconcile a known local result without resending or granting consent."""
+        identity = self._delivery_identity()
+        try:
+            claim = ClientDeliveryClaim(request_id=request_id, reference=reference)
+            TypeAdapter(Identifier).validate_python(event_id, strict=True)
+            if outcome not in {"acknowledged", "not_sent", "uncertain"}:
+                raise ValueError("Unknown settlement")
+            if (outcome == "acknowledged") != (receipt is not None):
+                raise ValueError("Only acknowledgements require receipts")
+            body = {"request_id": request_id, "outcome": outcome}
+            if receipt is not None:
+                body["receipt"] = receipt_projection(receipt).model_dump(mode="json")
+        except (ValidationError, ValueError) as exc:
+            raise WisdomValidationError("Invalid notification delivery settlement") from exc
+        response = self._request(
+            "POST", f"agent-led/deliveries/{quote(event_id, safe='')}/settle",
+            model=ClientDeliveryResponse, json_body=body,
+        )
+        self._delivery_response(response, identity, claim, event_id=event_id)
+        if response.state != outcome:
+            raise WisdomError("Notification delivery settlement was not acknowledged")
+        return response
 
     def _preference_org(self, response):
         if not self.display_org_id or response.org_id != self.display_org_id:

@@ -1,6 +1,7 @@
 import json
 import base64
 import hashlib
+from uuid import uuid4
 
 import pytest
 
@@ -12,6 +13,8 @@ from hermes_wisdom.client import (
     WisdomValidationError,
 )
 from hermes_wisdom.package import verify_content_files
+from hermes_wisdom.delivery import DeliveryReceipt
+from hermes_wisdom.client_delivery import receipt_projection
 
 
 def _draft(**overrides):
@@ -85,6 +88,111 @@ def client(response):
     value.timeout = 7
     value.session = Session(response)
     return value
+
+
+def delivery_client(**overrides):
+    body = {
+        "org_id": "o1", "recipient_user_id": "u1", "event_id": "event-1",
+        "request_id": str(uuid4()), "reference": {"kind": "candidate", "key": "sha256:" + "a" * 64},
+        "state": "claimed", "lease_until": "2026-09-07T12:02:00.000Z", "reason": None,
+        **overrides,
+    }
+    c = client(Response(200, body))
+    c.identity = {"owner": "u1", "claims": {"org_id": "o1"}}
+    return c, body
+
+
+def test_delivery_claim_is_minimal_and_does_not_upload_private_metadata():
+    c, body = delivery_client()
+    result = c.claim_notification_delivery(body["request_id"], body["reference"])
+    assert result.state == "claimed"
+    assert c.session.calls[0][2]["json"] == {"request_id": body["request_id"], "reference": body["reference"]}
+    for reference in [
+        {**body["reference"], "skill_name": "private-name"},
+        {"kind": "candidate", "key": "private-name"},
+        {"kind": "skill", "skill_id": "shared", "version": True, "event_type": "teammate_published"},
+        {"kind": "skill", "skill_id": "shared", "version": 0, "event_type": "teammate_published"},
+    ]:
+        with pytest.raises(WisdomValidationError):
+            c.claim_notification_delivery(body["request_id"], reference)
+    assert len(c.session.calls) == 1
+
+
+@pytest.mark.parametrize("field,value", [
+    ("org_id", "other-org"), ("recipient_user_id", "other-user"),
+    ("request_id", str(uuid4())),
+    ("reference", {"kind": "candidate", "key": "sha256:" + "b" * 64}),
+])
+def test_delivery_claim_rejects_misbound_responses(field, value):
+    c, body = delivery_client()
+    request = {"request_id": body["request_id"], "reference": body["reference"]}
+    c.session.response = Response(200, {**body, field: value})
+    with pytest.raises(WisdomError, match="does not match"):
+        c.claim_notification_delivery(**request)
+
+
+@pytest.mark.parametrize("overrides", [
+    {"lease_until": None}, {"lease_until": "2026-09-07T12:02:00"},
+    {"lease_until": "invalid"}, {"reason": "recipient_muted"},
+    {"state": "deferred"}, {"state": "acknowledged"},
+    {"untrusted_payload": "not part of this contract"},
+])
+def test_delivery_claim_rejects_inconsistent_directives(overrides):
+    c, body = delivery_client(**overrides)
+    with pytest.raises(WisdomError, match="schema validation"):
+        c.claim_notification_delivery(body["request_id"], body["reference"])
+
+
+def test_delivery_response_rechecks_identity_after_request():
+    c, body = delivery_client()
+    original = c.session.request
+
+    def change_identity(*args, **kwargs):
+        c.identity["owner"] = "other-user"
+        return original(*args, **kwargs)
+
+    c.session.request = change_identity
+    with pytest.raises(WisdomError, match="does not match"):
+        c.claim_notification_delivery(body["request_id"], body["reference"])
+
+
+def test_settlement_sends_only_hashed_receipt_identifiers():
+    c, body = delivery_client(state="acknowledged", lease_until=None)
+    receipt = DeliveryReceipt(platform="slack", destination="private-channel", message_id="123.456",
+        thread_id="100.200", scope_id="private-workspace", acknowledgement="provider_accepted")
+    result = c.settle_notification_delivery(body["event_id"], body["request_id"], body["reference"], outcome="acknowledged", receipt=receipt)
+    assert result.state == "acknowledged"
+    sent = c.session.calls[0][2]["json"]
+    assert sent == {"request_id": body["request_id"], "outcome": "acknowledged", "receipt": receipt_projection(receipt).model_dump()}
+    serialized = json.dumps(sent)
+    for private in [receipt.destination, receipt.message_id, receipt.thread_id, receipt.scope_id]:
+        assert private not in serialized
+    assert receipt_projection(receipt) == receipt_projection(receipt)
+    assert receipt_projection(receipt).message_key != receipt_projection(receipt).destination_key
+    changed = receipt.model_copy(update={"scope_id": "different-workspace"})
+    assert receipt_projection(changed).message_key != receipt_projection(receipt).message_key
+
+
+@pytest.mark.parametrize("outcome", ["not_sent", "uncertain"])
+def test_settlement_without_send_never_fabricates_a_receipt(outcome):
+    c, body = delivery_client(state=outcome, lease_until=None)
+    c.settle_notification_delivery(body["event_id"], body["request_id"], body["reference"], outcome=outcome)
+    assert c.session.calls[0][2]["json"] == {"request_id": body["request_id"], "outcome": outcome}
+
+
+def test_settlement_requires_a_valid_receipt_and_matching_result():
+    c, body = delivery_client(state="acknowledged", lease_until=None)
+    args = (body["event_id"], body["request_id"], body["reference"])
+    with pytest.raises(WisdomValidationError):
+        c.settle_notification_delivery(*args, outcome="acknowledged")
+    with pytest.raises(WisdomValidationError):
+        c.settle_notification_delivery(*args, outcome="acknowledged", receipt={"success": True})
+    assert c.session.calls == []
+    with pytest.raises(WisdomError, match="was not acknowledged"):
+        c.settle_notification_delivery(*args, outcome="not_sent")
+    c.session.response = Response(200, {**body, "event_id": "other-event", "state": "not_sent"})
+    with pytest.raises(WisdomError, match="does not match"):
+        c.settle_notification_delivery(*args, outcome="not_sent")
 
 
 def test_capability_uses_gateway_features_field():

@@ -15,6 +15,7 @@ import pytest
 from tools.environments.local import _find_bash, _find_shell
 
 
+@pytest.mark.skipif(platform.system() == "Windows", reason="POSIX user shell preference")
 class TestFindShellPrefersUserShell:
     """_find_shell should prefer $SHELL over bash on POSIX."""
 
@@ -138,23 +139,43 @@ class TestGitBashExternalProgramProbe:
 
     def test_probe_runs_external_msys_programs(self, monkeypatch):
         """``_bash_starts`` builds the same external-program probe argv on
-        every host, so this stays on the Linux runner with ``subprocess.run``
+        every host, so this stays on the Linux runner with ``_run_probe_command``
         mocked — no platform faking needed."""
-        import tools.environments.local as local_mod
         from tools.environments import local_gitbash_probe as gitbash_probe
 
         gitbash_probe._bash_starts_cache.clear()
         gitbash_probe._bash_probe_details_cache.clear()
         calls = []
 
-        def fake_run(argv, **kwargs):
-            calls.append((argv, kwargs))
-            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        def fake_run(argv, timeout=5.0):
+            calls.append((argv, timeout))
+            return 0, ""
 
-        monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(gitbash_probe, "_run_probe_command", fake_run)
 
         assert gitbash_probe._bash_starts(r"C:\Git\bin\bash.exe") is True
         assert calls[0][0][-1] == "/usr/bin/true; /usr/bin/cat --version >/dev/null"
+
+    def test_probe_timeout_records_deadlock_diagnostic(self, monkeypatch):
+        """Regression for #103398: When a probe times out (e.g. MSYS2 deadlock),
+        _bash_starts must fail cleanly and record a deadlock/timeout diagnostic
+        recognized as an MSYS spawn failure."""
+        from tools.environments import local_gitbash_probe as gitbash_probe
+
+        gitbash_probe._bash_starts_cache.clear()
+        gitbash_probe._bash_probe_details_cache.clear()
+
+        def timeout_run(argv, timeout=5.0):
+            return -1, f"Git Bash probe timed out after {timeout}s (process hang/deadlock)"
+
+        monkeypatch.setattr(gitbash_probe, "_run_probe_command", timeout_run)
+
+        path = r"C:\Git\bin\bash.exe"
+        assert gitbash_probe._bash_starts(path) is False
+        assert "timed out" in gitbash_probe._bash_probe_details_cache[path]
+        assert gitbash_probe._looks_like_msys_spawn_failure(
+            gitbash_probe._bash_probe_details_cache[path]
+        ) is True
 
     @pytest.mark.windows_only
     def test_aslr_failure_surfaces_targeted_windows_command(

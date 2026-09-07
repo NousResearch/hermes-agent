@@ -61,17 +61,32 @@ def inspect_workspace(path: str) -> dict:
     home = str(get_hermes_home())
     with server._sessions_lock:
         sessions = list(server._sessions.values())
+    # Repository identity comes from Git's first registration, not the first
+    # checkout still on disk. Inspection must never prune stale registrations.
+    root = trees[0]["path"] if trees else None
+    available = []
     for tree in trees:
-        tree["dirty"] = bool(_git_output(tree["path"], ["status", "--porcelain"]))
+        try:
+            tree["dirty"] = bool(_git_output(tree["path"], ["status", "--porcelain"]))
+        except ValueError:
+            if tree["path"] == path:
+                raise
+            try:
+                Path(tree["path"]).stat()
+            except FileNotFoundError:
+                # Includes a sibling removed between enumeration and probing.
+                continue
+            raise
         tree["activeSessionCount"] = sum(
             1 for session in sessions
             if session.get("cwd") == tree["path"]
             and (session.get("profile_home") or str(server._hermes_home)) == home)
+        available.append(tree)
     return {
-        "path": path, "repoRoot": trees[0]["path"] if trees else None,
+        "path": path, "repoRoot": root,
         "branch": _git_output(path, ["branch", "--show-current"]).strip() or None if is_git else None,
         "dirty": bool(_git_output(path, ["status", "--porcelain"])) if is_git else False,
-        "worktrees": trees,
+        "worktrees": available,
         "branches": _git_output(path, ["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"]).splitlines() if is_git else [],
     }
 

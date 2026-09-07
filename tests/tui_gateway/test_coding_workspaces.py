@@ -1,6 +1,9 @@
 """Opt-in workspace preparation uses real Git and the profile Projects registry."""
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 import tui_gateway.server as server
 
@@ -335,6 +338,108 @@ def _repo(tmp_path, name="repo"):
     git(repo, "init", "-b", "main")
     git(repo, "-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "--allow-empty", "-m", "base")
     return repo
+
+
+@pytest.mark.parametrize("deletion", ["before-inspection", "during-status"])
+def test_missing_sibling_does_not_block_workspace_use(tmp_path, monkeypatch, deletion):
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+    from tui_gateway import coding_workspaces
+
+    repo = _repo(tmp_path)
+    sibling = tmp_path / "unrelated"
+    git(repo, "worktree", "add", "-b", "unrelated", str(sibling))
+    with SessionDB(tmp_path / "state.db") as db, monkeypatch.context() as monkeypatch:
+        monkeypatch.setattr(server, "_hermes_home", str(get_hermes_home()))
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
+        monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+        selected = tmp_path / "selected"
+        git(repo, "worktree", "add", "-b", "selected", str(selected))
+        prepared = call("projects.workspace.prepare", path=str(repo), mode="existing", existingPath=str(selected), requestId="existing-owner")
+        created = call("session.create", source="desktop", cwd=prepared["cwd"], coding_workspace=prepared)
+        (Path(prepared["cwd"]) / "dirty.txt").write_text("keep this change", encoding="utf-8")
+        if deletion == "before-inspection":
+            shutil.rmtree(sibling)
+        else:
+            original = coding_workspaces._git_output
+
+            def delete_during_status(path, args):
+                if path == str(sibling) and args == ["status", "--porcelain"] and sibling.exists():
+                    shutil.rmtree(sibling)
+                return original(path, args)
+
+            monkeypatch.setattr(coding_workspaces, "_git_output", delete_during_status)
+
+        inspected = call("projects.workspace.inspect", path=str(repo))
+        assert inspected["repoRoot"] == str(repo)
+        trees = {tree["path"]: tree for tree in inspected["worktrees"]}
+        assert str(sibling) not in trees
+        assert trees[str(repo)]["isMain"]
+        assert trees[prepared["cwd"]]["dirty"]
+        assert trees[prepared["cwd"]]["activeSessionCount"] == 1
+        assert call("session.workspace.verify", session_id=created["session_id"], cwd=prepared["cwd"])["cwd"] == prepared["cwd"]
+        existing = call("projects.workspace.prepare", path=str(repo), mode="existing", existingPath=prepared["cwd"])
+        assert existing["cwd"] == prepared["cwd"]
+        fresh = call("projects.workspace.prepare", path=str(repo), mode="worktree", requestId="new-owner")
+        assert fresh["cwd"] != prepared["cwd"]
+        assert git(Path(fresh["cwd"]), "rev-parse", "--show-toplevel") == fresh["cwd"]
+        assert (Path(prepared["cwd"]) / "dirty.txt").read_text(encoding="utf-8") == "keep this change"
+        registrations = git(repo, "worktree", "list", "--porcelain", "-z")
+        assert f"worktree {sibling}\0" in registrations
+        assert "branch refs/heads/unrelated\0" in registrations
+        assert not sibling.exists()
+
+        # Move the primary after Git enumerates it, keeping the selected linked
+        # checkout connected to the real metadata. Do not invent porcelain data.
+        probe_before_move = coding_workspaces._git_output
+        relocated = tmp_path / "relocated"
+
+        def move_primary_after_listing(path, args):
+            output = probe_before_move(path, args)
+            if args == ["worktree", "list", "--porcelain", "-z"] and repo.exists():
+                repo.rename(relocated)
+                (selected / ".git").write_text(
+                    f"gitdir: {relocated / '.git' / 'worktrees' / selected.name}\n", encoding="utf-8")
+            return output
+
+        monkeypatch.setattr(coding_workspaces, "_git_output", move_primary_after_listing)
+        inspected = call("projects.workspace.inspect", path=str(selected))
+        assert inspected["repoRoot"] == str(repo)
+        assert not repo.exists()
+        assert [tree["path"] for tree in inspected["worktrees"]] == [str(selected)]
+        assert not inspected["worktrees"][0]["isMain"]
+
+
+@pytest.mark.parametrize("failure", ["missing-selected", "deleted-selected-during-status", "corrupt-selected", "corrupt-sibling"])
+def test_workspace_inspection_does_not_hide_selected_or_existing_errors(tmp_path, monkeypatch, failure):
+    from tui_gateway import coding_workspaces
+
+    repo = _repo(tmp_path)
+    selected = tmp_path / "selected"
+    git(repo, "worktree", "add", "-b", "selected", str(selected))
+    target = repo if failure == "corrupt-sibling" else selected
+    if failure == "missing-selected":
+        shutil.rmtree(selected)
+    elif failure == "deleted-selected-during-status":
+        original = coding_workspaces._git_output
+
+        def delete_selected_during_status(path, args):
+            if path == str(selected) and args == ["status", "--porcelain"] and selected.exists():
+                shutil.rmtree(selected)
+            return original(path, args)
+
+        monkeypatch.setattr(coding_workspaces, "_git_output", delete_selected_during_status)
+    else:
+        # An existing checkout with corrupt Git metadata is not a stale folder.
+        index = Path(git(target, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+        index.write_bytes(b"invalid index")
+    response = server._methods["projects.workspace.inspect"](1, {"path": str(selected)})
+    assert "error" in response, response
+    message = response["error"]["message"]
+    assert "index" in message if failure.startswith("corrupt") else (
+        "No such file or directory" in message or "git invocation failed" in message)
+    assert f"worktree {selected}\0" in git(repo, "worktree", "list", "--porcelain", "-z")
 
 
 def _claims():

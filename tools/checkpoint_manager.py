@@ -389,12 +389,24 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
         except OSError as exc:
             return f"Could not create checkpoint base: {exc}"
         _migrate_legacy_store(base)
-    if _store_has_head(store):
-        return None
-    for d in (store, store / _INDEXES_DIRNAME, store / _PROJECTS_DIRNAME):
-        d.mkdir(parents=True, exist_ok=True)
 
-    # ``git init --bare`` rejects GIT_WORK_TREE, so bypass _run_git.
+    if store.exists():
+        try:
+            validity = _git_subprocess(
+                ["git", "--git-dir", str(store), "rev-parse", "--git-dir"],
+                _isolated_git_env(),
+                _GIT_TIMEOUT,
+            )
+            if validity.returncode == 0:
+                return None
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            # Let the normal init path below return the actionable error.
+            pass
+
+    store.mkdir(parents=True, exist_ok=True)
+    (store / _INDEXES_DIRNAME).mkdir(exist_ok=True)
+    (store / _PROJECTS_DIRNAME).mkdir(exist_ok=True)
+
     try:
         result = _git_subprocess(["git", "init", "--bare", str(store)], _isolated_git_env(), _GIT_TIMEOUT)
         if result.returncode != 0:

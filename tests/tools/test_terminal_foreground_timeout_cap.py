@@ -5,7 +5,20 @@ process with notify_on_complete (never refused: in one 1,393-agent run 454 refus
 re-sent lower/split/background, 251 of them test suites).
 """
 import json
+import importlib
+import sys
 from unittest.mock import patch, MagicMock
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _use_default_foreground_timeout(monkeypatch):
+    """Keep the module-level default tests independent of worker env overrides."""
+    monkeypatch.delenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", raising=False)
+    module = sys.modules.get("tools.terminal_tool")
+    if module is not None:
+        importlib.reload(module)
 
 
 # ---------------------------------------------------------------------------

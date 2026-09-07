@@ -18,6 +18,10 @@ from urllib.parse import urlsplit
 from utils import safe_json_loads
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
+from agent.display_claude_sdk import (
+    SDK_CUTE_LINES, SDK_PREVIEW_BUILDERS, SDK_TOOL_VERBS, SDK_TOOL_VERBS_FOR_CONNECTOR,
+    SDK_TOOL_VERBS_NO_PREVIEW,
+)
 from agent.tool_identity import canonical_tool_args, canonical_tool_name
 from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
 
@@ -423,49 +427,6 @@ def _preview_todo_list(args: dict, _max_len: int) -> str:
     return t("display.preview.todo_reading") if todos_arg is None else t("display.preview.todo_tasks", verb=verb, count=len(todos_arg))
 
 
-# Per-task CRUD tools exposed by the Claude Agent SDK harness.
-#
-# Deliberately NOT aliased to native ``todo_list`` in :mod:`agent.tool_identity`,
-# which maps only tools whose semantics match.  ``todo_list`` rewrites the whole
-# list from a ``todos`` array; these operate on one task per call and carry no
-# such array, so the alias would route ``TaskCreate`` down the
-# ``todos_arg is None`` branch and render "reading task list" for a call that
-# creates one.  Wrong is worse than absent.
-TASK_TOOLS: frozenset[str] = frozenset({
-    "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
-})
-
-
-def _task_fields(args: dict) -> tuple[str, str, str]:
-    """``(subject, task_id, status)`` of a per-task tool call, each ``""`` when absent."""
-    return (
-        _oneline(str(args.get("subject") or "")).strip(),
-        str(args.get("taskId") or "").strip(),
-        str(args.get("status") or "").strip(),
-    )
-
-
-# Previews for the per-task tools show the task itself, not a count: ``todo_list``
-# renders "planning 3 task(s)" because one call really does carry three, while
-# these take one task per call, so a count would read "1 task(s)" every time --
-# true, and useless.  The subject is what tells the user which task moved.
-def _preview_task_create(args: dict, max_len: int) -> str | None:
-    subject = _task_fields(args)[0]
-    return _truncate_preview(subject, max_len) if subject else None
-
-
-def _preview_task_update(args: dict, max_len: int) -> str | None:
-    subject, task_id, status = _task_fields(args)
-    head = subject or (f"#{task_id}" if task_id else "")
-    preview = " ".join(p for p in (head, f"→ {status}" if status else "") if p)
-    return _truncate_preview(preview, max_len) if preview else None
-
-
-def _preview_task_get(args: dict, max_len: int) -> str | None:
-    task_id = _task_fields(args)[1]
-    return _truncate_preview(f"#{task_id}", max_len) if task_id else None
-
-
 def _preview_shell(key: str):
     def _build(args: dict, max_len: int) -> str | None:
         command = args.get(key)
@@ -531,9 +492,7 @@ _PREVIEW_BUILDERS = {
     "tool_call": _preview_bridge_call("tool_call"),
     "tool_search": _preview_bridge_call("tool_search"),
     "tool_describe": _preview_bridge_call("tool_describe"),
-    "TaskCreate": _preview_task_create, "TaskUpdate": _preview_task_update,
-    "TaskGet": _preview_task_get,
-    "TaskList": lambda _args, _limit: None,  # no meaningful arguments; the returned list is the content
+    **SDK_PREVIEW_BUILDERS,
 }
 
 
@@ -589,14 +548,8 @@ _TOOL_VERB_TOOLS: frozenset[str] = frozenset({
 })
 # Verbs for tools the catalog does not carry; English until they earn keys in every locale.
 _UNCATALOGUED_TOOL_VERBS: dict[str, str] = {
-    # The SDK harness splits native ``todo_list`` into per-task calls, so each gets its own
-    # verb rather than borrowing "Updating tasks" -- reading the list and adding one differ.
-    "TaskCreate": "Adding task", "TaskUpdate": "Updating task",
-    "TaskGet": "Reading task", "TaskList": "Reading the task list",
     "update_active_task": "Updating the active task",
-    # Not a Hermes tool and deliberately absent from the identity map (no native counterpart),
-    # but users see it constantly on runtimes that defer tool schemas, so it still earns a verb.
-    "ToolSearch": "Loading tools",
+    **SDK_TOOL_VERBS,
 }
 
 
@@ -607,13 +560,13 @@ def _tool_verb(tool_name: str) -> str | None:
 
 
 # Verbs that read better without the argument preview appended: ``update_active_task`` takes
-# the whole record (echoing its first line would mislead); ``TaskList`` takes no arguments.
+# the whole record (echoing its first line would mislead).
 _TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({
-    "skills_list", "session_search", "update_active_task", "TaskList",
+    "skills_list", "session_search", "update_active_task", *SDK_TOOL_VERBS_NO_PREVIEW,
 })
 # Verbs joined to the preview with " for " (search-style phrasing).
 _TOOL_VERBS_FOR_CONNECTOR: frozenset[str] = frozenset({
-    "web_search", "search_files", "ToolSearch",
+    "web_search", "search_files", *SDK_TOOL_VERBS_FOR_CONNECTOR,
 })
 
 _BRIDGE_GENERATING_TOOLS: frozenset[str] = frozenset({"tool_call", "tool_search", "tool_describe"})
@@ -1229,15 +1182,6 @@ def _cute_process_manage(a: dict, _r) -> str:
     return _cute_row("⚙️ ", "proc", t("display.cute.process_list") if action == "list" else f"{action} {sid}")
 
 
-_CUTE_TASK_VERBS = {"TaskCreate": "add", "TaskUpdate": "update", "TaskGet": "read", "TaskList": "list"}
-
-
-def _cute_task(tool_name: str, args: dict) -> str:
-    builder = _PREVIEW_BUILDERS[tool_name]
-    detail = _cute_trunc(builder(args, 0) or "")
-    return f"┊ 📋 task      {f'{_CUTE_TASK_VERBS[tool_name]} {detail}'.rstrip()}"
-
-
 _SCROLL_ARROWS = {"down": "↓", "up": "↑", "right": "→", "left": "←"}
 
 
@@ -1279,10 +1223,7 @@ _CUTE_LINES = {
     "execute_code": _cute_execute_code,
     "browser_exec": _cute_browser_exec,
     "delegate_task": _cute_delegate,
-    "TaskCreate": lambda a, _r: _cute_task("TaskCreate", a),
-    "TaskUpdate": lambda a, _r: _cute_task("TaskUpdate", a),
-    "TaskGet": lambda a, _r: _cute_task("TaskGet", a),
-    "TaskList": lambda a, _r: _cute_task("TaskList", a),
+    **SDK_CUTE_LINES,
 }
 
 

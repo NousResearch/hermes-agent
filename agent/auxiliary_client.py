@@ -2352,6 +2352,7 @@ _RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
 def _relay_aux_call_scope(args: tuple, kwargs: dict):
     """Bind a fresh relay call context for one auxiliary call; mark it failed on any exception."""
     task = args[0] if args else kwargs.get("task")
+    runtime_token = _RUNTIME_MAIN_CONTEXT.set(_normalize_main_runtime(kwargs.get("main_runtime")) or None)
     token = _RELAY_AUX_CALL_CONTEXT.set({
         "task": str(task or "unknown"),
         "request_id": f"aux-{uuid.uuid4().hex}",
@@ -2368,6 +2369,7 @@ def _relay_aux_call_scope(args: tuple, kwargs: dict):
         raise
     finally:
         _RELAY_AUX_CALL_CONTEXT.reset(token)
+        _RUNTIME_MAIN_CONTEXT.reset(runtime_token)
 
 
 def _relay_auxiliary_call(callback):
@@ -2426,6 +2428,106 @@ def _relay_auxiliary_metadata(
     }
 
 
+
+def _authorize_auxiliary_request(client: Any, kwargs: dict[str, Any], callback, *, provider: str | None, api_mode: str | None, metadata: dict[str, Any] | None):
+    binding = _auxiliary_egress_binding(
+        client, provider=provider, model=kwargs.get("model"), api_mode=api_mode,
+    )
+    if binding is None:
+        return callback(kwargs)
+    from agent.llm_egress_runtime import dispatch_authorized_agent_request
+    agent, route = binding
+    return dispatch_authorized_agent_request(agent, kwargs, callback, route=route)
+
+
+_AUX_EGRESS_PROVIDERS = frozenset({"anthropic", "openai-codex", "nous"})
+
+
+def _auxiliary_egress_binding(
+    client: Any,
+    *,
+    provider: str | None,
+    model: str | None,
+    api_mode: str | None,
+) -> tuple[Any, Any] | None:
+    """Build the complete identity and route for protected auxiliary calls."""
+    normalized_provider = _normalize_aux_provider(provider)
+    if normalized_provider not in _AUX_EGRESS_PROVIDERS:
+        return None
+    from agent.source_provenance import DEFAULT_POLICY_DIGEST
+
+    runtime = _normalize_main_runtime(None)
+    raw_runtime = _RUNTIME_MAIN_CONTEXT.get() or {}
+    relay = _RELAY_AUX_CALL_CONTEXT.get() or {}
+    request_id = str(relay.get("request_id") or f"aux-{uuid.uuid4().hex}")
+    session_id = str(
+        runtime.get("session_id")
+        or raw_runtime.get("session_id")
+        or f"aux-session:{request_id}"
+    )
+    turn_id = str(
+        raw_runtime.get("turn_id")
+        or f"{session_id}:aux:{str(relay.get('task') or 'call')}"
+    )
+    policy_digest = str(
+        raw_runtime.get("policy_digest")
+        or raw_runtime.get("llm_egress_policy_digest")
+        or DEFAULT_POLICY_DIGEST
+    )
+    candidate_base_url = getattr(client, "base_url", "")
+    if not isinstance(candidate_base_url, str) or not candidate_base_url.startswith(
+        ("http://", "https://")
+    ):
+        candidate_base_url = raw_runtime.get("base_url")
+    if not isinstance(candidate_base_url, str) or not candidate_base_url.startswith(
+        ("http://", "https://")
+    ):
+        if normalized_provider == "openai-codex":
+            candidate_base_url = "https://chatgpt.com/backend-api/codex"
+        elif normalized_provider == "anthropic":
+            candidate_base_url = "https://api.anthropic.com/v1"
+        else:
+            candidate_base_url = _NOUS_DEFAULT_BASE_URL
+    base_url = candidate_base_url
+    resolved_api_mode = str(
+        api_mode
+        or (
+            "codex_responses"
+            if normalized_provider == "openai-codex"
+            else "chat_completions"
+        )
+    )
+    agent_attrs = {
+        "provider": normalized_provider,
+        "model": str(model or ""),
+        "base_url": base_url,
+        "api_mode": resolved_api_mode,
+        "session_id": session_id,
+        "_current_turn_id": turn_id,
+        "_current_api_request_id": request_id,
+        "_llm_egress_policy_digest": policy_digest,
+        "_llm_egress_state_dir": Path(get_hermes_home()) / "egress",
+    }
+    if str(relay.get("task") or "") == "compression":
+        agent_attrs.update(
+            _llm_egress_max_serialized_bytes=2_000_000,
+            _llm_egress_max_conservative_tokens=666_667,
+            _llm_egress_max_sanitized_bytes=2_000_000,
+            _llm_egress_max_sanitized_segment_bytes=32_768,
+            _llm_egress_preserve_segment_boundaries=True,
+            _llm_egress_max_granted_serialized_bytes=2_000_000,
+            _llm_egress_max_granted_conservative_tokens=666_667,
+        )
+    agent = SimpleNamespace(**agent_attrs)
+    route = SimpleNamespace(
+        provider=normalized_provider,
+        model=str(model or ""),
+        base_url=base_url,
+        api_mode=resolved_api_mode,
+    )
+    return agent, route
+
+
 def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
@@ -2435,11 +2537,17 @@ def _relay_sync_completion(
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
     if route is None:
-        return _run_protected_sync_provider_call(callback, kwargs)
+        return _authorize_auxiliary_request(
+            client, kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
+            provider=provider, api_mode=api_mode, metadata=None,
+        )
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.execute_current(
-        kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
+        kwargs, lambda request: _authorize_auxiliary_request(
+            client, request, lambda authorized: _run_protected_sync_provider_call(callback, authorized),
+            provider=provider_name, api_mode=api_mode, metadata=metadata,
+        ),
         name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
         metadata=metadata, defer_logical_completion=True,
     )
@@ -2452,11 +2560,15 @@ async def _relay_async_completion(
     callback = create or (lambda request: client.chat.completions.create(**request))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
-        return await callback(kwargs)
+        return await _authorize_auxiliary_request(
+            client, kwargs, callback, provider=provider, api_mode=api_mode, metadata=None,
+        )
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return await relay_llm.execute_current_async(
-        kwargs, callback, name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
+        kwargs, lambda request: _authorize_auxiliary_request(
+            client, request, callback, provider=provider_name, api_mode=api_mode, metadata=metadata,
+        ), name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
         metadata=metadata, defer_logical_completion=True,
     )
 
@@ -2464,13 +2576,18 @@ async def _relay_async_completion(
 def _relay_sync_stream(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
 ) -> Any:
+    callback = lambda request: client.chat.completions.create(**request)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
-        return client.chat.completions.create(**kwargs)
+        return _authorize_auxiliary_request(
+            client, kwargs, callback, provider=provider, api_mode=api_mode, metadata=None,
+        )
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.stream_current(
-        kwargs, lambda request: client.chat.completions.create(**request), name=provider_name,
+        kwargs, lambda request: _authorize_auxiliary_request(
+            client, request, callback, provider=provider_name, api_mode=api_mode, metadata=metadata,
+        ), name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model), finalizer=dict, metadata=metadata,
         completed_response_predicate=lambda value: hasattr(value, "choices"),
     )
@@ -2830,7 +2947,10 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
+    "requested_provider", "session_id", "turn_id", "policy_digest",
+    "llm_egress_policy_digest", "_llm_egress_state_dir",
+)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -6853,6 +6973,11 @@ def _aux_recovery_ladder(
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info)
+    from agent.llm_egress_firewall import EgressBlocked
+    if isinstance(first_err, EgressBlocked):
+        from agent.auxiliary_egress_recovery import local_fallback_steps
+        response = yield from local_fallback_steps(route, _LadderStep)
+        return response if response is not None else _RERAISE_ORIGINAL
     resp, first_err, kwargs = yield from _ladder_parameter_rungs(first_err, route, kwargs, max_tokens)
     if first_err is None:
         return resp

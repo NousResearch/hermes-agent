@@ -8,11 +8,13 @@ observe → commit → project pipeline so the tool-result wire shape is produce
 
 from __future__ import annotations
 
+from agent import source_provenance_tools
 import concurrent.futures
 import contextlib
 import json
 from pathlib import Path
 import logging
+from contextlib import nullcontext
 import os
 import random
 import threading
@@ -710,16 +712,22 @@ def _run_agent_tool_execution_middleware(
             state.dispatched = True
             state.blocked = False
             state.args = final_args
-        return _dispatch_authorized_once(
+        def _execute_with_provenance(args):
+            with source_provenance_tools.source_provenance_activation(agent, function_name):
+                return execute(args)
+
+        result = _dispatch_authorized_once(
             agent,
             state,
             _ToolCallRef(function_name, final_args, effective_task_id, tool_call_id, trace),
-            execute=execute,
+            execute=_execute_with_provenance,
             scope_block=scope_block,
             display_index=display_index,
             begin_execution=begin_execution,
             authorization_gate=authorization_gate,
         )
+        source_provenance_tools.attach_trusted_source_provenance_metadata(agent, function_name)
+        return result
 
     def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
         request_result = apply_tool_request_middleware(
@@ -1018,7 +1026,16 @@ def _commit_tool_result(
     # Multimodal dicts become an OpenAI-style content list; text-only servers get a
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
-    tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
+    source_provenance = source_provenance_tools.attach_trusted_source_provenance_metadata(
+        agent, function_name, content=_tool_content
+    )
+    tool_message = make_tool_result_message(
+        function_name,
+        _tool_content,
+        tool_call_id,
+        effect_disposition=effect_disposition,
+        source_provenance=source_provenance,
+    )
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None

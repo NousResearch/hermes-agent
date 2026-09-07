@@ -912,7 +912,18 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     def _open_codex_stream(next_api_kwargs: dict[str, Any]):
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
-        return active_client.responses.create(**_bypass_sdk_request_transform(stream_kwargs))
+        from agent.llm_egress_runtime import dispatch_authorized_agent_request
+        return dispatch_authorized_agent_request(
+            agent,
+            stream_kwargs,
+            lambda authorized: active_client.responses.create(**_bypass_sdk_request_transform(dict(authorized))),
+            route=SimpleNamespace(
+                provider=getattr(agent, "provider", ""),
+                model=getattr(agent, "model", ""),
+                base_url=getattr(agent, "base_url", ""),
+                api_mode="codex_responses",
+            ),
+        )
 
     def _log_failure(exc: BaseException) -> None:
         request_body_bytes, exception_chain = _codex_request_failure_details(exc)

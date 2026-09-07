@@ -168,10 +168,20 @@ def parse_context_references(message: str) -> list[ContextReference]:
 def preprocess_context_references(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
     allowed_root: str | Path | None = None,
+    source_provenance_registry=None,
+    session_id: str | None = None,
+    turn_id: str | None = None,
+    request_id: str | None = None,
+    policy_digest: str | None = None,
 ) -> ContextReferenceResult:
     """Sync wrapper; safe both without a loop (CLI) and inside a running loop (gateway)."""
     coro = preprocess_context_references_async(
-        message, cwd=cwd, context_length=context_length, url_fetcher=url_fetcher, allowed_root=allowed_root
+        message, cwd=cwd, context_length=context_length, url_fetcher=url_fetcher, allowed_root=allowed_root,
+        source_provenance_registry=source_provenance_registry,
+        session_id=session_id,
+        turn_id=turn_id,
+        request_id=request_id,
+        policy_digest=policy_digest,
     )
     try:
         asyncio.get_running_loop()
@@ -185,6 +195,11 @@ def preprocess_context_references(
 async def preprocess_context_references_async(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
     allowed_root: str | Path | None = None,
+    source_provenance_registry=None,
+    session_id: str | None = None,
+    turn_id: str | None = None,
+    request_id: str | None = None,
+    policy_digest: str | None = None,
 ) -> ContextReferenceResult:
     refs = parse_context_references(message)
     if not refs:
@@ -197,9 +212,16 @@ async def preprocess_context_references_async(
     # are assembled in ref order; the token-budget check runs once afterwards.
     hard_limit = max(1, int(context_length * 0.50))
     soft_limit = max(1, int(context_length * 0.25))
+    provenance_context = _build_source_provenance_context(
+        source_provenance_registry,
+        session_id=session_id,
+        turn_id=turn_id,
+        request_id=request_id,
+        policy_digest=policy_digest,
+    )
     tasks = (
         _expand_reference(ref, cwd_path, url_fetcher=url_fetcher, allowed_root=allowed_root_path,
-                          max_inline_tokens=hard_limit)
+                          max_inline_tokens=hard_limit, provenance_context=provenance_context)
         for ref in refs
     )
     expanded = await asyncio.gather(*tasks)
@@ -240,11 +262,17 @@ _GIT_REFERENCE_ARGS: dict[str, Callable[[ContextReference], list[str]]] = {
 
 async def _expand_reference(
     ref: ContextReference, cwd: Path, *, url_fetcher: UrlFetcher = None, allowed_root: Path | None = None,
-    max_inline_tokens: int | None = None,
+    max_inline_tokens: int | None = None, provenance_context=None,
 ) -> Expansion:
     try:
         if ref.kind in ("file", "folder"):
-            return _expand_path_reference(ref, cwd, allowed_root=allowed_root, max_inline_tokens=max_inline_tokens)
+            return _expand_path_reference(
+                ref,
+                cwd,
+                allowed_root=allowed_root,
+                max_inline_tokens=max_inline_tokens,
+                provenance_context=provenance_context,
+            )
         if ref.kind in _GIT_REFERENCE_ARGS:
             git_args = _GIT_REFERENCE_ARGS[ref.kind](ref)
             return _expand_git_reference(ref, cwd, git_args, "git " + " ".join(git_args))
@@ -267,9 +295,12 @@ async def _expand_reference(
 
 
 def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Path | None = None,
-                           max_inline_tokens: int | None = None) -> Expansion:
+                           max_inline_tokens: int | None = None, provenance_context=None) -> Expansion:
     """``@file:`` / ``@folder:``: resolve, allow-check, then inline text / binary stub / listing."""
     is_folder = ref.kind == "folder"
+    source_path = Path(os.path.expanduser(ref.target))
+    if not source_path.is_absolute():
+        source_path = cwd / source_path
     path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
     _ensure_reference_path_allowed(path)
     if not path.exists():
@@ -283,9 +314,24 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
         # on disk where the agent's tools run, so hand it an actionable block instead.
         return None, _binary_reference_block(ref, path)
-    text = path.read_text(encoding="utf-8")
     if ref.line_start is not None:
-        text = "\n".join(text.splitlines()[max(ref.line_start - 1, 0):ref.line_end or ref.line_start])
+        raw_bytes = _read_bounded_reference_slice(path, ref.line_start, ref.line_end or ref.line_start)
+        text = raw_bytes.decode("utf-8")
+        if provenance_context is not None:
+            provenance_context.registry.issue_file_slice(
+                # Preserve the original spelling so symlinked leaves and
+                # ancestors remain visible to the no-follow registry check.
+                path=source_path,
+                line_start=ref.line_start,
+                line_end=ref.line_end or ref.line_start,
+                content=raw_bytes,
+                session_id=provenance_context.session_id,
+                turn_id=provenance_context.turn_id,
+                request_id=provenance_context.request_id,
+                policy_digest=provenance_context.policy_digest,
+            )
+    else:
+        text = path.read_text(encoding="utf-8")
     lang = _FENCE_LANGUAGES.get(path.suffix.lower(), "")
     text_tokens = estimate_tokens_rough(text)
     # Check BEFORE building the fenced block: an oversized file is not going to be
@@ -297,6 +343,48 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         # would duplicate it in "--- Context Warnings ---".
         return None, _oversized_text_reference_block(ref, path, text_tokens)
     return None, f"📄 {ref.raw} ({text_tokens} tokens)\n```{lang}\n{text}\n```"
+
+
+def _build_source_provenance_context(
+    registry,
+    *,
+    session_id: str | None,
+    turn_id: str | None,
+    request_id: str | None,
+    policy_digest: str | None,
+):
+    """Return a trusted grant context only when the whole identity is present."""
+    if registry is None or not all(
+        isinstance(value, str) and value
+        for value in (session_id, turn_id, request_id, policy_digest)
+    ):
+        return None
+    from agent.source_provenance import SourceProvenanceContext, SourceProvenanceRegistry
+    if not isinstance(registry, SourceProvenanceRegistry):
+        return None
+    return SourceProvenanceContext(registry, session_id, turn_id, request_id, policy_digest)
+
+
+def _read_bounded_reference_slice(path: Path, line_start: int, line_end: int) -> bytes:
+    """Read only the requested exact line interval for a provenance candidate."""
+    from agent.source_provenance import MAX_SOURCE_SLICE_BYTES, MAX_SOURCE_SLICE_LINES
+    if line_start < 1 or line_end < line_start or line_end - line_start + 1 > MAX_SOURCE_SLICE_LINES:
+        raise ValueError("file reference line range is not bounded")
+    selected: list[bytes] = []
+    byte_count = 0
+    with path.open("rb") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            if line_number < line_start:
+                continue
+            if line_number > line_end:
+                break
+            byte_count += len(raw_line)
+            if byte_count > MAX_SOURCE_SLICE_BYTES:
+                raise ValueError("file reference slice exceeds the byte limit")
+            selected.append(raw_line)
+    if len(selected) != line_end - line_start + 1:
+        raise ValueError("file reference line range is unavailable")
+    return b"".join(selected)
 
 
 def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -495,3 +583,6 @@ def _file_metadata(path: Path) -> str:
         except Exception:
             pass
     return f"{path.stat().st_size} bytes"
+    source_path = Path(os.path.expanduser(ref.target))
+    if not source_path.is_absolute():
+        source_path = cwd / source_path

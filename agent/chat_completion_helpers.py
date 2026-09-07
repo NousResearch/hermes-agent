@@ -671,6 +671,30 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     return finish(raw_response)
 
 
+def _dispatch_provider_request(agent, request, callback):
+    """Apply the exact provider-bound egress policy at a physical call site."""
+
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if provider not in _EGRESS_PROTECTED_PROVIDERS:
+        return callback(request)
+    from agent.llm_egress_runtime import dispatch_authorized_agent_request
+
+    return dispatch_authorized_agent_request(agent, request, callback)
+
+
+_EGRESS_PROTECTED_PROVIDERS = frozenset({"anthropic", "openai-codex", "nous", "nous-portal", "nousresearch"})
+
+
+def _attach_source_provenance_sidecar(agent, kwargs: dict, messages: list) -> dict:
+    """Carry internal read proofs around strict wire-message conversion."""
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if provider not in _EGRESS_PROTECTED_PROVIDERS:
+        return kwargs
+    from agent.source_provenance_tools import build_source_provenance_sidecar
+    sidecar = build_source_provenance_sidecar(messages)
+    return {**kwargs, "_hermes_source_provenance": sidecar} if sidecar else kwargs
+
+
 def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     """Run one non-streaming LLM request for the active api_mode and return it.
 
@@ -686,7 +710,10 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         # Request-local client so the stale/interrupt watchdog aborts sockets
         # from the stranger thread while the worker owns the SDK close (#67142).
         request_client = make_client("anthropic_messages_request", kind="anthropic_messages")
-        return agent._anthropic_messages_create(api_kwargs, client=request_client)
+        return _dispatch_provider_request(
+            agent, api_kwargs,
+            lambda authorized: agent._anthropic_messages_create(authorized, client=request_client),
+        )
     if agent.api_mode == "bedrock_converse":
         return _bedrock_converse_call(api_kwargs, stream=False)
     if agent.provider == "moa":
@@ -698,8 +725,15 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         _completions = getattr(getattr(agent.client, "chat", None), "completions", None)
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)
-        return agent.client.chat.completions.create(**api_kwargs)
-    return make_client("chat_completion_request").chat.completions.create(**api_kwargs)
+        return _dispatch_provider_request(
+            agent, api_kwargs,
+            lambda authorized: agent.client.chat.completions.create(**authorized),
+        )
+    request_client = make_client("chat_completion_request")
+    return _dispatch_provider_request(
+        agent, api_kwargs,
+        lambda authorized: request_client.chat.completions.create(**authorized),
+    )
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -1633,12 +1667,13 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     from agent.opencode_affinity import merge_opencode_session_headers
 
     kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
-    return merge_opencode_session_headers(
+    kwargs = merge_opencode_session_headers(
         kwargs,
         getattr(agent, "provider", None),
         getattr(agent, "base_url", None),
         getattr(agent, "session_id", None),
     )
+    return _attach_source_provenance_sidecar(agent, kwargs, api_messages)
 
 
 def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
@@ -1893,6 +1928,7 @@ _FALLBACK_REASON_LABELS = {
     FailoverReason.model_not_found: "model not found",
     FailoverReason.provider_policy_blocked: "provider policy blocked the request",
     FailoverReason.content_policy_blocked: "content policy blocked the request",
+    FailoverReason.egress_policy_blocked: "local egress policy blocked the request",
     FailoverReason.format_error: "request format rejected",
     FailoverReason.invalid_encrypted_content: "encrypted reasoning state rejected",
     FailoverReason.multimodal_tool_content_unsupported: "multimodal tool content unsupported",
@@ -1902,6 +1938,42 @@ _FALLBACK_REASON_LABELS = {
     FailoverReason.llama_cpp_grammar_pattern: "grammar pattern rejected",
     FailoverReason.unknown: "provider failure",
 }
+
+
+def _fallback_destination_class(fb: dict):
+    """Resolve a fallback's configured destination for egress-aware routing.
+
+    Egress policy failures must never walk another remote provider with the
+    same unsafe request.  A fallback entry may omit ``base_url`` and rely on
+    the provider definition in config.yaml, so resolve that URL here rather
+    than trusting the provider label (provider names are not a security
+    boundary).
+    """
+    from agent.llm_egress_firewall import classify_destination
+
+    base_url = (fb.get("base_url") or "").strip()
+    if not base_url:
+        try:
+            from hermes_cli.config import load_config
+
+            provider_cfg = (load_config() or {}).get("providers", {}).get(
+                (fb.get("provider") or "").strip(), {}
+            )
+            if isinstance(provider_cfg, dict):
+                base_url = str(
+                    provider_cfg.get("api")
+                    or provider_cfg.get("base_url")
+                    or ""
+                ).strip()
+        except Exception:
+            # Unknown destination must remain unknown and therefore cannot
+            # inherit local trust after an egress policy rejection.
+            base_url = ""
+    return classify_destination(
+        str(fb.get("provider") or ""),
+        base_url,
+        fb.get("api_mode") or "chat_completions",
+    )
 
 
 def _fallback_reason_text(reason: "FailoverReason | None") -> str:
@@ -2005,7 +2077,7 @@ def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     return False
 
 
-def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
+def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set, *, reason: "FailoverReason | None" = None) -> bool:
     """True when the entry is already unavailable, malformed, locally unusable, or resolves
     to the backend that just failed (falling back to it would loop the failure)."""
     if fb_key in unavailable:
@@ -2013,6 +2085,14 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         return True
     if not fb_provider or not fb_model:
         return True
+    if reason == FailoverReason.egress_policy_blocked:
+        from agent.llm_egress_firewall import DestinationClass
+        destination = _fallback_destination_class(fb)
+        if destination not in {DestinationClass.LOCAL_PROCESS, DestinationClass.LOOPBACK}:
+            unavailable.add(fb_key)
+            logger.info("Fallback skip: %s/%s is not local after egress denial (%s)",
+                        fb_provider, fb_model, destination.value)
+            return True
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
         unavailable.add(fb_key)
@@ -2146,7 +2226,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     unavailable = agent._unavailable_fallback_keys
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
-    if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
+    if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable, reason=reason):
         return agent._try_activate_fallback(reason)
 
     try:

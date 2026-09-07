@@ -39,7 +39,8 @@ class FailoverReason(enum.Enum):
     image_corrupt = "image_corrupt"       # Provider can't decode image bytes — strip and retry (shrinking won't help)
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator account data/privacy policy excluded the only endpoint
-    content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — don't retry unchanged
+    content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — deterministic per-request, don't retry unchanged
+    egress_policy_blocked = "egress_policy_blocked"  # Local privacy firewall denied remote transport
     format_error = "format_error"        # 400 bad request — abort or strip + retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
@@ -606,6 +607,19 @@ def classify_api_error(
     approx_tokens: int = 0, context_length: int = 200000, num_messages: int = 0,
 ) -> ClassifiedError:
     """Classify an API error into a structured recovery recommendation (see ``_STAGES``)."""
+    from agent.llm_egress_firewall import EgressBlocked
+
+    if isinstance(error, EgressBlocked):
+        return ClassifiedError(
+            reason=FailoverReason.egress_policy_blocked,
+            provider=provider or None,
+            model=model or None,
+            message="remote request denied by local egress policy",
+            error_context={"reason_codes": error.decision.reason_codes},
+            retryable=False,
+            should_fallback=True,
+        )
+
     status_code = _extract_status_code(error)
     # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.
     if status_code is None and type(error).__name__ == "RateLimitError":

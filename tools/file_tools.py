@@ -6,6 +6,7 @@ Companions: ``file_tools_paths`` (task-aware resolution), ``file_tools_write_gua
 staleness state).
 """
 
+from agent import source_provenance_tools
 import base64
 import errno
 import json
@@ -554,6 +555,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 "block or produce infinite output.")
 
         _resolved = _resolve_path_for_task(path, task_id)
+        source_path = Path(_expand_tilde(path))
+        if not source_path.is_absolute():
+            source_path = Path(_resolve_base_dir(task_id)) / source_path
 
         # A read on a FIFO/socket blocks until the exec timeout: a self-shipped DoS.
         if _file_ops_uses_host_paths(_get_file_ops(task_id)):
@@ -624,9 +628,20 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             result.content = _apply_char_budget(
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
+        content_before_redaction = result.content or ""
         if result.content:
             result.content = redact_sensitive_text(result.content, file_read=True)
             result_dict["content"] = result.content
+        if isinstance(_resolved, Path) and result.content == content_before_redaction:
+            source_provenance_tools.issue_active_read_provenance(
+                source_path=source_path,
+                resolved=_resolved,
+                offset=offset,
+                limit=limit,
+                returned_content=result.content or "",
+                result_dict=result_dict,
+                file_ops=_get_file_ops(task_id),
+            )
 
         if (file_size and file_size > _LARGE_FILE_HINT_BYTES
                 and limit > 200 and result_dict.get("truncated")):
@@ -1031,7 +1046,7 @@ READ_FILE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
+            "path": {"type": "string", "description": "Path to the file to read (absolute or relative)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
             "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000}
         },

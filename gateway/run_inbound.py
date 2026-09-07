@@ -1569,6 +1569,7 @@ class GatewayInboundMixin:
         """Expand ``@`` context references; returns None when the injection was refused (user notified)."""
         try:
             from agent.context_references import preprocess_context_references_async
+            from agent.source_provenance import provenance_kwargs_for_agent
 
             try:
                 from tools.terminal_scope import terminal_env as _ts_env
@@ -1577,7 +1578,11 @@ class GatewayInboundMixin:
             _msg_cwd = _ts_env("TERMINAL_CWD", os.path.expanduser("~"))
             _msg_ctx_len = await self._inbound_model_context_length(source, session_key)
             _ctx_result = await preprocess_context_references_async(
-                message_text, cwd=_msg_cwd, context_length=_msg_ctx_len, allowed_root=_msg_cwd
+                message_text,
+                cwd=_msg_cwd,
+                context_length=_msg_ctx_len,
+                allowed_root=_msg_cwd,
+                **provenance_kwargs_for_agent(getattr(self, "agent", None)),
             )
             if _ctx_result.blocked:
                 _adapter = self._adapter_for_source(source)

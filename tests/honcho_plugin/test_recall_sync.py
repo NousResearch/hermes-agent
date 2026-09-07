@@ -127,5 +127,3 @@ def test_timeout_keeps_single_flight_and_late_result_cannot_publish():
         provider._manager.get_prefetch_context = superseded
         assert provider.prefetch("Plan the garden") == ""
         assert provider._last_context_turn == provider._last_dialectic_turn == -999
-
-

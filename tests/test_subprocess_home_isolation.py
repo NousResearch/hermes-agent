@@ -111,6 +111,98 @@ class TestGetSubprocessHome:
         assert home_b.endswith("beta/home")
 
 
+# ---------------------------------------------------------------------------
+# external_credential_home_candidates() / external_credential_path()
+# ---------------------------------------------------------------------------
+
+class TestExternalCredentialPath:
+    """External CLI credential stores must stay reachable from a profile HOME.
+
+    ``~/.claude/.credentials.json``, ``gh``'s config and ``~/.codex`` are written by
+    third-party CLIs under the OS account's home. A Hermes process running with
+    ``HOME={HERMES_HOME}/home`` (container installs, and hosts where ``is_container()``
+    false-positives — #58135) previously read the empty profile home and reported the
+    provider as unauthenticated, dropping its ``/model`` row.
+    """
+
+    def _profile_home_env(self, tmp_path, monkeypatch):
+        """HOME points at the profile home; the real home holds the credential."""
+        hermes_home = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_home = hermes_home / "home"
+        profile_home.mkdir(parents=True)
+        real_home = tmp_path / "real-home"
+        real_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
+        return profile_home, real_home
+
+    def test_candidates_put_current_home_first_then_real_home(self, tmp_path, monkeypatch):
+        profile_home, real_home = self._profile_home_env(tmp_path, monkeypatch)
+        from hermes_constants import external_credential_home_candidates
+        assert external_credential_home_candidates() == [Path(profile_home), Path(real_home)]
+
+    def test_falls_back_to_real_home_when_profile_home_lacks_the_file(self, tmp_path, monkeypatch):
+        _profile_home, real_home = self._profile_home_env(tmp_path, monkeypatch)
+        creds = real_home / ".claude" / ".credentials.json"
+        creds.parent.mkdir(parents=True)
+        creds.write_text("{}", encoding="utf-8")
+
+        from hermes_constants import external_credential_path
+        assert external_credential_path(".claude", ".credentials.json") == creds
+
+    def test_profile_home_wins_when_it_holds_the_file(self, tmp_path, monkeypatch):
+        """A genuine container install logs in under the profile home — keep preferring it."""
+        profile_home, real_home = self._profile_home_env(tmp_path, monkeypatch)
+        for home in (profile_home, real_home):
+            creds = home / ".claude" / ".credentials.json"
+            creds.parent.mkdir(parents=True)
+            creds.write_text("{}", encoding="utf-8")
+
+        from hermes_constants import external_credential_path
+        assert external_credential_path(".claude", ".credentials.json") == (
+            profile_home / ".claude" / ".credentials.json")
+
+    def test_missing_everywhere_returns_current_home_so_writers_keep_their_target(
+            self, tmp_path, monkeypatch):
+        profile_home, _real_home = self._profile_home_env(tmp_path, monkeypatch)
+        from hermes_constants import external_credential_path
+        assert external_credential_path(".claude", ".credentials.json") == (
+            profile_home / ".claude" / ".credentials.json")
+
+    def test_no_profile_home_yields_a_single_candidate(self, tmp_path, monkeypatch):
+        real_home = tmp_path / "real-home"
+        real_home.mkdir()
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(real_home))
+        from hermes_constants import external_credential_home_candidates
+        assert external_credential_home_candidates() == [Path(real_home)]
+
+    def test_normal_home_is_never_widened_even_with_a_profile_home_present(
+            self, tmp_path, monkeypatch):
+        """Off a profile HOME the helper must behave exactly like ``Path.home()``."""
+        hermes_home = tmp_path / ".hermes" / "profiles" / "coder"
+        (hermes_home / "home").mkdir(parents=True)
+        real_home = tmp_path / "real-home"
+        real_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", str(real_home))
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        from hermes_constants import external_credential_home_candidates
+        assert external_credential_home_candidates() == [Path(real_home)]
+
+    def test_claude_code_credentials_path_follows_the_real_home(self, tmp_path, monkeypatch):
+        """The concrete regression: Anthropic disappearing from the picker (#58135)."""
+        _profile_home, real_home = self._profile_home_env(tmp_path, monkeypatch)
+        creds = real_home / ".claude" / ".credentials.json"
+        creds.parent.mkdir(parents=True)
+        creds.write_text("{}", encoding="utf-8")
+
+        from agent.anthropic_credentials import claude_code_credentials_path
+        assert claude_code_credentials_path() == creds
+
+
 
 # ---------------------------------------------------------------------------
 # _make_run_env() injection

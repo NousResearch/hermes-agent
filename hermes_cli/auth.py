@@ -1826,7 +1826,8 @@ def _external_process_auth_evidence(provider_id: str) -> tuple[bool, Optional[st
     # 2. The Copilot CLI's own plaintext token store (written by `copilot login` when no OS keychain
     #    is available). The file is JSONC — strip //-comment lines before parsing.
     try:
-        cli_config = os.path.expanduser("~/.copilot/config.json")
+        from hermes_constants import external_credential_path
+        cli_config = str(external_credential_path(".copilot", "config.json"))
         if os.path.isfile(cli_config):
             with open(cli_config, "r", encoding="utf-8", errors="ignore") as fh:
                 raw = "\n".join(

@@ -870,6 +870,44 @@ def apply_subprocess_home_env(env: dict[str, str]) -> None:
         env["HOME"] = home
 
 
+def external_credential_home_candidates(env: dict[str, str] | None = None) -> list[Path]:
+    """Home directories to resolve *external* CLI credential stores against, in read order.
+
+    ``~/.claude/.credentials.json``, ``gh``'s config, ``~/.codex``, ``~/.qwen`` and
+    ``~/.copilot`` belong to third-party CLIs the user logs into once, in their own shell.
+    Reading them through ``Path.home()`` alone silently finds nothing whenever the current
+    process runs with ``HOME={HERMES_HOME}/home`` — which happens on every container install,
+    on hosts where ``is_container()`` false-positives (#58135), and in any subprocess that
+    inherited the profile HOME. The visible symptom is a provider reporting no credentials
+    (a missing ``/model`` row) while the user is in fact logged in.
+
+    The current ``HOME`` always leads, so a real container install — where the login happened
+    *under* the profile home — keeps winning. The OS account's real home is appended ONLY when
+    the current ``HOME`` is demonstrably the Hermes profile home: anywhere else this returns a
+    single candidate and behaviour is identical to a bare ``Path.home()``.
+
+    Hermes' own state lives under ``HERMES_HOME`` and must NOT use this.
+    """
+    current_home = Path.home()
+    profile_home = _profile_home_path(env)
+    if not _is_profile_home(str(current_home), profile_home):
+        return [current_home]
+    real_home = get_real_home(env)
+    if not real_home or real_home == "/tmp" or _is_profile_home(real_home, profile_home):
+        return [current_home]
+    return [current_home, Path(real_home)]
+
+
+def external_credential_path(*parts: str, env: dict[str, str] | None = None) -> Path:
+    """First existing ``<home>/<parts>`` across :func:`external_credential_home_candidates`.
+
+    Falls back to the first candidate (current ``HOME``) when the file exists nowhere, so
+    callers that *write* the path keep their previous destination.
+    """
+    candidates = [home.joinpath(*parts) for home in external_credential_home_candidates(env)]
+    return next((path for path in candidates if path.exists()), candidates[0])
+
+
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 

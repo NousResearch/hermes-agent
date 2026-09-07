@@ -237,8 +237,13 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
 
 def claude_code_credentials_path() -> Path:
-    """Claude Code's shared OAuth file; every profile reads/writes this same path."""
-    return Path.home() / ".claude" / ".credentials.json"
+    """Claude Code's shared OAuth file; every profile reads/writes this same path.
+
+    Resolved through ``external_credential_path`` so a process running with the profile HOME
+    still finds a login the user performed in their own shell (see #58135).
+    """
+    from hermes_constants import external_credential_path
+    return external_credential_path(".claude", ".credentials.json")
 
 
 def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:

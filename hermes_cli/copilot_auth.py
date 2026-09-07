@@ -80,9 +80,11 @@ def resolve_copilot_token() -> tuple[str, str]:
 
 def _gh_cli_candidates() -> list[str]:
     """Candidate ``gh`` binary paths, including common Homebrew installs."""
+    from hermes_constants import external_credential_home_candidates
     candidates: list[str] = [c for c in (shutil.which("gh"),) if c]
     candidates += [
-        c for c in ("/opt/homebrew/bin/gh", "/usr/local/bin/gh", str(Path.home() / ".local/bin/gh"))
+        c for c in ("/opt/homebrew/bin/gh", "/usr/local/bin/gh",
+                    *(str(home / ".local/bin/gh") for home in external_credential_home_candidates()))
         if c not in candidates and os.path.isfile(c) and os.access(c, os.X_OK)]
     return candidates
 
@@ -120,19 +122,29 @@ def _probe_gh_cli_token() -> Optional[str]:
     clean_env = {k: v for k, v in os.environ.items() if k not in {"GITHUB_TOKEN", "GH_TOKEN"}}
     clean_env.setdefault("GH_PROMPT_DISABLED", "1")
     clean_env.setdefault("GH_NO_UPDATE_NOTIFIER", "1")
+    # gh resolves its hosts.yml from $HOME (or GH_CONFIG_DIR). A Hermes process running with
+    # HOME={HERMES_HOME}/home would probe an empty config and report "no oauth token found",
+    # hiding a Copilot login the user made in their own shell (see #58135). Probe each
+    # candidate home until one answers.
+    from hermes_constants import external_credential_home_candidates
+    home_env_values = ([clean_env["GH_CONFIG_DIR"]] if clean_env.get("GH_CONFIG_DIR", "").strip()
+                       else [str(home) for home in external_credential_home_candidates()])
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     host_args = ["--hostname", hostname] if hostname else []
     for gh_path in _gh_cli_candidates():
         cmd = [gh_path, "auth", "token", *host_args]
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8',
-                                    errors='replace', timeout=5, env=clean_env,
-                                    stdin=subprocess.DEVNULL, **_popen_kwargs)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            logger.debug("gh CLI token lookup failed (%s): %s", gh_path, exc)
-            continue
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
+        for home_value in home_env_values:
+            probe_env = clean_env if clean_env.get("GH_CONFIG_DIR", "").strip() else {
+                **clean_env, "HOME": home_value, "USERPROFILE": home_value}
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8',
+                                        errors='replace', timeout=5, env=probe_env,
+                                        stdin=subprocess.DEVNULL, **_popen_kwargs)
+            except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+                logger.debug("gh CLI token lookup failed (%s): %s", gh_path, exc)
+                break
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
     return None
 
 

@@ -2194,7 +2194,7 @@ class TestElementTokenAttachment:
        sending both is safe and stale-detection becomes explicit.
     """
 
-    def _backend_with_session(self, capabilities):
+    def _backend_with_session(self, capabilities, input_properties=None):
         """Build a backend whose session reports the given capabilities map."""
         from unittest.mock import MagicMock
         from tools.computer_use.cua_backend import CuaDriverBackend
@@ -2211,6 +2211,10 @@ class TestElementTokenAttachment:
                 return cap in capabilities.get(tool, set())
             return any(cap in caps for caps in capabilities.values())
         backend._session.supports_capability = _supports
+        properties = input_properties if input_properties is not None else {}
+        backend._session.supports_input_property = (
+            lambda tool, prop: prop in properties.get(tool, set())
+        )
         backend._active_pid = 111
         backend._active_window_id = 222
         return backend
@@ -2226,6 +2230,35 @@ class TestElementTokenAttachment:
         assert args["element_index"] == 5
         # The matching token rode along — cua-driver will prefer it.
         assert args["element_token"] == "s0001:5"
+
+    def test_token_attached_via_input_schema_when_capability_map_empty(self):
+        """cua-driver 0.23.x omits the `accessibility.element_tokens`
+        capability declaration while still listing `element_token` in the
+        live tools/list schema — the schema fallback keeps the token flowing
+        instead of failing every element_index call with snapshot_id_required."""
+        backend = self._backend_with_session(
+            {},
+            input_properties={"click": {"element_index", "element_token"}},
+        )
+        backend._snapshot_tokens = {5: "s0001:5"}
+        backend.click(element=5, button="left")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "click"
+        assert args["element_token"] == "s0001:5"
+
+    def test_token_withheld_when_schema_lacks_the_property(self):
+        """Neither the capability nor the schema property is present (pre-0.23
+        drivers with `additionalProperties: false`) — the token must stay off
+        the wire or older drivers reject the unknown argument."""
+        backend = self._backend_with_session(
+            {},
+            input_properties={"click": {"element_index"}},
+        )
+        backend._snapshot_tokens = {5: "s0001:5"}
+        backend.click(element=5, button="left")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "click"
+        assert "element_token" not in args
 
 
     def test_capture_refreshes_snapshot_tokens(self):

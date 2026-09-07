@@ -655,6 +655,21 @@ class TestExtractMessagePayload:
 
 class TestBuildMessageEvent:
     @pytest.mark.asyncio
+    async def test_quoted_message_snapshot_becomes_reply_context(self, adapter):
+        env = _make_chat_envelope(text="What did you ask me here?")
+        msg = env["chat"]["messagePayload"]["message"]
+        msg["quotedMessageMetadata"] = {
+            "name": "spaces/S/messages/QUOTED_MESSAGE",
+            "quotedMessageSnapshot": {"text": "What question should I answer?"},
+        }
+
+        event = await adapter._build_message_event(msg, env)
+
+        assert event is not None
+        assert event.reply_to_message_id == "spaces/S/messages/QUOTED_MESSAGE"
+        assert event.reply_to_text == "What question should I answer?"
+
+    @pytest.mark.asyncio
     async def test_dm_first_message_in_thread_is_main_flow(self, adapter):
         """Google Chat DMs spawn a fresh thread per top-level user
         message in the input box. The FIRST message in any new thread

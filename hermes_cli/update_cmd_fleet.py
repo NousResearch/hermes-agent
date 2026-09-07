@@ -300,21 +300,22 @@ def _run_pending_fleet_restart() -> bool:
         return False
 
 
-def _apply_pending_fleet_restart_catchup() -> None:
+def _apply_pending_fleet_restart_catchup() -> bool:
     """On an already-up-to-date ``hermes update``, finish a skipped restart.
 
-    No-op when nothing is pending; exits 1 on incomplete catch-up so automation
-    does not treat the fleet as healthy.
+    Returns True when it handled a pending restart, False when no restart was
+    pending, and exits 1 on incomplete recovery so automation does not treat
+    the fleet as healthy.
     """
     from hermes_cli.update_cmd import _run_pending_fleet_restart
     if not _pending_fleet_restart_needed():
-        return
+        return False
     print()
     _warn_pending_fleet_restart()
     print("→ Running the pending fleet restart...")
     if _run_pending_fleet_restart():
         _clear_fleet_restart_pending_marker()
-        return
+        return True
     print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
     sys.exit(1)
 

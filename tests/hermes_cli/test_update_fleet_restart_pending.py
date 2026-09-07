@@ -25,6 +25,7 @@ from hermes_cli import main as hermes_main
 import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
+import hermes_cli.gateway as gateway_cli
 import hermes_cli.update_cmd_fleet as update_cmd_fleet
 import hermes_cli.update_cmd_deps as update_cmd_deps
 from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
@@ -356,6 +357,39 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     ])
     assert update_cmd._run_pending_fleet_restart() is True
     assert "Pending fleet restart completed" in capsys.readouterr().out
+
+
+def test_gateway_restart_uses_fleet_catchup_when_update_restart_is_pending(monkeypatch):
+    """The restart hint must recover every tracked gateway, not one profile."""
+    calls = []
+    monkeypatch.setattr(gateway_cli, "_refuse_from_inside_gateway", lambda *args: None)
+    monkeypatch.setattr(
+        update_cmd,
+        "_apply_pending_fleet_restart_catchup",
+        lambda: calls.append("catchup") or True,
+    )
+    monkeypatch.setattr(gateway_cli, "_service_backend", lambda: calls.append("direct-restart"))
+
+    gateway_cli._cmd_restart(SimpleNamespace(system=False, all=False))
+
+    assert calls == ["catchup"]
+
+
+def test_gateway_restart_uses_regular_path_when_no_update_restart_is_pending(monkeypatch):
+    """Ordinary restarts retain their existing one-profile behavior."""
+    calls = []
+    monkeypatch.setattr(gateway_cli, "_refuse_from_inside_gateway", lambda *args: None)
+    monkeypatch.setattr(update_cmd, "_apply_pending_fleet_restart_catchup", lambda: False)
+    monkeypatch.setattr(gateway_cli, "_installed_service_kind_for", lambda windows: "systemd")
+    monkeypatch.setattr(
+        gateway_cli,
+        "_service_call",
+        lambda kind, verb, system: calls.append((kind, verb, system)),
+    )
+
+    gateway_cli._cmd_restart(SimpleNamespace(system=False, all=False))
+
+    assert calls == [("systemd", "restart", False)]
 
 
 # ---------------------------------------------------------------------------

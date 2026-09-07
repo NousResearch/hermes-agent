@@ -203,8 +203,14 @@ def _git_env(store: Path, working_dir: str, index_file: Optional[Path] = None) -
 
 def _git_subprocess(cmd: List[str], env: dict, timeout: int, cwd: Optional[str] = None):
     # creationflags suppresses the per-call conhost flash on Windows (no-op on POSIX).
-    return subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
-                          env=env, cwd=cwd, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+    # Text mode both replaces undecodable path bytes and normalizes CR/CRLF.
+    text_options = {} if "-z" in cmd else {"text": True, "encoding": "utf-8", "errors": "replace"}
+    result = subprocess.run(cmd, capture_output=True, timeout=timeout, **text_options,
+                            env=env, cwd=cwd, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+    if "-z" in cmd:
+        result.stdout = os.fsdecode(result.stdout)
+        result.stderr = result.stderr.decode("utf-8", errors="replace")
+    return result
 
 
 def _repair_bare_repo_dirs(store: Path) -> None:

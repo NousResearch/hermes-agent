@@ -179,6 +179,8 @@ def test_check_via_local_git_insteadof_rewrite_routes_to_ssh_fastpath(tmp_path, 
         calls.append((list(args), kwargs))
         if args[1] == "ls-remote":
             return MagicMock(returncode=0, stdout=f"{head_sha}\trefs/heads/main\n")
+        if args[1] == "fetch":
+            return MagicMock(returncode=1, stdout="")
         return real_run(args, **kwargs)
 
     monkeypatch.setattr(banner.subprocess, "run", spy_run)

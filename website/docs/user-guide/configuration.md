@@ -152,6 +152,24 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Update Behavior
 
+### Background checks and SSH authentication
+
+The startup update check reads the origin URL with the same isolated Git
+configuration used for its network calls. Global `url.*.insteadOf` rewrites
+therefore cannot hide an official SSH remote from the public HTTPS check.
+
+Hermes's isolated internal Git commands default to `ssh -o BatchMode=yes`:
+unknown host keys, passwords, and encrypted keys needing a passphrase fail
+instead of opening a terminal prompt. Trusted hosts with usable keys or an
+SSH agent continue to authenticate. This does not change your Git or SSH
+configuration on disk, or commands you run in the terminal tool.
+
+The internal default overrides repository `core.sshCommand` settings. An
+explicit `GIT_SSH_COMMAND` environment variable still takes precedence, so
+custom identity or transport commands can be retained there. Include
+`-o BatchMode=yes` in such an override if it must remain non-interactive;
+an override that permits prompting can still interrupt a background check.
+
 `hermes update` settings live under `updates` in `config.yaml`:
 
 ```yaml

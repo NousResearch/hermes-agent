@@ -113,7 +113,8 @@ class TestNoninteractiveGitEnv:
         assert values["core.sshCommand"] == "ssh -o BatchMode=yes"
         # Config-layer pin only: GIT_SSH_COMMAND is never set or overridden here, so a user's
         # explicit env var still takes precedence over core.sshCommand.
-        assert env.get("GIT_SSH_COMMAND") == os.environ.get("GIT_SSH_COMMAND")
+        override = "ssh -i custom-key -o BatchMode=no"
+        assert noninteractive_git_env({"GIT_SSH_COMMAND": override})["GIT_SSH_COMMAND"] == override
 
 
 # ---------------------------------------------------------------------------

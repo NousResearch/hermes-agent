@@ -243,8 +243,9 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     child of a fetch/ls-remote fails instead of prompting — ssh bypasses ``stdin=DEVNULL`` and
     opens ``/dev/tty`` directly (#104591); an agent-authenticated ssh still succeeds, and an
     explicit user ``GIT_SSH_COMMAND`` env var still takes precedence over this config-layer pin.
-    ``GIT_ASKPASS``/``SSH_ASKPASS`` are deliberately left alone: a *working* askpass helper or
-    ssh-agent should still succeed non-interactively. Pair with
+    ``GIT_ASKPASS``/``SSH_ASKPASS`` env vars are left alone, but OpenSSH BatchMode disables
+    passphrase/password prompts, including SSH askpass. Usable keys and ssh-agent authentication
+    still work; Git's own working askpass helper is unaffected. Pair with
     ``stdin=subprocess.DEVNULL``. Internal plumbing only — the agent-facing terminal tool has its
     own policy layer and visible PTY.
 

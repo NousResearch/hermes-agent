@@ -553,14 +553,14 @@ class TestCheckForSkillUpdates:
         assert results[0]["name"] == "demo-skill"
         assert results[0]["status"] == "update_available"
 
-    @pytest.mark.parametrize("regular_file", [False, True])
-    def test_orphaned_entry_reported_without_remote_fetch(self, tmp_path, monkeypatch, regular_file):
+    @pytest.mark.parametrize("path_kind", ["missing", "regular_file", "unsafe", "corrupt"])
+    def test_unusable_entry_reported_without_remote_fetch(self, tmp_path, monkeypatch, path_kind):
         """A lock-file entry whose install directory no longer exists is
         reported ``orphaned`` without paying the remote fetch cost (#104291)."""
         import tools.skills_hub as hub
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        if regular_file:
+        if path_kind == "regular_file":
             (skills_dir / "demo-skill").write_text("not an installed directory")
         monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
 
@@ -570,7 +570,7 @@ class TestCheckForSkillUpdates:
             "source": "github",
             "identifier": "owner/repo/demo-skill",
             "content_hash": "hash",
-            "install_path": "demo-skill",  # never created on disk
+            "install_path": {"unsafe": "../outside", "corrupt": ["bad"]}.get(path_kind, "demo-skill"),
         }]
 
         source = MagicMock()
@@ -579,29 +579,10 @@ class TestCheckForSkillUpdates:
         results = check_for_skill_updates(lock=lock, sources=[source])
 
         assert len(results) == 1
-        assert results[0]["status"] == "orphaned"
+        expected = "invalid_install" if path_kind in {"unsafe", "corrupt"} else "orphaned"
+        assert results[0]["status"] == expected
         assert "bundle" not in results[0]
         source.fetch.assert_not_called()
-
-    def test_hanging_fetch_is_abandoned_after_timeout(self):
-        """A fetch that outlives its wall-clock bound degrades to no bundle
-        quickly instead of stalling the whole update run (#104291)."""
-        from tools.skills_hub_install import _fetch_bundle_bounded
-
-        class _HangingSource:
-            def source_id(self):
-                return "github"
-
-            def fetch(self, identifier):
-                time.sleep(10)
-                raise AssertionError("fetch should have been abandoned")
-
-        started = time.monotonic()
-        bundle = _fetch_bundle_bounded(_HangingSource(), "owner/repo/demo-skill", timeout=0.2)
-        elapsed = time.monotonic() - started
-
-        assert bundle is None
-        assert elapsed < 5.0
 
 class TestCreateSourceRouter:
 

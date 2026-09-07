@@ -59,6 +59,66 @@ class TestMatchUserDenyRule:
         assert mod._match_user_deny_rule('git pu""sh --force origin main') is not None
 
 
+def test_deny_follows_executable_identity(deny_config, clean_env, monkeypatch):
+    """Paths, prefixes and shell carriers cannot outrank an explicit deny."""
+    commands = [
+        "sudo -n id -u", "/usr/bin/sudo -n id -u", "./sudo -n id -u",
+        '"/usr/bin/su"do -n id -u', r"/usr/bin/sud\o -n id -u",
+        "FOO=bar /usr/bin/sudo -n id -u", "env sudo -n id -u",
+        "/usr/bin/env -i FOO=bar /usr/bin/sudo -n id -u",
+        "env -u FOO -- /usr/bin/sudo -n id -u",
+        "env -C /tmp /usr/bin/sudo -n id -u",
+        "command -p /usr/bin/sudo -n id -u", "exec -a label /usr/bin/sudo -n id -u",
+        "nohup /usr/bin/sudo -n id -u", "nice -n 5 /usr/bin/sudo -n id -u",
+        "timeout 5 /usr/bin/sudo -n id -u",
+        "setsid -f /usr/bin/sudo -n id -u", "time -p /usr/bin/sudo -n id -u",
+        "stdbuf --output L /usr/bin/sudo -n id -u",
+        "ionice --class 2 /usr/bin/sudo -n id -u",
+        "chrt --fifo 20 /usr/bin/sudo -n id -u",
+        "taskset --cpu-list 0 /usr/bin/sudo -n id -u",
+        "chroot --userspec root:root /srv /usr/bin/sudo -n id -u",
+        "true && /usr/bin/sudo -n id -u; echo ok",
+        "echo ok | /usr/bin/sudo -n id -u", "(/usr/bin/sudo -n id -u)",
+        'echo "$(/usr/bin/sudo -n id -u)"',
+        "bash -lc 'env -i /usr/bin/sudo -n id -u'",
+        "env -S '/usr/bin/sudo -n id -u'",
+        "2>/tmp/log FOO=bar /usr/bin/sudo -n id -u",
+        "if true; then /usr/bin/sudo -n id -u; fi",
+    ]
+    for mode, yolo in (("manual", False), ("off", False), ("manual", True)):
+        deny_config(["sudo *"], mode=mode)
+        monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", yolo)
+        for command in commands:
+            for guard in (mod.check_dangerous_command, mod.check_all_command_guards):
+                result = guard(command, "local")
+                assert result.get("user_deny") is True, (mode, yolo, command, result)
+                assert result["approved"] is False
+
+
+def test_deny_projection_preserves_data_and_path_rules(deny_config):
+    """Project only executable positions; retain spelling-sensitive argument data."""
+    deny_config(["/usr/bin/sudo -n id -u"])
+    assert approval_floors._match_user_deny_rule("env /usr/bin/sudo -n id -u; true")
+    assert approval_floors._match_user_deny_rule("/opt/bin/sudo -n id -u") is None
+    deny_config(["sudo", "sudo *", "git status"])
+    for command in (
+        'echo "sudo -n id -u"', "printf 'ok && sudo -n id -u'",
+        'printf "%s" "$(printf safe) sudo -n id -u"',
+        "command -v sudo", "command -V sudo", "command -pv sudo",
+        "env -u sudo printf ok", "exec -a sudo printf ok",
+        "ionice --pid sudo", "chrt --pid sudo", "taskset --pid 1 sudo",
+        "echo 'first\nsudo -n id -u'", "echo ok # ; sudo -n id -u",
+        "git log --grep='git status'", r'printf "%s" "a\"; sudo -n id -u"',
+    ):
+        assert approval_floors._match_user_deny_rule(command) is None, command
+    for command in ("env git status; echo ok", "(git status)", "git\tstatus # comment"):
+        assert approval_floors._match_user_deny_rule(command) == "git status", command
+    assert approval_floors._match_user_deny_rule('env git st""atus') == "git status"
+    deny_config(['printf "a  b"'])
+    assert approval_floors._match_user_deny_rule('env printf "a  b"')
+    assert approval_floors._match_user_deny_rule('env printf "a b"') is None
+
+
 class TestDenyBeatsYolo:
     def test_deny_blocks_under_yolo_env(self, deny_config, clean_env, monkeypatch):
         deny_config(["git push --force*"])

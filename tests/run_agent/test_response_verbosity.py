@@ -8,12 +8,20 @@ from agent.transports import get_transport
 
 @pytest.mark.parametrize("level", ["low", "medium", "high"])
 def test_profile_config_reaches_responses(monkeypatch, level):
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"agent": {"verbosity": level}})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"agent": {"verbosity": level}, "model": {"context_length": 272000}},
+    )
     monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: [])
     monkeypatch.setattr(model_tools, "check_toolset_requirements", lambda: {})
+
+    def reject_network(*args, **kwargs):
+        raise AssertionError("verbosity configuration test must not access the network")
+
+    monkeypatch.setattr("socket.socket.connect", reject_network)
     agent = run_agent.AIAgent(
-        model="gpt-6-astra", provider="custom", api_mode="codex_responses",
-        base_url="http://127.0.0.1:8317/v1", api_key="test-only", quiet_mode=True,
+        model="gpt-5.1", provider="openai", api_mode="codex_responses",
+        base_url="https://api.openai.com/v1", api_key="test-only", quiet_mode=True,
         skip_context_files=True, skip_memory=True, reasoning_config={"effort": "high"},
     )
     kwargs = agent._build_api_kwargs([{"role": "user", "content": "Hello"}], tools_for_api=[])

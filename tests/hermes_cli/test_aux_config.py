@@ -205,6 +205,7 @@ def test_leave_unchanged_replaces_cancel_label(tmp_path, monkeypatch):
     ("effort_choice", "expected_effort", "cancelled"),
     [
         ("high", "high", False),
+        ("none", "none", False),
         ("", "", False),
         (None, "low", False),
         (provider_setup._CANCELLED, "low", True),
@@ -231,8 +232,16 @@ def test_delegation_route_and_reasoning_are_saved_atomically(
     save_config(cfg)
     original = deepcopy(load_config())
 
-    route_index = {"auto": 0, "provider": 1, "custom": 2}[route]
-    monkeypatch.setattr(provider_setup, "_prompt_provider_choice", lambda *_args, **_kwargs: route_index)
+    route_label = {
+        "auto": "auto (inherit main agent)",
+        "provider": "OpenRouter",
+        "custom": "Custom endpoint (direct URL)",
+    }[route]
+
+    def choose_route(choices, **_kwargs):
+        return next(i for i, label in enumerate(choices) if route_label in label)
+
+    monkeypatch.setattr(provider_setup, "_prompt_provider_choice", choose_route)
     monkeypatch.setattr("hermes_cli.inventory.build_aux_picker_rows", lambda **_kwargs: [object()])
     monkeypatch.setattr(
         "hermes_cli.inventory.format_aux_picker_entries",
@@ -289,14 +298,24 @@ def test_delegation_route_and_reasoning_are_saved_atomically(
 
 
 @pytest.mark.parametrize(
-    ("selected_index", "expected"),
-    [(-1, provider_setup._CANCELLED), (8, ""), (9, None)],
+    ("selected_label", "expected"),
+    [
+        (None, provider_setup._CANCELLED),
+        ("Disable reasoning", "none"),
+        ("Inherit parent", ""),
+        ("Skip (keep current)", None),
+    ],
 )
 def test_delegation_reasoning_prompt_distinguishes_cancel_inherit_and_skip(
-    monkeypatch, selected_index, expected
+    monkeypatch, selected_label, expected
 ):
     """The shared reasoning picker can expose delegation-only atomic choices."""
-    monkeypatch.setattr(provider_setup, "_radiolist", lambda *_args: selected_index)
+    def choose_reasoning(_title, choices, _default):
+        if selected_label is None:
+            return -1
+        return next(i for i, label in enumerate(choices) if selected_label in label)
+
+    monkeypatch.setattr(provider_setup, "_radiolist", choose_reasoning)
 
     result = provider_setup._prompt_reasoning_effort_selection(
         VALID_REASONING_EFFORTS,

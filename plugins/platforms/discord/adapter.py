@@ -6791,10 +6791,14 @@ def _define_discord_view_classes() -> None:
             try:
                 from tools.clarify_gateway import resolve_gateway_clarify
                 resolved = resolve_gateway_clarify(self.clarify_id, resolved_text)
+                # Index and outcome only: choice text is arbitrary conversational
+                # content and display names are operator PII, neither belongs in
+                # operational logs.
                 logger.info(
-                    "Discord clarify button resolved (id=%s, choice=%r, user=%s, ok=%s)",
-                    self.clarify_id, resolved_text,
-                    getattr(getattr(interaction, "user", None), "display_name", "?"), resolved,
+                    "Discord clarify button resolved (id=%s, choice_index=%s, ok=%s)",
+                    self.clarify_id,
+                    index,
+                    resolved,
                 )
             except Exception as exc:
                 logger.error("Discord clarify resolve_gateway_clarify failed (id=%s): %s", self.clarify_id, exc)

@@ -175,16 +175,23 @@ def _platform_enablement(
             # .env and never a platforms: entry (#104614) — while an explicit
             # enabled: false still wins, exactly like the real gateway config. Only the
             # profile's own .env (env_on_disk) is consulted; os.environ would leak the
-            # root install's credentials into this profile's state.
+            # root install's credentials into this profile's state. `bool(required)`
+            # guards the empty-required_env platforms (whatsapp, api_server, webhook,
+            # ...): `all()` over an empty tuple is True, which would report them
+            # enabled/configured with nothing set up — the unscoped branch reports
+            # enabled=False for that shape, so the scoped branch must agree.
             raw_enabled = plat_cfg.get("enabled")
             if raw_enabled is False:
                 enabled = False
             else:
-                enabled = bool(raw_enabled) or all(env_on_disk.get(key) for key in required)
+                enabled = bool(raw_enabled) or (
+                    bool(required)
+                    and all(env_on_disk.get(key) for key in required)
+                )
             home_channel = hc if isinstance(hc, dict) else None
         except Exception:
             enabled, home_channel = False, None
-        return enabled, all(env_on_disk.get(key) for key in required), home_channel
+        return enabled, bool(required) and all(env_on_disk.get(key) for key in required), home_channel
     try:
         from gateway.config import Platform, load_gateway_config
 

@@ -88,6 +88,5 @@ def test_resumed_events_clear_only_this_requests_wait_notice(monkeypatch):
     assert request.run() is sentinel
     assert len(notices) == 2
     assert "no response yet" in notices[0]
-    assert notices[1]
-    assert "waiting on" not in notices[1]
-    assert "no response" not in notices[1]
+    # Nonempty thinking.delta payloads enter TUI reasoning history.
+    assert notices[1] == ""

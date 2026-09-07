@@ -131,9 +131,14 @@ class TestOverrideCwdSanitizedForSSH:
             cwd = config_cwd
 
             def execute(self, *a, **k):
+                # The cwd that actually reaches the peer's shell. The builder's
+                # cwd only seeds the environment; every command resolves its
+                # own, so this is the value that decides whether `cd` succeeds.
+                captured.setdefault("execute_cwds", []).append(k.get("cwd"))
                 return {"output": "", "exit_code": 0}
 
         def fake_create_environment(env_type, image, cwd, timeout, **kwargs):
+            captured["create_cwd"] = cwd
             captured["cwd"] = cwd
             return _DummyEnv()
 
@@ -152,27 +157,130 @@ class TestOverrideCwdSanitizedForSSH:
             tt.clear_task_env_overrides(task_id)
             tt._active_environments.pop(task_id, None)
             tt._active_environments.pop("default", None)
-        return captured.get("cwd")
+        return captured
 
     def test_the_measured_case_does_not_reach_the_peer(self, monkeypatch):
         # The kanban worker's own Windows workspace, registered as an override.
-        cwd = self._run_and_capture_cwd(
+        cap = self._run_and_capture_cwd(
             monkeypatch,
             r"D:\hermes\kanban\boards\hermes-multinode\workspaces\t_27e56ac3",
         )
-        assert cwd == "~", (
-            f"Host cwd override leaked to the ssh peer: {cwd!r}. "
-            "Every command would fail in `cd` with exit 126 before running."
+        assert cap["create_cwd"] == "~", (
+            f"Host cwd override leaked to the environment builder: "
+            f"{cap['create_cwd']!r}."
         )
 
     def test_relative_override_does_not_reach_the_peer(self, monkeypatch):
-        assert self._run_and_capture_cwd(monkeypatch, "src/") == "~"
+        assert self._run_and_capture_cwd(monkeypatch, "src/")["create_cwd"] == "~"
 
     def test_absolute_remote_override_is_preserved(self, monkeypatch):
         # A real directory on the peer must still win — that is what overrides
         # are for.
-        cwd = self._run_and_capture_cwd(monkeypatch, "/Users/ftfuture/work/uservice/teamwork")
-        assert cwd == "/Users/ftfuture/work/uservice/teamwork"
+        cap = self._run_and_capture_cwd(monkeypatch, "/Users/ftfuture/work/uservice/teamwork")
+        assert cap["create_cwd"] == "/Users/ftfuture/work/uservice/teamwork"
+        assert cap["execute_cwds"] == ["/Users/ftfuture/work/uservice/teamwork"]
 
     def test_tilde_override_is_preserved(self, monkeypatch):
-        assert self._run_and_capture_cwd(monkeypatch, "~/work") == "~/work"
+        cap = self._run_and_capture_cwd(monkeypatch, "~/work")
+        assert cap["create_cwd"] == "~/work"
+        assert cap["execute_cwds"] == ["~/work"]
+
+
+class TestSessionRecordCwdSanitizedForSSH:
+    """The *third* code path -- the one the first version of this fix missed.
+
+    ``register_task_env_overrides`` writes a registered override straight into
+    the session cwd record, and every command without an explicit ``workdir``
+    resolves against that record.  Guarding ``config["cwd"]`` and the override
+    at the environment builder is therefore not enough: the builder gets a
+    clean ``~`` while ``env.execute`` still receives the host path, and the
+    measured bug reproduces with both of the other guards active.
+
+    The failure is also self-sustaining.  ``cd`` fails before the shell prints
+    the cwd marker, so the record is never corrected, and the same bad value is
+    re-recorded after each command.
+
+    Independent review of d33681f72 found this and supplied a repro; these
+    tests are that repro, pinned.
+    """
+
+    def test_resolver_drops_a_host_record_on_ssh(self):
+        tt.record_session_cwd(
+            "sess-ssh-record",
+            r"D:\hermes\kanban\boards\hermes-multinode\workspaces\t_27e56ac3",
+        )
+        try:
+            resolved = tt._resolve_command_cwd(
+                workdir=None, default_cwd="~",
+                env_type="ssh", session_key="sess-ssh-record",
+            )
+        finally:
+            tt.clear_session_cwd("sess-ssh-record")
+        assert resolved == "~"
+
+    def test_resolver_keeps_a_remote_record_on_ssh(self):
+        tt.record_session_cwd("sess-ssh-ok", "/Users/ftfuture/work")
+        try:
+            resolved = tt._resolve_command_cwd(
+                workdir=None, default_cwd="~",
+                env_type="ssh", session_key="sess-ssh-ok",
+            )
+        finally:
+            tt.clear_session_cwd("sess-ssh-ok")
+        assert resolved == "/Users/ftfuture/work"
+
+    def test_explicit_workdir_still_wins_on_ssh(self):
+        # workdir= is the caller saying "I know where this must run". The guard
+        # must not second-guess it -- that is how the measured bug was worked
+        # around before the fix existed.
+        tt.record_session_cwd("sess-ssh-wd", r"D:\hermes\kanban")
+        try:
+            resolved = tt._resolve_command_cwd(
+                workdir="/Users/ftfuture", default_cwd="~",
+                env_type="ssh", session_key="sess-ssh-wd",
+            )
+        finally:
+            tt.clear_session_cwd("sess-ssh-wd")
+        assert resolved == "/Users/ftfuture"
+
+    def test_other_backends_keep_their_record_untouched(self):
+        # The guard is ssh-only; local/container resolution must not change.
+        tt.record_session_cwd("sess-local", r"D:\hermes\kanban")
+        try:
+            for backend in ("local", "docker", "modal"):
+                assert tt._resolve_command_cwd(
+                    workdir=None, default_cwd="/root",
+                    env_type=backend, session_key="sess-local",
+                ) == r"D:\hermes\kanban", backend
+        finally:
+            tt.clear_session_cwd("sess-local")
+
+    def test_env_type_is_required(self):
+        # A new call site that forgets env_type must fail at the call, not
+        # silently skip the guard. That silence is how this path stayed
+        # unguarded while the other two were fixed.
+        import pytest
+        with pytest.raises(TypeError):
+            tt._resolve_command_cwd(workdir=None, default_cwd="~")
+
+
+class TestMeasuredBugDoesNotReachExecute(TestOverrideCwdSanitizedForSSH):
+    """End-to-end: the host path must not reach ``env.execute`` either.
+
+    Inherits the harness above. The earlier version of these tests asserted
+    only on the environment builder's cwd, which is exactly why the leak
+    survived them.
+    """
+
+    def test_execute_never_sees_the_host_path(self, monkeypatch):
+        cap = self._run_and_capture_cwd(
+            monkeypatch,
+            r"D:\hermes\kanban\boards\hermes-multinode\workspaces\t_27e56ac3",
+        )
+        assert cap["create_cwd"] == "~"
+        assert cap["execute_cwds"], "the command never reached env.execute"
+        for got in cap["execute_cwds"]:
+            assert got == "~", (
+                f"Host cwd reached the peer's shell as {got!r}. "
+                "`cd` fails there and the command returns 126 before it runs."
+            )

@@ -182,6 +182,7 @@ class TestCommandCwdReadsTheRecord:
         resolved = tt._resolve_command_cwd(
             workdir=None,
             default_cwd="/config/default",
+            env_type="local",
             session_key="sess-a",
         )
         assert resolved == "/my/worktree"
@@ -191,6 +192,7 @@ class TestCommandCwdReadsTheRecord:
         resolved = tt._resolve_command_cwd(
             workdir="/explicit/place",
             default_cwd="/config/default",
+            env_type="local",
             session_key="sess-a",
         )
         assert resolved == "/explicit/place"
@@ -199,6 +201,7 @@ class TestCommandCwdReadsTheRecord:
         resolved = tt._resolve_command_cwd(
             workdir=None,
             default_cwd="/config/default",
+            env_type="local",
             session_key="sess-a",
         )
         assert resolved == "/config/default"
@@ -208,6 +211,7 @@ class TestCommandCwdReadsTheRecord:
         resolved = tt._resolve_command_cwd(
             workdir=None,
             default_cwd="/config/default",
+            env_type="local",
             session_key="sess-a",
         )
         assert resolved == "/config/default"

@@ -2126,6 +2126,7 @@ def _resolve_command_cwd(
     *,
     workdir: Optional[str],
     default_cwd: str,
+    env_type: str,
     session_key: Optional[str] = None,
 ) -> str:
     """Return the cwd for a command. Explicit ``workdir=`` overrides everything.
@@ -2136,10 +2137,30 @@ def _resolve_command_cwd(
     ``cd`` lands in another record and can't affect us. A session with no
     record yet (first command) runs in ``default_cwd`` (config/override cwd),
     which is also what seeds a fresh environment.
+
+    The record is the *third* way a cwd reaches a command, and it needs the
+    same sanity check as the other two.  ``register_task_env_overrides``
+    writes a registered override straight into the record, so on the ``ssh``
+    backend a Hermes-host path lands here even when the config and override
+    guards both did their job -- and then every command without an explicit
+    ``workdir`` dies in ``cd`` with 126 before it runs.  Worse, the failure is
+    self-sustaining: ``cd`` fails before the marker is printed, so the record
+    is never corrected and the same bad value is re-recorded after each
+    command.
+
+    ``env_type`` is required rather than optional on purpose.  A new call site
+    that forgets it fails loudly at the call rather than silently skipping the
+    guard, which is exactly how this path came to be unguarded.
     """
     if workdir:
         return workdir
-    return get_session_cwd(session_key) or default_cwd
+    recorded = get_session_cwd(session_key)
+    if recorded and env_type == "ssh" and _is_unusable_ssh_cwd(recorded):
+        logger.info("Ignoring recorded session cwd %r for ssh backend "
+                    "(won't resolve on the peer). Using %r instead.",
+                    recorded, default_cwd)
+        return default_cwd
+    return recorded or default_cwd
 
 
 def terminal_tool(
@@ -2519,6 +2540,7 @@ def terminal_tool(
             effective_cwd = _resolve_command_cwd(
                 workdir=workdir,
                 default_cwd=cwd,
+                env_type=env_type,
                 session_key=session_key,
             )
             try:
@@ -2779,6 +2801,7 @@ def terminal_tool(
                     command_cwd = _resolve_command_cwd(
                         workdir=workdir,
                         default_cwd=cwd,
+                        env_type=env_type,
                         session_key=session_key,
                     )
                     execute_kwargs = {

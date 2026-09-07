@@ -195,7 +195,8 @@ def test_registering_cwd_override_updates_session_record(monkeypatch):
     # … and the session record — what commands actually resolve against — too.
     assert terminal_tool.get_session_cwd(task_id) == "/workspace/new"
     assert terminal_tool._resolve_command_cwd(
-        workdir=None, default_cwd="/workspace/config", session_key=task_id
+        workdir=None, default_cwd="/workspace/config", env_type="local",
+        session_key=task_id
     ) == "/workspace/new"
 
 

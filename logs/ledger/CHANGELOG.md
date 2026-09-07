@@ -8,6 +8,58 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.2.2] — 2026-09-06 — hermes@693641aa8b (0 behind upstream/main)
+
+Handoff tooling + a standing agent-conduct policy. **PATCH** per the version
+table ("housekeeping" + "docs / ledger-only"). No application code, no `.env`,
+no packaging change; agent runtime behaviour untouched. All entries in this
+block are `RUN-2026-09-06-003`. **Committed locally; not pushed** — held for
+review, same as everything since `NF-v0.1.1`.
+
+### Added
+
+- **CHG-2026-09-06-027** — `scripts/collect-logs.ps1` + `scripts/collect-logs.cmd`
+  (double-click wrapper) + `scripts/collect-logs.sh` (POSIX mirror): a
+  one-command builder for the review/handoff bundle. It (a) copies
+  `logs/ledger/**` into `D:\logs\ledger\`, (b) writes a git snapshot to
+  `D:\logs\repo-state.txt` (HEAD, branch, ahead/behind `origin` + `upstream`,
+  uncommitted files, recent log), (c) generates `D:\logs\HANDOFF-INDEX.md`
+  (manifest + check results), (d) copies any `logs/*.log` / `*.jsonl` if present,
+  (e) removes superseded `north-forge-agent-logs-*.zip` nested bundles, (f) zips
+  `D:\logs\` → `D:\logs.zip` (overwrite) + writes `D:\logs.zip.sha256`, and
+  (g) runs a completeness self-check (ledger copied in full; key ledger files
+  present + non-empty; audits/templates counts; local not behind `origin/main`;
+  uncommitted-tree warning; **session-report-vs-ledger date freshness**; zip
+  entry-set matches staging; zip newer than inputs). Exit 0 unless a check
+  FAILs. Existing `D:\logs\*.md` session reports are never touched. Paths
+  outside the repo (`D:\logs\`, `D:\logs.zip`) are **not** tracked — only the
+  three scripts are. Runnable by hand any time and as end-of-task practice; no
+  dependency on being invoked by an agent. Paths: `scripts/collect-logs.ps1`,
+  `scripts/collect-logs.cmd`, `scripts/collect-logs.sh`. Ref: — . Run:
+  RUN-2026-09-06-003.
+
+### Changed
+
+- **CHG-2026-09-06-028** — `logs/ledger/README.md`: new **"## Agent conduct"**
+  section (between "Workflow — the discipline" and "Optional automation").
+  States the standing policy: incidental **minor** bugs found during any task
+  are fixed and logged in the same run without stopping for approval; anything
+  touching **architecture, access-tier logic, secrets, or an already-flagged
+  `OPEN` `DECISION-`/`ERR-`** still escalates on the existing path; when unsure
+  whether something is "minor", escalate rather than guess. Also records the
+  end-of-task handoff step (run `scripts/collect-logs.*`, drop a
+  `D:\logs\<TOPIC>_<date>.md` write-up). Paths: `logs/ledger/README.md`.
+  Ref: — . Run: RUN-2026-09-06-003.
+
+### Unchanged (called out)
+
+- **`D:\logs\` and `D:\logs.zip`** — regenerated artifacts, outside the repo,
+  not committed (same as before). Prior hand-built `D:\logs\*.md` session
+  reports are kept as-is by the script.
+- **Application code, `.env`, packaging** — untouched.
+
+---
+
 ## [NF-v0.2.1] — 2026-09-06 — hermes@693641aa8b (0 behind upstream/main)
 
 Finishes the branding pass started by **`DECISION-2026-09-06-001` Option B (full

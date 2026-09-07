@@ -215,6 +215,43 @@ trustworthy to a reader who wasn't there.
 
 ---
 
+## Agent conduct
+
+Standing rules for any agent (Claude Code, Codex, …) doing work in this repo.
+
+**Incidental minor fixes — fix and log, don't stop to ask.**
+A small defect noticed in passing during some other task is fixed in the same run
+and recorded here — a `CHG-` bullet, or an `ERR-` + resolving `CHG-` if it was a
+genuine fault — without pausing the task for approval. "Minor" means: local,
+reversible, no design or policy content, and no change to user-visible behaviour
+beyond the fix itself (a typo, a broken link, a wrong path in a comment, a
+mis-scoped `.gitignore` line, a crashing edge case in a helper script).
+
+**Always escalate instead — do _not_ self-fix — when the thing touches:**
+- **Architecture** — the chassis/vertical split, repo layout, a subsystem's shape.
+- **Access-tier logic** — the two-tier Full/Basic model, passcode gating, the
+  pinned front-door skill, anything that decides what a recipient can reach.
+- **Secrets** — `.env`, credentials, keys, tokens; anything under
+  `ERR-2026-09-06-001`'s subject.
+- **An already-flagged pending decision** — any `OPEN` row in
+  `decisions/DECISION-LOG.md` or `errors/ERROR-LOG.md`. Add to that record; do
+  not pre-empt it.
+
+These keep the existing escalation path: surface it to the owner, open or update
+the `DECISION-`/`ERR-` row, stop.
+
+**When genuinely unsure which side something falls on, escalate.** A wrong guess
+that quietly changes architecture or access logic is far more expensive than a
+question. Use judgement on "minor"; when the judgement isn't clear, don't guess.
+
+**End-of-task handoff.** At the end of any session that changed tracked files or
+this ledger: run `scripts/collect-logs.ps1` (or `scripts/collect-logs.sh`) to
+rebuild `D:\logs\` + `D:\logs.zip`, and drop a plain-language write-up at
+`D:\logs\<TOPIC>_<YYYY-MM-DD>.md` alongside the ledger entries. The script's
+completeness check will warn if a run left ledger entries but no such report.
+
+---
+
 ## Optional automation
 
 The discipline above is manual by design (an entry needs judgement). If you want a

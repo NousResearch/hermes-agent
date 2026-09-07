@@ -306,6 +306,7 @@ def approve_permanent(pattern_key: str):
 def load_permanent(patterns: set):
     """Bulk-load permanent allowlist entries from config."""
     with _lock:
+        _permanent_approved.clear()
         _permanent_approved.update(patterns)
 
 
@@ -331,8 +332,7 @@ def load_permanent_allowlist() -> set:
         from hermes_cli.config import load_config_readonly
         config = load_config_readonly()
         patterns = set(config.get("command_allowlist", []) or [])
-        if patterns:
-            load_permanent(patterns)
+        load_permanent(patterns)
         return patterns
     except Exception as e:
         logger.warning("Failed to load permanent allowlist: %s", e)

@@ -563,6 +563,26 @@ class TestPatternKeyUniqueness:
             assert is_approved("legacy-find", key_delete) is True
 
 
+class TestPermanentAllowlistReload:
+    def test_load_permanent_replaces_stale_entries(self):
+        with mock_patch.object(approval_module, "_permanent_approved", set()):
+            load_permanent({"old-pattern"})
+            assert is_approved("reload", "old-pattern") is True
+
+            load_permanent({"new-pattern"})
+
+            assert is_approved("reload", "old-pattern") is False
+            assert is_approved("reload", "new-pattern") is True
+
+    def test_load_permanent_allowlist_clears_when_config_is_empty(self):
+        with mock_patch.object(approval_module, "_permanent_approved", {"stale-pattern"}):
+            with mock_patch("hermes_cli.config.load_config_readonly", return_value={"command_allowlist": []}):
+                assert approval_module.load_permanent_allowlist() == set()
+
+            assert approval_module._permanent_approved == set()
+            assert is_approved("reload", "stale-pattern") is False
+
+
 class TestFullCommandAlwaysShown:
     """The full command is always shown in the approval prompt (no truncation).
 

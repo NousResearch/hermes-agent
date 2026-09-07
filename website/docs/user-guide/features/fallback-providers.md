@@ -214,6 +214,8 @@ Main provider + main model → auxiliary.<task>.fallback_chain →
 fallback_providers / fallback_model → built-in auxiliary discovery chain
 ```
 
+A billing or quota failure quarantines only the failed custom endpoint for the auxiliary health cooldown, not every route registered as `custom`. A healthy local endpoint with a different base URL remains eligible for fallback and subsequent auto routing. Aliases for the same custom endpoint share its health state. Built-in providers retain their shared-account health checks.
+
 The task-specific chain is most precise and wins when present. The top-level `fallback_providers` chain is the same policy the main agent uses, so free-only or same-provider fallback rules apply to auxiliary tasks on `auto` as well.
 
 **Built-in text discovery chain (compression, web extract, title generation, etc.):**

@@ -195,23 +195,38 @@ def _needs_sudo(scope: str) -> bool:
     )
 
 
-def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
-    """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit."""
-    for scope, scope_cmd, result in _systemd_gateway_unit_listings():
+def _restart_systemd_gateway_units_best_effort(failed: list, restarted: list | None = None) -> list[str]:
+    """Best-effort reset-failed and restart of every hermes-gateway/serve unit."""
+    seen: list[str] = []
+
+    def _on_list_timeout(scope: str, exc: subprocess.TimeoutExpired) -> None:
+        failed.append(f"systemd-{scope}")
+        seen.append(f"systemd-{scope}")
+
+    for scope, scope_cmd, result in _systemd_gateway_unit_listings(_on_list_timeout):
         if result.returncode != 0:
             continue
 
         def process_unit(svc_name: str, _scope=scope, _cmd=scope_cmd) -> None:
-            restart_cmd = list(_cmd) + ["--no-ask-password", "restart", svc_name]
+            seen.append(svc_name)
+            manage_cmd = list(_cmd) + ["--no-ask-password"]
             if _needs_sudo(_scope):
-                restart_cmd = ["sudo", "-n"] + restart_cmd
-            _systemctl(restart_cmd, timeout=30)
+                manage_cmd = ["sudo", "-n"] + manage_cmd
+            res = _systemctl_reset_and_restart(manage_cmd, svc_name)
+            restart_wait = max(10.0, _service_restart_sec(_cmd, svc_name, default=0.0) + 10.0)
+            if res.returncode != 0:
+                failed.append(svc_name)
+            elif not _wait_for_service_active(_cmd, svc_name, timeout=restart_wait):
+                failed.append(svc_name)
+            elif restarted is not None:
+                restarted.append(svc_name)
 
         _for_each_systemd_gateway_unit(
             result.stdout,
             process_unit=process_unit,
             on_unit_timeout=lambda svc_name, exc: failed.append(svc_name),
         )
+    return seen
 
 
 def _run_pending_fleet_restart() -> bool:
@@ -232,7 +247,7 @@ def _run_pending_fleet_restart() -> bool:
     try:
         from hermes_cli.gateway import (
             find_gateway_pids, is_macos, is_windows, kill_gateway_processes, supports_systemd_services,
-            _wait_for_gateway_exit,
+            _wait_for_gateway_exit, _get_service_pids,
         )
     except Exception as exc:
         _warn_gateway_restart_phase_aborted(exc, None)
@@ -244,41 +259,58 @@ def _run_pending_fleet_restart() -> bool:
         logger.debug("Pending fleet restart: gateway probe failed: %s", exc)
         pids = None
 
-    if pids == []:
-        print("  ✓ No running gateways — nothing to restart.")
-        return True
-
     failed: list = []
+    restarted: list = []
+    services_seen: list = []
     try:
         # --- Systemd services (Linux) --- Discover all hermes-gateway* units (default + profiles) plus
         # hermes-serve* units (the Desktop app's backend, #83438).
         if supports_systemd_services():
-            _restart_systemd_gateway_units_best_effort(failed)
+            seen_systemd = _restart_systemd_gateway_units_best_effort(failed, restarted)
+            services_seen.extend(seen_systemd)
         # --- Launchd services (macOS) --- Restart EVERY ai.hermes.gateway* LaunchAgent, not only the
         # invoking profile's — parity with the systemd branch above (#41403). Per-label TimeoutExpired
         # isolation happens inside.
         if is_macos():
             try:
-                _restart_macos_launchd_gateways([], failed, 45.0)
+                _restart_macos_launchd_gateways(restarted, failed, 45.0)
+                if restarted or failed:
+                    services_seen.append("launchd")
             except Exception as exc:
                 logger.debug("Pending fleet restart: launchd failed: %s", exc)
                 failed.append("launchd")
+                services_seen.append("launchd")
         if is_windows():
             try:
                 from hermes_cli import gateway_windows
                 if gateway_windows.is_installed():
+                    services_seen.append("windows-gateway")
                     gateway_windows.restart()
+                    restarted.append("windows-gateway")
             except Exception as exc:
                 logger.debug("Pending fleet restart: Windows failed: %s", exc)
                 failed.append("windows-gateway")
-        try:
-            leftover = list(find_gateway_pids(all_profiles=True))
-        except Exception:
-            leftover = list(pids or [])
-        if leftover:
-            with _best_effort('Pending fleet restart: PID stop failed: %s'):
-                kill_gateway_processes(all_profiles=True)
-                _wait_for_gateway_exit(timeout=5.0, force_after=None)
+                services_seen.append("windows-gateway")
+
+        # If no gateways were running before we started, no service units exist,
+        # and no supervisor errors occurred, there was genuinely nothing to restart (#104249).
+        if pids == [] and not services_seen and not failed:
+            print("  ✓ No running gateways — nothing to restart.")
+            return True
+
+        if pids:
+            try:
+                svc_pids = _get_service_pids(all_profiles=True)
+            except Exception:
+                svc_pids = set()
+            try:
+                leftover = [pid for pid in find_gateway_pids(all_profiles=True) if pid in pids and pid not in svc_pids]
+            except Exception:
+                leftover = [pid for pid in pids if pid not in svc_pids]
+            if leftover:
+                with _best_effort('Pending fleet restart: PID stop failed: %s'):
+                    kill_gateway_processes(exclude_pids=svc_pids, all_profiles=True)
+                    _wait_for_gateway_exit(timeout=5.0, force_after=None)
         if failed:
             _warn_incomplete_gateway_fleet_restart(failed)
             return False

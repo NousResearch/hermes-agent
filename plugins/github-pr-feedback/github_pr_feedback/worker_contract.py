@@ -76,6 +76,17 @@ def _resolved_declared_hooks(
             Path(project_root) / ".hermes" / "plugins" / _PLUGIN_NAME,
             _PLUGIN_NAME,
         ))
+        try:
+            project_categories = tuple(
+                path for path in (Path(project_root) / ".hermes" / "plugins").iterdir()
+                if path.is_dir()
+            )
+        except OSError:
+            project_categories = ()
+        candidates.extend(
+            (category / _PLUGIN_NAME, f"{category.name}/{_PLUGIN_NAME}")
+            for category in project_categories
+        )
     candidates.append((user_plugins / _PLUGIN_NAME, _PLUGIN_NAME))
     try:
         categories = tuple(path for path in user_plugins.iterdir() if path.is_dir())

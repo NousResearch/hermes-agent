@@ -333,11 +333,15 @@ export async function fetchRemoteProfileSessions(
   const params = new URLSearchParams(searchParams)
   params.delete('profile') // the remote serves its own database
 
-  return fetchPagedSessionList(params, pageParams =>
-    fetchJsonForProfile(profile, `/api/sessions?${pageParams}`) as Promise<SessionListResponse>
+  return fetchPagedSessionList(
+    params,
+    pageParams => fetchJsonForProfile(profile, `/api/sessions?${pageParams}`) as Promise<SessionListResponse>
   )
 }
 
+/** Resolve a complete backend window or reject, never an unmarked partial prefix.
+ * A failed page leaves fallback/retry policy to the caller, as a single read does.
+ * Serial pages preserve ordering and first-page metadata until pinned backfill is joined. */
 async function fetchPagedSessionList(
   searchParams: URLSearchParams,
   fetchPage: (params: URLSearchParams) => Promise<SessionListResponse>

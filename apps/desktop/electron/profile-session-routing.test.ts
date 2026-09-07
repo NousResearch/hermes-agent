@@ -224,6 +224,112 @@ test('remote session reads keep small requests on one call', async () => {
   assert.equal(result, expected)
 })
 
+test('a later remote page failure rejects the window and recovery fetches it afresh', async () => {
+  const params = new URLSearchParams({ profile: 'remote-work', limit: '150', offset: '0' })
+  const calls: string[] = []
+  const failure = new Error('second page unavailable')
+  let failing = true
+
+  const fetchPage = async (_profile: string | null, path: string) => {
+    calls.push(path)
+    const query = new URL(path, 'http://desktop.test').searchParams
+    const offset = Number(query.get('offset'))
+    const limit = Number(query.get('limit'))
+
+    if (failing && offset === 100) {
+      throw failure
+    }
+
+    return {
+      sessions: Array.from({ length: limit }, (_, index) => ({
+        id: `${failing ? 'discarded' : 'fresh'}-${offset + index}`
+      })),
+      total: 150,
+      generation: failing ? 'discarded' : 'fresh'
+    }
+  }
+
+  await assert.rejects(fetchRemoteProfileSessions('remote-work', params, fetchPage), error => error === failure)
+  assert.equal(params.toString(), 'profile=remote-work&limit=150&offset=0')
+  failing = false
+  const recovered = await fetchRemoteProfileSessions('remote-work', params, fetchPage)
+
+  assert.deepEqual(calls, [
+    '/api/sessions?limit=100&offset=0',
+    '/api/sessions?limit=50&offset=100',
+    '/api/sessions?limit=100&offset=0',
+    '/api/sessions?limit=50&offset=100'
+  ])
+  assert.deepEqual(
+    recovered.sessions,
+    Array.from({ length: 150 }, (_, index) => ({ id: `fresh-${index}` }))
+  )
+  assert.equal(recovered.generation, 'fresh')
+  assert.equal(recovered.total, 150)
+  assert.equal(recovered.limit, 150)
+})
+
+test.each(['ssh', 'remote'])('registry %s later-page failure omits only that backend and recovers', async kind => {
+  const sources = [
+    { connectionId: 'gw-failing', kind, backends: [{ descriptor: 'failing', profileLabel: 'work' }] },
+    { connectionId: 'gw-live', kind: 'ssh', backends: [{ descriptor: 'live', profileLabel: 'default' }] }
+  ]
+
+  const params = new URLSearchParams({ limit: '150', offset: '0', profile: 'all' })
+  const discarded = Array.from({ length: 150 }, (_, index) => ({ id: `discarded-${index}` }))
+  const fresh = Array.from({ length: 150 }, (_, index) => ({ id: `fresh-${index}` }))
+  const calls: string[] = []
+  let failing = true
+
+  const getJson = async (descriptor: unknown, path: string) => {
+    if (descriptor === 'live') {
+      return { sessions: [{ id: 'live' }], total: 1 }
+    }
+
+    calls.push(path)
+
+    if (path.startsWith('/api/profiles/sessions')) {
+      throw new Error('404: No such API endpoint')
+    }
+
+    const query = new URL(path, 'http://desktop.test').searchParams
+    const offset = Number(query.get('offset'))
+    const limit = Number(query.get('limit'))
+
+    if (failing && offset === 100) {
+      throw new Error('second page unavailable')
+    }
+
+    return { sessions: (failing ? discarded : fresh).slice(offset, offset + limit), total: 150 }
+  }
+
+  const unavailable = await fetchRegistrySessionRows(sources, params, getJson)
+  assert.deepEqual(
+    unavailable.map(row => (row as { id: string }).id),
+    ['live']
+  )
+  assert.ok(discarded.every(row => !('connection_id' in row) && !('profile' in row)))
+  failing = false
+  const recovered = await fetchRegistrySessionRows(sources, params, getJson)
+  const remoteRows = recovered.filter(row => (row as { connection_id: string }).connection_id === 'gw-failing')
+
+  assert.equal(recovered.length, 151)
+  assert.deepEqual(
+    remoteRows.map(row => (row as { id: string }).id),
+    fresh.map(row => row.id)
+  )
+  assert.ok(remoteRows.every(row => (row as { profile: string }).profile === (kind === 'ssh' ? 'work' : 'default')))
+  assert.deepEqual(
+    calls.filter(path => path.startsWith('/api/sessions?')),
+    [
+      '/api/sessions?limit=100&offset=0',
+      '/api/sessions?limit=50&offset=100',
+      '/api/sessions?limit=100&offset=0',
+      '/api/sessions?limit=50&offset=100'
+    ]
+  )
+})
+
 test('registry sources: ssh backends are read natively and rows tagged with connection + profile', async () => {
   const calls: Array<{ descriptor: unknown; path: string }> = []
 
@@ -327,10 +433,7 @@ test('registry sources page flat session endpoints at their 100-row ceiling', as
     }
   )
 
-  assert.deepEqual(calls, [
-    '/api/sessions?limit=100&offset=0',
-    '/api/sessions?limit=50&offset=100'
-  ])
+  assert.deepEqual(calls, ['/api/sessions?limit=100&offset=0', '/api/sessions?limit=50&offset=100'])
   assert.equal(rows.length, 150)
 })
 

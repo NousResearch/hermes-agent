@@ -24,7 +24,9 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
+import { isConfirmChord } from '@/lib/keybinds/chords'
 import { visibleClarifyCard } from '@/lib/keybinds/composer-focus-keys'
+import { isMacPlatform } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import {
   bareChoice,
@@ -874,7 +876,8 @@ function BatchQuestionBlock({
   onDraft,
   onToggle,
   question,
-  staged
+  staged,
+  textareaRef
 }: {
   disabled: boolean
   locked: boolean
@@ -882,6 +885,7 @@ function BatchQuestionBlock({
   onToggle: (choice: string) => void
   question: ClarifyQuestion
   staged: { choices: string[]; draft: string }
+  textareaRef?: (el: HTMLTextAreaElement | null) => void
 }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
@@ -919,6 +923,7 @@ function BatchQuestionBlock({
               disabled={disabled}
               onChange={event => onDraft(event.target.value)}
               placeholder={copy.other}
+              ref={textareaRef}
               rows={1}
               size="sm"
               value={staged.draft}
@@ -931,6 +936,7 @@ function BatchQuestionBlock({
           disabled={disabled}
           onChange={event => onDraft(event.target.value)}
           placeholder={copy.placeholder}
+          ref={textareaRef}
           rows={1}
           size="sm"
           value={staged.draft}
@@ -955,12 +961,20 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
   const gateway = useStore($gateway)
 
   // qids only exist on the gateway request — args are a hydration-race
-  // fallback for display, never answerable (no ids to respond with).
-  const questions = request?.questions ?? []
+  // fallback for display, never answerable (no ids to respond with). Stable
+  // per request; without useMemo the confirm-chord effect below would
+  // resubscribe on every keystroke.
+  const questions = useMemo(() => request?.questions ?? [], [request?.questions])
   const ready = Boolean(request?.requestId) && questions.length > 0
 
   const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})
   const [submitting, setSubmitting] = useState(false)
+  // Per-question refs, index-aligned with `questions` — the confirm chord
+  // parks the caret on the first unanswered question.
+  const questionRefs = useRef<(HTMLTextAreaElement | null)[]>([])
+  // Identity for the confirm-chord visible-card check — this element carries
+  // `data-clarify-batch`, i.e. the one `visibleClarifyCard()` resolves.
+  const formRef = useRef<HTMLFormElement | null>(null)
 
   // Reconnect replay: answers the server already locked (an earlier window's
   // partial progress) pre-stage their questions so the restored card shows
@@ -1112,6 +1126,50 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
     }
   }, [gateway, onAnswered, request])
 
+  // Ctrl/Cmd+Enter confirms the batch from anywhere — including mid-typing in
+  // an "Other" box, where plain Enter inserts a newline on purpose. Capture
+  // phase so the composer's Ctrl+Enter (queue) never double-fires on the same
+  // press; visibleClarifyCard() is the same resolver the global gates use, so
+  // a card parked in a background session never answers from an inactive tab.
+  // Not everything staged: park on the first unanswered question instead of
+  // locking a partial batch.
+  useEffect(() => {
+    if (!ready) {
+      return
+    }
+
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (!isConfirmChord(event) || event.defaultPrevented) {
+        return
+      }
+
+      if (visibleClarifyCard() !== formRef.current) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+
+      if (submitting) {
+        return
+      }
+
+      const open = questions.findIndex(question => stagedAnswer(question) === null)
+
+      if (open >= 0) {
+        questionRefs.current[open]?.focus()
+
+        return
+      }
+
+      void confirmAll()
+    }
+
+    window.addEventListener('keydown', onKeyDown, true)
+
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [confirmAll, ready, questions, stagedAnswer, submitting])
+
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault()
@@ -1132,7 +1190,7 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
   }
 
   return (
-    <form className="my-1.5 grid gap-4" data-clarify-batch={questions.length} onSubmit={handleSubmit}>
+    <form className="my-1.5 grid gap-4" data-clarify-batch={questions.length} onSubmit={handleSubmit} ref={formRef}>
       <ClarifyShell className="grid gap-3">
         <div className="flex items-start gap-2">
           <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
@@ -1140,7 +1198,7 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
           </span>
           <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
         </div>
-        {questions.map(question => (
+        {questions.map((question, index) => (
           <BatchQuestionBlock
             disabled={submitting}
             key={question.qid}
@@ -1149,6 +1207,9 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
             onToggle={choice => toggleChoice(question, choice)}
             question={question}
             staged={stageFor(question.qid)}
+            textareaRef={el => {
+              questionRefs.current[index] = el
+            }}
           />
         ))}
       </ClarifyShell>
@@ -1164,7 +1225,7 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
             <>
               {copy.confirmAndContinueLabel}
               <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
-                ⏎
+                {isMacPlatform() ? '⌘⏎' : 'Ctrl⏎'}
               </span>
             </>
           )}

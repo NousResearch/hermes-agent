@@ -704,6 +704,78 @@ describe('ClarifyTool batch card', () => {
     })
   })
 
+  it('confirm chord (Ctrl/Cmd+Enter) submits the batch from anywhere once all staged', async () => {
+    const request = renderLiveBatch()
+
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    expect(screen.getByText('2 of 2 answered')).toBeTruthy()
+
+    // While the composer area has focus — not just from inside the card.
+    fireEvent.keyDown(window, { ctrlKey: true, key: 'Enter' })
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(2)
+    })
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.respond', {
+      answer: 'red',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+    expect(request).toHaveBeenNthCalledWith(2, 'clarify.respond', {
+      answer: 'packet',
+      question_id: 'q1',
+      request_id: 'request-batch'
+    })
+  })
+
+  it('confirm chord mid-typing in an Other box locks the typed answer', async () => {
+    const request = renderLiveBatch()
+
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+
+    const other = screen.getByPlaceholderText('Type your answer…') as HTMLTextAreaElement
+    fireEvent.focus(other)
+    fireEvent.change(other, { target: { value: 'packet' } })
+
+    // The chord fires while the caret is inside the Other textarea.
+    fireEvent.keyDown(other, { bubbles: true, cancelable: true, ctrlKey: true, key: 'Enter' })
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(2)
+    })
+    expect(request).toHaveBeenNthCalledWith(2, 'clarify.respond', {
+      answer: 'packet',
+      question_id: 'q1',
+      request_id: 'request-batch'
+    })
+  })
+
+  it('confirm chord with a question still open parks on it instead of locking', async () => {
+    const request = renderLiveBatch()
+
+    // Stage only q0; q1 (Other box) is still blank.
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+
+    fireEvent.keyDown(window, { ctrlKey: true, key: 'Enter' })
+
+    // Nothing submitted; the first unanswered textarea owns the caret.
+    expect(request).not.toHaveBeenCalled()
+    const other = screen.getByPlaceholderText('Type your answer…') as HTMLTextAreaElement
+    expect(document.activeElement).toBe(other)
+  })
+
+  it('plain Enter inside an Other box stays a newline, not a submit', () => {
+    const request = renderLiveBatch()
+
+    const other = screen.getByPlaceholderText('Type your answer…') as HTMLTextAreaElement
+    fireEvent.focus(other)
+    fireEvent.keyDown(other, { bubbles: true, cancelable: true, key: 'Enter' })
+
+    // Bare Enter never locks — only the confirm chord or the button does.
+    expect(request).not.toHaveBeenCalled()
+  })
+
   it('renders the settled batch with all questions and answers', () => {
     renderClarify(
       <ClarifyTool

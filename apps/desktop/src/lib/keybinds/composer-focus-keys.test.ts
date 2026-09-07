@@ -5,6 +5,7 @@ import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tre
 import { $switcherOpen, closeSwitcher } from '@/store/session-switcher'
 
 import {
+  clarifyCardOwnsKey,
   composerFocusBlockedBySurface,
   composerFocusKeysAllowed,
   isActivateOnEnterTarget,
@@ -39,6 +40,54 @@ describe('isActivateOnEnterTarget', () => {
     expect(isActivateOnEnterTarget(button)).toBe(true)
     expect(isActivateOnEnterTarget(child)).toBe(true)
     expect(isActivateOnEnterTarget(document.createElement('div'))).toBe(false)
+  })
+})
+
+describe('clarifyCardOwnsKey', () => {
+  afterEach(() => {
+    document.body.replaceChildren()
+  })
+
+  it('a single card owns only Enter and its rendered rows', () => {
+    const card = document.createElement('div')
+    card.setAttribute('data-clarify-choices', '1')
+    document.body.append(card)
+
+    const event = (key: string, mods: Partial<KeyboardEventInit> = {}) =>
+      new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...mods })
+
+    expect(clarifyCardOwnsKey(event('Enter'))).toBe(true)
+    expect(clarifyCardOwnsKey(event('a'))).toBe(true)
+    expect(clarifyCardOwnsKey(event('1'))).toBe(true)
+    // One choice ⇒ rows A (choice) + B (Other); "c" is past the last row.
+    expect(clarifyCardOwnsKey(event('b'))).toBe(true)
+    expect(clarifyCardOwnsKey(event('c'))).toBe(false)
+    expect(clarifyCardOwnsKey(event('Enter', { ctrlKey: true }))).toBe(false)
+  })
+
+  it('a batch card owns only the confirm chord — never plain Enter or letters', () => {
+    const card = document.createElement('div')
+    card.setAttribute('data-clarify-batch', '2')
+    document.body.append(card)
+
+    const event = (key: string, mods: Partial<KeyboardEventInit> = {}) =>
+      new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...mods })
+
+    expect(clarifyCardOwnsKey(event('Enter', { ctrlKey: true }))).toBe(true)
+    expect(clarifyCardOwnsKey(event('Enter', { metaKey: true }))).toBe(true)
+    // Plain Enter and typed letters stay with the composer / the Other box.
+    expect(clarifyCardOwnsKey(event('Enter'))).toBe(false)
+    expect(clarifyCardOwnsKey(event('a'))).toBe(false)
+    expect(clarifyCardOwnsKey(event('1'))).toBe(false)
+    // Shift/Alt variants are a different gesture, not the confirm chord.
+    expect(clarifyCardOwnsKey(event('Enter', { shiftKey: true, ctrlKey: true }))).toBe(false)
+    expect(clarifyCardOwnsKey(event('Enter', { altKey: true, ctrlKey: true }))).toBe(false)
+  })
+
+  it('no live card owns nothing', () => {
+    document.body.replaceChildren()
+
+    expect(clarifyCardOwnsKey(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true }))).toBe(false)
   })
 })
 

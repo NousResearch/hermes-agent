@@ -11,3 +11,20 @@ export function isComposerChord(event: KeyboardEvent): boolean {
 
   return mod && !event.shiftKey && event.key.toLowerCase() === 'l'
 }
+
+/**
+ * True when the event is the universal blocking-prompt confirm chord:
+ * ⌘⏎ on macOS, Ctrl+Enter elsewhere (⌃⏎ also folds into it via the
+ * explicit ctrlKey check). Shift/Alt variants are different gestures, not
+ * confirms. Consumers: the tool-approval bar, the batch clarify card's
+ * confirm, and the type-to-focus gate that must yield exactly these keys.
+ */
+export function isConfirmChord(event: {
+  key: string
+  metaKey: boolean
+  ctrlKey: boolean
+  shiftKey: boolean
+  altKey: boolean
+}): boolean {
+  return event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey
+}

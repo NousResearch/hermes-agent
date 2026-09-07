@@ -918,7 +918,15 @@ function Start-DesktopRelaunch {
         try {
             $exeName = [System.IO.Path]::GetFileNameWithoutExtension($RelaunchExe)
             $before = @(Get-Process -Name $exeName -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
-            Start-Process -FilePath 'explorer.exe' -ArgumentList $relaunch.CommandLine | Out-Null
+            # Absolute path, never the bare name. This rung runs mid-update with
+            # the venv's Scripts directory -- user-writable and being rewritten
+            # right now -- prepended to PATH, so a bare 'explorer.exe' can
+            # resolve to something the shell would never have picked.
+            $explorerPath = Join-Path $env:SystemRoot 'explorer.exe'
+            if (-not (Test-Path -LiteralPath $explorerPath -PathType Leaf)) {
+                throw "explorer.exe not found at $explorerPath"
+            }
+            Start-Process -FilePath $explorerPath -ArgumentList $relaunch.CommandLine | Out-Null
             $explorerDeadline = (Get-Date).AddSeconds(15)
             while ((Get-Date) -lt $explorerDeadline) {
                 $fresh = @(Get-Process -Name $exeName -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
@@ -1368,7 +1376,17 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     # unreliably $null under PS 5.1 even with the Handle-touch workaround.
     # CREATE_SUSPENDED closes the startup race: no updater instruction can run
     # before the process is assigned to its private job and resumed.
-    $arguments = ($HermesArgs | ForEach-Object { '"{0}"' -f ($_ -replace '"', '\"') }) -join ' '
+    # CommandLineToArgvW quoting. Backslashes are literal EXCEPT immediately
+    # before a quote, where each pair collapses to one and a lone one escapes
+    # the quote. Escaping only the embedded quotes left `--branch feature\`
+    # rendering as "feature\", whose closing quote is eaten: the branch name
+    # swallowed the next argument. Double every backslash run that precedes a
+    # quote we emit, including the terminating one.
+    $arguments = ($HermesArgs | ForEach-Object {
+        $escaped = [string]$_ -replace '(\\*)"', '$1$1\"'
+        $escaped = $escaped -replace '(\\+)$', '$1$1'
+        '"{0}"' -f $escaped
+    }) -join ' '
     # CreateProcess inherits this process's environment. Set Python's encoding
     # and buffering only for the atomic launch, then restore the hand-off host.
     $savedPythonIoEncoding = $env:PYTHONIOENCODING

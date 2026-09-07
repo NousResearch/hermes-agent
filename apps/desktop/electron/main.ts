@@ -65,7 +65,7 @@ import {
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { recycleOwnedBackend } from './backend-recycle'
-import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
+import { createInstallLockGateProbe, isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
@@ -410,6 +410,7 @@ import {
   type UpdateMarkerClaim,
   writeUpdateMarker
 } from './update-marker'
+import { isValidUpdateBranchRef, updateBranchRefPattern } from './update-branch-ref'
 import { runWindowsUpdatePreflight, type UpdatePreflightOutcome } from './update-preflight'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
@@ -3178,9 +3179,20 @@ async function resolveHealedBranch(updateRoot, branch) {
     return branch || 'main'
   }
 
+  // A stored branch that predates validation (or a hand-edited config) can
+  // still start with `-`, which git reads as an option. Fail the heal probe
+  // rather than run it, and pass the fully qualified ref as the pattern.
+  if (!isValidUpdateBranchRef(branch)) {
+    rememberLog(`[updates] refusing to probe an invalid update branch: ${branch}`)
+
+    return branch
+  }
+
   const originUrl = await getOriginUrl(updateRoot)
   const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
-  const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
+  const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, updateBranchRefPattern(branch)], {
+    cwd: updateRoot
+  })
 
   if (probe.code !== 2) {
     return branch
@@ -3533,7 +3545,13 @@ function installLockResources(updateRoot) {
 // Exclusive-open probe over the mutation set, split into files only our
 // link can lock (definite) and uv-shared hard links that need per-process
 // attribution. Falls back to the shim probe on a checkout without a venv.
-function probeInstallLocks(updateRoot): InstallResourceLocks {
+//
+// `limit` bounds the main-thread cost. Enumerating the whole set costs ~270
+// synchronous openSync calls (measured on a real install: ~27 ms median, and
+// seconds when a filter driver is cold), which the release gate paid on every
+// 300 ms poll. A caller that only needs "is anything locked" passes limit: 1
+// and stops at the first definite lock (~0.3 ms while the install is held).
+function probeInstallLocks(updateRoot, options: { limit?: number } = {}): InstallResourceLocks {
   const resources = installLockResources(updateRoot)
 
   if (resources.length === 0) {
@@ -3542,7 +3560,7 @@ function probeInstallLocks(updateRoot): InstallResourceLocks {
     return { definite: isShimLocked(shim) ? [shim] : [], shared: [] }
   }
 
-  return probeInstallResourceLocks(resources)
+  return probeInstallResourceLocks(resources, options)
 }
 
 // Holders proven by the kernel: Restart Manager over the locked files, with
@@ -3565,8 +3583,11 @@ async function attributedInstallHolders(
   })
 }
 
+// One boolean answer for the force-release discovery loop (a handful of passes,
+// each with its own budget — not a 300 ms poll; the release gate uses
+// createInstallLockGateProbe). Stops at the first definite lock.
 async function isAnyInstallResourceLocked(updateRoot): Promise<boolean> {
-  const locks = probeInstallLocks(updateRoot)
+  const locks = probeInstallLocks(updateRoot, { limit: 1 })
 
   if (locks.definite.length > 0) {return true}
 
@@ -4004,14 +4025,21 @@ async function releaseBackendLock(updateRoot, tag): Promise<{ unlocked: boolean;
   killHermesOwnedVenvDaemons(updateRoot)
 
   const shim = venvHermesShimPath(updateRoot)
+  // Bounded for a 300 ms poll: stop at the first definite lock, and run the
+  // Restart Manager attribution at most once per gate run.
+  const gateLockProbe = createInstallLockGateProbe({
+    probeLocks: limit => probeInstallLocks(updateRoot, { limit }),
+    countAttributedHolders: async budgetMs => (await attributedInstallHolders(updateRoot, budgetMs)).length
+  })
 
   const gate = await waitForBackendRelease(
     initialPids,
     {
       // Prove the whole mutation set, not just the shim: a holder that maps a
       // site-packages .pyd without touching hermes.exe used to pass this gate
-      // and break the venv sync later inside the detached updater.
-      isShimLocked: () => isAnyInstallResourceLocked(updateRoot),
+      // and break the venv sync later inside the detached updater. Bounded per
+      // poll; see createInstallLockGateProbe.
+      isShimLocked: gateLockProbe,
       isPidAlive: isPidAliveWindows,
       collectStragglerPids: () => {
         const stragglers = []
@@ -17674,6 +17702,21 @@ ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig(
 
 ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
+
+  // The persisted branch reaches `git ls-remote` as a pattern and the Windows
+  // updater as an argv element. Reject anything that is not a git branch name
+  // here, at the boundary, instead of relying on every later quoting site.
+  if (!isValidUpdateBranchRef(branch)) {
+    const current = readDesktopUpdateConfig()
+
+    return {
+      ok: false,
+      error: 'invalid-branch',
+      message: `"${branch}" isn't a valid git branch name, so the update branch was left on ${current.branch}.`,
+      branch: current.branch
+    }
+  }
+
   writeDesktopUpdateConfig({ branch })
 
   return { branch }

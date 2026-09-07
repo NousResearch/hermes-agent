@@ -15,8 +15,10 @@ import {
   closeSecondaryGateways,
   disposeSecondariesForConnection,
   ensureGatewayForAgent,
+  ensureGatewayForProfile,
   isActivePrimary,
-  requestGatewayForAgent
+  requestGatewayForAgent,
+  retainGatewayForAgent
 } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import {
@@ -1323,8 +1325,12 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($awaitingResponse.get()).toBe(false)
   })
 
-  it('manual reconnect revalidates, re-resolves, re-mints, and re-dials the dropped socket', async () => {
-    const desktop = fakeDesktop()
+  it('manual reconnect replaces an open primary without closing background profiles', async () => {
+    const desktop = {
+      ...fakeDesktop(),
+      getConnectionFor: vi.fn(async () => coderConn),
+      getGatewayWsUrlFor: vi.fn(async () => coderConn.wsUrl)
+    }
 
     ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
 
@@ -1332,11 +1338,33 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     await flushAsync()
 
     expect($gatewayState.get()).toBe('open')
-    act(() => FakeWebSocket.instances[0].drop())
-    FakeWebSocket.mode = 'open'
+    vi.useRealTimers()
+    await ensureGatewayForAgent('coder-remote', 'coder')
+    const release = await retainGatewayForAgent('coder-remote', 'coder')
+    await ensureGatewayForProfile('default')
+    vi.useFakeTimers()
+    const backgroundSocket = FakeWebSocket.instances[1]
+    const oldPrimary = FakeWebSocket.instances[0]
+
+    const tiles = ['default', 'writer'].map(profile => ({
+      ownerRoute: { connectionId: 'primary-vps', mode: 'remote' as const, profile, targetProfile: profile },
+      runtimeId: `runtime-${profile}`,
+      storedSessionId: `chat-${profile}`,
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: `primary-vps::${profile}`
+    }))
+
+    const revalidated = deferred<{ ok: boolean; rebuilt: boolean }>()
+    desktop.revalidateConnection.mockReturnValue(revalidated.promise)
 
     await act(async () => {
       const reconnect = reconnectGateway()
+      await vi.advanceTimersByTimeAsync(0)
+      await ensureGatewayForAgent('coder-remote', 'coder')
+      $sessionTiles.set(tiles)
+      $busy.set(true)
+      $awaitingResponse.set(true)
+      revalidated.resolve({ ok: true, rebuilt: false })
       await vi.advanceTimersByTimeAsync(0)
       await reconnect
     })
@@ -1348,8 +1376,38 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     const lastCall = desktop.getConnection.mock.calls.at(-1) ?? []
     expect(lastCall.length === 0 || lastCall[0] == null || lastCall[0] === '').toBe(true)
     expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(2)
-    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(oldPrimary.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(backgroundSocket.readyState).toBe(FakeWebSocket.OPEN)
+    expect(FakeWebSocket.instances).toHaveLength(3)
+    expect($sessionTiles.get()[0]).not.toHaveProperty('runtimeId')
+    expect($sessionTiles.get()[1].runtimeId).toBe('runtime-writer')
+    expect($busy.get()).toBe(true)
+    expect($awaitingResponse.get()).toBe(true)
     expect($gatewayState.get()).toBe('open')
+    release()
+  })
+
+  it('manual reconnect replaces only the active secondary route', async () => {
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      ...fakeDesktop(),
+      getConnectionFor: vi.fn(async () => coderConn),
+      getGatewayWsUrlFor: vi.fn(async () => coderConn.wsUrl)
+    }
+    render(<Harness />)
+    await flushAsync()
+    vi.useRealTimers()
+    await ensureGatewayForAgent('coder-remote', 'coder')
+    const primarySocket = FakeWebSocket.instances[0]
+    const oldSecondary = FakeWebSocket.instances[1]
+    await reconnectGateway()
+
+    expect(primarySocket.readyState).toBe(FakeWebSocket.OPEN)
+    expect(oldSecondary.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(FakeWebSocket.instances).toHaveLength(3)
+    expect(FakeWebSocket.instances[2].url).toBe(coderConn.wsUrl)
+    expect(activeGateway()?.connectionState).toBe('open')
+    expect(isActivePrimary()).toBe(false)
+    expect($connection.get()?.profile).toBe('coder')
   })
 
   it('power resume force-redials a half-open primary socket that still reports OPEN', async () => {

@@ -449,6 +449,10 @@ another profile's agent plugins without switching the whole app (the backend
 
 ## Troubleshooting
 
+### Reconnect without restarting the app
+
+If a Desktop chat or bot stops responding while the connection still shows **Connected**, select that bot/profile or gateway, open the status bar's gateway menu, and click **Reconnect gateway**. Reconnect stays available for open, connecting, and disconnected transports. It redials the active route without restarting Desktop or deliberately closing other routes' sockets. In-flight requests on the selected socket can be interrupted; this is an explicit recovery action, not a backend or model restart.
+
 ### Failed turns name the failing layer
 
 When a turn fails, the chat renders an error card that names **which layer

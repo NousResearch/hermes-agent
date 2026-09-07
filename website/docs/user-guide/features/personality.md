@@ -36,6 +36,7 @@ $HERMES_HOME/SOUL.md
 - Hermes does not look in the current working directory for `SOUL.md`
 - If `SOUL.md` exists but is empty, or cannot be loaded, Hermes falls back to a built-in default identity
 - If `SOUL.md` has content, that content is injected verbatim after security scanning and truncation
+- When `SOUL.md` is loaded, Hermes appends a short arbitration statement **after** runtime execution guidance so user-authored interaction / confirmation / speaking-style rules win those conflicts. Non-conflicting 0.21.0 execution rules (finish requested work, use tools when asked, do not fabricate) stay in force. No wrapper is added around the file itself.
 - SOUL.md is **not** duplicated in the context files section — it appears only once, as the identity
 
 That makes `SOUL.md` a true per-user or per-instance identity, not just an additive layer.
@@ -118,7 +119,7 @@ You optimize for truth, clarity, and usefulness over politeness theater.
 
 ## What Hermes injects into the prompt
 
-`SOUL.md` content goes directly into slot #1 of the system prompt — the agent identity position. No wrapper language is added around it.
+`SOUL.md` content goes directly into slot #1 of the system prompt — the agent identity position. No wrapper language is added around the file. When it is loaded, a separate arbitration statement is appended after runtime execution guidance so those user rules outrank later NEVER / ALWAYS blocks on interaction style, confirmation-before-acting, and when to ask.
 
 The content goes through:
 - prompt-injection scanning
@@ -263,12 +264,13 @@ That gives you:
 At a high level, the prompt stack includes:
 1. **SOUL.md** (agent identity — or built-in fallback if SOUL.md is unavailable)
 2. tool-aware behavior guidance
-3. memory/user context
-4. skills guidance
-5. context files (`AGENTS.md`, `.cursorrules`)
-6. timestamp
-7. platform-specific formatting hints
-8. optional system-prompt overlays such as `/personality`
+3. user-layer arbitration (only when SOUL.md loaded — style / confirm / when-to-ask conflicts)
+4. memory/user context
+5. skills guidance
+6. context files (`AGENTS.md`, `.cursorrules`)
+7. timestamp
+8. platform-specific formatting hints
+9. optional system-prompt overlays such as `/personality`
 
 `SOUL.md` is the foundation — everything else builds on top of it.
 

@@ -6,6 +6,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+from agent.prompt_builder import (
+    DEFAULT_AGENT_IDENTITY,
+    TASK_COMPLETION_GUIDANCE,
+    TOOL_USE_ENFORCEMENT_GUIDANCE,
+    USER_LAYER_PRIORITY_GUIDANCE,
+)
 from agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
 
@@ -762,4 +768,62 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(agent)
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
+
+
+def _stable_from_home(agent, home):
+    """Assemble the stable tier from a real HERMES_HOME (no load_soul_md mock)."""
+    agent._session_db = SimpleNamespace(db_path=str(home / "state.db"))
+    with (
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
+    ):
+        return build_system_prompt_parts(agent)["stable"]
+
+
+class TestUserLayerPriority:
+    """User-authored SOUL.md must outrank later 0.21.0 runtime guidance on
+    interaction / confirmation / speaking-style conflicts, without dropping
+    non-conflicting execution rules."""
+
+    _SOUL = (
+        "When she says she is stuck or frustrated, the first sentence must not "
+        "offer a solution. Acknowledge the feeling first. 先接住她的情绪."
+    )
+
+    def _agent(self):
+        return _make_agent(
+            load_soul_identity=True,
+            valid_tool_names=["read_file"],
+            _task_completion_guidance=True,
+            _tool_use_enforcement=True,
+            model="gpt-4",
+        )
+
+    def test_loaded_soul_wins_style_conflicts_after_runtime_guidance(self, tmp_path):
+        home = tmp_path / "hermes"
+        home.mkdir()
+        (home / "SOUL.md").write_text(self._SOUL, encoding="utf-8")
+
+        stable = _stable_from_home(self._agent(), home)
+
+        assert self._SOUL in stable
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in stable
+        assert TASK_COMPLETION_GUIDANCE in stable
+        assert USER_LAYER_PRIORITY_GUIDANCE in stable
+        assert stable.index(self._SOUL) < stable.index(TOOL_USE_ENFORCEMENT_GUIDANCE)
+        assert stable.index(TOOL_USE_ENFORCEMENT_GUIDANCE) < stable.index(
+            USER_LAYER_PRIORITY_GUIDANCE
+        )
+        assert "SOUL.md wins" in USER_LAYER_PRIORITY_GUIDANCE
+        assert "remain in force" in USER_LAYER_PRIORITY_GUIDANCE
+
+    def test_fallback_identity_does_not_get_user_layer_priority(self, tmp_path):
+        home = tmp_path / "hermes"
+        home.mkdir()
+
+        stable = _stable_from_home(self._agent(), home)
+
+        assert DEFAULT_AGENT_IDENTITY in stable
+        assert USER_LAYER_PRIORITY_GUIDANCE not in stable
+        assert self._SOUL not in stable
 

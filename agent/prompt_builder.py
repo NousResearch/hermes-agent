@@ -358,6 +358,18 @@ TASK_COMPLETION_GUIDANCE = (
     "produce. Reporting a blocker honestly is always better than inventing a result."
 )
 
+# Appended after runtime guidance when SOUL.md loaded as identity. Later-positioned
+# NEVER/ALWAYS blocks otherwise outrank user persona/interaction rules (0.21.0).
+# Cache-safe: session-start only; keep tight.
+USER_LAYER_PRIORITY_GUIDANCE = (
+    "# User-authored identity\n"
+    "When the SOUL.md identity above conflicts with later runtime execution guidance on "
+    "interaction style, confirmation-before-acting, or when to ask the user, SOUL.md wins. "
+    "NEVER / ALWAYS / ONLY phrasing in runtime guidance does not override those user rules. "
+    "Non-conflicting execution rules — finish requested work, use tools when the user asked "
+    "for action, do not fabricate results — remain in force."
+)
+
 # Universal parallel-tool-call guidance (ALL models): the runtime already executes independent calls
 # concurrently. Supersedes the former Google-only bullet so no model receives the steer twice.
 # Why this matters for cost: every assistant turn resends the entire accumulated conversation (and, on

@@ -38,8 +38,9 @@ This ordering matters for precedence discussions:
 - skills are part of the **stable** tier
 - memory/profile snapshots are part of the **volatile** tier
 - both are still in the cached system prompt (they are not injected as ad-hoc mid-turn overlays)
+- when `SOUL.md` is loaded as identity, `USER_LAYER_PRIORITY_GUIDANCE` is appended **after** the 0.21.0 runtime guidance blocks in the stable tier. Later NEVER/ALWAYS execution text otherwise outranks earlier user interaction rules; the arbitration (and its later position) makes SOUL.md win style / confirm-before-acting / when-to-ask conflicts without dropping non-conflicting execution rules.
 
-When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded and the hardcoded `DEFAULT_AGENT_IDENTITY` is used instead.
+When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded and the hardcoded `DEFAULT_AGENT_IDENTITY` is used instead. The user-layer arbitration is omitted in that case.
 
 ### Concrete example: assembled system prompt
 

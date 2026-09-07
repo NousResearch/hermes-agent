@@ -69,7 +69,7 @@ When Hermes starts a session, it reads `SOUL.md` from `HERMES_HOME`, scans it fo
 
 If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-in default identity.
 
-No wrapper language is added around the file. The content itself matters — write the way you want your agent to think and speak.
+No wrapper language is added around the file. When SOUL.md is loaded, Hermes also appends a short arbitration statement after runtime execution guidance so your interaction / confirmation / speaking-style rules win those conflicts; non-conflicting execution rules (finish requested work, use tools when asked, do not fabricate) stay in force. The content itself matters — write the way you want your agent to think and speak.
 
 ## A good first edit
 

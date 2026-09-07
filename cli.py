@@ -45,6 +45,7 @@ from hermes_cli.cli_model_switch_mixin import CLIModelSwitchMixin
 from hermes_cli.cli_voice_mixin import CLIVoiceMixin
 from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
 from hermes_cli.cli_tui_mixin import CLITuiMixin
+from hermes_cli.cli_process_notifications import _ProcessNotificationBatch
 from agent.interrupt_compat import request_hard_interrupt
 from agent.pet import render as pet_render
 
@@ -3401,14 +3402,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         from tools.process_registry import process_registry
         from tools.async_delegation import claim_event_delivery, complete_event_delivery
 
+        pending_inputs = []
+        completion_batch = []
         for event, synthetic_message in process_registry.drain_notifications(
             session_key=getattr(self, "session_id", "") or "", owns_event=self._owns_process_notification,
         ):
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
-            self._pending_input.put(synthetic_message)
+            if event.get("type", "completion") == "completion":
+                completion_batch.append((event, synthetic_message))
+            else:
+                if completion_batch:
+                    pending_inputs.append(_ProcessNotificationBatch(tuple(completion_batch)))
+                    completion_batch = []
+                pending_inputs.append(synthetic_message)
             complete_event_delivery(event, claim)
+        if completion_batch:
+            pending_inputs.append(_ProcessNotificationBatch(tuple(completion_batch)))
+        for pending_input in pending_inputs:
+            self._pending_input.put(pending_input)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray ``_interrupt_queue`` messages into ``_pending_input`` after every turn.
@@ -3488,6 +3501,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
 
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
+        if isinstance(user_input, _ProcessNotificationBatch):
+            from tools.process_registry import process_registry
+            user_input = user_input.render(process_registry)
+            if user_input is None:
+                return
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return

@@ -571,6 +571,7 @@ class TestStdinHelpers:
         proc.stdin.close.assert_called_once()
         assert result["status"] == "ok"
 
+    @pytest.mark.linux_only
     def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
         """PTY mode: writing data + sending EOF lets an EOF-driven child finish.
 
@@ -984,6 +985,7 @@ class TestEnvPollerIncrementalRead:
 class TestPopenLeakOnSetupFailure:
     """Regression for issue #2749: subprocess orphaned when post-Popen setup raises."""
 
+    @pytest.mark.linux_only
     def test_popen_killed_when_thread_creation_fails(self, registry):
         """If Thread() raises after Popen, proc must be killed — not orphaned."""
         killed = []
@@ -1085,6 +1087,7 @@ class TestSpawnRewriteCompoundBackground:
         # Simple background must remain as-is
         assert "sleep 5 &" in shell_cmd
 
+    @pytest.mark.linux_only
     def test_pty_path_uses_rewritten_command(self, registry):
         """PTY spawn path must also use the rewritten command (issue #68915)."""
         mock_pty_proc = MagicMock()
@@ -1231,6 +1234,7 @@ class TestKillProcess:
         assert result["status"] == "already_exited"
 
 
+    @pytest.mark.linux_only
     def test_kill_detached_session_uses_host_pid(self, registry):
         s = _make_session(sid="proc_detached", command="sleep 999")
         s.pid = 424242
@@ -1453,6 +1457,7 @@ class TestTerminateHostPidWindows:
         assert "/T" in captured["args"], "Tree flag required to reach descendants"
         assert "/F" in captured["args"], "Force flag required for headless Chromium"
 
+@pytest.mark.linux_only
 class TestTerminateHostPidPosix:
     """POSIX branch walks the tree via psutil and SIGTERMs children first."""
 

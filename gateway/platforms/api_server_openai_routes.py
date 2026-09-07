@@ -555,6 +555,7 @@ class OpenAICompatRoutesMixin:
         outcome, err = await self._run_idempotent(
             request, body, _compute_completion, log_label="chat completions",
             fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
+            route="chat_completions",
         )
         if err is not None:
             return err
@@ -599,22 +600,38 @@ class OpenAICompatRoutesMixin:
 
     async def _run_idempotent(
         self, request: "web.Request", body: Dict[str, Any], compute, *,
-        log_label: str, fingerprint_keys: List[str]) -> tuple:
-        """Run ``compute()`` once per profile + Idempotency-Key + body fingerprint ->
-        ``((result, usage), None)`` or ``(None, 500 response)``.
+        log_label: str, fingerprint_keys: List[str], route: str) -> tuple:
+        """Run ``compute()`` once per (profile + authenticated principal) + logical route +
+        Idempotency-Key + body fingerprint -> ``((result, usage), None)`` or
+        ``(None, 500 response)``.
 
-        The profile is folded into the cache key (mirroring ``_run_idempotency_scope``'s
-        ``_api_request_profile.get() or "default"``) so two ``/p/<profile>/...`` mirrors
-        under ``gateway.multiplex_profiles`` never share a cached response for a client-
-        supplied Idempotency-Key that happens to collide across profiles.
+        The cache key's authority/namespace portion is delegated to
+        ``self._run_idempotency_scope(request)`` — the exact opaque
+        ``sha256(profile \\0 expected-api-key-or-sentinel)`` scope the sibling durable ``/v1/runs``
+        admission API already computes via ``_run_idempotency_scope()`` — so this cache shares one
+        definition of "who is this request for" with that endpoint rather than growing a second,
+        subtly different one. That keeps two ``/p/<profile>/...`` mirrors under
+        ``gateway.multiplex_profiles`` from sharing a cached response for a client-supplied
+        Idempotency-Key that happens to collide across profiles, and keeps a caller whose
+        API_SERVER_KEY changes mid-cache-lifetime from replaying a previous principal's response.
+
+        ``route`` is a stable, call-site-supplied logical endpoint discriminator (e.g.
+        ``"chat_completions"`` / ``"responses"``) — not ``request.path`` — because ``/v1/...`` and
+        its ``/p/<profile>/v1/...`` alias must resolve to the same logical route after profile
+        resolution. It is folded into the cache key itself (not only relied on to differ via
+        ``fingerprint_keys``): ``_IdempotencyCache._store`` keeps the fingerprint only as a value
+        inside the key's slot, so without a route-distinct key, a client that (accidentally or by
+        automation) reuses one Idempotency-Key across both ``/v1/chat/completions`` and
+        ``/v1/responses`` would have the second route's settled response silently overwrite the
+        first route's slot, and a legitimate retry of the first request would recompute instead of
+        replaying its own cached result.
         """
-        from gateway.platforms.api_server import (
-            _api_request_profile, _error_response, _idem_cache, _make_request_fingerprint)
+        from gateway.platforms.api_server import _error_response, _idem_cache, _make_request_fingerprint
         idempotency_key = request.headers.get("Idempotency-Key")
         try:
             if idempotency_key:
-                profile = _api_request_profile.get() or "default"
-                scoped_key = f"{profile}\0{idempotency_key}"
+                principal_scope = self._run_idempotency_scope(request)
+                scoped_key = f"{principal_scope}\0{route}\0{idempotency_key}"
                 fp = _make_request_fingerprint(body, keys=fingerprint_keys)
                 result, usage = await _idem_cache.get_or_set(scoped_key, fp, compute)
             else:
@@ -892,6 +909,7 @@ class OpenAICompatRoutesMixin:
         outcome, err = await self._run_idempotent(
             request, body, _compute_response, log_label="responses",
             fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools"],
+            route="responses",
         )
         if err is not None:
             return err

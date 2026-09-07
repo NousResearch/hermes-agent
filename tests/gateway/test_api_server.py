@@ -151,10 +151,12 @@ class TestIdempotencyCache:
 
 class TestRunIdempotentProfileScope:
     """``_run_idempotent`` (the chat completions / responses idempotency wrapper) must scope
-    its cache key by the request's ``/p/<profile>/`` identity, mirroring
-    ``_run_idempotency_scope``'s ``_api_request_profile.get() or "default"`` — otherwise two
-    multiplexed profiles sharing a client-supplied Idempotency-Key silently share a cached
-    response instead of each running its own turn."""
+    its cache key by the request's composite authority namespace — profile, authenticated
+    principal, and logical route — mirroring the sibling durable ``/v1/runs`` admission API's
+    ``_run_idempotency_scope()`` (profile + expected API key) plus an explicit per-call-site
+    route discriminator. See tracked issue #84256 for the full composite-namespace contract
+    this class exercises: profile isolation, principal isolation, route isolation, and
+    same-namespace dedup/replay must all hold simultaneously."""
 
     @pytest.mark.asyncio
     async def test_same_key_different_profiles_do_not_share_a_cached_response(self, adapter, monkeypatch):
@@ -171,20 +173,69 @@ class TestRunIdempotentProfileScope:
         token_a = _api_request_profile.set("profile-a")
         try:
             outcome_a, err_a = await adapter._run_idempotent(
-                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"])
+                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+                route="chat_completions")
         finally:
             _api_request_profile.reset(token_a)
 
         token_b = _api_request_profile.set("profile-b")
         try:
             outcome_b, err_b = await adapter._run_idempotent(
-                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"])
+                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+                route="chat_completions")
         finally:
             _api_request_profile.reset(token_b)
 
         assert err_a is None and err_b is None
         assert len(calls) == 2, "each profile must run its own turn, not reuse the other's cached response"
         assert outcome_a != outcome_b
+
+    @pytest.mark.asyncio
+    async def test_concurrent_different_profiles_have_isolated_inflight_tasks(self, adapter, monkeypatch):
+        """#84256 acceptance contract: two profiles racing the *same* client Idempotency-Key
+        must each get their own in-flight compute task, not one profile blocking on (or
+        replaying) the other's still-running turn."""
+        monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
+        request = MagicMock()
+        request.headers = {"Idempotency-Key": "client-supplied-key"}
+        body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}
+        started = {"profile-a": asyncio.Event(), "profile-b": asyncio.Event()}
+        gate = {"profile-a": asyncio.Event(), "profile-b": asyncio.Event()}
+        calls = {"profile-a": 0, "profile-b": 0}
+
+        def _make_compute(profile: str):
+            async def compute():
+                calls[profile] += 1
+                started[profile].set()
+                await gate[profile].wait()
+                return (f"response-{profile}", {"total_tokens": calls[profile]})
+            return compute
+
+        async def _run(profile: str):
+            token = _api_request_profile.set(profile)
+            try:
+                return await adapter._run_idempotent(
+                    request, body, _make_compute(profile), log_label="test",
+                    fingerprint_keys=["model", "messages"], route="chat_completions")
+            finally:
+                _api_request_profile.reset(token)
+
+        task_a = asyncio.create_task(_run("profile-a"))
+        task_b = asyncio.create_task(_run("profile-b"))
+
+        # Both computes must be running concurrently (neither waiting on the other's slot)
+        # before either is allowed to finish.
+        await asyncio.wait_for(started["profile-a"].wait(), timeout=2)
+        await asyncio.wait_for(started["profile-b"].wait(), timeout=2)
+        assert calls == {"profile-a": 1, "profile-b": 1}
+
+        gate["profile-a"].set()
+        gate["profile-b"].set()
+        (outcome_a, err_a), (outcome_b, err_b) = await asyncio.gather(task_a, task_b)
+
+        assert err_a is None and err_b is None
+        assert outcome_a[0] == "response-profile-a"
+        assert outcome_b[0] == "response-profile-b"
 
     @pytest.mark.asyncio
     async def test_same_key_same_profile_still_dedupes(self, adapter, monkeypatch):
@@ -203,9 +254,11 @@ class TestRunIdempotentProfileScope:
         token = _api_request_profile.set("profile-a")
         try:
             outcome_1, err_1 = await adapter._run_idempotent(
-                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"])
+                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+                route="chat_completions")
             outcome_2, err_2 = await adapter._run_idempotent(
-                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"])
+                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+                route="chat_completions")
         finally:
             _api_request_profile.reset(token)
 
@@ -228,12 +281,152 @@ class TestRunIdempotentProfileScope:
             return (f"response-{len(calls)}", {"total_tokens": len(calls)})
 
         outcome_1, err_1 = await adapter._run_idempotent(
-            request, body, compute, log_label="test", fingerprint_keys=["model", "messages"])
+            request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+            route="chat_completions")
         outcome_2, err_2 = await adapter._run_idempotent(
-            request, body, compute, log_label="test", fingerprint_keys=["model", "messages"])
+            request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+            route="chat_completions")
 
         assert err_1 is None and err_2 is None
         assert len(calls) == 1
+        assert outcome_1 == outcome_2
+
+    @pytest.mark.asyncio
+    async def test_same_key_different_routes_do_not_share_a_cached_response(self, adapter, monkeypatch):
+        """Endpoint/route isolation (#84256, review point 2): a client reusing one
+        Idempotency-Key across /v1/chat/completions and /v1/responses must not have either
+        route's cached response leak into the other, and — critically — the second route's
+        settled write must not silently overwrite the first route's storage slot."""
+        monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
+        request = MagicMock()
+        request.headers = {"Idempotency-Key": "client-supplied-key"}
+        body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}
+        calls = []
+
+        async def compute():
+            calls.append(1)
+            return (f"response-{len(calls)}", {"total_tokens": len(calls)})
+
+        token = _api_request_profile.set("profile-a")
+        try:
+            outcome_chat, err_chat = await adapter._run_idempotent(
+                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+                route="chat_completions")
+            outcome_resp, err_resp = await adapter._run_idempotent(
+                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+                route="responses")
+        finally:
+            _api_request_profile.reset(token)
+
+        assert err_chat is None and err_resp is None
+        assert len(calls) == 2, "each route must run its own turn, not reuse the other route's cached response"
+        assert outcome_chat != outcome_resp
+
+    @pytest.mark.asyncio
+    async def test_chat_then_responses_then_chat_retry_replays_first_chat_result(self, adapter, monkeypatch):
+        """Same defect as above, phrased as the reviewer's exact retry scenario: chat (A) ->
+        responses (B) -> a legitimate retry of A must replay A's own cached result rather than
+        recomputing it (proving B's settled write didn't clobber A's storage slot)."""
+        monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
+        request = MagicMock()
+        request.headers = {"Idempotency-Key": "client-supplied-key"}
+        body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}
+        chat_calls = []
+        responses_calls = []
+
+        async def compute_chat():
+            chat_calls.append(1)
+            return (f"chat-response-{len(chat_calls)}", {"total_tokens": len(chat_calls)})
+
+        async def compute_responses():
+            responses_calls.append(1)
+            return (f"responses-response-{len(responses_calls)}", {"total_tokens": len(responses_calls)})
+
+        token = _api_request_profile.set("profile-a")
+        try:
+            outcome_chat_1, err_1 = await adapter._run_idempotent(
+                request, body, compute_chat, log_label="test", fingerprint_keys=["model", "messages"],
+                route="chat_completions")
+            outcome_resp, err_2 = await adapter._run_idempotent(
+                request, body, compute_responses, log_label="test", fingerprint_keys=["model", "messages"],
+                route="responses")
+            outcome_chat_retry, err_3 = await adapter._run_idempotent(
+                request, body, compute_chat, log_label="test", fingerprint_keys=["model", "messages"],
+                route="chat_completions")
+        finally:
+            _api_request_profile.reset(token)
+
+        assert err_1 is None and err_2 is None and err_3 is None
+        assert len(chat_calls) == 1, "the chat retry must replay the first chat call's cached result"
+        assert len(responses_calls) == 1
+        assert outcome_chat_1 == outcome_chat_retry
+        assert outcome_chat_1 != outcome_resp
+
+    @pytest.mark.asyncio
+    async def test_principal_rotation_does_not_replay_old_principals_response(self, adapter, monkeypatch):
+        """Authenticated-principal isolation (#84256, review point 3): if the profile's
+        expected API key changes while the process-global cache is still warm, a newly
+        authorized caller reusing the same Idempotency-Key/body must not receive the previous
+        principal's cached response."""
+        monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
+        request = MagicMock()
+        request.headers = {"Idempotency-Key": "client-supplied-key"}
+        body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}
+        calls = []
+
+        async def compute():
+            calls.append(1)
+            return (f"response-{len(calls)}", {"total_tokens": len(calls)})
+
+        monkeypatch.setattr(adapter, "_expected_api_key", lambda: "key-for-principal-one")
+        outcome_1, err_1 = await adapter._run_idempotent(
+            request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+            route="chat_completions")
+
+        monkeypatch.setattr(adapter, "_expected_api_key", lambda: "key-for-principal-two")
+        outcome_2, err_2 = await adapter._run_idempotent(
+            request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+            route="chat_completions")
+
+        assert err_1 is None and err_2 is None
+        assert len(calls) == 2, "a rotated principal must run its own turn, not reuse the old principal's response"
+        assert outcome_1 != outcome_2
+
+    @pytest.mark.asyncio
+    async def test_same_key_same_profile_same_principal_still_dedupes_via_run_idempotency_scope(
+            self, adapter, monkeypatch):
+        """Cross-check that ``_run_idempotent`` really delegates its principal/profile scope to
+        ``self._run_idempotency_scope()`` (the same helper the sibling ``/v1/runs`` admission API
+        uses), rather than reimplementing an independent definition."""
+        monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
+        request = MagicMock()
+        request.headers = {"Idempotency-Key": "client-supplied-key"}
+        body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}
+        scope_calls = []
+        real_scope = adapter._run_idempotency_scope
+
+        def _spy_scope(req):
+            scope_calls.append(req)
+            return real_scope(req)
+
+        monkeypatch.setattr(adapter, "_run_idempotency_scope", _spy_scope)
+        calls = []
+
+        async def compute():
+            calls.append(1)
+            return (f"response-{len(calls)}", {"total_tokens": len(calls)})
+
+        outcome_1, err_1 = await adapter._run_idempotent(
+            request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+            route="chat_completions")
+        outcome_2, err_2 = await adapter._run_idempotent(
+            request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+            route="chat_completions")
+
+        assert err_1 is None and err_2 is None
+        assert len(scope_calls) == 2, "_run_idempotent must consult _run_idempotency_scope() on every call"
+        assert len(calls) == 1
+        assert outcome_1 == outcome_2
         assert outcome_1 == outcome_2
 
 

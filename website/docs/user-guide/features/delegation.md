@@ -117,12 +117,29 @@ delegate_task(
 
 ## Batch Mode Details
 
-When a top-level agent provides a `tasks` array, Hermes returns one background handle, runs the subagents in parallel, and posts one consolidated result after every child finishes. An orchestrator subagent waits for its batch in the current turn so it can synthesize the results.
+When a top-level agent provides a `tasks` array, Hermes returns one background handle and runs the subagents in parallel. Results come back **per completion unit**, not once at the end:
+
+- Omit `group` when each result is useful to act on separately. Each task reports as soon as it finishes.
+- Use the same `group` string when you want to review outputs together: comparison, synthesis, or one coordinated decision. The group returns **one** consolidated message after all its tasks finish. Even independently executable tasks can belong in one group when their results inform the same decision.
+- Different groups report independently; grouped and ungrouped tasks can share one call.
+
+Grouping controls **result delivery, not execution order**: all tasks still run in parallel. If task B needs task A's output to do its work, dispatch A first, then dispatch B with that output after A returns.
+
+```json
+{"tasks": [
+  {"goal": "Review PR #101 ..."},
+  {"goal": "Review PR #102 ..."},
+  {"goal": "Benchmark approach A ...", "group": "bench"},
+  {"goal": "Benchmark approach B ...", "group": "bench"}
+]}
+```
+
+The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_indexes`); unit ids are the call's id suffixed `-1`, `-2`, …, and every unit of one call shares a single slot of `delegation.max_concurrent_children`, so grouping never changes capacity accounting. An orchestrator subagent waits for its whole batch in the current turn so it can synthesize the results.
 
 - **Maximum concurrency:** 3 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
-- **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback
-- **Result ordering:** Results are sorted by task index to match input order regardless of completion order
+- **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback. CLI and TUI completion notices use task-first titles such as `Subagent Task Completed: Review changes`; multi-task groups use the group name and task count. Unsuccessful or incomplete work gets a corresponding status label. These compact notices do not replace the full results delivered to the parent agent.
+- **Result ordering:** Within a unit, results are sorted by task index to match input order regardless of completion order; `TASK i/N` labels index the whole call
 - **Cancellation:** Follow-up messages do not cancel a top-level background batch. `/stop` or closing/resetting the owning session cancels its active children. Synchronous orchestrator children still follow their parent's interrupt state
 
 Synchronous single-task delegation from an orchestrator runs directly without thread pool overhead.
@@ -188,7 +205,7 @@ delegation:
   provider: "openrouter"             # optional: route children to a different provider
 ```
 
-Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model.
+Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides and max output tokens into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
 
 Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
 
@@ -273,6 +290,16 @@ stopwatch kill from other failures without parsing text: `timeout_seconds`
 `timeout_phase` (`before_first_llm_call` when the child never reached its
 first request, `after_llm_calls` otherwise). All three are `null` on
 non-timeout errors.
+
+## Failure Visibility
+
+A subagent that fails — non-retryable provider error (404/400), timeout, crash, or no usable output — is never silent:
+
+- **CLI**: the delegation tree prints a one-line reason: `⚠️ Subagent failed — "your goal": HTTP 404: model not found (after 12s)`. Batch runs append the reason to the per-task `✗` completion line.
+- **Gateway platforms** (Telegram, Discord, Slack, ...): the same clean line is delivered as a standalone chat notice, **even when `tool_progress` is off** for that platform.
+- **Parent agent**: the tool result entry carries `status: "failed"` plus the full `error` text, so the model can react (retry, re-route, report).
+
+Error text is reduced to the single most informative line (the exception message, not a traceback wall) and capped in length.
 
 :::tip Diagnostic dump on zero-call timeout
 With a hard cap configured, if a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, any early error messages, and stack traces for **all** live threads (not just the child's own) — a child parked waiting on a nested helper thread is indistinguishable from a slow provider without the full picture.
@@ -363,7 +390,7 @@ Control actions run synchronously in-turn (never backgrounded), are scoped to th
 
 ### From the TUI / gateway (session-facing)
 
-`steer_subagent(subagent_id, text)` in `tools/delegate_tool.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](/reference/slash-commands) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
+`steer_subagent(subagent_id, text)` in `tools/delegate_tool_registry.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](/reference/slash-commands) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
 
 ```json
 {"method": "subagent.steer", "params": {"session_id": "owning-ui-session", "subagent_id": "sa-0-1a2b3c4d", "text": "focus on pricing instead"}}
@@ -512,9 +539,24 @@ delegation:
   base_url: "http://localhost:1234/v1"
   api_key: "local-key"
   # api_mode: "anthropic_messages"  # Optional. Wire protocol override for base_url ("chat_completions", "codex_responses", or "anthropic_messages"). Empty = auto-detect from URL (e.g. /anthropic suffix). Set explicitly for endpoints the heuristic can't classify (Azure AI Foundry, MiniMax, Zhipu GLM, LiteLLM proxies, …).
+
+# Send per-child request settings on every subagent API call — e.g. OpenRouter
+# routing hints when delegating straight to openrouter.ai via base_url:
+delegation:
+  model: "deepseek/deepseek-v4-flash-0731"
+  base_url: "https://openrouter.ai/api/v1"
+  api_key: "sk-or-..."
+  request_overrides:
+    extra_body:
+      provider:
+        sort: throughput   # children route to the fastest OpenRouter provider
 ```
 
 When `base_url` points at an Anthropic-compatible endpoint — for example a path ending in `/anthropic`, an Azure Foundry Claude route, or a MiniMax `/anthropic` proxy — `api_mode` is auto-detected as `anthropic_messages` so the subagent uses the right wire format without you setting anything. Set `api_mode` explicitly when the auto-detection guess is wrong (rare).
+
+Subagents compact at the same ratio trigger as their parent (`compression.threshold`, 0.50 × window by default). `delegation.compression_threshold_tokens` (default `0`, off) adds an optional absolute cap on a child's compaction *trigger*, applied as the lower of it and the ratio threshold; it never touches the request payload or the parent. A token count of at least 16000 enables it; `true` or `"200k"` are config errors that are warned and ignored. It stays off by default because a replay of a 1,393-agent run put 200K–400K caps within 5% of each other in cost once cache prefixes are intact, and every compaction is a chance to lose detail.
+
+`delegation.request_overrides` works on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit — so it always takes effect. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. Explicit values merge **over** runtime- or parent-derived overrides: explicit top-level keys win, and `extra_body` is deep-merged one level, so a provider's own request personality (e.g. `thinking: {type: disabled}`) survives unless your key redefines it. See [Configuration → Delegation](../configuration.md#delegation) for details.
 
 :::tip
 The agent handles delegation automatically based on the task complexity. You don't need to explicitly ask it to delegate — it will do so when it makes sense.

@@ -322,6 +322,9 @@ export interface UiState {
   busy: boolean
   busyInputMode: BusyInputMode
   compact: boolean
+  // Context compaction in progress (idle/preflight/auto). Distinct from
+  // `compact`, which is the /compact layout-density flag.
+  compacting: boolean
   destructiveSlashConfirm: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
@@ -343,6 +346,10 @@ export interface UiState {
   sid: null | string
   status: string
   statusBar: StatusBarMode
+  // display.status_bar.fields — visibility filter for status-rule segments,
+  // shared with the classic CLI bar. null = user has not customized (show
+  // the default set).
+  statusBarFields: null | ReadonlySet<string>
   streaming: boolean
   theme: Theme
   // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
@@ -491,6 +498,7 @@ export interface GatewayEventHandlerContext {
   }
   system: {
     bellOnComplete: boolean
+    bellOnPrompt?: boolean
     stdout?: NodeJS.WriteStream
     sys: (text: string) => void
   }

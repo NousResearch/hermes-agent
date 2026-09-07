@@ -1,17 +1,8 @@
-"""Progressive subdirectory hint discovery.
-
-As the agent navigates into subdirectories via tool calls (read_file, terminal,
-search_files, etc.), this module discovers and loads project context files
-(AGENTS.md, CLAUDE.md, .cursorrules) from those directories.  Discovered hints
-are appended to the tool result so the model gets relevant context at the moment
-it starts working in a new area of the codebase.
-
-This complements the startup context loading in ``prompt_builder.py`` which only
-loads from the CWD.  Subdirectory hints are discovered lazily and injected into
-the conversation without modifying the system prompt (preserving prompt caching).
-
-Inspired by Block/goose's SubdirectoryHintTracker.
-"""
+"""Progressive subdirectory hint discovery: as the agent navigates into
+subdirectories via tool calls, load project context files (AGENTS.md, CLAUDE.md,
+.cursorrules) from them and append to the tool result — context arrives without
+touching the system prompt (prompt caching preserved). Complements the startup
+CWD-only loading in ``prompt_builder.py``."""
 
 import hashlib
 import logging
@@ -20,263 +11,153 @@ import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
-from agent.prompt_builder import _scan_context_content
+from agent.prompt_builder import _read_text_with_timeout, _scan_context_content, _truncate_content
+from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 
 logger = logging.getLogger(__name__)
 
-# Context files to look for in subdirectories, in priority order.
-# Same filenames as prompt_builder.py but we load ALL found (not first-wins)
-# since different subdirectories may use different conventions.
-_HINT_FILENAMES = [
-    "AGENTS.override.md",
-    "AGENTS.md", "agents.md",
-    "CLAUDE.md", "claude.md",
-    ".cursorrules",
-]
-
-# Maximum chars per hint file to prevent context bloat
-_MAX_HINT_CHARS = 8_000
-
-# Tool argument keys that typically contain file paths
+# Same filenames as prompt_builder.py, in priority order (first match wins per dir).
+_HINT_FILENAMES = ["AGENTS.override.md", "AGENTS.md", "agents.md", "CLAUDE.md", "claude.md", ".cursorrules"]
+# Per-file ceiling for on-demand subdirectory hints. 32 KiB matches Codex's `project_doc_max_bytes` default
+# (Claude Code and Cursor apply none); it is a guard against a stray huge CLAUDE.md in a vendored tree, not a
+# target — keep area AGENTS.md files well under it (~8k) because this text lands in a tool result on the first
+# touch of that directory. Over the ceiling: head+tail kept, marker with the path so the agent can read_file it,
+# and a WARNING in the log (the old 8k silent tail-chop cut apps/desktop/AGENTS.md for months unnoticed).
+_MAX_HINT_CHARS = 32_000
 _PATH_ARG_KEYS = {"path", "file_path", "workdir"}
-
-# Tools that take shell commands where we should extract paths
 _COMMAND_TOOLS = {"terminal"}
+_MAX_ANCESTOR_WALK = 5  # ancestor levels walked per path — bounds deep-path scans
 
-# How many parent directories to walk up when looking for hints.
-# Prevents scanning all the way to / for deeply nested paths.
-_MAX_ANCESTOR_WALK = 5
-
-# Directory names that never contain authoritative project context.
-# Backups, vendored deps, VCS internals, and caches routinely hold *copies* of
-# AGENTS.md; loading those duplicates real context and inflates the prompt.
-_EXCLUDED_DIR_NAMES = frozenset({
-    "node_modules", "venv", ".venv", "__pycache__",
-    ".git", ".hg", ".svn",
-    ".Trash", ".cache", ".tox", ".mypy_cache", ".pytest_cache",
-    "site-packages", "dist-packages",
-    "backups", "backup", ".backups",
-    "vendor", "third_party",
-})
+# Shared with broad recursive search probes so context discovery and search never drift into
+# different dependency/cache/build trees (those hold *copies* of context files, never authoritative ones).
+_EXCLUDED_DIR_NAMES = SEARCH_PRUNE_DIR_NAMES
 
 
-def _is_ancestor_or_same(a: Path, b: Path) -> bool:
-    """Check if *a* is the same as or an ancestor of *b* (parent directory check)."""
-    try:
-        b.relative_to(a)
-        return True
-    except ValueError:
-        return False
+def _digest(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _first_hint_file(directory: Path):
+    """``(path, stripped content)`` of the first readable non-empty hint file
+    in *directory* (priority order), or None. Unreadable files are skipped."""
+    for filename in _HINT_FILENAMES:
+        candidate = directory / filename
+        try:
+            if not candidate.is_file():
+                continue
+            content = candidate.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        return candidate, content
+    return None
 
 
 class SubdirectoryHintTracker:
     """Track which directories the agent visits and load hints on first access.
 
-    Usage::
-
-        tracker = SubdirectoryHintTracker(working_dir="/path/to/project")
-
-        # After each tool call:
-        hints = tracker.check_tool_call("read_file", {"path": "backend/src/main.py"})
-        if hints:
-            tool_result += hints  # append to the tool result string
+    Usage: after each tool call, ``hints = tracker.check_tool_call(name, args)``
+    and append the returned text to the tool result.
     """
 
     def __init__(self, working_dir: Optional[str] = None):
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
-        self._loaded_dirs: Set[Path] = set()
-        # Content digests already injected — prevents re-sending the same file
-        # reachable through symlinks, hardlinks, or duplicated copies.
+        # The working dir is pre-marked loaded (startup context handles it).
+        self._loaded_dirs: Set[Path] = {self.working_dir}
+        # Content digests already injected: the same file reached through
+        # symlinks/hardlinks/copies is never re-sent. Seeded with the CWD hint
+        # file prompt_builder already loaded.
         self._loaded_digests: Set[str] = set()
-        # Pre-mark the working dir as loaded (startup context handles it)
-        self._loaded_dirs.add(self.working_dir)
-        self._seed_working_dir_digest()
+        found = _first_hint_file(self.working_dir)
+        if found and found[1]:
+            self._loaded_digests.add(_digest(found[1]))
 
-    def _seed_working_dir_digest(self) -> None:
-        """Record the CWD context file's digest so it is never re-injected.
+    def check_tool_call(self, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
+        """Return formatted hint text for newly visited directories, or None."""
+        all_hints = [h for d in self._extract_directories(tool_name, tool_args) if (h := self._load_hints_for_directory(d))]
+        return "\n\n" + "\n\n".join(all_hints) if all_hints else None
 
-        ``prompt_builder`` already loads the working directory's context file at
-        startup.  Seeding its digest here means the same content reached through
-        a different path (a symlink farm, a shared workspace) is recognised as a
-        duplicate instead of being sent a second time.
-        """
-        for filename in _HINT_FILENAMES:
-            candidate = self.working_dir / filename
-            try:
-                if not candidate.is_file():
-                    continue
-                content = candidate.read_text(encoding="utf-8").strip()
-            except (OSError, UnicodeDecodeError):
-                continue
-            if content:
-                self._loaded_digests.add(
-                    hashlib.sha256(content.encode("utf-8")).hexdigest()
-                )
-            break  # first match wins, mirroring startup loading
-
-    def check_tool_call(
-        self,
-        tool_name: str,
-        tool_args: Dict[str, Any],
-    ) -> Optional[str]:
-        """Check tool call arguments for new directories and load any hint files.
-
-        Returns formatted hint text to append to the tool result, or None.
-        """
-        dirs = self._extract_directories(tool_name, tool_args)
-        if not dirs:
-            return None
-
-        all_hints = []
-        for d in dirs:
-            hints = self._load_hints_for_directory(d)
-            if hints:
-                all_hints.append(hints)
-
-        if not all_hints:
-            return None
-
-        return "\n\n" + "\n\n".join(all_hints)
-
-    def _extract_directories(
-        self, tool_name: str, args: Dict[str, Any]
-    ) -> list:
+    def _extract_directories(self, tool_name: str, args: Dict[str, Any]) -> list:
         """Extract directory paths from tool call arguments."""
         candidates: Set[Path] = set()
-
-        # Direct path arguments
         for key in _PATH_ARG_KEYS:
             val = args.get(key)
             if isinstance(val, str) and val.strip():
                 self._add_path_candidate(val, candidates)
-
-        # Shell commands — extract path-like tokens
-        if tool_name in _COMMAND_TOOLS:
-            cmd = args.get("command", "")
-            if isinstance(cmd, str):
-                self._extract_paths_from_command(cmd, candidates)
-
+        cmd = args.get("command", "") if tool_name in _COMMAND_TOOLS else None
+        if isinstance(cmd, str):
+            self._extract_paths_from_command(cmd, candidates)
         return list(candidates)
 
     def _add_path_candidate(self, raw_path: str, candidates: Set[Path]):
-        """Resolve a raw path and add its directory + ancestors to candidates.
-
-        Walks up from the resolved directory toward the filesystem root,
-        stopping at the first directory already in ``_loaded_dirs`` (or after
-        ``_MAX_ANCESTOR_WALK`` levels).  This ensures that reading
-        ``project/src/main.py`` discovers ``project/AGENTS.md`` even when
-        ``project/src/`` has no hint files of its own.
-        """
+        """Add a raw path's directory and its ancestors (up to ``_MAX_ANCESTOR_WALK``
+        levels, stopping at the first already-loaded dir) so reading
+        ``project/src/main.py`` still discovers ``project/AGENTS.md``."""
         try:
             p = Path(raw_path).expanduser()
             if not p.is_absolute():
                 p = self.working_dir / p
             p = p.resolve()
-            # Use parent if it's a file path (has extension or doesn't exist as dir)
             if p.suffix or (p.exists() and p.is_file()):
                 p = p.parent
-            # Walk up ancestors — stop at already-loaded or root
             for _ in range(_MAX_ANCESTOR_WALK):
                 if p in self._loaded_dirs:
                     break
                 if self._is_valid_subdir(p):
                     candidates.add(p)
-                parent = p.parent
-                if parent == p:
+                if p.parent == p:
                     break  # filesystem root
-                p = parent
+                p = p.parent
         except (OSError, ValueError, RuntimeError):
             pass
 
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
-        """Extract path-like tokens from a shell command string."""
+        """Extract path-like tokens (contain / or .; not flags or URLs) from a shell command."""
         try:
             tokens = shlex.split(cmd)
         except ValueError:
             tokens = cmd.split()
-
         for token in tokens:
-            # Skip flags
-            if token.startswith("-"):
-                continue
-            # Must look like a path (contains / or .)
-            if "/" not in token and "." not in token:
-                continue
-            # Skip URLs
-            if token.startswith(("http://", "https://", "git@")):
+            if token.startswith(("-", "http://", "https://", "git@")) or ("/" not in token and "." not in token):
                 continue
             self._add_path_candidate(token, candidates)
 
-    def _is_valid_subdir(self, path: Path) -> bool:
-        """Check if path is a valid directory to scan for hints.
+    def _within_working_dir(self, path: Path) -> bool:
+        """Reject paths outside the working-dir tree: loading ~/.codex/AGENTS.md
+        or ~/.claude/CLAUDE.md would mix another agent's instructions into this
+        session. Falls back to an ancestor check when ``is_relative_to`` fails."""
+        try:
+            return path.is_relative_to(self.working_dir)
+        except (OSError, ValueError):
+            try:
+                path.relative_to(self.working_dir)
+                return True
+            except ValueError:
+                return False
 
-        Only allow subdirectories within the working directory tree.
-        This prevents loading AGENTS.md from outside the active workspace
-        (e.g. ~/.codex/AGENTS.md, ~/.claude/CLAUDE.md), which causes
-        cross-agent context contamination and instruction mixup.
-        """
+    def _is_valid_subdir(self, path: Path) -> bool:
+        """Directory inside the working-dir tree, not yet loaded, not an excluded copy dir."""
         try:
             if not path.is_dir():
                 return False
         except OSError:
             return False
-        if path in self._loaded_dirs:
-            return False
-        # Reject paths outside the working directory tree.
-        # path.resolve() may differ from working_dir.resolve() due to symlinks,
-        # but path.is_relative_to(working_dir) handles both absolute and
-        # symlinked paths correctly on Python 3.9+.
-        try:
-            if not path.is_relative_to(self.working_dir):
-                return False
-        except (OSError, ValueError):
-            # Older Python or path resolution error — fall back to parent
-            # check as a best-effort safeguard.
-            if not _is_ancestor_or_same(self.working_dir, path):
-                return False
-        if self._is_excluded(path):
-            return False
-        return True
+        return path not in self._loaded_dirs and self._within_working_dir(path) and not self._is_excluded(path)
 
     def _is_excluded(self, path: Path) -> bool:
-        """True when the path sits inside a directory that holds copies, not context.
-
-        Directories the user is deliberately working inside are never excluded —
-        if ``working_dir`` is itself under ``vendor/``, that segment is legitimate
-        and only segments *below* the working dir are screened.
-        """
+        """True when a segment *below* the working dir is an excluded copy dir
+        (a user deliberately working inside ``vendor/`` keeps that segment legitimate)."""
         try:
             rel_parts = path.relative_to(self.working_dir).parts
         except ValueError:
-            # Paths outside the working dir are already rejected by
-            # _is_valid_subdir before this runs; treat as excluded defensively.
-            return True
+            return True  # outside the tree — already rejected upstream
         return any(part in _EXCLUDED_DIR_NAMES for part in rel_parts)
 
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
-        """Load hint files from a directory. Returns formatted text or None.
-
-        Only loads hints from directories within the working directory tree.
-        """
+        """Load the first hint file in *directory*; formatted text or None."""
         self._loaded_dirs.add(directory)
-
-        # Reject paths outside the working directory tree.
-        try:
-            if not directory.is_relative_to(self.working_dir):
-                logger.debug(
-                    "Skipping hint files in %s — outside working_dir %s",
-                    directory, self.working_dir,
-                )
-                return None
-        except (OSError, ValueError):
-            if not _is_ancestor_or_same(self.working_dir, directory):
-                logger.debug(
-                    "Skipping hint files in %s — outside working_dir %s",
-                    directory, self.working_dir,
-                )
-                return None
-
-        found_hints = []
+        if not self._within_working_dir(directory):
+            logger.debug("Skipping hint files in %s — outside working_dir %s", directory, self.working_dir)
+            return None
         for filename in _HINT_FILENAMES:
             hint_path = directory / filename
             try:
@@ -285,58 +166,32 @@ class SubdirectoryHintTracker:
             except OSError:
                 continue
             try:
-                content = hint_path.read_text(encoding="utf-8").strip()
+                content = (_read_text_with_timeout(hint_path) or "").strip()
                 if not content:
                     continue
-                # Skip content we've already injected. The same AGENTS.md is
-                # routinely reachable through several paths (symlinked shared
-                # workspaces, hardlinks, copied backups); re-sending it burns
-                # context for zero new information.
-                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                digest = _digest(content)
                 if digest in self._loaded_digests:
-                    logger.debug(
-                        "Skipping duplicate hint content at %s (digest %s)",
-                        hint_path,
-                        digest[:12],
-                    )
-                    break
+                    logger.debug("Skipping duplicate hint content at %s (digest %s)", hint_path, digest[:12])
+                    return None
                 self._loaded_digests.add(digest)
-                # Same security scan as startup context loading
+                # Same security scan as startup context loading.
                 content = _scan_context_content(content, filename)
-                if len(content) > _MAX_HINT_CHARS:
-                    content = (
-                        content[:_MAX_HINT_CHARS]
-                        + f"\n\n[...truncated {filename}: {len(content):,} chars total]"
-                    )
-                # Best-effort relative path for display
-                rel_path = str(hint_path)
-                try:
-                    rel_path = str(hint_path.relative_to(self.working_dir))
-                except (ValueError, RuntimeError):
-                    try:
-                        # as_posix: "~/" shorthand implies POSIX rendering
-                        # (avoids ~/AppData\Local\... chimeras on Windows).
-                        rel_path = "~/" + hint_path.relative_to(Path.home()).as_posix()
-                    except (ValueError, RuntimeError):
-                        pass  # keep absolute
-                found_hints.append((rel_path, content))
-                # First match wins per directory (like startup loading)
-                break
+                rel_path = self._display_path(hint_path)
+                content = _truncate_content(content, filename, max_chars=_MAX_HINT_CHARS, read_path=rel_path)
+                logger.debug("Loaded subdirectory hints from %s: %s", directory, [rel_path])
+                return f"[Subdirectory context discovered: {rel_path}]\n{content}"  # first match wins per directory
             except Exception as exc:
                 logger.debug("Could not read %s: %s", hint_path, exc)
+        return None
 
-        if not found_hints:
-            return None
-
-        sections = []
-        for rel_path, content in found_hints:
-            sections.append(
-                f"[Subdirectory context discovered: {rel_path}]\n{content}"
-            )
-
-        logger.debug(
-            "Loaded subdirectory hints from %s: %s",
-            directory,
-            [h[0] for h in found_hints],
-        )
-        return "\n\n".join(sections)
+    def _display_path(self, hint_path: Path) -> str:
+        """Working-dir-relative, else ``~/``-relative (POSIX rendering so Windows
+        never shows ``~/AppData\\Local\\...`` chimeras), else absolute."""
+        try:
+            return str(hint_path.relative_to(self.working_dir))
+        except (ValueError, RuntimeError):
+            pass
+        try:
+            return "~/" + hint_path.relative_to(Path.home()).as_posix()
+        except (ValueError, RuntimeError):
+            return str(hint_path)

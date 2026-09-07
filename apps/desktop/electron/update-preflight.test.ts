@@ -9,11 +9,12 @@ import {
   runWindowsUpdatePreflight,
   type UpdatePreflightDeps
 } from './update-preflight'
-import type {
-  DesktopPluginServiceProcess,
-  McpBridgeProcess,
-  ScanOutcome,
-  VenvBlockerScanResult
+import {
+  type DesktopPluginServiceProcess,
+  type McpBridgeProcess,
+  SCANNER_DEPENDENCY_UNAVAILABLE,
+  type ScanOutcome,
+  type VenvBlockerScanResult
 } from './venv-blocker-scan'
 
 const claim: UpdateMarkerClaim = { pid: 777, startedAt: 100 }
@@ -331,6 +332,44 @@ describe('runWindowsUpdatePreflight', () => {
     assert.equal(outcome.kind, 'probe-failure')
     assert.equal(outcome.error, 'scanner crashed')
     assert.deepEqual(calls, ['release', 'scan'])
+  })
+
+  it('carries the scanner repair instruction into the preflight dialog', async () => {
+    // The scanner imports psutil from the very venv an update rewrites, so an
+    // interrupted update leaves every later preflight refusing identically.
+    // The scanner knows the way out; the dialog used to drop it and tell the
+    // user to close windows and retry, which cannot ever succeed.
+    const repair = 'Repair it with: "C:\\Hermes\\venv\\Scripts\\python.exe" -m pip install --force-reinstall psutil'
+
+    const { deps } = makeDeps([
+      {
+        kind: 'probe-failure',
+        error: 'scanner exited 1',
+        code: SCANNER_DEPENDENCY_UNAVAILABLE,
+        repair
+      }
+    ])
+
+    const outcome = await runWindowsUpdatePreflight(deps)
+
+    assert.equal(outcome.kind, 'probe-failure')
+    assert.ok(
+      outcome.message.includes('"C:\\Hermes\\venv\\Scripts\\python.exe" -m pip install --force-reinstall psutil'),
+      `repair command missing from the dialog: ${outcome.message}`
+    )
+    assert.ok(
+      !/Close other Hermes windows/.test(outcome.message),
+      'retry advice is wrong for a failure that repeats until psutil is repaired'
+    )
+  })
+
+  it('keeps the generic message for a probe failure the scanner did not classify', async () => {
+    const { deps } = makeDeps([{ kind: 'probe-failure', error: 'scanner crashed' }])
+
+    const outcome = await runWindowsUpdatePreflight(deps)
+
+    assert.equal(outcome.kind, 'probe-failure')
+    assert.match(outcome.message, /Close other Hermes windows/)
   })
 
   it('refuses generic holders without offering the MCP consent path', async () => {

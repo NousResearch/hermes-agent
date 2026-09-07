@@ -216,16 +216,22 @@ def profile_name_for_home(path: str | Path | None) -> str | None:
         return None
     current = Path(path).expanduser()
     try:
-        if current.resolve(strict=False) == get_default_hermes_root().resolve(strict=False):
+        default_root = get_default_hermes_root()
+        if current == default_root:
+            return "default"
+        if current.parent.name == "profiles":
+            named = named_profile_home(current)
+            if named is not None:
+                return named.name
+            if current.name and not current.name.startswith("."):
+                return current.name
+        if current.resolve(strict=False) == default_root.resolve(strict=False):
             return "default"
         named = named_profile_home(current)
     except (OSError, RuntimeError, ValueError):
         return None
     if named is not None:
         return named.name
-    # Session records already carry a validated profile home. Preserve the
-    # established basename behavior for isolated test/custom roots whose
-    # parent is the conventional profiles directory but lacks root markers.
     if current.parent.name == "profiles" and current.name and not current.name.startswith("."):
         return current.name
     return None

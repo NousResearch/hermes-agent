@@ -35,6 +35,30 @@ def test_explicit_profile_target_never_falls_back(tmp_path, monkeypatch):
     # A real resolution I/O failure must propagate, too (no predicate patch).
     profiles = home / "profiles"
     profiles.rename(home / "saved-profiles")
-    profiles.symlink_to("profiles")
-    with pytest.raises((OSError, RuntimeError)):
-        server._profile_home("worker")
+    try:
+        profiles.symlink_to("profiles")
+    except OSError:
+        pass
+    else:
+        with pytest.raises((OSError, RuntimeError)):
+            server._profile_home("worker")
+
+
+def test_custom_root_basename_target_fails_closed_when_unavailable(tmp_path, monkeypatch):
+    """An explicit profile request matching a custom root basename fails closed."""
+    from tui_gateway import server
+
+    custom_home = tmp_path / "customer-data"
+    custom_home.mkdir()
+    (custom_home / "config.yaml").write_text("terminal:\n  cwd: /custom\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(custom_home))
+    monkeypatch.setattr(server, "_hermes_home", custom_home)
+
+    with pytest.raises(FileNotFoundError):
+        server._profile_home("customer-data")
+
+    with pytest.raises(FileNotFoundError):
+        with server._profile_db({"profile": "customer-data"}):
+            pass
+

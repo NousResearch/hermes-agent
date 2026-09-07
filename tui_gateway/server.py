@@ -23,7 +23,7 @@ from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable:
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
 from hermes_constants import (
-    get_default_hermes_root, get_hermes_home, get_hermes_home_override, profile_name_for_home,
+    get_hermes_home, get_hermes_home_override, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
@@ -452,17 +452,8 @@ def _canonical_profile_request(name: str) -> str:
     basenames are installation details, while explicit unknown profile names
     must continue to fail closed in ``_profile_home``.
     """
-    folded = name.casefold()
-    if folded in {".hermes", "hermes"}:
+    if name.casefold() in {".hermes", "hermes"}:
         return "default"
-    with contextlib.suppress(OSError, RuntimeError, ValueError):
-        if folded == get_default_hermes_root().name.casefold():
-            from hermes_cli import profiles as profiles_mod
-            # A custom Hermes root can share a name with a valid named profile.
-            # Prefer that real profile when it exists; otherwise this is the
-            # legacy basename of the default root.
-            if not Path(profiles_mod.get_profile_dir(name)).is_dir():
-                return "default"
     return name
 
 
@@ -487,8 +478,12 @@ def _profile_home(profile: str | None) -> Path | None:
     home = Path(profiles_mod.get_profile_dir(name))
     if not home.is_dir():
         raise FileNotFoundError(f"Profile '{name}' does not exist.")
-    if home.resolve() == Path(_hermes_home).resolve():
+    launch = Path(_hermes_home)
+    if home == launch:
         return None  # already the launch profile (no override needed)
+    if home.name == launch.name or home.is_symlink() or launch.is_symlink():
+        if home.resolve() == launch.resolve():
+            return None
     _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
     return home
 

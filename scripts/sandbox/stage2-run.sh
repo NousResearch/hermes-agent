@@ -196,6 +196,20 @@ if [ "$DEV_SANDBOX_INTERACTIVE" = true ]; then
   dev_mounts=(--dev /dev)
 fi
 
+# Every payload TLS client must trust the SANDBOX CA: all HTTP(S) goes
+# through the MITM proxy, which terminates each connection with a
+# sandbox-CA-minted cert and re-validates upstream against the real CA
+# bundle itself (real-ca.pem, passed to proxy.py below). Node reads
+# NODE_EXTRA_CA_CERTS instead of SSL_CERT_FILE, so it gets ca.pem too --
+# pointing it at the real bundle made npm reject the proxy's certs
+# (UNABLE_TO_VERIFY_LEAF_SIGNATURE) and the proxy log the abort as an
+# SSLEOFError. curl/git/openssl get the same ca.pem via their own vars.
+# One asymmetry to note: the *_FILE vars replace the trust store, but
+# NODE_EXTRA_CA_CERTS is additive -- Node keeps its built-in bundle --
+# so a Node process that somehow bypassed the proxy could still reach
+# public CAs directly. The *_PROXY vars are the enforcement; the CA
+# vars are only the trust plumbing.
+
 exec bwrap \
   --unshare-pid \
   --die-with-parent --proc /proc --tmpfs /tmp \
@@ -216,7 +230,7 @@ exec bwrap \
   --setenv CURL_CA_BUNDLE /work/certs/ca.pem \
   --setenv SSL_CERT_FILE /work/certs/ca.pem \
   --setenv GIT_SSL_CAINFO /work/certs/ca.pem \
-  --setenv NODE_EXTRA_CA_CERTS /work/certs/real-ca.pem \
+  --setenv NODE_EXTRA_CA_CERTS /work/certs/ca.pem \
   --setenv OPENSSL_CONF /work/certs/openssl.cnf \
   --setenv HTTP_PROXY http://127.0.0.1:8080 \
   --setenv HTTPS_PROXY http://127.0.0.1:8080 \

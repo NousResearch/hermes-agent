@@ -30,7 +30,7 @@ def test_unit_transaction_budget_preserves_scope_and_health(monkeypatch, gracefu
     if catchup:
         monkeypatch.setattr(fleet, "_SYSTEMD_SCOPES", (("user", scope),))
         failed = []
-        fleet._restart_systemd_gateway_units_best_effort(failed)
+        fleet._restart_systemd_gateway_units_best_effort(failed, list(fleet._systemd_gateway_unit_listings()))
         assert not failed
         assert sum("restart" in cmd for cmd, _ in calls) == 1
         return

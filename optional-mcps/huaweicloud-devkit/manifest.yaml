@@ -1,0 +1,97 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: huaweicloud-devkit
+description: >
+  Huawei Cloud toolkit MCP — KooCLI command planning and execution,
+  auth/profile management, sandbox deploy, service/API discovery, and
+  cloud safety guardrails for Huawei Cloud services.
+source: https://github.com/huaweicloud/huaweicloud-devkit
+
+# Git-installed stdio server. ${INSTALL_DIR} is substituted at install time
+# with the path the catalog cloned the repo into (~/.hermes/mcp-installs/).
+# The catalog never auto-updates: the user re-runs
+# `hermes mcp install huaweicloud-devkit` to refresh.
+transport:
+  type: stdio
+  command: node
+  args:
+    - "${INSTALL_DIR}/plugins/huaweicloud-core/src/mcp-server.mjs"
+  env:
+    HUAWEICLOUD_AGENT_TOOLKIT_MODE: local
+
+# Pinned per catalog dependency policy: full commit SHA (branches and tags
+# can be moved; SHAs cannot), and the pinned commit must be at least 2 weeks
+# old at pin time — same supply-chain rules as pyproject dependencies.
+# This SHA is the v1.0.2 stable release (tagged & committed 2026-08-22,
+# release published 2026-08-24, npm dist-tag 1.0.2) — 16 days old at pin
+# time. Bumping the pin is a PR to this manifest.
+install:
+  type: git
+  url: https://github.com/huaweicloud/huaweicloud-devkit.git
+  ref: be2ccec7026d56b8043ea932711b22e58d31f5c4
+  bootstrap:
+    - "npm ci --omit=dev"
+
+# Credentials live in the KooCLI config managed by the devkit itself
+# (huaweicloud_auth_init writes the KooCLI profile); nothing is stored in
+# Hermes .env, so no auth block is declared.
+auth:
+  type: none
+
+# Default surface is read-only/planning only. Mutating, credential, and
+# sandbox-runtime tools are excluded so a casual install gets a safe read
+# surface; users opt in per their threat model via the install-time
+# checklist or `hermes mcp configure huaweicloud-devkit`.
+tools:
+  default_excluded:
+    # Command execution (writes to cloud resources via KooCLI)
+    - huaweicloud_run_approved_command
+    # Credential and profile mutations
+    - huaweicloud_auth_init
+    - huaweicloud_auth_sync
+    - huaweicloud_setup_obs_config
+    - huaweicloud_sandbox_credentials
+    # Sandbox runtime (provisions/changes remote state; agreement acceptance)
+    - huaweicloud_sandbox_exec_with_session
+    - huaweicloud_sandbox_exec_one_shot
+    - huaweicloud_sandbox_close_session
+    - huaweicloud_sandbox_upload_file
+    - huaweicloud_sandbox_upload_project
+    - huaweicloud_sandbox_connect
+    - huaweicloud_sandbox_sign_agreement
+    # Vendor skill layer — redundant with the official
+    # optional-skills/huaweicloud/* entries shipped in the same PR
+    # (same rationale as aws-knowledge's excluded retrieve_skill tool).
+    - huaweicloud_retrieve_skill
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - huawei cloud
+    - huaweicloud
+    - koocli
+    - hcloud
+    - obs
+    - ecs
+    - rds
+    - cce
+  hosts:
+    - huaweicloud.com
+    - support.huaweicloud.com
+
+post_install: |
+  Huawei Cloud DevKit installed (read-only surface by default).
+
+  1. Credentials: run `npx huaweicloud-devkit@1.0.2 auth init` (KooCLI
+     profile), or enable the excluded huaweicloud_auth_* tools via
+     `hermes mcp configure huaweicloud-devkit`.
+  2. Companion skills (official catalog, snapshot of the pinned SHA):
+     hermes skills install official/huaweicloud/huaweicloud-core
+  3. Optional Bash guard for direct `hcloud` shell calls:
+     https://github.com/huaweicloud/huaweicloud-devkit#safety-hook
+  4. Start a new Hermes session to load tools, then verify with
+     `hermes doctor`.

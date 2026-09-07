@@ -12,6 +12,14 @@ from hermes_cli import auth_commands
 from hermes_cli.auth import read_credential_pool, write_credential_pool
 
 
+@pytest.fixture(autouse=True)
+def isolated_external_auth_stores(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
+
+
 def _rows():
     return [dict(id=f"row{i}", label=f"account{i}", source="manual:device_code",
                  auth_type="oauth", access_token=f"fixture-access-{i}",

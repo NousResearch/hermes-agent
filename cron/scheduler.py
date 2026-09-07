@@ -2373,9 +2373,10 @@ def run_job(
         # No audit row when we failed before the agent existed; the audit write must never raise.
         if _audit is not None:
             _audit.write({}, error_msg)
+        from cron.scheduler_diagnostics import format_run_error
         output = (
             _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)
-            + f"## Error\n\n```\n{error_msg}\n```\n"
+            + format_run_error(e)
         )
         return False, output, "", error_msg
 

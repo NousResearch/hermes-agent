@@ -1850,8 +1850,19 @@ def main(argv: Sequence[str] | None = None) -> None:
     try:
         import psutil  # noqa: PLC0415, F401
     except Exception as exc:
+        # The scanner runs under the target venv interpreter and imports psutil
+        # from the very site-packages the update is about to rewrite, so a
+        # previous interrupted update can leave psutil half-written. Every
+        # later update attempt then refuses identically, and the thing that
+        # would repair psutil is the update itself (#104687 H9). The scan stays
+        # fail-closed — a scanner that cannot enumerate must never report the
+        # install free — but the refusal names its own repair instead of
+        # surfacing as an anonymous probe failure.
         _emit_probe_fail(
-            f"psutil is not available: {exc}", root=root_text, code="probe_failed"
+            f"psutil is not available in the target venv: {exc}. "
+            f'Repair it with: "{sys.executable}" -m pip install --force-reinstall psutil',
+            root=root_text,
+            code="scanner_dependency_unavailable",
         )
     try:
         data = scan_venv_blockers(root_text)

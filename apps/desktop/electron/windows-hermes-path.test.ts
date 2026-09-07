@@ -193,15 +193,24 @@ test('getVenvSitePackagesEntries: returns empty on Windows when site-packages do
   assert.deepEqual(result, [])
 })
 
-test('getVenvSitePackagesEntries: reads pyvenv.cfg version on POSIX and resolves lib/pythonX.Y/site-packages', () => {
-  const result = getVenvSitePackagesEntries('/venv', {
-    isWindows: false,
-    directoryExists: p => p === '/venv/lib/python3.12/site-packages',
-    readFile: () => 'version_info = 3.12.1\n'
-  })
+// path.join() is platform-native regardless of the injected `isWindows`
+// flag, so on a real win32 host this produces backslash-joined paths that
+// never match the forward-slash POSIX fixture path below. Genuinely
+// POSIX-subject; skip on win32 per house convention (see
+// windows-process-identity.test.ts / update-scanner-carrier.test.ts /
+// backend-release-gate.windows-live.test.ts).
+test.skipIf(process.platform === 'win32')(
+  'getVenvSitePackagesEntries: reads pyvenv.cfg version on POSIX and resolves lib/pythonX.Y/site-packages',
+  () => {
+    const result = getVenvSitePackagesEntries('/venv', {
+      isWindows: false,
+      directoryExists: p => p === '/venv/lib/python3.12/site-packages',
+      readFile: () => 'version_info = 3.12.1\n'
+    })
 
-  assert.deepEqual(result, ['/venv/lib/python3.12/site-packages'])
-})
+    assert.deepEqual(result, ['/venv/lib/python3.12/site-packages'])
+  }
+)
 
 test('getVenvSitePackagesEntries: returns empty on POSIX when pyvenv.cfg is missing', () => {
   const result = getVenvSitePackagesEntries('/venv', {

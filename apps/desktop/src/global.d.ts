@@ -1,6 +1,7 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { BackendRestartCapability, BackendRestartTarget } from '../electron/backend-restart-contract'
 import type { PoolLimits } from '../electron/pool-limits'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
@@ -514,6 +515,9 @@ declare global {
       getBootstrapState: () => Promise<DesktopBootstrapState>
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
       recycleBackend?: (profile?: null | string) => Promise<{ ok: boolean }>
+      backendRestartStatus?: (target: BackendRestartTarget) => Promise<BackendRestartCapability>
+      /** Restarts only this owned local child; rejects unsupported targets. */
+      restartBackendFor?: (target: BackendRestartTarget) => Promise<HermesConnection>
       resetBootstrap: () => Promise<{ ok: boolean }>
       repairBootstrap: () => Promise<{ ok: boolean }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>

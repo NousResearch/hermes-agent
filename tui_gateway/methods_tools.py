@@ -1315,19 +1315,23 @@ def _plugin_rows() -> list[dict]:
         status = pc._plugin_status(name, enabled, disabled, key=key)
         # Bundled backends/platforms/providers run without an explicit enable: report the
         # truthful default instead of "not enabled" (reads as OFF).
-        if status == "not enabled" and source == "bundled" and pc._bundled_default_on(_dir):
+        default_enabled = source == "bundled" and pc._bundled_default_on(_dir)
+        if status == "not enabled" and default_enabled:
             status = "enabled"
         # key = canonical registry key (names collide across category dirs); portable = Agent Plugins v1.
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
-            "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir)})
+            "source": source, "status": status, "default_enabled": default_enabled,
+            "portable": pc._is_portable_plugin_dir(_dir)})
     return out
 
 
 def _plugins_list(rid, params):
     rows = _plugin_rows()
     user_count = sum(1 for r in rows if r["source"] != "bundled")
-    return _ok(rid, {"plugins": rows, "user_count": user_count, "bundled_count": len(rows) - user_count})
+    restart_required = _tools_mod("hermes_cli.plugins_restart").annotate_restart_state(rows)
+    return _ok(rid, {"plugins": rows, "user_count": user_count, "bundled_count": len(rows) - user_count,
+                     "restart_required": restart_required})
 
 
 def _plugins_toggle(rid, params):
@@ -1339,8 +1343,11 @@ def _plugins_toggle(rid, params):
     result = toggle(ident, enabled=bool(params.get("enable")))
     if not result.get("ok"):
         return _err(rid, 5026, result.get("error") or "toggle failed")
-    row = next((r for r in _plugin_rows() if ident in (r["key"], r["name"])), None)
-    return _ok(rid, {"ok": True, "unchanged": bool(result.get("unchanged")), "name": ident, "plugin": row})
+    rows = _plugin_rows()
+    restart_required = _tools_mod("hermes_cli.plugins_restart").annotate_restart_state(rows)
+    row = next((r for r in rows if ident in (r["key"], r["name"])), None)
+    return _ok(rid, {"ok": True, "unchanged": bool(result.get("unchanged")), "name": ident, "plugin": row,
+                     "restart_required": restart_required})
 
 
 def _plugins_install(rid, params):

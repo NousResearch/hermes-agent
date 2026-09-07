@@ -64,7 +64,7 @@ import {
   verifyHermesCli
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
-import { recycleOwnedBackend } from './backend-recycle'
+import { recycleOwnedBackend, registerScopedBackendRecycleIpc } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import {
   isHostKeyChangedBootFailure,
@@ -11650,54 +11650,7 @@ async function ensureRegistryBackend(
       return ensureBackend(profile, { spawnPriority })
     }
 
-    const stoppingLocal = poolStopper.inFlight(localRoute.poolKey)
-
-    if (stoppingLocal) {
-      await stoppingLocal
-    }
-
-    const existingLocal = backendPool.get(localRoute.poolKey)
-
-    if (existingLocal) {
-      existingLocal.lastActiveAt = Date.now()
-
-      if (spawnPriority === 'foreground') {
-        promotePoolEntry(existingLocal)
-      }
-
-      return existingLocal.connectionPromise
-    }
-
-    evictLruPoolBackends(poolMaxBackends() - 1)
-
-    const localEntry = {
-      process: null,
-      port: null,
-      token: null,
-      connectionPromise: null,
-      lastActiveAt: Date.now(),
-      remoteBaseUrl: null,
-      releaseLocalBackendSlot: null,
-      localBackendSlotKey: null,
-      localBackendSpawnRequest: null,
-      spawnPriority
-    }
-
-    localEntry.connectionPromise = spawnPoolBackend(profileKey, localEntry, {
-      forceLocal: true,
-      poolKey: localRoute.poolKey
-    }).catch(async error => {
-      // Same trace rule as the v1 pool path: a forced-local child whose spawn
-      // rejects before the child exists must still land in desktop.log.
-      logPoolSpawnFailure(`"${profileKey}" (forced-local)`, error)
-
-      await teardownFailedLocalBackend(localRoute.poolKey, localEntry)
-      throw error
-    })
-    backendPool.set(localRoute.poolKey, localEntry)
-    startPoolIdleReaper()
-
-    return localEntry.connectionPromise
+    return ensureForcedLocalPoolBackend(profileKey, localRoute.poolKey, spawnPriority)
   }
 
   const key = backendScopeKey(id, profile)
@@ -11768,6 +11721,64 @@ async function ensureRegistryBackend(
   startPoolIdleReaper()
 
   return entry.connectionPromise
+}
+
+async function ensureForcedLocalPoolBackend(
+  profileKey: string,
+  poolKey: string,
+  spawnPriority: LocalBackendSpawnPriority = 'foreground',
+  evictOthers = true
+) {
+  const stoppingLocal = poolStopper.inFlight(poolKey)
+
+  if (stoppingLocal) {
+    await stoppingLocal
+  }
+
+  const existingLocal = backendPool.get(poolKey)
+
+  if (existingLocal) {
+    existingLocal.lastActiveAt = Date.now()
+
+    if (spawnPriority === 'foreground') {
+      promotePoolEntry(existingLocal)
+    }
+
+    return existingLocal.connectionPromise
+  }
+
+  if (evictOthers) {
+    evictLruPoolBackends(poolMaxBackends() - 1)
+  }
+
+  const localEntry = {
+    process: null,
+    port: null,
+    token: null,
+    connectionPromise: null,
+    lastActiveAt: Date.now(),
+    remoteBaseUrl: null,
+    releaseLocalBackendSlot: null,
+    localBackendSlotKey: null,
+    localBackendSpawnRequest: null,
+    spawnPriority
+  }
+
+  localEntry.connectionPromise = spawnPoolBackend(profileKey, localEntry, {
+    forceLocal: true,
+    poolKey
+  }).catch(async error => {
+    // Same trace rule as the v1 pool path: a forced-local child whose spawn
+    // rejects before the child exists must still land in desktop.log.
+    logPoolSpawnFailure(`"${profileKey}" (forced-local)`, error)
+
+    await teardownFailedLocalBackend(poolKey, localEntry)
+    throw error
+  })
+  backendPool.set(poolKey, localEntry)
+  startPoolIdleReaper()
+
+  return localEntry.connectionPromise
 }
 
 // Dial a non-local registry connection for one profile. Never spawns a local
@@ -12843,7 +12854,7 @@ async function prepareProfileRenameRequest(request) {
   })
 }
 
-async function startHermes() {
+async function startHermes({ localRestartProfile = '' } = {}) {
   // Only the single-instance lock holder may reap/spawn/claim the desktop
   // backend. A lock-losing instance must stay inert even if some path reaches
   // here (e.g. the deferred-quit window before `ready`): its reapOrphans()
@@ -12969,13 +12980,14 @@ async function startHermes() {
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
     // unset preference keeps the legacy launch so existing installs are
     // unaffected.
-    const activeProfile = readActiveDesktopProfile()
+    const activeProfile = localRestartProfile || readActiveDesktopProfile()
 
     if (activeProfile) {
       backendArgs.unshift('--profile', activeProfile)
     }
 
     const setup = await runPrimaryBackendStartup({
+      localOnly: Boolean(localRestartProfile),
       connectRemote,
       ensureLocalRuntime: ensureRuntime,
       prepareLocalBackend: async () => {
@@ -13023,6 +13035,15 @@ async function startHermes() {
     const parentStartMarker = await desktopParentStartMarker()
     const backendNonce = crypto.randomBytes(16).toString('hex')
     const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
+
+    if (
+      localRestartProfile &&
+      (primaryProfileKey() !== localRestartProfile ||
+        primaryBackendIsRemote() ||
+        !backendConnectionState.isCurrentAttempt(connectionAttempt))
+    ) {
+      throw new Error('Backend restart target changed before local spawn.')
+    }
 
     const hermesProcess = spawn(
       backend.command,
@@ -13220,6 +13241,7 @@ async function startHermes() {
       source: 'local',
       authMode: 'token',
       token: authToken,
+      profile: primaryProfile,
       wsUrl,
       logs: hermesLog.slice(-80),
       ...getWindowState()
@@ -15141,6 +15163,31 @@ const hudIpc = registerHudIpc({
   resetHudLayout: resetHudWindowLayout,
   setHudSessionId: value => {
     hudSessionId = value
+  }
+})
+
+registerScopedBackendRecycleIpc(ipcMain, {
+  readState: profile => ({
+    // Status/restart must not migrate or repair registry files as a side effect.
+    registry: connectionRegistryCache ?? normalizeRegistry(null),
+    get routeOptions() {
+      return profileRouteOptions(profile)
+    },
+    primary: { process: backendConnectionState.getProcess(), connectionPromise: backendConnectionState.getPromise() },
+    pool: backendPool
+  }),
+  stopPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
+  stopPool: stopPoolBackend,
+  startLocal: async ({ connectionId, profile }, slot) => {
+    const connection = slot.primary
+      ? await startHermes({ localRestartProfile: profile })
+      : await ensureForcedLocalPoolBackend(profile, slot.key, 'foreground', false)
+
+    if (connection.mode !== 'local' || connection.profile !== profile) {
+      throw new Error('Backend restart target changed during local startup.')
+    }
+
+    return { ...connection, connectionId }
   }
 })
 

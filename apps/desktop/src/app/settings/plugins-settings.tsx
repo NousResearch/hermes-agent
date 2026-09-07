@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { type ReactNode, useEffect, useState } from 'react'
 
-import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -15,22 +14,15 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { FolderOpen, Monitor, Package, RefreshCw } from '@/lib/icons'
 import { normalize } from '@/lib/text'
-import {
-  $agentPluginBusy,
-  $agentPlugins,
-  $agentPluginsError,
-  $agentPluginsStatus,
-  type AgentPluginRow,
-  type GatewayRequest,
-  isDesktopRelevantPlugin,
-  loadAgentPlugins,
-  toggleAgentPlugin
-} from '@/store/agent-plugins'
+import { type AgentPluginRow, type GatewayRequest, isDesktopRelevantPlugin } from '@/store/agent-plugins'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
+import { PluginRestartNotice } from './plugin-restart-notice'
 import { EmptyState, ListRowSkeleton, Pill, SettingsContent, SettingsSection } from './primitives'
+import { useAgentPluginSettings } from './use-agent-plugin-settings'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 const KIND_ORDER: Record<PluginRecord['kind'], number> = { disk: 0, runtime: 1, bundled: 2 }
@@ -127,11 +119,15 @@ function PluginLine({
   )
 }
 
-function AgentPluginRowView({ row, profile }: { row: AgentPluginRow; profile: string | null }) {
+interface AgentPluginRowViewProps {
+  row: AgentPluginRow
+  busy: boolean
+  onToggle: (key: string, enable: boolean) => Promise<unknown>
+}
+
+function AgentPluginRowView({ row, busy, onToggle }: AgentPluginRowViewProps) {
   const { t } = useI18n()
   const p = t.settings.plugins
-  const { requestGateway } = useGatewayRequest()
-  const busy = useStore($agentPluginBusy)
   const key = row.key
 
   // Pre-contract-v6 backends return rows without a canonical key. Name-addressed
@@ -142,14 +138,14 @@ function AgentPluginRowView({ row, profile }: { row: AgentPluginRow; profile: st
     <Switch
       aria-label={`${row.status === 'enabled' ? p.disable : p.enable} ${row.name}`}
       checked={row.status === 'enabled'}
-      disabled={!key || busy === key}
+      disabled={!key || busy}
       onCheckedChange={on => {
         if (!key) {
           return
         }
 
         triggerHaptic('selection')
-        void toggleAgentPlugin(requestGateway, key, on, p.agent.toggleFailed(row.name), profile)
+        void onToggle(key, on).catch(error => notifyError(error, p.agent.toggleFailed(row.name)))
       }}
     />
   )
@@ -173,12 +169,9 @@ function AgentPluginRowView({ row, profile }: { row: AgentPluginRow; profile: st
 function AgentPluginsSection() {
   const { t } = useI18n()
   const p = t.settings.plugins
-  const { requestGateway } = useGatewayRequest()
   const gatewayState = useStore($gatewayState)
   const connection = useStore($connection)
-  const rows = useStore($agentPlugins)
-  const status = useStore($agentPluginsStatus)
-  const error = useStore($agentPluginsError)
+  const registry = useStore($connectionsRegistry)
   const [query, setQuery] = useState('')
 
   // 'Applies to' profile scope: which profile's plugins we list/toggle.
@@ -193,8 +186,24 @@ function AgentPluginsSection() {
   // The param we actually send: omit it for the active profile.
   const requestProfile = scopeOverride && scopeOverride !== activeProfile ? scopeOverride : null
 
+  const connectionId = connection?.connectionId ?? null
+
+  const gatewayLabel =
+    registry?.connections.find(source => source.id === connectionId)?.label ??
+    (connection?.mode === 'remote' ? p.agent.remoteGateway : p.agent.thisDevice)
+
+  const { inventory, toggle, request, recheck } = useAgentPluginSettings({
+    connectionId,
+    profile: scopeProfile ?? 'default',
+    activeProfile: activeProfile ?? 'default',
+    enabled: gatewayState === 'open'
+  })
+
+  const rows = inventory.data?.plugins ?? []
+  const status = inventory.data ? 'ready' : inventory.isError ? 'error' : 'loading'
+
   const { data: profilesData } = useQuery({
-    queryKey: ['agent-plugins-profiles'],
+    queryKey: ['agent-plugins-profiles', connectionId, activeProfile],
     queryFn: getProfiles,
     staleTime: 60_000
   })
@@ -205,15 +214,7 @@ function AgentPluginsSection() {
   // override so the list reloads for the profile the user just switched to.
   useEffect(() => {
     setScopeOverride(null)
-  }, [activeProfile])
-
-  useEffect(() => {
-    if (gatewayState !== 'open') {
-      return
-    }
-
-    void loadAgentPlugins(requestGateway, requestProfile)
-  }, [gatewayState, requestGateway, requestProfile])
+  }, [activeProfile, connectionId])
 
   const needle = normalize(query)
 
@@ -238,8 +239,12 @@ function AgentPluginsSection() {
         {p.agent.blurb}
       </p>
 
-      {profiles.length > 1 && (
-        <div className="mb-2 flex items-center gap-2">
+      {profiles.length > 1 ? (
+        <div
+          aria-label={p.agent.scope(scopeProfile ?? 'default', gatewayLabel)}
+          className="mb-2 flex flex-wrap items-center gap-2"
+          role="group"
+        >
           <span className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary)">
             {p.agent.appliesTo}
           </span>
@@ -258,17 +263,31 @@ function AgentPluginsSection() {
               ))}
             </SelectContent>
           </Select>
+          <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            · {gatewayLabel}
+          </span>
         </div>
+      ) : (
+        <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)">
+          {p.agent.scope(scopeProfile ?? 'default', gatewayLabel)}
+        </p>
+      )}
+
+      {inventory.data && (
+        <PluginRestartNotice
+          connectionId={connectionId}
+          gatewayLabel={gatewayLabel}
+          key={JSON.stringify([connectionId, scopeProfile])}
+          onRecheck={recheck}
+          profile={scopeProfile ?? 'default'}
+          request={request}
+          required={inventory.data.restart_required}
+        />
       )}
 
       {connection?.mode !== 'remote' && !requestProfile && (
         <div className="mb-2 flex items-center gap-3">
-          <Button
-            onClick={() => void revealAgentPluginsDir(requestGateway)}
-            size="sm"
-            type="button"
-            variant="textStrong"
-          >
+          <Button onClick={() => void revealAgentPluginsDir(request)} size="sm" type="button" variant="textStrong">
             <FolderOpen className="size-3.5" />
             <span>{p.openFolder}</span>
           </Button>
@@ -283,14 +302,14 @@ function AgentPluginsSection() {
         value={query}
       />
 
-      {status === 'loading' || status === 'idle' ? (
+      {status === 'loading' ? (
         <div>
           <ListRowSkeleton />
           <ListRowSkeleton />
           <ListRowSkeleton />
         </div>
       ) : status === 'error' ? (
-        <EmptyState description={error ?? undefined} title={p.agent.loadFailed} />
+        <EmptyState description={inventory.error?.message} title={p.agent.loadFailed} />
       ) : sorted.length === 0 ? (
         needle ? (
           <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
@@ -302,7 +321,12 @@ function AgentPluginsSection() {
       ) : (
         <div>
           {sorted.map(row => (
-            <AgentPluginRowView key={agentPluginRowKey(row)} profile={requestProfile} row={row} />
+            <AgentPluginRowView
+              busy={toggle.isPending}
+              key={agentPluginRowKey(row)}
+              onToggle={(key, enable) => toggle.mutateAsync({ key, enable })}
+              row={row}
+            />
           ))}
         </div>
       )}

@@ -1074,6 +1074,81 @@ def test_exact_claim_fences_carrier_write_and_committed_receipt_wins(tmp_path, m
                 contender.join(timeout=3)
             agent._session_db.close()
 
+    # A mixed-owner rollback must not mistake the fallback's ordinary tool row
+    # for a durable receipt of a sibling whose release failed transiently.
+    ad._reset_for_tests()
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+    agent = _make_loop_agent(tmp_path)
+    agent._active_turn_id = "turn-current"
+    units = [_record(parent_session_id=agent.session_id) for _ in range(2)]
+    assert _complete_unit(units[0], _child(0, "FOREIGN_EVIDENCE"))
+    assert _complete_unit(units[1], _child(0, "RETAINED_EVIDENCE"))
+    events = {event["delegation_id"]: event for event in _queue_contents()}
+    messages = _review_tool_batch()
+    notices = []
+    agent.tool_progress_callback = lambda kind, *a, **kw: notices.append(kind)
+    original_flush = agent._flush_messages_to_session_db
+    original_release = ad.release_event_delivery
+    foreign_token = "foreign-owner-token"
+    retained_token = None
+
+    def take_over_one_before_flush(rows):
+        nonlocal retained_token
+        entries = {entry["event_id"]: entry for entry in agent._pending_delegation_inject_claims}
+        retained_token = entries[units[1]]["claim_id"]
+        heartbeat = agent._delegation_inject_claim_heartbeat
+        heartbeat["stop"].set()
+        heartbeat["thread"].join(timeout=2)
+        _take_over_event_claim(units[0], foreign_token)
+        return original_flush(rows)
+
+    def fail_retained_release(event, claim_id):
+        if event["delegation_id"] == units[1]:
+            raise sqlite3.OperationalError("release is temporarily unavailable")
+        return original_release(event, claim_id)
+
+    import sqlite3
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(agent, "_flush_messages_to_session_db", take_over_one_before_flush)
+            scoped.setattr(ad, "release_event_delivery", fail_retained_release)
+            assert _flush_session_db_after_tool_progress(agent, messages, stage="mixed owner rollback")
+
+        stored = agent._session_db.get_messages_as_conversation(agent.session_id)
+        tool_rows = [row for row in stored if row["role"] == "tool"]
+        assert len(tool_rows) == 1
+        assert tool_rows[0]["content"] == "original"
+        assert messages[-1]["content"] == "original"
+        assert messages[-1]["_db_persisted"] is True
+        assert "_delegation_event_ids" not in messages[-1]
+        metadata = messages[-1].get("display_metadata") or {}
+        assert "delegation_event_ids" not in metadata
+        assert "delegation_delivery" not in metadata
+        assert "delegation.injected" not in notices
+        with ad._DB_LOCK, ad._transaction() as conn:
+            states = {
+                row[0]: (row[1], row[2])
+                for row in conn.execute(
+                    "SELECT delegation_id, delivery_state, delivery_claim FROM async_delegations "
+                    "WHERE delegation_id IN (?, ?)", units,
+                ).fetchall()
+            }
+        assert states[units[0]] == ("pending", foreign_token)
+        assert states[units[1]] == ("pending", retained_token)
+        assert {entry["event_id"] for entry in agent._pending_delegation_inject_claims} == {units[1]}
+
+        assert release_pending_injects(agent, messages) == 1
+        assert not agent._pending_delegation_inject_claims
+        queued = {event["delegation_id"] for event in _queue_contents()}
+        assert units[1] in queued
+        ordinary_token = ad.claim_event_delivery(events[units[1]], "ordinary-after-turn")
+        assert ordinary_token and ad.complete_event_delivery(events[units[1]], ordinary_token)
+        assert ad.get_event_delivery_claim_status(events[units[0]], foreign_token) == ("pending", True)
+        assert ad.complete_event_delivery(events[units[0]], foreign_token)
+    finally:
+        agent._session_db.close()
+
 
 def test_preparation_failures_leave_every_candidate_queued_or_owned(monkeypatch):
     """Status, snapshot, mutation and rollback faults cannot orphan an earlier claim."""

@@ -709,7 +709,9 @@ def _cmd_goal(rid, params, session, name, arg):
         f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
         "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
         "Controls: /goal status · /goal pause · /goal resume · /goal clear")
-    return _ok(rid, {"type": "send", "notice": notice, "message": state.goal})
+    from hermes_cli.goals import goal_kick_prompt, last_user_message_from_db
+    kick = goal_kick_prompt(state.goal, last_user_message_from_db(getattr(mgr, "session_id", None)))
+    return _ok(rid, {"type": "send", "notice": notice, "message": kick})
 
 
 def _cmd_loop(rid, params, session, name, arg):
@@ -1167,6 +1169,22 @@ def _(rid, params: dict) -> dict:
     enabled, tools}]}``"""
     servers = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
     return _ok(rid, {"servers": [_mcp_summarize_server(name, cfg) for name, cfg in sorted(servers.items())]})
+
+
+@_mcp_rpc("status", required=())
+def _(rid, params: dict) -> dict:
+    """``{servers: [{name, transport, tools, connected, disabled, status}], checked_at}`` from cached
+    runtime state; never connects, probes, or starts auth. Under a multiplexer the runtime view is the
+    scoped profile's; otherwise it is shown only when ``profile`` is the launch profile."""
+    import time
+    hc = _tools_mod("hermes_constants")
+    configured = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
+    include_runtime = (_tools_mod("agent.secret_scope").is_multiplex_active()
+                       or hc.hermes_home_key() == hc.hermes_home_key(hc.get_process_hermes_home()))
+    safe = ("name", "transport", "tools", "connected", "disabled", "status")
+    servers = _tools_mod("tools.mcp_tool_discovery").get_mcp_status(configured, include_runtime=include_runtime)
+    return _ok(rid, {"servers": [{k: e[k] for k in safe if k in e} for e in servers],
+                     "checked_at": int(time.time() * 1000)})
 
 
 @_mcp_rpc("add")

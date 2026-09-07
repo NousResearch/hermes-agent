@@ -921,6 +921,9 @@ class TestRunJobSessionPersistence:
             def result(self):
                 return {"final_response": "ok"}
 
+            def done(self):
+                return True  # run_job's finally asks the real Future; this one has already returned
+
         fake_future = FakeFuture()
         fake_pool = MagicMock()
         fake_pool.submit.return_value = fake_future

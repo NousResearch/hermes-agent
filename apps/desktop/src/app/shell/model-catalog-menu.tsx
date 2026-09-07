@@ -481,7 +481,7 @@ export function ModelCatalogMenu({
                   textValue=""
                 >
                   <span className="truncate">
-                    <HighlightMatches query={search} text={group.provider.name} />
+                    <HighlightMatches foldSeparators query={search} text={group.provider.name} />
                   </span>
                   <DisclosureCaret
                     className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/label:opacity-100"
@@ -554,7 +554,7 @@ export function ModelCatalogMenu({
                           {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
                           <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches query={search} text={name} />
+                            <HighlightMatches foldSeparators query={search} text={name} />
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                           </span>
                           {loadProgress ? (
@@ -640,7 +640,7 @@ export function ModelCatalogMenu({
                 {...kbRowProps(`moa:${preset}`)}
               >
                 <span className="min-w-0 flex-1 truncate">
-                  MoA: <HighlightMatches query={search} text={preset} />
+                  MoA: <HighlightMatches foldSeparators query={search} text={preset} />
                 </span>
                 {isCurrentMoa ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
               </DropdownMenuItem>

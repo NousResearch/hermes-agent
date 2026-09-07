@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -62,47 +62,15 @@ function renderMenu() {
 }
 
 
+it('matches and highlights separator-equivalent queries without revealing unrelated models', async () => {
+  renderMenu()
+  await screen.findByText(/Qwen3\.8 Flash/i)
 
-
-// The row label span (class "truncate") carries the full label text plus the
-// meta suffix ("High"/"Min"), so match by prefix. Works for both the plain
-// and the <mark>-split rendering.
-function rowTruncateSpan(prefix: string) {
-  return screen.queryByText((_, element) =>
-    Boolean(element?.classList.contains('truncate') && (element?.textContent ?? '').startsWith(prefix))
-  )
-}
-
-// The search filter and the highlight must agree: whatever a query reveals,
-// the row's label marks the query (separator-folded equivalence). Pre-fix,
-// hyphen queries revealed rows with zero marks, and space queries matched
-// only via the display segment - both polarity failures covered here.
-describe('model catalog search: fold between filter and highlight', () => {
-  it('HYPHEN query both filters and highlights the SPACED label (the reported defect - fails pre-fix)', async () => {
-    renderMenu()
-    await screen.findByText(/Qwen3\.8 Flash/i)
-
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'qwen3.8-flash' } })
-
+  for (const [query, marked] of [['qwen3.8-flash', 'Qwen3.8 Flash'], ['qwen3 8', 'Qwen3.8']]) {
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: query } })
     await vi.waitFor(() => {
-      // Whole label matches contiguously -> renders as a single <mark>.
-      expect(screen.getByText('Qwen3.8 Flash', { selector: 'mark' })).toBeDefined()
+      expect(screen.getByText(marked, { selector: 'mark' })).not.toBeNull()
+      expect(screen.queryByText(/GPT-5\.1/i)).toBeNull()
     })
-  })
-
-  it('SPACE query finds the HYPHENATED id (superset guarantee) and highlights', async () => {
-    renderMenu()
-    await screen.findByText(/Qwen3\.8 Flash/i)
-
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'qwen3 8' } })
-
-    await vi.waitFor(() => {
-      // Partial label match -> <mark>Qwen3.8</mark> + ' Flash'.
-      expect(screen.getByText('Qwen3.8', { selector: 'mark' })).toBeDefined()
-      // The row label (before the meta suffix) is intact.
-      expect(rowTruncateSpan('Qwen3.8 Flash')).toBeDefined()
-      // The fold must not over-match: a qwen query still hides GPT rows.
-      expect(rowTruncateSpan('GPT-5.1')).toBeNull()
-    })
-  })
+  }
 })

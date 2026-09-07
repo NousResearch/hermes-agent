@@ -148,6 +148,8 @@ on its own longer delay (list titles must not trail while scanning).
 
 **Slash descriptions.** Keep autocomplete rows single-line and ellipsized, but reveal the complete catalog description in the shared themed tooltip when hovering anywhere on a slash row. Size that tooltip to the window with collision padding and word wrapping; it must not intercept row selection. Catalog and completion producers preserve the full author-supplied description.
 
+**Model search.** Model filters and their highlighted labels treat hyphens, dots, underscores and spaces equivalently. Preserve original label spelling inside marks. The shared highlighter remains literal for other surfaces such as the command palette; model callers explicitly opt in. Model identifier search does not use dictionary spellcheck.
+
 **Keybind hints in tooltips.** On a tipped button bound to a rebindable hotkey,
 use `<TipKeybindLabel actionId="..." />` — it reads the i18n label and the
 current combo from `$bindings`. Pass `text={...}` only when the label is

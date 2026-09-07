@@ -17,12 +17,13 @@ import stat
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.web_deps import late
@@ -39,6 +40,7 @@ router = APIRouter()
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
+load_env = late("load_env", "hermes_cli.config")
 # Image types GET /api/media serves — extension-allowlisted so an authenticated
 # caller can't pull non-image files through it.
 _MEDIA_CONTENT_TYPES = {
@@ -222,6 +224,51 @@ def _fs_git_branch(cwd: str) -> str:
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
         return ""
+
+
+def _fs_backend(profile: Optional[str] = None):
+    """Return the profile's SSH workspace adapter, or None for host-local FS."""
+    from hermes_cli.ssh_workspace_fs import get_ssh_workspace_fs
+
+    with _profile_scope(profile):
+        terminal = dict(load_config().get("terminal") or {})
+        profile_env = load_env()
+    for key, env_name in {
+        "ssh_host": "TERMINAL_SSH_HOST",
+        "ssh_user": "TERMINAL_SSH_USER",
+        "ssh_port": "TERMINAL_SSH_PORT",
+        "ssh_key": "TERMINAL_SSH_KEY",
+    }.items():
+        if not terminal.get(key) and profile_env.get(env_name):
+            terminal[key] = profile_env[env_name]
+    profile_key = (profile or "current").strip().lower() or "current"
+    return get_ssh_workspace_fs(profile_key, terminal)
+
+
+def _raise_fs_backend_error(exc: Exception) -> None:
+    from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
+
+    if not isinstance(exc, SshWorkspaceFsError):
+        raise exc
+    status = {
+        "EACCES": 403,
+        "ECONN": 503,
+        "EFBIG": 413,
+        "EINVAL": 400,
+        "EIO": 502,
+        "ENOENT": 404,
+        "ENOTREG": 400,
+    }.get(exc.code, 400)
+    detail = {
+        "EACCES": "File is not readable",
+        "ECONN": "SSH workspace is unavailable",
+        "EFBIG": "File too large",
+        "EINVAL": "Invalid path",
+        "EIO": "SSH workspace request failed",
+        "ENOENT": "File not found",
+        "ENOTREG": "Only regular files can be read",
+    }.get(exc.code, str(exc) or "Filesystem request failed")
+    raise HTTPException(status_code=status, detail=detail)
 
 
 def _media_serve_roots() -> list[Path]:
@@ -605,7 +652,13 @@ _FS_LIST_ERRNO = (
 
 
 @router.get("/api/fs/list")
-async def fs_list(path: str):
+async def fs_list(path: str, profile: Optional[str] = None):
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            return await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
+        except Exception as exc:
+            _raise_fs_backend_error(exc)
     target = _fs_path(path)
     try:
         entries = []
@@ -628,7 +681,28 @@ async def fs_list(path: str):
 
 
 @router.get("/api/fs/read-text")
-async def fs_read_text(path: str):
+async def fs_read_text(path: str, profile: Optional[str] = None):
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            data, size, target = await asyncio.to_thread(
+                backend.read_bytes,
+                path,
+                max_bytes=_FS_TEXT_SOURCE_MAX_BYTES,
+                read_limit=_FS_TEXT_PREVIEW_MAX_BYTES,
+            )
+        except Exception as exc:
+            _raise_fs_backend_error(exc)
+        target_path = Path(target)
+        return {
+            "binary": _fs_looks_binary(data[:4096]),
+            "byteSize": size,
+            "language": _FS_PREVIEW_LANGUAGE_BY_EXT.get(target_path.suffix.lower(), "text"),
+            "mimeType": _fs_mime_type(target_path),
+            "path": target,
+            "text": data.decode("utf-8", errors="replace"),
+            "truncated": size > _FS_TEXT_PREVIEW_MAX_BYTES,
+        }
     target, st = _fs_regular_file(_fs_path(path))
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
@@ -645,7 +719,7 @@ async def fs_read_text(path: str):
 
 
 @router.post("/api/fs/write-text")
-async def fs_write_text(payload: FsWriteText):
+async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     """Overwrite (or create) a UTF-8 text file for the in-app spot editor.
 
     Mirrors the Electron ``hermes:fs:writeText`` hardening: path validated by
@@ -654,8 +728,21 @@ async def fs_write_text(payload: FsWriteText):
     temp file and ``os.replace``-d so a crash can't truncate the original.
     Stale-on-disk detection is the client's job (re-read before save).
     """
-    target = _fs_path(payload.path)
     text = payload.content or ""
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            target, byte_size = await asyncio.to_thread(
+                backend.write_text,
+                payload.path,
+                text,
+                max_bytes=_FS_TEXT_WRITE_MAX_BYTES,
+            )
+        except Exception as exc:
+            _raise_fs_backend_error(exc)
+        return {"ok": True, "path": target, "byteSize": byte_size}
+
+    target = _fs_path(payload.path)
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 
@@ -689,8 +776,18 @@ async def fs_write_text(payload: FsWriteText):
 
 
 @router.get("/api/fs/read-data-url")
-async def fs_read_data_url(path: str):
+async def fs_read_data_url(path: str, profile: Optional[str] = None):
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            data, _size, target = await asyncio.to_thread(
+                backend.read_bytes, path, max_bytes=_FS_DATA_URL_MAX_BYTES
+            )
+        except Exception as exc:
+            _raise_fs_backend_error(exc)
+        encoded = base64.b64encode(data).decode("ascii")
+        return {"dataUrl": f"data:{_fs_mime_type(Path(target))};base64,{encoded}"}
     target, st = _fs_regular_file(_fs_path(path))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
@@ -699,7 +796,22 @@ async def fs_read_data_url(path: str):
 
 
 @router.get("/api/fs/download")
-async def fs_download(path: str):
+async def fs_download(path: str, profile: Optional[str] = None):
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            target, _size = await asyncio.to_thread(backend.inspect_file, path)
+        except Exception as exc:
+            _raise_fs_backend_error(exc)
+        target_path = Path(target)
+        if _is_sensitive_path(target_path):
+            raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+        filename = urllib.parse.quote(target_path.name)
+        return StreamingResponse(
+            backend.stream_file(target),
+            media_type=_fs_mime_type(target_path),
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+        )
     target, _st = _fs_regular_file(_fs_path(path))
     if _is_sensitive_path(target):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
@@ -712,7 +824,13 @@ async def fs_download(path: str):
 
 
 @router.get("/api/fs/git-root")
-async def fs_git_root(path: str):
+async def fs_git_root(path: str, profile: Optional[str] = None):
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            return {"root": await asyncio.to_thread(backend.git_root, path)}
+        except Exception as exc:
+            _raise_fs_backend_error(exc)
     target = _fs_path(path)
     try:
         st = target.stat()
@@ -723,6 +841,14 @@ async def fs_git_root(path: str):
 
 
 @router.get("/api/fs/default-cwd")
-async def fs_default_cwd():
+async def fs_default_cwd(profile: Optional[str] = None):
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        cwd = backend.cwd
+        try:
+            branch = await asyncio.to_thread(backend.git_branch, cwd)
+        except Exception as exc:
+            _raise_fs_backend_error(exc)
+        return {"cwd": cwd, "branch": branch}
     cwd = _fs_default_cwd()
     return {"cwd": cwd, "branch": _fs_git_branch(cwd)}

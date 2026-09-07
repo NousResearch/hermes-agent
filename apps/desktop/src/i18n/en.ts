@@ -583,6 +583,9 @@ export const en: Translations = {
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
       sessionDensityTitle: 'Session List Density',
+      alwaysUseDropdownTitle: 'Always use dropdown',
+      alwaysUseDropdownDesc:
+        'Always show the Sessions sidebar profile picker as a dropdown, even with one profile. Applies across profiles and gateways in this app.',
       sessionDensityDesc: 'Choose how much context appears beneath session titles in the sidebar.',
       sessionDensityCompact: 'Compact',
       sessionDensityComfortable: 'Comfortable',

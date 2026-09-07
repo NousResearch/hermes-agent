@@ -136,6 +136,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       label: appearance.uiScaleTitle,
       target: { setting: APPEARANCE_SETTING_IDS.uiScale, view: 'config:appearance' }
     },
+    {
+      context: appearanceContext,
+      description: appearance.alwaysUseDropdownDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.profilePicker}`,
+      keywords: ['profile picker', 'sidebar', 'sessions', 'dropdown', 'squares'],
+      label: appearance.alwaysUseDropdownTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.profilePicker, view: 'config:appearance' }
+    },
     // Linux has no translucency row to land on, and a palette hit that scrolls
     // to nothing is worse than no hit.
     ...(TRANSLUCENCY_SUPPORTED

@@ -476,6 +476,8 @@ export interface Translations {
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
       sessionDensityTitle: string
+      alwaysUseDropdownTitle: string
+      alwaysUseDropdownDesc: string
       sessionDensityDesc: string
       sessionDensityCompact: string
       sessionDensityComfortable: string

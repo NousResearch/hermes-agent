@@ -406,6 +406,9 @@ export const ja = defineLocale({
       uiScaleDesc: (percent: number) =>
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
       sessionDensityTitle: 'セッションリストの密度',
+      alwaysUseDropdownTitle: '常にドロップダウンを使用',
+      alwaysUseDropdownDesc:
+        'プロファイルが1つでも、セッションサイドバーのプロファイル選択を常にドロップダウンで表示します。このアプリ内のすべてのプロファイルとゲートウェイに適用されます。',
       sessionDensityDesc: 'サイドバーのセッションタイトルの下に表示する情報量を選びます。',
       sessionDensityCompact: 'コンパクト',
       sessionDensityComfortable: '標準',

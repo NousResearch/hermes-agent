@@ -471,6 +471,9 @@ export const ar = defineLocale({
     },
     appearance: {
       title: 'المظهر',
+      alwaysUseDropdownTitle: 'استخدام القائمة المنسدلة دائمًا',
+      alwaysUseDropdownDesc:
+        'عرض منتقي الملفات الشخصية في الشريط الجانبي للجلسات كقائمة منسدلة دائمًا، حتى عند وجود ملف شخصي واحد. ينطبق هذا الإعداد على جميع الملفات الشخصية والبوابات في هذا التطبيق.',
       intro: 'خصص مظهر Hermes Desktop.',
       colorMode: 'نمط الألوان',
       colorModeDesc: 'اختر الوضع الفاتح أو الداكن أو اتبع النظام.',

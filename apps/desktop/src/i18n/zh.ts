@@ -569,6 +569,9 @@ export const zh: Translations = {
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
       sessionDensityTitle: '会话列表密度',
+      alwaysUseDropdownTitle: '始终使用下拉菜单',
+      alwaysUseDropdownDesc:
+        '始终将会话侧边栏的配置档案选择器显示为下拉菜单，即使只有一个配置档案。此设置适用于本应用中的所有配置档案和网关。',
       sessionDensityDesc: '选择侧边栏会话标题下方显示的信息量。',
       sessionDensityCompact: '紧凑',
       sessionDensityComfortable: '舒适',

@@ -1064,6 +1064,28 @@ def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
     assert evicted == ["old_detached", "new_detached"]
 
 
+def test_idle_reaper_rearms_missing_ws_orphan_timer(server, monkeypatch):
+    """A detached lane cannot keep its lease forever if initial timer setup was lost."""
+    sid = "detached-without-reaper"
+    session = {
+        "transport": server._detached_ws_transport,
+        "created_at": time.time(),
+        "last_active": time.time(),
+    }
+    server._sessions.clear()
+    server._sessions[sid] = session
+    server._pending_ws_reaps.clear()
+    scheduled: list[str] = []
+    monkeypatch.setattr(server, "_schedule_ws_orphan_reap", scheduled.append)
+    monkeypatch.setattr(server, "_flush_dirty_sessions", lambda: 0)
+    monkeypatch.setattr(server, "_enforce_session_cap", lambda: None)
+    monkeypatch.setattr(server, "_reclaim_orphaned_leases", lambda: None)
+
+    server._reap_idle_sessions()
+
+    assert scheduled == [sid]
+
+
 def test_sync_session_key_after_compress_reanchors_active_session_lease(
     server, monkeypatch, tmp_path
 ):

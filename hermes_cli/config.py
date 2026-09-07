@@ -657,30 +657,8 @@ def ensure_hermes_home():
     assert_named_profile_home_live(home)
     if key in _HERMES_HOME_ENSURED and home.is_dir():
         return
-    if is_managed():
-        # Activation creates the dirs; verify, then seed SOUL.md. logs/curator may be unknown to
-        # the activation script (inside an already-secured logs/). umask(0o007) => SOUL.md is 0660.
-        old_umask = os.umask(0o007)
-        try:
-            if not home.is_dir():
-                raise RuntimeError(f"HERMES_HOME {home} does not exist.")
-            for subdir in ("cron", "sessions", "logs", "memories"):
-                if not (home / subdir).is_dir():
-                    raise RuntimeError(f"{home / subdir} does not exist.")
-            (home / "logs" / "curator").mkdir(parents=True, exist_ok=True)
-            _ensure_default_soul_md(home)
-        finally:
-            os.umask(old_umask)
-    else:
-        home.mkdir(parents=True, exist_ok=True)
-        _secure_dir(home)
-        for subdir in _HERMES_HOME_SUBDIRS:
-            d = home / subdir
-            d.mkdir(parents=True, exist_ok=True)
-            _secure_dir(d)
-        _ensure_default_soul_md(home)
-
-    _HERMES_HOME_ENSURED.add(key)
+    from hermes_cli.config_home import initialize_home
+    initialize_home(home, _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
 
 
 # ---- Config loading/saving ----
@@ -1222,8 +1200,9 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
     if config is None:
         try:
             config = load_config()
-        except Exception:
-            return [ConfigIssue("error", "Could not load config.yaml", "Run 'hermes setup' to create a valid config")]
+        except Exception as exc:
+            from hermes_cli.config_home import config_load_issue
+            return [config_load_issue(exc)]
 
     issues: List[ConfigIssue] = []
     _validate_voice(config, issues)

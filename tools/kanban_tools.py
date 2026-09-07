@@ -220,6 +220,33 @@ def _existing_task(kb, conn, tid: str):
     return task
 
 
+def _scope_tenant() -> Optional[str]:
+    """Tenant this process is confined to, or None (unscoped: single-tenant installs,
+    orchestrators run without a tenant). The dispatcher sets ``HERMES_TENANT`` from the
+    task row at spawn; a hosting layer sets it on a tenant's gateway."""
+    return (os.environ.get("HERMES_TENANT") or "").strip() or None
+
+
+def _enforce_tenant_scope(task) -> None:
+    """Fail closed: a tenant-scoped process may only read or mutate tasks that carry the
+    same ``tenant``. Boards are a namespace, not a boundary — every profile resolves the
+    same kanban.db — so without this a worker could ``kanban_show`` another tenant's task
+    bodies/handoffs, comment into its workers' prompts, or ``kanban_create`` a task assigned
+    to another tenant's profile (which that tenant's dispatcher would run with its own keys
+    and sandbox). Untenanted rows (``tenant IS NULL``) are not visible to a scoped process
+    either: NULL is "no owner", not "everyone". The scoped id is deliberately not echoed."""
+    scope = _scope_tenant()
+    if scope is not None and task is not None and (task.tenant or None) != scope:
+        raise _Reject(f"task {task.id} is outside this worker's tenant scope; refusing access.")
+
+
+def _scoped_task(kb, conn, tid: str):
+    """``_existing_task`` + tenant scope check; the one accessor handlers should use."""
+    task = _existing_task(kb, conn, tid)
+    _enforce_tenant_scope(task)
+    return task
+
+
 def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
 
@@ -495,7 +522,7 @@ def _handle_show(args: dict, **kw) -> str:
     """Full task state: row, parents, children, comments, runs, last 50 events."""
     tid = _require_task_id(args)
     with _board(args.get("board")) as (kb, conn):
-        task = _existing_task(kb, conn, tid)
+        task = _scoped_task(kb, conn, tid)
         return json.dumps({
             "task": _fields(task, _TASK_FIELDS),
             "parents": kb.parent_ids(conn, tid),
@@ -520,6 +547,13 @@ def _handle_list(args: dict, **kw) -> str:
         return tool_error("limit must be an integer")
     _check(limit >= 1, "limit must be >= 1")
     _check(limit <= KANBAN_LIST_MAX_LIMIT, f"limit must be <= {KANBAN_LIST_MAX_LIMIT}")
+    tenant = args.get("tenant")
+    scope = _scope_tenant()
+    if scope is not None:
+        # A scoped process cannot widen its view by passing another tenant (or none).
+        _check(tenant is None or tenant == scope,
+               "tenant filter is outside this worker's tenant scope")
+        tenant = scope
     with _board(args.get("board")) as (kb, conn):
         # Match CLI list: dependencies cleared since the last dispatcher tick
         # should be visible to orchestrators immediately.
@@ -527,7 +561,7 @@ def _handle_list(args: dict, **kw) -> str:
         # One extra row lets the output report truncation without dumping the board.
         rows = kb.list_tasks(
             conn, assignee=args.get("assignee"), status=args.get("status"),
-            tenant=args.get("tenant"), include_archived=include_archived, limit=limit + 1)
+            tenant=tenant, include_archived=include_archived, limit=limit + 1)
         truncated = len(rows) > limit
         tasks = rows[:limit]
         return json.dumps({
@@ -560,7 +594,7 @@ def _handle_complete(args: dict, **kw) -> str:
         # Goal-mode pre-completion judge gate (Issue #38367). Prevent workers from bypassing the auxiliary
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
-        task = kb.get_task(conn, tid)
+        task = _scoped_task(kb, conn, tid)
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
         try:
             ok = kb.complete_task(
@@ -612,7 +646,7 @@ def _handle_block(args: dict, **kw) -> str:
         # loop instead. Restrict goal_mode tasks to the kinds that represent a genuine external blocker the
         # worker cannot resolve itself; `capability` and `transient` (or an unset kind) route back through
         # kanban_complete, which the judge now gates.
-        task = kb.get_task(conn, tid)
+        task = _scoped_task(kb, conn, tid)
         _check(not (task and task.goal_mode and kind not in _GOAL_MODE_BLOCK_ALLOWED_KINDS),
                f"goal_mode tasks can only block with kind in "
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
@@ -639,7 +673,7 @@ def _handle_request_review(args: dict, **kw) -> str:
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
     with _board(args.get("board")) as (kb, conn):
-        _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
+        _goal_gate("kanban_request_review", _scoped_task(kb, conn, tid), tid, summary)
         ok, fail_reason = kb.request_review(
             conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
             expected_run_id=_worker_run_id(tid), with_reason=True)
@@ -655,6 +689,7 @@ def _handle_request_changes(args: dict, **kw) -> str:
     reason = _redact(
         _require_text(args, "reason", "reason is required — describe the changes needed"))
     with _board(args.get("board")) as (kb, conn):
+        _scoped_task(kb, conn, tid)
         ok, detail = kb.request_changes(
             conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not request changes for {tid}: {detail or 'invalid review state'}")
@@ -669,6 +704,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     tid = _worker_guard("kanban_heartbeat", args)
     from hermes_cli import kanban_db_dispatch as kbd
     with _board(args.get("board")) as (kb, conn):
+        _scoped_task(kb, conn, tid)
         # The dispatcher pins HERMES_KANBAN_CLAIM_LOCK at spawn; the default
         # claimer covers locally-driven workers that bypassed the dispatcher.
         kb.heartbeat_claim(conn, tid, claimer=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"))
@@ -696,6 +732,9 @@ def _handle_comment(args: dict, **kw) -> str:
     # with what reads as a system directive. See #19713.
     author = os.environ.get("HERMES_PROFILE") or "worker"
     with _board(args.get("board")) as (kb, conn):
+        # Cross-task commenting stays open *within* a tenant; comments land in future
+        # workers' system prompts, so they must not cross the tenant boundary.
+        _scoped_task(kb, conn, tid)
         cid = kb.add_comment(conn, tid, author=author, body=str(body))
         return _ok(task_id=tid, comment_id=cid)
 
@@ -704,6 +743,7 @@ def _store_attachment(board, tid, filename, data, content_type) -> str:
     """Store via ``kanban_db.store_attachment_bytes`` (shared size cap, per-task
     dir, metadata row) so agent, dashboard, and CLI surfaces stay in lockstep."""
     with _board(board) as (kb, conn):
+        _scoped_task(kb, conn, tid)
         att_id = kb.store_attachment_bytes(
             conn, tid, str(filename), data,
             content_type=content_type, uploaded_by="agent", board=board)
@@ -793,7 +833,7 @@ def _handle_attachments(args: dict, **kw) -> str:
     """List a task's attachments (read-only; no ownership restriction)."""
     tid = _require_task_id(args)
     with _board(args.get("board")) as (kb, conn):
-        _existing_task(kb, conn, tid)
+        _scoped_task(kb, conn, tid)
         return json.dumps({
             "ok": True, "task_id": tid,
             "attachments": [
@@ -828,7 +868,19 @@ def _handle_create(args: dict, **kw) -> str:
     model_override, provider_override = args.get("model"), args.get("provider")
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
+    tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
+    scope = _scope_tenant()
+    if scope is not None:
+        # A scoped process creates tasks in its own tenant only: an explicit foreign tenant
+        # would hand the new task (and its body) to another tenant's dispatcher.
+        _check(args.get("tenant") in (None, "", scope),
+               "tenant is outside this worker's tenant scope")
+        tenant = scope
     with _board(args.get("board")) as (kb, conn):
+        for pid in parents:
+            # A cross-tenant parent edge would leak this task's handoff into the other
+            # tenant's worker context and let it gate that tenant's pipeline.
+            _scoped_task(kb, conn, pid)
         if project_id is None and workspace_kind is None and workspace_path is None:
             self_tid = os.environ.get("HERMES_KANBAN_TASK")
             self_task = kb.get_task(conn, self_tid) if self_tid else None
@@ -836,7 +888,7 @@ def _handle_create(args: dict, **kw) -> str:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
         new_tid = kb.create_task(
             conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
-            parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
+            parents=tuple(parents), tenant=tenant,
             priority=_opt_int(args.get("priority"), 0),
             workspace_kind=str(workspace_kind if workspace_kind is not None else "scratch"),
             workspace_path=workspace_path, project_id=project_id,
@@ -928,6 +980,7 @@ def _handle_unblock(args: dict, **kw) -> str:
     tid = str(tid)
     _enforce_worker_task_ownership(tid)
     with _board(args.get("board")) as (kb, conn):
+        _scoped_task(kb, conn, tid)
         _check(kb.unblock_task(conn, tid), f"could not unblock {tid} (not blocked or unknown)")
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
 
@@ -940,6 +993,8 @@ def _handle_link(args: dict, **kw) -> str:
     child_id = args.get("child_id")
     _check(parent_id and child_id, "both parent_id and child_id are required")
     with _board(args.get("board")) as (kb, conn):
+        _scoped_task(kb, conn, str(parent_id))
+        _scoped_task(kb, conn, str(child_id))
         kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
         return _ok(parent_id=parent_id, child_id=child_id)
 

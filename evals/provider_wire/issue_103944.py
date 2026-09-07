@@ -1,4 +1,4 @@
-"""Offline production-import probe for #103944; never dispatches a model call."""
+"""Credential-free named-route reasoning parity probe over localhost SDK HTTP."""
 
 import json
 import os
@@ -27,7 +27,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        captures.append(body)
+        if self.path.endswith("/chat/completions"):
+            captures.append(body)
         data = json.dumps({
             "id": "fixture",
             "object": "chat.completion",

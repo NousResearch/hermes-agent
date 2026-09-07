@@ -38,7 +38,7 @@ import logging
 import sys
 from pathlib import Path
 
-from providers.base import ProviderProfile
+from providers.base import OAuthPKCEConfig, ProviderProfile
 
 logger = logging.getLogger(__name__)
 

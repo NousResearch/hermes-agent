@@ -20,7 +20,7 @@ from dataclasses import dataclass
 # ProviderProfile: external_process = copilot-acp (spawns `copilot --acp --stdio`), copilot = GitHub
 # Copilot token / gh auth.
 _ACCOUNTS_AUTH_TYPES: frozenset[str] = frozenset(
-    {"oauth_device_code", "oauth_external", "oauth_minimax", "external_process", "copilot"}
+    {"oauth_pkce", "oauth_device_code", "oauth_external", "oauth_minimax", "external_process", "copilot"}
 )
 
 

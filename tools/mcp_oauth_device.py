@@ -187,7 +187,12 @@ async def login_device(name, server_url, oauth_config):
     except httpx.HTTPError:
         raise RuntimeError("Device OAuth network request failed") from None
     # Validate the entire grant before touching disk; reuse the existing scoped store.
-    await storage.set_client_info(provider.context.client_info)
-    storage.save_oauth_metadata(provider.context.oauth_metadata)
-    await storage.set_tokens(tokens)
+    previous = storage.snapshot()
+    try:
+        await storage.set_client_info(provider.context.client_info)
+        storage.save_oauth_metadata(provider.context.oauth_metadata)
+        await storage.set_tokens(tokens)
+    except OSError:
+        storage.restore(previous)
+        raise
     get_manager().evict(name)

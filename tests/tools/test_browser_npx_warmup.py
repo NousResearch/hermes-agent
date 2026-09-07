@@ -24,6 +24,16 @@ from tools.browser_tool_install import warm_agent_browser_npx_cache
 from tools.browser_tool_lifecycle import _legacy_kill_process_tree
 
 
+@pytest.fixture(autouse=True)
+def isolated_cache_lock_path(tmp_path, monkeypatch):
+    # These tests isolate process/env handling; real cache resolution and
+    # contention are covered by test_browser_shared_warmup.py.
+    monkeypatch.setattr(
+        "tools.browser_tool_install._agent_browser_npx_lock_path",
+        lambda env, **kwargs: tmp_path / "warmup.lock",
+    )
+
+
 def _mock_proc(returncode=0, communicate_side_effect=None, pid=4242):
     proc = MagicMock()
     proc.pid = pid

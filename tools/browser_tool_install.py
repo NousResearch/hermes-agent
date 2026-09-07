@@ -108,19 +108,27 @@ def _agent_browser_candidates(extended_path: str):
         yield shutil.which("agent-browser", path=str(local_bin_dir))
 
 
-def _agent_browser_npx_lock_path(env: dict[str, str]) -> Path:
-    """Return a lock path shared by every process using the same npm cache."""
-    configured = env.get("NPM_CONFIG_CACHE") or env.get("npm_config_cache")
-    if configured:
-        cache_dir = Path(os.path.expandvars(configured)).expanduser()
-    elif os.name == "nt":
-        local_appdata = env.get("LOCALAPPDATA") or os.environ.get("LOCALAPPDATA")
-        base = local_appdata or env.get("HOME") or str(Path.home())
-        cache_dir = Path(base).expanduser() / "npm-cache"
-    else:
-        home = env.get("HOME") or str(Path.home())
-        cache_dir = Path(home).expanduser() / ".npm"
-    return cache_dir / ".hermes-agent-browser-warmup.lock"
+def _agent_browser_npx_lock_path(env: dict[str, str], *, timeout: float = 5.0) -> Optional[Path]:
+    """Use npm's effective cache, including project/user npmrc configuration."""
+    configured = env.get("npm_config_cache") or env.get("NPM_CONFIG_CACHE")
+    if not configured:
+        npm = shutil.which("npm", path=env.get("PATH"))
+        if not npm:
+            return None
+        try:
+            result = subprocess.run(
+                [npm, "config", "get", "cache"], env=env, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=max(0.0, timeout),
+                creationflags=windows_hide_flags(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        configured = result.stdout.strip()
+        if not configured:
+            return None
+    return Path(configured).expanduser() / ".hermes-agent-browser-warmup.lock"
 
 
 def _find_agent_browser(*, validate: bool = True) -> str:
@@ -380,10 +388,15 @@ def _agent_browser_npx_cache_lock(env: dict[str, str], *, timeout: float = 60.0)
     failure skips warming. Kernel locks release on process death; deleting the
     npm cache while it is held can replace its inode and defeat serialization.
     """
+    deadline = time.monotonic() + timeout
+    path = _agent_browser_npx_lock_path(env, timeout=min(5.0, timeout))
+    if path is None:
+        _origin().logger.debug('Skipping npx warmup: effective npm cache unavailable')
+        yield False
+        return
     handle = None
     acquired = False
     try:
-        path = _agent_browser_npx_lock_path(env)
         path.parent.mkdir(parents=True, exist_ok=True)
         handle = path.open('a+b')
         if os.name == 'nt':
@@ -397,7 +410,6 @@ def _agent_browser_npx_cache_lock(env: dict[str, str], *, timeout: float = 60.0)
         else:
             import fcntl
             lock = lambda: fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        deadline = time.monotonic() + timeout
         while True:
             try:
                 lock()

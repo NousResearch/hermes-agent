@@ -12,22 +12,19 @@ import { cn } from '@/lib/utils'
  *
  * The query must mirror the surface's OWN filter semantics, or the emphasis
  * lies about why a row matched:
- * - a string for literal-substring filters (the model pickers) — spaces and
- *   all, exactly what the filter saw, after the shared `searchFold` runs on
- *   BOTH sides (separators -_. and case stop mattering, mirroring
- *   `foldIncludes` — a hyphen query must light up the spaced label);
- * - a string[] for per-term AND matchers (the command palette) — every term
- *   is marked wherever it occurs, overlapping/adjacent ranges merged.
- *
- * The fold is length-preserving, so ranges found in the folded text index
- * the original unchanged — marks slice the original characters.
+ * - literal matching by default, including per-term string[] queries in the
+ *   command palette;
+ * - `foldSeparators` only for model surfaces whose filter uses `foldIncludes`.
+ *   Replacing separators one-for-one keeps ranges aligned with the label.
  */
 export function HighlightMatches({
   className,
+  foldSeparators = false,
   query,
   text
 }: {
   className?: string
+  foldSeparators?: boolean
   query: string | string[]
   text: string
 }) {
@@ -37,7 +34,9 @@ export function HighlightMatches({
     return <>{text}</>
   }
 
-  const ranges = matchRanges(searchFold(text), terms.map(searchFold))
+  const ranges = foldSeparators
+    ? matchRanges(searchFold(text), terms.map(searchFold))
+    : matchRanges(text.toLowerCase(), terms)
 
   if (ranges.length === 0) {
     // No occurrence (the row matched on its id/slug/keywords, not this label).

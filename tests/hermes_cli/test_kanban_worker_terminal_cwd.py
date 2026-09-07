@@ -38,7 +38,9 @@ def _make_task(kb, *, assignee: str = "w"):
 
 
 def _capture_spawn_env(kb, monkeypatch, workspace: str) -> dict:
-    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
 
     captured: dict = {}
 
@@ -52,7 +54,7 @@ def _capture_spawn_env(kb, monkeypatch, workspace: str) -> dict:
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    kb._default_spawn(_make_task(kb), workspace)
+    kbd._default_spawn(_make_task(kb), workspace)
     return captured
 
 
@@ -75,6 +77,7 @@ def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path):
     # The subprocess cwd and TERMINAL_CWD must agree — both anchor the workspace.
     assert captured["cwd"] == str(workspace)
     assert captured["env"]["HERMES_KANBAN_WORKSPACE"] == str(workspace)
+
 
 def test_terminal_cwd_not_pinned_for_nonexistent_workspace(monkeypatch, tmp_path):
     """A non-directory workspace must not become the worker's TERMINAL_CWD.

@@ -13,7 +13,6 @@ from unittest.mock import patch
 
 from tools.checkpoint_manager import (
     CheckpointManager,
-    _shadow_repo_path,
     _init_store,
     _run_git,
     _git_env,
@@ -80,10 +79,9 @@ def disabled_mgr(checkpoint_base, monkeypatch):
 class TestStorePath:
     def test_store_is_single_shared_path(self, work_dir, checkpoint_base, monkeypatch):
         monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
-        # All projects resolve to the same store.
-        p1 = _shadow_repo_path(str(work_dir))
-        p2 = _shadow_repo_path(str(work_dir.parent / "other"))
-        assert p1 == p2 == _store_path(checkpoint_base)
+        # All projects resolve to the same store (only refs/indexes are per-project).
+        assert _store_path() == _store_path(checkpoint_base)
+        assert _project_hash(str(work_dir)) != _project_hash(str(work_dir.parent / "other"))
 
     def test_project_hash_identifies_dir_and_expands_tilde(self, fake_home):
         project = fake_home / "project"

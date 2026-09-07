@@ -44,9 +44,8 @@ def _personalities_from_cli_config() -> Dict[str, Any]:
 
 
 def _short_desc(info: Mapping[str, Any], default: str) -> str:
-    """50-char description preview used in completion menus."""
-    description = str(info.get("description", default))
-    return description[:50] + ("..." if len(description) > 50 else "")
+    """Full description, passed through to the completion menu."""
+    return str(info.get("description", default))
 
 
 def _file_size_label(path: str) -> str:

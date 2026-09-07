@@ -2057,7 +2057,16 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
                 extra_body["plugins"] = [{"id": "pareto-router", "min_coding_score": _ps}]
     if extra_body:
         summary_kwargs["extra_body"] = extra_body
-    return summary_kwargs
+    # The OpenCode relay pins per-conversation routing by x-opencode-session; without
+    # the header the summary call is rejected with 400 MissingSessionID (#105132).
+    from agent.opencode_affinity import merge_opencode_session_headers
+
+    return merge_opencode_session_headers(
+        summary_kwargs,
+        getattr(agent, "provider", None),
+        getattr(agent, "base_url", None),
+        getattr(agent, "session_id", None),
+    )
 
 
 def _summary_text(agent, response, **normalize_kwargs) -> str:
@@ -2079,6 +2088,17 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
+        # The OpenCode relay pins per-conversation routing by x-opencode-session; without
+        # the header the summary call is rejected with 400 MissingSessionID (#105132).
+        from agent.opencode_affinity import merge_opencode_session_headers
+
+        ant_kw = merge_opencode_session_headers(
+            ant_kw,
+            getattr(agent, "provider", None),
+            getattr(agent, "_anthropic_base_url", None)
+            or getattr(agent, "base_url", None),
+            getattr(agent, "session_id", None),
+        )
         response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt

@@ -330,7 +330,32 @@ def load_permanent_allowlist() -> set:
     try:
         from hermes_cli.config import load_config_readonly
         config = load_config_readonly()
-        patterns = set(config.get("command_allowlist", []) or [])
+        raw = config.get("command_allowlist", []) or []
+        if isinstance(raw, str):
+            # Pre-#88163 ``hermes config set command_allowlist '...'`` stored the
+            # literal as a string scalar, and set() on a str splits it per
+            # character -- silently killing the allowlist (#104779). Recover the
+            # intended list when the string parses as one, else drop it.
+            import yaml
+            try:
+                parsed = yaml.safe_load(raw)
+            except yaml.YAMLError:
+                parsed = None
+            if isinstance(parsed, list):
+                logger.warning(
+                    "command_allowlist is a string (likely written by a pre-#88163 "
+                    "`hermes config set`); recovered %d entries from its list literal",
+                    len(parsed),
+                )
+                raw = parsed
+            else:
+                logger.warning(
+                    "command_allowlist is a string (likely written by a pre-#88163 "
+                    "`hermes config set`) and is not a list literal; ignoring it - "
+                    "re-set it with a list value",
+                )
+                raw = []
+        patterns = set(raw)
         if patterns:
             load_permanent(patterns)
         return patterns

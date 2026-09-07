@@ -2054,3 +2054,40 @@ class TestLifecycleGuardLaunchctlParity:
             "launchctl print system/com.apple.WindowServer",
         ):
             assert contains_gateway_lifecycle_command(cmd) is False, cmd
+
+
+class TestPermanentAllowlistStringScalar:
+    """#104779: pre-#88163 `hermes config set command_allowlist '...'` stored the
+    literal as a string scalar; set() on a str splits it per character and
+    silently killed the permanent allowlist. Loading must recover a list literal
+    and drop anything else instead of splitting it into characters."""
+
+    def test_string_list_literal_is_recovered(self):
+        cfg = {"command_allowlist": '["git status", "pytest -q"]'}
+        with mock_patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            with mock_patch.object(approval_module, "_permanent_approved", set()):
+                loaded = approval_module.load_permanent_allowlist()
+                assert loaded == {"git status", "pytest -q"}
+                assert is_approved("str-scalar", "git status") is True
+
+    def test_plain_string_is_dropped_not_split_into_characters(self):
+        cfg = {"command_allowlist": "git status"}
+        with mock_patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            with mock_patch.object(approval_module, "_permanent_approved", set()):
+                assert approval_module.load_permanent_allowlist() == set()
+                assert approval_module._permanent_approved == set()
+
+    def test_malformed_yaml_string_is_dropped(self):
+        cfg = {"command_allowlist": "[unclosed"}
+        with mock_patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            with mock_patch.object(approval_module, "_permanent_approved", set()):
+                assert approval_module.load_permanent_allowlist() == set()
+                assert approval_module._permanent_approved == set()
+
+    def test_list_value_still_loads_unchanged(self):
+        cfg = {"command_allowlist": ["git status", "pytest -q"]}
+        with mock_patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            with mock_patch.object(approval_module, "_permanent_approved", set()):
+                loaded = approval_module.load_permanent_allowlist()
+                assert loaded == {"git status", "pytest -q"}
+                assert is_approved("str-scalar", "pytest -q") is True

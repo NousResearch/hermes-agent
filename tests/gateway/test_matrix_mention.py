@@ -156,6 +156,27 @@ class TestOutboundMentions:
             "@alice:example.org</a>, please check this."
         )
 
+    def test_formatted_body_preserves_inline_code_inside_link_label(self):
+        text = (
+            "[`feat/minimal-rewrite`]"
+            "(https://github.com/example/project/tree/feat/minimal-rewrite)"
+        )
+
+        content = self.adapter._build_text_message_content(text)
+
+        assert content["body"] == text
+        assert content["formatted_body"] == (
+            '<a href="https://github.com/example/project/tree/feat/minimal-rewrite">'
+            "<code>feat/minimal-rewrite</code></a>"
+        )
+
+    def test_markdown_fallback_preserves_inline_code_inside_link_label(self):
+        text = "[`code`](https://example.com)"
+
+        html = self.adapter._markdown_to_html_fallback(text)
+
+        assert html == '<a href="https://example.com"><code>code</code></a>'
+
 
 # ---------------------------------------------------------------------------
 # Require-mention gating in _on_room_message

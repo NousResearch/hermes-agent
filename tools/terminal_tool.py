@@ -1305,12 +1305,49 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     return False
 
 
+def _is_unusable_ssh_cwd(cwd: str) -> bool:
+    """Return True if *cwd* cannot be a working directory on the SSH peer.
+
+    ``ssh`` differs from every other backend: the cwd is resolved by a shell on
+    *another machine*, so a path taken from the Hermes host is not merely
+    useless there -- ``cd`` fails and the command returns 126 before it runs.
+    ``_get_env_config`` already discards such paths for the container backends
+    and ``terminal_tool`` re-applies that guard to the per-task override, but
+    both were scoped to ``_CONTAINER_BACKENDS`` and ``ssh`` is not one of them.
+
+    Measured on SSJOON 2026-09-07: the kanban worker exports ``TERMINAL_CWD``
+    as its own Windows workspace
+    (``D:\\hermes\\kanban\\...\\workspaces\\<task_id>``) while the peer is a
+    Mac, so ``sw_vers`` and ``sysctl -n hw.model`` both returned 126 until the
+    caller passed an explicit workdir.  ``_HOST_CWD_PREFIXES`` would not have
+    caught it either -- it lists only the ``C:`` drive.
+
+    The rule is deliberately one line: a remote cwd must be ``~``, ``~/...``
+    (the peer's own home -- see :func:`_is_ssh_remote_tilde_cwd`), or an
+    absolute POSIX path.  Everything else -- ``D:\\x``, ``d:/x``, ``.``,
+    ``src/`` -- cannot name a directory on the peer.
+
+    An earlier draft also rejected any path containing a backslash and matched
+    drive letters with a regex.  Mutation testing showed both branches were
+    unreachable behind this one, and the backslash rule was worse than
+    redundant: ``/Users/me\\weird`` is a legal POSIX path on the peer, so the
+    rule would have rejected a directory that works.
+
+    This only rejects what *cannot* work; it does not try to guess whether an
+    otherwise-plausible POSIX path exists on the peer.
+    """
+    if not cwd:
+        return False
+    if cwd == "~" or cwd.startswith("~/"):
+        return False
+    return not cwd.startswith("/")
+
+
 # One-shot guard for the config-fallback bridge below.  Purely an
 # optimization: after the first attempt either TERMINAL_ENV is set (bridge
 # succeeded — merged config always carries terminal.backend) or the import
 # failed and retrying every call would be wasted work.
 _terminal_config_bridge_attempted = False
-
 
 def _ensure_terminal_env_bridged() -> None:
     """Backfill TERMINAL_* env vars from config.yaml when no launcher did.
@@ -1414,6 +1451,14 @@ def _get_env_config() -> Dict[str, Any]:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                         "(host/relative path won't work in sandbox). Using %r instead.",
                         cwd, env_type, default_cwd)
+            cwd = default_cwd
+    elif env_type == "ssh" and cwd:
+        # The cwd is resolved by a shell on the peer, so a path from this host
+        # is not just useless there -- it fails in `cd` before the command runs.
+        if _is_unusable_ssh_cwd(cwd) and cwd != default_cwd:
+            logger.info("Ignoring TERMINAL_CWD=%r for ssh backend "
+                        "(host path won't resolve on the peer). Using %r instead.",
+                        cwd, default_cwd)
             cwd = default_cwd
 
     return {
@@ -2201,6 +2246,18 @@ def terminal_tool(
                     "Ignoring host/relative cwd override %r for %s backend "
                     "(won't exist in sandbox). Using %r instead.",
                     cwd, env_type, config["cwd"],
+                )
+            cwd = config["cwd"]
+        elif env_type == "ssh" and _is_unusable_ssh_cwd(cwd):
+            # Same bypass, other backend: the override skips the guard that
+            # _get_env_config() applies to config["cwd"]. Over ssh the cost is
+            # not a container that fails to start but a `cd` that fails on the
+            # peer, so every command returns 126 before it runs.
+            if cwd != config["cwd"]:
+                logger.info(
+                    "Ignoring host cwd override %r for ssh backend "
+                    "(won't resolve on the peer). Using %r instead.",
+                    cwd, config["cwd"],
                 )
             cwd = config["cwd"]
         default_timeout = config["timeout"]

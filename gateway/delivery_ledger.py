@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -62,10 +63,34 @@ FLOOD_RETRY_DEFAULT_SECONDS = 60.0
 FLOOD_RETRY_CAP_SECONDS = 15 * 60.0
 FLOOD_RETRY_SLACK_SECONDS = 2.0
 
+# The canonical prefix above is what the adapters produce for a flood they decide not to sleep. It is
+# not the only shape that reaches this ledger. PTB raises ``RetryAfter``, whose own text reads
+# "Flood control exceeded. Retry in 185 seconds", and that text is what lands in ``last_error``
+# whenever a send fails on a path that has not been normalized, or was written by an older build
+# before it was. Such a row has to be recognised too: unrecognised, it is treated as an ordinary
+# failure, so no redelivery timer is armed for it and a boot sweep claims it immediately instead of
+# adopting it until its deadline, spending the one attempt inside the penalty that caused it.
+# Matching requires the "flood control" wording as well as the delay, so an unrelated error that
+# merely suggests retrying is never mistaken for a flood.
+_RAW_FLOOD_RE = re.compile(r"flood control exceeded.*?retry in\s+(\d+(?:\.\d+)?)", re.IGNORECASE)
+
+
+def _raw_flood_wait(text: str) -> Optional[float]:
+    """Seconds asked for by a flood error still carrying the platform's own wording, else ``None``."""
+    match = _RAW_FLOOD_RE.search(text or "")
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
 
 def is_flood_error(error: Any) -> bool:
-    """True for the adapters' fail-closed flood result (``flood_control:<seconds>``)."""
-    return str(error or "").strip().lower().startswith(FLOOD_ERROR_PREFIX)
+    """True for a flood refusal: the adapters' fail-closed ``flood_control:<seconds>`` result, or a
+    row still carrying the platform's own flood wording (see ``_RAW_FLOOD_RE``)."""
+    text = str(error or "").strip().lower()
+    return text.startswith(FLOOD_ERROR_PREFIX) or _raw_flood_wait(text) is not None
 
 
 def flood_wait_seconds(error: Any, default: float = FLOOD_RETRY_DEFAULT_SECONDS) -> float:
@@ -77,6 +102,12 @@ def flood_wait_seconds(error: Any, default: float = FLOOD_RETRY_DEFAULT_SECONDS)
             wait = float(text[len(FLOOD_ERROR_PREFIX):].strip())
         except ValueError:
             wait = default
+    else:
+        # A row still carrying the platform's own flood wording states its delay just as precisely,
+        # and the deadline must use it rather than the generic default.
+        raw = _raw_flood_wait(text)
+        if raw is not None:
+            wait = raw
     return wait if wait > 0 else default
 
 

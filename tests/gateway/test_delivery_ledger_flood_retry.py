@@ -142,6 +142,13 @@ async def _drain_timers(runner):
     ("Forbidden: bot was blocked by the user", False),
     ("", False),
     (None, False),
+    # PTB's own RetryAfter wording, which is what a row carries when it was written by a send path
+    # that had not been normalized, or by an older build. Unrecognised, such a row gets no timer.
+    ("Flood control exceeded. Retry in 185 seconds", True),
+    ("flood control exceeded. retry in 30 seconds", True),
+    # The flood wording is required, not merely a delay: an unrelated error that suggests retrying
+    # must not be read as a flood refusal.
+    ("Bad Gateway; retry in 5 seconds", False),
 ])
 def test_is_flood_error(error, expected):
     assert dl.is_flood_error(error) is expected
@@ -153,6 +160,10 @@ def test_is_flood_error(error, expected):
     ("flood_control:abc", 60.0),           # unreadable -> default
     ("flood_control:0", 60.0),
     ("send_path_degraded", 60.0),
+    # The platform's own wording states the delay just as precisely as the canonical prefix, so the
+    # deadline must come from it rather than the generic default.
+    ("Flood control exceeded. Retry in 185 seconds", 185.0),
+    ("Bad Gateway; retry in 5 seconds", 60.0),
 ])
 def test_flood_wait_seconds(error, expected):
     assert dl.flood_wait_seconds(error) == pytest.approx(expected)
@@ -639,3 +650,64 @@ async def test_other_outcomes_do_not_arm_the_flood_timer(result):
     await adapter._finalize_delivery_obligation("ob-y", result, _event(), adapter)
 
     runner._schedule_flood_redelivery.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# The adapter normalizes every definite flood refusal, so the ledger sees one shape.
+# ---------------------------------------------------------------------------
+
+def _real_telegram_adapter():
+    """A real Telegram adapter with a stub bot, for driving the send and edit flood paths."""
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token", extra={}))
+    adapter._bot = MagicMock()
+    return adapter
+
+
+def test_a_persisted_row_with_the_platforms_own_wording_is_dated_from_it():
+    """The boot sweep decides adopt-or-claim from the row's deadline. Read as an ordinary failure, a
+    raw flood row is claimed at once and spends its one attempt inside the penalty that caused it."""
+    raw = "Flood control exceeded. Retry in 185 seconds"
+
+    assert dl.is_flood_error(raw) is True
+    assert dl.flood_wait_seconds(raw) == pytest.approx(185.0)
+    assert dl.flood_not_before(T0, raw) == pytest.approx(T0 + 185.0)
+
+
+@pytest.mark.asyncio
+async def test_a_short_flood_that_outlives_the_retries_fails_closed_canonically():
+    """A wait under the inline cap is slept and retried. When the flood is still there after the last
+    attempt the send used to raise, handing the caller the platform's wording instead of the
+    canonical result, so no redelivery timer was armed and the reply waited for the next restart."""
+    from telegram.error import RetryAfter
+
+    adapter = _real_telegram_adapter()
+    adapter._send_chunk_markdown_or_plain = AsyncMock(side_effect=RetryAfter(1))
+
+    result = await adapter._send_chunk_with_retries(
+        "5230977008", "the final answer", 0, None, None, None, False,
+        adapter._telegram_error_types())
+
+    assert isinstance(result, SendResult)
+    assert result.success is False
+    assert result.error == "flood_control:1.0"
+    assert dl.is_flood_error(result.error) is True
+    assert result.retry_after == pytest.approx(1.0)
+    assert adapter._send_chunk_markdown_or_plain.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_an_edit_still_flooded_after_the_inline_wait_fails_closed_canonically():
+    """The edit path sleeps a short wait once and retries. A retry that is refused again, typically
+    for far longer, must report the new delay canonically rather than as raw text."""
+    from telegram.error import RetryAfter
+
+    adapter = _real_telegram_adapter()
+    adapter._edit_text = AsyncMock(side_effect=[RetryAfter(1), RetryAfter(185)])
+
+    result = await adapter.edit_message("5230977008", "900", "the final answer")
+
+    assert result.success is False
+    assert result.error == "flood_control:185.0"
+    assert dl.flood_wait_seconds(result.error) == pytest.approx(185.0)

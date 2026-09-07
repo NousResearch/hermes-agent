@@ -1067,7 +1067,10 @@ def _detect_container() -> bool:
     # the root ("/") mount line. A host that merely *runs* containers exposes every container's
     # overlay lowerdir (``lowerdir=/var/lib/containerd/...``) at non-root mount points, which a
     # whole-file scan misread as "inside a container" and flipped subprocess HOME (#58135).
-    return _root_mount_has_marker("/proc/self/mountinfo", ("kubepods", "containerd", "crio"))
+    return _root_mount_has_marker(
+        "/proc/self/mountinfo",
+        ("kubepods", "containerd", "crio", "/containers/storage/"),
+    )
 
 
 def _root_mount_has_marker(path: str, markers: tuple[str, ...]) -> bool:

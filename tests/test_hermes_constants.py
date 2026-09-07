@@ -386,6 +386,33 @@ class TestIsContainer:
         assert _root_mount_has_marker(str(container), markers) is True
         assert _root_mount_has_marker(str(tmp_path / "missing"), markers) is False
 
+    @pytest.mark.parametrize(
+        "storage_root",
+        (
+            "/var/lib/containers/storage",
+            "/home/user/.local/share/containers/storage",
+        ),
+    )
+    def test_cgroup_v2_detects_containers_storage_rootfs(self, monkeypatch, storage_root):
+        """Podman/CRI-O roots can name only the shared containers/storage tree."""
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda _path: False)
+
+        def read_proc(path):
+            if path == "/proc/1/cgroup":
+                return "0::/\n"
+            if path == "/proc/self/mountinfo":
+                return (
+                    "600 599 0:58 / / rw,relatime - overlay overlay "
+                    f"rw,lowerdir={storage_root}/overlay/l/A,"
+                    f"upperdir={storage_root}/overlay/abc/diff\n"
+                )
+            return ""
+
+        monkeypatch.setattr(hermes_constants, "_read_proc", read_proc)
+        assert is_container() is True
+
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""
         monkeypatch.setattr(hermes_constants, "_container_detected", True)

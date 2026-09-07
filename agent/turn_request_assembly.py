@@ -14,7 +14,7 @@ import logging
 from typing import Any
 
 from agent.message_sanitization import _sanitize_messages_surrogates
-from agent.model_metadata import anchored_context_tokens
+from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
 
@@ -245,6 +245,7 @@ def assemble_api_request(
     # Usage-anchored override: real prompt_tokens (incl. system + tool schemas) +
     # delta estimate replaces the whole-history heuristic when the anchor is fresh.
     _anchored_pressure = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+    agent._request_pressure_anchored = _anchored_pressure is not None
     if _anchored_pressure is not None:
         request_pressure_tokens = _anchored_pressure
     else:
@@ -254,11 +255,6 @@ def assemble_api_request(
         request_pressure_tokens = _pressure_with_real_floor(
             agent.context_compressor, request_pressure_tokens
         )
-    # Stash the rough estimate so update_from_response() can pair it with the real
-    # count (should_defer_preflight_to_real_usage). getattr: test doubles lack it.
-    _note_rough = getattr(agent.context_compressor, "note_request_rough_estimate", None)
-    if callable(_note_rough):
-        _note_rough(request_pressure_tokens)
     return AssembledRequest(
         "fallthrough", api_messages, tools_for_api, _moa_prepared_request,
         pending_moa_prepared_request, approx_tokens, request_pressure_tokens, approx_tokens * 4,

@@ -16,6 +16,7 @@ import queue
 import threading
 import time
 from agent.i18n import t
+from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
@@ -616,12 +617,26 @@ class GatewayTurnMixin:
         _warn_token_threshold = int(_hyg_context_length * 0.95)
         _msg_count = len(history)
 
-        # Prefer the API-reported prompt tokens over the rough estimate (runs 30-50% high, which only
-        # fires hygiene early — safe). Do NOT compensate with a threshold multiplier.
-        if session_entry.last_prompt_tokens > 0:
-            _approx_tokens, _token_source = session_entry.last_prompt_tokens, "actual"
-        else:
-            _approx_tokens, _token_source = estimate_messages_tokens_rough(history), "estimated"
+        # Real usage decides: the API-reported prompt count, else the anchor persisted on the session
+        # row (real count + delta of what was appended since, survives gateway restarts), else the
+        # rough estimate (runs 30-50% high, which only fires hygiene early — safe). Do NOT compensate
+        # with a threshold multiplier.
+        from agent.image_token_cost import image_cost_context, learned_image_token_cost
+        _anchored = None
+        # Images in any local delta/estimate are priced at the cost learned from this model's usage.
+        with image_cost_context(learned_image_token_cost(hs.model, hs.base_url)):
+            if session_entry.last_prompt_tokens <= 0:
+                from agent.usage_anchor import persisted_anchor_tokens
+                _session_db = getattr(self, "_session_db", None)
+                _anchored = persisted_anchor_tokens(
+                    getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
+                )
+            if session_entry.last_prompt_tokens > 0:
+                _approx_tokens, _token_source = session_entry.last_prompt_tokens, "actual"
+            elif _anchored is not None:
+                _approx_tokens, _token_source = _anchored, "anchored"
+            else:
+                _approx_tokens, _token_source = estimate_messages_tokens_rough(history), "estimated"
 
         # Hard safety valve: force compression at an extreme message count regardless of tokens,
         # breaking the disconnect → no token data → no compression spiral. 5000 clears 1M+ sessions.
@@ -3165,6 +3180,7 @@ class GatewayTurnMixin:
         _cur_tool = _activity.get("current_tool")
         _iter_n = _activity.get("api_call_count", 0)
         _iter_max = _activity.get("max_iterations", 0)
+        # Operator-facing log keeps the raw resolved value; only the user-facing lines hide the sentinel.
         logger.error(
             "Agent idle for %.0fs (timeout %.0fs) in session %s "
             "| last_activity=%s | iteration=%s/%s | tool=%s",
@@ -3174,18 +3190,19 @@ class GatewayTurnMixin:
         if _timed_out_agent:
             request_hard_interrupt(_timed_out_agent, _INTERRUPT_REASON_TIMEOUT)
         _timeout_mins = int(worker.agent_timeout // 60) or 1
+        _iter_progress = format_iteration_progress(_iter_n, _iter_max)
         _diag_lines = [
             f"⏱️ Agent inactive for {_timeout_mins} min — no tool calls or API responses."
         ]
         if _cur_tool:
             _diag_lines.append(
                 f"The agent appears stuck on tool `{_cur_tool}` ({_secs_ago:.0f}s since last "
-                f"activity, iteration {_iter_n}/{_iter_max})."
+                f"activity, {_iter_progress})."
             )
         else:
             _diag_lines.append(
                 f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
-                f"iteration {_iter_n}/{_iter_max}). "
+                f"{_iter_progress}). "
                 "The agent may have been waiting on an API response."
             )
         _diag_lines.append(
@@ -3740,7 +3757,7 @@ class GatewayTurnMixin:
                 if _a:
                     _parts = []
                     if _want_iteration_detail:
-                        _parts.append(f"iteration {_a['api_call_count']}/{_a['max_iterations']}")
+                        _parts.append(format_iteration_progress(_a["api_call_count"], _a["max_iterations"]))
                     _action = _a.get("current_tool") or _a.get("last_activity_desc")
                     if _action:
                         _parts.append(str(_action))

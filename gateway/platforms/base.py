@@ -1660,6 +1660,11 @@ class SendResult:
     error_kind: Optional[str] = None
 
 
+# Longest server ``retry_after`` ``_send_with_retry`` will sleep inline. Longer penalties return the
+# typed failure so the delivery ledger owns the wait (#91969: a 97-minute FloodWait slept verbatim
+# pinned the send coroutine and froze inbound on every platform).
+_SEND_RETRY_INLINE_WAIT_CAP_SECS = 60.0
+
 # Platform-neutral send-failure kinds for ``SendResult.error_kind``: too_long (size cap),
 # bad_format (markup rejected; plain-text retry fixes), forbidden (the bot CANNOT reach the user),
 # not_found (chat/thread/message gone), rate_limited, transient (connection-level, retry-safe),
@@ -3157,6 +3162,16 @@ class BasePlatformAdapter(ABC):
         return any(pat in lowered for pat in _RETRYABLE_ERROR_PATTERNS)
 
     @staticmethod
+    def _is_rate_limited_error(error: Optional[str]) -> bool:
+        """Return True if the error string classifies as a rate limit / flood cap.
+
+        Single wrapper around :func:`classify_send_error` so the call sites in
+        :meth:`_send_with_retry` share one notion of "is this a rate limit" instead
+        of inline copies that could drift.
+        """
+        return classify_send_error(None, error or "") == "rate_limited"
+
+    @staticmethod
     def _is_timeout_error(error: Optional[str]) -> bool:
         """Return True for read/write timeouts — NOT retryable and NOT a plain-text
         fallback trigger, because the request may already have been delivered."""
@@ -3221,7 +3236,19 @@ class BasePlatformAdapter(ABC):
         if result.success:
             return result
         error_str = result.error or ""
-        is_network = result.retryable or self._is_retryable_error(error_str)
+        # A rate-limited / flood-capped send is transient: it should back off
+        # (honoring the server's retry_after when present) rather than fall
+        # through to the plain-text fallback, which re-enters the ban and can
+        # truncate content.  Gate on the platform-neutral classifier as well so
+        # platforms that surface a rate limit without a retry_after field
+        # (e.g. Weixin raising a bare RuntimeError) get the same treatment.
+        is_rate_limited = self._is_rate_limited_error(error_str)
+        is_network = (
+            result.retryable
+            or is_rate_limited
+            or result.retry_after is not None
+            or self._is_retryable_error(error_str)
+        )
         # Timeouts: not safe to retry (may have delivered) and not a formatting error.
         if not is_network and self._is_timeout_error(error_str):
             return result
@@ -3232,6 +3259,16 @@ class BasePlatformAdapter(ABC):
                 backoff = server_retry_after
                 if backoff is None:
                     backoff = base_delay * (2 ** (attempt - 1))
+                elif backoff > _SEND_RETRY_INLINE_WAIT_CAP_SECS:
+                    # Never hold this coroutine open for a long server penalty: a 97-minute
+                    # FloodWait slept verbatim once froze inbound on every platform (#91969).
+                    # Return the typed failure; the delivery ledger redelivers after the cooldown.
+                    logger.error(
+                        "[%s] Server asked to retry after %.0fs (> %.0fs inline cap); returning "
+                        "typed failure for redelivery instead of sleeping: %s",
+                        self.name, backoff, _SEND_RETRY_INLINE_WAIT_CAP_SECS, error_str,
+                    )
+                    return result
                 delay = backoff + random.uniform(0, 1)
                 server_retry_after = None
                 logger.warning("[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s", self.name,
@@ -3242,10 +3279,36 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
-                server_retry_after = result.retry_after  # None unless the server asked again
-                if not (result.retryable or self._is_retryable_error(error_str)):
-                    break  # non-transient now — fall through to plain-text fallback
-            else:  # retries exhausted — notify user
+                if result.retry_after is not None:
+                    server_retry_after = result.retry_after
+                # The failure kind can change between attempts (a transient error may
+                # later surface as a flood/rate-limit, or a rate-limited send may give
+                # way to a permanent formatting error). Reclassify from the refreshed
+                # error_str on every attempt so the break/continue decision below
+                # reflects the current attempt, not a stale first-send classification.
+                is_rate_limited = self._is_rate_limited_error(error_str)
+                if not (
+                    result.retryable
+                    or is_rate_limited
+                    or result.retry_after is not None
+                    or self._is_retryable_error(error_str)
+                ):
+                    break  # error switched to non-transient — fall through to plain-text fallback
+            else:
+                # All retries exhausted (loop completed without break) — notify user.
+                # If the final failure is a rate-limit / still carries a server
+                # retry_after, do NOT send the delivery-failure notice now: the notice
+                # send would land inside the same flood penalty and re-enter the ban
+                # (a fourth send at t=378 in an [0, 189, 378, 378] sequence). Return
+                # the typed failure so the delivery ledger owns redelivery after the
+                # cooldown instead — no extra sleep or request needed.
+                if self._is_rate_limited_error(error_str) or result.retry_after is not None:
+                    logger.error(
+                        "[%s] Rate-limited send exhausted retries; returning typed failure "
+                        "for redelivery (no notice sent inside active flood penalty): %s",
+                        self.name, error_str,
+                    )
+                    return result
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
                 notice = (
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
@@ -3255,7 +3318,9 @@ class BasePlatformAdapter(ABC):
                 except Exception as notify_err:
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
-        # Non-network / post-retry formatting failure: try plain text as fallback
+        # Non-network / post-retry formatting failure: try plain text as fallback. A
+        # rate-limited error never reaches here: it classifies as network above and the
+        # loop only breaks on a non-transient, non-rate-limited error.
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await _send(f"(Response formatting failed, plain text:)\n\n{content[:3500]}")
         if not fallback_result.success:

@@ -564,6 +564,10 @@ def _print_job_details(job_data: Dict[str, Any]) -> None:
             print(template.format(job_data[key]))
 
 
+_PAUSED_CREATE_NOTICE_CLI = (
+    "  ⚠  Created PAUSED — will not fire until `hermes cron resume`.")
+
+
 def cron_create(args):
     # The gateway-lifecycle guard lives in cron.jobs.create_job (every creation path); a block
     # surfaces as result["error"].
@@ -571,7 +575,11 @@ def cron_create(args):
         action="create", schedule=args.schedule, prompt=args.prompt,
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
-        no_agent=getattr(args, "no_agent", False) or None, **_job_api_kwargs(args))
+        no_agent=getattr(args, "no_agent", False) or None,
+        **_job_api_kwargs(args),
+        paused=getattr(args, "paused", False) or None,
+        paused_reason=getattr(args, "paused_reason", None) or None,
+    )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1
@@ -580,7 +588,10 @@ def cron_create(args):
     if result.get("skills"):
         print(f"  Skills: {', '.join(result['skills'])}")
     _print_job_details(result.get("job", {}))
-    print(f"  Next run: {result['next_run_at']}")
+    if not result.get("job", {}).get("enabled", True):
+        print(color(_PAUSED_CREATE_NOTICE_CLI, Colors.YELLOW))
+    else:
+        print(f"  Next run: {result['next_run_at']}")
     _warn_if_gateway_not_running()
     return 0
 

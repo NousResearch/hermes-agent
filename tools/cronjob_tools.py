@@ -519,6 +519,10 @@ def _with_guidance(result: Dict[str, Any], job: Dict[str, Any], deliver: Optiona
     return result
 
 
+_PAUSED_CREATE_NOTICE = (
+    "Created PAUSED — will not fire until resumed (cronjob action='resume').")
+
+
 def _action_create(a: Dict[str, Any]) -> str:
     prompt, script = a["prompt"], a["script"]
     deliver = _normalize_deliver_param(a["deliver"])
@@ -558,6 +562,18 @@ def _action_create(a: Dict[str, Any]) -> str:
     if a["continuity"] is not None:
         context_from = _apply_continuity(context_from, a["continuity"])
 
+    # paused/paused_reason are creation-only safety axes: a job born paused cannot fire
+    # until an explicit resume. Non-boolean values (JSON junk) must fail BEFORE persistence.
+    paused_flag = a["paused"]
+    paused_reason_value = _normalize_optional_job_value(a["paused_reason"])
+    if paused_flag is not None and not isinstance(paused_flag, bool):
+        return tool_error("paused must be a boolean.", success=False)
+    if paused_reason_value is not None and paused_flag is not True:
+        return tool_error("paused_reason requires paused=true.", success=False)
+    paused_create_kwargs = {}
+    if paused_flag:
+        paused_create_kwargs = {"paused": True, "paused_reason": paused_reason_value}
+
     from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
     try:
         job = create_job_with_scheduler_registration(
@@ -572,11 +588,15 @@ def _action_create(a: Dict[str, Any]) -> str:
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"],
-            failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])))
+            failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
+            **paused_create_kwargs,
+        )
     except CronSchedulerRegistrationError as exc:
         _partial = exc.to_dict()
         return tool_error(_partial.pop("error"), success=False, **_partial)
-    _create_message = " ".join(filter(None, (f"Cron job '{job['name']}' created.", _local_delivery_notice(job, deliver))))
+    _create_message = " ".join(filter(None, (f"Cron job '{job['name']}' created.",
+        _PAUSED_CREATE_NOTICE if not job.get("enabled", True) else None,
+        _local_delivery_notice(job, deliver))))
     # The builtin ticker lives in the gateway process: with no gateway running the job is stored
     # but never fires — tell the model (the CLI already warns).
     _result = {
@@ -871,6 +891,8 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
+    paused: Optional[bool] = None,
+    paused_reason: Optional[str] = None,
     task_id: str = None,
     session_id: Optional[str] = None) -> str:
     """Unified cron job management tool."""
@@ -977,6 +999,20 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "boolean",
                 "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
             },
+            "paused": {
+                "type": "boolean",
+                "description": "Create the job PAUSED (create-only): persisted disabled"
+                    " in the same atomic write, never registered with the scheduler,"
+                    " and unable to become due or execute until an explicit 'resume'"
+                    " action. Use for canary/dry-run jobs whose first delivery must"
+                    " be operator-approved. Omit for normal enabled creation.",
+            },
+            "paused_reason": {
+                "type": "string",
+                "description": "Auditable pause cause stored with paused=true creation"
+                    " (e.g. 'canary — awaiting operator approval')."
+                    " Requires paused=true; ignored otherwise.",
+            },
         },
         "required": ["action"]
     }
@@ -999,8 +1035,26 @@ def check_cronjob_requirements() -> bool:
 # create/edit --model`, hand-edited jobs) — the agent must not point unattended spend at a
 # different model. Programmatic callers of cronjob() itself retain the parameters.
 _HANDLER_FORWARDED_ARGS = (
-    "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
-    "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session")
+    "job_id",
+    "prompt",
+    "schedule",
+    "name",
+    "repeat",
+    "deliver",
+    "failure_deliver",
+    "skill",
+    "skills",
+    "reason",
+    "script",
+    "context_from",
+    "continuity",
+    "enabled_toolsets",
+    "workdir",
+    "no_agent",
+    "attach_to_session",
+    "paused",
+    "paused_reason",
+)
 
 
 def _cronjob_handler(args, **kw):

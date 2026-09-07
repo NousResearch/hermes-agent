@@ -3407,11 +3407,18 @@ class CronSchedulerRegistrationError(RuntimeError):
 
 
 def create_job_with_scheduler_registration(**kwargs) -> dict:
-    """Persist one job and register its first trigger with the active provider."""
+    """Persist one job and register its first trigger with the active provider.
+
+    A job created paused/disabled (``create_job(paused=True)``) is persisted but NOT
+    registered: there is no first trigger to arm, and registration would be a live
+    scheduling side effect for a job the operator has not enabled yet. resume_job()
+    notifies the provider, arming it then."""
     from cron.jobs import create_job
     from cron.scheduler_provider import resolve_cron_scheduler
 
     job = create_job(**kwargs)
+    if not job.get("enabled", True):
+        return job
     try:
         resolve_cron_scheduler().register_job(job)
     except Exception as exc:

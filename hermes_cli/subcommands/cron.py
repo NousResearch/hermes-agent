@@ -80,6 +80,17 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "into its prompt, so it can dedupe against what was already "
             "reported and continue where the last run left off (scouts, "
             "monitors, incremental digests). First run is unchanged.")
+    _flag(cron_create, "--paused", default=False,
+        help="Create the job PAUSED: stored disabled in one atomic write and "
+            "never armed by the scheduler — it cannot become due or fire "
+            "until `hermes cron resume`. Use for canary/dry-run jobs whose "
+            "first delivery must be operator-approved.")
+    cron_create.add_argument(
+        "--paused-reason",
+        dest="paused_reason",
+        help="Auditable pause cause stored with --paused (e.g. 'canary — "
+            "awaiting operator approval'). Requires --paused.",
+    )
 
     cron_edit = cron_subparsers.add_parser("edit", help="Edit an existing scheduled job")
     cron_edit.add_argument("job_id", help="Job ID to edit")

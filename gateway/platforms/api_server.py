@@ -3360,6 +3360,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "prompt": prompt, "schedule": schedule, "name": name,
                 "deliver": body.get("deliver", "local"),
                 "origin": self._cron_origin_from_request(request)}
+            paused = body.get("paused", False)
+            if not isinstance(paused, bool):
+                return web.json_response(
+                    {"error": "paused must be a boolean"}, status=400
+                )
+            paused_reason = (body.get("paused_reason") or "").strip() or None
+            if paused_reason is not None and not paused:
+                return web.json_response(
+                    {"error": "paused_reason requires paused=true"}, status=400
+                )
+            kwargs["paused"] = paused
+            if paused_reason is not None:
+                kwargs["paused_reason"] = paused_reason
             if skills:
                 kwargs["skills"] = skills
             if repeat is not None:

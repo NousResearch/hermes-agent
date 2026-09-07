@@ -609,3 +609,110 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+# ── Self-heal: marker left behind by a supervisor-level restart (TRA-1180 class) ──
+#
+# `systemctl --user restart hermes-gateway` (weekly-update fallback, manual ops) never
+# runs this module's clear path, so the marker survives a restart that DID bring the
+# fleet to the pulled code — and every later CLI call warns forever. The marker must be
+# discharged when (and only when) the fleet provably serves expected_sha.
+
+
+def _patch_marker_sha(monkeypatch, disk_sha):
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+
+
+def test_startup_warn_discharged_when_fleet_current(monkeypatch, capsys):
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        update_cmd_fleet,
+        "_marker_only_restart_obsolete",
+        update_cmd_fleet._marker_only_restart_obsolete,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_startup_warn_kept_when_fleet_stale(monkeypatch, capsys):
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    err = capsys.readouterr().err
+    assert "did not restart running gateways" in err
+    assert update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_startup_warn_kept_when_fleet_probe_empty(monkeypatch, capsys):
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    err = capsys.readouterr().err
+    assert "did not restart running gateways" in err
+    assert update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_startup_warn_kept_when_fleet_identity_unknown(monkeypatch, capsys):
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": None, "code_version": None, "state": "unknown"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    err = capsys.readouterr().err
+    assert "did not restart running gateways" in err
+    assert update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_marker_kept_when_newer_pull_moved_checkout_past_marker(monkeypatch, capsys):
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="d" * 40)
+    _patch_marker_sha(monkeypatch, "e" * 40)  # checkout advanced after the marker
+    seen = {"called": False}
+
+    def _collect(**kwargs):
+        seen["called"] = True
+        return [{"profile": "default", "pid": 42, "code_sha": "d" * 40, "code_version": None, "state": "current"}]
+
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", _collect)
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    err = capsys.readouterr().err
+    assert "did not restart running gateways" in err
+    assert update_cmd._fleet_restart_pending_marker_path().exists()
+    assert seen["called"] is False  # short-circuits before probing the fleet

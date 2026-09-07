@@ -15,7 +15,8 @@ from utils import normalize_proxy_env_vars
 
 from agent.anthropic_credentials import _is_oauth_token
 from agent.anthropic_endpoints import (
-    _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
+    _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint,
+    _is_github_copilot_anthropic_endpoint, _is_kimi_coding_endpoint,
     _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
     _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _normalize_base_url_text,
     _requires_bearer_auth,
@@ -398,6 +399,15 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
     elif style == "oauth":
         headers["user-agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
         headers["x-app"] = "cli"
+    if _is_github_copilot_anthropic_endpoint(normalized_base_url):
+        # Copilot authenticates the IDE, not just the token: /v1/messages rejects a request
+        # without Editor-Version ("missing Editor-Version header for IDE auth", HTTP 400).
+        # The OpenAI-wire path gets these from the Copilot profile's default_headers; this
+        # SDK route never sees that profile, so apply the same identity here.
+        from hermes_cli.copilot_auth import copilot_request_headers
+
+        for k, v in copilot_request_headers().items():
+            headers.setdefault(k, v)
     if _is_opencode_endpoint(base_url):
         # OpenCode identifies clients by request headers (like OpenRouter). The OpenAI-wire paths
         # get these from profile.default_headers, but this route never sees the profile.

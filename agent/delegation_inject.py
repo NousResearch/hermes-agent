@@ -152,7 +152,7 @@ def _entry_is_renewable(agent: Any, entry: dict[str, Any]) -> bool:
     agent advances, retaining or renewing the old local latch can only delay the
     durable fallback and must never block a new carrier.
     """
-    if entry.get(_CLAIM_ABANDONED_KEY):
+    if entry.get(_CLAIM_ABANDONED_KEY) or entry.get("queue_retry"):
         return False
     active_turn_id = str(getattr(agent, "_active_turn_id", "") or "")
     entry_turn_id = str(entry.get("turn_id") or "")
@@ -378,79 +378,40 @@ def release_pending_injects(
         if turn_id is not None and str(entry.get("turn_id") or "") != str(turn_id):
             keep.append(entry)
             continue
-        event = entry["event"]
-        event_id = str(entry["event_id"])
-        if _durable_event_is_in_history(messages, event_id):
-            if complete_event_delivery(event, entry["claim_id"]):
-                settled += 1
-                message = entry.get("message")
-                if isinstance(message, dict):
-                    settled_messages.append(message)
-                continue
-            try:
-                state, still_owned = _claim_status(entry)
-            except Exception:
-                keep.append(entry)
-                logger.warning(
-                    "Could not classify failed durable carrier settlement %s; "
-                    "retaining local claim for retry",
-                    event_id,
-                    exc_info=True,
-                )
-                continue
-            if still_owned:
-                keep.append(entry)
-                continue
-            entry[_CLAIM_ABANDONED_KEY] = True
-            settled += 1
-            message = entry.get("message")
-            if isinstance(message, dict):
-                settled_messages.append(message)
-            logger.warning(
-                "Retired stale local delegation claim %s while preserving its "
-                "durable carrier (state=%s)",
-                event_id,
-                state,
-            )
-            continue
-
-        # Remove the unconsumed marker by durable identity even when compression
-        # replaced the Python dict object.
-        removable_event_ids.add(event_id)
-        committed = release_event_delivery(event, entry["claim_id"])
-        state = get_event_delivery_state(event)
-        if committed:
-            # At the attempt cap release transitions to dropped, not pending.
-            if state == "pending":
+        event, event_id = entry["event"], str(entry["event_id"])
+        durable = _durable_event_is_in_history(messages, event_id)
+        if not durable:
+            removable_event_ids.add(event_id)
+        try:
+            if entry.get("queue_retry"):
                 with process_registry.completion_routing_lock:
                     process_registry.completion_queue.put(event)
+                settled += 1
+                continue
+            if durable:
+                committed = complete_event_delivery(event, entry["claim_id"])
+            else:
+                committed = release_event_delivery(event, entry["claim_id"])
+                if committed:
+                    # Ownership is now the ordinary queue's. If its publication or
+                    # status read fails, retain an explicit RAM retry owner instead.
+                    entry["queue_retry"] = True
+                    if get_event_delivery_state(event) == "pending":
+                        with process_registry.completion_routing_lock:
+                            process_registry.completion_queue.put(event)
+            if not committed:
+                state, still_owned = _claim_status(entry)
+                if still_owned:
+                    keep.append(entry)
+                    continue
+                entry[_CLAIM_ABANDONED_KEY] = True
+                logger.debug("Retired local delegation claim %s (state=%s)", event_id, state)
             settled += 1
-            continue
-        if state == "delivered":
-            settled += 1
-            continue
-        try:
-            state, still_owned = _claim_status(entry)
+            if durable and isinstance(entry.get("message"), dict):
+                settled_messages.append(entry["message"])
         except Exception:
             keep.append(entry)
-            logger.warning(
-                "Could not classify failed delegation release %s; "
-                "retaining local claim for retry",
-                event_id,
-                exc_info=True,
-            )
-            continue
-        if still_owned:
-            keep.append(entry)
-            continue
-        entry[_CLAIM_ABANDONED_KEY] = True
-        settled += 1
-        logger.warning(
-            "Retired stale local delegation claim %s after ownership moved "
-            "elsewhere (durable state=%s)",
-            event_id,
-            state,
-        )
+            logger.warning("Could not settle delegation claim %s; retained for retry", event_id, exc_info=True)
 
     if removable_event_ids:
         retained: list[dict[str, Any]] = []
@@ -557,126 +518,108 @@ def attach_ready_injects_to_tool_results(
     from tools.async_delegation import (
         claim_event_delivery,
         get_event_delivery_state,
-        release_event_delivery,
     )
     from tools.process_registry import process_registry
     from tools.process_registry_notifications import _format_async_delegation
 
-    accepted: list[tuple[dict[str, Any], str, str, str]] = []
-    completion_queue = process_registry.completion_queue
+    accepted: list[tuple[dict[str, Any], str]] = []
+    pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
+    setattr(agent, _PENDING_CLAIMS_ATTR, pending)  # establish owner before dequeue/claim
+    unowned: dict[int, dict] = {}
+    original_target = None
+    handed_off = False
 
     def requeue(event):
-        with process_registry.completion_routing_lock:
-            completion_queue.put(event)
-
-    candidates = []
-    # Dequeue/classify/requeue is one bounded routing reservation shared with
-    # gateway and TUI consumers.  Whichever consumer gets here first must either
-    # keep the event or make it visible again before releasing the lock, so a
-    # ready same-turn dependency cannot disappear in another consumer's private
-    # list at the exact tool-result boundary.
-    with process_registry.completion_routing_lock:
         try:
-            scan_count = completion_queue.qsize()
+            with process_registry.completion_routing_lock:
+                process_registry.completion_queue.put(event)
         except Exception:
-            return 0
-        for _ in range(max(0, scan_count)):
-            try:
-                event = completion_queue.get_nowait()
-            except queue.Empty:
-                break
-            except Exception:
-                break
-            delivery = str(event.get("result_delivery") or "after_turn").strip().lower()
-            if (
-                event.get("type") != "async_delegation"
-                or delivery != "inject"
-                or str(event.get("parent_turn_id") or "") != active_turn_id
-                or str(event.get("parent_session_id") or "") != str(getattr(agent, "session_id", "") or "")
-                or not event.get("parent_session_id")
-            ):
-                completion_queue.put(event)
-                continue
-            candidates.append(event)
+            # Queue failure must not leave the durable row as the only owner until restart.
+            pending.append({"event": event, "event_id": _event_identity(event), "claim_id": "",
+                            "message": None, "turn_id": active_turn_id, "queue_retry": True})
+            logger.exception("Could not requeue delegation; retained explicit retry owner")
+        unowned.pop(id(event), None)
 
-    # Formatting / sandbox I/O holds neither a queue nor a database lock.
-    # Dequeue gives this consumer the RAM item; the durable claim arbitrates a
-    # concurrently restored copy before any transcript mutation.
-    for event in candidates:
-        try:
-            text = _format_async_delegation(event)
-            if not text:
-                requeue(event)
-                continue
-            event_id = _event_identity(event)
-            separator_size = 2 if accepted else 0
-            available = None if carrier_capacity is None else carrier_capacity - separator_size
-            bounded_text = _bounded_carrier_text(
-                text, max_chars=available, event_id=event_id,
-                storage_env=storage_env, budget_config=budget_config,
-            )
-            if bounded_text is None:
-                requeue(event)
-                continue
-            claim_id = claim_event_delivery(event, f"tool-boundary:{os.getpid()}")
-        except Exception:
-            logger.warning("Failed to prepare tool-boundary delegation event", exc_info=True)
-            requeue(event)
-            continue
-        if claim_id is None:
-            if get_event_delivery_state(event) == "pending":
-                requeue(event)
-            continue
-        accepted.append((event, claim_id, bounded_text, event_id))
-        if carrier_capacity is not None:
-            carrier_capacity -= separator_size + len(bounded_text)
-
-    if not accepted:
-        return 0
-
-    original_target = deepcopy(target)
-    original_content = deepcopy(target.get("content", ""))
-    original_pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
-    event_ids = [item[3] for item in accepted]
     try:
-        _append_carrier_text(target, "\n\n".join(item[2] for item in accepted))
+        candidates = []
+        with process_registry.completion_routing_lock:
+            for _ in range(process_registry.completion_queue.qsize()):
+                try:
+                    event = process_registry.completion_queue.get_nowait()
+                except queue.Empty:
+                    break
+                unowned[id(event)] = event
+                if (
+                    event.get("type") != "async_delegation"
+                    or event.get("task_failure_notice")  # interim notices are not final unit receipts
+                    or str(event.get("result_delivery") or "after_turn").strip().lower() != "inject"
+                    or str(event.get("parent_turn_id") or "") != active_turn_id
+                    or str(event.get("parent_session_id") or "") != str(getattr(agent, "session_id", "") or "")
+                    or not event.get("parent_session_id")
+                ):
+                    requeue(event)
+                else:
+                    candidates.append(event)
+
+        # Formatting/storage holds no routing or database lock. Every event still
+        # belongs to unowned until a claim is registered in the existing RAM owner.
+        for event in candidates:
+            try:
+                text = _format_async_delegation(event)
+                if not text:
+                    continue
+                event_id = _event_identity(event)
+                separator_size = 2 if accepted else 0
+                available = None if carrier_capacity is None else carrier_capacity - separator_size
+                bounded_text = _bounded_carrier_text(
+                    text, max_chars=available, event_id=event_id,
+                    storage_env=storage_env, budget_config=budget_config,
+                )
+                if bounded_text is None:
+                    continue
+                claim_id = claim_event_delivery(event, f"tool-boundary:{os.getpid()}")
+                if claim_id is None:
+                    # An uncertain read is NOT permission to discard this event.
+                    # Leave it in unowned so the outer finally restores queue ownership.
+                    if get_event_delivery_state(event) not in (None, "pending"):
+                        unowned.pop(id(event), None)
+                    continue
+            except Exception:
+                logger.warning("Failed to prepare tool-boundary delegation event", exc_info=True)
+                continue
+            entry = {"event": event, "claim_id": claim_id, "event_id": event_id,
+                     "message": None, "turn_id": active_turn_id}
+            pending.append(entry)
+            unowned.pop(id(event), None)
+            accepted.append((entry, bounded_text))
+            if carrier_capacity is not None:
+                carrier_capacity -= separator_size + len(bounded_text)
+
+        if not accepted:
+            return 0
+        # Snapshot and mutation failures are covered by the SAME ownership boundary.
+        original_target = deepcopy(target)
+        original_content = deepcopy(target.get("content", ""))
+        event_ids = [entry["event_id"] for entry, _text in accepted]
+        _append_carrier_text(target, "\n\n".join(text for _entry, text in accepted))
         target["_delegation_delivery_original_content"] = original_content
         target["_delegation_event_ids"] = event_ids
-        display_metadata = dict(target.get("display_metadata") or {})
-        display_metadata["delegation_event_ids"] = event_ids
-        display_metadata["delegation_delivery"] = "tool_boundary"
-        target["display_metadata"] = display_metadata
+        metadata = dict(target.get("display_metadata") or {})
+        metadata.update(delegation_event_ids=event_ids, delegation_delivery="tool_boundary")
+        target["display_metadata"] = metadata
         agent._session_messages = messages
-
-        pending = list(original_pending)
-        pending.extend(
-            {
-                "event": event,
-                "claim_id": claim_id,
-                "event_id": event_id,
-                "message": target,
-                "turn_id": active_turn_id,
-            }
-            for event, claim_id, _text, event_id in accepted
-        )
-        setattr(agent, _PENDING_CLAIMS_ATTR, pending)
+        for entry, _text in accepted:
+            entry["message"] = target
         ensure_pending_inject_heartbeat(agent)
-    except Exception:
-        target.clear()
-        target.update(original_target)
-        try:
-            setattr(agent, _PENDING_CLAIMS_ATTR, original_pending)
-            _stop_claim_heartbeat_if_idle(agent)
-        except Exception:
-            logger.debug("Failed to restore delegation claim bookkeeping", exc_info=True)
-        for event, claim_id, _text, _event_id in accepted:
-            try:
-                released = release_event_delivery(event, claim_id)
-            except Exception:
-                logger.exception("Failed to release rolled-back delegation claim")
-                continue
-            if released and get_event_delivery_state(event) == "pending":
-                requeue(event)
-        raise
-
-    return len(accepted)
+        handed_off = True
+        return len(accepted)
+    finally:
+        for event in list(unowned.values()):
+            requeue(event)
+        if not handed_off:
+            if original_target is not None:
+                target.clear()
+                target.update(original_target)
+            # All acquired tokens are already registered, including ones whose
+            # release/status read fails. Never release a token that we didn't acquire.
+            release_pending_injects(agent, messages, turn_id=active_turn_id)

@@ -221,6 +221,11 @@ def _flush_session_db_after_tool_progress(
     is enriched before the batch's first durable commit, so history remains
     append-only and every provider sees the ordinary assistant/tool role shape.
     """
+    from agent.turn_iteration_prep import _maybe_inject_iteration_budget_warning
+
+    # Preserve main's checkpoint warning before sizing or stamping the tool result.
+    _maybe_inject_iteration_budget_warning(agent, messages)
+
     # A known no-op persistence path cannot accept a durable carrier. Do not
     # acquire/release its claim at every tool batch: that would exhaust the
     # delivery-attempt cap without ever offering the after-turn fallback.
@@ -880,6 +885,15 @@ def _resolve_sequential_tool_timeout() -> float | None:
     return resolve_timeout("tools.sequential_call", default=_resolve_concurrent_tool_timeout())
 
 
+# Tools whose call blocks on a long-running operation that supervises its own liveness: no generic
+# sequential deadline. ``delegate_task`` in a nested orchestrator blocks for the whole batch by design
+# (children carry heartbeats, the stale monitor, and ``delegation.child_timeout_seconds``); under the
+# 420 s deadline every real batch "timed out" while its children ran on as orphans, and the orchestrator
+# spent the following hours polling transcripts (measured: 332 timeouts, ~$4k of orchestrator turns in
+# one run).
+_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task"})
+
+
 def _abandoned_sequential_result(agent, ref: _ToolCallRef, message: str, result_cls, **outcome) -> _ManagedToolResult:
     """Emit the terminal post_tool_call for a worker the sequential runner gave up on
     (timeout / interrupt) and wrap ``message`` in its marker ``result_cls``."""
@@ -926,7 +940,7 @@ def _run_sequential_tool_execution_middleware(
     """Run one sequential call on a worker thread under the concurrent executor's deadline.
     Interactive tools (``clarify``) own their wait via ``agent.clarify_timeout``; the
     generic deadline would report ``tool_timeout`` while the prompt is still live."""
-    timeout_s = _resolve_sequential_tool_timeout()
+    timeout_s = None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS else _resolve_sequential_tool_timeout()
     ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace)
     kwargs = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)
     if function_name in _NEVER_PARALLEL_TOOLS:

@@ -464,7 +464,7 @@ def test_env_scrub_hermes_allowlist_and_secret_blocks():
         "HERMES_DELEGATED_CHILD_CONTEXT": "1",
         # other HERMES_* → dropped (broad prefix removed)
         "HERMES_BASE_URL": "https://x", "HERMES_INTERACTIVE": "1",
-        "HERMES_KANBAN_DB": "postgres://u:p@h/db",
+        "HERMES_KANBAN_TASK": "t_parent",
         # secret substrings (incl. new DSN/WEBHOOK) → dropped
         "SENTRY_DSN": "https://a@s.io/1", "SLACK_WEBHOOK": "https://h/x",
         "OPENAI_API_KEY": "sk", "GITHUB_TOKEN": "ghp",
@@ -479,7 +479,7 @@ def test_env_scrub_hermes_allowlist_and_secret_blocks():
     ):
         assert kept in out, f"{kept} should be kept"
     for dropped in (
-        "HERMES_BASE_URL", "HERMES_INTERACTIVE", "HERMES_KANBAN_DB",
+        "HERMES_BASE_URL", "HERMES_INTERACTIVE", "HERMES_KANBAN_TASK",
         "SENTRY_DSN", "SLACK_WEBHOOK", "OPENAI_API_KEY", "GITHUB_TOKEN",
         "RANDOM_X",
     ):

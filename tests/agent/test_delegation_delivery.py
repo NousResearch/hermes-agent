@@ -173,7 +173,7 @@ def _make_loop_agent(tmp_path: Path) -> AIAgent:
             max_iterations=4,
             skip_context_files=True,
             skip_memory=True,
-            session_db=SessionDB(db_path=tmp_path / "state.db"),
+            session_db=SessionDB(db_path=ad._db_path()),
             session_id=f"inject-loop-{uuid.uuid4().hex}",
         )
     agent.client = MagicMock()
@@ -775,9 +775,10 @@ def test_tui_busy_dequeue_cannot_hide_ready_inject_from_tool_boundary(monkeypatc
 
 
 # #104299 integration: preserve its real completion-unit partition/finalizer.
-def _gated_unit_call(monkeypatch, gates, *, delivery="inject"):
+def _gated_unit_call(monkeypatch, gates, *, delivery="inject", independent=False):
     import json
 
+    monkeypatch.setattr(delegate_tool, "_load_config", lambda: {"independent_completions": independent})
     parent = MagicMock()
     parent._delegate_depth = 0
     parent.session_id = "parent-session"
@@ -837,7 +838,7 @@ def test_inject_uses_completed_units_without_splitting_groups_or_capacity(monkey
         return messages[-1]["content"]
 
     try:
-        handle = _gated_unit_call(monkeypatch, gates)
+        handle = _gated_unit_call(monkeypatch, gates, independent=True)
         assert handle["status"] == "dispatched"
         units = {tuple(u["task_indexes"]): u for u in handle["units"]}
         assert set(units) == {(0, 1), (2,)}
@@ -895,7 +896,11 @@ def test_unit_dispatch_propagates_policy_and_default_uses_same_after_turn_claim(
         ("unknown-mode", "after_turn"),
         (" INJECT ", "inject"),
     ]
-    for requested, expected in cases:
+    for independent, requested, expected in (
+        (independent, requested, expected)
+        for independent in (False, True) for requested, expected in cases
+    ):
+        expected_units = 2 if independent else 1
         ad._reset_for_tests()
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()
@@ -905,17 +910,21 @@ def test_unit_dispatch_propagates_policy_and_default_uses_same_after_turn_claim(
             {"role": "tool", "tool_call_id": "current", "content": "unchanged"}
         ]
         try:
-            handle = _gated_unit_call(monkeypatch, gates, delivery=requested)
+            handle = _gated_unit_call(monkeypatch, gates, delivery=requested, independent=independent)
             assert handle["status"] == "dispatched"
             assert handle["result_delivery"] == expected
             for gate in gates:
                 gate.set()
             events = [
-                process_registry.completion_queue.get(timeout=5) for _ in range(2)
+                process_registry.completion_queue.get(timeout=5) for _ in range(expected_units)
             ]
+            assert len(handle.get("units", [handle])) == expected_units
             assert {event["delegation_id"] for event in events} == {
-                unit["delegation_id"] for unit in handle["units"]
+                unit["delegation_id"] for unit in handle.get("units", [handle])
             }
+            assert sum(len(event["results"]) for event in events) == len(gates)
+            if expected == "inject":
+                assert f"{expected_units} completion unit(s)" in handle["note"]
             for event in events:
                 assert event["result_delivery"] == expected
                 assert event["parent_turn_id"] == "turn-current"
@@ -923,13 +932,13 @@ def test_unit_dispatch_propagates_policy_and_default_uses_same_after_turn_claim(
 
             attached = attach_ready_injects_to_tool_results(agent, messages, 1)
             if expected == "inject":
-                assert attached == 2  # two units, never three child rows
-                assert release_pending_injects(agent, messages) == 2
+                assert attached == expected_units  # timing never changes the configured units
+                assert release_pending_injects(agent, messages) == expected_units
             else:
                 assert attached == 0
             assert messages[-1]["content"] == "unchanged"
 
-            for _ in range(2):
+            for _ in range(expected_units):
                 event = process_registry.completion_queue.get(timeout=5)
                 claim = ad.claim_event_delivery(event, "ordinary-after-turn")
                 assert claim
@@ -967,3 +976,162 @@ def test_abandoned_unit_retains_dispatch_policy_and_turn_on_recovery(monkeypatch
     assert attach_ready_injects_to_tool_results(agent, messages, 1) == 0
     claim = ad.claim_event_delivery(event, "recovered-after-turn")
     assert claim and ad.complete_event_delivery(event, claim)
+
+
+def _review_tool_batch():
+    return [
+        {"role": "assistant", "tool_calls": [{"id": "tc", "type": "function",
+          "function": {"name": "terminal", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "tc", "tool_name": "terminal", "content": "original"},
+    ]
+
+
+def test_exact_claim_fences_carrier_write_and_committed_receipt_wins(tmp_path, monkeypatch):
+    """Both writer orderings use real SQLite: takeover first, or insertion first.
+
+    The second ordering pauses INSIDE the transcript transaction and starts a
+    competing claimant. It must wait for the commit, then reconcile its receipt
+    rather than taking a token based on a stale pre-transaction SELECT.
+    """
+    from agent.tool_executor import _flush_session_db_after_tool_progress
+
+    for takeover_first in (True, False):
+        agent = _make_loop_agent(tmp_path)
+        agent._active_turn_id = "turn-current"
+        unit = _record(parent_session_id=agent.session_id)
+        assert _complete_unit(unit, _child(0, "EXCLUSIVE_EVIDENCE"))
+        messages = _review_tool_batch()
+        notices, outcome, tokens = [], [], []
+        agent.tool_progress_callback = lambda kind, *a, **kw: notices.append(kind)
+        original_flush = agent._flush_messages_to_session_db
+        original_insert = agent._session_db._insert_message_rows
+        started, finished = threading.Event(), threading.Event()
+        contender = None
+
+        def try_competing_claim(event):
+            started.set()
+            try:
+                outcome.append(ad.claim_event_delivery(event, "competing-consumer"))
+            finally:
+                finished.set()
+
+        def pause_inside_insert(conn, session_id, rows):
+            nonlocal contender
+            event = agent._pending_delegation_inject_claims[0]["event"]
+            contender = threading.Thread(target=try_competing_claim, args=(event,))
+            contender.start()
+            assert started.wait(2)
+            assert not finished.wait(0.05)
+            return original_insert(conn, session_id, rows)
+
+        def expire_before_flush(rows):
+            entry = agent._pending_delegation_inject_claims[0]
+            tokens.append(entry["claim_id"])
+            heartbeat = agent._delegation_inject_claim_heartbeat
+            heartbeat["stop"].set()
+            heartbeat["thread"].join(timeout=2)
+            with ad._DB_LOCK, ad._transaction() as conn:
+                conn.execute("UPDATE async_delegations SET delivery_claimed_at=0 WHERE delegation_id=?", (unit,))
+            if takeover_first:
+                try_competing_claim(entry["event"])
+                assert outcome[0]
+                tokens.append(outcome[0])
+            result = original_flush(rows)
+            if contender is not None:
+                contender.join(timeout=3)
+                assert not contender.is_alive()
+            return result
+
+        try:
+            with monkeypatch.context() as scoped:
+                scoped.setattr(agent, "_flush_messages_to_session_db", expire_before_flush)
+                if not takeover_first:
+                    scoped.setattr(agent._session_db, "_insert_message_rows", pause_inside_insert)
+                assert _flush_session_db_after_tool_progress(agent, messages, stage="review claim fence")
+            stored = agent._session_db.get_messages_as_conversation(agent.session_id)
+            tool_rows = [row for row in stored if row["role"] == "tool"]
+            assert len(tool_rows) == 1
+            with ad._DB_LOCK, ad._transaction() as conn:
+                state, token = conn.execute(
+                    "SELECT delivery_state, delivery_claim FROM async_delegations WHERE delegation_id=?", (unit,)
+                ).fetchone()
+            if takeover_first:
+                assert tool_rows[0]["content"] == "original"
+                assert messages[-1]["content"] == "original"
+                assert (state, token) == ("pending", outcome[0])
+                assert "delegation.injected" not in notices
+                assert ad.complete_completion_delivery(unit, outcome[0])
+            else:
+                assert "EXCLUSIVE_EVIDENCE" in tool_rows[0]["content"]
+                assert outcome == [None]
+                assert (state, token) == ("delivered", None)
+                assert notices.count("delegation.injected") == 1
+            assert not agent._pending_delegation_inject_claims
+            assert all(token not in str(stored) for token in tokens)
+            assert all(token not in str(AIAgent._sanitize_api_messages(deepcopy(messages))) for token in tokens)
+        finally:
+            if contender is not None:
+                contender.join(timeout=3)
+            agent._session_db.close()
+
+
+def test_preparation_failures_leave_every_candidate_queued_or_owned(monkeypatch):
+    """Status, snapshot, mutation and rollback faults cannot orphan an earlier claim."""
+    import sqlite3
+    from agent.tool_executor import _flush_session_db_after_tool_progress
+
+    for fault in ("status", "snapshot", "mutation", "rollback"):
+        ad._reset_for_tests()
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+        units = [_record() for _ in range(3)]
+        for unit in units:
+            assert _complete_unit(unit, _child(0, "review evidence"))
+        events = {event["delegation_id"]: event for event in _queue_contents()}
+        foreign = ad.claim_event_delivery(events[units[1]], "competing-consumer")
+        assert foreign
+        agent = _tool_boundary_agent()
+        agent._flush_messages_to_session_db = lambda rows: None
+        messages = _review_tool_batch()
+        real_state, real_copy, real_append = ad.get_event_delivery_state, inject.deepcopy, inject._append_carrier_text
+
+        def fail_state(event):
+            if event["delegation_id"] == units[1]:
+                raise sqlite3.OperationalError("database is locked")
+            return real_state(event)
+
+        def fail_snapshot(value):
+            if value is messages[-1]:
+                raise RuntimeError("snapshot fault after acquisition")
+            return real_copy(value)
+
+        def fail_mutation(message, text):
+            real_append(message, text)
+            raise RuntimeError("fault after content mutation")
+
+        def fail_release(*args):
+            raise sqlite3.OperationalError("release is temporarily unavailable")
+
+        with monkeypatch.context() as scoped:
+            if fault == "status":
+                scoped.setattr(ad, "get_event_delivery_state", fail_state)
+            elif fault == "mutation":
+                scoped.setattr(inject, "_append_carrier_text", fail_mutation)
+            else:
+                scoped.setattr(inject, "deepcopy", fail_snapshot)
+            if fault == "rollback":
+                scoped.setattr(ad, "release_event_delivery", fail_release)
+            _flush_session_db_after_tool_progress(agent, messages, stage=f"review {fault} fault")
+            queued = {event["delegation_id"] for event in _queue_contents()}
+            owned = {entry["event_id"] for entry in agent._pending_delegation_inject_claims}
+            assert set(units) <= queued | owned
+            assert messages[-1]["content"] == "original"
+            assert ad.get_event_delivery_claim_status(events[units[1]], foreign) == ("pending", True)
+            if fault == "rollback":
+                assert units[0] in owned and units[2] in owned
+        release_pending_injects(agent, messages)
+        assert not agent._pending_delegation_inject_claims
+        for unit in (units[0], units[2]):
+            claim = ad.claim_event_delivery(events[unit], "ordinary-after-turn")
+            assert claim and ad.complete_event_delivery(events[unit], claim)
+        assert ad.complete_event_delivery(events[units[1]], foreign)

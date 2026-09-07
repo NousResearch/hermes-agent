@@ -1739,6 +1739,7 @@ def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
 
 def _run_agent_with_watchdog(
     agent, prompt: str, job: dict, job_id: str, job_name: str, task_id: str, cancel_event,
+    worker_state: Optional[dict] = None,
 ) -> dict:
     """Run ``agent.run_conversation`` on a worker thread under the inactivity (not wall-clock)
     watchdog: default 600s, override HERMES_CRON_TIMEOUT, 0 = unlimited."""
@@ -1783,6 +1784,8 @@ def _run_agent_with_watchdog(
     _cron_context = contextvars.copy_context()
     _cron_future = _cron_pool.submit(
         _cron_context.run, agent.run_conversation, prompt, task_id=task_id)
+    if worker_state is not None:
+        worker_state["future"] = _cron_future
     _inactivity_timeout = False
     _watch_stop = threading.Event()
 
@@ -2330,6 +2333,7 @@ def run_job(
     model = ""
     _session_db = None
     _audit: Optional[_FireAudit] = None
+    _worker_state: dict = {}
     scope = _CronRunScope(job, job_id, execution_id)
     try:
         scope.enter()
@@ -2353,7 +2357,8 @@ def run_job(
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(
-            agent, prompt, job, job_id, job_name, scope.task_id, cancel_event)
+            agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
+            worker_state=_worker_state)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
@@ -2368,15 +2373,19 @@ def run_job(
         # No audit row when we failed before the agent existed; the audit write must never raise.
         if _audit is not None:
             _audit.write({}, error_msg)
+        from cron.scheduler_diagnostics import format_run_error
         output = (
             _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)
-            + f"## Error\n\n```\n{error_msg}\n```\n"
+            + format_run_error(e)
         )
         return False, output, "", error_msg
 
     finally:
+        from cron.scheduler_detached_worker import defer_teardown_to_running_worker
+        _worker_teardown_deferred = defer_teardown_to_running_worker(
+            _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id)
         scope.exit()
-        if _session_db:
+        if _session_db and not _worker_teardown_deferred:
             _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id)
         # Tear down the ephemeral agent or the gateway leaks fds per tick (EMFILE). With deferred
         # teardown, hand the live agent back: delivery needs a live async client.
@@ -2385,11 +2394,12 @@ def run_job(
         # per job until it hits EMFILE (#10200 / "too many open files"). When the caller opted to defer
         # teardown (passed a list), hand the live agent back instead of closing it here — delivery must run
         # against a live async client, and the caller tears down afterwards (#58720).
-        if defer_agent_teardown is not None:
-            if agent is not None:
-                defer_agent_teardown.append(agent)
-        else:
-            _teardown_cron_agent(agent, job_id)
+        if not _worker_teardown_deferred:
+            if defer_agent_teardown is not None:
+                if agent is not None:
+                    defer_agent_teardown.append(agent)
+            else:
+                _teardown_cron_agent(agent, job_id)
 
 
 def _teardown_cron_agent(
@@ -2508,7 +2518,8 @@ def run_one_job(
     # API fires) crosses this seam.  Ensure the detached worker has a durable
     # attempt to adopt before any launch can occur.
     if not job.get("execution_id"):
-        execution = create_execution(job["id"], source="direct")
+        execution = create_execution(
+            job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))
         job["execution_id"] = execution["id"]
 
     execution_id = str(job["execution_id"])
@@ -2869,7 +2880,8 @@ def _run_one_job_body(
 
     execution_id = job.get("execution_id")
     if not execution_id:
-        execution_id = create_execution(job["id"], source="direct")["id"]
+        execution_id = create_execution(
+            job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))["id"]
     delivery_attempted = False
     delivery_error = None
     from agent.secret_scope import (
@@ -3403,6 +3415,8 @@ def create_job_with_scheduler_registration(**kwargs) -> dict:
     from cron.scheduler_provider import resolve_cron_scheduler
 
     job = create_job(**kwargs)
+    if not job.get("enabled", True):
+        return job
     try:
         resolve_cron_scheduler().register_job(job)
     except Exception as exc:
@@ -3619,6 +3633,7 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     # CAS returns the persisted record; bool fallback only for older test doubles.
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
     claimed_job["execution_id"] = job["execution_id"]
+    claimed_job["_scheduled_instant"] = job.get("_scheduled_instant")
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
 
 
@@ -3672,7 +3687,8 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         return None
     # Record the attempt before dispatch; recovery marks abandoned rows unknown (no retry).
     try:
-        execution = create_execution(job_id, source="builtin")
+        execution = create_execution(
+            job_id, source="builtin", scheduled_instant=job.get("_scheduled_instant"))
         dispatched_job = dict(job, execution_id=execution["id"])
         _ctx = contextvars.copy_context()
     except Exception as execution_err:

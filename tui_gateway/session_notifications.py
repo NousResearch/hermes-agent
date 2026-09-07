@@ -104,6 +104,10 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     evt_type = evt.get("type", "completion")
     if evt_type == "async_delegation":
         # No process session_id: else every completion keys as ("", "async_delegation") and the second is suppressed forever.
+        # An early per-task failure notice must not collapse with the batch's final result (nor with a sibling's notice).
+        if evt.get("task_failure_notice"):
+            task_idx = ((evt.get("results") or [{}])[0] or {}).get("task_index", "")
+            return (evt.get("delegation_id", ""), evt_type, "task_failure", task_idx)
         return (evt.get("delegation_id", ""), evt_type)
     extra = _DEDUP_EXTRA_FIELDS.get("watch_overflow_" if evt_type.startswith("watch_overflow_") else evt_type, ())
     return (evt.get("session_id", ""), evt_type, *(evt.get(f, 0 if f == "suppressed" else "") for f in extra))
@@ -410,7 +414,8 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str, claim: 
     complete_event_delivery(evt, claim)
 
 
-def _notif_reserve_event(sid: str, session: dict, registry, *, shutdown: bool = False):
+def _notif_reserve_event(sid: str, session: dict, registry, *, shutdown: bool = False,
+                         event=None, owned: bool = False):
     """Dequeue/classify one event while the caller holds ``completion_routing_lock``.
 
     Formatting, durable claims, UI emission, sleeping, and model dispatch happen after
@@ -419,17 +424,20 @@ def _notif_reserve_event(sid: str, session: dict, registry, *, shutdown: bool = 
     empty boundary caused by this poller.
     """
     queue = registry.completion_queue
-    try:
-        evt = queue.get_nowait()
-    except Exception:
-        return None, "empty"
+    if event is None:
+        try:
+            evt = queue.get_nowait()
+        except Exception:
+            return None, "empty"
+    else:
+        evt = event
 
     evt_type = evt.get("type", "completion")
     is_delegation = evt_type == "async_delegation"
-    if _notification_event_belongs_elsewhere(sid, session, evt):
+    if not owned and _notification_event_belongs_elsewhere(sid, session, evt):
         queue.put(evt)
         return None, "foreign"
-    if _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
+    if not owned and _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
         origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
         if shutdown and is_delegation:
             queue.put(evt)
@@ -449,7 +457,7 @@ def _notif_reserve_event(sid: str, session: dict, registry, *, shutdown: bool = 
     return evt, "reserved"
 
 
-def _notif_handle_event(sid, session, evt, emitted, registry, fmt, action) -> None:
+def _notif_handle_event(sid, session, evt, emitted, registry, fmt, action, completions) -> None:
     """Format/emit outside routing reservation, then claim DB row before ``running``."""
     try:
         text = fmt(evt)
@@ -466,23 +474,33 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, action) -> No
     # poll while busy, while distinct watch matches remain visible.
     dedup_key = _notification_event_dedup_key(evt)
     if dedup_key not in emitted:
-        _emit("status.update", sid, {"kind": "process", "text": text})
+        from tools.process_registry_notifications import async_delegation_display_text
+        display_text = async_delegation_display_text(evt) if evt.get("type") == "async_delegation" else text
+        _emit("status.update", sid, {"kind": "process", "text": display_text})
         emitted.add(dedup_key)
     if action != "reserved":
+        return
+    if evt.get("type", "completion") == "completion":
+        completions.append((evt, text))
         return
 
     from tools.async_delegation import claim_event_delivery
     # A racing user prompt gets priority.  Crucially, ``running`` is published only
     # after the durable claim succeeds; reconciliation returning None cannot wedge UI.
-    with session["history_lock"]:
-        if session.get("running") or session.get("_finalized"):
-            claim = None
-            raced_busy = True
-        else:
-            raced_busy = False
-            claim = claim_event_delivery(evt, "tui-poller")
-            if claim is not None:
-                session["running"] = True
+    try:
+        with session["history_lock"]:
+            if session.get("running") or session.get("_finalized"):
+                claim = None
+                raced_busy = True
+            else:
+                raced_busy = False
+                claim = claim_event_delivery(evt, "tui-poller")
+                if claim is not None:
+                    session["running"] = True
+    except Exception:
+        _notif_requeue_if_pending(registry, evt)
+        logger.exception("Could not claim notification; kept for retry")
+        return
     if raced_busy:
         with registry.completion_routing_lock:
             registry.completion_queue.put(evt)
@@ -493,12 +511,78 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, action) -> No
     _notif_dispatch_event(sid, session, evt, text, claim)
 
 
+def _notif_dispatch_completions(sid, session, notifications, registry, deferred):
+    from tools.process_registry_notifications import ProcessNotificationBatch
+    from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+
+    if not notifications:
+        return
+    if not _notif_claim_turn(session):
+        with registry.completion_routing_lock:
+            for event, _text in notifications:
+                (deferred.append if deferred is not None else registry.completion_queue.put)(event)
+        if deferred is None:
+            time.sleep(0.25)
+        return
+    claimed = [(event, text, claim) for event, text in notifications
+               if (claim := claim_event_delivery(event, "tui-completion-batch")) is not None]
+    text = ProcessNotificationBatch(tuple((event, text) for event, text, _claim in claimed)).render(registry)
+    if text is None:
+        _notif_release_turn(session)
+    try:
+        if text is not None:
+            _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
+                          "completion batch dispatch failed")
+    except Exception:
+        for event, _text, claim in claimed:
+            release_event_delivery(event, claim)
+        return
+    for event, _text, claim in claimed:
+        complete_event_delivery(event, claim)
+
+
+def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, *, owned=False, reservations=None):
+    """Preserve main's ordered completion runs and its ownership-once post-turn path.
+
+    The poller supplies reservations classified under the shared routing lock.
+    Post-turn events have already passed ProcessRegistry's ownership filter.
+    Rendering, durable claims and agent turns are all outside that lock.
+    """
+    completions = []
+    for index, event in enumerate(events):
+        if event.get("type", "completion") != "completion":
+            _notif_dispatch_completions(sid, session, completions, registry, deferred)
+            completions = []
+        if reservations is None:
+            with registry.completion_routing_lock:
+                event, action = _notif_reserve_event(
+                    sid, session, registry, event=event, owned=owned,
+                    shutdown=deferred is not None)
+        else:
+            action = reservations[index]
+        if event is not None:
+            _notif_handle_event(sid, session, event, emitted, registry, fmt, action, completions)
+    _notif_dispatch_completions(sid, session, completions, registry, deferred)
+
+
+def _notif_drain_ready(sid, session, registry, *, shutdown=False):
+    """One bounded routing snapshot; busy/foreign events are requeued before unlock."""
+    ready, actions = [], []
+    with registry.completion_routing_lock:
+        for _ in range(registry.completion_queue.qsize()):
+            event, action = _notif_reserve_event(sid, session, registry, shutdown=shutdown)
+            if event is not None:
+                ready.append(event)
+                actions.append(action)
+    return ready, actions
+
+
 def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
     """Daemon notification and kanban poller for one TUI/Desktop session."""
     from tools.process_registry import process_registry
     from tools.process_registry_notifications import format_process_notification
 
-    emitted: set = set()
+    emitted = session.setdefault("_notification_emitted", set())
     last_kanban_poll = last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
@@ -513,41 +597,32 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
             last_kanban_poll = now
             _notif_poll_kanban(sid, session)
 
-        with process_registry.completion_routing_lock:
-            evt, action = _notif_reserve_event(sid, session, process_registry)
-        if evt is not None:
-            _notif_handle_event(
-                sid, session, evt, emitted, process_registry,
-                format_process_notification, action)
-        if action in {"empty", "foreign", "busy"}:
-            time.sleep({"empty": 0.5, "foreign": 0.1, "busy": 0.25}[action])
+        ready, actions = _notif_drain_ready(sid, session, process_registry)
+        _notif_handle_ready(sid, session, ready, emitted, process_registry,
+                            format_process_notification, None, reservations=actions)
+        if not ready or "busy" in actions:
+            time.sleep(0.25 if ready else 0.5)
 
-    # One bounded shutdown snapshot: foreign/busy requeues cannot spin forever.
-    try:
-        remaining = process_registry.completion_queue.qsize()
-    except Exception:
-        remaining = 0
-    for _ in range(max(0, remaining)):
-        with process_registry.completion_routing_lock:
-            evt, action = _notif_reserve_event(
-                sid, session, process_registry, shutdown=True)
-        if evt is not None:
-            _notif_handle_event(
-                sid, session, evt, emitted, process_registry,
-                format_process_notification, action)
-        if action in {"empty", "busy"}:
-            break
+    ready, actions = _notif_drain_ready(sid, session, process_registry, shutdown=True)
+    deferred = []
+    _notif_handle_ready(sid, session, ready, emitted, process_registry,
+                        format_process_notification, deferred, reservations=actions)
+    with process_registry.completion_routing_lock:
+        for event in deferred:
+            process_registry.completion_queue.put(event)
 
 
 def _async_delegation_display_metadata(evt: dict) -> dict:
     """Build display-only metadata before the completion event is formatted."""
+    from tools.process_registry_notifications import async_delegation_display_text
     raw_results = evt.get("results")
     results: list[dict] = [r for r in raw_results if isinstance(r, dict)] if isinstance(raw_results, list) else []
     task_count = len(results) or 1
     completed_count = sum(1 for r in results if r.get("status") in {"completed", "success"})
     failed_count = sum(1 for r in results if r.get("status") in {"failed", "error"})
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
-    return {"delegation_id": str(evt.get("delegation_id") or ""), "task_count": task_count,
+    return {"display_text": async_delegation_display_text(evt),
+            "delegation_id": str(evt.get("delegation_id") or ""), "task_count": task_count,
             "completed_count": completed_count or task_count - failed_count, "failed_count": failed_count,
             **({"duration_seconds": duration} if isinstance(duration, (int, float)) else {})}
 

@@ -398,6 +398,9 @@ class AIAgent(
         # Session boundary: the usage anchor describes the OLD transcript; fall back to full estimation.
         self._usage_anchor = None
         self._turn_base_usage_anchor = None
+        # The workspace snapshot is pinned per session (agent/system_prompt.py::_coding_parts); a
+        # /new, /resume or /branch on the same agent must re-snapshot at its own session start.
+        self._frozen_workspace_snapshot = None
 
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
@@ -922,20 +925,6 @@ class AIAgent(
         _quietly(self._finalize_owned_session_row)
 
     # -- close()/release_clients() phases -------------------------------------------------------------
-
-    def _close_task_resources(self, task_id: str) -> None:
-        """Kill this task's background processes, then its terminal sandbox, browser daemon and computer-use
-        backend (lazy imports keep the core footprint narrow)."""
-        def kill_processes() -> None:
-            from tools.process_registry import process_registry
-            process_registry.kill_all(task_id=task_id)
-
-        def release_computer_use() -> None:
-            from tools.computer_use.tool import release_computer_use_session
-            release_computer_use_session(task_id)
-
-        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id), release_computer_use):
-            _quietly(step)
 
     def _close_active_children(self, *, soft: bool) -> None:
         """Detach and close per-turn child agents; ``soft`` releases their clients first, falling back to close()."""

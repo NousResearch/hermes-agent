@@ -136,6 +136,16 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
                     # Detached unit: a crash before the join must not lose children that already finished.
                     record_unit_child(batch.unit_id, entry)
                 _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_here - len(results))
+                if (not honor_parent_interrupt and batch.unit_id and entry.get("status") in SUBAGENT_FAILURE_STATUSES
+                        and len(results) < n_here):
+                    # Detached unit, a sibling is still running: tell the parent NOW, not when the last one finishes.
+                    # Non-durable and separate from the unit's final result (which is still delivered once).
+                    with _quiet("task failure notice failed", exc_info=True):
+                        from tools.async_delegation import push_task_failure_notice
+                        _i = entry.get("task_index", -1)
+                        _live = batch.live_paths[_i] if isinstance(_i, int) and 0 <= _i < len(batch.live_paths) else None
+                        push_task_failure_notice(
+                            batch.unit_id, {**entry, **({"live_transcript": _live} if _live else {})}, n_tasks=n_tasks)
     results.sort(key=lambda r: r["task_index"])  # match input order
 
 def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True) -> dict:
@@ -162,6 +172,11 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     update_manifest_statuses(batch.live_deleg_id, results)
 
     combined: Dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
+    # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
+    from tools.process_registry_notifications import _process_accounting_lines
+    process_notes = [line for entry in results for line in _process_accounting_lines(entry)]
+    if process_notes:
+        combined["process_notes"] = process_notes
     unit_paths = [batch.live_paths[i] for (i, _, _) in batch.children if i < len(batch.live_paths)]
     if unit_paths:
         combined["live_transcripts"] = unit_paths
@@ -265,14 +280,15 @@ def _batch_progress_token(child_agents: List[Any]) -> tuple:
 
 _BACKGROUND_NOTES = {
     "one": (
-        "Subagent is running in the background. You and the user can keep working; its full result re-enters the "
-        "conversation as a new message when it finishes. Do not wait or poll — just continue."
+        "Subagent is running in the background; its full result re-enters the conversation as a new message when it "
+        "finishes. Results are delivered only after you END YOUR TURN: do anything that does not depend on it, then "
+        "stop with a one-line status. Do not poll its transcript or artifacts to wait for it."
     ),
     "many": (
-        "{n} subagents are running in parallel in the background as {k} independent unit(s). You and the user can keep "
-        "working; each unit's results re-enter the conversation as their own message as soon as THAT unit finishes "
-        "(tasks sharing a `group` finish together; ungrouped tasks report individually), so act on each as it lands. "
-        "Do not wait or poll — just continue."
+        "{n} subagents are running in parallel in the background as {k} completion unit(s); each unit's results "
+        "re-enter the conversation as their own new message when THAT unit finishes. Results are delivered only "
+        "after you END YOUR TURN: do anything that does not depend on them, then stop with a one-line status. Do not "
+        "poll transcripts or artifacts to wait for them."
     ),
     "control_hint": (
         "While a child runs you can orchestrate it live with this same tool: delegate_task(action='list') to see live "
@@ -302,7 +318,8 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
     payload["result_delivery"] = batch.result_delivery
     if batch.result_delivery == "inject":
         payload["note"] = (
-            "Subagents run asynchronously; each ungrouped task reports alone and grouped tasks finish together. "
+            f"{n} subagent(s) run asynchronously as {len(units)} completion unit(s); "
+            "each unit reports once after all of its tasks finish. "
             "Keep working: ready units may ride a new tool-result boundary in this turn. "
             "Missed boundaries use normal after-turn delivery. Never wait or poll."
         )
@@ -318,7 +335,13 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
 def _units_of(batch: _Batch) -> List[_Batch]:
     """Partition the call's children into async units: one per distinct task ``group`` (first-appearance order) and
     one per ungrouped task. Each unit is a ``_Batch`` sharing the call's task_list/transcripts but owning a subset of
-    ``children``, so a unit joins only on itself and its completion re-enters the conversation on its own."""
+    ``children``, so a unit joins only on itself and its completion re-enters the conversation on its own.
+
+    Off by default (``delegation.independent_completions``): the whole call is ONE unit and returns as one message.
+    A per-task flurry of completions (one new turn each) fragmented orchestrators that had no plan for it."""
+    from tools.delegate_tool_config import _get_independent_completions
+    if not _get_independent_completions():
+        return [batch]
     members: Dict[Any, List[tuple]] = {}
     for i, t, c in batch.children:
         g = t.get("group")

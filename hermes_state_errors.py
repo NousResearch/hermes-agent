@@ -217,3 +217,7 @@ def classify_persistence_error(exc_or_str) -> str:
     if is_disk_full_error(exc_or_str) or any(m in text for m in ("disk", "readonly", "read-only")):
         return "disk"
     return "unknown"
+
+
+class DelegationClaimLostError(RuntimeError):
+    """A fresh tool carrier no longer owns every exact durable delivery token."""

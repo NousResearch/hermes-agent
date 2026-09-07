@@ -292,13 +292,17 @@ def _goal_followup_after_turn(
         return goal_followup
     try:
         if session.get("session_key") and (goal_mgr := _active_goal_manager(session)) is not None:
+            _active_deleg = 0
             try:
-                from hermes_cli.goals import gather_background_processes as _gather_bg
-                _bg_procs = _gather_bg()
+                from hermes_cli.goals import count_active_delegations, gather_background_processes as _gather_bg
+                # Only THIS session's processes (TUI turns register under session_key): subagents'
+                # pollers must not park the parent's goal. Same rule as the CLI and gateway loops.
+                _bg_procs = _gather_bg(owner_task_id=session.get("session_key") or None)
+                _active_deleg = count_active_delegations(getattr(session.get("agent"), "session_id", None))
             except Exception:
                 _bg_procs = None
             decision = goal_mgr.evaluate_after_turn(
-                raw, user_initiated=True, background_processes=_bg_procs)
+                raw, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
             if verdict_msg := decision.get("message") or "":
                 _emit("status.update", sid, {"kind": "goal", "text": verdict_msg})
             if decision.get("should_continue") and (
@@ -391,33 +395,15 @@ def _run_post_turn_followups(
             session_key=session.get("session_key", ""),
             owns_event=lambda e: _session_owns_notification_event(sid, session, e),
             skip_poll_observed=False)
-        for index, (_evt, synth) in enumerate(drained):
-            with session["history_lock"]:
-                busy = bool(session.get("running"))
-                if not busy:
-                    from tools.async_delegation import claim_event_delivery
-                    _claim = claim_event_delivery(_evt, "tui-post-turn")
-                    if _claim is not None:
-                        session["running"] = True
-                else:
-                    _claim = None
-            if busy:
-                # Never invert the poller's routing-lock -> history-lock order.
-                with process_registry.completion_routing_lock:
-                    for pending_evt, _pending_synth in drained[index:]:
-                        process_registry.completion_queue.put(pending_evt)
-                break
-            if _claim is None:
-                # Reconciliation may have settled the row from an already committed
-                # tool carrier.  Never leave ``running`` reserved in that case; only
-                # a still-pending competing lease goes back to the queue.
-                _notif_requeue_if_pending(process_registry, _evt)
-                continue
-            from tools.async_delegation import complete_event_delivery, release_event_delivery
-            _dispatch_followup_turn(
-                rid, sid, session, synth, "completion notification dispatch",
-                on_done=lambda evt=_evt, claim=_claim: complete_event_delivery(evt, claim),
-                on_error=lambda evt=_evt, claim=_claim: release_event_delivery(evt, claim))
+        from tools.process_registry_notifications import format_process_notification
+        deferred = []
+        _notif_handle_ready(
+            sid, session, [event for event, _text in drained],
+            session.setdefault("_notification_emitted", set()), process_registry,
+            format_process_notification, deferred, owned=True)
+        with process_registry.completion_routing_lock:
+            for event in deferred:
+                process_registry.completion_queue.put(event)
     except Exception as _drain_exc:
         _hook_failure("completion queue drain", _drain_exc)
 

@@ -309,6 +309,9 @@ class SessionMessagesMixin:
             from agent.transcript_repair import resolve_and_repair_transcript_batch
             inserted_rows = resolve_and_repair_transcript_batch(conn, session_id, messages,
                 encode_content_fn=self._encode_content, decode_content_fn=self._decode_content)
+            if any("_delegation_delivery_claims" in msg for msg in inserted_rows):
+                from tools.async_delegation import validate_tool_carrier_claims
+                validate_tool_carrier_claims(conn, session_id, inserted_rows)
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
             return inserted
@@ -1047,6 +1050,15 @@ class SessionMessagesMixin:
         """Count messages, optionally for a specific session."""
         sql = "SELECT COUNT(*) FROM messages" + (" WHERE session_id = ?" if session_id else "")
         return self._read_one(sql, (session_id,) if session_id else ())[0]
+
+    def has_gateway_input_owner(self, session_id: str, owner: str) -> bool:
+        """Probe the accepted-input marker without allocating message bodies or archives."""
+        return self._read_one(
+            "SELECT 1 FROM messages WHERE session_id = ? AND role = 'user' "
+            "AND observed = 0 AND (active = 1 OR compacted = 1) "
+            "AND CASE WHEN json_valid(display_metadata) "
+            "THEN json_extract(display_metadata, '$.gateway_input_owner') END = ? LIMIT 1",
+            (session_id, owner)) is not None
 
     def has_platform_message_id(self, session_id: str, platform_message_id: str) -> bool:
         """True when *platform_message_id* exists (partial-index probe; the gateway's transient-failure dedupe).

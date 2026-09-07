@@ -298,7 +298,7 @@ class TestDetectMessageType:
         return QQAdapter._detect_message_type(media_urls, media_types)
 
     def test_no_media(self):
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         assert self._fn([], []) == MessageType.TEXT
 
 

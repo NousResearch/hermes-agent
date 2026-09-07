@@ -1111,6 +1111,10 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
                 continue
             models = row.get("models") or []
             if current_model not in models:
+                from hermes_cli.models import _model_requires_account_discovery
+
+                if _model_requires_account_discovery(row.get("slug"), current_model):
+                    break
                 row["models"] = [current_model, *models]
                 row["total_models"] = row.get("total_models", len(models)) + 1
             break

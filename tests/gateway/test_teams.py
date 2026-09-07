@@ -592,7 +592,7 @@ class TestTeamsAttachmentClassification:
 
     @pytest.mark.anyio
     async def test_file_download_info_sets_document_type(self):
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         adapter = self._make_adapter()
         adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")
@@ -610,7 +610,7 @@ class TestTeamsAttachmentClassification:
 
     @pytest.mark.anyio
     async def test_mixed_image_and_document_prefers_document(self):
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         adapter = self._make_adapter()
         adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")

@@ -423,15 +423,14 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 
 import dataclasses
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
-from enum import Enum
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -766,15 +765,24 @@ _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
     ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config", ".azure", ".gcloud",
     "Library/Keychains")
 
+def _sqlite_files(name: str) -> tuple[str, ...]:
+    """A SQLite store plus its WAL/SHM/rollback-journal sidecars."""
+    return (name, f"{name}-wal", f"{name}-shm", f"{name}-journal")
+
+
 # Credential stores at the HERMES_HOME root, denied per-file so skills/, logs/ and agent-written
-# files stay deliverable (cache subdirs are allowlisted BEFORE this). Mirrors agent/file_safety.py
-# so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
+# files stay deliverable (cache subdirs are allowlisted BEFORE this). A superset of the
+# agent/file_safety.py read+write denies so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
 # recency window); pairing/ and mcp-tokens/ (live OAuth tokens) are denied as whole trees.
 _ROOT_CREDENTIAL_PATHS = (
     ".env", "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
     "google_token.json", "google_oauth_pending.json", os.path.join("auth", "google_oauth.json"),
     "webhook_subscriptions.json", os.path.join("cache", "bws_cache.json"),
-    os.path.join("cache", "bws_cache.enc.json"), "pairing", "mcp-tokens")
+    os.path.join("cache", "bws_cache.enc.json"), "pairing", "mcp-tokens",
+    # Whole conversation history (every secret ever pasted into a chat) and the copied browser
+    # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed
+    # too: WAL mode touches state.db-wal on every write, so recency trust alone would leak them.
+    "sessions", "browser-profile", *_sqlite_files("state.db"), *_sqlite_files("kanban.db"))
 
 
 def _profile_cache_roots() -> List[Path]:
@@ -794,20 +802,28 @@ def _profile_cache_roots() -> List[Path]:
     return [p / "cache" / subdir for p in profile_dirs for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS]
 
 
+def _kanban_root() -> Path:
+    """Kanban is root-shared across profiles by design (``kanban_db.kanban_home``)."""
+    return Path(os.environ.get("HERMES_KANBAN_HOME", "").strip() or _HERMES_ROOT).expanduser()
+
+
+def _kanban_board_dirs() -> List[Path]:
+    """Every directory under ``<root>/kanban/boards`` (lax on purpose: the DENY side must catch a
+    board whatever its name; the allow side filters further)."""
+    with contextlib.suppress(OSError):
+        return [p for p in (_kanban_root() / "kanban" / "boards").iterdir() if p.is_dir()]
+    return []
+
+
 def _kanban_attachment_roots() -> List[Path]:
     """Return durable Kanban attachment roots without importing kanban_db."""
     override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
     if override:
         return [Path(override).expanduser()]
-    home_override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
-    root = Path(home_override).expanduser() if home_override else _HERMES_ROOT
-    roots = [root / "kanban" / "attachments"]
-    with contextlib.suppress(OSError):
-        board_dirs = [path for path in (root / "kanban" / "boards").iterdir()
-                      if path.is_dir() and not path.is_symlink()
-                      and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", path.name)
-                      and (path / "kanban.db").is_file()]
-        roots.extend(path / "attachments" for path in board_dirs)
+    roots = [_kanban_root() / "kanban" / "attachments"]
+    roots.extend(path / "attachments" for path in _kanban_board_dirs()
+                 if not path.is_symlink() and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", path.name)
+                 and (path / "kanban.db").is_file())
     return roots
 
 
@@ -831,12 +847,19 @@ def _media_delivery_recency_seconds() -> float:
     return _or_default(lambda: max(0.0, float(custom)) if custom else default, default)
 
 
+def _kanban_board_db_paths() -> List[Path]:
+    """Named-board ``kanban.db`` stores (+ sidecars): they sit beside the ATTACHMENTS dir
+    ``_kanban_attachment_roots`` allowlists and hold every task, comment and run transcript."""
+    return [board / name for board in _kanban_board_dirs() for name in _sqlite_files("kanban.db")]
+
+
 def _media_delivery_denied_paths() -> List[Path]:
     """Return absolute denylist paths under which delivery is never allowed."""
     home = Path(os.path.expanduser("~"))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
             *(home / sub for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
-            *(r / rel for r in (_HERMES_HOME, _HERMES_ROOT) for rel in _ROOT_CREDENTIAL_PATHS)]
+            *(r / rel for r in (_HERMES_HOME, _HERMES_ROOT) for rel in _ROOT_CREDENTIAL_PATHS),
+            *_kanban_board_db_paths()]
 
 
 def _resolve_path(path: Path, *, strict: bool = False, expand: bool = False) -> Optional[Path]:
@@ -1108,12 +1131,26 @@ def _log_safe_path(path: str) -> str:
 
 
 def _validated_delivery_path(raw_path, session_key: str, label: str) -> Optional[str]:
-    """``validate_media_delivery_path`` plus the shared "Skipping unsafe ..." warning."""
+    """``validate_media_delivery_path`` plus the shared "Skipping unsafe ..." warning. A path the
+    host cannot see is retried against the active remote sandbox (ssh/modal/...; #466)."""
     raw = str(raw_path)
     safe_path = validate_media_delivery_path(raw, session_key=session_key)
     if not safe_path:
-        logger.warning("Skipping unsafe %s: %s", label, _log_safe_path(raw))
+        from gateway.media_fetch import fetch_remote_media
+        safe_path = fetch_remote_media(raw)
+    if not safe_path:
+        # Say WHY: a path that does not exist on the host is the common case (a model hallucinated or
+        # a sandbox path failed to translate) and is not a security rejection.
+        reason = "not found on this host" if not _existing_regular_file(raw) else "denied by the delivery policy"
+        logger.warning("Skipping %s (%s): %s", label, reason, _log_safe_path(raw))
     return safe_path
+
+
+def _existing_regular_file(raw: str) -> bool:
+    try:
+        return Path(os.path.expanduser(raw)).is_file()
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 SUPPORTED_DOCUMENT_TYPES = {
@@ -1467,91 +1504,6 @@ async def cache_media_bytes_async(
     )
 
 
-class MessageType(Enum):
-    """Types of incoming messages."""
-    TEXT = "text"
-    LOCATION = "location"
-    PHOTO = "photo"
-    VIDEO = "video"
-    AUDIO = "audio"
-    VOICE = "voice"
-    DOCUMENT = "document"
-    STICKER = "sticker"
-    COMMAND = "command"  # /command style
-
-
-class ProcessingOutcome(Enum):
-    """Result classification for message-processing lifecycle hooks."""
-    SUCCESS = "success"
-    FAILURE = "failure"
-    CANCELLED = "cancelled"
-
-
-@dataclass
-class MessageEvent:
-    """Incoming message from a platform — the normalized shape all adapters produce."""
-    text: str
-    message_type: MessageType = MessageType.TEXT
-    # Author, mirrored from ``source`` for per-message prompt builders; None for non-IM sources.
-    user_id: Optional[str] = None
-    user_name: Optional[str] = None
-    source: SessionSource = None
-    raw_message: Any = None
-    message_id: Optional[str] = None
-    # Platform update id (Telegram ``update_id``): ``/restart`` records it so the new gateway
-    # advances past it even if PTB's shutdown ACK times out.
-    platform_update_id: Optional[int] = None
-    # Media attachments: local file paths (for vision tool access)
-    media_urls: List[str] = field(default_factory=list)
-    media_types: List[str] = field(default_factory=list)
-    # Per-attachment text-inlining contract; None = legacy "text/* already inlined into ``text``".
-    media_text_inlined: List[Optional[bool]] = field(default_factory=list)
-    reply_to_message_id: Optional[str] = None
-    reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
-    reply_to_author_id: Optional[str] = None
-    reply_to_author_name: Optional[str] = None
-    reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
-    # Structured interactive-prompt reply (relay only): {prompt_id, option_id, label?,
-    # prompt_message_id?}; routed to the approval/slash-confirm/clarify resolvers BEFORE dispatch.
-    prompt_response: Optional[Dict[str, Any]] = None
-    # Auto-loaded skill(s) for topic/channel bindings; a single name or ordered list.
-    auto_skill: Optional[str | list[str]] = None
-    # Per-channel ephemeral system prompt; applied at API call time, never persisted to transcript.
-    channel_prompt: Optional[str] = None
-    # History-backfilled channel context (missed under require_mention); kept out of ``text`` so
-    # run.py's sender-prefix logic sees only the trigger message.
-    channel_context: Optional[str] = None
-    # Set for synthetic events (e.g. background-process notifications) that must bypass user authorization.
-    internal: bool = False
-    # Free-form per-event metadata (e.g. ``whatsapp_from_owner=True``); plugins must ``.get()``.
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.now)
-    # May this event resolve gateway commands / control prompts? Proactive plugin events set False
-    # so untrusted payload text stays conversational. Kept last for positional compat.
-    allow_gateway_control: bool = True
-
-    def is_command(self) -> bool:
-        """Check if this is a command message (e.g., /new, /reset)."""
-        return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")
-
-    def get_command(self) -> Optional[str]:
-        """Extract command name if this is a command message."""
-        if not self.is_command():
-            return None
-        raw = (self.text or "").lstrip().split(maxsplit=1)[0][1:].lower().split("@", 1)[0]
-        # Reject file paths: valid command names never contain /
-        return None if "/" in raw else raw
-
-    def get_command_args(self) -> str:
-        """Get the arguments after a command."""
-        if not self.is_command():
-            return self.text
-        parts = (self.text or "").lstrip().split(maxsplit=1)
-        args = parts[1] if len(parts) > 1 else ""
-        # iOS auto-corrects -- to — (em dash) and - to – (en dash)
-        return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
-
-
 @dataclass
 class TextDebounceState:
     event: MessageEvent
@@ -1621,6 +1573,11 @@ class SendResult:
     # branch without substring-matching ``error``.
     error_kind: Optional[str] = None
 
+
+# Longest server ``retry_after`` ``_send_with_retry`` will sleep inline. Longer penalties return the
+# typed failure so the delivery ledger owns the wait (#91969: a 97-minute FloodWait slept verbatim
+# pinned the send coroutine and froze inbound on every platform).
+_SEND_RETRY_INLINE_WAIT_CAP_SECS = 60.0
 
 # Platform-neutral send-failure kinds for ``SendResult.error_kind``: too_long (size cap),
 # bad_format (markup rejected; plain-text retry fixes), forbidden (the bot CANNOT reach the user),
@@ -3119,6 +3076,16 @@ class BasePlatformAdapter(ABC):
         return any(pat in lowered for pat in _RETRYABLE_ERROR_PATTERNS)
 
     @staticmethod
+    def _is_rate_limited_error(error: Optional[str]) -> bool:
+        """Return True if the error string classifies as a rate limit / flood cap.
+
+        Single wrapper around :func:`classify_send_error` so the call sites in
+        :meth:`_send_with_retry` share one notion of "is this a rate limit" instead
+        of inline copies that could drift.
+        """
+        return classify_send_error(None, error or "") == "rate_limited"
+
+    @staticmethod
     def _is_timeout_error(error: Optional[str]) -> bool:
         """Return True for read/write timeouts — NOT retryable and NOT a plain-text
         fallback trigger, because the request may already have been delivered."""
@@ -3183,7 +3150,19 @@ class BasePlatformAdapter(ABC):
         if result.success:
             return result
         error_str = result.error or ""
-        is_network = result.retryable or self._is_retryable_error(error_str)
+        # A rate-limited / flood-capped send is transient: it should back off
+        # (honoring the server's retry_after when present) rather than fall
+        # through to the plain-text fallback, which re-enters the ban and can
+        # truncate content.  Gate on the platform-neutral classifier as well so
+        # platforms that surface a rate limit without a retry_after field
+        # (e.g. Weixin raising a bare RuntimeError) get the same treatment.
+        is_rate_limited = self._is_rate_limited_error(error_str)
+        is_network = (
+            result.retryable
+            or is_rate_limited
+            or result.retry_after is not None
+            or self._is_retryable_error(error_str)
+        )
         # Timeouts: not safe to retry (may have delivered) and not a formatting error.
         if not is_network and self._is_timeout_error(error_str):
             return result
@@ -3194,6 +3173,16 @@ class BasePlatformAdapter(ABC):
                 backoff = server_retry_after
                 if backoff is None:
                     backoff = base_delay * (2 ** (attempt - 1))
+                elif backoff > _SEND_RETRY_INLINE_WAIT_CAP_SECS:
+                    # Never hold this coroutine open for a long server penalty: a 97-minute
+                    # FloodWait slept verbatim once froze inbound on every platform (#91969).
+                    # Return the typed failure; the delivery ledger redelivers after the cooldown.
+                    logger.error(
+                        "[%s] Server asked to retry after %.0fs (> %.0fs inline cap); returning "
+                        "typed failure for redelivery instead of sleeping: %s",
+                        self.name, backoff, _SEND_RETRY_INLINE_WAIT_CAP_SECS, error_str,
+                    )
+                    return result
                 delay = backoff + random.uniform(0, 1)
                 server_retry_after = None
                 logger.warning("[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s", self.name,
@@ -3204,10 +3193,36 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
-                server_retry_after = result.retry_after  # None unless the server asked again
-                if not (result.retryable or self._is_retryable_error(error_str)):
-                    break  # non-transient now — fall through to plain-text fallback
-            else:  # retries exhausted — notify user
+                if result.retry_after is not None:
+                    server_retry_after = result.retry_after
+                # The failure kind can change between attempts (a transient error may
+                # later surface as a flood/rate-limit, or a rate-limited send may give
+                # way to a permanent formatting error). Reclassify from the refreshed
+                # error_str on every attempt so the break/continue decision below
+                # reflects the current attempt, not a stale first-send classification.
+                is_rate_limited = self._is_rate_limited_error(error_str)
+                if not (
+                    result.retryable
+                    or is_rate_limited
+                    or result.retry_after is not None
+                    or self._is_retryable_error(error_str)
+                ):
+                    break  # error switched to non-transient — fall through to plain-text fallback
+            else:
+                # All retries exhausted (loop completed without break) — notify user.
+                # If the final failure is a rate-limit / still carries a server
+                # retry_after, do NOT send the delivery-failure notice now: the notice
+                # send would land inside the same flood penalty and re-enter the ban
+                # (a fourth send at t=378 in an [0, 189, 378, 378] sequence). Return
+                # the typed failure so the delivery ledger owns redelivery after the
+                # cooldown instead — no extra sleep or request needed.
+                if self._is_rate_limited_error(error_str) or result.retry_after is not None:
+                    logger.error(
+                        "[%s] Rate-limited send exhausted retries; returning typed failure "
+                        "for redelivery (no notice sent inside active flood penalty): %s",
+                        self.name, error_str,
+                    )
+                    return result
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
                 notice = (
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
@@ -3217,7 +3232,9 @@ class BasePlatformAdapter(ABC):
                 except Exception as notify_err:
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
-        # Non-network / post-retry formatting failure: try plain text as fallback
+        # Non-network / post-retry formatting failure: try plain text as fallback. A
+        # rate-limited error never reaches here: it classifies as network above and the
+        # loop only breaks on a non-transient, non-rate-limited error.
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await _send(f"(Response formatting failed, plain text:)\n\n{content[:3500]}")
         if not fallback_result.success:
@@ -3466,12 +3483,13 @@ class BasePlatformAdapter(ABC):
             return
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
-        # Topic recovery is Telegram-DM-only; skip the executor hop for group traffic.
-        if (getattr(self, "_topic_recovery_fn", None) is not None
+        expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
+        # Explicitly routed events already name their destination; recovering a
+        # different topic would redirect them and yield before the session claim.
+        if (not expected_session_key and getattr(self, "_topic_recovery_fn", None) is not None
                 and event.source.platform == Platform.TELEGRAM and event.source.chat_type == "dm"):
             await asyncio.to_thread(self._apply_topic_recovery, event)
         session_key = self._event_session_key(event)
-        expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
         if expected_session_key and session_key != expected_session_key:
             logger.warning("Dropping internally routed event: expected session=%s derived=%s",
                            expected_session_key, session_key)
@@ -3646,9 +3664,11 @@ class BasePlatformAdapter(ABC):
         delivery_adapter: "BasePlatformAdapter") -> None:
         """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
         replacement adapter live, trigger another redelivery sweep (the watcher's may have run
-        before this failure landed; atomic claiming keeps it idempotent)."""
+        before this failure landed; atomic claiming keeps it idempotent). On a flood-control refusal
+        arm the runner's timed redelivery, so the reply goes out once the penalty has passed instead
+        of waiting for the next restart."""
         try:
-            from gateway.delivery_ledger import mark_delivered, mark_failed
+            from gateway.delivery_ledger import is_flood_error, mark_delivered, mark_failed
             if getattr(result, "success", False):
                 await asyncio.to_thread(mark_delivered, obligation_id)
                 return
@@ -3661,6 +3681,11 @@ class BasePlatformAdapter(ABC):
                 if live is not delivery_adapter and callable(redeliver):
                     await redeliver(event.source.platform,
                                     profile=getattr(delivery_adapter, "_owner_profile", None))
+            elif is_flood_error(error):
+                schedule = getattr(self.gateway_runner, "_schedule_flood_redelivery", None)
+                if callable(schedule):
+                    schedule(event.source.platform,
+                             profile=getattr(delivery_adapter, "_owner_profile", None))
         except Exception:
             logger.debug("delivery ledger update failed", exc_info=True)
 

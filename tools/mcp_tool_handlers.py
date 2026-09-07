@@ -403,7 +403,8 @@ def _render_call_tool_result(result, server_name: str, redaction_values=()) -> s
     fills in only when the blocks rendered effectively empty, keeping structuredContent-only
     servers working. ``_meta`` minus reserved keys is always surfaced."""
     if mcp_field(result, "is_error", "isError", False):
-        return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error"), redaction_values))
+        error_text = _sanitize_error(_error_result_text(result) or "MCP tool returned an error", redaction_values)
+        return tool_error(_truncate_mcp_text_result(error_text))
     text_result, usable_parts = _render_content_blocks(result, server_name)
     structured = _capped_structured_content(result)
     meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))

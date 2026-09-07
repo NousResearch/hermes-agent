@@ -9,9 +9,10 @@ SCAN="$HERE/../content-scan"
 TMP=$(mktemp -d 2>/dev/null || { d=/tmp/nfcs-tests.$$; mkdir -p "$d"; printf '%s' "$d"; })
 trap 'rm -rf "$TMP"' EXIT
 
-pass=0 fail=0
+pass=0 fail=0 skipped=0
 ok()   { pass=$((pass+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 bad()  { fail=$((fail+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
+skip() { skipped=$((skipped+1)); printf '  \033[33mSKIP\033[0m %s\n' "$1"; }
 
 # Values that MATCH the tightened patterns but are obviously not real (mixed, no
 # "EXAMPLE", no long single-char run). Stand-ins for a real leaked secret. Assembled
@@ -104,5 +105,123 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-printf '\n%s passed, %s failed\n' "$pass" "$fail"
+# 4. Codex F-03 / ERR-2026-09-07-005 regression. The old --commits scan captured
+#    changed paths as newline text and expanded them UNQUOTED, so a path with a
+#    space (tab, leading dash, ...) word-split into non-existent pathspecs and its
+#    content was never scanned. A planted GitHub-token-shaped value in
+#    "dir/file name.txt" passed `--commits` clean. These must now be CAUGHT.
+
+# 4a — THE regression: a secret in a filename containing a space.
+r=$(newrepo f03_space)
+( cd "$r"
+  printf 'base\n' > base.txt && git add base.txt && git commit -qm c0
+  mkdir -p d
+  printf 'gh = "%s"\n' "$FAKE_GH" > "d/file name.txt"
+  git add -A && git commit -qm c1
+)
+if ( cd "$r" && "$SCAN" --commits "HEAD~1..HEAD" ) >/dev/null 2>&1; then
+    bad "F-03: secret in a space-containing filename is caught by --commits"
+else
+    ok  "F-03: secret in a space-containing filename is caught by --commits"
+fi
+
+# 4b — control: a space-containing filename with NO secret is not falsely flagged.
+r=$(newrepo f03_space_clean)
+( cd "$r"
+  printf 'base\n' > base.txt && git add base.txt && git commit -qm c0
+  mkdir -p d
+  printf 'just some text, no credentials\n' > "d/file name.txt"
+  git add -A && git commit -qm c1
+)
+if ( cd "$r" && "$SCAN" --commits "HEAD~1..HEAD" ) >/dev/null 2>&1; then
+    ok  "a space-containing filename with no secret is not falsely flagged"
+else
+    bad "a space-containing filename with no secret is not falsely flagged"
+fi
+
+# 4c — filename that starts with a dash.
+r=$(newrepo f03_dash)
+( cd "$r"
+  printf 'base\n' > base.txt && git add base.txt && git commit -qm c0
+  printf 'aws = "%s"\n' "$FAKE_AWS" > -leading-dash.txt
+  git add -A && git commit -qm c1
+)
+if ( cd "$r" && "$SCAN" --commits "HEAD~1..HEAD" ) >/dev/null 2>&1; then
+    bad "secret in a filename that starts with '-' is caught"
+else
+    ok  "secret in a filename that starts with '-' is caught"
+fi
+
+# 4d — filename with non-ASCII characters (probe: some filesystems/locales mangle it).
+r=$(newrepo f03_unicode)
+uni="café-π-Ω.txt"
+if ( cd "$r"
+     printf 'base\n' > base.txt && git add base.txt && git commit -qm c0
+     printf 'gh = "%s"\n' "$FAKE_GH" > "$uni" 2>/dev/null && [ -f "$uni" ] &&
+     git add -A && git commit -qm c1 ) 2>/dev/null; then
+    if ( cd "$r" && "$SCAN" --commits "HEAD~1..HEAD" ) >/dev/null 2>&1; then
+        bad "secret in a filename with non-ASCII characters is caught"
+    else
+        ok  "secret in a filename with non-ASCII characters is caught"
+    fi
+else
+    skip "non-ASCII filename case (filesystem/locale would not create the name)"
+fi
+
+# 4e — tab in a filename (probe: NTFS/Explorer discourage it; CI's ext4 is fine).
+r=$(newrepo f03_tab)
+tabname=$(printf 'has\ttab.txt')
+if ( cd "$r"
+     printf 'base\n' > base.txt && git add base.txt && git commit -qm c0
+     printf 'aws = "%s"\n' "$FAKE_AWS" > "$tabname" 2>/dev/null && [ -f "$tabname" ] &&
+     git add -A && git commit -qm c1 ) 2>/dev/null; then
+    if ( cd "$r" && "$SCAN" --commits "HEAD~1..HEAD" ) >/dev/null 2>&1; then
+        bad "secret in a filename containing a tab is caught"
+    else
+        ok  "secret in a filename containing a tab is caught"
+    fi
+else
+    skip "tab-in-filename case (this filesystem will not create the name)"
+fi
+
+# 4f — a secret introduced while RENAMING a file INTO a space-containing path,
+#      all in one commit: the added post-image must still be scanned.
+r=$(newrepo f03_rename)
+( cd "$r"
+  printf 'base\n' > base.txt && git add base.txt && git commit -qm c0
+  printf 'placeholder\n' > moveme.txt && git add moveme.txt && git commit -qm c1
+  mkdir -p "dir with space"
+  git mv moveme.txt "dir with space/renamed file.txt"
+  printf 'gh = "%s"\n' "$FAKE_GH" >> "dir with space/renamed file.txt"
+  git add -A && git commit -qm c2
+)
+if ( cd "$r" && "$SCAN" --commits "HEAD~1..HEAD" ) >/dev/null 2>&1; then
+    bad "secret added while renaming into a spaced path is caught"
+else
+    ok  "secret added while renaming into a spaced path is caught"
+fi
+
+# 4g — add-then-delete across the range, adding path has a space: caught at the add.
+r=$(newrepo f03_add_delete)
+( cd "$r"
+  printf 'base\n' > base.txt && git add base.txt && git commit -qm c0
+  mkdir -p d
+  printf 'slack = "%s"\n' "$FAKE_SLACK" > "d/temp name.txt"
+  git add -A && git commit -qm c1-add
+  git rm -q "d/temp name.txt" && git commit -qm c2-delete
+  printf 'unrelated\n' > later.txt && git add later.txt && git commit -qm c3
+)
+root=$(cd "$r" && git rev-list --max-parents=0 HEAD)
+if ( cd "$r" && "$SCAN" --commits "$root..HEAD" ) >/dev/null 2>&1; then
+    bad "secret added (spaced path) then deleted later in the range is still caught"
+else
+    ok  "secret added (spaced path) then deleted later in the range is still caught"
+fi
+
+# ---------------------------------------------------------------------------
+if [ "$skipped" -gt 0 ]; then
+    printf '\n%s passed, %s failed, %s skipped\n' "$pass" "$fail" "$skipped"
+else
+    printf '\n%s passed, %s failed\n' "$pass" "$fail"
+fi
 [ "$fail" -eq 0 ]

@@ -8,6 +8,49 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.5.3] — 2026-09-07 — hermes@233757037d (8 behind upstream/main)
+
+`RUN-2026-09-07-007`. Committed on `7139d96eb0` (`origin/main` tip after
+`NF-v0.5.2`). **PATCH** — one security fix: close the `content-scan` gate bypass
+(`ERR-2026-09-07-005` / Codex `F-03`). No application code; hook + hook tests only.
+
+### Security
+
+- **CHG-2026-09-07-019** — `.githooks/content-scan` **whitespace-path bypass fixed**
+  (`ERR-2026-09-07-005`, Codex `F-03`). The `--commits` gate (used by the
+  `pre-push` hook **and** `nf-secret-scan.yml` CI) built its changed-file list as
+  newline text and expanded it **unquoted** — `_scan "$c" $paths`. A legal path
+  with a space (`dir/file name.txt`) word-split into non-existent pathspecs and
+  its blob was never scanned; a planted `ghp_`-shaped token in such a file passed
+  the gate clean.
+  - Fix: the gate no longer puts paths in shell variables. New `_scan_commit`
+    reads `git diff-tree --no-commit-id -r --no-renames --diff-filter=d -z`
+    (NUL-delimited; `-z` also disables git's path quoting) one raw record at a
+    time, and `_scan_blob` hands `git grep -P` the **post-image blob object id**.
+    No path is passed to git as a pathspec on the gate path, so word-splitting
+    cannot occur regardless of spaces / tabs / leading dashes / Unicode.
+    `--no-renames` makes every raw record carry exactly one path (a rename ⇒
+    delete-old + add-new) and moved content is still re-scanned.
+  - `--tree` / `--worktree` (manual-audit modes) are **unchanged** — they only
+    ever pass the literal pathspec `.`, which was never affected.
+  - `.githooks/secret-guard` (the `.env` *filename* guard) is **not touched** —
+    explicitly out of scope.
+  - Tests: `.githooks/tests/run.sh` +7 cases — secret in a
+    space / tab / leading-dash / non-ASCII filename; a rename into a spaced path
+    in one commit; an add-then-delete of a spaced path across the range; and a
+    negative control (spaced filename, no secret ⇒ not flagged). **13/13 pass
+    under `bash` and `dash`** (CI's `sh`); `sh -n` / `dash -n` clean. A `skip`
+    counter was added for the tab/Unicode probes (they ran here; they self-skip
+    only on a filesystem that refuses the name).
+  - Verified explicitly (same method as the `F-04` fix): planted the exact Codex
+    repro — a `ghp_` token in `"my dir/config file.txt"` — and confirmed the
+    **pre-fix** script (`git show HEAD~1:.githooks/content-scan`) returns exit 0
+    "clean" while the **fixed** script exits 1 and reports the file + line.
+  - `.githooks/README.md` reviewed — its description ("scans the content of files
+    the new commits changed") stays accurate; no doc change.
+  - Paths: `.githooks/content-scan`, `.githooks/tests/run.sh`. Ref:
+    `ERR-2026-09-07-005`, Codex `F-03`. Run: RUN-2026-09-07-007.
+
 ## [NF-v0.5.2] — 2026-09-07 — hermes@233757037d (8 behind upstream/main)
 
 `RUN-2026-09-07-006`. Committed on `f8e9070942` (`origin/main` tip after

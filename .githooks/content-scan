@@ -59,6 +59,47 @@ _scan() {
     done
 }
 
+# --- --commits path: scan by BLOB OID, never by a path string ----------------
+# The blocking gate. A changed path containing a space / tab / leading dash /
+# Unicode char must NOT be able to word-split and silently skip the scan
+# (Codex F-03 / ERR-2026-09-07-005). So the gate reads the raw NUL-delimited
+# diff one record at a time and hands `git grep` the post-image blob's object
+# id — no path is ever passed to git as a pathspec here.
+
+# $1 = commit (report label only)  ·  $2 = post-image blob OID  ·  $3 = path (report only)
+_scan_blob() {
+    _c=$1; _oid=$2; _p=$3
+    _out=$(LC_ALL=C git grep -P -h -n -I -e "$P_AWS" -e "$P_GH" -e "$P_SLACK" "$_oid" 2>/dev/null) || return 0
+    [ -n "$_out" ] || return 0
+    _short=$(printf '%s' "$_c" | cut -c1-12)
+    printf '%s\n' "$_out" | while IFS= read -r hit; do
+        [ -n "$hit" ] || continue
+        case $hit in *"$MARKER"*) continue ;; esac
+        # `git grep -h` on a blob prints "<lineno>:<content>"; prefix commit + path.
+        printf '  %s\n' "$(printf '%s:%s:%s' "$_short" "$_p" "$hit" | cut -c1-170)" >> "$HITS"
+    done
+}
+
+# Scan every file one commit added or modified.
+#   -z              NUL-delimited output; also turns OFF git's path quoting.
+#   --no-renames    a rename => delete-old + add-new, so every raw record carries
+#                   exactly one path and moved content is still re-scanned.
+#   --diff-filter=d drop deletions (that content is already gone).
+_scan_commit() {
+    _c=$1
+    git diff-tree --no-commit-id -r --no-renames --diff-filter=d -z "$_c" 2>/dev/null \
+        | tr '\0' '\n' \
+        | while IFS= read -r _hdr; do
+            IFS= read -r _path || _path=
+            # a raw record header is ":<omode> <nmode> <osha> <nsha> <status>"
+            case $_hdr in :*) ;; *) continue ;; esac
+            _nsha=$(printf '%s\n' "$_hdr" | cut -d' ' -f4)
+            case $_nsha in *[!0-9a-f]* | '') continue ;; esac   # not a hex OID -> skip
+            case $_nsha in *[1-9a-f]*) ;; *) continue ;; esac    # all-zero -> no post-image
+            _scan_blob "$_c" "$_nsha" "$_path"
+        done
+}
+
 _report() {
     [ -s "$HITS" ] || { printf 'content-scan: clean — no AWS/GitHub/Slack credentials in %s\n' "$1"; return 0; }
     printf '\n\033[31m✖ content-scan: credential-shaped strings in %s\033[0m\n' "$1" >&2
@@ -79,10 +120,7 @@ case "$mode" in
         rng=${2:?--commits needs <a>..<b> or <sha>}
         commits=$(git rev-list "$rng" 2>/dev/null || git rev-parse "$rng" 2>/dev/null)
         for c in $commits; do
-            paths=$(git diff-tree --no-commit-id --name-only -r --diff-filter=d "$c" 2>/dev/null)
-            [ -n "$paths" ] || continue
-            # shellcheck disable=SC2086
-            _scan "$c" $paths
+            _scan_commit "$c"
         done
         _report "commits ${rng}" ;;
     --tree)

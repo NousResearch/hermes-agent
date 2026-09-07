@@ -78,29 +78,6 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
   parity tests (two runs one date, one report ⇒ flagged).
 - **Status:** OPEN — logged for scheduling; no change this run.
 
-### ERR-2026-09-07-005 — HIGH — `.githooks/content-scan` whitespace-path bypass
-
-- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
-- **Run:** RUN-2026-09-07-006
-- **Source:** Codex audit **F-03** — reproduced by Codex in a scratch repo.
-- **Confidence:** Confirmed Fact (Codex reproduced with a real `ghp_`-shaped
-  token; not re-reproduced this session).
-- **What:** in `.githooks/content-scan` (~lines 80–85) the changed-path list is
-  captured as newline text and expanded **unquoted** into `_scan`. A legal path
-  like `dir/file name.txt` word-splits into two non-existent pathspecs, so the
-  blob is never scanned. `content-scan --commits` returned exit 0 / "clean" for a
-  planted GitHub token in such a file. Both the pre-push hook and the
-  `nf-secret-scan.yml` CI job use this mode, so an ordinary filename with a space
-  defeats the content gate. The six existing scanner self-tests miss whitespace,
-  tabs, leading `-`, and NUL/newline paths.
-- **Impact:** live gap in an advertised security mechanism — a secret in a
-  space-containing filename passes both local and CI content scanning.
-- **Fix sketch (not done — R-02):** stop storing paths in shell vars — use
-  `git diff-tree -z` + a NUL-safe loop, scan one exact path at a time
-  (`git grep … -- "$path"`) or scan by blob OID; add whitespace / tab / leading-`-` /
-  Unicode / rename coverage to `.githooks/tests/run.sh`.
-- **Status:** OPEN — **queued as the next fix** after this batch (owner priority).
-
 ### ERR-2026-09-07-006 — MEDIUM — Bootstrap readiness marker is not validated
 
 - **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
@@ -146,6 +123,42 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 ---
 
 ## Resolved
+
+### ERR-2026-09-07-005 — HIGH — `.githooks/content-scan` whitespace-path bypass
+
+- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
+- **Run:** RUN-2026-09-07-006 (opened) · RUN-2026-09-07-007 (fixed)
+- **Source:** Codex audit **F-03** — reproduced by Codex in a scratch repo.
+- **Confidence:** Confirmed Fact — reproduced **and** verified fixed this session
+  (`RUN-2026-09-07-007`): a `ghp_`-shaped token in `"my dir/config file.txt"`,
+  scanned via `content-scan --commits HEAD~1..HEAD` — the pre-fix script
+  (`git show HEAD~1:.githooks/content-scan`) returned exit 0 "clean"; the fixed
+  script exits 1 and reports `…:my dir/config file.txt:1:GITHUB_TOKEN = "ghp_…"`.
+- **What:** in `.githooks/content-scan` the `--commits` gate captured the
+  changed-path list as newline text and expanded it **unquoted** into `_scan`
+  (`_scan "$c" $paths`). A legal path like `dir/file name.txt` word-split into two
+  non-existent pathspecs, so the blob was never scanned. `content-scan --commits`
+  returned exit 0 / "clean" for a planted GitHub token in such a file. Both the
+  pre-push hook and the `nf-secret-scan.yml` CI job use this mode, so an ordinary
+  filename with a space defeated the content gate. The six existing self-tests
+  covered only ASCII/no-space paths.
+- **Impact:** live gap in an advertised security mechanism — a secret in a
+  space-containing filename passed both local and CI content scanning.
+- **Resolved:** 2026-09-07 (`RUN-2026-09-07-007`, `CHG-2026-09-07-019`,
+  `NF-v0.5.3`). The `--commits` path no longer stores paths in shell variables at
+  all — new `_scan_commit` reads `git diff-tree --no-commit-id -r --no-renames
+  --diff-filter=d -z` (NUL-delimited, quoting disabled) one raw record at a time
+  and hands `git grep` the **post-image blob OID** (`_scan_blob`); no path is ever
+  passed to git as a pathspec on the gate path, so word-splitting cannot happen.
+  `--tree` / `--worktree` (which only ever pass the literal pathspec `.`) are
+  unchanged. `.githooks/tests/run.sh` gains 7 cases: secret in a space / tab /
+  leading-dash / non-ASCII filename, a rename-into-a-spaced-path in one commit, an
+  add-then-delete of a spaced path across the range, and a negative control
+  (spaced filename, no secret ⇒ not flagged). 13/13 pass under both `bash` and
+  `dash` (CI's shell); `sh -n` / `dash -n` clean.
+- **Not touched:** `.githooks/secret-guard` (the `.env` *filename* guard) — out of
+  scope for this fix.
+- **Status:** RESOLVED.
 
 ### ERR-2026-09-07-003 — HIGH — `bootstrap-north-forge.ps1` `-Force` can delete the checkout
 
@@ -359,6 +372,6 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 | ERR-2026-09-07-002 | 2026-09-07 | LOW | Upstream test compat | Upstream test files call `os.geteuid()` in an eager `skipif` decorator arg → `pytest tests/` aborts at collection on Windows. Pre-existing upstream, pulled in by the `CHG-2026-09-07-010` sync; NF touches none of the files; targeted runs green | ACCEPTED-RISK | CHG-2026-09-07-014 (owner: accept as-is, no shim; rely on Linux CI + targeted runs; revisit if upstream fixes or a full local Windows run is needed) |
 | ERR-2026-09-07-003 | 2026-09-07 | HIGH | Bootstrap tooling | Codex F-04 (data-loss): `bootstrap-north-forge.ps1` path guard rejected venv/data *inside* the repo but not *equal to* it → `-VenvDir <repo>` + `-Force` runs `Remove-Item -Recurse` on the checkout. Default `north-forge.cmd` path unaffected (no `-VenvDir` passed). Canonicalize + reject equal/inside/contains for venv AND data | RESOLVED | CHG-2026-09-07-015 (+ `tests/test_bootstrap_north_forge_path_safety.py`) |
 | ERR-2026-09-07-004 | 2026-09-07 | HIGH | Ledger tooling | Codex F-02: `collect-logs.{sh,ps1}` completeness check compares newest report-filename *date* to newest ledger-ID date, not `RUN-` id to report. One same-day report covers every run that day; run id can be absent entirely | OPEN | — (R-01: RUN-to-report manifest + FAIL on missing run) |
-| ERR-2026-09-07-005 | 2026-09-07 | HIGH | Secret scanning | Codex F-03 (reproduced): `.githooks/content-scan` expands changed paths unquoted → a filename with a space word-splits into non-existent pathspecs; a planted `ghp_` token in `dir/file name.txt` passed `--commits` clean. Pre-push + CI both affected | OPEN | — **queued next** (R-02: `git diff-tree -z` NUL-safe loop / scan by blob OID; whitespace test coverage) |
+| ERR-2026-09-07-005 | 2026-09-07 | HIGH | Secret scanning | Codex F-03 (reproduced): `.githooks/content-scan` expands changed paths unquoted → a filename with a space word-splits into non-existent pathspecs; a planted `ghp_` token in `dir/file name.txt` passed `--commits` clean. Pre-push + CI both affected | RESOLVED | CHG-2026-09-07-019 — `--commits` gate now reads `git diff-tree -z` and scans by post-image **blob OID**, never by path string; +7 `run.sh` cases (space/tab/dash/Unicode/rename/add-delete/negative). Verified before/after |
 | ERR-2026-09-07-006 | 2026-09-07 | MEDIUM | Bootstrap tooling | Codex F-05: `.nf-bootstrapped` / `north-forge.cmd` only check the marker + `hermes.exe` exist, never that the editable install points at the current checkout → renamed/copied checkout can launch stale code | OPEN | — (R-03.3: verify marker `repo=` == `$RepoRoot`, venv owns `hermes.exe`, `import hermes_cli` resolves in-repo) |
 | ERR-2026-09-07-007 | 2026-09-07 | MEDIUM | Secret scanning | Codex F-09: coverage is narrow — 3 provider token shapes only; filename block is `.env`-family only (`credentials.json` / `id_rsa` / `*.pfx` / SA-JSON unblocked); redactor skips binary/large; `--no-verify` bypasses hooks | OPEN | — (R-02.4/5: pinned maintained CI scanner + private-key/container filename policy) |

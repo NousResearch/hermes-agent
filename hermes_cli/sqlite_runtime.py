@@ -30,6 +30,18 @@ def is_sqlite_wal_reset_vulnerable(version_info: tuple[int, ...]) -> bool:
         or (3, 44, 6) <= info < (3, 45, 0))
 
 
+def ensure_safe_sqlite_writer() -> None:
+    """Fail closed before opening a writable state database on a vulnerable SQLite runtime."""
+    import sqlite3
+
+    if is_sqlite_wal_reset_vulnerable(sqlite3.sqlite_version_info):
+        raise RuntimeError(
+            "refusing writable state.db open with vulnerable SQLite runtime "
+            f"{sqlite3.sqlite_version}; use SQLite 3.51.3+, or patched 3.50.7-3.50.x "
+            "or 3.44.6-3.44.x"
+        )
+
+
 @dataclass(frozen=True)
 class SQLiteRuntimeInfo:
     """SQLite details reported by one exact Python executable."""

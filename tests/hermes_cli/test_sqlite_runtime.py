@@ -15,6 +15,7 @@ from hermes_cli.sqlite_runtime import (
     is_sqlite_wal_reset_vulnerable,
     probe_sqlite_runtime,
 )
+from hermes_state import SessionDB
 
 
 @pytest.mark.parametrize(
@@ -52,6 +53,61 @@ def test_probe_reports_the_requested_interpreters_linked_sqlite() -> None:
     with sqlite3.connect(":memory:") as conn:
         source_id = conn.execute("SELECT sqlite_source_id()").fetchone()[0]
     assert info.sqlite_source_id == source_id
+
+
+def test_writable_session_db_refuses_vulnerable_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hermes_state
+
+    monkeypatch.setattr(hermes_state.sqlite3, "sqlite_version_info", (3, 51, 2))
+    monkeypatch.setattr(hermes_state.sqlite3, "sqlite_version", "3.51.2")
+
+    with pytest.raises(RuntimeError, match="vulnerable SQLite runtime"):
+        SessionDB(db_path=tmp_path / "state.db")
+    assert not (tmp_path / "state.db").exists()
+
+
+def test_read_only_session_db_remains_available_on_vulnerable_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hermes_state
+
+    db_path = tmp_path / "state.db"
+    SessionDB(db_path=db_path).close()
+    monkeypatch.setattr(hermes_state.sqlite3, "sqlite_version_info", (3, 51, 2))
+    monkeypatch.setattr(hermes_state.sqlite3, "sqlite_version", "3.51.2")
+
+    db = SessionDB(db_path=db_path, read_only=True)
+    db.close()
+
+
+def test_shared_state_direct_writers_refuse_vulnerable_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hermes_cli.sqlite_runtime as runtime
+    import gateway.delivery_ledger as delivery_ledger
+    import tools.async_delegation as async_delegation
+
+    monkeypatch.setattr(runtime, "is_sqlite_wal_reset_vulnerable", lambda _version: True)
+    monkeypatch.setattr(delivery_ledger, "_db_path", lambda: tmp_path / "delivery-state.db")
+    monkeypatch.setattr(async_delegation, "_db_path", lambda: tmp_path / "delegation-state.db")
+
+    with pytest.raises(RuntimeError, match="vulnerable SQLite runtime"):
+        delivery_ledger._connect()
+    with pytest.raises(RuntimeError, match="vulnerable SQLite runtime"):
+        async_delegation._connect()
+    assert not (tmp_path / "delivery-state.db").exists()
+    assert not (tmp_path / "delegation-state.db").exists()
+
+    monkeypatch.setattr(runtime, "is_sqlite_wal_reset_vulnerable", lambda _version: False)
+    conn = async_delegation._connect()
+    conn.close()
+    monkeypatch.setattr(runtime, "is_sqlite_wal_reset_vulnerable", lambda _version: True)
+    assert async_delegation.get_durable_delegation("missing") is None
 
 
 @pytest.mark.skipif(os.name == "nt", reason="uses a POSIX executable probe stub")

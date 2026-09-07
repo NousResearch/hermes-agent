@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.sqlite_runtime import ensure_safe_sqlite_writer
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 
@@ -83,6 +84,7 @@ def _db_path():
 
 
 def _connect() -> sqlite3.Connection:
+    ensure_safe_sqlite_writer()
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)
@@ -91,6 +93,15 @@ def _connect() -> sqlite3.Connection:
     except Exception:
         conn.close()  # don't leak the connection on PRAGMA/DDL failure
         raise
+    return conn
+
+
+def _connect_read_only() -> sqlite3.Connection:
+    path = _db_path()
+    conn = sqlite3.connect(
+        f"file:{path}?mode=ro", uri=True, timeout=1.0,
+    )
+    conn.execute("PRAGMA query_only = ON")
     return conn
 
 
@@ -447,11 +458,17 @@ def _event_delivery(fn, evt: Dict[str, Any], claim_id: str) -> None:
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
-    with _DB_LOCK, _transaction() as conn:
+    path = _db_path()
+    if not path.exists():
+        return None
+    conn = _connect_read_only()
+    try:
         row = conn.execute("""SELECT origin_session, state, dispatched_at, completed_at,
                       result_json, delivery_state, delivery_attempts,
                       origin_session_id
                FROM async_delegations WHERE delegation_id=?""", (delegation_id,)).fetchone()
+    finally:
+        conn.close()
     return None if row is None else {
         "delegation_id": delegation_id, "origin_session": row[0], "state": row[1], "dispatched_at": row[2],
         "completed_at": row[3], "result": json.loads(row[4]) if row[4] else None, "delivery_state": row[5],

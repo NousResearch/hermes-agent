@@ -1,4 +1,4 @@
-import os, sys, json, asyncio, threading, tempfile, sqlite3, socket
+import os, sys, json, asyncio, threading, tempfile, sqlite3, socket, subprocess, tracemalloc
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from types import SimpleNamespace
@@ -146,7 +146,16 @@ import run_agent
 
 class ControlledAgent(AIAgent):
     def __init__(self, *args, **kwargs):
-        if fault == "pre-agent":
+        if fault == "foreign-writer":
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).with_name("foreign_writer.py")),
+                 str(ROOT), str(HOME / "state.db"), sid],
+                capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=20,
+            )
+            assert result.returncode == 0, result.stderr
+            faults.append("foreign-writer-committed")
+            raise RuntimeError("controlled construction failure after independent write")
+        if fault in ("pre-agent", "archive-memory"):
             faults.append("agent-construction")
             raise RuntimeError("controlled agent initialization failure")
         kwargs["enabled_toolsets"] = []
@@ -178,9 +187,24 @@ from gateway.session_transcript import TranscriptReadError
 original_load = runner.session_store.load_transcript
 
 
+raw_reads = []
+original_get_messages = SessionDB.get_messages
+
+
+def observed_get_messages(self, session_id, *args, **kwargs):
+    if kwargs.get("include_inactive") or kwargs.get("include_compacted") or any(args[:2]):
+        raw_reads.append(session_id)
+    return original_get_messages(self, session_id, *args, **kwargs)
+
+
+SessionDB.get_messages = observed_get_messages
+
+
 def controlled_load(session_id, **kwargs):
-    if fault == "raw-read" and kwargs.get("raw"):
-        faults.append("raw-read")
+    if kwargs.get("raw"):
+        raw_reads.append(session_id)
+    if fault == "history-read":
+        faults.append("history-read")
         raise TranscriptReadError(session_id)
     return original_load(session_id, **kwargs)
 
@@ -196,7 +220,7 @@ def rows():
         return [
             dict(row)
             for row in conn.execute(
-                "SELECT id,role,content,platform_message_id,timestamp FROM messages "
+                "SELECT id,role,content,platform_message_id,timestamp,display_metadata,active,compacted FROM messages "
                 "WHERE session_id=? ORDER BY id",
                 (sid,),
             )
@@ -204,13 +228,14 @@ def rows():
 
 
 async def main():
-    global fault
+    global fault, source, entry
     from datetime import datetime
 
     observations = []
     expected = []
     cases = [
-        ("warmup", "100", None, True),
+        ("chat A input", "100", None, True),
+        ("chat B distinct input", "100", "pre-agent", True),
         ("same happy input", "101", None, True),
         ("same happy input", "102", None, True),
         ("synthetic happy", None, None, True),
@@ -224,12 +249,20 @@ async def main():
         ("init failure", "107", "pre-agent", True),
         ("synthetic init failure", None, "pre-agent", True),
         ("synthetic init failure", None, "pre-agent", True),
-        ("synthetic init failure", None, "raw-read", False),
+        ("synthetic init failure", None, "history-read", False),
+        ("keyless independent-writer input", None, "foreign-writer", True),
+        ("bounded archive input", None, "archive-memory", True),
         ("healthy follow-up", "108", None, True),
     ]
     # Deliberately identical timestamps: independently accepted keyless turns must survive too.
     timestamp = datetime.fromtimestamp(1700000000)
     for text, pid, fault, accepted in cases:
+        if text == "chat B distinct input":
+            from dataclasses import replace
+            source = replace(source, chat_id="chat-B")
+            other = runner.session_store.get_or_create_session(source)
+            entry = runner.session_store.switch_session(other.session_key, sid)
+            assert entry
         event = MessageEvent(
             text=text,
             source=source,
@@ -237,25 +270,43 @@ async def main():
             internal=pid is None,
             timestamp=timestamp,
         )
+        if fault == "archive-memory":
+            # Large archived payloads must stay in SQLite, not become a Python baseline.
+            with sqlite3.connect(HOME / "state.db") as conn:
+                conn.executemany(
+                    "INSERT INTO messages (session_id, role, content, timestamp, active, compacted) "
+                    "VALUES (?, 'user', ?, 1, 0, 1)",
+                    ((sid, "x" * 4096) for _ in range(5000)),
+                )
+            tracemalloc.start()
+        before_raw = len(raw_reads)
         before_requests = len(requests)
         before_faults = len(faults)
         runner._evict_cached_agent(entry.session_key)
         response = await runner._handle_message(event)
+        peak = None
+        if fault == "archive-memory":
+            _, peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+        if fault == "foreign-writer":
+            expected.append(("foreign independent input", None))
         if accepted:
             expected.append((text, pid))
         actual = [
             (r["content"], r["platform_message_id"])
             for r in rows()
-            if r["role"] == "user"
+            if r["role"] == "user" and r["active"]
         ]
         hit = faults[before_faults:]
-        if fault == "raw-read":
+        if fault == "history-read":
             reached = (
-                hit == ["raw-read"]
+                hit == ["history-read"]
                 and len(requests) == before_requests
                 and "history is temporarily unavailable" in response
             )
-        elif fault == "pre-agent":
+        elif fault == "foreign-writer":
+            reached = hit == ["foreign-writer-committed"] and len(requests) == before_requests
+        elif fault in ("pre-agent", "archive-memory"):
             reached = hit == ["agent-construction"] and len(requests) == before_requests
         elif fault == "post-agent":
             reached = (
@@ -272,17 +323,28 @@ async def main():
                 accepted=accepted,
                 expected_users=len(expected),
                 actual_users=len(actual),
-                pass_=actual == expected,
+                pass_=actual == expected and len(raw_reads) == before_raw
+                and (peak is None or peak < 8 * 1024 * 1024),
+                raw_reads=len(raw_reads) - before_raw,
+                archive_peak_bytes=peak,
                 reached=reached,
                 faults=hit,
                 requests=len(requests) - before_requests,
                 response=response,
             )
         )
+    users = [r for r in rows() if r["role"] == "user" and r["active"]]
+    markers = [json.loads(r["display_metadata"] or "{}").get("gateway_input_owner") for r in users]
+    observations.append(dict(
+        text="durable marker propagation", reached=bool(users),
+        pass_=all(isinstance(m, str) and m for m in markers) and len(set(markers)) == len(markers)
+        and all("display_metadata" not in m for request in requests
+                for m in request["body"].get("messages", [])),
+    ))
     receipt = dict(
         home=str(HOME),
         observations=observations,
-        rows=rows(),
+        rows=[r for r in rows() if r["active"]],
         requests=len(requests),
         blocked_external_attempts=blocked,
         passed=sum(o["pass_"] and o["reached"] for o in observations),

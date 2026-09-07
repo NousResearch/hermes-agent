@@ -28,7 +28,7 @@ def test_gateway_failure_writer_preserves_accepted_turn_identity(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_failure_owner_uses_launch_rows_across_compaction(tmp_path):
+def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
     import asyncio
     import sqlite3
     from gateway.config import GatewayConfig, Platform
@@ -45,81 +45,65 @@ def test_failure_owner_uses_launch_rows_across_compaction(tmp_path):
             return None
 
         runner._hmwa_stop_typing_for_turn = stop_typing
-        for index, (pid, parent_write) in enumerate(
-            (pid, parent_write)
-            for pid in (None, "current-platform-input")
-            for parent_write in (False, True)
+        # An archived ancestor or the published live child can own a turn. Neither
+        # a reaped sibling nor undone/observed/foreign-marker rows can own it.
+        cases = ("ancestor", "middle-ancestor", "live-child", "reaped", "undone", "observed", "foreign", "unmarked")
+        for index, (location, pid) in enumerate(
+            (location, pid) for location in cases for pid in (None, "100")
         ):
             source = SessionSource(
-                platform=Platform.TELEGRAM,
-                chat_id=f"fixture-{index}",
-                user_id="fixture",
+                platform=Platform.TELEGRAM, chat_id=f"fixture-{index}", user_id="fixture"
             )
             entry = store.get_or_create_session(source)
             sid = entry.session_id
             db = store._db_for_session_id(sid)
-            # Existing identical input cannot supply current-turn ownership. Rich input's
-            # durable text also differs from its prepared content.
-            db.append_message(sid, "user", "same [screenshot]")
-            baseline = frozenset(r["id"] for r in store.load_transcript(sid, raw=True))
+            owner = f"accepted-owner-{index}"
+            metadata = {"gateway_input_owner": owner}
             prepared = runner._PreparedTurn(
-                [],
-                "",
-                "same",
-                [{"type": "text", "text": "same"}],
-                1700000000,
-                None,
-                sid,
-                baseline,
+                [], "", "same", [{"type": "text", "text": "same"}],
+                1700000000, None, sid, owner,
             )
-            if parent_write:
-                current_id = db.append_message(
-                    sid, "user", "same [screenshot]", platform_message_id=pid
-                )
+            db.append_message(sid, "user", "same [screenshot]")
+            middle = sid + "-middle"
+            db.create_session(middle, source="telegram", parent_session_id=sid)
+            orphan = sid + "-orphan"
+            child = sid + "-live"
+            db.create_session(orphan, source="telegram", parent_session_id=middle)
+            db.end_session(orphan, "ws_orphan_reap")
+            db.create_session(child, source="telegram", parent_session_id=middle)
+            target = {"ancestor": sid, "middle-ancestor": middle, "reaped": orphan}.get(location, child)
+            marker = {"gateway_input_owner": "foreign-writer"} if location == "foreign" else metadata
+            current_id = db.append_message(
+                target, "user", "same [screenshot]", platform_message_id=pid,
+                observed=location == "observed",
+                display_metadata=None if location == "unmarked" else marker,
+            )
+            db.end_session(sid, "compression")
+            db.end_session(middle, "compression")
+            if location in ("ancestor", "middle-ancestor", "undone"):
                 with sqlite3.connect(db.db_path) as conn:
                     conn.execute(
-                        "UPDATE messages SET active=0, compacted=1 WHERE id=?",
-                        (current_id,),
+                        "UPDATE messages SET active=0, compacted=? WHERE id=?",
+                        (int(location != "undone"), current_id),
                     )
-            child = sid + "-child"
-            db.end_session(sid, "compression")
-            db.create_session(child, source="telegram", parent_session_id=sid)
-            if not parent_write:
-                current_id = db.append_message(
-                    child, "user", "same [screenshot]", platform_message_id=pid
-                )
             store._publish_transcript_reroute(sid, child)
+            owned = location in ("ancestor", "middle-ancestor", "live-child")
+            assert store.has_input_owner(sid, owner) is owned, location
+            # A restarted store has no published map and must pick the same live child.
+            store._transcript_reroutes.clear()
+            assert store.has_input_owner(sid, owner) is owned, location
             before = db.message_count()
             await runner._hmwa_agent_error_reply(
                 RuntimeError("controlled post-compaction failure"),
                 MessageEvent(text="same", source=source, message_id=pid),
-                source,
-                entry,
-                entry.session_key,
-                prepared,
+                source, entry, entry.session_key, prepared,
             )
-            assert db.message_count() == before
-            assert current_id in {r["id"] for r in store.load_transcript(sid, raw=True)}
-        source = SessionSource(
-            platform=Platform.TELEGRAM, chat_id="observed", user_id="fixture"
-        )
-        entry = store.get_or_create_session(source)
-        sid = entry.session_id
-        prepared = runner._PreparedTurn(
-            [], "", "accepted", "accepted", 1700000000, None, sid
-        )
-        db.append_message(sid, "user", "ambient observation", observed=True)
-        before = db.message_count()
-        await runner._hmwa_agent_error_reply(
-            RuntimeError("controlled pre-agent failure"),
-            MessageEvent(text="accepted", source=source, message_id=None),
-            source,
-            entry,
-            entry.session_key,
-            prepared,
-        )
-        assert db.message_count() == before + 1
-        assert db.get_messages(sid)[-1]["content"] == "accepted"
+            assert db.message_count() == before + (not owned), location
+            assert store.has_input_owner(sid, owner), location
+            if not owned:
+                latest = db.get_messages(child)[-1]
+                assert latest["content"] == prepared.persist_user_message
+                assert latest["display_metadata"]["gateway_input_owner"] == owner
         db.close()
 
     asyncio.run(check())

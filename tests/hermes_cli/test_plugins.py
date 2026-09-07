@@ -1182,6 +1182,39 @@ class TestForceReloadSymmetry:
         assert msg2 == _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
         hold.set()
 
+    def test_pre_tool_call_retries_after_running_worker_becomes_stale(self, monkeypatch, caplog):
+        """A permanently hung policy worker must not block tools until restart."""
+        from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+        import hermes_cli.plugins_dispatch as dispatch_mod
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+        )
+        now = 0.0
+        monkeypatch.setattr(dispatch_mod.time, "monotonic", lambda: now)
+
+        release_first = threading.Event()
+        starts = []
+
+        def policy(**_kwargs):
+            starts.append(len(starts) + 1)
+            if len(starts) == 1:
+                release_first.wait(timeout=10.0)
+            return None
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call"] = [policy]
+
+        assert mgr.invoke_hook("pre_tool_call") == [
+            {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
+        ]
+
+        now = 60.2
+        assert mgr.invoke_hook("pre_tool_call") == []
+        assert starts == [1, 2]
+        assert "remained running for 60.2s; abandoning stale worker token and retrying" in caplog.text
+        release_first.set()
+
     def test_pre_tool_call_worker_start_failure_fails_closed_without_sticking(
         self, monkeypatch
     ):

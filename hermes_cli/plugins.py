@@ -1151,9 +1151,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._event_queue: queue.Queue[Any] = queue.Queue(maxsize=_EVENT_PENDING_CAP)
         self._event_worker: Optional[threading.Thread] = None
         self._emit_depth = threading.local()
-        # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb)) so a stuck
-        # policy hook cannot spawn a new abandoned thread on every fire.
-        self._hook_running_callbacks: Dict[tuple, object] = {}
+        # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb)). Each value is
+        # (identity token, start time), allowing bounded retries without letting a stuck policy hook
+        # spawn a new abandoned thread on every fire.
+        self._hook_running_callbacks: Dict[tuple, Tuple[object, float]] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS

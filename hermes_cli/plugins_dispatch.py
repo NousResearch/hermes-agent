@@ -207,17 +207,32 @@ class PluginDispatchMixin:
         callback_name = getattr(cb, "__name__", repr(cb))
         callback_key = (hook_name, id(cb))
         token = object()
+        started_at = time.monotonic()
         with self._hook_timeout_lock:
+            now = time.monotonic()
             suppressed_until = self._hook_timeout_suppressed_until.get(callback_key)
-            running = callback_key in self._hook_running_callbacks
-            if (suppressed_until is not None and suppressed_until > time.monotonic()) or running:
+            running = self._hook_running_callbacks.get(callback_key)
+            if suppressed_until is not None and suppressed_until > now:
                 logger.warning(
-                    "Hook '%s' callback %s skipped after previous "
-                    "timeout or while still running", hook_name, callback_name)
+                    "Hook '%s' callback %s skipped during timeout suppression", hook_name, callback_name)
                 return _HOOK_SKIPPED
+            if running is not None:
+                running_token, running_since = running
+                running_age = max(0.0, now - running_since)
+                stale_after = timeout + self._hook_timeout_suppression_seconds
+                if running_age < stale_after:
+                    logger.warning(
+                        "Hook '%s' callback %s skipped while still running (age %.1fs)",
+                        hook_name, callback_name, running_age)
+                    return _HOOK_SKIPPED
+                logger.error(
+                    "Hook '%s' callback %s remained running for %.1fs; abandoning stale worker "
+                    "token and retrying", hook_name, callback_name, running_age)
+                if self._hook_running_callbacks.get(callback_key) == (running_token, running_since):
+                    self._hook_running_callbacks.pop(callback_key, None)
             if suppressed_until is not None:
                 self._hook_timeout_suppressed_until.pop(callback_key, None)
-            self._hook_running_callbacks[callback_key] = token
+            self._hook_running_callbacks[callback_key] = (token, started_at)
 
         context = contextvars.copy_context()
         done = threading.Event()
@@ -226,7 +241,8 @@ class PluginDispatchMixin:
 
         def _release_token() -> None:
             with self._hook_timeout_lock:
-                if self._hook_running_callbacks.get(callback_key) is token:
+                running = self._hook_running_callbacks.get(callback_key)
+                if running is not None and running[0] is token:
                     self._hook_running_callbacks.pop(callback_key, None)
 
         def _runner() -> None:

@@ -1,0 +1,8 @@
+#!/command/with-contenv sh
+set -e
+export HOME=/opt/data
+[ -f /opt/data/1ain/library-agent/.venv/bin/activate ] && . /opt/data/1ain/library-agent/.venv/bin/activate
+cd /opt/data/1ain/library-agent
+lib_host="${LIBRARY_AGENT_HOST:-127.0.0.1}"
+lib_port="${LIBRARY_AGENT_PORT:-8991}"
+exec s6-setuidgid hermes hermes python -m uvicorn app:app --host "$lib_host" --port "$lib_port" --no-open

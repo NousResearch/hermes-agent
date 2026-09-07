@@ -1,0 +1,8 @@
+#!/command/with-contenv sh
+set -e
+export HOME=/opt/data
+[ -f /opt/data/1ain/dashboard/.venv/bin/activate ] && . /opt/data/1ain/dashboard/.venv/bin/activate
+cd /opt/data/1ain/dashboard
+dash_host="${BST_DASHBOARD_HOST:-172.16.1.2}"
+dash_port="${BST_DASHBOARD_PORT:-8999}"
+exec s6-setuidgid hermes hermes python -m uvicorn app:app --host "$dash_host" --port "$dash_port" --no-open

@@ -2522,6 +2522,22 @@ def cmd_dashboard(args):
 
     apply_nofile_soft_limit()
 
+    # `serve` reaches neither main()'s dispatch (intercepted by
+    # _try_fast_serve_launch) nor _prepare_agent_startup (not in
+    # _AGENT_COMMANDS), so config-owned shell hooks never registered in the
+    # Desktop's per-seat backend and every fail_closed guard was inert for
+    # room turns. Register here: named-profile routing above has resolved, so
+    # HERMES_HOME is the seat's, and --stop/--status already exited. Mirrors
+    # gateway/run_startup.py; idempotent per (home, event, matcher, command),
+    # and accept_hooks=False lets hooks_auto_accept / the allowlist decide.
+    try:
+        from agent.shell_hooks import register_from_config
+        from hermes_cli.config import load_config
+
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        logger.debug("shell-hook registration failed at serve startup", exc_info=True)
+
     _ssh_session_token = _read_ssh_session_token_file(_token_file) if _token_file else None
     _mcp_discovery_after_bind = _dashboard_prepare_runtime(args, _headless_backend)
 

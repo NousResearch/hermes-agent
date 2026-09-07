@@ -1,9 +1,22 @@
 """Stdlib-only update marker reader used before the MCP bridge loads the venv.
 
 The shared marker names a PID and an integer timestamp (claim time or floored
-kernel creation time), optionally followed by ``handoff-bridge``. Age is only
-advisory: unknown owners remain blocking, and proven live owners never expire.
-Readers do not mutate the marker; updater lock owners handle exact reclamation.
+kernel creation time), optionally followed by ``handoff-bridge``.
+
+Ownership rules, identical in ``apps/desktop/electron/update-marker.ts``,
+``hermes_cli/update_lock.py`` and ``scripts/desktop-update/windows.ps1``:
+
+* an owner proven to be the claimant (``matching``) never expires -- a slow
+  update must never be raced by a second one;
+* an owner that is alive but unprovable (``unknown`` -- possibly just a
+  recycled PID) expires at :data:`UPDATE_MARKER_MAX_AGE_SECONDS`, as upstream
+  main does today. Without that, one recycled PID disables the MCP bridge and
+  every update path permanently;
+* a body that is empty, malformed or future-dated names nobody at all. It is
+  not a claim, so it never gates. Mutating owners (the desktop and the CLI
+  lock) reclaim it after a dwell; this module only reads.
+
+Readers here do not mutate the marker; updater lock owners handle reclamation.
 """
 
 from __future__ import annotations
@@ -11,6 +24,7 @@ from __future__ import annotations
 import ctypes
 import math
 import os
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -22,8 +36,8 @@ from hermes_constants import get_process_hermes_home
 MARKER_NAME = ".hermes-update-in-progress"
 MCP_MAIN_MODULE = "agent.transports.hermes_tools_mcp_server"
 
-# Keep in sync with UPDATE_MARKER_MAX_AGE_MS in apps/desktop/electron/update-marker.ts
-# and UPDATE_MARKER_MAX_AGE_SECONDS in hermes_cli/update_lock.py.
+# Keep in sync with UPDATE_MARKER_MAX_AGE_MS in apps/desktop/electron/update-marker.ts.
+# This module is the canonical Python definition; hermes_cli.update_lock imports it.
 UPDATE_MARKER_MAX_AGE_SECONDS = 20 * 60
 # A claimant stamps whole seconds; its kernel creation time may carry fractions.
 _OWNER_START_TOLERANCE_SECONDS = 1.0
@@ -44,7 +58,7 @@ def _windows_open_process_error_is_definitive_exit(error: int) -> bool:
     return int(error) == _ERROR_INVALID_PARAMETER
 
 
-def _pid_alive(pid: int) -> bool:
+def pid_alive(pid: int) -> bool:
     """Return whether *pid* is live, treating access denial as live.
 
     Never ``os.kill(pid, 0)`` on Windows: CPython routes signal 0 to
@@ -126,16 +140,75 @@ def _windows_pid_create_time(pid: int) -> float | None:
         return None
 
 
-def _pid_create_time(pid: int) -> float | None:
+# Linux reports process start time in USER_HZ ticks since boot. USER_HZ is
+# fixed at 100 for userspace on every mainstream Linux ABI regardless of
+# CONFIG_HZ, so no sysconf binding (and no ctypes libc load) is required.
+_LINUX_USER_HZ = 100
+
+
+def _linux_pid_create_time(pid: int) -> float | None:
+    """Process creation epoch from /proc alone.
+
+    ``/proc/<pid>/stat`` field 22 is the start time in USER_HZ ticks since
+    boot; ``/proc/stat``'s ``btime`` is the boot wall clock. Field 2 (comm) is
+    parenthesised and may contain spaces and ``)``, so split after the last one.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as handle:
+            stat = handle.read()
+        after_comm = stat[stat.rindex(")") + 1:].split()
+        ticks = float(after_comm[19])  # after_comm[0] is field 3
+        btime = 0.0
+        with open("/proc/stat", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.startswith("btime "):
+                    btime = float(line.split()[1])
+                    break
+    except (OSError, ValueError, IndexError):
+        return None
+    if ticks < 0 or btime <= 0:
+        return None
+    created = btime + ticks / _LINUX_USER_HZ
+    return created if math.isfinite(created) and created > 0 else None
+
+
+def _darwin_pid_create_time(pid: int) -> float | None:
+    """Process creation epoch from ``ps -o lstart=`` (stdlib only, no psutil)."""
+    try:
+        completed = subprocess.run(
+            ["/bin/ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    raw = completed.stdout.strip()
+    if completed.returncode != 0 or not raw:
+        return None
+    # ps prints the local-time ctime form, e.g. "Sat Sep  6 12:34:56 2026".
+    for fmt in ("%a %b %d %H:%M:%S %Y", "%a %b  %d %H:%M:%S %Y"):
+        try:
+            return time.mktime(time.strptime(raw, fmt))
+        except ValueError:
+            continue
+    return None
+
+
+def pid_create_time(pid: int) -> float | None:
     """Return the process creation epoch of *pid*, or ``None`` when unprovable.
 
-    Windows asks the kernel directly (no psutil in the bridge's import path);
-    elsewhere ownership stays unknown without loading third-party packages.
+    Every platform asks the OS directly: no third-party package may be
+    imported here, because this runs before the MCP bridge has decided whether
+    the venv it would import from is safe to touch. ``None`` still classifies
+    as ``unknown`` -- kept as defence in depth for platforms not covered here.
     """
     if pid <= 0:
         return None
     if os.name == "nt":
         return _windows_pid_create_time(pid)
+    if sys.platform == "darwin":
+        return _darwin_pid_create_time(pid)
+    if sys.platform.startswith("linux"):
+        return _linux_pid_create_time(pid)
     return None
 
 
@@ -245,19 +318,20 @@ def pid_identity_status(
     pid: int,
     started_at: int,
     *,
-    pid_alive: Callable[[int], bool] = _pid_alive,
-    pid_create_time: Callable[[int], float | None] = _pid_create_time,
+    pid_alive: Callable[[int], bool] = pid_alive,
+    pid_create_time: Callable[[int], float | None] = pid_create_time,
 ) -> str:
     """Classify the marker's ``<pid>`` against ``<ts>``: ``matching``, ``stale`` or ``unknown``."""
+    _alive, _create_time = pid_alive, pid_create_time
     if pid <= 0 or started_at <= 0:
         return "stale"
     try:
-        if not pid_alive(pid):
+        if not _alive(pid):
             return "stale"
     except Exception:
         return "unknown"
     try:
-        created = pid_create_time(pid)
+        created = _create_time(pid)
     except Exception:
         return "unknown"
     if created is None or not math.isfinite(created) or created <= 0:
@@ -269,37 +343,61 @@ class UpdateMarkerError(RuntimeError):
     """The marker exists but cannot safely authorize installation access."""
 
 
+class UpdateMarkerUnhealthyError(UpdateMarkerError):
+    """The marker names nobody: empty, malformed, future-dated, mid-cleanup.
+
+    Distinct from its base class because the two demand opposite responses. A
+    marker we cannot READ (permissions, I/O error) is a genuine unknown and
+    callers must fail closed. A marker we read perfectly well and found to name
+    nobody proves no update is running, so it must not gate anything -- it is
+    the state a torn write leaves behind, and treating it as "an update is in
+    progress" is what disabled the MCP bridge until a human deleted the file.
+    """
+
+
 def live_update_marker_owner(
     marker: str | Path | None = None,
     *,
     now: float | None = None,
     max_age_seconds: float = UPDATE_MARKER_MAX_AGE_SECONDS,
-    pid_alive: Callable[[int], bool] = _pid_alive,
-    pid_create_time: Callable[[int], float | None] = _pid_create_time,
+    pid_alive: Callable[[int], bool] = pid_alive,
+    pid_create_time: Callable[[int], float | None] = pid_create_time,
 ) -> UpdateMarkerOwner | None:
     """Read ownership without deleting any file; unknown claims remain blocking."""
     path = Path(marker) if marker is not None else marker_path()
     try:
         artifacts = list(path.parent.glob(path.name + ".cas-*"))
         if artifacts:
-            raise UpdateMarkerError("Update marker cleanup is still unresolved")
+            raise UpdateMarkerUnhealthyError(
+                f"Update marker cleanup is still unresolved: {artifacts[0]}"
+            )
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
     except (OSError, UnicodeError) as exc:
-        raise UpdateMarkerError("Cannot read the update marker safely") from exc
+        raise UpdateMarkerError(f"Cannot read the update marker safely: {path}") from exc
     parsed = parse_update_marker(raw)
     if parsed is None:
-        raise UpdateMarkerError("Update marker is incomplete or malformed; retry after the updater finishes")
+        raise UpdateMarkerUnhealthyError(
+            f"Update marker is empty or malformed and names no owner. "
+            f"If no update is running, delete this file: {path}"
+        )
     pid, started_at = parsed
     age = (time.time() if now is None else float(now)) - started_at
     if not math.isfinite(age) or age < -5:
-        raise UpdateMarkerError("Update marker timestamp is in the future")
+        raise UpdateMarkerUnhealthyError(
+            f"Update marker timestamp is in the future. "
+            f"If no update is running, delete this file: {path}"
+        )
     bridge = raw.replace("\r\n", "\n").rstrip("\n").endswith("\nhandoff-bridge")
     status = pid_identity_status(pid, started_at, pid_alive=pid_alive, pid_create_time=pid_create_time)
-    if (bridge and age > 30) or (status == "stale" and not bridge):
+    overdue = age > max_age_seconds
+    # `stale` is proven dead or proven recycled. `unknown` is alive but
+    # unattributable: it holds the gate until the ceiling and is then released,
+    # which is the only thing that keeps a marker recoverable at all.
+    if (bridge and age > 30) or (not bridge and (status == "stale" or (status == "unknown" and overdue))):
         return None
-    return UpdateMarkerOwner(pid, started_at, age, age > max_age_seconds, status, bridge)
+    return UpdateMarkerOwner(pid, started_at, age, overdue, status, bridge)
 
 
 def should_quiesce_mcp_bridge(
@@ -307,22 +405,34 @@ def should_quiesce_mcp_bridge(
     argv: Sequence[str] | None = None,
     marker: str | Path | None = None,
     now: float | None = None,
-    pid_alive: Callable[[int], bool] = _pid_alive,
-    pid_create_time: Callable[[int], float | None] = _pid_create_time,
+    pid_alive: Callable[[int], bool] = pid_alive,
+    pid_create_time: Callable[[int], float | None] = pid_create_time,
 ) -> bool:
     """Gate the exact MCP module launch while the marker prevents installation access.
 
-    Never raises; an unreadable marker gates only this exact entry point.
+    Never raises. Only two things gate: a live owner, and a marker we could not
+    READ at all (permissions/IO) -- that one stays fail-closed because it might
+    be hiding a real update. Everything else, including a marker that names
+    nobody and any unexpected internal failure, does NOT gate: turning every
+    exception into "quiesce" is how a single torn write made the bridge exit 0
+    at import on every launch, on every platform, until a human intervened.
     """
     try:
         original_argv = getattr(sys, "orig_argv", sys.argv) if argv is None else argv
         if not is_exact_mcp_module_argv(original_argv):
             return False
+    except Exception:
+        return False
+    try:
         return (
             live_update_marker_owner(
                 marker, now=now, pid_alive=pid_alive, pid_create_time=pid_create_time
             )
             is not None
         )
-    except Exception:
+    except UpdateMarkerUnhealthyError:
+        return False
+    except UpdateMarkerError:
         return True
+    except Exception:
+        return False

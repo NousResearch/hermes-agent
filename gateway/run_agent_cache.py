@@ -295,7 +295,7 @@ class GatewayAgentCacheMixin:
             return False
 
     def _clear_conversation_scope(self, session_key: str, *, reason: str) -> None:
-        """THE single conversation-boundary funnel (/new, /resume, auto-reset, expiry finalization,
+        """THE single conversation-boundary funnel (/new, /resume, suspension replacement,
         compression-exhausted reset). New conversation-scoped dicts go in _CONVERSATION_SCOPED_STATE
         so every boundary picks them up. Turn-scoped state (_running_agents/_ts, slot leases, turn-
         lease tokens) is owned by _release_running_agent_state and NOT cleared. Idle agent-cache
@@ -692,10 +692,9 @@ class GatewayAgentCacheMixin:
         from the persisted session next turn). Never touched: agents mid-turn, the most recently
         used sessions, and transcripts not yet on disk.
 
-        A gateway serving many chats therefore holds every warm transcript indefinitely: agents that took a
-        turn within the TTL are never idle-swept, and the sweep additionally defers finalizable sessions
-        until they expire. RSS climbs until the cgroup throttles and SIGTERM can no longer flush inside
-        systemd's stop timeout (#80764).
+        A gateway serving many chats can hold every warm transcript for the TTL window.
+        Pressure eviction bounds that heap before the cgroup throttles and SIGTERM can
+        no longer flush inside systemd's stop timeout (#80764).
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
         from gateway.agent_cache_pressure import (

@@ -773,7 +773,7 @@ def register(ctx):
 
 ### `on_session_finalize`
 
-当 CLI 或 gateway **销毁**活跃会话时触发——例如用户执行 `/new`、gateway GC 了空闲会话，或 CLI 在 agent 活跃时退出。可用它刷新与旧 session ID 绑定的状态。Gateway reset 时，替代会话会先创建并持久化，然后才调用此回调。
+当 CLI 或 gateway **销毁**活跃会话时触发——例如用户执行 `/new`，或 CLI 在 agent 活跃时退出。仅回收资源的空闲缓存淘汰不会结束持久化对话。可用它刷新与旧 session ID 绑定的状态。Gateway reset 时，替代会话会先创建并持久化，然后才调用此回调。
 
 **回调签名：**
 

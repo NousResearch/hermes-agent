@@ -249,7 +249,47 @@ class TestListAndCleanup:
 class TestPersistence:
     """Verify that sessions are persisted to SessionDB and can be restored."""
 
+    def test_create_session_does_not_mint_an_empty_db_row(self, manager):
+        """A session with no history must NOT create a state.db row.
 
+        ACP clients open a session before knowing whether a prompt is coming,
+        and some open one purely to interrogate the agent (a model-catalog
+        probe that sends initialize + session/new, reads the response, and
+        exits). Persisting on create left a message_count=0 shell per probe,
+        indistinguishable from a real chat in the session list and unreapable
+        by `hermes sessions prune` (the rows never end, so ended_at stays NULL).
+        """
+        db = manager._get_db()
+        before = len(db.search_sessions(source="acp", limit=10000))
+
+        state = manager.create_session(cwd="/tmp/probe")
+
+        assert db.get_session(state.session_id) is None
+        assert len(db.search_sessions(source="acp", limit=10000)) == before
+
+    def test_session_row_is_created_once_history_exists(self, manager):
+        """The deferral must not lose a real conversation."""
+        state = manager.create_session(cwd="/tmp/real")
+        assert manager._get_db().get_session(state.session_id) is None
+
+        state.history.append({"role": "user", "content": "hello"})
+        manager.save_session(state.session_id)
+
+        row = manager._get_db().get_session(state.session_id)
+        assert row is not None
+        assert row["source"] == "acp"
+
+    def test_fork_persists_immediately_because_history_is_copied(self, manager):
+        """fork_session copies a non-empty history, so its row lands at once."""
+        parent = manager.create_session(cwd="/tmp/fork-src")
+        parent.history.append({"role": "user", "content": "forked content"})
+        manager.save_session(parent.session_id)
+
+        child = manager.fork_session(parent.session_id, cwd="/tmp/fork-dst")
+
+        assert child is not None
+        assert child.session_id != parent.session_id
+        assert manager._get_db().get_session(child.session_id) is not None
 
 
 

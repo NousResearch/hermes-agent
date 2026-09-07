@@ -1321,6 +1321,23 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         _profile = get_provider_profile(agent.provider)
 
     _ephemeral_out = _consume_ephemeral_max_output(agent)
+    # Local patch (2026-09-07, re-applied post-update 09-07): one-shot "disable
+    # thinking" for length-truncation continuation retries. Set by
+    # conversation_loop on the continuation branch; consumed here into
+    # extra_body.chat_template_kwargs.enable_thinking=false so the local model
+    # resumes the *answer* instead of re-entering a thinking block and re-burning
+    # the output budget. Only fires for the local custom provider.
+    # Re-targeted 09-07: 'custom' is now a registered provider profile, so the
+    # injection rides the shared _common dict (profile path) instead of the
+    # legacy call; the transport merges extra_body_additions on BOTH paths.
+    _ephemeral_think_off = bool(getattr(agent, "_ephemeral_disable_thinking", None))
+    if _ephemeral_think_off:
+        agent._ephemeral_disable_thinking = None  # consume immediately
+    _extra_body_additions = (
+        {"chat_template_kwargs": {"enable_thinking": False}}
+        if _ephemeral_think_off and agent.provider == "custom"
+        else None
+    )
     # Strip image parts for non-vision models on BOTH paths (registered
     # providers with profiles used to bypass it).
     _common = dict(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages),
@@ -1331,7 +1348,8 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx,
         provider_preferences=_prefs or None, openrouter_min_coding_score=agent.openrouter_min_coding_score,
         supports_reasoning=agent._supports_reasoning_extra_body(),
-        qwen_session_metadata=_qwen_meta)
+        qwen_session_metadata=_qwen_meta,
+        extra_body_additions=_extra_body_additions)
     if _profile:
         # Profiles handle per-provider quirks via hooks fed the context above.
         return transport.build_kwargs(provider_profile=_profile, **_common)

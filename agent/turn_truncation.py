@@ -230,6 +230,14 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
             "_length_continuation_nudge": True,
         })
         agent._session_messages = messages
+        # Local patch (2026-09-07, re-applied post-update 09-07): disable thinking
+        # on the continuation retry so a reasoning model resumes the *answer*
+        # instead of re-entering a thinking block and re-burning the output
+        # budget (the 4-retry "Response remained truncated" death spiral).
+        # One-shot; consumed in _build_chat_completions_kwargs. Covers the
+        # mid-answer truncation case upstream's _ephemeral_reasoning_off
+        # (thinking-only truncation) does not.
+        agent._ephemeral_disable_thinking = True
         _retry.restart_with_length_continuation = True
         return st.done("break")
 

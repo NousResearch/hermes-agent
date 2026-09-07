@@ -132,7 +132,7 @@ class _NonStreamRequest:
             # next heartbeat: reasoning callbacks do not reset the CLI spinner.
             if (self.wait_notice_started_ts is not None and activity_ts is not None
                     and activity_ts > self.wait_notice_started_ts):
-                self.agent._emit_wait_notice("Thinking...")
+                self.agent._emit_wait_notice("")
                 self.wait_notice_started_ts = None
             if not heartbeat:
                 return

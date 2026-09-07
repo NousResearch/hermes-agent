@@ -5,7 +5,11 @@ import { memo, type ReactNode } from 'react'
 import { $overlayState } from '../app/overlayStore.js'
 import { $turnState } from '../app/turnStore.js'
 import { $uiState, $uiTheme } from '../app/uiStore.js'
-import { DEV_CONTEXT_RAIL_WIDTH, devContextHasActivity, devContextPlacement } from '../domain/devContext.js'
+import {
+  devContextHasActivity,
+  devContextPlacement,
+  devContextRailWidth
+} from '../domain/devContext.js'
 import type { RailInputs } from '../domain/railInputs.js'
 import { truncateDisplay, type WorkspaceHudSnapshot } from '../domain/workspaceHud.js'
 import type { RailFlowStatus } from '../hooks/useContextRailInputs.js'
@@ -396,6 +400,7 @@ export const DevContextRail = memo(function DevContextRail(props: DevContextRail
   const model = useDevContextModel(props)
   const ambientRailColumns = useAmbientRailWidth('left') + useAmbientRailWidth('right')
   const placement = devContextPlacement(model.enabled, props.cols, ambientRailColumns, model.hasActivity)
+  const railWidth = devContextRailWidth(model.enabled, props.cols, ambientRailColumns, model.hasActivity)
 
   if (placement !== 'side') {
     return null
@@ -408,7 +413,7 @@ export const DevContextRail = memo(function DevContextRail(props: DevContextRail
       flexDirection="column"
       flexShrink={0}
       overflow="hidden"
-      width={DEV_CONTEXT_RAIL_WIDTH}
+      width={railWidth}
     >
       <Box paddingX={1}>
         <DevContextHeader t={model.t} />

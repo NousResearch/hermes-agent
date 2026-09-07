@@ -10,6 +10,7 @@ import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { DevContextBottomDock, DevContextRail } from '../components/devContextRail.js'
 import {
   DEV_CONTEXT_MIN_TERMINAL_COLS,
+  DEV_CONTEXT_MIN_TRANSCRIPT_COLS,
   DEV_CONTEXT_RAIL_WIDTH,
   devContextHasActivity,
   devContextPlacement,
@@ -112,10 +113,13 @@ describe('developer context rail layout', () => {
     expect(devContextPlacement(true, DEV_CONTEXT_MIN_TERMINAL_COLS, 0, true)).toBe('side')
     expect(devContextPlacement(true, DEV_CONTEXT_MIN_TERMINAL_COLS - 1, 0, true)).toBe('bottom')
     expect(devContextPlacement(true, 140, 44, true)).toBe('side')
-    expect(devContextPlacement(true, 130, 44, true)).toBe('bottom')
+    expect(devContextPlacement(true, 130, 44, true)).toBe('side')
     expect(devContextPlacement(true, 140, 0, false)).toBe('hidden')
     expect(devContextRailVisible(true, DEV_CONTEXT_MIN_TERMINAL_COLS, 0, true)).toBe(true)
-    expect(devContextRailWidth(true, DEV_CONTEXT_MIN_TERMINAL_COLS, 0, true)).toBe(DEV_CONTEXT_RAIL_WIDTH)
+    expect(devContextRailWidth(true, DEV_CONTEXT_MIN_TERMINAL_COLS, 0, true)).toBe(
+      DEV_CONTEXT_MIN_TERMINAL_COLS - DEV_CONTEXT_MIN_TRANSCRIPT_COLS
+    )
+    expect(devContextRailWidth(true, 160, 0, true)).toBe(DEV_CONTEXT_RAIL_WIDTH)
     expect(devContextRailWidth(false, 160, 0, true)).toBe(0)
     expect(devContextRailWidth(true, 160, 0, false)).toBe(0)
   })
@@ -231,6 +235,7 @@ describe('developer context rail layout', () => {
       ]
     })
 
+    expect(await renderRail(DEV_CONTEXT_MIN_TERMINAL_COLS, 40, 0)).toContain('DEV CONTEXT')
     expect(await renderRail(DEV_CONTEXT_MIN_TERMINAL_COLS - 1, 40, 0)).toBe('')
 
     const frame = await renderDock(DEV_CONTEXT_MIN_TERMINAL_COLS - 1)

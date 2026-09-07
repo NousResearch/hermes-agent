@@ -1,6 +1,7 @@
 export const DEV_CONTEXT_RAIL_WIDTH = 40
-export const DEV_CONTEXT_MIN_TERMINAL_COLS = 112
+export const DEV_CONTEXT_MIN_TERMINAL_COLS = 80
 export const DEV_CONTEXT_MIN_TRANSCRIPT_COLS = 48
+const DEV_CONTEXT_MIN_RAIL_WIDTH = 28
 
 export type DevContextPlacement = 'bottom' | 'hidden' | 'side'
 
@@ -27,8 +28,8 @@ export const devContextHasActivity = (
 
 /**
  * The developer rail is deliberately a layout participant, not an overlay.
- * Keep it out of cramped terminals and leave the transcript a readable body
- * width when user-provided rails are active too.
+ * At the minimum supported width it shrinks so the transcript keeps its body
+ * width; below that, use the bottom dock instead.
  */
 export const devContextRailVisible = (
   enabled: boolean,
@@ -38,12 +39,13 @@ export const devContextRailVisible = (
 ): boolean => {
   const totalColumns = Math.floor(columns)
   const otherRailColumns = Math.max(0, Math.floor(ambientRailColumns))
+  const availableColumns = totalColumns - otherRailColumns
 
   return (
     enabled &&
     hasActivity &&
     totalColumns >= DEV_CONTEXT_MIN_TERMINAL_COLS &&
-    totalColumns - otherRailColumns - DEV_CONTEXT_RAIL_WIDTH >= DEV_CONTEXT_MIN_TRANSCRIPT_COLS
+    availableColumns >= DEV_CONTEXT_MIN_TRANSCRIPT_COLS + DEV_CONTEXT_MIN_RAIL_WIDTH
   )
 }
 
@@ -65,4 +67,13 @@ export const devContextRailWidth = (
   columns: number,
   ambientRailColumns = 0,
   hasActivity = true
-): number => (devContextRailVisible(enabled, columns, ambientRailColumns, hasActivity) ? DEV_CONTEXT_RAIL_WIDTH : 0)
+): number => {
+  if (!devContextRailVisible(enabled, columns, ambientRailColumns, hasActivity)) {
+    return 0
+  }
+
+  return Math.min(
+    DEV_CONTEXT_RAIL_WIDTH,
+    Math.floor(columns) - Math.max(0, Math.floor(ambientRailColumns)) - DEV_CONTEXT_MIN_TRANSCRIPT_COLS
+  )
+}

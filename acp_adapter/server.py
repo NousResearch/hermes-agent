@@ -33,7 +33,13 @@ from acp_adapter.events import (
 from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
-from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
+from acp_adapter.session import (
+    SessionManager,
+    SessionState,
+    _expand_acp_enabled_toolsets,
+    apply_fast_mode_to_agent,
+    configured_fast_mode,
+)
 from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
 from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
 from agent.interrupt_compat import request_hard_interrupt
@@ -226,6 +232,8 @@ class _TurnCallbacks:
 class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     """ACP Agent implementation wrapping Hermes AIAgent."""
 
+    _SLASH_COMMANDS = set(SlashCommandsMixin._COMMANDS)
+
     _EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
     _EDIT_APPROVAL_POLICY_DEFAULT = "ask"
     _MODE_DEFAULT = "default"
@@ -336,7 +344,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             }
         state.agent = self.session_manager._make_agent(
             session_id=state.session_id, cwd=state.cwd, model=new_model,
-            requested_provider=target_provider, **endpoint,
+            requested_provider=target_provider, fast_mode=state.fast_mode, **endpoint,
         )
         self.session_manager.save_session(state.session_id)
         return current_provider, target_provider, new_model
@@ -935,18 +943,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     def _available_commands(cls) -> list[AvailableCommand]:
         commands: list[AvailableCommand] = []
         seen: set[str] = set()
-        for spec in cls._ADVERTISED_COMMANDS:
-            input_hint = spec.get("input_hint")
+        for name, (_help, description, input_hint) in cls._COMMANDS.items():
             commands.append(
                 AvailableCommand(
-                    name=spec["name"],
-                    description=spec["description"],
-                    input=UnstructuredCommandInput(hint=input_hint)
-                    if input_hint
-                    else None,
+                    name=name,
+                    description=description,
+                    input=UnstructuredCommandInput(hint=input_hint) if input_hint else None,
                 )
             )
-            seen.add(spec["name"])
+            seen.add(name)
 
         try:
             from agent.skill_commands import get_skill_commands
@@ -1041,6 +1046,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         handler = {
             "help": self._cmd_help,
             "model": self._cmd_model,
+            "fast": self._cmd_fast,
             "tools": self._cmd_tools,
             "context": self._cmd_context,
             "reset": self._cmd_reset,
@@ -1100,11 +1106,36 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             cwd=state.cwd,
             model=new_model,
             requested_provider=target_provider,
+            fast_mode=state.fast_mode,
         )
         self.session_manager.save_session(state.session_id)
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
         return f"Model switched to: {new_model}\nProvider: {provider_label}"
+
+    def _cmd_fast(self, args: str, state: SessionState) -> str:
+        tokens = args.strip().lower().split()
+        if "--global" in tokens:
+            return "ACP /fast is session-scoped; change global defaults through Hermes config."
+        arg = " ".join(token for token in tokens if token != "--session")
+        if not arg or arg == "status":
+            status = "fast" if state.fast_mode else "normal"
+            return f"Fast mode: {status}\nUsage: /fast [normal|fast|status]"
+        if arg in {"fast", "on"}:
+            from hermes_cli.models import resolve_fast_mode_overrides
+            model = state.model or getattr(state.agent, "model", None)
+            if resolve_fast_mode_overrides(model) is None:
+                return "Fast mode is not available for the current model."
+            enabled = True
+        elif arg in {"normal", "off"}:
+            enabled = False
+        else:
+            return f"Unknown fast mode: {arg}\nUsage: /fast [normal|fast|status]"
+        state.fast_mode = enabled
+        apply_fast_mode_to_agent(state.agent, state.model, enabled)
+        self.session_manager.save_session(state.session_id)
+        status = "fast" if enabled else "normal"
+        return f"Fast mode: {status} (this session)"
 
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:
@@ -1228,6 +1259,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
     def _cmd_reset(self, args: str, state: SessionState) -> str:
         state.history.clear()
+        state.fast_mode = configured_fast_mode()
+        apply_fast_mode_to_agent(state.agent, state.model, state.fast_mode)
         reset_failed = False
         try:
             reset_session_state = getattr(state.agent, "reset_session_state", None)

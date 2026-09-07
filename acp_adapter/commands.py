@@ -48,6 +48,7 @@ class SlashCommandsMixin:
             "Show current model and provider, or switch models",
             "model name to switch to",
         ),
+        "fast": ("Show or change fast mode for this session", "Show or change fast mode for this session", "normal|fast|status"),
         "tools": ("List available tools", "List available tools with descriptions", None),
         "context": ("Show conversation context info", "Show conversation message counts by role", None),
         "reset": ("Clear conversation history", "Clear conversation history", None),
@@ -129,6 +130,31 @@ class SlashCommandsMixin:
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider or "openrouter"
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
         return f"Model switched to: {new_model}\nProvider: {provider_label}"
+
+    def _cmd_fast(self, args: str, state: SessionState) -> str:
+        tokens = args.strip().lower().split()
+        if "--global" in tokens:
+            return "ACP /fast is session-scoped; change global defaults through Hermes config."
+        arg = " ".join(token for token in tokens if token != "--session")
+        if not arg or arg == "status":
+            status = "fast" if state.fast_mode else "normal"
+            return f"Fast mode: {status}\nUsage: /fast [normal|fast|status]"
+        if arg in {"fast", "on"}:
+            from hermes_cli.models import resolve_fast_mode_overrides
+            model = state.model or getattr(state.agent, "model", None)
+            if resolve_fast_mode_overrides(model) is None:
+                return "Fast mode is not available for the current model."
+            enabled = True
+        elif arg in {"normal", "off"}:
+            enabled = False
+        else:
+            return f"Unknown fast mode: {arg}\nUsage: /fast [normal|fast|status]"
+        from acp_adapter.session import apply_fast_mode_to_agent
+        state.fast_mode = enabled
+        apply_fast_mode_to_agent(state.agent, state.model, enabled)
+        self.session_manager.save_session(state.session_id)
+        status = "fast" if enabled else "normal"
+        return f"Fast mode: {status} (this session)"
 
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:

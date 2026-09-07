@@ -423,17 +423,35 @@ def _log_only_write(text: str) -> None:
 
 
 def _run_logged_subprocess(cmd, *, cwd=None, env=None):
-    """Run ``cmd`` with combined output captured into update.log only; returns the
-    ``CompletedProcess`` so the caller can surface the output on failure."""
-    # Check if there are updates. On shallow checkouts `rev-list --count` walks the truncated graph and can
-    # report the entire remote ancestry (e.g. "Found 9980 new commit(s)" on a depth-1 install — #53479). The
-    # zero/nonzero gate is still sound (HEAD == origin/<branch> counts 0), so keep it, but treat the shallow
-    # NUMBER as unknown and recover the real one via the GitHub compare API when possible.
-    result = subprocess.run(
-        cmd, cwd=cwd, env=env, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace")
-    _log_only_write(result.stdout or "")
-    return result
+    """Run ``cmd`` with combined output streamed into update.log only; returns the
+    ``CompletedProcess`` so the caller can surface the output on failure.
+
+    Streams line-by-line instead of buffering until exit: the Desktop update
+    hand-off watches ``update.log`` for progress, and a healthy-but-quiet
+    npm/electron build whose output only lands at exit looks stalled and gets
+    cancelled by the watchdog (exit 124, #104537). Output still goes ONLY to
+    the log, never the terminal.
+    """
+    output = []
+    child_env = dict(env if env is not None else os.environ)
+    child_env.setdefault("PYTHONUNBUFFERED", "1")
+    with subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    ) as process:
+        for line in process.stdout:
+            output.append(line)
+            _log_only_write(line)
+        returncode = process.wait()
+    return subprocess.CompletedProcess(
+        cmd, returncode, stdout="".join(output), stderr=None
+    )
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):

@@ -231,7 +231,10 @@ writes one atomic, redacted receipt per process under the profile's
 rewriting the shared PID checkpoint. The registry persists the receipt before
 releasing its completion event; one-shot linger waits on that event. The existing
 process query methods load retained snapshots without adopting PIDs or enqueuing
-notifications. Receipt retention is bounded by age and count.
+notifications. Reads require the commissioning durable session or its compression
+continuation; knowing a handle alone does not authorize a retained result read.
+The registry captures that owner before starting any output reader, including on
+CLI and non-notifying processes. Receipt retention is bounded by age and count.
 
 ## Concurrency
 

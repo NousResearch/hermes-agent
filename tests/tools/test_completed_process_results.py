@@ -104,7 +104,8 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
             "import cli; cli.main(query='Run the background review', quiet=True, "
             "oneshot=True, provider='custom', model='test-model', api_key='local-test-only', "
             f"base_url={url!r}, toolsets='terminal', max_turns=3, ignore_rules=True)",
-        ], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
+        ], cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, encoding="utf-8", timeout=60)
     finally:
         release.touch()
         server.shutdown()
@@ -130,9 +131,12 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
     def read_result(profile):
         result = subprocess.run([sys.executable, "-c", consumer, process_id],
                                 cwd=tmp_path, env={**env, "HERMES_HOME": str(profile)},
-                                check=True, capture_output=True, text=True, timeout=30)
+                                check=True, stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, encoding="utf-8", timeout=30)
         return json.loads(result.stdout)
 
+    receipt = json.loads((home / "logs" / "process-results" / f"{process_id}.json").read_text(encoding="utf-8"))
+    env["HERMES_SESSION_ID"] = receipt["parent_session_id"]
     recovered = read_result(home)
     assert recovered["result"]["status"] == "exited", recovered
     assert recovered["status"]["exit_code"] == 7, recovered
@@ -149,12 +153,16 @@ def test_receipts_are_bounded_redacted_and_session_scoped(tmp_path, monkeypatch)
 
     monkeypatch.setattr(receipts, "MAX_RETAINED_RESULTS", 2)
     secret = "sk-" + "aB2cD3eF4gH5iJ6kL7mN8pQ9rS0tU1vW2xY3zA4bC5dE6fG7"
+    from gateway.session_context import scoped_current_session_id
+    from tools.process_registry_results import load_completed_results
+    monkeypatch.setenv("HERMES_SESSION_ID", "owner-session")
     sessions = []
     registry = ProcessRegistry()
     for index in range(3):
         session = ProcessSession(
             id=f"proc_{index:012x}", command=f"echo {secret}", task_id=f"owner-{index}",
             owner_task_id=f"owner-{index}", session_key=f"chat-{index}",
+            parent_session_id="owner-session",
             started_at=time.time() - receipts.RESULT_RETENTION_SECONDS * 2,
             output_buffer="x" * MAX_OUTPUT_CHARS + "\n" + secret,
             exited=True, exit_code=index,
@@ -176,6 +184,22 @@ def test_receipts_are_bounded_redacted_and_session_scoped(tmp_path, monkeypatch)
         task_id="owner-2", include_retained=True)] == [recovered.id]
     assert fresh.list_sessions(task_id="unrelated", session_key="unrelated", include_retained=True) == []
     assert fresh.get("proc_0000") is None  # Ambiguous across durable results.
+    with scoped_current_session_id("unrelated-session"):
+        assert load_completed_results(recovered.id) == {}
+        assert fresh.get(recovered.id) is None
+    from hermes_state import SessionDB
+    db = SessionDB()
+    try:
+        db.create_session("owner-session", "cli")
+        db.create_session("delegated-child", "subagent", parent_session_id="owner-session")
+        with scoped_current_session_id("delegated-child"):
+            assert fresh.get(recovered.id) is None
+        db.end_session("owner-session", end_reason="compression")
+        db.create_session("owner-tip", "cli", parent_session_id="owner-session")
+        with scoped_current_session_id("owner-tip"):
+            assert fresh.get(recovered.id).output_buffer == recovered.output_buffer
+    finally:
+        db.close()
     assert fresh.completion_queue.empty()
     for path in paths:
         expired = time.time() - receipts.RESULT_RETENTION_SECONDS - 1

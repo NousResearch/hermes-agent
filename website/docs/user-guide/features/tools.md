@@ -232,10 +232,12 @@ process(action="write", session_id="proc_abc123", data="y")  # Send input
 PTY mode (`pty=true`) enables interactive CLI tools like Codex and Claude Code.
 
 Completed background commands retain their exit status and captured output in the
-active profile. After a headless parent exits or Hermes restarts, use the original
-`session_id` with `process(action="log")` for output and `process(action="poll")`
-for exit status. `process(action="list")` also includes retained results for the
-current task or conversation.
+active profile. Resume the conversation that launched the command (or its
+compressed continuation), then use the original `session_id` with
+`process(action="log")` for output and `process(action="poll")` for exit status.
+Unrelated conversations and requests without a bound owning session cannot read
+retained receipts, even with an exact process handle. `process(action="list")`
+also includes retained results for the current task or conversation.
 
 Hermes keeps the newest **64 completed results**, for up to **7 days after
 completion**, under `logs/process-results/` in the profile's Hermes home. Each

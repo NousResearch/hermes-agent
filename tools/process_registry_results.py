@@ -8,6 +8,7 @@ parents cannot overwrite each other's results in the running-PID checkpoint.
 import json
 import logging
 import re
+import sqlite3
 import time
 
 from hermes_constants import get_hermes_home
@@ -61,10 +62,29 @@ def save_completed_result(session) -> None:
         logger.warning("Could not retain completed process result %s", session.id, exc_info=True)
 
 
+def _owns_result(owner: str, parent: str | None) -> bool:
+    if not parent:
+        return False
+    if owner == parent:
+        return True
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        return db.get_compression_tip(parent) == owner
+    finally:
+        db.close()
+
+
 def load_completed_results(prefix: str = "") -> dict:
     """Restore read-only snapshots; no process handles, watchers, or queue events."""
     from tools.process_registry import ProcessSession
 
+    from gateway.session_context import get_session_env
+
+    owner = get_session_env("HERMES_SESSION_ID", "")
+    if not owner:
+        return {}
     results = {}
     try:
         paths = _result_paths()
@@ -78,12 +98,14 @@ def load_completed_results(prefix: str = "") -> dict:
             record = json.loads(path.read_text(encoding="utf-8"))
             if record["id"] != path.stem or not re.fullmatch(r"proc_[\w]+", record["id"]):
                 continue
+            if not _owns_result(owner, record.get("parent_session_id")):
+                continue
             session = ProcessSession(
                 **{key: record[key] for key in _RESULT_FIELDS},
                 exited=True, output_buffer=record["output"],
             )
             session._completion_event.set()
             results[session.id] = session
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
             logger.debug("Skipping unreadable process result %s", path.name, exc_info=True)
     return results

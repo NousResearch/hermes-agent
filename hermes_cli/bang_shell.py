@@ -96,7 +96,8 @@ def _bang_env() -> dict:
         from tools.environments.local import build_subprocess_env
         return build_subprocess_env()  # == _sanitize_subprocess_env(os.environ.copy())
     except Exception:
-        return os.environ.copy()  # tools package unimportable: run the user's command anyway
+        from agent.delegation_context import strip_kanban_env
+        return strip_kanban_env(os.environ)  # tools package unimportable: keep the user's command safe
 
 
 def run_bang_command(command: str, *, cwd: Optional[str] = None, timeout: int = DEFAULT_TIMEOUT, writer=None) -> int:

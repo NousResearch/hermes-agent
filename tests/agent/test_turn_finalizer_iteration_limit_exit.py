@@ -2,10 +2,16 @@
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+import os
 
 import pytest
 
 from agent.turn_finalizer import finalize_turn
+
+
+@pytest.fixture(autouse=True)
+def _legitimate_worker_identity(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_OWNER_PID", str(os.getpid()))
 
 
 class _LimitAgent:

@@ -11,6 +11,7 @@ new comments steer, and own-authored comments are skipped.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -75,6 +76,7 @@ def test_seed_then_inject_new_comment(worker_home, monkeypatch):
         conn.close()
 
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_OWNER_PID", str(os.getpid()))
     monkeypatch.setenv("HERMES_PROFILE", "worker-bot")
     agent = FakeAgent()
 
@@ -108,6 +110,7 @@ def test_skips_own_authored_comments(worker_home, monkeypatch):
         conn.close()
 
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_OWNER_PID", str(os.getpid()))
     monkeypatch.setenv("HERMES_PROFILE", "worker-bot")
     agent = FakeAgent()
 

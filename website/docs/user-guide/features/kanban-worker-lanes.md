@@ -35,6 +35,7 @@ For Hermes profile lanes, the dispatcher's `_default_spawn` runs `hermes -p <ass
 | Variable | Carries |
 |---|---|
 | `HERMES_KANBAN_TASK` | the task id the worker is operating on |
+| `HERMES_KANBAN_OWNER_PID` | one-shot worker-lineage binding; the dispatcher sends `pending`, and the worker replaces it with its own PID |
 | `HERMES_KANBAN_DB` | absolute path to the per-board SQLite file |
 | `HERMES_KANBAN_BOARD` | board slug |
 | `HERMES_KANBAN_WORKSPACES_ROOT` | root of the board's workspace tree |
@@ -43,6 +44,53 @@ For Hermes profile lanes, the dispatcher's `_default_spawn` runs `hermes -p <ass
 | `HERMES_KANBAN_CLAIM_LOCK` | the claim lock string (`<host>:<pid>:<uuid>`) |
 | `HERMES_PROFILE` | the worker's own profile name (for `kanban_comment` author attribution) |
 | `HERMES_TENANT` | tenant namespace, if the task has one |
+
+### Process identity and child isolation
+
+`HERMES_KANBAN_TASK` is context, not proof of ownership. A worker can launch a
+shell, `hermes chat`, a code-execution subprocess, or a model-driving runtime;
+those processes inherit environment bytes but do not inherit the dispatcher's
+worker lineage. Treating the task variable alone as authority would let an
+ordinary descendant act on the worker's card.
+
+The dispatcher therefore starts a Hermes worker with
+`HERMES_KANBAN_OWNER_PID=pending`. The worker entry point binds that sentinel
+to its own process ID before plugin and tool discovery. A descendant inherits a
+concrete PID belonging to its parent, so it fails the single canonical
+`is_dispatcher_owned_worker_context()` predicate and is not a Kanban worker.
+The worker's `HERMES_KANBAN_TASK`, run ID, board, database, claim lock, branch,
+and other authority-bearing variables are removed from ordinary child
+environments by default. Workspace paths remain available for legitimate file
+operations. Delegate children receive the stronger existing scrub and lineage
+marker.
+
+The same predicate gates lifecycle tools, tool visibility, heartbeat, stop
+nudge, turn finalization, session delivery, and the `hermes kanban` CLI. A
+dispatcher-owned worker may terminate its own task-scoped run; an inherited
+child cannot implicitly target the parent's task. Cross-task comments remain
+an explicit handoff operation for a real worker, while unowned descendants
+cannot use the inherited task as a mutation target.
+
+Codex's supervised Hermes-tools MCP endpoint is the only preserved non-entry
+runtime. The worker passes its identity through the sanitized subprocess
+factory, marks the endpoint as `codex-mcp`, and the endpoint activates it only
+after its own bootstrap. Other transports, schedulers, TUI hosts, browser
+launchers, bang commands, and code-execution paths use the scrub-by-default
+factory.
+
+This protects against accidental or indirect identity inheritance; it is not
+cryptographic authentication against a local process that can deliberately
+forge environment variables. Plugin and integration authors must use
+`build_subprocess_env()` or `hermes_subprocess_env()` rather than merging
+`os.environ` after sanitization. The security regression and implementation
+are tracked in [issue #103974](https://github.com/NousResearch/hermes-agent/issues/103974).
+
+Related work includes [#81843](https://github.com/NousResearch/hermes-agent/pull/81843)
+(terminal child scrubbing), [#103896](https://github.com/NousResearch/hermes-agent/pull/103896)
+(cron worker isolation), and the dispatcher/lifecycle work tracked by the
+Kanban PRs linked from the issue. Those changes cover adjacent spawn or
+lifecycle paths; the owner-PID handshake centralizes the missing process
+lineage boundary.
 
 For non-Hermes lanes (registered via a plugin), the plugin supplies its own `spawn_fn` callable that gets `task`, `workspace`, and `board` and returns an optional pid for crash detection.
 

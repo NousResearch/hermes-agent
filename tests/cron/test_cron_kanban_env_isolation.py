@@ -49,6 +49,7 @@ def _clear_kanban_detect_cache():
 def worker_env(monkeypatch):
     """Simulate running inside a dispatcher-spawned kanban worker."""
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker_real_task")
+    monkeypatch.setenv("HERMES_KANBAN_OWNER_PID", str(os.getpid()))
     monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", "/tmp/ws")
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "42")
     monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "lock-abc")

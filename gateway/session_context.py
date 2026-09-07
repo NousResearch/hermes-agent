@@ -187,7 +187,8 @@ def async_delivery_supported() -> bool:
     """Whether the current session can deliver a background completion later.  False for
     stateless channels (:func:`declare_stateless_channel`) and Kanban workers
     (``HERMES_KANBAN_TASK``: one-shot subprocesses whose parent disappears after the turn)."""
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    from agent.delegation_context import dispatcher_owned_kanban_task_id
+    if dispatcher_owned_kanban_task_id() is not None:
         return False
     value = _SESSION_ASYNC_DELIVERY.get()
     return True if value is _UNSET else bool(value)

@@ -93,15 +93,23 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             "env_passthrough in the skill/config so it passes by explicit opt-in.",
             len(_dropped_hermes), ", ".join(sorted(_dropped_hermes)),
         )
-    # delegate_task children are marked by a ContextVar, not os.environ, and the sandbox crosses
-    # a process boundary: strip dispatcher-owned Kanban vars AFTER the scrub so an explicit
-    # passthrough cannot re-grant a delegated child the parent's board mutation capability.
-    try:
-        from agent.delegation_context import is_delegated_child_process_context, scrub_kanban_env
-        if is_delegated_child_process_context():
-            scrubbed = scrub_kanban_env(scrubbed)
-    except Exception:
-        pass
+    # The sandbox crosses a process boundary: a passthrough entry must not
+    # re-grant a child the parent's board authority.  Ordinary children keep
+    # only workspace convenience; delegate children receive the stronger
+    # historical scrub and lineage marker.
+    from agent.delegation_context import (
+        KANBAN_WORKSPACE_ENV_KEYS,
+        is_delegated_child_process_context,
+        scrub_kanban_env,
+        strip_kanban_env,
+    )
+    if is_delegated_child_process_context():
+        scrubbed = scrub_kanban_env(scrubbed)
+    else:
+        for key in KANBAN_WORKSPACE_ENV_KEYS:
+            if key in source_env:
+                scrubbed[key] = source_env[key]
+        scrubbed = strip_kanban_env(scrubbed)
     return scrubbed
 
 

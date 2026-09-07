@@ -67,6 +67,7 @@ def worker_env(monkeypatch, tmp_path):
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_OWNER_PID", str(os.getpid()))
     return tid
 
 
@@ -192,6 +193,7 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_OWNER_PID", str(os.getpid()))
 
     # Mock the judge to reject the completion. The gate only runs when a
     # judge is reachable, so force the availability probe True as well.
@@ -260,6 +262,7 @@ def _make_goal_mode_worker_env(monkeypatch, tmp_path):
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_OWNER_PID", str(os.getpid()))
     return goal_task_id
 
 

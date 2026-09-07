@@ -52,13 +52,13 @@ def _delegation_ctx(predicate: str, default: bool) -> bool:
 
 
 def _is_delegated_child_context() -> bool:
-    return _delegation_ctx("is_delegated_child_context", False)
+    return _delegation_ctx("is_delegated_child_process_context", False)
 
 
 def _is_dispatcher_owned_worker() -> bool:
     """False for delegate_task children AND for cron jobs fired in-process from
     a worker — i.e. whenever HERMES_KANBAN_* is present but not ours."""
-    return _delegation_ctx("is_dispatcher_owned_worker_context", True)
+    return _delegation_ctx("is_dispatcher_owned_worker_context", False)
 
 
 def _visible(*, to_env_worker: bool) -> bool:
@@ -143,7 +143,12 @@ def _require_task_id(args: dict) -> str:
 
 def _own_task_env(task_id: str, var: str) -> Optional[str]:
     """``$var`` only when this worker is scoped to ``task_id``; else None."""
-    return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
+    return (
+        os.environ.get(var)
+        if _is_dispatcher_owned_worker()
+        and os.environ.get("HERMES_KANBAN_TASK") == task_id
+        else None
+    )
 
 
 def _worker_run_id(task_id: str) -> Optional[int]:
@@ -153,6 +158,28 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return int(raw) if raw else None
     except ValueError:
         return None
+
+
+def _inherited_worker_task_id() -> Optional[str]:
+    """Return a rejected worker task marker without treating it as authority."""
+    try:
+        from agent.delegation_context import inherited_kanban_task_id
+
+        inherited = inherited_kanban_task_id()
+    except Exception:
+        inherited = None
+    if inherited:
+        return inherited
+    task = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    return task if task and not _is_dispatcher_owned_worker() else None
+
+
+def _reject_inherited_worker_task(task_id: str) -> None:
+    """Reject a mutation that targets the worker task from an unowned context."""
+    inherited = _inherited_worker_task_id()
+    if inherited and task_id == inherited:
+        raise _Reject(
+            f"process is not the owner of worker task {inherited}; refusing to mutate it")
 
 
 def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Optional[dict]:
@@ -170,6 +197,9 @@ def _enforce_worker_task_ownership(tid: str) -> None:
     a buggy or prompt-injected worker that passed an explicit ``task_id`` for some other task could corrupt
     sibling or cross-tenant runs (see #19534).
     """
+    if not _is_dispatcher_owned_worker():
+        _reject_inherited_worker_task(tid)
+        return
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
     if env_tid and tid != env_tid:
         raise _Reject(
@@ -189,7 +219,7 @@ def _worker_guard(tool_name: str, args: dict) -> str:
 def _require_orchestrator_tool(tool_name: str) -> None:
     """The check_fn already hides orchestrator tools from workers; this catches
     a stale registration or test harness routing a worker here anyway."""
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if _is_dispatcher_owned_worker() and os.environ.get("HERMES_KANBAN_TASK"):
         raise _Reject(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers must use "
             "kanban_complete, kanban_block, kanban_heartbeat, or kanban_comment for their "
@@ -420,6 +450,8 @@ def heartbeat_current_worker_from_env() -> bool:
     attempted. ``HERMES_KANBAN_RUN_ID`` pins the run row so a reclaimed stale run is not
     heartbeated; ``HERMES_KANBAN_CLAIM_LOCK`` absent -> default claimer (local workers)."""
     global _auto_heartbeat_last_attempt
+    if not _is_dispatcher_owned_worker():
+        return False
     tid = os.environ.get("HERMES_KANBAN_TASK")
     now = time.monotonic()
     if not tid or (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
@@ -454,6 +486,8 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     """Steer new operator comments on the worker's task into ``agent``; True iff a
     steer was injected; never raises. Own comments (``HERMES_PROFILE``) are skipped."""
     global _comment_poll_last_attempt
+    if not _is_dispatcher_owned_worker():
+        return False
     tid = os.environ.get("HERMES_KANBAN_TASK")
     now = time.monotonic()
     if (not tid or agent is None or not hasattr(agent, "steer")
@@ -685,6 +719,7 @@ def _handle_comment(args: dict, **kw) -> str:
     tid = args.get("task_id")
     _check(tid, "task_id is required (use the current task id if that's what "
                 "you mean — pulls from env but kept explicit here)")
+    _reject_inherited_worker_task(str(tid))
     body = _redact(_require_text(args, "body"))
     # Author comes from the worker's runtime identity, never caller args: comments are
     # injected into future workers' system prompts, so an args["author"] override could
@@ -830,7 +865,11 @@ def _handle_create(args: dict, **kw) -> str:
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
         if project_id is None and workspace_kind is None and workspace_path is None:
-            self_tid = os.environ.get("HERMES_KANBAN_TASK")
+            self_tid = (
+                os.environ.get("HERMES_KANBAN_TASK")
+                if _is_dispatcher_owned_worker()
+                else None
+            )
             self_task = kb.get_task(conn, self_tid) if self_tid else None
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
@@ -939,6 +978,8 @@ def _handle_link(args: dict, **kw) -> str:
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
     _check(parent_id and child_id, "both parent_id and child_id are required")
+    _reject_inherited_worker_task(str(parent_id))
+    _reject_inherited_worker_task(str(child_id))
     with _board(args.get("board")) as (kb, conn):
         kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
         return _ok(parent_id=parent_id, child_id=child_id)

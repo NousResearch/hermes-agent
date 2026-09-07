@@ -311,7 +311,10 @@ class HostSupervisor:
             raise RuntimeError("compute host respawn disabled after crash loop")
         self._hello_event.clear()
         self._hello = {}
-        env = {**hermes_subprocess_env(inherit_credentials=True), **os.environ, **(self.env or {})}
+        from agent.delegation_context import strip_kanban_env
+        env = hermes_subprocess_env(inherit_credentials=True)
+        env.update(self.env or {})
+        env = strip_kanban_env(env)
         env["HERMES_COMPUTE_HOST_HEARTBEAT_SECS"] = str(self.heartbeat_secs)
         root = str(_repo_root())
         env.setdefault("PYTHONPATH", root)

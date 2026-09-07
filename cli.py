@@ -4049,7 +4049,8 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
 
     The caller swallows all errors: a broken loop must never wedge a worker.
     """
-    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    from agent.delegation_context import dispatcher_owned_kanban_task_id
+    task_id = dispatcher_owned_kanban_task_id()
     if not task_id:
         return
     raw_run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
@@ -4124,7 +4125,11 @@ def _run_quiet_single_query(cli, effective_query):
 
     # Kanban goal_mode: keep working in THIS session until a judge agrees the card is
     # done, the worker terminates it, or the turn budget runs out (sticky block).
-    if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
+    from agent.delegation_context import dispatcher_owned_kanban_task_id
+    if (
+        os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1"
+        and dispatcher_owned_kanban_task_id() is not None
+    ):
         try:
             _run_kanban_goal_loop_q(cli, response)
         except Exception as _goal_exc:
@@ -4138,7 +4143,10 @@ def _run_quiet_single_query(cli, effective_query):
     _exit_code = 0
     if isinstance(result, dict) and result.get("failed"):
         _exit_code = 1
-        if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in ("rate_limit", "billing"):
+        if (
+            dispatcher_owned_kanban_task_id() is not None
+            and result.get("failure_reason") in ("rate_limit", "billing")
+        ):
             try:
                 from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE
                 _exit_code = _RL_CODE
@@ -4194,7 +4202,8 @@ def _route_single_query_images(cli, query, effective_query, single_query_images,
 def _collect_kanban_task_images(single_query_images):
     """Kanban workers: image paths/URLs in the task body join the first turn's attachments."""
     single_query_image_urls: list[str] = []
-    _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    from agent.delegation_context import dispatcher_owned_kanban_task_id
+    _kanban_task_id = dispatcher_owned_kanban_task_id() or ""
     if not _kanban_task_id:
         return single_query_image_urls
     try:
@@ -4244,7 +4253,8 @@ def _install_single_query_signal_handlers(cli):
         # + stdout/stderr first so the final debug trace isn't lost; SIGALRM deadman guards the flush
         # against any rare blocking-I/O case (the reporter measured flush in <1ms; the alarm is a failsafe,
         # not the common path).
-        if os.environ.get("HERMES_KANBAN_TASK"):
+        from agent.delegation_context import dispatcher_owned_kanban_task_id
+        if dispatcher_owned_kanban_task_id() is not None:
             with suppress(Exception):
                 if hasattr(_signal, "SIGALRM"):
                     _signal.signal(_signal.SIGALRM, lambda *_: os._exit(0))

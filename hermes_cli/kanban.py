@@ -150,6 +150,8 @@ def kanban_command(args: argparse.Namespace) -> int:
     # import DB mutators directly.
     if _is_delegated_child_cli_mutation(args):
         return _err("kanban: delegate_task child contexts cannot mutate Kanban tasks via the CLI")
+    if scope_error := _worker_cli_scope_error(args):
+        return _err(scope_error)
 
     # `boards …` manages board metadata and the current-board pointer itself, so it must ignore
     # the `--board` routing override (else `--board beta boards show` reports beta).
@@ -222,6 +224,76 @@ _DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
     "create", "new", "rm", "remove", "delete", "switch", "use", "rename",
     "set-default-workdir",
 })
+
+_WORKER_SCOPED_MUTATION_ACTIONS: frozenset[str] = frozenset({
+    "init", "create", "swarm", "assign", "set-model", "reclaim", "reassign",
+    "link", "unlink", "claim", "comment", "attach", "attach-rm", "complete", "edit",
+    "block", "schedule", "unblock", "request-review", "request-changes",
+    "reopen-review", "promote", "archive", "dispatch", "daemon", "repair",
+    "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
+    "gc",
+})
+
+
+def _cli_task_ids(args: argparse.Namespace) -> list[str]:
+    """Collect task targets from scalar and bulk CLI argument shapes."""
+    ids: list[str] = []
+    for name in ("task_id", "task_ids", "ids"):
+        value = getattr(args, name, None)
+        if isinstance(value, (list, tuple)):
+            ids.extend(str(item) for item in value if item)
+        elif value:
+            ids.append(str(value))
+    return ids
+
+
+def _worker_cli_scope_error(args: argparse.Namespace) -> Optional[str]:
+    """Return a CLI scope error, or None when the action is safe to dispatch.
+
+    A real worker may use task-scoped lifecycle commands for its own card.  A
+    normal descendant may retain workspace convenience but cannot mutate the
+    inherited parent card; explicit foreign targets remain ordinary operator
+    requests rather than silently inheriting worker ownership.
+    """
+    action = getattr(args, "kanban_action", None)
+    if action == "boards":
+        board_action = getattr(args, "boards_action", None) or "list"
+        if board_action not in _DELEGATED_CHILD_DENIED_BOARD_ACTIONS:
+            return None
+    elif action not in _WORKER_SCOPED_MUTATION_ACTIONS:
+        return None
+
+    from agent.delegation_context import (
+        dispatcher_owned_kanban_task_id,
+        inherited_kanban_task_id,
+        is_dispatcher_owned_worker_context,
+    )
+
+    owned_task = dispatcher_owned_kanban_task_id()
+    inherited_task = inherited_kanban_task_id()
+    if not owned_task and not is_dispatcher_owned_worker_context():
+        raw_task = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+        inherited_task = inherited_task or (raw_task or None)
+    scope_task = owned_task or inherited_task
+    if not scope_task:
+        return None
+
+    ids = _cli_task_ids(args)
+    if action == "comment" and owned_task:
+        # Cross-task comments are the existing handoff channel for workers.
+        return None
+    if not ids:
+        return (
+            f"kanban: {action} is not available from a scoped worker CLI "
+            "without an explicit task target"
+        )
+    if owned_task:
+        if all(task_id == owned_task for task_id in ids):
+            return None
+        return f"kanban: worker is scoped to task {owned_task}; refusing other task targets"
+    if any(task_id == scope_task for task_id in ids):
+        return f"kanban: this process is not the owner of inherited worker task {scope_task}"
+    return None
 
 
 def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
@@ -783,8 +855,9 @@ def _cmd_attach_rm(args: argparse.Namespace) -> int:
 
 
 def _worker_run_id_for(task_id: str) -> Optional[int]:
+    from agent.delegation_context import dispatcher_owned_kanban_task_id
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
-    if os.environ.get("HERMES_KANBAN_TASK") != task_id or not raw:
+    if dispatcher_owned_kanban_task_id() != task_id or not raw:
         return None
     try:
         return int(raw)

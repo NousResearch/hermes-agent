@@ -6,6 +6,7 @@ are made.
 """
 
 import ast
+import os
 import inspect
 import io
 import json
@@ -4758,6 +4759,7 @@ class TestRunConversation:
         agent.max_iterations = 2
 
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_123")
+        monkeypatch.setenv("HERMES_KANBAN_OWNER_PID", str(os.getpid()))
 
         # Return a tool call for every iteration to exhaust the budget.
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

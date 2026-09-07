@@ -264,21 +264,26 @@ def _filter_secret_env(
             out[key] = value
 
 
-def _finalize_child_env(env: dict) -> dict:
+def _finalize_child_env(env: dict, *, inherit_kanban: bool = False) -> dict:
     """Guards shared by every spawn surface: profile-home propagation, session-context
     bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
-    Kanban scrub. Returns the (possibly new) dict."""
+    Kanban scrub. ``inherit_kanban`` is reserved for an explicitly supervised
+    runtime and is honored only by the dispatcher-owned worker."""
     _apply_profile_home(env)
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
     _apply_windows_msys_bash_env_defaults(env)
-    try:  # strip dispatcher-owned Kanban env from delegate_task child subprocesses
-        from agent.delegation_context import is_delegated_child_process_context, scrub_kanban_env
-        if is_delegated_child_process_context():
-            return scrub_kanban_env(env)
-    except Exception:
-        pass
-    return env
+    from agent.delegation_context import (
+        is_delegated_child_process_context,
+        is_dispatcher_owned_worker_context,
+        scrub_kanban_env,
+        strip_kanban_env,
+    )
+    if is_delegated_child_process_context():
+        return scrub_kanban_env(env)
+    if inherit_kanban and is_dispatcher_owned_worker_context():
+        return env
+    return strip_kanban_env(env)
 
 
 def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
@@ -304,13 +309,18 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
                          _plugin_terminal_env_strip_keys(), lambda p: p)
 
 
-def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
+def hermes_subprocess_env(
+    *, inherit_credentials: bool = False, inherit_kanban: bool = False,
+) -> dict[str, str]:
     """Sanitized env for the **non-terminal** spawn surface (browser, ACP/CLI executors,
     computer-use driver, TUI Node host). Tier 1 (``_ALWAYS_STRIP_KEYS``, plugin keys,
     force-prefixed hints, dynamic internal secrets) is always removed; Tier 2 (the
     provider/tool blocklist) unless ``inherit_credentials`` — pass that **only** for
     children that legitimately need LLM credentials (user-blessed claude/codex/gemini
-    CLI, TUI Node host). Terminal/execute_code use ``_sanitize_subprocess_env``."""
+    CLI, TUI Node host). Kanban identity is removed by default;
+    ``inherit_kanban`` is an explicit supervised-runtime escape hatch and is
+    honored only for an actual dispatcher-owned worker. Terminal/execute_code
+    use ``_sanitize_subprocess_env``."""
     env = os.environ.copy()
     strip = _ALWAYS_STRIP_KEYS | _plugin_terminal_env_strip_keys()
     if not inherit_credentials:
@@ -320,7 +330,7 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
                 or _is_hermes_internal_secret(key)):
             del env[key]
     env.setdefault("PYTHONUTF8", "1")  # Windows UTF-8 safety for spawned processes
-    return _finalize_child_env(env)
+    return _finalize_child_env(env, inherit_kanban=inherit_kanban)
 
 
 def build_subprocess_env(

@@ -16,10 +16,11 @@ _DEFAULT_MAX_ATTEMPTS = 2
 
 
 def kanban_stop_nudge_enabled() -> bool:
-    """On when ``HERMES_KANBAN_TASK`` is set, unless ``HERMES_KANBAN_STOP_NUDGE`` disables it."""
+    """On for a dispatcher-owned worker unless explicitly disabled."""
     if (os.environ.get("HERMES_KANBAN_STOP_NUDGE") or "").strip().lower() in {"0", "false", "no", "off"}:
         return False
-    return bool((os.environ.get("HERMES_KANBAN_TASK") or "").strip())
+    from agent.delegation_context import dispatcher_owned_kanban_task_id
+    return dispatcher_owned_kanban_task_id() is not None
 
 
 def _tool_call_name(tc: Any) -> str:
@@ -60,7 +61,8 @@ def build_kanban_stop_nudge(
     ):
         return None
 
-    tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"
+    from agent.delegation_context import dispatcher_owned_kanban_task_id
+    tid = (task_id or dispatcher_owned_kanban_task_id() or "").strip() or "this task"
     return (
         "[System: You are a Hermes kanban worker. A plain-text reply is NOT a "
         "terminal state for the board.\n\n"

@@ -2202,6 +2202,11 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
+    # The child PID is unknown while Popen's environment is assembled.  The
+    # worker CLI binds this one-shot sentinel to its own PID before tool
+    # discovery; descendants inherit only a concrete PID and therefore fail
+    # the worker-identity check.
+    env["HERMES_KANBAN_OWNER_PID"] = "pending"
     env["HERMES_KANBAN_WORKSPACE"] = workspace
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.

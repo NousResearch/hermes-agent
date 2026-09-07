@@ -129,6 +129,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Keep Hermes' own banners off stdout (the MCP wire).
     os.environ.setdefault("HERMES_QUIET", "1")
     os.environ.setdefault("HERMES_REDACT_SECRETS", "true")
+    # Codex launches this endpoint as a supervised child of the worker.  It is
+    # the only non-entry runtime allowed to activate the preserved task scope.
+    from agent.delegation_context import activate_supervised_kanban_runtime
+    activate_supervised_kanban_runtime()
 
     try:
         server = _build_server()

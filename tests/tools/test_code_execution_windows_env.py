@@ -351,16 +351,17 @@ class TestPosixEquivalence:
         ("tenor_passthrough", lambda k: k == "TENOR_API_KEY"),
         ("all_passthrough", lambda _: True),
     ])
-    def test_posix_behavior_unchanged(self, env_name, env, pt_name, pt):
+    def test_posix_behavior_unchanged_except_kanban_identity(self, env_name, env, pt_name, pt):
         """For every combination of (env shape × passthrough rule), the
-        new helper with is_windows=False must produce the exact same dict
-        as the legacy inline scrubber.
+        new helper with is_windows=False must preserve the legacy scrubber
+        except for the new Kanban identity boundary.
 
         We parametrize over three passthrough rules to cover the full
         surface: no passthrough, single-var passthrough (the common
         skill-registered case), and everything-passes (edge case that
         could expose precedence bugs)."""
-        expected = _legacy_posix_scrubber(env, pt)
+        from agent.delegation_context import strip_kanban_env
+        expected = strip_kanban_env(_legacy_posix_scrubber(env, pt))
         actual = _scrub_child_env(env, is_passthrough=pt, is_windows=False)
         assert actual == expected, (
             f"POSIX behavior regressed for env={env_name}, passthrough={pt_name}\n"

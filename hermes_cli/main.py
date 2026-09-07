@@ -3308,6 +3308,11 @@ def _default_to_chat(args) -> None:
 
 def main():
     """Main entry point for hermes CLI."""
+    # Establish or discard process-scoped Kanban identity before any fast path,
+    # plugin discovery, parser, or tool registry can observe inherited env.
+    from agent.delegation_context import initialize_kanban_worker_process
+    initialize_kanban_worker_process()
+
     _set_process_title()
     _advertise_agent_env()
 

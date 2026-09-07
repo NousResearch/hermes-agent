@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from agent.kanban_stop import (
@@ -13,8 +15,13 @@ from agent.kanban_stop import (
 
 @pytest.fixture
 def clear_kanban_env(monkeypatch):
-    for var in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_STOP_NUDGE"):
+    for var in (
+        "HERMES_KANBAN_TASK",
+        "HERMES_KANBAN_OWNER_PID",
+        "HERMES_KANBAN_STOP_NUDGE",
+    ):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_OWNER_PID", str(os.getpid()))
     return monkeypatch
 
 

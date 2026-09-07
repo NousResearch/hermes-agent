@@ -56,9 +56,31 @@ class CodexAppServerClient:
         # GATEWAY_RELAY_* auth — none of which a coding subprocess has any use for. Route through the
         # centralized helper so Tier-1 + dynamic-internal secrets are always stripped while provider creds
         # still flow, matching copilot_acp_client (#29157 sibling spawn-site gap).
-        spawn_env = hermes_subprocess_env(inherit_credentials=True)
+        from agent.delegation_context import (
+            dispatcher_owned_kanban_task_id,
+            strip_kanban_env,
+        )
+
+        inherit_kanban = dispatcher_owned_kanban_task_id() is not None
+        spawn_env = hermes_subprocess_env(
+            inherit_credentials=True, inherit_kanban=inherit_kanban)
+        preserved_kanban = {
+            key: value
+            for key, value in spawn_env.items()
+            if key.startswith("HERMES_KANBAN_")
+        }
         if env:
             spawn_env.update(env)
+        # Caller-supplied overlays must not re-grant or retarget identity after
+        # the factory scrub. For a real worker, restore only the identity that
+        # the factory captured from that worker before adding the runtime mark.
+        spawn_env = strip_kanban_env(spawn_env)
+        if inherit_kanban:
+            spawn_env.update(preserved_kanban)
+        if inherit_kanban and spawn_env.get("HERMES_KANBAN_TASK"):
+            # The MCP endpoint is the one supervised non-entry runtime that
+            # may activate the worker identity after its own bootstrap.
+            spawn_env["HERMES_KANBAN_RUNTIME"] = "codex-mcp"
         if codex_home:
             spawn_env["CODEX_HOME"] = codex_home
 

@@ -157,10 +157,11 @@ def apply_stop_gates(
         final_msg["_kanban_stop_synthetic"] = True
         append_message(messages, final_msg)
         verdict = _continue(_kanban_nudge, "_kanban_stop_synthetic")
+        from agent.delegation_context import dispatcher_owned_kanban_task_id
         logger.info(
             "kanban stop-loop nudge issued (attempt %d) task=%s",
             agent._kanban_stop_nudges,
-            os.environ.get("HERMES_KANBAN_TASK", ""),
+            dispatcher_owned_kanban_task_id() or "",
         )
         agent._emit_status(
             "⚠️ Kanban worker tried to exit without "

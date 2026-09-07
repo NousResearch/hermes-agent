@@ -136,7 +136,8 @@ def _browser_env() -> dict:
         return _build_browser_env()
     except Exception as e:
         logger.debug("credential-scrubbed browser env unavailable: %s", e)
-        return os.environ.copy()
+        from agent.delegation_context import strip_kanban_env
+        return strip_kanban_env(os.environ)
 
 
 def _cdp_ready(url: str, timeout: float = 0.2) -> bool:

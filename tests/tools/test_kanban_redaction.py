@@ -8,6 +8,7 @@ test_kanban_tools.py.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -38,6 +39,7 @@ def worker_env(monkeypatch, tmp_path):
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_OWNER_PID", str(os.getpid()))
     return tid
 
 

@@ -848,6 +848,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
 
     import os
     os.environ["HERMES_KANBAN_TASK"] = tid
+    os.environ["HERMES_KANBAN_OWNER_PID"] = str(os.getpid())
     try:
         kt._handle_complete({
             "summary": "one real, one ghost",
@@ -855,6 +856,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
         })
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)
+        os.environ.pop("HERMES_KANBAN_OWNER_PID", None)
 
     runner = object.__new__(GatewayRunner)
     runner._owns_kanban_dispatcher_lock = lambda: True

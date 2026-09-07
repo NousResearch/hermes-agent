@@ -34,7 +34,7 @@ def github(tmp_path, monkeypatch):
                     run["head_sha"] = "b" * 40
                 runs = [] if state.get("missing") else [run]
                 value = [{"total_count": 101, "check_runs": [
-                    {**run, "id": i, "name": "optional", "conclusion": "skipped"}
+                    {**run, "id": 1000 + i, "name": "optional", "conclusion": "skipped"}
                     for i in range(100)]}, {"total_count": 101, "check_runs": runs}]
                 if state.get("race"):
                     state["race"]()

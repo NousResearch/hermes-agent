@@ -140,6 +140,7 @@ class HeartbeatManager:
     def __init__(self, session_id: str):
         self.session_id = session_id
         self._state: Optional[HeartbeatState] = load_heartbeat(session_id)
+        self._persisted_state_json = self._state.to_json() if self._state is not None else None
         self._last_claim: Optional[tuple[float, int]] = None  # (last_fired_at, fire_count) before the last due_prompt
 
     @property
@@ -174,6 +175,7 @@ class HeartbeatManager:
         self._state = HeartbeatState(prompt=prompt, interval_seconds=interval_seconds, status="active",
                                      created_at=time.time())
         save_heartbeat(self.session_id, self._state)
+        self._persisted_state_json = self._state.to_json()
         return self._state
 
     def _set_status(self, status: str, *, reanchor: bool = False) -> Optional[HeartbeatState]:
@@ -183,6 +185,7 @@ class HeartbeatManager:
         if reanchor:
             self._state.last_fired_at = time.time()
         save_heartbeat(self.session_id, self._state)
+        self._persisted_state_json = self._state.to_json()
         return self._state
 
     def pause(self) -> Optional[HeartbeatState]:
@@ -197,6 +200,48 @@ class HeartbeatManager:
         self._state = None
         return cleared
 
+    def update(self, prompt: str, interval_seconds: int) -> HeartbeatState:
+        """Edit prompt/interval on the active heartbeat, preserving counters and timestamps."""
+        s = self._state
+        if s is None or s.status not in {"active", "paused"}:
+            status = s.status if s else "missing"
+            raise RuntimeError(f"heartbeat is not editable (status={status})")
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise ValueError("heartbeat prompt is empty")
+        interval_seconds = int(interval_seconds)
+        if interval_seconds < MIN_INTERVAL_SECONDS:
+            raise ValueError(f"interval must be at least {MIN_INTERVAL_SECONDS}s")
+
+        def _mutate(current_json):
+            if not current_json:
+                raise RuntimeError("heartbeat is not editable (status=missing)")
+            st = HeartbeatState.from_json(current_json)
+            if st.status not in {"active", "paused"}:
+                raise RuntimeError(f"heartbeat is not editable (status={st.status})")
+            st.prompt = prompt
+            st.interval_seconds = interval_seconds
+            return st.to_json()
+
+        db = _get_session_db()
+        if db is None:
+            raise RuntimeError("session DB unavailable")
+        persisted = db.mutate_meta(f"heartbeat:{self.session_id}", _mutate)
+        self._state = HeartbeatState.from_json(persisted)
+        self._persisted_state_json = persisted
+        return self._state
+
+    def _local_state_changes(self) -> Dict[str, Any]:
+        """Return fields explicitly changed since this manager last persisted its state."""
+        if self._state is None or self._persisted_state_json is None:
+            return {}
+        baseline = HeartbeatState.from_json(self._persisted_state_json)
+        return {
+            name: getattr(self._state, name)
+            for name in self._state.__dataclass_fields__
+            if getattr(self._state, name) != getattr(baseline, name)
+        }
+
     def due_prompt(self, now: Optional[float] = None) -> Optional[str]:
         """Return the injection prompt if the heartbeat is due, else None.
 
@@ -204,13 +249,38 @@ class HeartbeatManager:
         double-fire the same tick. Missed ticks coalesce: the anchor resets to NOW, not the theoretical
         schedule.
         """
-        s = self._state
-        if s is None or not s.is_due(now):
+        if self._state is None:
             return None
-        self._last_claim = (s.last_fired_at, s.fire_count)
-        s.last_fired_at = now if now is not None else time.time()
-        s.fire_count += 1
-        save_heartbeat(self.session_id, s)
+        db = _get_session_db()
+        if db is None:
+            return None
+        fired_at = now if now is not None else time.time()
+        local_changes = self._local_state_changes()
+        claim = None
+
+        def _claim(current_json):
+            nonlocal claim
+            if not current_json:
+                claim = None
+                return None
+            current = HeartbeatState.from_json(current_json)
+            for name, value in local_changes.items():
+                setattr(current, name, value)
+            if not current.is_due(fired_at):
+                claim = None
+                return current_json
+            claim = (current.last_fired_at, current.fire_count)
+            current.last_fired_at = fired_at
+            current.fire_count += 1
+            return current.to_json()
+
+        persisted = db.mutate_meta(f"heartbeat:{self.session_id}", _claim)
+        self._state = HeartbeatState.from_json(persisted) if persisted else None
+        self._persisted_state_json = persisted
+        s = self._state
+        if s is None or claim is None or s.last_fired_at != fired_at:
+            return None
+        self._last_claim = claim
         return s.render_prompt()
 
     def abandon_fire(self) -> bool:
@@ -220,14 +290,29 @@ class HeartbeatManager:
         claim, s = self._last_claim, self._state
         if claim is None or s is None:
             return False
-        current = load_heartbeat(self.session_id)
-        if current is None or current.status != "active" or (current.last_fired_at, current.fire_count) != (
-                s.last_fired_at, s.fire_count):
+        db = _get_session_db()
+        if db is None:
             return False
-        s.last_fired_at, s.fire_count = claim
-        self._last_claim = None
-        save_heartbeat(self.session_id, s)
-        return True
+        expected = (s.last_fired_at, s.fire_count)
+        rewound = False
+
+        def _rewind(current_json):
+            nonlocal rewound
+            if not current_json:
+                return None
+            current = HeartbeatState.from_json(current_json)
+            if current.status != "active" or (current.last_fired_at, current.fire_count) != expected:
+                return current_json
+            current.last_fired_at, current.fire_count = claim
+            rewound = True
+            return current.to_json()
+
+        persisted = db.mutate_meta(f"heartbeat:{self.session_id}", _rewind)
+        self._state = HeartbeatState.from_json(persisted) if persisted else None
+        self._persisted_state_json = persisted
+        if rewound:
+            self._last_claim = None
+        return rewound
 
 
 def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bool:

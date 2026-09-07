@@ -1285,6 +1285,31 @@ class SessionDB(
             return retagged
         return self._execute_write(_do)
 
+    def mutate_meta(
+        self, key: str, mutator: Callable[[Optional[str]], Optional[str]],
+    ) -> Optional[str]:
+        """Atomically read *key*, pass the current value (or None) to *mutator*, and upsert the
+        returned value inside the same ``BEGIN IMMEDIATE``. Returning ``None`` leaves a missing
+        value missing. Returns the persisted value. The callback must be safe to retry because the
+        transaction retries on lock contention."""
+        _upsert_sql = (
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        )
+
+        def _do(conn):
+            row = conn.execute("SELECT value FROM state_meta WHERE key = ?", (key,)).fetchone()
+            current = row[0] if row else None
+            new_value = mutator(current)
+            # Skip the UPSERT when the value is unchanged: scheduler probes for
+            # not-due automations return the same JSON on every poll, and writing
+            # identical bytes is pure WAL amplification.
+            if new_value is not None and new_value != current:
+                conn.execute(_upsert_sql, (key, new_value))
+            return new_value
+
+        return self._execute_write(_do)
+
     def list_meta_prefix(self, prefix: str) -> List[Tuple[str, str]]:
         """``[(key, value), ...]`` for state_meta keys starting with the literal
         ``prefix`` (LIKE wildcards escaped) — e.g. ``loop:<session_id>`` rows."""

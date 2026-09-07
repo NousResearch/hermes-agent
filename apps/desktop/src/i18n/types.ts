@@ -2351,6 +2351,7 @@ export interface Translations {
     unavailable: string
     advanced: string
     title: string
+    editTitle: string
     goalLabel: string
     loopLabel: string
     heartbeatLabel: string
@@ -2376,6 +2377,9 @@ export interface Translations {
     startGoal: string
     startLoop: string
     createHeartbeat: string
+    saveGoal: string
+    saveLoop: string
+    saveHeartbeat: string
     firstRunGoal: string
     firstRunLoop: string
     firstRunHeartbeat: string
@@ -2407,6 +2411,7 @@ export interface Translations {
       goalDoneTurns: (turns: number) => string
       goalTurn: (turn: number) => string
       goalActions: string
+      editGoal: string
       viewDetails: string
       addCriterion: string
       addCriterionDialogTitle: string
@@ -2455,6 +2460,7 @@ export interface Translations {
       loopEveryHours: (hours: number) => string
       loopSelfPaced: string
       loopActions: string
+      editLoop: string
       pauseLoop: string
       resumeLoop: string
       stopLoop: string
@@ -2474,6 +2480,7 @@ export interface Translations {
       heartbeatNext: (time: string) => string
       heartbeatDueWaitingForIdle: string
       heartbeatActions: string
+      editHeartbeat: string
       pauseHeartbeat: string
       resumeHeartbeat: string
       clearHeartbeat: string

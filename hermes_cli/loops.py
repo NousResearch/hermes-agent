@@ -383,6 +383,7 @@ class LoopManager:
     def __init__(self, session_id: str):
         self.session_id = session_id
         self._state: Optional[LoopState] = load_loop(session_id)
+        self._persisted_state_json = self._state.to_json() if self._state is not None else None
 
     @property
     def state(self) -> Optional[LoopState]:
@@ -391,6 +392,7 @@ class LoopManager:
     def refresh(self) -> None:
         """Re-read state from the DB (cross-process safety for the gateway)."""
         self._state = load_loop(self.session_id)
+        self._persisted_state_json = self._state.to_json() if self._state is not None else None
 
     def is_active(self) -> bool:
         return self._state is not None and self._state.status == "active"
@@ -400,7 +402,19 @@ class LoopManager:
 
     def _save(self) -> LoopState:
         save_loop(self.session_id, self._state)
+        self._persisted_state_json = self._state.to_json()
         return self._state
+
+    def _local_state_changes(self) -> Dict[str, Any]:
+        """Return fields explicitly changed since this manager last persisted its state."""
+        if self._state is None or self._persisted_state_json is None:
+            return {}
+        baseline = LoopState.from_json(self._persisted_state_json)
+        return {
+            name: getattr(self._state, name)
+            for name in self._state.__dataclass_fields__
+            if getattr(self._state, name) != getattr(baseline, name)
+        }
 
     def status_line(self) -> str:
         s = self._state
@@ -483,6 +497,57 @@ class LoopManager:
         self._state = None
         return True
 
+    def update(
+        self,
+        prompt: str,
+        *,
+        interval_seconds: int,
+        times: Optional[int] = None,
+        until: Optional[str] = None,
+    ) -> LoopState:
+        """Edit prompt/interval/times/until on the active loop, preserving all runtime state."""
+        s = self._state
+        if s is None or s.status not in {"active", "paused"}:
+            status = s.status if s else "missing"
+            raise RuntimeError(f"loop is not editable (status={status})")
+        if s.awaiting_response:
+            raise RuntimeError("loop is awaiting a response; wait for the current tick to finish")
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise ValueError("loop prompt is empty")
+        interval = float(max(int(interval_seconds), min_interval_seconds()))
+        if times is not None and int(times) > 0 and int(times) < s.ticks_fired:
+            raise RuntimeError(f"run cap ({times}) is below ticks already fired ({s.ticks_fired})")
+
+        def _mutate(current_json):
+            if not current_json:
+                raise RuntimeError("loop is not editable (status=missing)")
+            st = LoopState.from_json(current_json)
+            if st.status not in {"active", "paused"}:
+                raise RuntimeError(f"loop is not editable (status={st.status})")
+            if st.awaiting_response:
+                raise RuntimeError("loop is awaiting a response; wait for the current tick to finish")
+            if times is not None and int(times) > 0 and int(times) < st.ticks_fired:
+                raise RuntimeError(f"run cap ({times}) is below ticks already fired ({st.ticks_fired})")
+            st.prompt = prompt
+            st.interval_seconds = interval
+            st.current_delay = interval
+            now = time.time()
+            st.next_due_at = now + interval
+            if times is not None:
+                st.times = int(times)
+            if until is not None:
+                st.until = (until or "").strip()
+            return st.to_json()
+
+        db = _get_session_db()
+        if db is None:
+            raise RuntimeError("session DB unavailable")
+        persisted = db.mutate_meta(_meta_key(self.session_id), _mutate)
+        self._state = LoopState.from_json(persisted)
+        self._persisted_state_json = persisted
+        return self._state
+
     def is_due(self, now: Optional[float] = None) -> bool:
         """Cheap check: active, not mid-wakeup, and the clock has passed."""
         s = self._state
@@ -498,16 +563,42 @@ class LoopManager:
         itself a slash command (``/loop 10m /recap``). Marks ``awaiting_response`` so the tick
         can't double-fire; drivers MUST follow up with ``complete_tick`` (or ``abandon_tick``).
         """
-        s = self._state
-        if s is None or not self.is_due():
+        if self._state is None:
             return None
-        s.ticks_fired += 1
-        s.last_fired_at = time.time()
-        s.awaiting_response = True
-        # Provisional schedule from NOW: complete_tick reschedules from turn end, but if the
-        # process dies mid-turn this keeps the persisted loop from being 'due' in a tight loop.
-        s.next_due_at = s.last_fired_at + (s.current_delay or s.interval_seconds or self_paced_floor_seconds())
-        self._save()
+        db = _get_session_db()
+        if db is None:
+            return None
+        fired_at = time.time()
+        local_changes = self._local_state_changes()
+
+        def _claim(current_json):
+            if not current_json:
+                return None
+            current = LoopState.from_json(current_json)
+            for name, value in local_changes.items():
+                setattr(current, name, value)
+            if (
+                current.status != "active"
+                or current.awaiting_response
+                or fired_at < current.next_due_at
+            ):
+                return current_json
+            current.ticks_fired += 1
+            current.last_fired_at = fired_at
+            current.awaiting_response = True
+            # Provisional schedule from NOW: complete_tick reschedules from turn end, but if the
+            # process dies mid-turn this keeps the persisted loop from being 'due' in a tight loop.
+            current.next_due_at = fired_at + (
+                current.current_delay or current.interval_seconds or self_paced_floor_seconds()
+            )
+            return current.to_json()
+
+        persisted = db.mutate_meta(_meta_key(self.session_id), _claim)
+        self._state = LoopState.from_json(persisted) if persisted else None
+        self._persisted_state_json = persisted
+        s = self._state
+        if s is None or s.last_fired_at != fired_at or not s.awaiting_response:
+            return None
 
         if s.prompt.lstrip().startswith("/"):
             return s.prompt.strip()

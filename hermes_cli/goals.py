@@ -1186,6 +1186,41 @@ class GoalManager:
         self._state.last_reason = reason
         self._save()
 
+    def update(self, prompt: str, *, max_turns: Optional[int] = None, criteria: Optional[List[str]] = None) -> GoalState:
+        """Edit prompt/max_turns/criteria on the active goal, preserving all runtime state."""
+        state = self._state
+        if state is None or state.status not in {"active", "paused"}:
+            status = state.status if state else "missing"
+            raise RuntimeError(f"goal is not editable (status={status})")
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise ValueError("goal text is empty")
+
+        def _mutate(current_json):
+            if not current_json:
+                raise RuntimeError("goal is not editable (status=missing)")
+            s = GoalState.from_json(current_json)
+            if s.status not in {"active", "paused"}:
+                raise RuntimeError(f"goal is not editable (status={s.status})")
+            s.goal = prompt
+            if max_turns is not None:
+                next_max_turns = int(max_turns)
+                if next_max_turns < s.turns_used:
+                    raise RuntimeError(
+                        f"turn cap ({next_max_turns}) is below turns already used ({s.turns_used})"
+                    )
+                s.max_turns = next_max_turns
+            if criteria is not None:
+                s.subgoals = [str(c).strip() for c in criteria if str(c).strip()]
+            return s.to_json()
+
+        db = _get_session_db()
+        if db is None:
+            raise RuntimeError("session DB unavailable")
+        persisted = db.mutate_meta(_meta_key(self.session_id), _mutate)
+        self._state = GoalState.from_json(persisted)
+        return self._state
+
     # --- /subgoal user controls ---------------------------------------
 
     def add_subgoal(self, text: str) -> str:

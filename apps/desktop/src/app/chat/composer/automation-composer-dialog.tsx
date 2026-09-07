@@ -62,10 +62,14 @@ export function AutomationComposerDialog({
   const submitting = state.submitting
   const sessionId = state.sessionId
   const type = state.type
+  const mode = state.mode
+  const isEdit = mode === 'edit'
   const controls = useStore($sessionControlBySession)
   const entry = sessionId ? controls[sessionId] : undefined
-  const existing = entry?.snapshot?.[type]
+  const existing = !isEdit ? entry?.snapshot?.[type] : undefined
   const unavailable = !!entry && (entry.capability === 'unsupported' || !!entry.error || entry.loading)
+  const [prefilledEditKey, setPrefilledEditKey] = useState<string | null>(null)
+
   useEffect(() => {
     if (open && sessionId) {void refreshSessionControl(sessionId)}
   }, [open, sessionId])
@@ -79,6 +83,48 @@ export function AutomationComposerDialog({
 
     return $activeSessionId.listen(() => invalidateOnSessionSwitch())
   }, [open])
+
+  useEffect(() => {
+    if (!open) {
+      if (prefilledEditKey !== null) {
+        setPrefilledEditKey(null)
+      }
+
+      return
+    }
+
+    if (!isEdit || !entry?.snapshot || !sessionId) {
+      return
+    }
+
+    const editKey = `${sessionId}:${type}`
+
+    if (prefilledEditKey === editKey) {
+      return
+    }
+
+    const snap = entry.snapshot[type]
+
+    if (!snap) {
+      return
+    }
+
+    if ('title' in snap) {
+      setPrompt(snap.title)
+      setCriteria([...snap.subgoals])
+      setMaxTurns(String(snap.max_turns))
+    } else {
+      setPrompt(snap.prompt)
+      setInterval(String(snap.interval_seconds))
+
+      if ('times' in snap) {
+        setRunLimit(snap.times ? String(snap.times) : '')
+        setStopCondition(snap.until || '')
+      }
+    }
+
+    setPrefilledEditKey(editKey)
+  }, [open, isEdit, sessionId, type, entry?.snapshot, prefilledEditKey])
 
   const [prompt, setPrompt] = useState('')
   const [criteria, setCriteria] = useState<string[]>([])
@@ -107,7 +153,7 @@ export function AutomationComposerDialog({
   }
 
   const handleSubmit = async () => {
-    if (submitting || !sessionId || existing || unavailable) {
+    if (submitting || !sessionId || (!isEdit && existing) || unavailable) {
       return
     }
 
@@ -147,8 +193,9 @@ export function AutomationComposerDialog({
     }
   }
 
-  const submitLabel =
-    type === 'goal' ? copy.startGoal : type === 'loop' ? copy.startLoop : copy.createHeartbeat
+  const submitLabel = isEdit
+    ? type === 'goal' ? copy.saveGoal : type === 'loop' ? copy.saveLoop : copy.saveHeartbeat
+    : type === 'goal' ? copy.startGoal : type === 'loop' ? copy.startLoop : copy.createHeartbeat
 
   const firstRunText =
     type === 'goal' ? copy.firstRunGoal : type === 'loop' ? copy.firstRunLoop : copy.firstRunHeartbeat
@@ -159,9 +206,9 @@ export function AutomationComposerDialog({
     <Dialog onOpenChange={closeAutomationComposer} open={open}>
       <DialogContent bodyClassName="gap-5" className="max-w-lg">
         <DialogHeader>
-          <DialogTitle icon={CodiconAutomation}>{copy.title}</DialogTitle>
+          <DialogTitle icon={CodiconAutomation}>{isEdit ? copy.editTitle : copy.title}</DialogTitle>
           <DialogDescription>
-            {conversationTitle ? copy.sessionScope(conversationTitle) : copy.title}
+            {conversationTitle ? copy.sessionScope(conversationTitle) : (isEdit ? copy.editTitle : copy.title)}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -172,7 +219,7 @@ export function AutomationComposerDialog({
           }}
         >
           <SegmentedControl
-            disabled={submitting}
+            disabled={submitting || isEdit}
             onChange={toggleType}
             options={TYPE_OPTIONS.map(option => ({
               id: option.id,
@@ -335,10 +382,10 @@ export function AutomationComposerDialog({
             </>
           )}
 
-          <div className="grid gap-1 text-xs text-muted-foreground">
+          {!isEdit && <div className="grid gap-1 text-xs text-muted-foreground">
             <p>{firstRunText}</p>
             {type !== 'goal' && <p>{idleText}</p>}
-          </div>
+          </div>}
 
           {!sessionId && <FieldHint error>{copy.noSession}</FieldHint>}
           {unavailable && <FieldHint error>{copy.unavailable}</FieldHint>}
@@ -349,7 +396,7 @@ export function AutomationComposerDialog({
           </div>}
           {state.error && <FieldHint error>{state.error}</FieldHint>}
 
-          <div className="grid gap-1.5">
+          {!isEdit && <div className="grid gap-1.5">
             <p className="text-[0.66rem] leading-4 text-muted-foreground">{copy.cronExplain}</p>
             {onOpenCron && (
               <button
@@ -362,13 +409,13 @@ export function AutomationComposerDialog({
                 {copy.cronLink}
               </button>
             )}
-          </div>
+          </div>}
 
           <DialogFooter>
             <Button onClick={closeAutomationComposer} type="button" variant="ghost">
               {t.common.cancel}
             </Button>
-            <Button disabled={submitting || !sessionId || !!existing || unavailable || !prompt.trim()} type="submit">
+            <Button disabled={submitting || !sessionId || (!isEdit && !!existing) || unavailable || !prompt.trim()} type="submit">
               {submitLabel}
             </Button>
           </DialogFooter>

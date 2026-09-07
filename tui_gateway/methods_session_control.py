@@ -14,6 +14,7 @@ import json
 import logging
 import time
 import threading
+from typing import Callable
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -43,11 +44,14 @@ _ACTION_COMMAND_MAP: dict[str, tuple[str, str]] = {
 
 _MANAGER_ACTIONS = frozenset({
     "goal.create",
+    "goal.update",
     "subgoal.add",
     "subgoal.remove",
     "subgoal.clear",
     "loop.create",
+    "loop.update",
     "heartbeat.create",
+    "heartbeat.update",
     "heartbeat.pause",
     "heartbeat.resume",
     "heartbeat.clear",
@@ -297,6 +301,20 @@ def _(rid, params: dict) -> dict:
             if action.endswith(".create"):
                 with _CREATION_LOCK, _session_profile_runtime_scope(session):
                     action_result = _execute_manager_action(session_key, action, validated)
+            elif action == "goal.update":
+                lock = session.get("history_lock")
+                if lock is None:
+                    return _err(rid, 4004, "Goal edit requires the session history lock. Refresh the session and try again.")
+                acquired = lock.acquire(blocking=False)
+                if not acquired:
+                    return _err(rid, 4004, "Goal is busy with a live session. Wait for the current turn to finish.")
+                try:
+                    if session.get("running"):
+                        return _err(rid, 4004, "Goal is busy with a live session. Wait for the current turn to finish.")
+                    with _session_profile_runtime_scope(session):
+                        action_result = _execute_manager_action(session_key, action, validated)
+                finally:
+                    lock.release()
             else:
                 with _session_profile_runtime_scope(session):
                     action_result = _execute_manager_action(session_key, action, validated)
@@ -323,29 +341,6 @@ def _(rid, params: dict) -> dict:
         except Exception as exc:
             logger.debug("session.control.update emit failed (best-effort): %s", exc, exc_info=True)
     return _ok(rid, {"control": control, "dispatch": _dispatch_envelope(action_result)})
-
-
-def _validate_action_args(rid, action: str, args: dict):
-    """Validate the only actions with input before any manager is constructed."""
-    if action == "goal.create":
-        return _validate_goal_create_args(rid, args)
-    if action == "loop.create":
-        return _validate_loop_create_args(rid, args)
-    if action == "heartbeat.create":
-        return _validate_heartbeat_create_args(rid, args)
-    if action == "subgoal.add":
-        text = args.get("text")
-        if not isinstance(text, str) or not (text := text.strip()):
-            return None, _err(rid, 4004, "subgoal text is required")
-        return {"text": text}, None
-    if action == "subgoal.remove":
-        index = args.get("index")
-        if type(index) is not int:
-            return None, _err(rid, 4004, "subgoal index must be an integer")
-        if index < 1:
-            return None, _err(rid, 4004, "subgoal index must be >= 1")
-        return {"index": index}, None
-    return {}, None
 
 
 _MAX_TURNS_CEILING = 1000
@@ -415,6 +410,74 @@ def _validate_heartbeat_create_args(rid, args):
     return {"prompt": prompt, "interval_seconds": interval}, None
 
 
+def _validate_goal_update_args(rid, args):
+    prompt = args.get("prompt")
+    if not isinstance(prompt, str) or not (prompt := prompt.strip()):
+        return None, _err(rid, 4004, "goal prompt is required")
+    criteria = args.get("criteria")
+    if criteria is not None:
+        if not isinstance(criteria, list) or not all(isinstance(c, str) for c in criteria):
+            return None, _err(rid, 4004, "criteria must be a list of strings")
+        stripped = []
+        for c in criteria:
+            s = c.strip() if isinstance(c, str) else ""
+            if not s:
+                return None, _err(rid, 4004, "criteria items must be non-empty strings")
+            stripped.append(s)
+        criteria = stripped
+    max_turns = args.get("max_turns")
+    if max_turns is not None:
+        if type(max_turns) is not int or max_turns < 1:
+            return None, _err(rid, 4004, "max_turns must be a positive integer")
+        if max_turns > _MAX_TURNS_CEILING:
+            return None, _err(rid, 4004, f"max_turns must be <= {_MAX_TURNS_CEILING}")
+    return {"prompt": prompt, "criteria": criteria, "max_turns": max_turns}, None
+
+
+def _validate_loop_update_args(rid, args):
+    return _validate_loop_create_args(rid, args)
+
+
+def _validate_heartbeat_update_args(rid, args):
+    return _validate_heartbeat_create_args(rid, args)
+
+
+def _validate_subgoal_add(rid, args):
+    text = args.get("text")
+    if not isinstance(text, str) or not (text := text.strip()):
+        return None, _err(rid, 4004, "subgoal text is required")
+    return {"text": text}, None
+
+
+def _validate_subgoal_remove(rid, args):
+    index = args.get("index")
+    if type(index) is not int:
+        return None, _err(rid, 4004, "subgoal index must be an integer")
+    if index < 1:
+        return None, _err(rid, 4004, "subgoal index must be >= 1")
+    return {"index": index}, None
+
+
+_VALIDATOR_TABLE: dict[str, Callable] = {
+    "goal.create": _validate_goal_create_args,
+    "goal.update": _validate_goal_update_args,
+    "loop.create": _validate_loop_create_args,
+    "loop.update": _validate_loop_update_args,
+    "heartbeat.create": _validate_heartbeat_create_args,
+    "heartbeat.update": _validate_heartbeat_update_args,
+    "subgoal.add": _validate_subgoal_add,
+    "subgoal.remove": _validate_subgoal_remove,
+}
+
+
+def _validate_action_args(rid, action: str, args: dict):
+    """Validate the only actions with input before any manager is constructed."""
+    validator = _VALIDATOR_TABLE.get(action)
+    if validator is not None:
+        return validator(rid, args)
+    return {}, None
+
+
 def _dispatch_command(rid, *, session_id: str, name: str, arg: str) -> dict:
     """Delegate a fixed intent to the existing TUI command dispatcher."""
     handler = _methods.get("command.dispatch")
@@ -425,19 +488,6 @@ def _dispatch_command(rid, *, session_id: str, name: str, arg: str) -> dict:
     except Exception as exc:
         logger.debug("command.dispatch %s %s failed: %s", name, arg, exc, exc_info=True)
         return _err(rid, 5031, f"dispatch failed: {exc}")
-
-
-def _execute_manager_action(session_key: str, action: str, args: dict) -> dict:
-    """Use manager APIs for controls that have no TUI command handler."""
-    if action == "goal.create":
-        return _execute_goal_create(session_key, args)
-    if action.startswith("subgoal."):
-        return _execute_subgoal_action(session_key, action, args)
-    if action == "loop.create":
-        return _execute_loop_create(session_key, args)
-    if action == "heartbeat.create":
-        return _execute_heartbeat_create(session_key, args)
-    return _execute_heartbeat_action(session_key, action)
 
 
 def _execute_goal_create(session_key: str, args: dict) -> dict:
@@ -537,14 +587,85 @@ def _execute_heartbeat_create(session_key: str, args: dict) -> dict:
     return {"result": {"type": "exec", "output": notice}}
 
 
+def _execute_goal_update(session_key: str, args: dict) -> dict:
+    from hermes_cli.goals import GoalManager, load_goal
+
+    existing = load_goal(session_key)
+    if existing is None or existing.status in {"cleared", "done"}:
+        status = existing.status if existing else "missing"
+        return _err(None, 4004, f"No editable goal exists (status={status}). Create one first with goal.create.")
+    manager = GoalManager(session_id=session_key)
+    state = manager.update(
+        args["prompt"],
+        max_turns=args.get("max_turns"),
+        criteria=args.get("criteria"),
+    )
+    notice = f"✓ Goal updated: {state.goal}"
+    return {"result": {"type": "exec", "output": notice}}
+
+
+def _execute_loop_update(session_key: str, args: dict) -> dict:
+    from hermes_cli.loops import LoopManager, load_loop
+
+    existing = load_loop(session_key)
+    if existing is None or existing.status in {"cleared", "done"}:
+        status = existing.status if existing else "missing"
+        return _err(None, 4004, f"No editable loop exists (status={status}). Create one first with loop.create.")
+    manager = LoopManager(session_id=session_key)
+    state = manager.update(
+        args["prompt"],
+        interval_seconds=args["interval_seconds"],
+        times=args.get("run_limit"),
+        until=args.get("stop_condition"),
+    )
+    notice = f"✓ Loop updated: {state.prompt}"
+    return {"result": {"type": "exec", "output": notice}}
+
+
+def _execute_heartbeat_update(session_key: str, args: dict) -> dict:
+    from hermes_cli.heartbeat import HeartbeatManager, format_interval, load_heartbeat
+
+    existing = load_heartbeat(session_key)
+    if existing is None or existing.status in {"cleared", "done"}:
+        status = existing.status if existing else "missing"
+        return _err(None, 4004, f"No editable heartbeat exists (status={status}). Create one first with heartbeat.create.")
+    manager = HeartbeatManager(session_id=session_key)
+    state = manager.update(args["prompt"], interval_seconds=args["interval_seconds"])
+    notice = f"✓ Heartbeat updated (every {format_interval(state.interval_seconds)}): {state.prompt}"
+    return {"result": {"type": "exec", "output": notice}}
+
+
+_EXECUTOR_TABLE: dict[str, Callable] = {
+    "goal.create": _execute_goal_create,
+    "goal.update": _execute_goal_update,
+    "loop.create": _execute_loop_create,
+    "loop.update": _execute_loop_update,
+    "heartbeat.create": _execute_heartbeat_create,
+    "heartbeat.update": _execute_heartbeat_update,
+}
+
+
+def _execute_manager_action(session_key: str, action: str, args: dict) -> dict:
+    """Use manager APIs for controls that have no TUI command handler."""
+    executor = _EXECUTOR_TABLE.get(action)
+    if executor is not None:
+        return executor(session_key, args)
+    if action.startswith("subgoal."):
+        return _execute_subgoal_action(session_key, action, args)
+    return _execute_heartbeat_action(session_key, action)
+
+
 def _manager_error_message(action: str, exc: Exception) -> str:
     prefixes = {
         "goal.create": "/goal",
+        "goal.update": "/goal",
         "subgoal.add": "/subgoal",
         "subgoal.remove": "/subgoal remove",
         "subgoal.clear": "/subgoal clear",
         "loop.create": "/loop",
+        "loop.update": "/loop",
         "heartbeat.create": "/heartbeat",
+        "heartbeat.update": "/heartbeat",
     }
     return f"{prefixes.get(action, action)}: {exc}"
 

@@ -9,11 +9,13 @@ import {
 } from './session-control'
 
 export type AutomationType = 'goal' | 'loop' | 'heartbeat'
+export type AutomationComposerMode = 'create' | 'edit'
 
 export interface AutomationComposerState {
   open: boolean
   sessionId: string | null
   type: AutomationType
+  mode: AutomationComposerMode
   submitting: boolean
   error: string | null
 }
@@ -42,6 +44,7 @@ const EMPTY_STATE: AutomationComposerState = {
   open: false,
   sessionId: null,
   type: 'goal',
+  mode: 'create',
   submitting: false,
   error: null
 }
@@ -50,7 +53,20 @@ export const $automationComposer = atom<AutomationComposerState>({ ...EMPTY_STAT
 
 $gateway.listen(() => $automationComposer.set({ ...EMPTY_STATE }))
 
-function actionFor(type: AutomationType): SessionControlAction {
+function actionFor(type: AutomationType, mode: AutomationComposerMode = 'create'): SessionControlAction {
+  if (mode === 'edit') {
+    switch (type) {
+      case 'goal':
+        return 'goal.update'
+
+      case 'loop':
+        return 'loop.update'
+
+      case 'heartbeat':
+        return 'heartbeat.update'
+    }
+  }
+
   switch (type) {
     case 'goal':
       return 'goal.create'
@@ -78,6 +94,25 @@ export function openAutomationComposer(type: AutomationType = 'goal', sessionId?
     open: true,
     sessionId: sid,
     type,
+    mode: 'create',
+    submitting: false,
+    error: null
+  })
+}
+
+/** Opens the composer in edit mode for an existing automation. */
+export function openAutomationComposerForEdit(type: AutomationType, sessionId: string): void {
+  const current = $automationComposer.get()
+
+  if (current.submitting) {
+    return
+  }
+
+  $automationComposer.set({
+    open: true,
+    sessionId,
+    type,
+    mode: 'edit',
     submitting: false,
     error: null
   })
@@ -96,7 +131,7 @@ export function closeAutomationComposer(): void {
 export function setAutomationComposerType(type: AutomationType): void {
   const current = $automationComposer.get()
 
-  if (current.submitting) {
+  if (current.submitting || current.mode === 'edit') {
     return
   }
 
@@ -155,7 +190,7 @@ export async function submitAutomation(
   $automationComposer.set(pending)
 
   try {
-    const dispatch = await runSessionControlAction(sessionId, actionFor(type), args)
+    const dispatch = await runSessionControlAction(sessionId, actionFor(type, current.mode), args)
 
     if ($automationComposer.get() !== pending) {
       throw new Error("Automation request belongs to a previous conversation")

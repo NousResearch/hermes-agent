@@ -6,7 +6,8 @@ import {
   $automationComposer,
   type AutomationType,
   invalidateOnSessionSwitch,
-  openAutomationComposer
+  openAutomationComposer,
+  openAutomationComposerForEdit
 } from '@/store/automation-composer'
 import { $activeSessionId } from '@/store/session'
 import { $sessionControlBySession, runSessionControlAction } from '@/store/session-control'
@@ -56,7 +57,7 @@ const openAs = (type: AutomationType = 'goal') => {
 }
 
 afterEach(() => {
-  $automationComposer.set({ open: false, sessionId: null, type: 'goal', submitting: false, error: null })
+  $automationComposer.set({ open: false, sessionId: null, type: 'goal', mode: 'create', submitting: false, error: null })
   $sessionControlBySession.set({})
   vi.clearAllMocks()
 })
@@ -107,6 +108,50 @@ describe('AutomationComposerDialog', () => {
     await screen.findByRole('dialog')
     expect(screen.getByLabelText(/completion criteria/i)).toBeTruthy()
     expect(screen.getByText(/work starts immediately/i)).toBeTruthy()
+  })
+
+  it('prefills an existing goal once without overwriting a typed draft on refresh', async () => {
+    $sessionControlBySession.set({
+      'session-123': {
+        capability: 'supported',
+        snapshot: {
+          goal: {
+            title: 'Original objective',
+            status: 'active',
+            subgoals: ['Keep the tests green'],
+            max_turns: 12
+          }
+        }
+      }
+    } as never)
+    await renderDialog()
+
+    act(() => openAutomationComposerForEdit('goal', 'session-123'))
+
+    const prompt = await screen.findByLabelText(/goal prompt/i)
+    expect((prompt as HTMLTextAreaElement).value).toBe('Original objective')
+    fireEvent.click(screen.getByText('Advanced'))
+    expect((screen.getByLabelText(/max continuation turns/i) as HTMLInputElement).value).toBe('12')
+    expect(screen.getByText('Keep the tests green')).toBeTruthy()
+
+    fireEvent.change(prompt, { target: { value: 'My unsaved objective' } })
+    act(() => {
+      $sessionControlBySession.set({
+        'session-123': {
+          capability: 'supported',
+          snapshot: {
+            goal: {
+              title: 'Server refresh objective',
+              status: 'active',
+              subgoals: ['Server refresh criterion'],
+              max_turns: 20
+            }
+          }
+        }
+      } as never)
+    })
+
+    expect((screen.getByLabelText(/goal prompt/i) as HTMLTextAreaElement).value).toBe('My unsaved objective')
   })
 
   it('switching to loop reveals interval, run limit and stop condition fields', async () => {

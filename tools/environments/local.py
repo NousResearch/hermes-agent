@@ -672,6 +672,18 @@ def _kill_process_group_posix(proc) -> None:
                 proc.wait(timeout=0.2)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # On macOS, killpg can return EPERM for a group whose leader exited
+        # but was not yet reaped (XNU's killpg1 skips SZOMB members, returns
+        # EPERM when the group exists but no eligible member is found).  This
+        # is not a genuine signal denial: it is a teardown race.  If the
+        # direct child exited, treat the group-kill as benign, suppress the
+        # error, and still sweep any snapshotted descendants individually so
+        # process-tree cleanup is preserved.  If the child is still alive,
+        # this is a genuine denial → re-raise.
+        if proc.poll() is None:
+            raise
+        # Child exited: the group-kill EPERM is benign.  Descendants sweep below.
     _sweep_escaped_descendants(descendants, pgid)
 
 
@@ -800,7 +812,20 @@ class LocalEnvironment(BaseEnvironment):
         """Kill the entire process group (all children)."""
         try:
             (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
-        except OSError:  # ProcessLookupError / PermissionError included
+        except ProcessLookupError:
+            # Group already gone — benign.
+            pass
+        except PermissionError:
+            # A genuine denial in _kill_process_group_posix re-raises, while a
+            # benign (exited-unreaped zombie group) PermissionError is suppressed there.
+            # If we get here, it's genuine → re-raise. If the group was already gone
+            # before kill, that path catches ProcessLookupError and doesn't re-raise here.
+            # Fall back to proc.kill() ONLY if it's safe; re-raise otherwise.
+            with contextlib.suppress(Exception):
+                proc.kill()
+            raise
+        except OSError:
+            # Other errors (e.g. process state issues): fallback to direct kill.
             with contextlib.suppress(Exception):
                 proc.kill()
 

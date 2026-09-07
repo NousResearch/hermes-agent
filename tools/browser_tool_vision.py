@@ -68,7 +68,7 @@ def _native_vision_result(
 
     data_url = _resize_image_for_vision(screenshot_path, mime_type="image/png", max_base64_bytes=_EMBED_TARGET_BYTES,
                                         max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
-    native_result = _build_native_vision_tool_result(image_url=str(screenshot_path), question=question,
+    native_result = _build_native_vision_tool_result(image_url=str(screenshot_path),
                                                      image_data_url=data_url,
                                                      image_size_bytes=screenshot_path.stat().st_size)
     meta = native_result.setdefault("meta", {})

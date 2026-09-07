@@ -1886,7 +1886,7 @@ def opencode_provider_family(provider_id: Optional[str]) -> Optional[str]:
     """Resolve a provider id (canonical or prefixed) to its OpenCode family, or None.
 
     Returns ``"opencode-zen"`` or ``"opencode-go"`` for the built-in providers AND for custom providers
-    whose name extends a family slug (e.g. ``opencode-go-bridge`` pointing at
+    whose bare or ``custom:``-prefixed name extends a family slug (e.g. ``opencode-go-bridge`` pointing at
     ``https://opencode.ai/zen/go/v1``, issue #85589). Matching is case-insensitive. Custom family providers
     need the same per-model api_mode routing and /v1 base-url normalization as the built-ins — this
     predicate is the single owner of that family-membership question; do not re-implement it inline.
@@ -1894,7 +1894,11 @@ def opencode_provider_family(provider_id: Optional[str]) -> Optional[str]:
     raw = str(provider_id or "").strip().lower()
     if not raw:
         return None
-    canonical = normalize_provider(provider_id)
+    if raw.startswith("custom:"):
+        raw = raw.split(":", 1)[1].strip()
+        if not raw:
+            return None
+    canonical = normalize_provider(raw)
     if canonical in _OPENCODE_FAMILIES:
         return canonical
     return next((f for f in _OPENCODE_FAMILIES if raw.startswith(f)), None)

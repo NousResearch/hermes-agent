@@ -5953,7 +5953,19 @@ def _build_call_kwargs(
     # OpenCode relay session affinity — same key as the main turn so compression/title/vision
     # calls stay on the conversation's warm backend.
     from agent.opencode_affinity import merge_opencode_session_headers
-    return merge_opencode_session_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
+    route_provider = str(provider or "").strip().lower()
+    route_base_url = str(base_url or "").strip().rstrip("/")
+    main_provider = str(_runtime_main_value("provider") or "").strip().lower()
+    main_base_url = str(_runtime_main_value("base_url") or "").strip().rstrip("/")
+    requested_provider = (
+        _runtime_main_value("requested_provider")
+        if route_provider == main_provider and route_base_url == main_base_url
+        else None
+    )
+    return merge_opencode_session_headers(
+        kwargs, provider, base_url, _runtime_main_value("session_id") or None,
+        requested_provider=requested_provider,
+    )
 
 
 def _validate_llm_response(

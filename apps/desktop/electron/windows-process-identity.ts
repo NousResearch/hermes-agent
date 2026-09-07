@@ -198,16 +198,31 @@ export function pruneProcessIdentityCache(
 }
 
 /**
- * Adapt the async OS query to synchronous marker readers. The first read (and
- * every query failure) returns unknown/null, which keeps the gate closed. A
- * later poll may use the short-lived exact result. Positive updater adoption
- * should call queryWindowsProcessCreatedAt directly instead of this cache.
+ * Adapt the async OS query to synchronous marker readers.
+ *
+ * The answer is deliberately TRI-STATE, because "nobody has asked the OS yet"
+ * and "the OS was asked and would not say" are different facts that callers
+ * must act on differently:
+ *
+ *  - `undefined` — the query for this pid has NOT settled: a cold miss, an
+ *    in-flight query, or an expired entry being refreshed. Nothing is known
+ *    about the pid, so this is not evidence of anything.
+ *  - `null` — the query SETTLED without a value (dead pid, access denied,
+ *    timeout, unsupported platform). A real, if negative, answer.
+ *  - a number — the settled creation epoch, reusable for `cacheMs`.
+ *
+ * Collapsing the first two into `null` is what let update-marker.ts reclaim a
+ * PROVEN-live updater's claim on the very first read: the cold miss answered
+ * "unknown", and an unknown owner past the age ceiling is reclaimed, so a slow
+ * update was reclaimed out from under itself and a second updater admitted.
+ * Positive updater adoption should still call queryWindowsProcessCreatedAt
+ * directly rather than going through this cache.
  */
 export function createCachedWindowsProcessCreateTimeProbe({
   cacheMs = DEFAULT_CACHE_MS,
   now = Date.now,
   query = queryProcessCreatedAt
-}: CacheOptions = {}): (pid: number) => number | null {
+}: CacheOptions = {}): (pid: number) => number | null | undefined {
   const entries = new Map<number, ProcessIdentityCacheEntry>()
 
   // Re-insert rather than update in place: insertion order is the recency
@@ -224,7 +239,8 @@ export function createCachedWindowsProcessCreateTimeProbe({
     write(pid, { pending: false, validUntil: at + cacheMs, value }, at)
   }
 
-  return (pid: number): number | null => {
+  return (pid: number): number | null | undefined => {
+    // A pid that cannot exist needs no query: that IS the settled answer.
     if (!Number.isInteger(pid) || pid <= 0) {return null}
     const at = now()
     const existing = entries.get(pid)
@@ -239,7 +255,9 @@ export function createCachedWindowsProcessCreateTimeProbe({
       )
     }
 
-    return null
+    // Unsettled. An expired entry counts as unsettled too: its value is past
+    // its validity, and reporting a stale negative would reclaim a live owner.
+    return undefined
   }
 }
 

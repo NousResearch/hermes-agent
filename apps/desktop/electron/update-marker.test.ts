@@ -33,6 +33,7 @@ import {
   updateHandoffConflict,
   writeUpdateMarker
 } from './update-marker'
+import { createCachedWindowsProcessCreateTimeProbe } from './windows-process-identity'
 
 function tmpHome(tag) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-marker-${tag}-`))
@@ -395,9 +396,14 @@ test('releaseUpdateMarkerIfOwnedBy removes only a marker that names the given pi
 
 
 test.each([
-  [99.9, 'matching'], [100.9, 'matching'], [101, 'stale'], [null, 'unknown']
+  [99.9, 'matching'], [100.9, 'matching'], [101, 'stale'], [null, 'unknown'],
+  // A probe that has not answered yet is NOT an answer of "unprovable".
+  [undefined, 'unknown-pending']
 ])('PID creation %s compared with marker timestamp 100 is %s', (created, expected) => {
-  assert.equal(probePidIdentity(123, 100, { kill: ALIVE, getProcessCreatedAt: () => created as number | null }), expected)
+  assert.equal(
+    probePidIdentity(123, 100, { kill: ALIVE, getProcessCreatedAt: () => created as number | null | undefined }),
+    expected
+  )
 })
 
 test('proven live owner survives the advisory age ceiling', () => {
@@ -484,4 +490,85 @@ test('exclusive claim never overwrites a contender arriving after the pre-check'
   } finally {
     spy.mockRestore()
   }
+})
+
+
+// ---------------------------------------------------------------------------
+// The REAL production probe, not a synchronous stub.
+//
+// Every arm above injects `getProcessCreatedAt`, which answers instantly — and
+// that is exactly what hid the defect. Production readers (main.ts's marker
+// poll, updateHandoffConflict, acquireUpdateMarker) pass no `kill`, so they get
+// createCachedWindowsProcessCreateTimeProbe, whose cold miss starts an async OS
+// query and returns immediately. While that answer was indistinguishable from
+// "could not prove it", the FIRST read of any overdue claim reclaimed a
+// proven-live updater's marker and admitted a second updater over the same
+// install. These arms drive the real probe with a controllable query.
+// ---------------------------------------------------------------------------
+
+function settlingProbe() {
+  let settle!: (value: number | null) => void
+  const answer = new Promise<number | null>(resolve => { settle = resolve })
+
+  return {
+    probe: createCachedWindowsProcessCreateTimeProbe({ now: () => 1_000, query: () => answer }),
+    // Resolving is not enough: the cache settles in a promise callback.
+    settleTo: async (value: number | null) => {
+      settle(value)
+      await new Promise(resolve => { setImmediate(resolve) })
+    }
+  }
+}
+
+const OVERDUE_NOW = 1_000_000_000_000
+const OVERDUE_STARTED_AT = Math.floor((OVERDUE_NOW - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000)
+
+function readWithProbe(home: string, probe: (pid: number) => number | null | undefined) {
+  return readLiveUpdateMarker(home, { kill: ALIVE, now: () => OVERDUE_NOW, getProcessCreatedAt: probe })
+}
+
+test('an unsettled real probe never reclaims an overdue owner, then proves it', async () => {
+  const home = tmpHome('probe-unsettled')
+  writeMarker(home, 4242, OVERDUE_STARTED_AT)
+  const { probe, settleTo } = settlingProbe()
+
+  const cold = readWithProbe(home, probe)
+
+  assert.equal(cold?.kind, 'live', 'a pending probe is not evidence that the owner expired')
+  assert.ok(fs.existsSync(markerPath(home)), 'the first read must not reclaim a live owner')
+
+  // (b) settled to the owner's true creation time => matching, never expires.
+  await settleTo(OVERDUE_STARTED_AT)
+  const proven = readWithProbe(home, probe)
+
+  assert.equal(proven?.kind, 'live')
+  assert.equal(proven?.overdue, true, 'still past the ceiling, and still authoritative')
+  assert.ok(fs.existsSync(markerPath(home)), 'a proven owner outlives the ceiling')
+})
+
+test('an overdue owner IS reclaimed once the real probe settles without proof', async () => {
+  const home = tmpHome('probe-settled-null')
+  writeMarker(home, 4242, OVERDUE_STARTED_AT)
+  const { probe, settleTo } = settlingProbe()
+
+  assert.equal(readWithProbe(home, probe)?.kind, 'live', 'pending holds the gate')
+
+  await settleTo(null)
+
+  assert.equal(readWithProbe(home, probe), null, 'a settled unprovable owner expires at the ceiling')
+  assert.ok(!fs.existsSync(markerPath(home)), 'recoverability is the whole point of the ceiling')
+})
+
+test('a recycled pid is reclaimed as soon as the real probe settles', async () => {
+  const home = tmpHome('probe-settled-recycled')
+  writeMarker(home, 4242, OVERDUE_STARTED_AT)
+  const { probe, settleTo } = settlingProbe()
+
+  assert.equal(readWithProbe(home, probe)?.kind, 'live', 'pending holds the gate')
+
+  // Born after the claim was stamped: this pid cannot be the claimant.
+  await settleTo(OVERDUE_STARTED_AT + 60)
+
+  assert.equal(readWithProbe(home, probe), null)
+  assert.ok(!fs.existsSync(markerPath(home)), 'a proven-recycled pid never holds the gate')
 })

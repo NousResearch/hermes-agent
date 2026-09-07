@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 
+from hermes_cli.config import _expand_env_vars
 from hermes_cli.managed_scope import apply_managed_overlay
 from utils import env_var_enabled
 
@@ -106,7 +107,11 @@ def worker_contract_enabled(
         config = yaml.safe_load((home / "config.yaml").read_text())
     except (OSError, UnicodeError, yaml.YAMLError):
         return False
-    config = apply_managed_overlay(config) if isinstance(config, dict) else {}
+    config = (
+        apply_managed_overlay(_expand_env_vars(config))
+        if isinstance(config, dict)
+        else {}
+    )
     plugins = config.get("plugins")
     if not isinstance(plugins, dict):
         return False

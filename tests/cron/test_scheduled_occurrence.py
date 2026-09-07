@@ -145,3 +145,15 @@ def test_ledger_migration_and_completion_identity(tmp_path, monkeypatch):
         adopted = executions.adopt_claimed_execution(claim['execution_id'])
         assert adopted is not None
         assert adopted['scheduled_instant'] == slot
+
+        # A runnable legacy wall-clock value cannot establish an exact UTC identity.
+        from datetime import timedelta
+        from hermes_time import now
+        naive = jobs.create_job(prompt='legacy', schedule='every 4h')
+        rows = jobs.load_jobs()
+        for item in rows:
+            if item['id'] == naive['id']:
+                item['next_run_at'] = (now() - timedelta(minutes=10)).replace(tzinfo=None).isoformat()
+        jobs.save_jobs(rows)
+        due = next(item for item in jobs.get_due_jobs() if item['id'] == naive['id'])
+        assert due['_scheduled_instant'] is None

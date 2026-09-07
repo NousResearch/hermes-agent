@@ -2939,7 +2939,7 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         return False
 
     # Only the dispatch snapshot carries this field; never infer it from a later stamp.
-    job["_scheduled_instant"] = None if manual_run else scheduled_instant(d.next_run_dt.isoformat())
+    job["_scheduled_instant"] = None if manual_run else scheduled_instant(job.get("next_run_at"))
 
     if not manual_run and kind == "cron" and _reanchor_stale_cron(d):
         return False

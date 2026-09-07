@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -749,13 +750,238 @@ def test_malformed_log_and_task_reconstruction_fail_closed(
         )
 
 
-def test_prompt_stays_serviceable_at_every_delta_boundary(tmp_path: Path):
-    """Any valid transcript yields a prompt within the driver limit, omission marker included."""
-    for index, middle in enumerate(range(64_900, 64_980, 2)):
+# -- designated-owner routing: the no-match fallback tier ---------------------
+OWNER_PROFILE = "build"
+OWNED_MEMBERS = [{**member, "owner": True} if member["profile"] == OWNER_PROFILE else member for member in MEMBERS]
+PRECEDENCE_CASES = json.loads(
+    (Path(__file__).with_name("hosted_room_responder_precedence.json")).read_text("utf-8"))["cases"]
+
+
+def _create_room(db: Path, members: list[dict]) -> dict:
+    return hosted_rooms.create_room(
+        db,
+        room_id=ROOM_ID,
+        name="Release",
+        members=members,
+        authority_gateway_id=GATEWAY_ID,
+        now=1,
+    )
+
+
+def _owned_members(owner: str | None) -> list[dict]:
+    return [{**member, "owner": True} if member["profile"] == owner else member for member in MEMBERS]
+
+
+def _round_zero_profiles(room: dict, db: Path) -> list[str]:
+    """Drain one Discussion with every member passing; return the responders in turn order."""
+    profiles: list[str] = []
+    while True:
+        decision = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL_PROFILES)
+        if decision.status != "task":
+            assert decision.status == "settled", decision
+            return profiles
+        assert decision.task is not None
+        assert decision.task.round_index == 0
+        profiles.append(decision.task.member.profile)
+        _settle_next(room, db, text="(pass)")
+
+
+def _fail_or_defer(room: dict, db: Path, task: discussion.DiscussionTaskPlan, status: str) -> None:
+    publication = discussion.plan_publication(
+        room,
+        _events(db),
+        task,
+        status=status,
+        result={"reason": "member_unavailable"} if status == "deferred" else {"error": "owner crashed"},
+        execution_generation=1 if status == "deferred" else None,
+        local_profiles=LOCAL_PROFILES,
+    )
+    _append_publication(db, publication)
+
+
+@pytest.mark.parametrize("case", PRECEDENCE_CASES, ids=[case["name"] for case in PRECEDENCE_CASES])
+def test_responder_precedence_matches_the_shared_contract(tmp_path: Path, case: dict):
+    db = tmp_path / "state.db"
+    room = _create_room(db, _owned_members(case["owner"]))
+    _append_user(db, event_id="user-1", text=case["text"])
+
+    assert _round_zero_profiles(room, db) == case["expected"]
+
+
+def test_owner_flag_is_validated_onto_the_roster():
+    members = discussion.validate_roster(OWNED_MEMBERS, local_profiles=LOCAL_PROFILES)
+    assert [member.owner for member in members] == [False, True, False]
+    room = discussion.validate_room(
+        {"room_id": ROOM_ID, "name": "Release", "members": OWNED_MEMBERS,
+         "authority_gateway_id": GATEWAY_ID, "authority_epoch": 1},
+        local_profiles=LOCAL_PROFILES,
+    )
+    assert room.owner is not None and room.owner.profile == OWNER_PROFILE
+    assert discussion.validate_room(
+        {"room_id": ROOM_ID, "name": "Release", "members": MEMBERS,
+         "authority_gateway_id": GATEWAY_ID, "authority_epoch": 1},
+        local_profiles=LOCAL_PROFILES,
+    ).owner is None
+
+
+@pytest.mark.parametrize(
+    ("members", "match"),
+    [
+        ([{**MEMBERS[0], "owner": True}, {**MEMBERS[1], "owner": True}], "at most one"),
+        ([{**MEMBERS[0], "owner": "yes"}, MEMBERS[1]], "owner must be a boolean"),
+    ],
+)
+def test_owner_flag_is_exclusive_and_boolean(members: list[dict], match: str):
+    with pytest.raises(discussion.DiscussionValidationError, match=match):
+        discussion.validate_roster(members, local_profiles=LOCAL_PROFILES)
+
+
+@pytest.mark.parametrize("owner", [OWNER_PROFILE, None])
+@pytest.mark.parametrize("text", ["hello", "@ everyone hi"])
+def test_unmentioned_human_message_never_has_zero_responders(tmp_path: Path, owner: str | None, text: str):
+    db = tmp_path / "state.db"
+    room = _create_room(db, _owned_members(owner))
+    _append_user(db, event_id="user-1", text=text)
+
+    decision = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL_PROFILES)
+    assert decision.status == "task", decision
+
+
+@pytest.mark.parametrize("status", ["deferred", "failed"])
+def test_unavailable_owner_falls_back_to_the_rest_of_the_room_visibly(tmp_path: Path, status: str):
+    db = tmp_path / "state.db"
+    room = _create_room(db, OWNED_MEMBERS)
+    _append_user(db, event_id="user-1", text="Ship it?")
+
+    owner_task = _next_task(room, db)
+    assert owner_task.member.profile == OWNER_PROFILE
+    assert owner_task.member_index == 0
+    assert "unavailable" not in owner_task.payload["prompt"]
+    _fail_or_defer(room, db, owner_task, status)
+
+    fallback: list[discussion.DiscussionTaskPlan] = []
+    for expected_profile, expected_index in (("research", 1), ("review", 2)):
+        task = _next_task(room, db)
+        assert (task.member.profile, task.round_index, task.member_index) == (expected_profile, 0, expected_index)
+        assert f"[Owner @{OWNER_PROFILE} was unavailable for this message; it is routed to you.]" in task.payload["prompt"]
+        fallback.append(_settle_next(room, db, text="(pass)"))
+
+    decision = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL_PROFILES)
+    assert (decision.status, decision.reason) == ("settled", "silent_round")
+    kinds = [event["kind"] for event in _events(db)]
+    assert kinds.count(f"turn.{status}") == 1  # the owner's fallback trigger stays visible in the log
+    assert [event["payload"]["member_id"] for event in _events(db) if event["kind"] == "turn.settled"] == [
+        "member-research", "member-review"]
+
+
+def test_owner_pass_settles_the_round_as_silence(tmp_path: Path):
+    db = tmp_path / "state.db"
+    room = _create_room(db, OWNED_MEMBERS)
+    _append_user(db, event_id="user-1", text="Anything to add?")
+
+    owner_task = _settle_next(room, db, text="(pass)")
+    assert owner_task.member.profile == OWNER_PROFILE
+
+    decision = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL_PROFILES)
+    assert (decision.status, decision.reason) == ("settled", "silent_round")
+
+
+def test_owner_reply_hands_off_to_cited_peers_as_before(tmp_path: Path):
+    db = tmp_path / "state.db"
+    room = _create_room(db, OWNED_MEMBERS)
+    _append_user(db, event_id="user-1", text="Ship it?")
+
+    owner_task = _settle_next(room, db, text="@review please sign off.")
+    assert owner_task.member.profile == OWNER_PROFILE
+
+    second = _next_task(room, db)
+    assert (second.member.profile, second.round_index) == ("review", 1)
+
+
+def test_owner_fallback_task_is_deterministic_and_reconstructs_after_restart(tmp_path: Path):
+    db = tmp_path / "state.db"
+    room = _create_room(db, OWNED_MEMBERS)
+    _append_user(db, event_id="user-1", text="Ship it?")
+    _fail_or_defer(room, db, _next_task(room, db), "deferred")
+
+    first = _next_task(room, db)
+    assert (first.member.profile, first.member_index) == ("research", 1)
+    assert first == _next_task(room, db)
+    assert set(first.payload) == {"target_member_id", "target_profile", "prompt", "source_event_seq"}
+
+    driver.admit_task(db, first.identity, payload=first.payload, clock=time.time)
+    reconstructed = discussion.reconstruct_task_plan(
+        room, _events(db), driver.get_task(db, first.identity), local_profiles=LOCAL_PROFILES)
+    assert reconstructed == first
+    # A restart re-plans from the same durable log and must land on the same task.
+    assert discussion.plan_next_task(room, _events(db), local_profiles=LOCAL_PROFILES).task == first
+
+
+@pytest.mark.parametrize("text", [f"@{OWNER_PROFILE} and @review, thoughts?", "@everyone thoughts?"])
+def test_explicitly_mentioned_owner_going_offline_triggers_no_owner_fallback(tmp_path: Path, text: str):
+    """Mentions win outright: a mentioned owner that defers is silence, not a routing fallback."""
+    db = tmp_path / "state.db"
+    room = _create_room(db, OWNED_MEMBERS)
+    _append_user(db, event_id="user-1", text=text)
+
+    tasks: list[discussion.DiscussionTaskPlan] = []
+    while (decision := discussion.plan_next_task(room, _events(db), local_profiles=LOCAL_PROFILES)).status == "task":
+        assert decision.task is not None
+        tasks.append(decision.task)
+        if decision.task.member.profile == OWNER_PROFILE:
+            _fail_or_defer(room, db, decision.task, "deferred")
+        else:
+            _settle_next(room, db, text="(pass)")
+
+    assert [task.member.profile for task in tasks] == (
+        [OWNER_PROFILE, "review"] if text.startswith(f"@{OWNER_PROFILE}") else ["research", OWNER_PROFILE, "review"])
+    assert not any("unavailable" in task.payload["prompt"] for task in tasks)
+
+
+@pytest.mark.parametrize("owner", [OWNER_PROFILE, None])
+def test_prompt_stays_serviceable_at_every_delta_boundary(tmp_path: Path, owner: str | None):
+    """Any valid transcript yields a prompt within the driver limit, with or without the owner notice."""
+    for index, middle in enumerate(range(64_860, 64_980, 2)):
         db = tmp_path / f"state-{index}.db"
-        room = hosted_rooms.create_room(
-            db, room_id=ROOM_ID, name="Release", members=MEMBERS, authority_gateway_id=GATEWAY_ID, now=1)
+        room = _create_room(db, _owned_members(owner))
         for seq, size in enumerate((1_000, middle, discussion.MAX_USER_TEXT_BYTES)):
             _append_user(db, event_id=f"user-{seq}", text="x" * size)
+        if owner:
+            _fail_or_defer(room, db, _next_task(room, db), "deferred")
         prompt = _next_task(room, db).payload["prompt"]
         assert len(prompt.encode("utf-8")) <= driver.MAX_PROMPT_BYTES, middle
+
+
+def test_owner_retry_that_defers_again_keeps_the_fallback_going(tmp_path: Path):
+    db = tmp_path / "state.db"
+    room = _create_room(db, OWNED_MEMBERS)
+    _append_user(db, event_id="user-1", text="Ship it?")
+    owner_task = _next_task(room, db)
+    _fail_or_defer(room, db, owner_task, "deferred")
+    assert _settle_next(room, db, text="(pass)").member.profile == "research"
+
+    retried = discussion.plan_publication(
+        room, _events(db), owner_task, status="deferred", result={"reason": "member_unavailable"},
+        execution_generation=2, local_profiles=LOCAL_PROFILES)
+    _append_publication(db, retried)
+
+    task = _next_task(room, db)
+    assert (task.member.profile, task.round_index, task.member_index) == ("review", 0, 2)
+
+
+def test_owner_retry_that_answers_ends_the_fallback_without_a_second_owner_turn(tmp_path: Path):
+    db = tmp_path / "state.db"
+    room = _create_room(db, OWNED_MEMBERS)
+    _append_user(db, event_id="user-1", text="Ship it?")
+    owner_task = _next_task(room, db)
+    _fail_or_defer(room, db, owner_task, "deferred")
+    assert _settle_next(room, db, text="(pass)").member.profile == "research"
+
+    recovered = discussion.plan_publication(
+        room, _events(db), owner_task, status="settled", result={"text": "(pass)"}, local_profiles=LOCAL_PROFILES)
+    _append_publication(db, recovered)
+
+    decision = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL_PROFILES)
+    assert (decision.status, decision.reason) == ("settled", "silent_round")
+    owner_turns = [e for e in _events(db) if e["kind"].startswith("turn.") and e["payload"]["member_id"] == "member-build"]
+    assert [e["kind"] for e in owner_turns] == ["turn.deferred", "turn.settled"]

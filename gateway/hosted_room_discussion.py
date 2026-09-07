@@ -56,6 +56,8 @@ _TERMINAL_FIELDS = {  # kind -> exact payload fields (coordinates + seen_through
         ("turn.cancelled", ("reason",)), ("turn.deferred", ("execution_generation", "reason")))}
 _TERMINAL_OPTIONAL_FIELDS = {"turn.failed": frozenset({"reason_code"})}
 _TERMINAL_EVENT_KINDS = frozenset(_TERMINAL_FIELDS)
+_OWNER_FALLBACK_TERMINALS = frozenset({"turn.deferred", "turn.failed"})
+_OWNER_UNAVAILABLE_NOTICE = "[Owner @{handle} was unavailable for this message; it is routed to you.]"
 # Gateway-authored control events: kind -> (exact payload fields, identifier fields).
 _GATEWAY_EVENT_FIELDS = {
     "room.activity": (
@@ -82,6 +84,7 @@ class DiscussionMember:
     handle: str
     display_name: str = ""
     target: Mapping[str, Any] | None = None
+    owner: bool = False
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,11 @@ class DiscussionRoom:
     members: tuple[DiscussionMember, ...]
     gateway_id: str
     authority_epoch: int
+
+    @property
+    def owner(self) -> DiscussionMember | None:
+        """The room-configured default responder for an unmentioned user message, if any."""
+        return next((member for member in self.members if member.owner), None)
 
 
 @dataclass(frozen=True)
@@ -227,7 +235,7 @@ def _validate_member(raw: Any, index: int, known_profiles: set[str]) -> Discussi
             f"member {index} contains cross-gateway fields: {', '.join(sorted(remote_fields))}")
     member = _exact_fields(
         raw, label=f"member {index}", required=frozenset({"member_id", "profile", "handle"}),
-        optional=frozenset({"display_name", "target"}))
+        optional=frozenset({"display_name", "owner", "target"}))
     member_id, profile, handle = (
         _identifier(member[field], label=f"member {index} {label}")
         for field, label in (("member_id", "id"), ("profile", "profile"), ("handle", "handle")))
@@ -236,7 +244,9 @@ def _validate_member(raw: Any, index: int, known_profiles: set[str]) -> Discussi
         raise DiscussionValidationError(f"member {index} display_name must be a string")
     if len(display_name := display_name.strip()) > hosted_rooms.MAX_ACTOR_LABEL_CHARS:
         raise DiscussionValidationError(f"member {index} display_name is too long")
-    return DiscussionMember(member_id, profile, handle, display_name, target)
+    if not isinstance(owner := member.get("owner", False), bool):
+        raise DiscussionValidationError(f"member {index} owner must be a boolean")
+    return DiscussionMember(member_id, profile, handle, display_name, target, owner)
 
 
 def validate_roster(value: Any, *, local_profiles: Iterable[str]) -> tuple[DiscussionMember, ...]:
@@ -262,6 +272,8 @@ def validate_roster(value: Any, *, local_profiles: Iterable[str]) -> tuple[Discu
                 raise DiscussionValidationError(message)
             seen.add(key)
         members.append(member)
+    if sum(member.owner for member in members) > 1:
+        raise DiscussionValidationError("at most one member can be the room owner")
     return tuple(members)
 
 
@@ -305,6 +317,25 @@ def resolve_mentions(
     if everyone or (default_all and not mentioned):
         return tuple(members)
     return tuple(member for member in members if member.handle.casefold() in mentioned)
+
+
+def _round_zero_responders(
+    text: str, room: DiscussionRoom, terminals: Mapping[tuple[int, str], str]
+) -> tuple[tuple[DiscussionMember, ...], DiscussionMember | None]:
+    """Responders to the user's message, and the owner they stand in for when routing fell back.
+
+    Precedence: mentions or @everyone, else the configured owner, else everyone. An owner whose round-0 turn
+    ended deferred or failed keeps the leading slot (already terminal, so it is skipped) and the rest of the
+    roster follows in order, so an unmentioned human message never goes unanswered because its default
+    responder was unavailable. A pass is an answer and triggers no fallback; a mentioned owner is never one.
+    """
+    if mentioned := resolve_mentions((text,), room.members, default_all=False):
+        return mentioned, None
+    if (owner := room.owner) is None:
+        return tuple(room.members), None
+    if terminals.get((0, owner.member_id)) in _OWNER_FALLBACK_TERMINALS:
+        return (owner, *(member for member in room.members if member.member_id != owner.member_id)), owner
+    return (owner,), None
 
 
 def _unaddressed_member_mentions(
@@ -480,6 +511,9 @@ def _derive_member_watermarks(events: Sequence[_ValidatedEvent]) -> dict[tuple[s
 
 
 def _member_digest(member: DiscussionMember) -> str:
+    # Ownership is frozen with the roster at creation, so it stays out of the digest: it selects who speaks,
+    # not who the member is. Any future roster mutation must preserve or version the routing configuration
+    # used by admitted tasks; hashing one member's own flag would not cover another member's changed routing.
     target = compact_json(member.target or {"kind": "local", "profile": member.profile}, ensure_ascii=False)
     return hashlib.sha256(f"{member.member_id}\0{member.profile}\0{member.handle}\0{target}".encode()).hexdigest()[:24]
 
@@ -506,12 +540,12 @@ def _truncate_utf8_text(value: Any, *, max_bytes: int, suffix: str = "") -> str:
 
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
-    seen_through_seq: int) -> str:
+    seen_through_seq: int, notice: str | None = None) -> str:
     delta = [event for event in messages if watermark < event.seq <= seen_through_seq][- MAX_DISCUSSION_DELTA_LINES:]
     peers = ", ".join(f"@{candidate.handle}" for candidate in room.members if candidate.member_id != member.member_id)
     opening = [
         f'[Discussion: "{room.name}"] You are @{member.handle}, one participant '
-        f"with {peers or 'no other members'} and the user.", "",
+        f"with {peers or 'no other members'} and the user.", *([notice] if notice else []), "",
         "New messages in this thread since your last turn (oldest first):"]
     rules = [
         "", "Rules for this Discussion:",
@@ -621,20 +655,21 @@ def plan_next_task(
     thread_messages, discussion_messages, member_messages = _thread_messages(validated, discussion)
     if len(member_messages) >= MAX_DISCUSSION_MESSAGES:
         return decide("bounded", "max_messages")
-    terminals = {
-        (int(event.payload["round_index"]), str(event.payload["member_id"])) for event in validated
+    terminals = {  # (round, member) -> latest terminal kind for this Discussion
+        (int(event.payload["round_index"]), str(event.payload["member_id"])): event.kind for event in validated
         if event.kind in _TERMINAL_EVENT_KINDS and event.payload.get("discussion_event_id") == discussion.event_id}
     watermarks = _effective_watermarks(validated, initial_watermarks)
     seen_through_seq = max(event.seq for event in thread_messages)
     for round_index in range(MAX_DISCUSSION_ROUNDS):
-        # The user's message selects the first round, with no mention meaning
-        # everyone. Later rounds are opt-in: only a peer explicitly cited by a
-        # Bot and not heard from afterward gets another turn. Every member's
-        # watermark remains intact, so a peer cited later still receives the
-        # complete bounded transcript delta without consuming turns meanwhile.
-        responders = (
-            resolve_mentions((str(discussion.payload["text"]),), room.members) if round_index == 0
-            else _unaddressed_member_mentions(discussion_messages, room))
+        # The user's message selects the first round: mentions or @everyone,
+        # else the room's configured owner, else everyone. Later rounds are
+        # opt-in: only a peer explicitly cited by a Bot and not heard from
+        # afterward gets another turn. Every member's watermark remains intact,
+        # so a peer cited later still receives the complete bounded transcript
+        # delta without consuming turns meanwhile.
+        responders, unavailable_owner = (
+            _round_zero_responders(str(discussion.payload["text"]), room, terminals) if round_index == 0
+            else (_unaddressed_member_mentions(discussion_messages, room), None))
         for member_index, member in enumerate(_rotate(responders, round_index)):
             if (round_index, member.member_id) in terminals:
                 continue
@@ -643,7 +678,8 @@ def plan_next_task(
                 continue
             prompt = _build_prompt(
                 room=room, member=member, messages=thread_messages, watermark=watermark,
-                seen_through_seq=seen_through_seq)
+                seen_through_seq=seen_through_seq, notice=_OWNER_UNAVAILABLE_NOTICE.format(
+                    handle=unavailable_owner.handle) if unavailable_owner else None)
             return decide("task", "member_turn", task=_make_task_plan(
                 room=room, discussion_event=discussion, member=member, member_index=member_index,
                 round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt))

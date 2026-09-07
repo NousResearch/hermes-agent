@@ -2089,3 +2089,23 @@ def test_local_profiles_skips_delete_tombstones_and_dot_dirs(tmp_path: Path):
     service = HostedRoomService(_server(), db_path=tmp_path / "shared-state.db")
 
     assert service.local_profiles() == ("default", "ops")
+
+
+def test_create_room_persists_the_designated_owner_flag(tmp_path: Path):
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    service.local_profiles = lambda: ("default", "ops")
+    room = service.create_room(
+        room_id="room-1",
+        name="Release room",
+        members=[
+            {"member_id": "default", "profile": "default", "handle": "hermes"},
+            {"member_id": "ops", "profile": "ops", "handle": "ops", "owner": True},
+        ],
+    )
+
+    assert [member.get("owner") for member in room["members"]] == [None, True]
+    stored = hosted_rooms.list_rooms(db)[0]
+    assert [member.get("owner") for member in stored["members"]] == [None, True]
+    validated = discussion.validate_room(stored, local_profiles=service.local_profiles())
+    assert validated.owner is not None and validated.owner.member_id == "ops"

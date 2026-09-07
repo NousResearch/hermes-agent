@@ -30,9 +30,9 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
 
-from agent.redact import redact_sensitive_text
 from tools.process_registry_notifications import format_process_notification
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
+from tools.process_registry_results import load_completed_results, save_completed_result
 
 logger = logging.getLogger(__name__)
 
@@ -785,13 +785,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return env
 
     def _track_started(self, session: ProcessSession, reader_target, reader_name: str, extra_args=()) -> None:
-        """Start the output reader thread, register the session and checkpoint it."""
+        """Register before starting the reader: an already-exited child can finish immediately."""
         reader = threading.Thread(target=reader_target, args=(session, *extra_args), daemon=True, name=reader_name)
         session._reader_thread = reader
-        reader.start()
         with self._lock:
             self._prune_if_needed()
             self._running[session.id] = session
+        reader.start()
         self._write_checkpoint()
 
     def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict) -> ProcessSession:
@@ -1172,9 +1172,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         Idempotent: kill_process() and the reader thread can both call this; only
         the FIRST move enqueues the completion notification, so no duplicates."""
         with self._lock:
-            was_running = self._running.pop(session.id, None) is not None
+            was_running = session.id in self._running
+            if was_running:
+                # Keep the session tracked until its result is durable. A finite
+                # parent must not observe completion and exit during this write.
+                save_completed_result(session)
+                self._running.pop(session.id)
             self._finished[session.id] = session
-        session._completion_event.set()
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
             notification = {
@@ -1192,6 +1196,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             }
             _redact_process_result(notification)
             self.completion_queue.put(notification)
+        session._completion_event.set()
 
     @staticmethod
     def _exit_fields(session: ProcessSession) -> dict:
@@ -1246,7 +1251,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         with self._lock:
             pending = [
                 s for s in self._running.values()
-                if s.notify_on_complete and not s.exited and (task_id is None or s.task_id == task_id)
+                if s.notify_on_complete and not s._completion_event.is_set() and (task_id is None or s.task_id == task_id)
             ]
         if not pending or timeout <= 0:
             return result
@@ -1264,7 +1269,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         interrupted = False
         for session in pending:
             try:
-                while not session.exited:
+                while not session._completion_event.is_set():
                     if interrupted or _is_interrupted():
                         interrupted = True
                         break
@@ -1283,14 +1288,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
                         # #17327).
                         self._reconcile_local_exit(session)
                         self._refresh_detached_session(session)
-                    if session.exited:
+                    if session._completion_event.is_set():
                         break
                     session._completion_event.wait(min(remaining, interval))
             except KeyboardInterrupt:
                 # Stop waiting, but never let the interrupt skip the caller's durable
                 # teardown (session flush, end_session) that follows.
                 interrupted = True
-            result["completed" if session.exited else "timed_out"].append(session.id)
+            result["completed" if session._completion_event.is_set() else "timed_out"].append(session.id)
         if result["timed_out"]:
             logger.warning(
                 "One-shot exit linger timed out after %ss with %d background "
@@ -1400,8 +1405,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def get(self, session_id: str) -> Optional[ProcessSession]:
         """Session by full ID or unique prefix (``proc_4dae`` / bare ``4dae``, like git
         short hashes); ambiguous or too-short prefixes resolve to None, never a guess."""
+        if not isinstance(session_id, str) or not session_id:
+            return None
         with self._lock:
             session = self._running.get(session_id) or self._finished.get(session_id)
+        if session is None:
+            session = load_completed_results(session_id).get(session_id)
         return self._refresh_detached_session(session if session is not None else self._resolve_prefix(session_id))
 
     def _resolve_prefix(self, session_id: str) -> Optional[ProcessSession]:
@@ -1414,12 +1423,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
             query = f"proc_{query}"
         if len(query) - len("proc_") < self._MIN_PREFIX_CHARS:
             return None
+        matches = load_completed_results(query)
         with self._lock:
-            matches = [
-                s for store in (self._running, self._finished)
+            matches.update({
+                sid: s for store in (self._running, self._finished)
                 for sid, s in store.items() if sid.startswith(query)
-            ]
-        return matches[0] if len(matches) == 1 else None
+            })
+        return next(iter(matches.values())) if len(matches) == 1 else None
 
     def _reconcile_local_exit(self, session: "ProcessSession") -> None:
         """Reconcile ``session.exited`` against the real child state.
@@ -1781,9 +1791,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         surfaced too, even if they belong to a different task — so the agent can discover a forgotten
         preview server that is blocking session reset (#29177).
         """
+        sessions = load_completed_results()
         with self._lock:
-            all_sessions = list(self._running.values()) + list(self._finished.values())
-        all_sessions = [self._refresh_detached_session(s) for s in all_sessions]
+            sessions.update(self._finished)
+            sessions.update(self._running)
+        all_sessions = [self._refresh_detached_session(s) for s in sessions.values()]
         if task_id or session_key:
             all_sessions = [
                 s for s in all_sessions
@@ -1910,6 +1922,8 @@ PROCESS_SCHEMA = {
     "description": (
         "Poll, wait on, or kill background terminal processes (from "
         "terminal(background=true)). "
+        "Completed results remain retrievable by session_id after restart "
+        "(up to 7 days, newest 64 results per profile; rolling output tail). "
         "poll: status + new output. log: full output, paged. wait: block "
         "until exit or timeout (partial output on timeout). write vs "
         "submit: submit appends Enter — use it to answer prompts; write "

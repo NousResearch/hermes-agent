@@ -231,6 +231,20 @@ process(action="write", session_id="proc_abc123", data="y")  # Send input
 
 PTY mode (`pty=true`) enables interactive CLI tools like Codex and Claude Code.
 
+Completed background commands retain their exit status and captured output in the
+active profile. After a headless parent exits or Hermes restarts, use the original
+`session_id` with `process(action="log")` for output and `process(action="poll")`
+for exit status. `process(action="list")` also includes retained results for the
+current task or conversation.
+
+Hermes keeps the newest **64 completed results**, for up to **7 days after
+completion**, under `logs/process-results/` in the profile's Hermes home. Each
+receipt contains at most the existing rolling **200,000-character output tail**,
+with the same secret redaction as terminal output. Receipts expire on subsequent
+result reads or writes. Recovery does not rerun commands or replay completion
+notifications. This preserves work that finished while the parent was alive;
+it does not keep unfinished children alive after a timeout or crash.
+
 ## Sudo Support
 
 On an interactive parent session, supported sudo commands use the masked password prompt (cached for the session). This includes literal absolute or quoted executable paths and `env` prefixes with ordinary options and assignments, such as `env -u UNUSED /usr/bin/sudo id`. Passwordless sudo does not need a prompt. You can also configure `SUDO_PASSWORD` in your profile's `.env` file on the agent machine.

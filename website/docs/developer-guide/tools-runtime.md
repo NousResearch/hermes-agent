@@ -224,6 +224,15 @@ It also supports:
 - PTY mode
 - approval callbacks for dangerous commands
 
+`tools/process_registry_checkpoint.py` owns running-process checkpoints and
+PID-safe adoption. Completed output is separate: `tools/process_registry_results.py`
+writes one atomic, redacted receipt per process under the profile's
+`logs/process-results/`. Producers cannot overwrite another parent's results by
+rewriting the shared PID checkpoint. The registry persists the receipt before
+releasing its completion event; one-shot linger waits on that event. The existing
+process query methods load retained snapshots without adopting PIDs or enqueuing
+notifications. Receipt retention is bounded by age and count.
+
 ## Concurrency
 
 Tool calls may execute sequentially or concurrently depending on the tool mix and interaction requirements.

@@ -13,15 +13,26 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
+import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from cron import executions as _executions
-from cron.executions import ledger_transaction, open_ledger, prepare_ledger
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
+
+try:
+    from cron.executions import ledger_transaction, open_ledger, prepare_ledger
+except ImportError as original_error:
+    # Long-running schedulers can cache pre-refactor executions across a checkout update.
+    sys.modules.pop("cron.executions", None)
+    try:
+        from cron.executions import ledger_transaction, open_ledger, prepare_ledger
+    except ImportError:
+        raise original_error from None
+
+from cron import executions as _executions
 
 # Optional test override (mirrors ``cron.executions.EXECUTIONS_FILE``).
 EXECUTIONS_FILE: Optional[Path] = None

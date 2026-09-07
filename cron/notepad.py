@@ -10,14 +10,24 @@ the store untouched — the notepad is prompt-injected each run. Write path is t
 from __future__ import annotations
 
 import sqlite3
+import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from cron.executions import ledger_transaction, open_ledger, prepare_ledger
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
+
+try:
+    from cron.executions import ledger_transaction, open_ledger, prepare_ledger
+except ImportError as original_error:
+    # Long-running schedulers can cache pre-refactor executions across a checkout update.
+    sys.modules.pop("cron.executions", None)
+    try:
+        from cron.executions import ledger_transaction, open_ledger, prepare_ledger
+    except ImportError:
+        raise original_error from None
 
 # Optional test override. Production resolves the path at transaction time so multiplexed profile
 # ticks (set_hermes_home_override) cannot leak one profile's notepad rows into the import-time home

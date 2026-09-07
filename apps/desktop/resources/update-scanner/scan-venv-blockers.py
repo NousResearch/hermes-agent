@@ -707,6 +707,63 @@ def _process_generation_matches(pid: int, created_at: float) -> bool:
     return live_created_at == created_at
 
 
+# A loaded extension module or DLL is the strongest mutation-set evidence a
+# scan can offer: the file is mapped, so Restart Manager attributes it to this
+# process and the update is going to rewrite it. Prefer one over an ordinary
+# data file when both are mapped.
+_MUTATION_SET_RESOURCE_SUFFIXES = (".pyd", ".dll")
+
+
+def _mapped_mutation_set_path(
+    process: Any,
+    *,
+    venv: Path,
+    runtime_dir: Path,
+) -> str | None:
+    """One file under *venv* this process currently maps, or ``None``.
+
+    Desktop's force-release re-proves ownership of a named file before it
+    terminates anything, and under the shared managed runtime that proof is
+    *required*: ``.hermes-runtime`` is deliberately outside the update's
+    mutation set because unrelated uv tool venvs borrow the managed
+    interpreter, so "image under the install root" alone must not authorize a
+    kill (``TERMINATION_SHARED_RUNTIME_WITHOUT_MUTATION_PROOF``). Restart
+    Manager supplies that file when it can see the holder; a scanner-only
+    holder had nothing to offer and was refused.
+
+    The venv *is* the mutation set, so any mapped file under it is a valid
+    claim, and a file under ``.hermes-runtime`` never is (the prefix test
+    already excludes it; the exact re-proof below also covers a venv that
+    junctions into the runtime). Never raises: the resource is optional
+    evidence and an unreadable module list must not fail a scan.
+    """
+    venv_prefix = os.path.normcase(str(venv)).rstrip(os.sep) + os.sep
+    runtime_prefix = os.path.normcase(str(runtime_dir)).rstrip(os.sep) + os.sep
+    best: tuple[int, str, str] | None = None
+    try:
+        for entry in process.memory_maps():
+            raw = getattr(entry, "path", None)
+            if not isinstance(raw, str) or not raw:
+                continue
+            key = os.path.normcase(raw)
+            if not key.startswith(venv_prefix) or key.startswith(runtime_prefix):
+                continue
+            rank = 0 if key.endswith(_MUTATION_SET_RESOURCE_SUFFIXES) else 1
+            candidate = (rank, key, raw)
+            if best is None or candidate < best:
+                best = candidate
+    except Exception:
+        return None
+    if best is None:
+        return None
+    resource = best[2]
+    # One exact re-proof on the single winner, so a junction or a substituted
+    # drive cannot smuggle a shared-runtime file in behind a venv-shaped path.
+    if not _within(resource, venv) or _within(resource, runtime_dir):
+        return None
+    return resource
+
+
 def _mcp_role(
     snapshot: _ProcessSnapshot,
     root: Path,
@@ -745,6 +802,7 @@ def _mcp_record(
     wrapper_pid: int | None,
     owner: str | None = None,
     parent_by_pid: Mapping[int, int] | None = None,
+    resource: str | None = None,
 ) -> dict[str, Any]:
     if owner is None:
         owner = (
@@ -769,6 +827,8 @@ def _mcp_record(
     }
     if wrapper_pid is not None and wrapper_pid != snapshot.pid:
         record["wrapper_pid"] = wrapper_pid
+    if resource:
+        record["resource"] = resource
     return record
 
 
@@ -871,6 +931,7 @@ def _desktop_plugin_record(
     *,
     role: str,
     wrapper_pid: int | None,
+    resource: str | None = None,
 ) -> dict[str, Any]:
     record: dict[str, Any] = {
         "pid": snapshot.pid,
@@ -885,6 +946,8 @@ def _desktop_plugin_record(
     }
     if wrapper_pid is not None and wrapper_pid != snapshot.pid:
         record["wrapper_pid"] = wrapper_pid
+    if resource:
+        record["resource"] = resource
     return record
 
 
@@ -976,6 +1039,7 @@ def _generic_record(
     name: str,
     cmdline: str,
     snapshot: _ProcessSnapshot | None,
+    resource: str | None = None,
 ) -> dict[str, Any]:
     command = _hermes_cli_command(snapshot.argv if snapshot else cmdline)
     owner = "desktop" if command in {"serve", "dashboard"} else "unknown"
@@ -994,6 +1058,8 @@ def _generic_record(
         record["created_at"] = snapshot.created_at
         if int(snapshot.ppid) > 0:
             record["parent_pid"] = int(snapshot.ppid)
+    if resource:
+        record["resource"] = resource
     # Safe-to-stop local previews (``python -m http.server``) still carry their
     # UI metadata. This is display/affordance data only — the record stays a
     # hard block for the updater; stopping one goes through the separate
@@ -1354,11 +1420,22 @@ def scan_venv_blockers(root: str | Path) -> dict[str, Any]:
         if _within(snapshot.exe, venv)
         and (script := _desktop_plugin_script(snapshot.argv, target_root)) is not None
     }
+    # The managed runtime is shared with foreign uv venvs, so it is outside the
+    # update's mutation set; a resource claim must never name a file under it.
+    runtime_dir = target_root / ".hermes-runtime"
     for pid, (scanned_name, scanned_cmdline) in by_pid.items():
         snapshot = snapshots.get(pid)
         if snapshot is None and pid not in unreadable:
             continue  # exited between enumeration and identity read
         if snapshot is not None:
+            # One file this holder maps inside the mutation set, so Desktop can
+            # re-prove ownership before terminating a holder whose own image
+            # lives under the shared runtime (#104687 H5).
+            resource = _mapped_mutation_set_path(
+                snapshot.process,
+                venv=venv,
+                runtime_dir=runtime_dir,
+            )
             classified = _mcp_role(snapshot, target_root, wrappers, snapshots)
             if classified is not None:
                 role, wrapper_pid = classified
@@ -1390,6 +1467,7 @@ def scan_venv_blockers(root: str | Path) -> dict[str, Any]:
                         wrapper_pid=wrapper_pid,
                         owner=owner,
                         parent_by_pid=parent_by_pid,
+                        resource=resource,
                     )
                 )
                 continue
@@ -1419,6 +1497,7 @@ def scan_venv_blockers(root: str | Path) -> dict[str, Any]:
                             snapshot,
                             role=role,
                             wrapper_pid=wrapper_pid,
+                            resource=resource,
                         )
                     )
                     continue
@@ -1454,7 +1533,9 @@ def scan_venv_blockers(root: str | Path) -> dict[str, Any]:
             # dead-end the hand-off before that machinery can run (#98336).
             deferred_entries.append(deferred_entry)
             continue
-        processes.append(_generic_record(pid, scanned_name, live_cmdline, snapshot))
+        processes.append(
+            _generic_record(pid, scanned_name, live_cmdline, snapshot, resource)
+        )
 
     # Workers first: terminating a wrapper first can destroy the ancestry proof
     # required to authorize an external base-interpreter child.

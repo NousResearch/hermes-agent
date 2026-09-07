@@ -3250,3 +3250,130 @@ def test_shared_runtime_plugin_unit_keeps_its_separate_host_proof(
         assert result["desktop_plugin_services"] == []
         assert {row["pid"] for row in result["processes"]} == {10, 20}
         assert all(row["action"] == "refuse" for row in result["processes"])
+
+
+# ---------------------------------------------------------------------------
+# _mapped_mutation_set_path — mutation-set evidence for a scanner-only holder
+#
+# #104687 H5: `.hermes-runtime` is shared with foreign uv tool venvs, so it sits
+# outside the update's mutation set and "image under the install root" alone
+# must not authorize a kill. Desktop therefore refuses a holder whose image is
+# under the shared runtime unless it can re-prove a lock on a file the update
+# actually rewrites. Restart Manager supplies that file when it sees the
+# holder; a scanner-only holder used to have nothing to offer and was refused
+# with TERMINATION_SHARED_RUNTIME_WITHOUT_MUTATION_PROOF.
+# ---------------------------------------------------------------------------
+
+
+def _mapped_process(paths):
+    """A psutil-shaped process whose loaded-module list is exactly *paths*."""
+    entries = [types.SimpleNamespace(path=str(value)) for value in paths]
+    return types.SimpleNamespace(memory_maps=lambda: list(entries))
+
+
+def _mapping_layout(tmp_path):
+    root = tmp_path / "install"
+    venv = root / "venv"
+    runtime = root / ".hermes-runtime"
+    pyd = venv / "Lib" / "site-packages" / "psutil" / "_psutil_windows.pyd"
+    cfg = venv / "pyvenv.cfg"
+    runtime_dll = runtime / "python" / "python313.dll"
+    for path in (pyd, cfg, runtime_dll):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"")
+    return root, venv, runtime, pyd, cfg, runtime_dll
+
+
+def test_mapped_resource_names_a_venv_module_the_update_rewrites(scanner_copy, tmp_path):
+    root, venv, runtime, pyd, _cfg, runtime_dll = _mapping_layout(tmp_path)
+    process = _mapped_process([
+        str(runtime / "python" / "python.exe"),
+        r"C:\Windows\System32\ntdll.dll",
+        str(runtime_dll),
+        str(pyd),
+    ])
+
+    assert scanner_copy._mapped_mutation_set_path(
+        process, venv=venv, runtime_dir=runtime
+    ) == str(pyd)
+
+
+def test_mapped_resource_prefers_a_loaded_module_over_a_plain_venv_file(
+    scanner_copy, tmp_path
+):
+    _root, venv, runtime, pyd, cfg, _runtime_dll = _mapping_layout(tmp_path)
+    process = _mapped_process([str(cfg), str(pyd)])
+
+    assert scanner_copy._mapped_mutation_set_path(
+        process, venv=venv, runtime_dir=runtime
+    ) == str(pyd)
+
+
+def test_mapped_resource_is_absent_for_a_runtime_only_image(scanner_copy, tmp_path):
+    _root, venv, runtime, _pyd, _cfg, runtime_dll = _mapping_layout(tmp_path)
+    process = _mapped_process([
+        str(runtime / "python" / "python.exe"),
+        str(runtime_dll),
+        r"C:\Windows\System32\kernel32.dll",
+    ])
+
+    assert (
+        scanner_copy._mapped_mutation_set_path(process, venv=venv, runtime_dir=runtime)
+        is None
+    )
+
+
+def test_mapped_resource_never_raises_on_an_unreadable_module_list(
+    scanner_copy, tmp_path
+):
+    _root, venv, runtime, _pyd, _cfg, _dll = _mapping_layout(tmp_path)
+
+    def _denied():
+        raise RuntimeError("access is denied")
+
+    process = types.SimpleNamespace(memory_maps=_denied)
+
+    assert (
+        scanner_copy._mapped_mutation_set_path(process, venv=venv, runtime_dir=runtime)
+        is None
+    )
+
+
+@pytest.mark.parametrize("maps_venv_module", [True, False])
+def test_scan_emits_resource_only_for_a_holder_inside_the_mutation_set(
+    scanner_copy, monkeypatch, tmp_path, maps_venv_module,
+):
+    """The scan's own holder record carries the proof Desktop needs.
+
+    Without it windows-update-holder-policy has no `resource` to forward and a
+    scanner-only holder running the shared managed interpreter is refused.
+    """
+    root, venv, runtime, pyd, _cfg, runtime_dll = _mapping_layout(tmp_path)
+    managed = runtime / "python" / "generation" / "python.exe"
+    venv_python = venv / "Scripts" / "python.exe"
+    argv = [str(venv_python), "-c", "import time; time.sleep(10)"]
+    row = _detector_proc(4242, str(managed), "python.exe", argv, ppid=1)
+    row.memory_maps.return_value = [
+        types.SimpleNamespace(path=str(runtime_dll)),
+        *([types.SimpleNamespace(path=str(pyd))] if maps_venv_module else []),
+    ]
+    snapshot = scanner_copy._ProcessSnapshot(
+        4242, 1, "python.exe", str(managed), tuple(argv), 4242.0, row,
+    )
+
+    monkeypatch.setitem(
+        sys.modules, "psutil", types.SimpleNamespace(process_iter=lambda attrs: iter([row]))
+    )
+    monkeypatch.setattr(scanner_copy, "_validated_root", lambda supplied: (root, venv))
+    monkeypatch.setattr(scanner_copy, "_snapshot_for_pid", lambda pid, **kwargs: snapshot)
+
+    result = scanner_copy.scan_venv_blockers(root)
+
+    assert [row["pid"] for row in result["processes"]] == [4242]
+    record = result["processes"][0]
+    if maps_venv_module:
+        assert record["resource"] == str(pyd)
+    else:
+        # Only the shared runtime is mapped: there is nothing in the mutation
+        # set to claim, and a runtime path is never a valid claim.
+        assert "resource" not in record

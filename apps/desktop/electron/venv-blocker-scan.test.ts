@@ -2174,3 +2174,90 @@ describe('stopSafeVenvBlockers', () => {
 })
 }
 }
+
+// ---------------------------------------------------------------------------
+// Scanner mutation-set resource (#104687 H5) and the classified probe failure
+// (#104687 H9).
+// ---------------------------------------------------------------------------
+
+describe('scanner resource claims', () => {
+  const expectedRoot = path.join(volumeRoot, 'update', 'root')
+  const expectedVenv = path.join(expectedRoot, 'venv')
+  const target = { expectedRoot, expectedVenv }
+  const parseObject = (value: unknown) => parseVenvBlockerScanOutput(JSON.stringify(value), target)
+
+  const venvResource = path.join(expectedVenv, 'Lib', 'site-packages', 'psutil', '_psutil_windows.pyd')
+  const runtimeResource = path.join(expectedRoot, '.hermes-runtime', 'python', 'python313.dll')
+
+  // Without a mutation-set claim the exact-terminate script refuses a holder
+  // whose image lives under the SHARED .hermes-runtime, so a scanner-only
+  // holder could never be terminated.
+  it('carries a venv resource through to every holder kind', () => {
+    const outcome = parseObject(
+      blockedScanEnvelope(expectedRoot, expectedVenv, {
+        processes: [genericProcess({ resource: venvResource })],
+        mcp_bridges: [mcpBridge({ resource: venvResource })],
+        desktop_plugin_services: [desktopPluginService({ resource: venvResource })]
+      })
+    )
+
+    assert.equal(outcome.kind, 'blocked')
+
+    if (outcome.kind !== 'blocked') {return}
+
+    assert.equal(outcome.result.processes[0]?.resource, venvResource)
+    assert.equal(outcome.result.mcpBridges[0]?.resource, venvResource)
+    assert.equal(outcome.result.desktopPluginServices[0]?.resource, venvResource)
+  })
+
+  it('omits resource when the scanner proved nothing', () => {
+    const outcome = parseObject(
+      blockedScanEnvelope(expectedRoot, expectedVenv, { processes: [genericProcess()] })
+    )
+
+    assert.equal(outcome.kind, 'blocked')
+
+    if (outcome.kind !== 'blocked') {return}
+
+    assert.ok(!Object.hasOwn(outcome.result.processes[0] ?? {}, 'resource'))
+  })
+
+  // The claim's whole purpose is to prove the holder touches the mutation set.
+  // .hermes-runtime is deliberately OUTSIDE it (foreign uv venvs borrow the
+  // managed interpreter), so a runtime path is not a weaker claim -- it is the
+  // exact claim the terminator rejects, and accepting it here would only move
+  // the failure downstream.
+  it('fails closed on a resource outside the scanned venv', () => {
+    for (const resource of [runtimeResource, 'relative\\path.pyd', 42, '']) {
+      assert.equal(
+        parseObject(
+          blockedScanEnvelope(expectedRoot, expectedVenv, {
+            processes: [genericProcess({ resource })]
+          })
+        ).kind,
+        'probe-failure',
+        `processes resource=${JSON.stringify(resource)}`
+      )
+
+      assert.equal(
+        parseObject(
+          blockedScanEnvelope(expectedRoot, expectedVenv, {
+            mcp_bridges: [mcpBridge({ resource })]
+          })
+        ).kind,
+        'probe-failure',
+        `mcp_bridges resource=${JSON.stringify(resource)}`
+      )
+
+      assert.equal(
+        parseObject(
+          blockedScanEnvelope(expectedRoot, expectedVenv, {
+            desktop_plugin_services: [desktopPluginService({ resource })]
+          })
+        ).kind,
+        'probe-failure',
+        `desktop_plugin_services resource=${JSON.stringify(resource)}`
+      )
+    }
+  })
+})

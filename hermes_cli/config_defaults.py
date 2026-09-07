@@ -600,9 +600,9 @@ DEFAULT_CONFIG = {
         # instead of dropping the middle with a "summary unavailable" placeholder; the session
         # freezes at its size until /compress (bypasses the cooldown) or /new.
         "abort_on_summary_failure": False,
-        # (Historical key name.) When True, gpt-5.4/5.5/5.6 on the ChatGPT Codex OAuth route raise
-        # their compaction trigger to 85%: Codex hard-caps them at a 272K window, so the global 50%
-        # would compact at ~136K. False = global `threshold`. Only that route; the same models via
+        # (Historical key name.) When True, gpt-5.4/5.5/5.6 and gpt-6 Astra (any slug containing
+        # "astra" without "900k") on the ChatGPT Codex OAuth route raise their compaction trigger to
+        # 85%: Codex hard-caps them at a 272K window, so the global 50% would compact at ~136K. False = global `threshold`. Only that route; the same models via
         # OpenAI direct, OpenRouter or Copilot keep the global value.
         "codex_gpt55_autoraise": True,
         # Show the one-time autoraise banner; False keeps the autoraise, hides the notice.
@@ -695,9 +695,8 @@ DEFAULT_CONFIG = {
         # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
         "vision": _aux(120, download_timeout=30),
         # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
-        # are ignored. Compression: raise timeout for local models. max_output_tokens is only
-        # honored with a concrete provider/model AND ``reasoning_effort: none``; 0 = uncapped.
-        "compression": _aux(120, max_output_tokens=0),
+        # are ignored. Compression: raise timeout for local models.
+        "compression": _aux(120),
         "skills_hub": _aux(30),
         "approval": _aux(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like
@@ -1247,6 +1246,9 @@ DEFAULT_CONFIG = {
         # Max parallel children per batch AND max concurrent background delegation units; async
         # dispatches beyond it run synchronously. Floor 1, no ceiling.
         "max_concurrent_children": 10,
+        # Background fan-outs return as ONE message when the whole call finishes. true = each task
+        # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
+        "independent_completions": False,
         # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
@@ -1304,7 +1306,7 @@ DEFAULT_CONFIG = {
                     {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
                 ],
                 "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
-                "max_tokens": 4096,
+
                 "enabled": True,
             }
         },
@@ -1824,7 +1826,7 @@ DEFAULT_CONFIG = {
         # providers: {openrouter: {url: https://example.com/my-curation.json}}.
         "providers": {},
     },
-    # Per-model metadata overrides. Fields: context_window, max_output_tokens, supports_tools,
+    # Per-model metadata overrides. Fields: context_window, supports_tools,
     # supports_vision, supports_reasoning, model_family. <provider>.<model_id> wins over
     # models.dev/OpenRouter/hardcoded defaults for the fields it sets (chain order in
     # agent/model_metadata.py). <provider>._default and top-level _default fill gaps ONLY for models
@@ -2077,6 +2079,8 @@ DEFAULT_CONFIG = {
     },
 
     "updates": {
+        # Passive version/banner checks only; explicit `hermes update --check` remains enabled.
+        "check": True,
         # Pre-update backup. quick = snapshot small critical state (pairing JSONs, cron jobs,
         # config.yaml, .env, auth.json, profile DBs) into <HERMES_HOME>/state-snapshots/, skipping
         # files >1 GiB; restore via ``/snapshot``. full = quick PLUS a ``hermes backup`` zip in
@@ -2273,6 +2277,9 @@ DEFAULT_CONFIG = {
         # gnome-libsecret|kwallet|kwallet5|kwallet6|basic force one (basic = unencrypted). Bridged
         # to HERMES_DESKTOP_PASSWORD_STORE; ignored off-Linux.
         "password_store": "auto",
+        # Linux: False preserves an existing custom XDG launcher entry; missing entries
+        # are still created. True keeps the generated entry current on each launch.
+        "manage_launcher_entry": True,
         # macOS only: code-signing identity (login-keychain cert; self-signed works) to re-sign
         # locally rebuilt apps so the Designated Requirement — and thus TCC grants — survives
         # updates. Empty = default ad-hoc identifier-pinned signing.

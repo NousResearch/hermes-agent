@@ -79,14 +79,16 @@ fixed at the mount, not by adding a tool.
 Spawns a subagent with isolated context + terminal session; the parent waits for the summary unless
 `background=true`, which returns a delegation id and re-enters the result via the async-delegation
 completion queue. Shapes: single (`goal` + optional `context`, `toolsets`) or batch (`tasks: [...]`,
-concurrency capped by `delegation.max_concurrent_children`, default 3). A background batch is split
-into completion **units** (`delegate_tool_dispatch._units_of`): tasks sharing a `group` join and
-report together; each ungrouped task reports alone as it finishes. Units of one call share ONE pool
-slot (`slot_key` in `async_delegation._dispatch`) — never count units against capacity. Roles: `leaf` (default;
+concurrency capped by `delegation.max_concurrent_children`, default 3). A background batch returns as ONE
+completion by default; with `delegation.independent_completions` it is split into completion **units**
+(`delegate_tool_dispatch._units_of`): tasks sharing a `group` join and report together; each ungrouped
+task reports alone as it finishes. Units of one call share ONE pool slot (`slot_key` in
+`async_delegation._dispatch`) — never count units against capacity; the executor is sized by live UNITS
+and the stall clock arms when the runner starts, so a queued unit is never judged stalled. Roles: `leaf` (default;
 no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execute_code`) and
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
-`max_concurrent_children, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
+`max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
 subagent_auto_approve, inherit_mcp_toolsets, max_iterations`. **Durability:** background
 delegation is process-local; work that must survive restart uses `cronjob` or
 `terminal(background=True, notify_on_complete=True)`. API: `website/docs/developer-guide/subagent-lifecycle-api.md`.

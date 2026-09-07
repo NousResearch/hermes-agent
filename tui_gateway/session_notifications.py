@@ -428,7 +428,9 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred) -> 
     # while distinct watch_match events from one process must stay visible.
     dedup_key = _notification_event_dedup_key(evt)
     if dedup_key not in emitted:
-        _emit("status.update", sid, {"kind": "process", "text": text})
+        from tools.process_registry_notifications import async_delegation_display_text
+        display_text = async_delegation_display_text(evt) if is_delegation else text
+        _emit("status.update", sid, {"kind": "process", "text": display_text})
         emitted.add(dedup_key)
     if not _notif_claim_turn(session):
         queue.put(evt)
@@ -491,13 +493,15 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
 
 def _async_delegation_display_metadata(evt: dict) -> dict:
     """Build display-only metadata before the completion event is formatted."""
+    from tools.process_registry_notifications import async_delegation_display_text
     raw_results = evt.get("results")
     results: list[dict] = [r for r in raw_results if isinstance(r, dict)] if isinstance(raw_results, list) else []
     task_count = len(results) or 1
     completed_count = sum(1 for r in results if r.get("status") in {"completed", "success"})
     failed_count = sum(1 for r in results if r.get("status") in {"failed", "error"})
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
-    return {"delegation_id": str(evt.get("delegation_id") or ""), "task_count": task_count,
+    return {"display_text": async_delegation_display_text(evt),
+            "delegation_id": str(evt.get("delegation_id") or ""), "task_count": task_count,
             "completed_count": completed_count or task_count - failed_count, "failed_count": failed_count,
             **({"duration_seconds": duration} if isinstance(duration, (int, float)) else {})}
 

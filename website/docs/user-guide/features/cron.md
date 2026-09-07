@@ -334,6 +334,19 @@ Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
 `history`). Terminal history is bounded; active attempts are never pruned. The
 ledger is included in quick backups.
 
+Scheduled attempts also record their exact scheduled instant, separately from
+the time they were claimed. If an old `jobs.json` snapshot re-arms an occurrence
+that the retained ledger records as completed, Hermes skips that replay and
+re-anchors recurring jobs. This works even when the snapshot predates the
+dispatch stamp or the original run started late. Explicit manual runs do not
+consume a scheduled occurrence's identity.
+
+This is not an exactly-once side-effect guarantee: legacy rows without an
+identity, pruned history, unavailable ledgers, and interrupted attempts cannot
+prove completion. Restoring the ledger itself to an older backup also removes
+that evidence. External fire callbacks identify the currently accepted store
+claim, not an upstream scheduled slot absent from the callback.
+
 ### Repeated-failure review nudge
 
 Each job tracks a `failure_streak` — consecutive failed runs (delivery

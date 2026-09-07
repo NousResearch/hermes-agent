@@ -251,7 +251,7 @@ _REQUEST_OPTION_MISSING = object()
 # vocabulary clamping happens downstream in agent.reasoning_effort.
 _REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 _RUNTIME_AGENT_OVERRIDE_KEYS = (
-    "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool", "max_tokens")
+    "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool")
 
 
 def _clean_request_string(value: Any) -> Optional[str]:
@@ -313,24 +313,11 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
         runtime = resolve_runtime_provider(requested=provider, target_model=target_model)
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
-    model_cfg = _get_model_config()
-    max_tokens = None
-    env_max_tokens = os.environ.get("HERMES_MAX_TOKENS")
-    if env_max_tokens:
-        with suppress(ValueError, TypeError):
-            max_tokens = int(env_max_tokens)
-    elif isinstance(model_cfg, dict):
-        cfg_max_tokens = model_cfg.get("max_tokens")
-        if isinstance(cfg_max_tokens, int):
-            max_tokens = cfg_max_tokens
-    if max_tokens is None:
-        runtime_max_tokens = runtime.get("max_output_tokens")
-        if isinstance(runtime_max_tokens, int) and runtime_max_tokens > 0:
-            max_tokens = runtime_max_tokens
+
     return {
         **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode", "command")},
         "args": list(runtime.get("args") or []),
-        "credential_pool": runtime.get("credential_pool"), "max_tokens": max_tokens}
+        "credential_pool": runtime.get("credential_pool")}
 
 
 def _request_agent_overrides(
@@ -771,7 +758,7 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key"}
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id"}
 _SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",

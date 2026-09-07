@@ -334,6 +334,8 @@ display:
 
 :::info
 Pasting multi-line text is supported — use any of the newline keys above, or simply paste content directly.
+
+In terminals using the Kitty keyboard protocol, `Alt+Enter` on the numeric keypad also inserts a newline, including next to a collapsed paste. Modified keypad navigation keys follow their non-keypad equivalents.
 :::
 
 ### Shift+Enter compatibility

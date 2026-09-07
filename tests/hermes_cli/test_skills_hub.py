@@ -136,7 +136,7 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
 
 
 
-def test_check_for_skill_updates_does_not_fall_back_across_registries():
+def test_check_for_skill_updates_does_not_fall_back_across_registries(tmp_path, monkeypatch):
     """An entry whose source has no adapter reports `unavailable`.
 
     Previously `candidate_sources ... or sources` fell back to every source, so
@@ -168,9 +168,12 @@ def test_check_for_skill_updates_does_not_fall_back_across_registries():
         def inspect(self, identifier):
             return _ForeignBundle()
 
+    from tools import skills_hub as hub
+    monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path)
+    (tmp_path / "reddit").mkdir()
     lock = _DummyLockFile([
         {"name": "reddit", "identifier": "reddit", "source": "clawhub",
-         "content_hash": "hash-of-the-clawhub-copy"},
+         "install_path": "reddit", "content_hash": "hash-of-the-clawhub-copy"},
     ])
 
     results = check_for_skill_updates(

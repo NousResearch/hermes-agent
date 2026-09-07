@@ -3302,6 +3302,15 @@ class TelegramAdapter(BasePlatformAdapter):
                             _send_attempt + 1, wait, safe_send_error)
                         await asyncio.sleep(wait)
                         continue
+                    # Retries exhausted and still flooded. Fail closed the same way a long penalty
+                    # does: raising here handed the caller the platform's own wording instead of the
+                    # canonical result, so the delivery ledger did not recognise the row as a flood
+                    # refusal, armed no redelivery timer, and the reply waited for the next restart.
+                    logger.warning(
+                        "[%s] Telegram flood control on send persisted across %d attempts; failing "
+                        "closed so the delivery ledger owns the wait: %s",
+                        self.name, _send_attempt + 1, safe_send_error)
+                    return _flood_cap_result(wait)
                 raise
 
     async def _retrigger_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> None:
@@ -3514,6 +3523,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception as retry_err:
                     safe_retry_error = _redact_telegram_error_text(retry_err)
                     logger.error("[%s] Edit retry failed after flood wait: %s", self.name, safe_retry_error)
+                    retry_wait = getattr(retry_err, "retry_after", None)
+                    if retry_wait is not None or "retry after" in str(retry_err).lower():
+                        # Still flooded after the inline wait, and typically for much longer than the
+                        # first refusal asked for. Fail closed canonically so the ledger arms its
+                        # timer on this delay rather than storing the platform's raw wording, which
+                        # it would read as an ordinary failure and never redeliver.
+                        return _flood_cap_result(
+                            float(retry_wait) if retry_wait is not None else wait)
                     return SendResult(success=False, error=safe_retry_error)
             safe_error = _redact_telegram_error_text(e)
             # Transient network errors must not permanently disable progress-message editing.

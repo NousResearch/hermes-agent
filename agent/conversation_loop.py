@@ -21,6 +21,7 @@ from agent.message_metadata import append_message
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
 from agent.process_bootstrap import _install_safe_stdio
+from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
 from agent.prompt_caching import (
     build_prompt_cache_plan,
     effective_cache_ttl,
@@ -755,7 +756,11 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     """Return False when the persisted runtime-identity lines are stale."""
 
-    lines = prompt.splitlines()
+    identity, runtime_marker, runtime = prompt.rpartition(f"\n\n{RUNTIME_ENVIRONMENT_HEADING}\n\n")
+    # Legacy prose may quote the heading, but only the new renderer ends in this boundary.
+    runtime_marker = runtime_marker if prompt.endswith(RUNTIME_ENVIRONMENT_END) else ""
+    # The final runtime block can contain embedder prose, not authoritative identity.
+    lines = (identity if runtime_marker else prompt).splitlines()
 
     def line_value(label: str) -> str:
         """Last matching line wins — safe ONLY for volatile-tier fields at the END of the
@@ -765,12 +770,12 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
         return matches[-1] if matches else ""
 
     def host_info_value(label: str) -> str:
-        """Read a field from the prompt's own host-info block, anchored on the FIRST ``User
-        home directory:`` line so a user's ``AGENTS.md`` row cannot force a rebuild every turn."""
+        """New prompts delimit runtime hints; legacy prompts put them before context."""
         prefix = f"{label}:"
-        for idx, line in enumerate(lines):
+        host_lines = runtime.split("\n\n", 1)[0].splitlines() if runtime_marker else lines
+        for idx, line in enumerate(host_lines):
             if line.startswith("User home directory:"):
-                for candidate in lines[idx + 1: idx + 4]:
+                for candidate in host_lines[idx + 1: idx + 4]:
                     if candidate.startswith(prefix):
                         return candidate[len(prefix):].strip()
         return ""

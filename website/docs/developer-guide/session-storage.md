@@ -6,6 +6,30 @@ sessions. This replaces the earlier per-session JSONL file approach.
 
 Source files: `hermes_state.py` (facade) plus the `hermes_state_*.py` siblings (schema, fts, search, compression, portability, gateway, ...)
 
+### Desktop profile isolation and compaction generations
+
+Each named profile stores its transcript in its own `$HERMES_HOME/state.db`,
+including when one `hermes serve` process serves several profiles. In-session
+agent rebuilds (Bot Chat capability refresh and `tools.configure`) must retain
+that session's database handle and bind its profile home during construction.
+Releasing the outgoing agent must not close the handle inherited by its replacement.
+`tools.configure` resolves configuration from the live session's `profile_home`,
+even when the client supplies only `session_id`. Rebuilds prepare model configuration
+before allocating a replacement, then install the agent and transfer ownership
+together; preparation failure leaves the existing agent responsible for teardown.
+Explicit profiles that cannot be resolved or whose directory has disappeared fail
+before accessing launch configuration or history. A stale `tools.configure`
+session ID likewise returns `session not found` without changing configuration;
+omitting the session ID still supports the global settings operation.
+
+In-place compaction archives old rows with `active=0` and inserts the retained
+context as `active=1` rows. A protected message can therefore legitimately appear
+in both generations with identical content and timestamp. Do not delete these
+archive rows as duplicates. Diagnose duplicate *live* writes using `active=1`,
+and check the database's profile as well as the session ID when investigating
+history that appears to revert.
+
+
 
 ## Architecture Overview
 
@@ -122,6 +146,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 Notes:
 - `tool_calls` is stored as a JSON string (serialized list of tool call objects)
 - `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
+- Desktop history hydration retains assistant sidecars in both REST and JSON-RPC (`session.resume`, `session.activate`, `session.history`) projections, including rows with reasoning and tool calls. REST may return the SQLite JSON string while RPC returns decoded items; Desktop accepts both. A final Responses reply may live only in `codex_message_items` while `content` is empty. Canonical content still takes precedence, and analysis/commentary items are not promoted to reply text.
 - `reasoning` stores the raw reasoning text for providers that expose it
 - `api_content` is a byte-fidelity sidecar: the exact content string sent to the API for this message when it differs from `content` (ephemeral memory/plugin injections, persist overrides). It preserves the wire bytes for prompt-cache-stable replay — stored as sent, except lone surrogates, which sqlite3 cannot bind and which the conversation loop scrubs from every outgoing payload anyway. `NULL` means `content` was sent verbatim.
 - Timestamps are Unix epoch floats (`time.time()`)

@@ -1393,6 +1393,59 @@ export interface Translations {
     resetToMine: string
   }
   agents: {
+    sessionsTab: string
+    treeTab: string
+    overviewSubtitle: string
+    liveUnavailable: string
+    inventoryUnavailable: string
+    historyShifted: string
+    openAsTab: string
+    searchSessions: string
+    allSources: string
+    allProfiles: string
+    allProviders: string
+    activityFilter: string
+    recentActivity: string
+    allSessions: string
+    noRecentActivity: string
+    recentActivityHint: string
+    needsYou: string
+    working: string
+    unread: string
+    idle: string
+    stale: string
+    noSessions: string
+    selectSession: string
+    openConversation: string
+    reply: string
+    stop: string
+    retry: string
+    connect: string
+    owner: string
+    source: string
+    profile: string
+    provider: string
+    model: string
+    description: string
+    unknown: string
+    loadMore: string
+    coverageNote: string
+    promptHint: string
+    history: string
+    ready: string
+    onDemand: string
+    offline: string
+    unsupported: string
+    partial: string
+    allQuiet: string
+    allQuietHint: string
+    needYouCount: (count: number) => string
+    workingCount: (count: number) => string
+    closePreview: string
+    replyPlaceholder: string
+    noPreview: string
+    shown: (visible: number, total: number) => string
+
     close: string
     title: string
     subtitle: string

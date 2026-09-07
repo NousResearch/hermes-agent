@@ -597,6 +597,29 @@ describe('connection-aware plugin host APIs', () => {
 })
 
 describe('profile-aware plugin session opens', () => {
+  it('keeps an explicit Sessions owner and cancels an abandoned overview open after its dial', async () => {
+    const route = { connectionId: 'source-b', profile: 'default', targetProfile: 'default', mode: 'remote' as const }
+    await host.openSession('collision', { route, workspaceMode: 'sessions', intent: 'main' })
+    expect(openSessionCore).toHaveBeenCalledWith('collision', expect.any(Function), 'main', {
+      ownerRoute: route,
+      workspaceMode: 'sessions',
+      workspaceOwnerKey: undefined
+    })
+    vi.mocked(openSessionCore).mockClear()
+    let finish!: () => void
+    vi.mocked(openGatewayForAgent).mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        })
+    )
+    let current = true
+    const pending = host.openSession('late', { route, workspaceMode: 'sessions', isCurrent: () => current })
+    current = false
+    finish()
+    await expect(pending).rejects.toThrow(/superseded/i)
+    expect(openSessionCore).not.toHaveBeenCalled()
+  })
   it('captures the full owner route before opening a remote session', async () => {
     const route = {
       connectionId: 'source-a',

@@ -44,8 +44,10 @@ const {
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   isActivePrimary,
+  isGatewayOpenForAgent,
   pruneSecondaryGateways,
-  setPrimaryGateway
+  setPrimaryGateway,
+  setPrimaryGatewayConnectionId
 } = await import('./gateway')
 
 interface DesktopStub {
@@ -92,6 +94,39 @@ afterEach(() => {
 })
 
 describe('registry-agent scope eviction (activeGateway must never silently hit the primary)', () => {
+  it('reads only the exact owner socket without dialing or consulting ambient connection config', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnectionId('primary')
+    const ambientConnectionId = vi.fn(() => 'ambient')
+    configureGatewayRegistry({ onEvent: vi.fn(), activeConnectionId: ambientConnectionId })
+    const desktop = installAgentDesktop()
+
+    expect(isGatewayOpenForAgent).toBeTypeOf('function')
+    expect(isGatewayOpenForAgent('primary', 'default')).toBe(true)
+    expect(isGatewayOpenForAgent('primary', 'research')).toBe(false)
+    expect(isGatewayOpenForAgent('homelab', 'research')).toBe(false)
+    expect(isGatewayOpenForAgent('ambient', 'default')).toBe(false)
+    primary.connectionState = 'closed'
+    expect(isGatewayOpenForAgent('primary', 'default')).toBe(false)
+    expect(desktop.getConnection).not.toHaveBeenCalled()
+    expect(desktop.getConnectionFor).not.toHaveBeenCalled()
+    expect(gatewayMocks.connect).not.toHaveBeenCalled()
+    expect(ambientConnectionId).not.toHaveBeenCalled()
+
+    await ensureGatewayForAgent('homelab', 'research')
+    vi.clearAllMocks()
+    expect(isGatewayOpenForAgent('homelab', 'research')).toBe(true)
+    expect(isGatewayOpenForAgent('homelab', 'default')).toBe(false)
+    expect(isGatewayOpenForAgent('other', 'research')).toBe(false)
+    activeGateway()?.close()
+    expect(isGatewayOpenForAgent('homelab', 'research')).toBe(false)
+    expect(desktop.getConnection).not.toHaveBeenCalled()
+    expect(desktop.getConnectionFor).not.toHaveBeenCalled()
+    expect(gatewayMocks.connect).not.toHaveBeenCalled()
+    expect(ambientConnectionId).not.toHaveBeenCalled()
+  })
+
   it('activates the agent socket, not the primary, for a registry scope', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')

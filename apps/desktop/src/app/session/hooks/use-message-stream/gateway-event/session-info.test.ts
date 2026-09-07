@@ -1,7 +1,11 @@
+import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { createOverviewActions } from '@/app/agents/actions'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import type { AgentRow } from '@/store/agent-overview'
+import { $activeSessionId } from '@/store/session'
 import {
   $currentCwd,
   $selectedStoredSessionId,
@@ -9,6 +13,9 @@ import {
   releaseWorkspaceCwdOwner,
   setCurrentCwd
 } from '@/store/session'
+
+import { createPersistedDisplayTranscriptProvenance } from '../../use-session-actions/transcript-provenance'
+import { renderMessageStream } from '../test-harness'
 
 import { handleSessionInfoEvent } from './session-info'
 import type { GatewayEventContext } from './types'
@@ -55,6 +62,118 @@ function sessionInfoEvent({
 }
 
 describe('handleSessionInfoEvent workspace ownership', () => {
+  it.each([
+    { connectionId: 'source-b', profile: 'default' },
+    { connectionId: 'source-a', profile: 'other' }
+  ])('keeps foreground A when an overview reply emits same-id info from $connectionId/$profile', async ownerB => {
+    $activeSessionId.set('runtime-a')
+    $selectedStoredSessionId.set('collision')
+    setCurrentCwd('/source-a')
+
+    const foreground = {
+      ...createClientSessionState('collision'),
+      ownerRoute: { connectionId: 'source-a', profile: 'default' }
+    }
+
+    const stream = renderMessageStream('runtime-a', {
+      states: new Map([['runtime-a', foreground]])
+    })
+
+    const request = vi.fn(async (connectionId: string, profile: string, method: string) => {
+      if (method === 'session.resume') {
+        stream.handleEvent({
+          connectionId,
+          profile,
+          type: 'session.info',
+          session_id: 'runtime-b',
+          payload: { stored_session_id: 'collision', cwd: '/source-b', running: false }
+        })
+
+        return { session_id: 'runtime-b' }
+      }
+
+      return { status: 'streaming' }
+    })
+
+    const actions = createOverviewActions({ request, open: vi.fn() })
+    await act(async () => {
+      await actions.reply({ ...ownerB, resolvedId: 'collision', canonical: false } as AgentRow, 'continue B')
+    })
+    expect(request).toHaveBeenLastCalledWith(
+      ownerB.connectionId,
+      ownerB.profile,
+      'prompt.submit',
+      { session_id: 'runtime-b', text: 'continue B', profile: ownerB.profile },
+      20_000
+    )
+    expect($activeSessionId.get()).toBe('runtime-a')
+    expect($currentCwd.get()).toBe('/source-a')
+    expect(stream.states.get('runtime-a')).toBe(foreground)
+  })
+
+  it('accepts a proven same-owner rebuild but refuses missing source evidence', () => {
+    $activeSessionId.set('runtime-a')
+    $selectedStoredSessionId.set('collision')
+
+    const stream = renderMessageStream('runtime-a', {
+      states: new Map([
+        [
+          'runtime-a',
+          {
+            ...createClientSessionState('collision'),
+            ownerRoute: { connectionId: 'source-a', profile: 'default' }
+          }
+        ]
+      ])
+    })
+
+    const payload = { stored_session_id: 'collision', cwd: '/rebuilt', running: false }
+    act(() => stream.handleEvent({ type: 'session.info', session_id: 'unproven', payload }))
+    expect($activeSessionId.get()).toBe('runtime-a')
+    act(() =>
+      stream.handleEvent({
+        connectionId: 'source-a',
+        profile: 'default',
+        type: 'session.info',
+        session_id: 'rebuilt',
+        payload
+      })
+    )
+    expect($activeSessionId.get()).toBe('rebuilt')
+    expect($currentCwd.get()).toBe('/rebuilt')
+  })
+
+  it('preserves untagged primary rebuilds when only legacy transcript provenance is known', () => {
+    $activeSessionId.set('runtime-primary')
+    $selectedStoredSessionId.set('collision')
+
+    const stream = renderMessageStream('runtime-primary', {
+      states: new Map([
+        [
+          'runtime-primary',
+          {
+            ...createClientSessionState('collision'),
+            transcriptProvenance: createPersistedDisplayTranscriptProvenance({
+              storedSessionId: 'collision',
+              lineageRootId: null,
+              scope: 'default'
+            })
+          }
+        ]
+      ])
+    })
+
+    act(() =>
+      stream.handleEvent({
+        type: 'session.info',
+        session_id: 'primary-rebuilt',
+        payload: { stored_session_id: 'collision', cwd: '/primary-rebuilt' }
+      })
+    )
+    expect($activeSessionId.get()).toBe('primary-rebuilt')
+    expect($currentCwd.get()).toBe('/primary-rebuilt')
+  })
+
   beforeEach(() => {
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
@@ -62,6 +181,8 @@ describe('handleSessionInfoEvent workspace ownership', () => {
   })
 
   afterEach(() => {
+    cleanup()
+    $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
     setCurrentCwd('')

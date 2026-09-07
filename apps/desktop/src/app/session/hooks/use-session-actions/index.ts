@@ -875,7 +875,29 @@ export function useSessionActions({
 
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
-      const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
+      const ownerRoute = capturedOwner || getSessionOwnerHint(storedSessionId)
+      const previousRuntime = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+      const previousState = previousRuntime ? sessionStateByRuntimeIdRef.current.get(previousRuntime) : undefined
+
+      const cacheOwnerMatches = (state: ClientSessionState): boolean => {
+        if (!ownerRoute) {
+          return true
+        }
+
+        const cachedOwner = state.ownerRoute ?? state.transcriptProvenance
+
+        return Boolean(
+          cachedOwner &&
+          cachedOwner.connectionId === ownerRoute.connectionId &&
+          normalizeProfileKey(cachedOwner.profile) ===
+            normalizeProfileKey(ownerRoute.targetProfile || ownerRoute.profile)
+        )
+      }
+
+      const resumedSameSelectedSession =
+        selectedStoredSessionIdRef.current === storedSessionId &&
+        (!ownerRoute || Boolean(previousState && cacheOwnerMatches(previousState)))
+
       const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
 
       const isCurrentResume = () =>
@@ -935,6 +957,12 @@ export function useSessionActions({
           return null
         }
 
+        // A different owner's cache may back a still-running background chat.
+        // Treat it as a miss here; do not destroy that owner's runtime state.
+        if (!cacheOwnerMatches(state)) {
+          return null
+        }
+
         if (state.storedSessionId !== storedSessionId) {
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(runtimeId)
@@ -963,7 +991,6 @@ export function useSessionActions({
       // gateway call (no-op when it's already on that profile / single-profile).
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const ownerRoute = capturedOwner || getSessionOwnerHint(storedSessionId)
       // A connection switch clears/reloads the session rows before this path
       // runs, so an untagged row belongs to the connection that supplied the
       // current list. Capture that source before the async metadata lookup. If
@@ -976,7 +1003,10 @@ export function useSessionActions({
         ambientConnection?.mode === 'remote' ? ambientConnection.connectionId?.trim() || '' : ''
 
       const storedForProfile = await resolveStoredSession(storedSessionId, ownerRoute)
-      const sessionProfile = storedForProfile?.profile
+
+      // Optional REST metadata must not erase the backend profile of a known
+      // owner: multiplexed gateways select the resume DB from the RPC payload.
+      const sessionProfile = ownerRoute ? ownerRoute.targetProfile || ownerRoute.profile : storedForProfile?.profile
 
       if (resumeRequestRef.current !== requestId) {
         return
@@ -1548,22 +1578,25 @@ export function useSessionActions({
         let resumeRuntimeBaselineMessages: ChatMessage[] = []
         const resumeStartedAt = Date.now() / 1000
 
-        const resumePromise = singleFlightSessionResume(storedSessionId, () =>
-          requestForSession<SessionResumeResponse>('session.resume', {
-            session_id: storedSessionId,
-            cols: 96,
-            source: 'desktop',
-            defer_history: !watchWindow,
-            // REST is the transcript authority for Desktop. Avoid duplicating a
-            // potentially huge compression lineage in the WebSocket response.
-            // Watch windows attach lazily (live mirror). Every other cold resume
-            // gets the gateway's default deferred build: the RPC returns the
-            // transcript immediately instead of blocking the switch on _make_agent
-            // (MCP discovery / prompt build), and the agent pre-warms in the
-            // background while the prefetch above paints the transcript.
-            ...(watchWindow ? { lazy: true } : { omit_messages: true }),
-            ...(sessionProfile ? { profile: sessionProfile } : {})
-          })
+        const resumePromise = singleFlightSessionResume(
+          storedSessionId,
+          () =>
+            requestForSession<SessionResumeResponse>('session.resume', {
+              session_id: storedSessionId,
+              cols: 96,
+              source: 'desktop',
+              defer_history: !watchWindow,
+              // REST is the transcript authority for Desktop. Avoid duplicating a
+              // potentially huge compression lineage in the WebSocket response.
+              // Watch windows attach lazily (live mirror). Every other cold resume
+              // gets the gateway's default deferred build: the RPC returns the
+              // transcript immediately instead of blocking the switch on _make_agent
+              // (MCP discovery / prompt build), and the agent pre-warms in the
+              // background while the prefetch above paints the transcript.
+              ...(watchWindow ? { lazy: true } : { omit_messages: true }),
+              ...(sessionProfile ? { profile: sessionProfile } : {})
+            }),
+          sessionOwner
         ).then(resumed => {
           resumeRuntimeBaselineMessages =
             sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages
@@ -1802,6 +1835,13 @@ export function useSessionActions({
             ...state,
             ...(runtimeInfo ?? {}),
             messages: visibleMessagesForView,
+            ownerRoute:
+              sessionOwner && typeof sessionOwner === 'object'
+                ? {
+                    ...sessionOwner,
+                    profile: sessionOwner.targetProfile || sessionOwner.profile
+                  }
+                : undefined,
             transcriptProvenance,
             busy: resumedRunning,
             awaitingResponse: resumedRunning && !recoveredInFlightTail,

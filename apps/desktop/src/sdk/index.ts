@@ -332,6 +332,8 @@ export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
 let openSessionGeneration = 0
 
 export interface PluginOpenSessionOptions {
+  /** A short-lived caller may abandon its selection while the owner socket dials. */
+  isCurrent?: () => boolean
   awaitHydration?: boolean
   expectHistory?: boolean
   /** Always request a sequenced session.resume after the open, even when the
@@ -858,6 +860,7 @@ export const host = {
 
     const openingStillCurrent = () =>
       generation === openSessionGeneration &&
+      (options.isCurrent?.() ?? true) &&
       (options.workspaceMode !== 'bots' ||
         ($workspaceMode.get() === 'bots' && $workspaceOwnerKey.get() === (options.workspaceOwnerKey ?? null)))
 
@@ -972,10 +975,10 @@ export const host = {
 
           const intent = options.intent ?? 'in-place'
 
-          if (options.workspaceMode === 'bots') {
+          if (options.workspaceMode) {
             openSession(storedSessionId, navigate, intent, {
               ownerRoute: ownerRoute ?? undefined,
-              workspaceMode: 'bots',
+              workspaceMode: options.workspaceMode,
               workspaceOwnerKey: options.workspaceOwnerKey,
               ...(options.tabTitle ? { workspaceTabTitle: options.tabTitle } : {})
             })

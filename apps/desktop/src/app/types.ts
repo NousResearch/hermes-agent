@@ -186,6 +186,8 @@ export interface PersistedDisplayTranscriptProvenance {
 }
 
 export interface ClientSessionState {
+  /** Owner of this cached runtime/transcript, independent of the current route. */
+  ownerRoute?: { connectionId: string; profile: string; targetProfile?: string }
   storedSessionId: string | null
   transcriptAuthorityEpoch?: number
   transcriptProvenance?: PersistedDisplayTranscriptProvenance

@@ -1,5 +1,7 @@
+import type { SessionOwnerScope } from '@/store/session-request-router'
+
 /**
- * Single-flight guard for `session.resume`, keyed by STORED session id.
+ * Single-flight guard for `session.resume`, keyed by owner + STORED session id.
  *
  * After sleep/wake or a reconnect, many independent surfaces discover the same
  * dead runtime at once — submit recovery, slash/rewind recovery, tile resumes,
@@ -8,15 +10,29 @@
  * the losers become orphans for the reaper (#91276 storm).
  *
  * Module-level so EVERY call site in the window shares one in-flight promise
- * per stored id, no matter which hook instance it lives in. All participating
+ * per owned stored id, no matter which hook instance it lives in. All participating
  * callers resolve to a `session.resume`-shaped response (an object carrying
  * `session_id`); joiners receive whatever the winning call returns.
  */
 
 const _inFlightResumeByStoredSessionId = new Map<string, Promise<unknown>>()
 
-export function singleFlightSessionResume<T>(storedSessionId: string, run: () => Promise<T>): Promise<T> {
-  const existing = _inFlightResumeByStoredSessionId.get(storedSessionId)
+function resumeKey(storedSessionId: string, owner: SessionOwnerScope): string {
+  return JSON.stringify([
+    storedSessionId,
+    owner && typeof owner === 'object'
+      ? [owner.connectionId, owner.profile, owner.targetProfile || owner.profile]
+      : (owner ?? null)
+  ])
+}
+
+export function singleFlightSessionResume<T>(
+  storedSessionId: string,
+  run: () => Promise<T>,
+  owner?: SessionOwnerScope
+): Promise<T> {
+  const key = resumeKey(storedSessionId, owner)
+  const existing = _inFlightResumeByStoredSessionId.get(key)
 
   if (existing) {
     return existing as Promise<T>
@@ -28,12 +44,12 @@ export function singleFlightSessionResume<T>(storedSessionId: string, run: () =>
   const flight = Promise.resolve()
     .then(run)
     .finally(() => {
-      if (_inFlightResumeByStoredSessionId.get(storedSessionId) === flight) {
-        _inFlightResumeByStoredSessionId.delete(storedSessionId)
+      if (_inFlightResumeByStoredSessionId.get(key) === flight) {
+        _inFlightResumeByStoredSessionId.delete(key)
       }
     })
 
-  _inFlightResumeByStoredSessionId.set(storedSessionId, flight)
+  _inFlightResumeByStoredSessionId.set(key, flight)
 
   return flight
 }
@@ -51,9 +67,9 @@ export function singleFlightSessionResume<T>(storedSessionId: string, run: () =>
  */
 const _recoveredRuntimeByStoredSessionId = new Map<string, string>()
 
-export function registerRecoveredRuntime(storedSessionId: string, runtimeId: string): void {
+export function registerRecoveredRuntime(storedSessionId: string, runtimeId: string, owner?: SessionOwnerScope): void {
   if (storedSessionId && runtimeId) {
-    _recoveredRuntimeByStoredSessionId.set(storedSessionId, runtimeId)
+    _recoveredRuntimeByStoredSessionId.set(resumeKey(storedSessionId, owner), runtimeId)
   }
 }
 
@@ -63,14 +79,19 @@ export function registerRecoveredRuntime(storedSessionId: string, runtimeId: str
  * bounded retry, never a loop. `deadRuntimeId` skips (and drops) the entry
  * when the caller already knows that exact runtime is dead.
  */
-export function takeRecoveredRuntime(storedSessionId: string, deadRuntimeId?: null | string): string | undefined {
-  const cached = _recoveredRuntimeByStoredSessionId.get(storedSessionId)
+export function takeRecoveredRuntime(
+  storedSessionId: string,
+  deadRuntimeId?: null | string,
+  owner?: SessionOwnerScope
+): string | undefined {
+  const key = resumeKey(storedSessionId, owner)
+  const cached = _recoveredRuntimeByStoredSessionId.get(key)
 
   if (cached === undefined) {
     return undefined
   }
 
-  _recoveredRuntimeByStoredSessionId.delete(storedSessionId)
+  _recoveredRuntimeByStoredSessionId.delete(key)
 
   return deadRuntimeId && cached === deadRuntimeId ? undefined : cached
 }

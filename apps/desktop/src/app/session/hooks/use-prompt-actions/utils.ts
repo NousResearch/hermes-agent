@@ -5,6 +5,8 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
+import { $sessions, knownSessionOwner } from '@/store/session'
+import type { SessionOwnerScope } from '@/store/session-request-router'
 
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
 
@@ -72,6 +74,7 @@ export class SessionRecoveryAborted extends Error {
 }
 
 export interface SessionRecoveryDeps {
+  owner?: SessionOwnerScope
   requestGateway: GatewayRequest
   /**
    * Owning profile for a stored session. A resume without it lands on
@@ -119,17 +122,21 @@ export async function resumeStoredRuntimeSession(
   // same dead runtime at once, and each independent session.resume mints a new
   // runtime — every loser is an orphan for the reaper. Sharing one in-flight
   // promise makes concurrent recoveries converge on ONE runtime.
-  const resumed = await singleFlightSessionResume(storedSessionId, async () => {
-    const resolveProfile = deps.resolveProfile ?? defaultResolveProfile
-    const profile = await resolveProfile(storedSessionId)
+  const owner = deps.owner ?? knownSessionOwner($sessions.get(), storedSessionId)
+  const resolveProfile = deps.resolveProfile ?? defaultResolveProfile
+  const profile = await resolveProfile(storedSessionId)
 
-    return deps.requestGateway<{ session_id: string }>('session.resume', {
-      session_id: storedSessionId,
-      source: 'desktop',
-      omit_messages: true,
-      ...(profile ? { profile } : {})
-    })
-  })
+  const resumed = await singleFlightSessionResume(
+    storedSessionId,
+    () =>
+      deps.requestGateway<{ session_id: string }>('session.resume', {
+        session_id: storedSessionId,
+        source: 'desktop',
+        omit_messages: true,
+        ...(profile ? { profile } : {})
+      }),
+    owner ?? profile
+  )
 
   return resumed?.session_id ?? null
 }
@@ -158,6 +165,8 @@ export async function withSessionNotFoundResume<T>(
   deps: SessionRecoveryDeps,
   options?: { alsoTimeout?: boolean }
 ): Promise<{ recovered: boolean; result: T; sessionId: string }> {
+  const owner = deps.owner ?? knownSessionOwner($sessions.get(), storedSessionId ?? null)
+
   try {
     return { recovered: false, result: await call(sessionId), sessionId }
   } catch (err) {
@@ -174,14 +183,14 @@ export async function withSessionNotFoundResume<T>(
     // A previous recovery for this stored session already minted a runtime
     // that its caller drift-aborted away from. Reuse it before resuming
     // again — re-minting would strand yet another runtime for the reaper.
-    const cachedRecoveredId = takeRecoveredRuntime(storedSessionId, sessionId)
+    const cachedRecoveredId = takeRecoveredRuntime(storedSessionId, sessionId, owner)
 
     if (cachedRecoveredId) {
       const cachedDrift = deps.driftReason?.()
 
       if (cachedDrift) {
         // Still drifted: keep the runtime findable for whoever acts next.
-        registerRecoveredRuntime(storedSessionId, cachedRecoveredId)
+        registerRecoveredRuntime(storedSessionId, cachedRecoveredId, owner)
         throw new SessionRecoveryAborted(cachedDrift, cachedRecoveredId)
       }
 
@@ -201,7 +210,7 @@ export async function withSessionNotFoundResume<T>(
     let recoveredId: null | string
 
     try {
-      recoveredId = await resumeStoredRuntimeSession(storedSessionId, deps)
+      recoveredId = await resumeStoredRuntimeSession(storedSessionId, { ...deps, owner })
     } catch {
       throw err
     }
@@ -217,7 +226,7 @@ export async function withSessionNotFoundResume<T>(
       // (the user moved on), so record it in the stored->runtime recovery
       // cache. The next action targeting this stored session reuses it
       // instead of minting another orphan (#91276).
-      registerRecoveredRuntime(storedSessionId, recoveredId)
+      registerRecoveredRuntime(storedSessionId, recoveredId, owner)
       throw new SessionRecoveryAborted(drift, recoveredId)
     }
 

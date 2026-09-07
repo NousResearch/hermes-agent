@@ -157,6 +157,56 @@ Each `(connection, profile)` pair gets its own backend and socket, pooled
 with the same idle-reaping as local per-profile backends — background agents
 keep streaming while you look at another gateway.
 
+### Agent overview
+
+Open **Agents** to zoom out without replacing the conversation you are writing.
+The native overlay has two views:
+
+- **Sessions** brings independent conversations and bots' canonical chats into
+  one overview across registered gateways and profiles.
+- **Spawn tree** keeps the delegated-worker view: tasks spawned by a parent
+  conversation, their progress, and their tool activity.
+
+The default **Recent activity** view is an activity HQ, not a second archive.
+Running sessions and sessions needing your input stay visible regardless of age;
+other sessions appear for **15 minutes after activity**, then age out automatically.
+Choose **All sessions** to inspect older chats. This visibility filter does not
+delete or archive anything, and an in-progress reply draft is preserved.
+
+Each conversation carries its gateway and profile identity. A model provider
+is a property of the Hermes session, not a separate gateway: Hermes sessions
+using different providers can appear together. Search and filters narrow the
+view; selecting a row shows its details. Conversation actions target the row's
+own gateway and profile, not whichever chat happens to be in the foreground.
+Opening a bot resolves its existing **Bot Chat** by name; the overview does not
+create a competing canonical chat. **Reply** sends to that conversation without
+switching your foreground chat; **Stop** interrupts only the selected live run.
+Open the conversation itself to answer an approval or clarification prompt.
+Use **Open as tab** to keep Agents beside your chat, or press **Escape** to close
+the overlay without losing the current draft.
+
+**Backend version matters.** Complete session/bot inventory requires the
+read-only overview API included with this feature. An older gateway remains
+listed, but displays an update-required notice and unknown/incomplete coverage,
+not a misleading empty history. The overview intentionally does not fall back
+to older session-list APIs that can auto-archive or repair databases as a side
+effect of reading them. Upgrade that gateway's Hermes backend for full coverage.
+
+The overview is **not a device-wide process monitor**. Independent Claude Code,
+Codex CLI, and other applications do not become controllable Hermes sessions
+merely because they run on the same computer. Live activity is reported by
+connected Hermes runtimes; saved history is not proof that an agent is running.
+A recent message alone does not mean "Working."
+
+Registered gateways remain visible when unavailable. Last-known active work
+stays visible as **Stale**, not as evidence that it finished or is still running.
+Each source has a bounded collection budget, so a slow gateway cannot discard
+healthy coverage. While the view is visible, automatic probes recover coverage
+after transient failures; **Retry** is an optional immediate attempt, not a
+requirement for recovery. Parked local and SSH runtimes remain connect-on-demand:
+looking at the overview must not start every profile's backend or open surprise
+tunnels.
+
 ### Switching and scoping
 
 The sidebar foot follows one hierarchy: **gateway → profile → sessions**.

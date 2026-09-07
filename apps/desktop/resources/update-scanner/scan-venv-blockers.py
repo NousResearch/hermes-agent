@@ -353,15 +353,40 @@ def _local_preview_metadata(pid: int, name: str) -> dict[str, object]:
         return {}
 
 
-def _terminate_safe_preview(
-    pid: int, expected_create_time: float, *, psutil_module: object | None = None,
-) -> tuple[bool, str | None]:
-    """Terminate one verified local preview process tree.
+def _executable_within(process: object, venv_dir: Path) -> bool:
+    """True only when *process* runs an executable inside *venv_dir*.
 
-    A fresh ``psutil.Process`` identity check and exact argv classification occur immediately before
-    termination; psutil guards mutating Process methods against PID reuse (no taskkill stale-PID
-    race).
+    Unreadable identity is not containment: an ``AccessDenied`` executable
+    belongs to something this scanner may not touch.
     """
+    try:
+        executable = process.exe()  # type: ignore[attr-defined]
+    except Exception:
+        return False
+    return bool(executable) and _within(executable, venv_dir)
+
+
+def _terminate_safe_preview(
+    pid: int,
+    expected_create_time: float,
+    venv_dir: Path,
+    *,
+    psutil_module: object | None = None,
+) -> tuple[bool, str | None]:
+    """Terminate one verified local preview process inside *venv_dir*.
+
+    A fresh ``psutil.Process`` identity check, exact argv classification, and a
+    root-containment check on the executable all occur immediately before
+    termination; psutil guards mutating Process methods against PID reuse (no
+    taskkill stale-PID race).
+
+    The child tree is included only for children that independently pass the
+    same containment check. A preview server that spawned something outside the
+    target venv is not authorization to kill that something (#104687 H10), so a
+    foreign child downgrades this to a single-PID termination.
+    """
+    if int(pid) <= 0 or not math.isfinite(expected_create_time) or expected_create_time <= 0:
+        return False, "invalid process identity"
     try:
         if psutil_module is None:
             import psutil as psutil_module  # type: ignore[no-redef]  # noqa: PLC0415
@@ -371,7 +396,16 @@ def _terminate_safe_preview(
             return False, "process identity changed"
         if not _classify_local_preview_args(process.cmdline()):
             return False, "process is no longer a local preview"
-        targets = [*reversed(process.children(recursive=True)), process]
+        if not _executable_within(process, venv_dir):
+            return False, "process is not running from the target root venv"
+        try:
+            children = list(process.children(recursive=True))
+        except Exception:
+            children = []
+        contained = [child for child in children if _executable_within(child, venv_dir)]
+        targets = (
+            [*reversed(contained), process] if len(contained) == len(children) else [process]
+        )
         for target in targets:
             target.terminate()
         _gone, alive = psutil_module.wait_procs(targets, timeout=3)  # type: ignore[attr-defined]
@@ -894,7 +928,8 @@ def _generic_record(
     # Safe-to-stop local previews (``python -m http.server``) still carry their
     # UI metadata. This is display/affordance data only — the record stays a
     # hard block for the updater; stopping one goes through the separate
-    # ``--terminate-safe`` path, which re-verifies identity and argv itself.
+    # ``--terminate-safe-preview`` path, which re-verifies identity, argv, and
+    # target-root containment itself.
     record.update(_local_preview_metadata(int(pid), str(name)))
     return record
 
@@ -1711,6 +1746,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--terminate-mcp-bridge", type=int)
     parser.add_argument("--terminate-desktop-plugin-service", type=int)
     parser.add_argument("--terminate-venv-holder", type=int)
+    parser.add_argument("--terminate-safe-preview", type=int)
     parser.add_argument("--created-at", type=float)
     return parser
 
@@ -1729,10 +1765,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.terminate_desktop_plugin_service is not None
     )
     venv_holder_terminate_requested = args.terminate_venv_holder is not None
+    safe_preview_terminate_requested = args.terminate_safe_preview is not None
     terminate_requested = (
         mcp_terminate_requested
         or desktop_plugin_terminate_requested
         or venv_holder_terminate_requested
+        or safe_preview_terminate_requested
     )
     created_requested = args.created_at is not None
     if terminate_requested != created_requested or (
@@ -1741,12 +1779,13 @@ def main(argv: Sequence[str] | None = None) -> None:
                 mcp_terminate_requested,
                 desktop_plugin_terminate_requested,
                 venv_holder_terminate_requested,
+                safe_preview_terminate_requested,
             )
         )
         > 1
     ):
         _emit_probe_fail(
-            "--terminate-mcp-bridge and --created-at must be supplied together",
+            "exactly one --terminate-* flag and --created-at must be supplied together",
             root=root_text,
             code="invalid_arguments",
         )
@@ -1773,7 +1812,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 terminated = bool(unit_outcome["terminated"])
                 stopped_host = unit_outcome.get("host")
                 mode = "terminate_desktop_plugin_service"
-            else:
+            elif venv_holder_terminate_requested:
                 pid = args.terminate_venv_holder
                 terminated = terminate_venv_holder(
                     target_root,
@@ -1781,6 +1820,12 @@ def main(argv: Sequence[str] | None = None) -> None:
                     created_at=args.created_at,
                 )
                 mode = "terminate_venv_holder"
+            else:
+                pid = args.terminate_safe_preview
+                terminated, _error = _terminate_safe_preview(
+                    int(pid), float(args.created_at), venv
+                )
+                mode = "terminate_safe_preview"
         except Exception as exc:
             _emit_probe_fail(str(exc), root=root_text, code="probe_failed")
         document: dict[str, Any] = {
@@ -1818,24 +1863,5 @@ def main(argv: Sequence[str] | None = None) -> None:
     raise SystemExit(0)
 
 
-def _terminate_safe_main(argv: list[str]) -> NoReturn:
-    if len(argv) != 2:
-        print(json.dumps({"ok": False, "error": "expected pid and create time"}))
-        raise SystemExit(2)
-    try:
-        pid = int(argv[0])
-        create_time = float(argv[1])
-        if pid <= 0 or not math.isfinite(create_time) or create_time <= 0:
-            raise ValueError
-    except ValueError:
-        print(json.dumps({"ok": False, "error": "invalid process identity"}))
-        raise SystemExit(2)
-    stopped, error = _terminate_safe_preview(pid, create_time)
-    print(json.dumps({"ok": stopped, "pid": pid, "error": error}))
-    raise SystemExit(0 if stopped else 1)
-
-
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--terminate-safe":
-        _terminate_safe_main(sys.argv[2:])
     main()

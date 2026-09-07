@@ -22,6 +22,7 @@ import pytest
 import hermes_cli._scan_venv_blockers as scanner
 from hermes_cli._scan_venv_blockers import (
     _classify_local_preview_args,
+    _executable_within,
     _hermes_cli_command,
     _is_pausable_gateway,
     _probe_fail_json,
@@ -809,7 +810,7 @@ def test_classify_local_preview_args_rejects_module_flags_passed_to_a_script() -
     ) == {}
 
 
-def test_terminate_safe_preview_revalidates_identity_and_exact_argv() -> None:
+def test_terminate_safe_preview_revalidates_identity_and_exact_argv(tmp_path) -> None:
     class FakeProcess:
         def __init__(self, pid: int, *, created: float, args: list[str]) -> None:
             self.pid = pid
@@ -825,6 +826,9 @@ def test_terminate_safe_preview_revalidates_identity_and_exact_argv() -> None:
         def cmdline(self) -> list[str]:
             return self._args
 
+        def exe(self) -> str:
+            return self.executable
+
         def children(self, *, recursive: bool) -> list[FakeProcess]:
             assert recursive is True
             return self._children
@@ -835,15 +839,21 @@ def test_terminate_safe_preview_revalidates_identity_and_exact_argv() -> None:
         def kill(self) -> None:
             self.killed = True
 
+    venv = tmp_path / "venv"
+    (venv / "Scripts").mkdir(parents=True)
     child = FakeProcess(200, created=10.0, args=["child.exe"])
+    child.executable = str(venv / "Scripts" / "child.exe")
     parent = FakeProcess(100, created=1722798000.25, args=["python.exe", "-m", "http.server", "8766"])
+    parent.executable = str(venv / "Scripts" / "python.exe")
     parent._children = [child]
     fake_psutil = types.SimpleNamespace(
         Process=lambda pid: parent if pid == 100 else child,
         wait_procs=lambda processes, timeout: (processes, []),
     )
 
-    stopped, error = _terminate_safe_preview(100, 1722798000.25, psutil_module=fake_psutil)
+    stopped, error = _terminate_safe_preview(
+        100, 1722798000.25, venv, psutil_module=fake_psutil
+    )
 
     assert stopped is True
     assert error is None
@@ -851,12 +861,115 @@ def test_terminate_safe_preview_revalidates_identity_and_exact_argv() -> None:
     assert child.terminated is True
 
 
-def test_terminate_safe_preview_refuses_reused_pid() -> None:
+def test_terminate_safe_preview_refuses_a_target_outside_the_target_venv(tmp_path) -> None:
+    """#104687 H10: --terminate-safe was not root-scoped at all."""
+    venv = tmp_path / "venv"
+    (venv / "Scripts").mkdir(parents=True)
+    foreign = tmp_path / "elsewhere"
+    foreign.mkdir()
+
+    process = MagicMock()
+    process.create_time.return_value = 1722798000.25
+    process.cmdline.return_value = ["python.exe", "-m", "http.server", "8766"]
+    process.exe.return_value = str(foreign / "python.exe")
+    fake_psutil = types.SimpleNamespace(Process=lambda _pid: process)
+
+    stopped, error = _terminate_safe_preview(
+        100, 1722798000.25, venv, psutil_module=fake_psutil
+    )
+
+    assert stopped is False
+    assert error == "process is not running from the target root venv"
+    process.terminate.assert_not_called()
+    process.kill.assert_not_called()
+
+
+def test_terminate_safe_preview_spares_a_child_tree_outside_the_target_venv(tmp_path) -> None:
+    """#104687 H10: a preview server is not authorization to kill a foreign child."""
+    venv = tmp_path / "venv"
+    (venv / "Scripts").mkdir(parents=True)
+    foreign = tmp_path / "elsewhere"
+    foreign.mkdir()
+
+    class FakeProcess:
+        def __init__(self, pid, created, args, executable):
+            self.pid = pid
+            self._created = created
+            self._args = args
+            self.executable = executable
+            self.terminated = False
+            self._children = []
+
+        def create_time(self):
+            return self._created
+
+        def cmdline(self):
+            return self._args
+
+        def exe(self):
+            return self.executable
+
+        def children(self, *, recursive):
+            return self._children
+
+        def terminate(self):
+            self.terminated = True
+
+    child = FakeProcess(200, 10.0, ["cmd.exe"], str(foreign / "cmd.exe"))
+    parent = FakeProcess(
+        100,
+        1722798000.25,
+        ["python.exe", "-m", "http.server", "8766"],
+        str(venv / "Scripts" / "python.exe"),
+    )
+    parent._children = [child]
+    fake_psutil = types.SimpleNamespace(
+        Process=lambda pid: parent,
+        wait_procs=lambda processes, timeout: (processes, []),
+    )
+
+    stopped, error = _terminate_safe_preview(
+        100, 1722798000.25, venv, psutil_module=fake_psutil
+    )
+
+    assert stopped is True
+    assert error is None
+    assert parent.terminated is True
+    assert child.terminated is False
+
+
+def test_terminate_safe_preview_rejects_a_nonsense_identity(tmp_path) -> None:
+    called = []
+    fake_psutil = types.SimpleNamespace(Process=lambda pid: called.append(pid))
+
+    for pid, created in ((0, 1.0), (-1, 1.0), (100, 0.0), (100, float("nan"))):
+        stopped, error = _terminate_safe_preview(
+            pid, created, tmp_path, psutil_module=fake_psutil
+        )
+        assert stopped is False
+        assert error == "invalid process identity"
+
+    assert called == []
+
+
+def test_executable_within_treats_unreadable_identity_as_foreign(tmp_path) -> None:
+    denied = MagicMock()
+    denied.exe.side_effect = PermissionError("access denied")
+    assert _executable_within(denied, tmp_path) is False
+
+    empty = MagicMock()
+    empty.exe.return_value = ""
+    assert _executable_within(empty, tmp_path) is False
+
+
+def test_terminate_safe_preview_refuses_reused_pid(tmp_path) -> None:
     process = MagicMock()
     process.create_time.return_value = 1722798999.0
     fake_psutil = types.SimpleNamespace(Process=lambda _pid: process)
 
-    stopped, error = _terminate_safe_preview(100, 1722798000.25, psutil_module=fake_psutil)
+    stopped, error = _terminate_safe_preview(
+        100, 1722798000.25, tmp_path, psutil_module=fake_psutil
+    )
 
     assert stopped is False
     assert error == "process identity changed"
@@ -2405,6 +2518,118 @@ def test_main_reports_the_stopped_supervisor_for_a_plugin_service_stop(
     with pytest.raises(SystemExit):
         scanner.main(["--root", str(root), "--terminate-mcp-bridge", "20", "--created-at", "101.0"])
     assert "host" not in json.loads(capsys.readouterr().out.strip())
+
+def test_main_terminate_safe_preview_requires_root_and_validates_it(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """#104687 H10: the safe-preview stop used to dispatch before argument parsing.
+
+    ``python scan-venv-blockers.py --terminate-safe <pid> <t>`` reached
+    termination with no ``--root``, no root validation, and no containment.
+    """
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        scanner,
+        "_terminate_safe_preview",
+        lambda pid, created_at, venv_dir: calls.append((pid, created_at, venv_dir)) or (True, None),
+    )
+
+    # No --root at all: argparse refuses before anything is terminated.
+    with pytest.raises(SystemExit) as exit_info:
+        scanner.main(["--terminate-safe-preview", "20", "--created-at", "101.0"])
+
+    assert exit_info.value.code == 1
+    assert json.loads(capsys.readouterr().out)["reason"] == "invalid_arguments"
+    assert calls == []
+
+    # A root that does not validate is a fail-closed probe failure.
+    with pytest.raises(SystemExit) as exit_info:
+        scanner.main(
+            [
+                "--root",
+                str(tmp_path / "not-an-install"),
+                "--terminate-safe-preview",
+                "20",
+                "--created-at",
+                "101.0",
+            ]
+        )
+
+    assert exit_info.value.code == 1
+    assert json.loads(capsys.readouterr().out)["reason"] == "probe_failed"
+    assert calls == []
+
+
+def test_main_terminate_safe_preview_passes_the_validated_venv(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    root = tmp_path / "install"
+    venv = root / "venv"
+    calls: list[tuple] = []
+    monkeypatch.setattr(scanner, "_validated_root", lambda _root: (root, venv))
+    monkeypatch.setattr(
+        scanner,
+        "_terminate_safe_preview",
+        lambda pid, created_at, venv_dir: calls.append((pid, created_at, venv_dir)) or (True, None),
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        scanner.main(
+            ["--root", str(root), "--terminate-safe-preview", "20", "--created-at", "101.0"]
+        )
+
+    assert exit_info.value.code == 0
+    document = json.loads(capsys.readouterr().out.strip())
+    assert document["mode"] == "terminate_safe_preview"
+    assert document["terminated"] is True
+    assert document["pid"] == 20
+    assert calls == [(20, 101.0, venv)]
+
+
+def test_main_refuses_more_than_one_terminate_flag(monkeypatch, tmp_path: Path, capsys) -> None:
+    root = tmp_path / "install"
+    monkeypatch.setattr(scanner, "_validated_root", lambda _root: (root, root / "venv"))
+    stopped: list[int] = []
+    monkeypatch.setattr(
+        scanner,
+        "_terminate_safe_preview",
+        lambda pid, created_at, venv_dir: stopped.append(pid) or (True, None),
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        scanner.main(
+            [
+                "--root",
+                str(root),
+                "--terminate-safe-preview",
+                "20",
+                "--terminate-venv-holder",
+                "21",
+                "--created-at",
+                "101.0",
+            ]
+        )
+
+    assert exit_info.value.code == 1
+    assert json.loads(capsys.readouterr().out)["reason"] == "invalid_arguments"
+    assert stopped == []
+
+
+def test_scanner_has_no_pre_parser_terminate_dispatch() -> None:
+    """The ``__main__`` guard must not act on raw ``sys.argv`` before ``main()``."""
+    for path in (
+        Path(scanner.__file__),
+        Path(scanner.__file__).resolve().parents[1]
+        / "apps"
+        / "desktop"
+        / "resources"
+        / "update-scanner"
+        / "scan-venv-blockers.py",
+    ):
+        text = path.read_text(encoding="utf-8")
+        assert "_terminate_safe_main" not in text, path
+        assert 'sys.argv[1] == "--terminate-safe"' not in text, path
+
 
 def test_terminate_venv_holder_stops_any_fresh_target_scan_match(
     monkeypatch, tmp_path: Path

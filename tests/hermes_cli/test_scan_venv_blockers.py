@@ -23,6 +23,7 @@ import hermes_cli._scan_venv_blockers as scanner
 from hermes_cli._scan_venv_blockers import (
     _classify_local_preview_args,
     _executable_within,
+    _gateway_subcommand,
     _hermes_cli_command,
     _is_pausable_gateway,
     _probe_fail_json,
@@ -1005,6 +1006,19 @@ def test_terminate_safe_preview_refuses_reused_pid(tmp_path) -> None:
         "python.exe -m hermes_cli.main -p gateway gateway run",
         # case variations survive
         "PYTHON.EXE -m hermes_cli.main GATEWAY RUN",
+        # Launcher shapes the pause path stops but the hand-rolled
+        # hermes_cli.main-tail parser could never match (#104687).
+        r"C:\Hermes\venv\Scripts\hermes-gateway.exe",
+        r"C:\Hermes\venv\Scripts\python.exe gateway/run.py",
+        r"C:\Hermes\venv\Scripts\python.exe C:\Hermes\gateway\run.py",
+        r'"C:\Program Files\Hermes\venv\Scripts\hermes.exe" gateway run',
+        # bare `hermes gateway` defaults to run
+        r"C:\Hermes\venv\Scripts\hermes.exe gateway",
+        "python.exe -m hermes_cli.main gateway",
+        # restart shapes: include_restart_managers is always True on Windows
+        # (supports_systemd_services() is False), so the pause path stops these
+        "python.exe -m hermes_cli.main gateway restart",
+        r"C:\Hermes\venv\Scripts\hermes.exe gateway restart",
     ],
 )
 def test_is_pausable_gateway_accepts_gateway_run_chains(cmdline: str) -> None:
@@ -1020,8 +1034,8 @@ def test_is_pausable_gateway_accepts_gateway_run_chains(cmdline: str) -> None:
         "python.exe -m hermes_cli.main gateway stop",
         "python.exe -m hermes_cli.main gateway status",
         "python.exe -m hermes_cli.main gateway install",
-        # A bare gateway command is not proof that the operative action was run.
-        "python.exe -m hermes_cli.main gateway",
+        # gateway MANAGEMENT subcommands are not runtimes the pause path stops
+        "python.exe -m hermes_cli.main gateway uninstall",
         # operator REPL / stray script
         "python.exe",
         "python.exe myscript.py gateway run",  # not a hermes_cli.main invocation
@@ -1030,6 +1044,115 @@ def test_is_pausable_gateway_accepts_gateway_run_chains(cmdline: str) -> None:
 )
 def test_is_pausable_gateway_rejects_everything_else(cmdline: str) -> None:
     assert _is_pausable_gateway(cmdline) is False
+
+
+def test_gateway_exemption_covers_every_launcher_shape_in_both_copies(scanner_copy) -> None:
+    """#104687 GATEWAY-EXEMPTION: the exemption must not be a smaller set than
+    what the pause path stops.
+
+    The PR replaced the delegation to ``gateway.status`` with a hand-rolled
+    ``hermes_cli.main``-tail parser that could not match ``hermes-gateway.exe``,
+    ``python gateway/run.py``, bare ``hermes gateway`` or ``gateway restart``.
+    ``hermes_cli.gateway.find_gateway_pids`` stops all of them on Windows
+    (``include_restart_managers = not supports_systemd_services()``, always
+    ``True`` there), so each was reported as a hard blocker that dead-ended the
+    hand-off. Asserted on the in-tree module and on the packaged carrier.
+    """
+    exempt = [
+        r"C:\Hermes\venv\Scripts\hermes-gateway.exe",
+        r"C:\Hermes\venv\Scripts\python.exe gateway/run.py",
+        r"C:\Hermes\venv\Scripts\hermes.exe gateway",
+        r"C:\Hermes\venv\Scripts\hermes.exe gateway restart",
+    ]
+
+    for cmdline in exempt:
+        assert scanner_copy._is_pausable_gateway(cmdline) is True, cmdline
+        assert scanner_copy._is_pausable_gateway(cmdline.split()) is True, cmdline
+
+    # Management subcommands and non-Hermes launchers still block.
+    for cmdline in (
+        r"C:\Hermes\venv\Scripts\hermes.exe gateway status",
+        r"C:\Hermes\venv\Scripts\hermes.exe gateway stop",
+        r"C:\Hermes\venv\Scripts\python.exe myscript.py gateway run",
+        r"C:\Hermes\venv\Scripts\python.exe -m tui_gateway",
+    ):
+        assert scanner_copy._is_pausable_gateway(cmdline) is False, cmdline
+
+
+def test_gateway_subcommand_matches_the_canonical_parser() -> None:
+    """The inlined port must not drift from ``gateway.status``.
+
+    The carrier cannot import ``gateway.status`` (it runs under ``python -I``
+    against the install root it is rewriting), so the parser is inlined in both
+    scanner copies. This differential test is what keeps the copy honest: a
+    change to ``gateway/status.py`` that this port does not follow fails here.
+    """
+    from gateway.status import _gateway_command_subcommand
+
+    corpus = [
+        "",
+        "python.exe",
+        "python.exe -m hermes_cli.main",
+        "python.exe -m hermes_cli.main gateway",
+        "python.exe -m hermes_cli.main gateway run",
+        "python.exe -m hermes_cli.main gateway restart",
+        "python.exe -m hermes_cli.main gateway stop",
+        "python.exe -m hermes_cli.main gateway status",
+        "python.exe -m hermes_cli.main gateway install",
+        "python.exe -m hermes_cli.main serve --host 127.0.0.1 --port 8756",
+        "PYTHON.EXE -m hermes_cli.main GATEWAY RUN",
+        "python.exe -m hermes_cli.main --profile gateway gateway run",
+        "python.exe -m hermes_cli.main --profile=gateway gateway run",
+        "python.exe -m hermes_cli.main -p gateway gateway run",
+        "python.exe -m hermes_cli.main -p=gateway gateway run",
+        "python.exe myscript.py gateway run",
+        "python.exe -m tui_gateway",
+        "hermes.exe gateway",
+        "hermes.exe gateway run",
+        "hermes.exe gateway restart",
+        "hermes gateway run",
+        r"C:\Hermes\venv\Scripts\hermes-gateway.exe",
+        "hermes-gateway",
+        r"C:\Hermes\venv\Scripts\python.exe gateway/run.py",
+        r"C:\Hermes\venv\Scripts\python.exe C:\Hermes\gateway\run.py",
+        r'"C:\Program Files\Hermes\venv\Scripts\hermes.exe" gateway run',
+        r'"C:\Program Files\Hermes\venv\Scripts\python.exe"  -m hermes_cli.main gateway run',
+        r"C:\Hermes\venv\Scripts\python.exe -m hermes_cli/main.py gateway run",
+        'python.exe -m hermes_cli.main serve --title "x gateway run"',
+        "python.exe -m hermes_cli.main gateway run --replace",
+    ]
+
+    for cmdline in corpus:
+        assert _gateway_subcommand(cmdline) == _gateway_command_subcommand(cmdline), cmdline
+
+
+def test_gateway_exemption_matches_the_windows_pause_matcher() -> None:
+    """The exempted set is exactly the runtime set the Windows pause path stops."""
+    from gateway.status import (
+        looks_like_gateway_command_line,
+        looks_like_gateway_runtime_command_line,
+    )
+
+    narrowed = []
+    for cmdline in (
+        "python.exe -m hermes_cli.main gateway run",
+        "python.exe -m hermes_cli.main gateway restart",
+        "python.exe -m hermes_cli.main gateway stop",
+        "hermes.exe gateway",
+        r"C:\Hermes\venv\Scripts\hermes-gateway.exe",
+        r"C:\Hermes\venv\Scripts\python.exe gateway/run.py",
+        "python.exe -m hermes_cli.main serve",
+    ):
+        assert _is_pausable_gateway(cmdline) is looks_like_gateway_runtime_command_line(cmdline), cmdline
+
+        if looks_like_gateway_runtime_command_line(cmdline) and not looks_like_gateway_command_line(
+            cmdline
+        ):
+            narrowed.append(cmdline)
+
+    # The restart shape is the part the strict `run`-only matcher would miss;
+    # Windows pause discovery includes it, so the exemption must too.
+    assert narrowed == ["python.exe -m hermes_cli.main gateway restart"]
 
 
 def test_hermes_command_parser_is_exact_and_understands_python_options() -> None:

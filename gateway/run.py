@@ -4237,8 +4237,12 @@ class GatewayRunner(
                 agent._last_flushed_db_idx = 0
         agent._api_call_count = 0
 
-    def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
+    def _profile_name_for_source(
+        self, source: SessionSource, *, bot: Optional[str | tuple[str, ...]] = None,
+        adapter_profile: Optional[str] = None,
+    ) -> Optional[str]:
         """Resolve the profile name for an inbound source via configured routes (most specific wins).
+        A dedicated secondary adapter keeps ``adapter_profile`` unless a bot-qualified route matches.
         ``None`` = default/active profile. Gated on ``multiplex_profiles``, since the scoped run only
         activates under multiplexing; otherwise keys would be profile-namespaced while the agent ran in
         ``agent:main``."""
@@ -4247,18 +4251,19 @@ class GatewayRunner(
             return None
         routes = getattr(config, "profile_routes", None)
         if not routes:
-            return None
+            return adapter_profile
         from gateway.profile_routing import ProfileRouteRejected, match_profile_route
         try:
             matched = match_profile_route(
                 routes, platform=source.platform.value, guild_id=getattr(source, "guild_id", None),
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
-                parent_chat_id=getattr(source, "parent_chat_id", None))
+                parent_chat_id=getattr(source, "parent_chat_id", None), bot=bot,
+                require_bot=bool(adapter_profile))
         except Exception:
             logger.warning(
-                "Profile route matching failed for %s/%s, falling back to default",
+                "Profile route matching failed for %s/%s, falling back to adapter profile",
                 source.platform, source.chat_id, exc_info=True)
-            return None
+            return adapter_profile
         if matched:
             try:
                 served = {name for name, _home in _multiplex_profile_homes(config)}
@@ -4277,7 +4282,7 @@ class GatewayRunner(
             "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",
             source.platform.value, source.chat_id,
             getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None))
-        return None
+        return adapter_profile
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
         """Resolve which profile's HERMES_HOME serves this source: ``source.profile``, then

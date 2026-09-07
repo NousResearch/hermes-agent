@@ -279,6 +279,13 @@ gateway:
       chat_id: "-1001234567890"
       profile: tg-profile
 
+    # One user's DM to one specific Telegram bot (@ is optional)
+    - name: tg-admin-dm
+      platform: telegram
+      bot: "@admin_bot"
+      chat_id: "72719239"
+      profile: ops
+
     # A WhatsApp DM — write the phone number; JID and LID forms also match
     - name: owner-whatsapp
       platform: whatsapp
@@ -286,10 +293,14 @@ gateway:
       profile: owner
 ```
 
-Routes are matched most-specific-first (`thread_id` > `chat_id` > `guild_id`),
+Routes are matched most-specific-first (`bot` > `thread_id` > `chat_id` > `guild_id`),
 all declared fields must hold (AND), and a route keyed on a channel also
-matches threads/forum posts whose parent is that channel. Messages that match
-no route stay on the default/active profile. The routed profile gets the full
+matches threads/forum posts whose parent is that channel. Bot usernames are
+case-insensitive and may include a leading `@`. A generic route without `bot`
+does not override a dedicated secondary adapter, because Telegram DMs to
+different bots share the same user `chat_id`; an unmatched event stays on the
+receiving adapter's profile (or the default/active profile for the primary
+adapter). The routed profile gets the full
 per-profile isolation described above (config, skills, memory, credentials,
 session namespace). Routing works on every platform adapter, not just Discord.
 

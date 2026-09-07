@@ -1,9 +1,10 @@
 """Profile-based routing: route guilds/channels/threads to different profiles.
 
 Matching priority, most specific first (``gateway.profile_routes`` in config.yaml):
-platform + chat_id + thread_id (14) → platform + chat_id (6) → platform + guild_id (2)
-→ default profile. For Discord threads/forum posts ``parent_chat_id`` carries the
-direct parent, so a channel route also matches any thread/post under it.
+bot (16) + platform/chat/thread discriminators (up to 14) → platform + chat_id +
+thread_id (12) → platform + chat_id (4) → platform + guild_id (2) → default profile.
+For Discord threads/forum posts ``parent_chat_id`` carries the direct parent, so a
+channel route also matches any thread/post under it.
 """
 
 from __future__ import annotations
@@ -57,16 +58,19 @@ class ProfileRoute:
     guild_id: Optional[str] = None
     chat_id: Optional[str] = None
     thread_id: Optional[str] = None
+    bot: Optional[str] = None
     enabled: bool = True
 
     @property
     def specificity(self) -> int:
         """Higher value = more specific match."""
-        return 2 * bool(self.guild_id) + 4 * bool(self.chat_id) + 8 * bool(self.thread_id)
+        return (2 * bool(self.guild_id) + 4 * bool(self.chat_id)
+                + 8 * bool(self.thread_id) + 16 * bool(self.bot))
 
     def matches(
         self, platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
         thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
+        bot: Optional[str | tuple[str, ...]] = None,
     ) -> bool:
         """True if every discriminator the route declares holds (AND).
 
@@ -74,6 +78,8 @@ class ProfileRoute:
         ``chat_id`` also matches across number/JID/LID after the exact check (groups/broadcasts stay exact-only).
         """
         if not self.enabled or self.platform != platform:
+            return False
+        if self.bot and not _bot_identity_matches(self.bot, bot):
             return False
         if self.thread_id and self.thread_id != thread_id:
             return False
@@ -85,6 +91,22 @@ class ProfileRoute:
         ):
             return False
         return not (self.guild_id and self.guild_id != guild_id)
+
+
+def _normalize_bot_identity(value: Any) -> Optional[str]:
+    """Normalize a bot username or id for route matching."""
+    if value is None:
+        return None
+    normalized = str(value).strip().lstrip("@").lower()
+    return normalized or None
+
+
+def _bot_identity_matches(
+    expected: str, actual: Optional[str | tuple[str, ...]],
+) -> bool:
+    """Return whether a route bot matches any identity exposed by an adapter."""
+    candidates = actual if isinstance(actual, tuple) else (actual,)
+    return any(expected == _normalize_bot_identity(candidate) for candidate in candidates)
 
 
 def _coerce_route_id(value: Any) -> Optional[str]:
@@ -138,6 +160,7 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
             guild_id=_coerce_route_id(entry.get("guild_id")),
             chat_id=_coerce_route_id(entry.get("chat_id")),
             thread_id=_coerce_route_id(entry.get("thread_id")),
+            bot=_normalize_bot_identity(entry.get("bot")),
             enabled=entry.get("enabled", True),
         ))
     routes.sort(key=lambda r: r.specificity, reverse=True)
@@ -148,9 +171,15 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
 def match_profile_route(
     routes: List[ProfileRoute], platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
     thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
+    bot: Optional[str | tuple[str, ...]] = None, require_bot: bool = False,
 ) -> Optional[ProfileRoute]:
     """Return the first (most specific) matching route, or None."""
     for route in routes:
-        if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id, parent_chat_id=parent_chat_id):
+        if require_bot and not route.bot:
+            continue
+        if route.matches(
+            platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id,
+            parent_chat_id=parent_chat_id, bot=bot,
+        ):
             return route
     return None

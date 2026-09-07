@@ -2333,6 +2333,24 @@ class BasePlatformAdapter(ABC):
         :meth:`_session_key_profile` so adapter-level keys leave ``agent:main:``."""
         self._owner_profile = None if (name := (profile_name or "").strip() or None) == "default" else name
 
+    def _profile_route_bot_identities(self) -> tuple[str, ...]:
+        """Return bot usernames and ids used by ``gateway.profile_routes``."""
+        identities: list[str] = []
+
+        def add(value: Any) -> None:
+            if isinstance(value, (str, int)) and str(value).strip():
+                identities.append(str(value))
+
+        username = getattr(self, "_current_bot_username", None)
+        if callable(username):
+            add(username())
+        for attr in ("_bot_username", "bot_username", "_bot_user_id", "bot_user_id"):
+            add(getattr(self, attr, None))
+        bot = getattr(self, "_bot", None)
+        for attr in ("username", "id"):
+            add(getattr(bot, attr, None))
+        return tuple(dict.fromkeys(identities))
+
     def _session_key_profile(self, source: Optional[Any] = None) -> Optional[str]:
         """Profile namespace for an adapter-derived session key. Ingress runs BEFORE the runner
         stamps ``source.profile``, so without this every bot in a multiplexed gateway shares one
@@ -4174,11 +4192,18 @@ class BasePlatformAdapter(ABC):
             chat_id_alt=chat_id_alt, is_bot=is_bot, scope_id=_opt(scope_id),
             guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),
             message_id=_opt(message_id))
-        profile, profile_route_rejected = None, False  # profile from configured routes, if any
+        adapter_profile = (
+            getattr(self, "_owner_profile", None)
+            or getattr(self, "_hermes_profile_name", None)
+        )
+        profile, profile_route_rejected = adapter_profile, False
         if self.gateway_runner is not None:
             from gateway.profile_routing import ProfileRouteRejected
             try:
-                profile = self.gateway_runner._profile_name_for_source(SessionSource(**fields))
+                profile = self.gateway_runner._profile_name_for_source(
+                    SessionSource(**fields), bot=self._profile_route_bot_identities(),
+                    adapter_profile=adapter_profile,
+                )
             except ProfileRouteRejected:
                 profile_route_rejected = True
             except Exception:

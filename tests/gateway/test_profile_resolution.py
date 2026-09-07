@@ -8,7 +8,7 @@ import pytest
 
 from gateway.session import SessionSource, build_session_key
 from gateway.run import GatewayRunner
-from gateway.profile_routing import ProfileRoute, ProfileRouteRejected
+from gateway.profile_routing import ProfileRoute, ProfileRouteRejected, parse_profile_routes
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent
 
@@ -372,6 +372,64 @@ class TestAdapterToSessionKeyIntegration:
         assert key.startswith("agent:coder:"), key
         # A default-profile key would land in agent:main — must differ.
         assert key != build_session_key(source, profile=None)
+
+    def test_generic_route_does_not_override_secondary_adapter_profile(self, mock_runner):
+        mock_runner.config.profile_routes = [
+            ProfileRoute(
+                name="admin-dm",
+                platform="telegram",
+                profile="ops",
+                chat_id="72719239",
+            )
+        ]
+        adapter = _stub_adapter(Platform.TELEGRAM, mock_runner)
+        setattr(adapter, "_hermes_profile_name", "team-b")
+
+        with patch(
+            "hermes_cli.profiles.profiles_to_serve",
+            return_value=[
+                ("default", Path("/profiles/default")),
+                ("ops", Path("/profiles/ops")),
+                ("team-b", Path("/profiles/team-b")),
+            ],
+        ):
+            source = adapter.build_source(chat_id="72719239", chat_type="dm")
+
+        assert source.profile == "team-b"
+
+    def test_bot_route_targets_only_the_named_secondary_adapter(self, mock_runner):
+        route = parse_profile_routes([
+            {
+                "name": "admin-bot-dm",
+                "platform": "telegram",
+                "profile": "ops",
+                "chat_id": "72719239",
+                "bot": "@admin_bot",
+            }
+        ])[0]
+        mock_runner.config.profile_routes = [route]
+
+        with patch(
+            "hermes_cli.profiles.profiles_to_serve",
+            return_value=[
+                ("default", Path("/profiles/default")),
+                ("ops", Path("/profiles/ops")),
+                ("team-b", Path("/profiles/team-b")),
+            ],
+        ):
+            admin_adapter = _stub_adapter(Platform.TELEGRAM, mock_runner)
+            admin_adapter.set_owner_profile("team-b")
+            setattr(admin_adapter, "_bot_username", "admin_bot")
+            other_adapter = _stub_adapter(Platform.TELEGRAM, mock_runner)
+            other_adapter.set_owner_profile("team-b")
+            setattr(other_adapter, "_bot_username", "my_secondary_bot")
+
+            assert admin_adapter.build_source(
+                chat_id="72719239", chat_type="dm"
+            ).profile == "ops"
+            assert other_adapter.build_source(
+                chat_id="72719239", chat_type="dm"
+            ).profile == "team-b"
 
     @pytest.mark.asyncio
     async def test_adapter_drops_rejected_route_before_dispatch(self, mock_runner):

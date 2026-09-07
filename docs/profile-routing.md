@@ -9,7 +9,7 @@
 By default a single gateway run uses one profile (memory, persona, tools). **Profile-based
 routing** lets one gateway instance serve **multiple isolated profiles**, selecting which
 profile handles an inbound message based on *where the message came from* — the platform,
-server (`guild_id`), channel (`chat_id`), and/or thread (`thread_id`).
+bot (`bot`), server (`guild_id`), channel (`chat_id`), and/or thread (`thread_id`).
 
 This is the inbound counterpart to multiplexing: instead of running N gateways, run one
 gateway and route per-community / per-channel / per-thread to a dedicated profile. Each
@@ -45,6 +45,13 @@ profile_routes:
     chat_id: "-1001234567890"
     profile: tg-profile
 
+  # Pin one user's DM to one specific bot; the leading @ is optional.
+  - name: tg-admin-dm
+    platform: telegram
+    bot: "@admin_bot"
+    chat_id: "72719239"
+    profile: ops
+
   # Route a single Discord thread.
   - name: standup-thread
     platform: discord
@@ -64,6 +71,7 @@ profile_routes:
 | `guild_id` | no | Server/guild (Discord). |
 | `chat_id` | no | Channel/group/DM id. |
 | `thread_id` | no | Thread id within a channel. |
+| `bot` | no | Receiving bot username or id; usernames are case-insensitive and may start with `@`. |
 | `enabled` | no | Default `true`; set `false` to disable a route without removing it. |
 
 ## Matching rules
@@ -72,6 +80,7 @@ A route matches an inbound source when **every discriminator the route declares 
 (conjunctive / AND). A field the route leaves unset is ignored.
 
 - **`platform`** must equal the source platform exactly.
+- **`bot`** (if set) must identify the adapter that received the event.
 - **`thread_id`** (if set) must equal the source thread id.
 - **`chat_id`** (if set) must match the source channel **or** its parent — a thread in a
   channel matches the channel's route (hierarchical match for Discord forums/threads).
@@ -84,13 +93,16 @@ When multiple routes match, the **most specific** one wins. Specificity is addit
 
 | Discriminator | Weight |
 |---|---|
+| `bot` | 16 |
 | `thread_id` | 8 |
 | `chat_id` | 4 |
 | `guild_id` | 2 |
 | (platform only) | 0 |
 
 So a thread route (8) beats a channel route (4) beats a guild route (2) within the same server.
-If no route matches, the message uses the default/active profile.
+If no route matches, the message uses the receiving adapter's profile, or the default/active
+profile for the primary adapter. A route without `bot` cannot override a dedicated secondary
+adapter; this prevents a generic DM `chat_id` route from hijacking another bot's traffic.
 
 ## How it works at runtime
 

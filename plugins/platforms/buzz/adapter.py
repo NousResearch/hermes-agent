@@ -1631,6 +1631,9 @@ class BuzzAdapter(BasePlatformAdapter):
         dispatch_text = self._strip_mention(content)
         # NIP-10 root scopes the session; remember it so our reply joins the SAME thread instead of nesting.
         thread_id = self._extract_thread_root(event)
+        if thread_id is None and not is_dm and self._reply_to_mode != "off":
+            # Start in the session our threaded answer and subsequent replies will use.
+            thread_id = event_id
         self._record_thread_root(event_id, event)
         # Attachment fetch spends credentials: only the gateway's explicit ``True`` permits it (else fail closed).
         # The message still dispatches so GatewayRunner can apply denial/pairing.

@@ -49,6 +49,13 @@ def test_install_plan_apply_arguments_are_stable():
     assert apply.apply_receipt == "wip_123"
 
 
+def test_mute_supports_shared_status_and_unmute_without_local_skill_scope():
+    value = parser()
+    assert value.parse_args(["wisdom", "mute"]).duration == "status"
+    for choice in ["status", "1d", "1w", "30d", "forever", "off"]:
+        assert value.parse_args(["wisdom", "mute", choice]).duration == choice
+
+
 def test_setup_requires_an_explicit_disclosure_switch_for_automation():
     value = parser()
     setup = value.parse_args(["wisdom", "setup", "--accept-disclosure", "--json"])

@@ -49,6 +49,7 @@ _PRIVATE_COMMANDS = {
     "notifications",
     "inbox",
     "consent",
+    "mute",
 }
 
 
@@ -434,6 +435,7 @@ class WisdomCommandController:
             "update": self._update,
             "uninstall": self._uninstall,
             "notifications": self._notifications,
+            "mute": self._mute,
         }
         handler = handlers.get(keyword)
         if handler is None:
@@ -846,7 +848,7 @@ class WisdomCommandController:
                 ),
                 WisdomItem(
                     "Account and activity",
-                    _wisdom_help_lines("setup", "status", "notifications", "inbox", "consent", "help"),
+                    _wisdom_help_lines("setup", "status", "notifications", "mute", "inbox", "consent", "help"),
                 ),
                 WisdomItem(
                     "Examples",
@@ -857,6 +859,30 @@ class WisdomCommandController:
                 ),
             ],
         )
+
+    def _mute(self, service: WisdomService, args: list[str]) -> WisdomView:
+        from hermes_wisdom.preferences import WisdomPreferences
+
+        if len(args) > 1:
+            raise ValueError("Use /wisdom mute [status|1d|1w|30d|forever|off]")
+        result = WisdomPreferences(service).native_mute_command(args[0] if args else "status")
+        remote, pending = result["mute"], result["sync"]
+        summary = "Gateway unavailable; the shared mute state could not be confirmed."
+        if remote is not None:
+            summary = "Proactive Wisdom notifications are muted." if remote["muted"] else "Proactive Wisdom notifications are enabled."
+            if remote["muted"] and remote["muted_until"]:
+                summary += f" Until {remote['muted_until']}."
+        sync = pending["preference_sync"] if pending else None
+        notices = {
+            "pending": "Your change is saved locally and waiting to sync.",
+            "syncing": "Your change is syncing.",
+            "failed": "Sync failed. Check the shared state, then repeat your choice to retry.",
+            "conflict": "Your preference changed on another client. Check the shared state before choosing again.",
+            "expired": "This queued choice expired without confirmation. Choose again to retry.",
+        }
+        return WisdomView("Wisdom notifications", summary,
+            notice=notices.get(sync),
+            items=[WisdomItem("Your organization", "This affects your proactive notifications across clients. Manual browse, install, update, and sharing remain available.")])
 
     def _setup(self, service: WisdomService, _args: list[str]) -> WisdomView:
         return WisdomView(

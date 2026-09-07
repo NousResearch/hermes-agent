@@ -163,6 +163,18 @@ def test_expired_lease_recovers(preferences):
     assert tuple(row) == ("synced", 2, None)
 
 
+def test_last_attempt_crash_becomes_terminal_instead_of_stuck_syncing(preferences):
+    p, service, now = preferences
+    stage(p, REF)
+    with p.store.transaction() as db:
+        db.execute("UPDATE wisdom_preference_outbox SET state='syncing',lease_token='abandoned',lease_until=?,attempts=3", (now[0] - 1,))
+    p.flush("org")
+    service.client.suppress_recommendation.assert_not_called()
+    with p.store.transaction() as db:
+        row = db.execute("SELECT state,lease_token FROM wisdom_preference_outbox").fetchone()
+    assert tuple(row) == ("failed", None)
+
+
 def test_invalid_remote_expiry_fails_closed(preferences):
     p, service, _ = preferences
     service.client.recommendation_suppressions.return_value = [

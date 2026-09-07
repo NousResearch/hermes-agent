@@ -239,14 +239,9 @@ def cmd_wisdom(args: argparse.Namespace) -> int:
                 client=service.client,
             )
         elif command == "mute":
-            from hermes_wisdom.agent_led.history import SuggestionHistory
-            from hermes_wisdom.agent_led.templates import mute_duration_days
+            from hermes_wisdom.preferences import WisdomPreferences
 
-            result = SuggestionHistory().record_mute(
-                args.skill_id or "*",
-                days=mute_duration_days(args.duration),
-                client=service.client,
-            )
+            result = WisdomPreferences(service).native_mute_command(args.duration)
         else:
             args._wisdom_parser.print_help()
             return 2
@@ -408,6 +403,5 @@ def build_wisdom_parser(subparsers) -> None:
     dismiss.add_argument("skill")
     dismiss.add_argument("content_hash")
     dismiss.add_argument("--days", type=int, help="Suppression window (default from policy)")
-    mute = add("mute", "Mute proactive Wisdom suggestions")
-    mute.add_argument("duration", choices=["1d", "1w", "30d", "forever"])
-    mute.add_argument("--skill-id", dest="skill_id", help="Mute one skill instead of all")
+    mute = add("mute", "Manage your organization-wide proactive Wisdom notifications")
+    mute.add_argument("duration", nargs="?", default="status", choices=["status", "1d", "1w", "30d", "forever", "off"])

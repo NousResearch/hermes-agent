@@ -10,7 +10,7 @@ import hashlib
 import json
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .client import WisdomError
 from .mediation_store import MediationStore
@@ -74,6 +74,37 @@ class WisdomPreferences:
             )
         return owner
 
+    def native_mute_command(self, choice: str = "status") -> dict:
+        """Explicit command entrypoint, not available to automatic assessment tools."""
+        self.service.require_setup()
+        org = self.store.active_org_id()
+        choices = {
+            "1d": "1_day",
+            "1w": "1_week",
+            "30d": "30_days",
+            "forever": "forever",
+            "off": None,
+        }
+        if choice != "status":
+            if choice not in choices:
+                raise ValueError("Use mute status, 1d, 1w, 30d, forever, or off")
+            self.request_mute(org, choices[choice])
+        self.flush_mute(org)
+        try:
+            user = self.identity(org)
+            current = self.service.client.recommendation_mute()
+            if current.org_id != org or self.identity(org) != user:
+                raise WisdomError("Preference identity changed")
+            remote = current.model_dump(mode="json")
+        except Exception:
+            remote = None
+        return {
+            "organization_id": org,
+            "gateway_available": remote is not None,
+            "mute": remote,
+            "sync": self.mute_status(org),
+        }
+
     def stage_suppression(
         self, db, *, org: str, user: str, reference: dict, days: int = 30
     ) -> dict:
@@ -110,12 +141,184 @@ class WisdomPreferences:
             "preference_sync": row[1],
         }
 
+    def request_mute(self, org: str, duration: str | None) -> dict:
+        """Native user action only; fresh authority, then durable local intent."""
+        self.service.require_setup()
+        user = self.identity(org)
+        current = self.service.client.recommendation_mute()
+        if current.org_id != org or self.identity(org) != user:
+            raise WisdomError("Preference identity changed")
+        if "revision" not in current.model_fields_set:
+            raise WisdomError("Gateway must be updated before shared mute is available")
+        return self.stage_mute(org, duration, expected_revision=current.revision)
+
+    def stage_mute(
+        self, org: str, duration: str | None, *, expected_revision: int
+    ) -> dict:
+        if duration not in {None, "1_day", "1_week", "30_days", "forever"}:
+            raise ValueError("Unsupported mute duration")
+        if (
+            type(expected_revision) is not int
+            or not 0 <= expected_revision < 2_147_483_647
+        ):
+            raise ValueError("Invalid mute revision")
+        user, now = self.identity(org), self.clock()
+        with self.store.transaction() as db:
+            MediationStore._check_org(db, org)
+            db.execute(
+                """INSERT INTO wisdom_mute_outbox
+                (organization_id,user_id,mutation_id,expected_revision,duration,
+                 requested_at,expires_at,available_at) VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(organization_id,user_id) DO UPDATE SET
+                mutation_id=excluded.mutation_id,expected_revision=excluded.expected_revision,
+                duration=excluded.duration,requested_at=excluded.requested_at,
+                expires_at=excluded.expires_at,available_at=excluded.available_at,
+                state='pending',attempts=0,lease_token=NULL,lease_until=NULL,last_error=NULL""",
+                (
+                    org,
+                    user,
+                    uuid.uuid4().hex,
+                    expected_revision,
+                    duration,
+                    now,
+                    now + 86400,
+                    now,
+                ),
+            )
+        return self.mute_status(org)
+
+    def mute_status(self, org: str) -> dict | None:
+        user = self.identity(org)
+        with self.store.transaction() as db:
+            MediationStore._check_org(db, org)
+            row = db.execute(
+                "SELECT * FROM wisdom_mute_outbox WHERE organization_id=? AND user_id=?",
+                (org, user),
+            ).fetchone()
+        if row is None:
+            return None
+        days = {"1_day": 1, "1_week": 7, "30_days": 30}.get(row["duration"])
+        return {
+            "mutation_id": row["mutation_id"],
+            "requested_duration": row["duration"],
+            "requested_until": row["requested_at"] + days * 86400 if days else None,
+            "preference_sync": row["state"],
+            "request_expires_at": row["expires_at"],
+        }
+
+    def flush_mute(self, org: str) -> None:
+        user, now, token = self.identity(org), self.clock(), uuid.uuid4().hex
+        with self.store.transaction() as db:
+            MediationStore._check_org(db, org)
+            db.execute(
+                """UPDATE wisdom_mute_outbox SET state='expired',lease_token=NULL,lease_until=NULL
+                WHERE organization_id=? AND user_id=? AND expires_at<=? AND state IN ('pending','syncing')""",
+                (org, user, now),
+            )
+            db.execute(
+                """UPDATE wisdom_mute_outbox SET state='failed',lease_token=NULL,lease_until=NULL
+                WHERE organization_id=? AND user_id=? AND state='syncing' AND lease_until<=? AND attempts>=3""",
+                (org, user, now),
+            )
+            row = db.execute(
+                """SELECT * FROM wisdom_mute_outbox WHERE organization_id=? AND user_id=?
+                AND expires_at>? AND available_at<=? AND attempts<3
+                AND (state='pending' OR (state='syncing' AND lease_until<=?))""",
+                (org, user, now, now, now),
+            ).fetchone()
+            if row is None:
+                return
+            db.execute(
+                """UPDATE wisdom_mute_outbox SET state='syncing',attempts=attempts+1,lease_token=?,lease_until=?
+                WHERE organization_id=? AND user_id=?""",
+                (token, now + 60, org, user),
+            )
+        try:
+            if self.identity(org) != user:
+                raise WisdomError("Preference owner changed")
+            requested_at = (
+                datetime
+                .fromtimestamp(row["requested_at"], timezone.utc)
+                .isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z")
+            )
+            result = self.service.client.set_recommendation_mute(
+                row["duration"],
+                expected_revision=row["expected_revision"],
+                mutation_id=row["mutation_id"],
+                requested_at=requested_at,
+            )
+            if (
+                result.org_id != org
+                or result.mutation_id != row["mutation_id"]
+                or result.revision != row["expected_revision"] + 1
+                or result.duration != row["duration"]
+            ):
+                raise WisdomError("Gateway returned mismatched mute acknowledgement")
+            days = {"1_day": 1, "1_week": 7, "30_days": 30}.get(row["duration"])
+            expected_until = _timestamp(requested_at) + days * 86400 if days else None
+            actual_until = (
+                _timestamp(result.muted_until) if result.muted_until else None
+            )
+            forever = row["duration"] == "forever"
+            if (
+                actual_until != expected_until
+                or result.forever != forever
+                or result.muted
+                != (
+                    forever
+                    or (expected_until is not None and expected_until > self.clock())
+                )
+            ):
+                raise WisdomError("Gateway returned inconsistent mute state")
+            state, error = "synced", None
+        except Exception as exc:
+            status = getattr(exc, "status", None)
+            state = (
+                "conflict"
+                if status == 409
+                else "expired"
+                if status == 410
+                else "failed"
+                if row["attempts"] + 1 >= 3
+                else "pending"
+            )
+            error = type(exc).__name__
+        if self.identity(org) != user:
+            raise WisdomError("Preference owner changed")
+        with self.store.transaction() as db:
+            MediationStore._check_org(db, org)
+            db.execute(
+                """UPDATE wisdom_mute_outbox SET state=?,last_error=?,available_at=?,lease_token=NULL,lease_until=NULL
+                WHERE organization_id=? AND user_id=? AND mutation_id=? AND lease_token=?""",
+                (
+                    state,
+                    error,
+                    now + 60 * 2 ** row["attempts"],
+                    org,
+                    user,
+                    row["mutation_id"],
+                    token,
+                ),
+            )
+
     def flush(self, org: str, *, limit: int = 10) -> None:
         user = self.identity(org)
+        self.flush_mute(org)
         for _ in range(min(max(limit, 0), 10)):
             now, token = self.clock(), uuid.uuid4().hex
             with self.store.transaction() as db:
                 MediationStore._check_org(db, org)
+                db.execute(
+                    """UPDATE wisdom_preference_outbox SET state='expired',lease_token=NULL,lease_until=NULL
+                    WHERE organization_id=? AND user_id=? AND suppress_until<=? AND state IN ('pending','syncing')""",
+                    (org, user, now),
+                )
+                db.execute(
+                    """UPDATE wisdom_preference_outbox SET state='failed',lease_token=NULL,lease_until=NULL
+                    WHERE organization_id=? AND user_id=? AND state='syncing' AND lease_until<=? AND attempts>=3""",
+                    (org, user, now),
+                )
                 row = db.execute(
                     """SELECT * FROM wisdom_preference_outbox
                   WHERE organization_id=? AND user_id=? AND suppress_until>?
@@ -199,7 +402,23 @@ class WisdomPreferences:
                         suppressed[row["key"]] = max(
                             suppressed.get(row["key"], 0), row["suppress_until"]
                         )
-            return {"available": True, "muted": mute.muted, "suppressed": suppressed}
+            pending_mute = self.mute_status(org)
+            locally_muted = bool(
+                pending_mute
+                and pending_mute["preference_sync"] in {"pending", "syncing", "failed"}
+                and pending_mute["requested_duration"] is not None
+                and pending_mute["request_expires_at"] > now
+                and (
+                    pending_mute["requested_until"] is None
+                    or pending_mute["requested_until"] > now
+                )
+            )
+            return {
+                "available": True,
+                "muted": mute.muted or locally_muted,
+                "suppressed": suppressed,
+                "mute_sync": pending_mute,
+            }
         except Exception as exc:
             return {
                 "available": False,

@@ -232,6 +232,23 @@ def test_mute_wire_preserves_native_duration_vocabulary():
     assert value.session.calls[-1][2]["json"] == {"duration": "1_week"}
     with pytest.raises(WisdomValidationError):
         value.set_recommendation_mute("arbitrary")
+    value.recommendation_mute()
+    assert value.session.calls[-1][2]["params"] == {"include_revision": "1"}
+
+
+def test_guarded_mute_clear_keeps_idempotency_metadata_on_put():
+    response = {"org_id": "o1", "muted": False, "duration": None, "muted_until": None,
+                "forever": False, "revision": 3, "mutation_id": "a" * 32, "updated_at": "2026-09-07T00:00:00.000Z"}
+    value = client(Response(200, response))
+    value.identity = {"claims": {"org_id": "o1"}}
+    result = value.set_recommendation_mute(None, expected_revision=2, mutation_id="a" * 32, requested_at="2026-09-07T00:00:00.000Z")
+    assert result.revision == 3
+    method, _, request = value.session.calls[-1]
+    assert method == "PUT"
+    assert request["json"] == {"duration": None, "expected_revision": 2, "mutation_id": "a" * 32, "requested_at": "2026-09-07T00:00:00.000Z"}
+    with pytest.raises(WisdomValidationError):
+        value.set_recommendation_mute("1_day", expected_revision=2)
+    assert len(value.session.calls) == 1
 
 
 def test_submit_body_has_no_local_candidate_or_activity_signals():

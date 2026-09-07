@@ -111,6 +111,9 @@ class WisdomMuteResponse(BaseModel):
     duration: Literal["1_day", "1_week", "30_days", "forever"] | None
     muted_until: str | None
     forever: bool
+    revision: int = Field(default=0, ge=0)
+    mutation_id: str | None = None
+    updated_at: str | None = None
 
 
 class Draft(WireModel):
@@ -504,18 +507,50 @@ class WisdomClient:
 
     def recommendation_mute(self) -> WisdomMuteResponse:
         return self._preference_org(
-            self._request("GET", "agent-led/mute", model=WisdomMuteResponse)
-        )
-
-    def set_recommendation_mute(self, duration: str | None) -> WisdomMuteResponse:
-        if duration not in {None, "1_day", "1_week", "30_days", "forever"}:
-            raise WisdomValidationError("Unsupported mute duration")
-        return self._preference_org(
             self._request(
-                "DELETE" if duration is None else "PUT",
+                "GET",
                 "agent-led/mute",
                 model=WisdomMuteResponse,
-                json_body={"duration": duration} if duration else None,
+                params={"include_revision": "1"},
+            )
+        )
+
+    def set_recommendation_mute(
+        self,
+        duration: str | None,
+        *,
+        expected_revision: int | None = None,
+        mutation_id: str | None = None,
+        requested_at: str | None = None,
+    ) -> WisdomMuteResponse:
+        if duration not in {None, "1_day", "1_week", "30_days", "forever"}:
+            raise WisdomValidationError("Unsupported mute duration")
+        guarded = any(
+            value is not None
+            for value in (expected_revision, mutation_id, requested_at)
+        )
+        if guarded and (
+            type(expected_revision) is not int
+            or not 0 <= expected_revision < 2_147_483_647
+            or not mutation_id
+            or not requested_at
+        ):
+            raise WisdomValidationError(
+                "Queued mute requires revision, mutation ID and request time"
+            )
+        payload = {"duration": duration}
+        if guarded:
+            payload.update(
+                expected_revision=expected_revision,
+                mutation_id=mutation_id,
+                requested_at=requested_at,
+            )
+        return self._preference_org(
+            self._request(
+                "DELETE" if duration is None and not guarded else "PUT",
+                "agent-led/mute",
+                model=WisdomMuteResponse,
+                json_body=payload if duration is not None or guarded else None,
             )
         )
 

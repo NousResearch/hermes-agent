@@ -31,6 +31,27 @@ def _context(**overrides) -> WisdomCommandContext:
     return WisdomCommandContext(**values)
 
 
+def test_shared_mute_command_is_private_and_preserves_pending_feedback(monkeypatch):
+    from unittest.mock import Mock
+
+    preferences = Mock()
+    preferences.native_mute_command.return_value = {
+        "mute": {"muted": False, "muted_until": None},
+        "sync": {"preference_sync": "pending"},
+    }
+    monkeypatch.setattr("hermes_wisdom.preferences.WisdomPreferences", lambda service: preferences)
+    controller = WisdomCommandController()
+    service = _Service()
+    private = controller.execute("mute 1w", service, _context())
+    preferences.native_mute_command.assert_called_once_with("1w")
+    assert "waiting to sync" in private.notice
+    assert "enabled" in private.to_text()
+    preferences.native_mute_command.reset_mock()
+    group = controller.execute("mute forever", service, _context(is_group=True))
+    preferences.native_mute_command.assert_not_called()
+    assert group.actions[0].label == "Continue in DM"
+
+
 class _Service:
     def __init__(self) -> None:
         self.store = SimpleNamespace(active_org_id=lambda: "org-1")

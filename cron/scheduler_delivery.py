@@ -1743,6 +1743,29 @@ def _deliver_result(
     delivery_errors = []
     for target in targets:
         # Bot Chat owns admission; never concurrently resume a live owner's transcript.
+        # Script-only operational jobs targeting the canonical Hermes DM must not
+        # inherit the owning profile's Telegram adapter/token. Verify and send
+        # through the dedicated operational identity instead, with no topic id.
+        if (
+            job.get("no_agent")
+            and target["platform"].lower() == "telegram"
+            and str(target["chat_id"]) == "8148316720"
+        ):
+            try:
+                from tools.operational_sender import send_operational_message
+
+                send_operational_message(cleaned_delivery_content)
+                logger.info(
+                    "Job '%s': delivered to canonical operational Telegram DM via verified sender",
+                    job["id"],
+                )
+            except Exception as exc:
+                msg = f"operational Telegram delivery failed: {exc}"
+                logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
+                delivery_errors.append(msg)
+            continue
+        # bot-chat targets bypass gateway adapters: output becomes an inbound turn in the target
+        # profile's Bot Chat via the chat CLI lane. Must precede the Platform enum, which lacks it.
         if target["platform"] == BOT_CHAT_PLATFORM:
             bot_chat_error = _deliver_to_bot_chat(job, content, target["chat_id"])
             if bot_chat_error:

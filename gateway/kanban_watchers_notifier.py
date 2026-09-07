@@ -7,6 +7,7 @@ per-subscription delivery (``_KanbanNotification``) live here.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from functools import partial
 from pathlib import Path
@@ -50,6 +51,12 @@ _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "revie
 # every 5 seconds forever. A genuinely dead chat still drops, just ~60s later — a fine trade for an
 # unattended gate where a false drop means silent work pileup.
 MAX_SEND_FAILURES = 12
+
+# Passive notifications for the operator's Telegram DM are intentionally
+# independent of the profile that owns the subscription.  In particular, a
+# notifier running with several profile adapters must not leak an Orion/Halo
+# (or any other profile) bot into the user-facing channel.
+_OPERATIONAL_TELEGRAM_CHAT_ID = "8148316720"
 
 _LOCAL_PATH_RE = re.compile(r"(?<![\w:/])(?:/(?:Users|home|private|tmp|var|etc|workspace)/[^\s,;]+|" r"[A-Za-z]:\\[^\s,;]+)")
 
@@ -529,6 +536,30 @@ class _KanbanNotification:
         metadata: dict[str, Any] = dict(delivery_metadata) if isinstance(delivery_metadata, dict) else {}
         if sub.get("thread_id") and not metadata.get("thread_id"):
             metadata["thread_id"] = sub["thread_id"]
+        # The canonical operational DM is a special, identity-verified
+        # destination.  Do not pass inherited thread/topic metadata, and do
+        # not call the subscription profile adapter: that adapter may be a
+        # different bot (notifier_profile=orion, for example).
+        operational_telegram = (
+            self.platform_str == "telegram"
+            and str(sub.get("chat_id")) == _OPERATIONAL_TELEGRAM_CHAT_ID
+        )
+        if operational_telegram:
+            from tools.operational_sender import send_operational_message
+
+            await asyncio.to_thread(send_operational_message, msg)
+            if ev.kind == "completed":
+                await self.runner._deliver_kanban_artifacts(
+                    adapter=adapter, chat_id=sub["chat_id"], metadata={},
+                    event_payload=getattr(ev, "payload", None), task=self.task,
+                    operational=True,
+                )
+            logger.debug(
+                "kanban notifier: delivered %s event for %s via verified operational Telegram sender",
+                ev.kind, self.task_id,
+            )
+            return
+
         _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
         # SendResult(success=False) without an exception is a FAILED delivery
         # (else the event is lost); None / non-SendResult keeps the

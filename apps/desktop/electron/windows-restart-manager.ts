@@ -18,7 +18,9 @@
  *   holder of an ambiguous batch is therefore kept only when its module list
  *   contains a path under the attribution root, and that mapped path becomes
  *   its resource. Holders that only map another link cannot break our unlink
- *   and are dropped.
+ *   and are dropped -- but only when the module list was actually read. A
+ *   holder whose modules cannot be enumerated is reported UNATTRIBUTED (it
+ *   still blocks the update) and never carries an ownership proof.
  */
 
 import { execFile } from 'node:child_process'
@@ -28,11 +30,18 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
+import { windowsPowerShellExecutable } from './windows-powershell-path'
+import { psLiteral } from './windows-remote-lifecycle'
 import type { ForceReleaseHolder } from './windows-update-force-release'
 
 const execFileAsync = promisify(execFile)
 
-export type RunPowerShell = (
+/**
+ * Distinct from `RunPowerShell` in windows-process-terminate.ts, which also
+ * carries an abort signal, an absolute deadline and a hard-boundary dependency
+ * bag. This is the plain query runner; the two are not interchangeable.
+ */
+export type RunRestartManagerPowerShell = (
   script: string,
   timeoutMs?: number
 ) => Promise<{ stdout: string; stderr: string; code: number }>
@@ -48,13 +57,7 @@ export const RESTART_MANAGER_PER_FILE_LIMIT = 12
  */
 export const RESTART_MANAGER_DEFAULT_TIMEOUT_MS = 12_000
 
-function powershellExecutable(): string {
-  const windowsRoot = process.env.SystemRoot || 'C:\\Windows'
-
-  return path.join(windowsRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-}
-
-async function defaultRunPowerShell(
+async function runRestartManagerPowerShell(
   script: string,
   timeoutMs = 4_000
 ): Promise<{ stdout: string; stderr: string; code: number }> {
@@ -62,7 +65,7 @@ async function defaultRunPowerShell(
 
   try {
     const { stdout, stderr } = await execFileAsync(
-      powershellExecutable(),
+      windowsPowerShellExecutable(),
       ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
       { encoding: 'utf8', timeout: budget, windowsHide: true, maxBuffer: 2 * 1024 * 1024 }
     )
@@ -77,21 +80,29 @@ async function defaultRunPowerShell(
   }
 }
 
-function escapePsSingleQuoted(value: string): string {
-  return `'${String(value).replace(/'/g, "''")}'`
-}
-
 /**
  * Emitted PowerShell must split RM rows on a literal pipe.
  * Prefer String.Split over -split regex so TS template escaping cannot
- * accidentally emit a character-class / alternation pattern.
+ * accidentally emit a character-class / alternation pattern. Module-private:
+ * the contract is proved by running the generated script through real
+ * PowerShell (windows-restart-manager.windows-live.test.ts), not by restating
+ * this literal in an assertion.
  */
-export const RESTART_MANAGER_ROW_SPLIT_EXPRESSION = "$part.Split([char]'|', 4)"
+const RESTART_MANAGER_ROW_SPLIT_EXPRESSION = "$part.Split([char]'|', 4)"
 
 /**
- * P/Invoke surface for Restart Manager. Compiled once per source revision into
- * a cached assembly so later PowerShell processes load it in milliseconds
- * instead of paying `Add-Type -TypeDefinition` compilation.
+ * P/Invoke surface for Restart Manager, compiled by `Add-Type -TypeDefinition`
+ * on every run.
+ *
+ * There is deliberately NO cached assembly. The previous cache wrote
+ * `%TEMP%\hermes-restart-manager\HermesRm-<sha1-of-source>.dll` and loaded it
+ * with `Add-Type -Path` whenever it existed: a deterministic, same-user
+ * writable path holding executable code that was never verified. Recording a
+ * hash beside it does not close that hole -- whoever can replace the DLL can
+ * replace the hash file -- and a per-process temp directory is exactly what
+ * the compiler already does with a random name. Compilation costs ~0.5-0.9 s
+ * (measured, Windows PowerShell 5.1), which is affordable now that attribution
+ * runs once per release-gate run instead of once per 300 ms poll.
  */
 export const RESTART_MANAGER_NATIVE_SOURCE = `
 using System;
@@ -121,6 +132,47 @@ public static class HermesRm {
   [DllImport("rstrtmgr.dll")] public static extern int RmEndSession(uint pSessionHandle);
   [DllImport("rstrtmgr.dll", CharSet=CharSet.Unicode)] public static extern int RmRegisterResources(uint pSessionHandle, uint nFiles, string[] rgsFilenames, uint nApplications, IntPtr rgApplications, uint nServices, string[] rgsServiceNames);
   [DllImport("rstrtmgr.dll")] public static extern int RmGetList(uint dwSessionHandle, out uint pnProcInfoNeeded, ref uint pnProcInfo, [In,Out] RM_PROCESS_INFO[] rgAffectedApps, ref uint lpdwRebootReasons);
+  // Attribution compares CANONICAL paths. A module list reports the path the
+  // loader used; the attribution root arrives from the desktop's own
+  // resolution. Junctions, symlinks, 8.3 short names and mixed case make two
+  // spellings of the same file compare unequal, which silently drops a real
+  // holder. Same resolution the terminate script uses: GetFinalPathNameByHandle.
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  private static extern IntPtr CreateFileW(string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  private static extern uint GetFinalPathNameByHandleW(IntPtr handle, StringBuilder buffer, uint length, uint flags);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  private static extern bool CloseHandle(IntPtr handle);
+  private const char PathSep = '\\\\';
+  private static string StripExtendedPrefix(string value) {
+    if (string.IsNullOrEmpty(value)) return "";
+    if (value.Length <= 4 || value[0] != PathSep || value[1] != PathSep || value[2] != '?' || value[3] != PathSep) return value;
+    string rest = value.Substring(4);
+    bool unc = rest.Length > 4 && rest[3] == PathSep
+      && (rest[0] == 'U' || rest[0] == 'u') && (rest[1] == 'N' || rest[1] == 'n') && (rest[2] == 'C' || rest[2] == 'c');
+    return unc ? new string(PathSep, 2) + rest.Substring(4) : rest;
+  }
+  public static string FinalPath(string target) {
+    if (string.IsNullOrEmpty(target)) return "";
+    string full;
+    try { full = System.IO.Path.GetFullPath(target); } catch { full = target; }
+    IntPtr handle = CreateFileW(full, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+    if (handle == new IntPtr(-1)) return StripExtendedPrefix(full);
+    try {
+      StringBuilder buffer = new StringBuilder(4096);
+      uint written = GetFinalPathNameByHandleW(handle, buffer, 4095, 0);
+      if (written == 0 || written > 4095) return StripExtendedPrefix(full);
+      return StripExtendedPrefix(buffer.ToString());
+    } finally { CloseHandle(handle); }
+  }
+  public static bool IsSameOrUnderRoot(string child, string root) {
+    if (string.IsNullOrEmpty(child) || string.IsNullOrEmpty(root)) return false;
+    string c = child.TrimEnd(PathSep);
+    string r = root.TrimEnd(PathSep);
+    if (c.Length == 0 || r.Length == 0) return false;
+    if (string.Equals(c, r, StringComparison.OrdinalIgnoreCase)) return true;
+    return c.StartsWith(r + PathSep, StringComparison.OrdinalIgnoreCase);
+  }
   // One RM session over every file in the batch. Rows carry the batch label
   // as their resource because RM does not report per-file ownership.
   public static string Query(string[] files, string label) {
@@ -157,34 +209,72 @@ public static class HermesRm {
 }
 `.trim()
 
-export function restartManagerNativeSourceHash(): string {
-  return crypto.createHash('sha1').update(RESTART_MANAGER_NATIVE_SOURCE).digest('hex').slice(0, 16)
+/**
+ * Attribute one ambiguous (hard-link-shared) RM holder to a module it maps
+ * under the attribution root.
+ *
+ * Three outcomes, and the difference between the last two is the whole point:
+ *   mapped      -> it maps OUR link; the canonical module path is the proof.
+ *   foreign     -> its module list was read in full and contains nothing under
+ *                  the root; another venv's link, cannot block our unlink.
+ *   unattributed-> the question could not be answered (the process is gone,
+ *                  its create time no longer matches the generation RM named,
+ *                  or Process.Modules threw: access denied, bitness mismatch,
+ *                  a module list changing under enumeration). It is still
+ *                  reported as a holder -- the update must not proceed -- but
+ *                  it carries no ownership proof, so the terminate boundary
+ *                  will not accept it as an authorized target on that basis.
+ *
+ * Exported because the generated script embeds it verbatim and the live suite
+ * runs it against synthetic rows under real PowerShell.
+ */
+export const RESTART_MANAGER_ATTRIBUTION_FUNCTION = `
+function Resolve-HolderAttribution([int]$holderPid, [double]$expectedCreatedAt, [string]$rootClaim) {
+  if ([string]::IsNullOrWhiteSpace($rootClaim)) { return [pscustomobject]@{ status = 'unattributed'; path = '' } }
+  # Canonicalize the root with the SAME resolution applied to each module
+  # below. The desktop passes the install path as it resolved it; a junction, a
+  # symlinked install, an 8.3 short name or a different case all spell the same
+  # directory, and the raw prefix compare this replaced made a real holder of
+  # our own venv look like somebody else's link.
+  $root = [HermesRm]::FinalPath($rootClaim)
+  if ([string]::IsNullOrWhiteSpace($root)) { return [pscustomobject]@{ status = 'unattributed'; path = '' } }
+  $proc = $null
+  try { $proc = [System.Diagnostics.Process]::GetProcessById($holderPid) } catch { $proc = $null }
+  if ($null -eq $proc) { return [pscustomobject]@{ status = 'unattributed'; path = '' } }
+  $liveCreated = $null
+  try { $liveCreated = [DateTimeOffset]::new($proc.StartTime.ToUniversalTime()).ToUnixTimeSeconds() } catch { $liveCreated = $null }
+  if ($null -eq $liveCreated) { return [pscustomobject]@{ status = 'unattributed'; path = '' } }
+  # PID reuse: RM named one generation, GetProcessById returns whoever owns the
+  # PID now. Never read a stranger's module list as this holder's evidence.
+  if ([Math]::Abs([double]$liveCreated - $expectedCreatedAt) -gt 1.5) { return [pscustomobject]@{ status = 'unattributed'; path = '' } }
+  $modules = $null
+  try { $modules = @($proc.Modules) } catch { $modules = $null }
+  if ($null -eq $modules) { return [pscustomobject]@{ status = 'unattributed'; path = '' } }
+  foreach ($module in $modules) {
+    $moduleFinal = ''
+    try { $moduleFinal = [HermesRm]::FinalPath([string]$module.FileName) } catch { $moduleFinal = '' }
+    if ([HermesRm]::IsSameOrUnderRoot($moduleFinal, $root)) {
+      return [pscustomobject]@{ status = 'mapped'; path = $moduleFinal }
+    }
+  }
+  return [pscustomobject]@{ status = 'foreign'; path = '' }
 }
-
-export function defaultRestartManagerCacheDir(): string {
-  return path.join(os.tmpdir(), 'hermes-restart-manager')
-}
-
-function withTrailingSeparator(target: string): string {
-  return target.endsWith('\\') || target.endsWith('/') ? target : `${target}${path.sep}`
-}
+`.trim()
 
 export function buildRestartManagerScript(
   resourceListPath: string,
   {
     perFileLimit = RESTART_MANAGER_PER_FILE_LIMIT,
-    cacheDir = defaultRestartManagerCacheDir(),
     attributionRoot = ''
-  }: { perFileLimit?: number; cacheDir?: string; attributionRoot?: string } = {}
+  }: { perFileLimit?: number; attributionRoot?: string } = {}
 ): string {
-  const assemblyPath = path.join(cacheDir, `HermesRm-${restartManagerNativeSourceHash()}.dll`)
-  const attribution = attributionRoot ? withTrailingSeparator(path.resolve(attributionRoot)) : ''
+  const attribution = attributionRoot ? path.resolve(attributionRoot) : ''
 
   return `
 $ErrorActionPreference = 'Stop'
 $definite = @()
 $ambiguous = @()
-foreach ($line in [System.IO.File]::ReadAllLines(${escapePsSingleQuoted(resourceListPath)}, [System.Text.Encoding]::UTF8)) {
+foreach ($line in [System.IO.File]::ReadAllLines(${psLiteral(resourceListPath)}, [System.Text.Encoding]::UTF8)) {
   if (-not $line) { continue }
   $tab = $line.IndexOf([char]9)
   if ($tab -lt 1) { continue }
@@ -194,28 +284,16 @@ foreach ($line in [System.IO.File]::ReadAllLines(${escapePsSingleQuoted(resource
   if ($flag -eq 'A') { $ambiguous += $target } else { $definite += $target }
 }
 if (($definite.Count + $ambiguous.Count) -eq 0) { Write-Output '[]'; exit 0 }
-$attributionRoot = ${escapePsSingleQuoted(attribution)}
+$attributionRootClaim = ${psLiteral(attribution)}
 $rmSource = @"
 ${RESTART_MANAGER_NATIVE_SOURCE}
 "@
-$rmAssembly = ${escapePsSingleQuoted(assemblyPath)}
-$rmLoaded = $false
-if (Test-Path -LiteralPath $rmAssembly) {
-  try { Add-Type -Path $rmAssembly -ErrorAction Stop; $rmLoaded = $true } catch { $rmLoaded = $false }
-}
-if (-not $rmLoaded) {
-  $compiled = $false
-  try {
-    $rmDir = Split-Path -Parent $rmAssembly
-    if (-not (Test-Path -LiteralPath $rmDir)) { New-Item -ItemType Directory -Path $rmDir -Force | Out-Null }
-    $rmTemp = "$rmAssembly.$([System.Diagnostics.Process]::GetCurrentProcess().Id).tmp"
-    Add-Type -TypeDefinition $rmSource -OutputAssembly $rmTemp -ErrorAction Stop
-    try { Move-Item -LiteralPath $rmTemp -Destination $rmAssembly -Force -ErrorAction Stop } catch { Remove-Item -LiteralPath $rmTemp -Force -ErrorAction SilentlyContinue }
-    Add-Type -Path $rmAssembly -ErrorAction Stop
-    $compiled = $true
-  } catch { $compiled = $false }
-  if (-not $compiled) { Add-Type -TypeDefinition $rmSource }
-}
+# No cached assembly: see RESTART_MANAGER_NATIVE_SOURCE. Add-Type compiles into
+# the compiler's own randomly named temp output, which no other process can
+# predict; a deterministic %TEMP%\HermesRm-<hash>.dll was loadable code that
+# nothing verified.
+Add-Type -TypeDefinition $rmSource
+${RESTART_MANAGER_ATTRIBUTION_FUNCTION}
 function Convert-RmRows([string]$raw, [string]$label) {
   $rows = @()
   if (-not $raw) { return $rows }
@@ -229,7 +307,7 @@ function Convert-RmRows([string]$raw, [string]$label) {
     if ($pidVal -le 0 -or $created -le 0) { continue }
     $name = if ($bits.Count -ge 3) { $bits[2] } else { 'unknown' }
     $res = if ($bits.Count -ge 4 -and $bits[3]) { $bits[3] } else { $label }
-    $rows += [pscustomobject]@{ pid = $pidVal; createdAt = $created; name = $name; resource = $res }
+    $rows += [pscustomobject]@{ pid = $pidVal; createdAt = $created; name = $name; resource = $res; attribution = 'proven' }
   }
   return $rows
 }
@@ -244,18 +322,16 @@ foreach ($batch in $batches) {
   try { $raw = [HermesRm]::Query([string[]]$batch, [string]$batch[0]) } catch { continue }
   foreach ($row in @(Convert-RmRows $raw ([string]$batch[0]))) { $items += $row }
 }
-if ($ambiguous.Count -gt 0 -and $attributionRoot) {
+if ($ambiguous.Count -gt 0 -and $attributionRootClaim) {
   try { $raw = [HermesRm]::Query([string[]]$ambiguous, [string]$ambiguous[0]) } catch { $raw = '' }
   foreach ($row in @(Convert-RmRows $raw ([string]$ambiguous[0]))) {
-    $mapped = $null
-    try {
-      $proc = [System.Diagnostics.Process]::GetProcessById([int]$row.pid)
-      foreach ($module in $proc.Modules) {
-        if ($module.FileName.StartsWith($attributionRoot, [StringComparison]::OrdinalIgnoreCase)) { $mapped = $module.FileName; break }
-      }
-    } catch { $mapped = $null }
-    if (-not $mapped) { continue }
-    $row.resource = $mapped
+    $resolved = Resolve-HolderAttribution ([int]$row.pid) ([double]$row.createdAt) $attributionRootClaim
+    if ($resolved.status -eq 'foreign') { continue }
+    if ($resolved.status -eq 'mapped') {
+      $row.resource = $resolved.path
+    } else {
+      $row.attribution = 'unattributed'
+    }
     $items += $row
   }
 }
@@ -294,6 +370,12 @@ export function parseRestartManagerOutput(
         ? row.resource
         : fallbackResource
 
+    // An unattributed ambiguous holder blocks the update but proves nothing
+    // about ownership of a specific link. `resource` is the ownership claim
+    // the terminate boundary re-proves, so it must stay empty; the path is
+    // still carried in `resources` for the refusal message and the log.
+    const unattributed = row?.attribution === 'unattributed'
+
     if (!Number.isInteger(pid) || pid <= 0) {continue}
 
     if (!Number.isFinite(createdAt) || createdAt <= 0) {continue}
@@ -311,7 +393,7 @@ export function parseRestartManagerOutput(
       name,
       cmdline: name,
       source: 'restart-manager',
-      resource,
+      ...(unattributed ? { resources: resource ? [resource] : [] } : { resource }),
       role: 'other'
     })
   }
@@ -340,18 +422,16 @@ export async function listRestartManagerHoldersForResources(
   resources: readonly string[],
   {
     platform = process.platform,
-    run = defaultRunPowerShell,
+    run = runRestartManagerPowerShell,
     timeoutMs = RESTART_MANAGER_DEFAULT_TIMEOUT_MS,
     listDir,
-    cacheDir,
     shared = [],
     attributionRoot
   }: {
     platform?: NodeJS.Platform
-    run?: RunPowerShell
+    run?: RunRestartManagerPowerShell
     timeoutMs?: number
     listDir?: string
-    cacheDir?: string
     /** Locked files that other hard links share; holders are kept only when they map a path under `attributionRoot`. */
     shared?: readonly string[]
     attributionRoot?: string
@@ -375,7 +455,6 @@ export async function listRestartManagerHoldersForResources(
 
   try {
     const script = buildRestartManagerScript(listPath, {
-      ...(cacheDir ? { cacheDir } : {}),
       ...(attributionRoot ? { attributionRoot } : {})
     })
 

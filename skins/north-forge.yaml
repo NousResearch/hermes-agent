@@ -1,21 +1,26 @@
-# North Forge — the fork's own CLI skin.
+# North Forge - the fork's own CLI skin.  (v2: full session re-theme)
 #
-# Purpose: replace the stock Hermes launch splash (the ⚕ caduceus hero +
-# "HERMES-AGENT" wordmark from hermes_cli/banner.py) with North Forge's own mark,
-# WITHOUT editing banner.py — the engine is used unmodified. banner.py already
-# reads `skin.banner_logo` / `skin.banner_hero` and falls back to its built-in
-# constants only when they are empty, so a skin is the whole mechanism.
+# v1 (CHG-2026-09-07-012) was a text/identity swap: it set branding strings +
+# banner art and nothing else, so the whole session rendered in stock Hermes
+# gold (the `default` skin's palette filled every unset key). v2 fills the
+# skin-engine's actual surface area - a full `colors:` block (banner panel,
+# status bar, response box, completion menu, clarify/approval prompts), a full
+# `spinner:` block, and `tool_prefix` - so North Forge's identity carries through
+# the entire session, at the coverage level of the built-in `charizard` skin.
+# See logs/ledger CHG-2026-09-07-021 and CODEX-SKIN-COMPARISON-2026-09-07.md.
 #
-# Everything not set here (colors, spinner, tool_prefix) is inherited from the
-# built-in `default` skin via hermes_cli/skin_engine.py `_build_skin_config`, so
-# this is a text/identity swap, not a re-theme.
+# The engine is still used UNMODIFIED - every value here is within the documented
+# skin contract (hermes_cli/skin_engine.py, website/docs/user-guide/features/skins.md).
+# banner_hero is a static Braille-pattern silhouette (U+2800..U+28FF), the same
+# technique as HERMES_CADUCEUS / the charizard hero - generated offline from the
+# shipped mark (assets/icons/icon-512.png + a redrawn compass rose), not rendered
+# at runtime.
 #
-# Ships tracked in the repo at skins/north-forge.yaml. north-forge.cmd copies it
-# into HERMES_HOME/skins/ on every launch (self-healing); the first bootstrap
-# points `display.skin` at it. Decision: DECISION-2026-09-07-001. Change: CHG-2026-09-07-012.
+# Ships tracked at skins/north-forge.yaml. north-forge.cmd copies it into
+# HERMES_HOME/skins/ on every launch (self-healing). Decision: DECISION-2026-09-07-001.
 
 name: north-forge
-description: "North Forge — the fork's forge-gold identity (default skin for drive-native installs)"
+description: "North Forge - forge-gold on dark iron; compass-rose + anvil + flame mark (drive-native default skin)"
 
 branding:
   agent_name: "North Forge"
@@ -25,25 +30,93 @@ branding:
   prompt_symbol: "❯"
   help_header: "(⚒) Available Commands"
 
-# "NORTH FORGE" — ANSI Shadow, gold→bronze gradient matching assets/banner.png.
-banner_logo: |-
-  [bold #FFD700]███╗   ██╗ ██████╗ ██████╗ ████████╗██╗  ██╗   ███████╗ ██████╗ ██████╗  ██████╗ ███████╗[/]
-  [bold #FFD700]████╗  ██║██╔═══██╗██╔══██╗╚══██╔══╝██║  ██║   ██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝[/]
-  [#FFBF00]██╔██╗ ██║██║   ██║██████╔╝   ██║   ███████║   █████╗  ██║   ██║██████╔╝██║  ███╗█████╗  [/]
-  [#FFBF00]██║╚██╗██║██║   ██║██╔══██╗   ██║   ██╔══██║   ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  [/]
-  [#CD7F32]██║ ╚████║╚██████╔╝██║  ██║   ██║   ██║  ██║   ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗[/]
-  [#CD7F32]╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝   ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝[/]
+# --- full palette: hot-metal gold/amber over dark iron -------------------------
+colors:
+  # startup banner panel
+  banner_border:   "#B87333"   # forged-copper panel edge
+  banner_title:    "#FFC64B"   # bright gold - version label
+  banner_accent:   "#FF8C1A"   # ember - section headers (Available Tools, ...)
+  banner_dim:      "#9A6A3A"   # cooled bronze - separators / secondary labels
+  banner_text:     "#F3E6D0"   # warm parchment - tool / skill names
+  # generic UI
+  ui_accent:       "#FF8C1A"
+  ui_label:        "#D9A441"
+  ui_ok:           "#5FB55F"
+  ui_error:        "#E4572E"
+  ui_warn:         "#E8A33D"
+  # prompt / response box
+  prompt:          "#F3E6D0"
+  input_rule:      "#7E5734"   # dim anvil-line above the input (WCAG SOFT 2.98 vs dark)
+  response_border: "#FF8C1A"   # was stock gold in v1
+  session_label:   "#D9A441"
+  session_border:  "#7A5C33"
+  # status / usage bar - dark iron, not Hermes navy
+  status_bar_bg:        "#1A1410"
+  status_bar_text:      "#D8C4A6"
+  status_bar_strong:    "#FFC64B"
+  status_bar_dim:       "#8A7350"
+  status_bar_good:      "#7FB37F"
+  status_bar_warn:      "#E8A33D"
+  status_bar_bad:       "#E4572E"
+  status_bar_critical:  "#FF6B5B"
+  # completion menu / selection / shell
+  completion_menu_bg:              "#161009"
+  completion_menu_current_bg:      "#3A2A16"
+  completion_menu_meta_bg:         "#161009"
+  completion_menu_meta_current_bg: "#4A3620"
+  selection_bg:                    "#3A2A16"
+  shell_dollar:                    "#E8A33D"
+  voice_status_bg:                 "#1A1410"
 
-# Anvil + sparks hero, replacing the caduceus.
+# --- forge-flavoured spinner --------------------------------------------------
+spinner:
+  waiting_faces:  ["(⚒)", "(▲)", "(◆)", "(※)", "(✦)"]
+  thinking_faces: ["(⚒)", "(▲)", "(⌁)", "(※)", "(✦)"]
+  thinking_verbs:
+    - "heating the stock"
+    - "drawing out"
+    - "setting the weld"
+    - "hammering to shape"
+    - "tempering"
+    - "quenching"
+    - "checking the grain"
+    - "striking while hot"
+  wings:
+    - ["⟪⚒", "⚒⟫"]
+    - ["⟪▲", "▲⟫"]
+    - ["⟪✦", "✦⟫"]
+
+tool_prefix: "│"
+
+# "NORTH FORGE" - ANSI Shadow, forge-gold -> bronze, dot-dash rules echo the mark.
+banner_logo: |-
+  [dim #7A4E28]· ─ ·· ─ · · ─── · ─ ·· ─ · · ─── · ─ ·· ─ · · ─── · ─ ·· ─ · ·[/]
+  [bold #FFC64B]███╗   ██╗ ██████╗ ██████╗ ████████╗██╗  ██╗   ███████╗ ██████╗ ██████╗  ██████╗ ███████╗[/]
+  [bold #FFB733]████╗  ██║██╔═══██╗██╔══██╗╚══██╔══╝██║  ██║   ██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝[/]
+  [#F0982A]██╔██╗ ██║██║   ██║██████╔╝   ██║   ███████║   █████╗  ██║   ██║██████╔╝██║  ███╗█████╗  [/]
+  [#D9832A]██║╚██╗██║██║   ██║██╔══██╗   ██║   ██╔══██║   ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  [/]
+  [#BE7430]██║ ╚████║╚██████╔╝██║  ██║   ██║   ██║  ██║   ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗[/]
+  [#9A6033]╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝   ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝[/]
+  [dim #7A4E28]· ─ ·· ─ · · ─── · ─ ·· ─ · · ─── · ─ ·· ─ · · ─── · ─ ·· ─ · · ─── ·[/]
+
+# Compass rose + anvil + rising flame, as a Braille-density silhouette.
+# Generated from assets/icons/icon-512.png + a redrawn compass (see
+# CHG-2026-09-07-021 / scratch build). ~30 cols x 16 rows, matching the house
+# size of HERMES_CADUCEUS.
 banner_hero: |-
-  [#FFD700]         ·   *   ·          [/]
-  [#FFBF00]          \  |  /           [/]
-  [#FFBF00]       ▁▁▁▁▁▁▁▁▁▁▁▁▁▁       [/]
-  [#FFA500]     ▟██████████████████▙   [/]
-  [#FF8C00]     ▜██████████████████▛   [/]
-  [#CD7F32]          ▐████████▌        [/]
-  [#CD7F32]          ▐████████▌        [/]
-  [#B8860B]        ▗████████████▖      [/]
-  [#B8860B]        ▟██████████████▙    [/]
-  [#8B5A2B]       ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔     [/]
-  [dim #7A5C33]         north forge        [/]
+  [#7A4E28]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣀⣀⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+  [#8A5A2B]⠀⠀⠀⠀⠀⠀⠀⢀⡠⠔⠒⠉⠉⠀⠀⠀⠀⠉⠉⠒⠢⢄⡀⠀⠀⠀⠀⠀⠀⠀[/]
+  [#9A6A33]⠀⠀⠀⠀⢀⣠⠚⠁⠀⠀⠀⠀⠀⠀⢸⡇⠀⠀⠀⠀⠀⠀⠈⠓⢄⡀⠀⠀⠀⠀[/]
+  [#A9772F]⠀⠀⠀⣠⠚⠁⠀⠀⠀⠀⠀⠀⠀⠀⣾⣿⠀⠀⠀⠀⠀⠀⠀⠀⠈⠛⣄⠀⠀⠀[/]
+  [#B87333]⠀⠀⡰⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⣿⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢆⠀⠀[/]
+  [#C9812B]⠀⢰⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣾⢏⣮⢻⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢆⠀[/]
+  [#E08A22]⠀⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣰⢯⣾⣿⣯⡄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⡀[/]
+  [#FF8C1A]⢸⠀⠀⣀⣀⣠⣤⣴⣶⣾⣿⣿⣿⡽⣿⣿⡿⢧⣿⣿⣷⣶⣦⣤⣄⣀⣀⠀⠀⡇[/]
+  [#FFC64B]⢸⠀⠀⠉⠉⠛⠛⠿⠯⠻⣿⣿⣶⣿⣶⣶⣶⣿⣿⡿⠷⠸⠿⠛⠛⠉⠉⠀⠀⡇[/]
+  [#FF8C1A]⠀⡇⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠛⢻⣿⣿⣿⡏⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⠁[/]
+  [#D9832A]⠀⠹⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣶⣿⢟⣟⢿⣿⣦⠀⠀⠀⠀⠀⠀⠀⠀⢀⠎⠀[/]
+  [#B87333]⠀⠀⠱⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⠎⠀⠀[/]
+  [#9A6A33]⠀⠀⠀⠙⢤⡀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⢀⣠⠋⠀⠀⠀[/]
+  [#8A5A2B]⠀⠀⠀⠀⠈⠛⢤⡀⠀⠀⠀⠀⠀⠀⢸⡇⠀⠀⠀⠀⠀⠀⢀⡤⠚⠁⠀⠀⠀⠀[/]
+  [#7A4E28]⠀⠀⠀⠀⠀⠀⠀⠈⠑⠢⢄⣀⣀⠀⠀⠀⠀⢀⣀⡠⠔⠚⠁⠀⠀⠀⠀⠀⠀⠀[/]
+  [#6E4626]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠉⠉⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]

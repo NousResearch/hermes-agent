@@ -8,6 +8,54 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.5.5] — 2026-09-07 — hermes@03f3b09222 (47 behind upstream/main)
+
+`RUN-2026-09-07-009`. Stacks on the (as-yet unpushed) `NF-v0.5.4` commit.
+**PATCH** — visual identity: the North Forge CLI skin goes from a text/identity
+swap to a full-session re-theme. `skins/north-forge.yaml` only (+ ledger). The
+skin **engine is unmodified** — every value stays within the documented skin
+contract. **This is version 1 of the rebuild; refinements are logged in
+`D:\logs\SKIN-REBUILD-V2_2026-09-07.md` §6.**
+
+### Changed
+
+- **CHG-2026-09-07-021** — `skins/north-forge.yaml` **rebuilt as a full themed
+  session** at the coverage level of the built-in `charizard` skin (motivated by
+  `logs/CODEX-SKIN-COMPARISON-2026-09-07.md` — v1 set branding strings + 2 art
+  fields and **no `colors:` block**, so every session surface rendered in the
+  stock Hermes `default` gold/navy palette).
+  - **`colors:` — all 30 keys added** (a "hot-metal gold/amber over dark iron"
+    palette). Re-tints the banner Panel, the persistent **status bar**
+    (`#1A1410` dark iron, was Hermes navy `#1a1a2e`), the **response-box border**
+    (`#FF8C1A` ember, was gold `#FFD700`), the completion menu, the
+    `/clarify` / sudo / tool-approval prompts, the voice badge, `shell_dollar`.
+    Passes the same WCAG audit the built-ins face
+    (`tests/hermes_cli/test_skin_palettes.py`: STRONG ≥ 3.9 / SOFT ≥ 2.8 vs a
+    dark pole; `status_bar_*` vs `status_bar_bg`) — `input_rule` lifted
+    `#6E4B2A → #7E5734` to clear the SOFT floor.
+  - **`spinner:` — full block added**: `⚒/▲/◆/※/✦` faces + 8 forge
+    `thinking_verbs` ("heating the stock", "tempering", "quenching", "striking
+    while hot"…) + `⟪⚒ … ⚒⟫` wings.
+  - **`tool_prefix: "│"`** (was inherited `┊`).
+  - **`banner_hero` replaced** — was a chunky block-element anvil; now a
+    **Braille-pattern silhouette (U+2800–U+28FF)** of the North Forge mark
+    (compass rose + 4-point star + anvil + rising flame), 30×16, matching the
+    `HERMES_CADUCEUS` house size, with a bronze→gold→bronze vertical gradient.
+    Same static-asset technique as `HERMES_CADUCEUS` / the `charizard` hero —
+    generated offline from `assets/icons/icon-512.png` + a redrawn bold compass
+    (blueprint line-art from `assets/banner.png` is below Braille's resolution
+    floor at this size and was rejected), **not** rendered at runtime.
+  - **`banner_logo`** re-tinted to the forge gradient + dot-dash flanking rules
+    echoing the reference art (shape unchanged — ANSI Shadow "NORTH FORGE").
+  - Verified: `pytest` skin + launcher suites **73 passed**;
+    `load_skin("north-forge")` → 30 colours / 8 verbs / `│`;
+    `get_prompt_toolkit_style_overrides()` → 39 classes,
+    `status-bar => bg:#1A1410`; real `.\north-forge.cmd --version` starts clean.
+    Rendered preview (banner + session chrome, before/after) in
+    `D:\logs\SKIN-REBUILD-V2_2026-09-07.md`.
+  - Paths: `skins/north-forge.yaml`. Ref: `logs/CODEX-SKIN-COMPARISON-2026-09-07.md`,
+    `DECISION-2026-09-07-001`. Run: RUN-2026-09-07-009.
+
 ## [NF-v0.5.4] — 2026-09-07 — hermes@03f3b09222 (47 behind upstream/main)
 
 `RUN-2026-09-07-008`. Committed on `e288a7f0c5` (`origin/main` tip after

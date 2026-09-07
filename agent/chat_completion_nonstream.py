@@ -39,6 +39,7 @@ class _NonStreamRequest:
             else None
         )
         self.call_start = h.time.time()
+        self.wait_notice_started_ts = None
         self.thread = None
 
     def _install_codex_request_token(self) -> None:
@@ -122,10 +123,31 @@ class _NonStreamRequest:
         with state.lock:
             return state.last_event_ts, state.last_progress_ts, state.retry_started_ts
 
-    def _emit_wait_notice(self, elapsed: float) -> None:
+    def _emit_wait_notice(self, elapsed: float, *, heartbeat: bool = True) -> None:
         wd = self.wd
         try:
             last_event_ts, last_progress_ts, retry_started_ts = self._codex_watchdog_snapshot()
+            activity_ts = retry_started_ts if retry_started_ts is not None else last_event_ts
+            # Only undo a notice this request owns, promptly rather than at the
+            # next heartbeat: reasoning callbacks do not reset the CLI spinner.
+            if (self.wait_notice_started_ts is not None and activity_ts is not None
+                    and activity_ts > self.wait_notice_started_ts):
+                self.agent._emit_wait_notice("Thinking...")
+                self.wait_notice_started_ts = None
+            if not heartbeat:
+                return
+            silence = self.call_start + elapsed - (
+                activity_ts if activity_ts is not None else self.call_start)
+            if activity_ts is not None and silence < 30.0:
+                self.agent._touch_activity(
+                    "waiting for first stream event after reconnect"
+                    if retry_started_ts is not None else "receiving stream response")
+                return
+            status = "no response yet"
+            if retry_started_ts is not None:
+                status = "no response after reconnect"
+            elif last_event_ts is not None:
+                status = "no stream events"
             recovery = h._codex_wait_notice_recovery(stale_timeout=wd.stale_timeout,
                 ttfb_enabled=wd.ttfb_enabled, ttfb_timeout=wd.ttfb_timeout,
                 last_event_ts=last_event_ts, last_progress_ts=last_progress_ts,
@@ -133,9 +155,12 @@ class _NonStreamRequest:
                 call_start=self.call_start, idle_enabled=wd.idle_enabled, idle_timeout=wd.idle_timeout,
                 idle_requires_progress=wd.idle_requires_progress,
                 elapsed=elapsed)
+            if recovery and activity_ts is not None:
+                recovery += " total elapsed"
             self.agent._emit_wait_notice(
                 f"⏳ waiting on {self.api_kwargs.get('model', 'the provider')} — "
-                f"{int(elapsed)}s with no response yet (provider may be slow or overloaded{recovery})")
+                f"{int(silence)}s with {status} (provider may be slow or overloaded{recovery})")
+            self.wait_notice_started_ts = self.call_start + elapsed
         except Exception:
             h.logger.debug("wait-notice construction failed", exc_info=True)
 
@@ -227,12 +252,11 @@ class _NonStreamRequest:
         while t.is_alive():
             t.join(timeout=0.3)
             poll_count += 1
-            # Every ~30s: gateway inactivity heartbeat + rewrite the status line
-            # so users see WHAT the wait is (the "infinite thinking" complaint).
+            # Keep the quiet gateway heartbeat; only silence warrants a notice.
+            # Resumed events clear our notice on the next poll, not 30s later.
             now = h.time.time()
             elapsed = now - self.call_start
-            if poll_count % 100 == 0:  # 100 × 0.3s = 30s
-                self._emit_wait_notice(elapsed)
+            self._emit_wait_notice(elapsed, heartbeat=poll_count % 100 == 0)
             last_event_ts, last_progress_ts, retry_started_ts = self._codex_watchdog_snapshot()
             retry_ttfb_elapsed = now - retry_started_ts if retry_started_ts is not None else None
             if wd.ttfb_enabled and retry_ttfb_elapsed is not None and retry_ttfb_elapsed > wd.ttfb_timeout:

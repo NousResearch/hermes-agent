@@ -363,43 +363,28 @@ class TestIsContainer:
 
 
 
-    def test_host_running_containers_not_false_positive(self, monkeypatch, tmp_path):
-        """A host that merely RUNS containers must not be classified as one.
+    def test_cgroup_v2_fallback_inspects_only_the_root_mount(self, tmp_path):
+        """#58135: a host that merely RUNS containers exposes each container's overlay lowerdir
+        (``lowerdir=/var/lib/containerd/...``) at non-root mount points; only the root ('/') line
+        says whether *this* process lives in a runtime overlay."""
+        from hermes_constants import _root_mount_has_marker
 
-        Regression for NousResearch/hermes-agent#58135: on a cgroup-v2 host
-        with Docker's containerd image store, each running container adds an
-        overlay mount whose option string contains
-        ``lowerdir=/var/lib/containerd/...``. The marker appears only in
-        non-root mount lines, so scanning the whole file produced a false
-        positive. Only the root ('/') mount line should be inspected.
-        """
-        import builtins
-        self._reset_cache(monkeypatch)
-        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
-        monkeypatch.setattr(os.path, "exists", lambda p: False)
-        cgroup_file = tmp_path / "cgroup"
-        cgroup_file.write_text("0::/\n")  # cgroup v2 — no runtime marker
-        mountinfo_file = tmp_path / "mountinfo"
-        mountinfo_file.write_text(
-            # Root is a real block device on the host.
+        markers = ("kubepods", "containerd", "crio")
+        host = tmp_path / "host"
+        host.write_text(
             "25 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw\n"
-            # A running container's overlay rootfs mounted elsewhere — its
-            # lowerdir references containerd but must NOT flip the host.
-            "469 554 0:94 / /var/lib/docker/rootfs/overlayfs/7dda83 rw,relatime "
-            "shared:247 - overlay overlay rw,lowerdir=/var/lib/containerd/"
-            "io.containerd.snapshotter.v1.overlayfs/snapshots/33509/fs\n"
+            "469 554 0:94 / /var/lib/docker/rootfs/overlayfs/7dda83 rw,relatime shared:247 - overlay overlay "
+            "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/33509/fs\n"
         )
-        _real_open = builtins.open
-
-        def _fake_open(p, *a, **kw):
-            if p == "/proc/1/cgroup":
-                return _real_open(str(cgroup_file), *a, **kw)
-            if p == "/proc/self/mountinfo":
-                return _real_open(str(mountinfo_file), *a, **kw)
-            return _real_open(p, *a, **kw)
-
-        monkeypatch.setattr("builtins.open", _fake_open)
-        assert is_container() is False
+        container = tmp_path / "container"
+        container.write_text(
+            "1 0 0:50 / / rw,relatime - overlay overlay "
+            "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/9/fs\n"
+            "2 1 0:51 / /proc rw,nosuid - proc proc rw\n"
+        )
+        assert _root_mount_has_marker(str(host), markers) is False
+        assert _root_mount_has_marker(str(container), markers) is True
+        assert _root_mount_has_marker(str(tmp_path / "missing"), markers) is False
 
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""

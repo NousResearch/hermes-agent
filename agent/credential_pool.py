@@ -2236,10 +2236,8 @@ class CredentialPool:
                 # its single-use refresh token (#100339). Once the profile owns
                 # rows, the root fallback for this provider is shadowed.
                 self._entries = [e for e in self._entries if e.id not in borrowed_ids]
-                write_credential_pool(self.provider, [e.to_dict() for e in self._entries])
                 self._borrowed_root_ids = set()
-            else:
-                self._persist()
+            write_credential_pool(self.provider, [e.to_dict() for e in self._entries])
             return entry
 
 

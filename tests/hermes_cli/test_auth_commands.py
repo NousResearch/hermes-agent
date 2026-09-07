@@ -1127,3 +1127,119 @@ def test_qwen_oauth_login_marks_active_through_moved_owner(monkeypatch):
 
     assert auth_commands._qwen_oauth_login(None) is creds
     assert marked == [creds]
+
+
+def test_auth_add_anthropic_oauth_marks_active_provider(tmp_path, monkeypatch):
+    """hermes auth add anthropic --type oauth must mark active_provider on first add."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.run_hermes_oauth_login_pure",
+        lambda: {
+            "access_token": "anthropic-oauth-test-tok",
+            "refresh_token": "anthropic-oauth-test-ref",
+            "expires_at_ms": 1750000000000,
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+    from types import SimpleNamespace
+
+    auth_add_command(SimpleNamespace(provider="anthropic", auth_type="oauth", label=None))
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text(encoding="utf-8"))
+    assert payload["active_provider"] == "anthropic"
+    entries = payload["credential_pool"]["anthropic"]
+    assert len(entries) == 1
+    assert entries[0]["source"] == "manual:hermes_pkce"
+    assert entries[0]["access_token"] == "anthropic-oauth-test-tok"
+
+
+def test_auth_add_api_key_marks_active_provider_on_first_add(tmp_path, monkeypatch):
+    """hermes auth add <provider> --type api-key must set active_provider on first add."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth_commands import auth_add_command
+    from types import SimpleNamespace
+
+    auth_add_command(
+        SimpleNamespace(
+            provider="openrouter",
+            auth_type="api-key",
+            api_key="sk-or-test-key",
+            label="openrouter-test",
+        )
+    )
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text(encoding="utf-8"))
+    assert payload["active_provider"] == "openrouter"
+    entries = payload["credential_pool"]["openrouter"]
+    assert len(entries) == 1
+    assert entries[0]["access_token"] == "sk-or-test-key"
+
+
+def test_auth_add_openai_codex_in_named_profile_persists_credential(tmp_path, monkeypatch):
+    """hermes auth add openai-codex in a profile must persist credentials and activate provider (#103989)."""
+    root_home = tmp_path / "root_hermes"
+    profile_home = root_home / "profiles" / "ziyan"
+    root_home.mkdir(parents=True, exist_ok=True)
+    profile_home.mkdir(parents=True, exist_ok=True)
+
+    (root_home / "auth.json").write_text(
+        json.dumps({"version": 1, "providers": {}, "credential_pool": {}}, indent=2),
+        encoding="utf-8",
+    )
+    (profile_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {},
+                "credential_pool": {
+                    "nous": [{"id": "97eecb", "label": "test@example.com"}]
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: {
+            "tokens": {
+                "access_token": "codex-profile-access-tok",
+                "refresh_token": "codex-profile-refresh-tok",
+            },
+            "base_url": "https://api.openai.com/v1",
+            "last_refresh": "2026-09-06T00:00:00Z",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+    from agent.credential_pool import load_pool
+    from types import SimpleNamespace
+
+    auth_add_command(
+        SimpleNamespace(
+            provider="openai-codex",
+            auth_type="oauth",
+            label="openai-codex-oauth-1",
+        )
+    )
+
+    profile_payload = json.loads((profile_home / "auth.json").read_text(encoding="utf-8"))
+    assert profile_payload["active_provider"] == "openai-codex"
+    assert "openai-codex" in profile_payload["credential_pool"]
+    codex_entries = profile_payload["credential_pool"]["openai-codex"]
+    assert len(codex_entries) == 1
+    assert codex_entries[0]["source"] == "manual:device_code"
+    assert codex_entries[0]["access_token"] == "codex-profile-access-tok"
+    assert codex_entries[0]["label"] == "openai-codex-oauth-1"
+
+    pool = load_pool("openai-codex")
+    assert len(pool.entries()) == 1
+    assert pool.entries()[0].label == "openai-codex-oauth-1"
+

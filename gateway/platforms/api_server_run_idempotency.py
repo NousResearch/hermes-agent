@@ -214,17 +214,29 @@ class RunIdempotencyStore:
             missing_runs INTEGER NOT NULL DEFAULT 0)""")
         self._conn.execute(f"""CREATE TABLE IF NOT EXISTS {_COMMANDS} (
             command_id TEXT PRIMARY KEY, scope TEXT NOT NULL, created_at REAL NOT NULL)""")
-        self._conn.execute(f"""CREATE TRIGGER IF NOT EXISTS group_run_frozen_insert_v1
+        # REPLACE can delete a different frozen row without firing DELETE triggers
+        # on legacy connections. Fence victims of both unique keys before conflict resolution.
+        frozen_victim = f"""SELECT 1 FROM run_idempotency AS victim
+            JOIN {_FREEZES} AS frozen ON frozen.scope=victim.scope
+            WHERE (victim.run_id=NEW.run_id OR
+                (victim.scope=NEW.scope AND victim.idempotency_key=NEW.idempotency_key))"""
+        self._conn.execute(f"""CREATE TRIGGER IF NOT EXISTS group_run_frozen_insert_v2
             BEFORE INSERT ON run_idempotency
             WHEN EXISTS (SELECT 1 FROM {_FREEZES} WHERE scope=NEW.scope)
+              OR EXISTS ({frozen_victim})
             BEGIN SELECT RAISE(ABORT, 'group run scope frozen'); END""")
-        self._conn.execute(f"""CREATE TRIGGER IF NOT EXISTS group_run_frozen_identity_v1
+        self._conn.execute(f"""CREATE TRIGGER IF NOT EXISTS group_run_frozen_identity_v2
             BEFORE UPDATE ON run_idempotency
-            WHEN EXISTS (SELECT 1 FROM {_FREEZES} WHERE scope IN (OLD.scope,NEW.scope))
+            WHEN (EXISTS (SELECT 1 FROM {_FREEZES} WHERE scope IN (OLD.scope,NEW.scope))
               AND (NEW.scope IS NOT OLD.scope OR NEW.idempotency_key IS NOT OLD.idempotency_key
                 OR NEW.fingerprint IS NOT OLD.fingerprint OR NEW.run_id IS NOT OLD.run_id
-                OR NEW.owner_pid IS NOT OLD.owner_pid OR NEW.owner_started IS NOT OLD.owner_started)
+                OR NEW.owner_pid IS NOT OLD.owner_pid OR NEW.owner_started IS NOT OLD.owner_started))
+              OR EXISTS ({frozen_victim}
+                AND NOT (victim.scope=OLD.scope AND victim.idempotency_key=OLD.idempotency_key))
             BEGIN SELECT RAISE(ABORT, 'group run scope frozen'); END""")
+        # The caller holds BEGIN IMMEDIATE: install both replacements before removing v1.
+        self._conn.execute("DROP TRIGGER IF EXISTS group_run_frozen_insert_v1")
+        self._conn.execute("DROP TRIGGER IF EXISTS group_run_frozen_identity_v1")
         terminal = f"({_STATUS_SQL.replace('status_json', 'OLD.status_json')}) IN ({_TERMINAL_SQL})"
         # Keep global/legacy pruning usable. A removed nonterminal receipt becomes
         # unresolved evidence, never an empty successful Stop after restart.

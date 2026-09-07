@@ -1,4 +1,4 @@
-import type { ProfileScope } from '@/api/client'
+import { capabilityScoped, type ProfileScope } from '@/api/client'
 import { type McpOAuthFlow, mcpOAuthRpc } from '@/api/mcp'
 
 import { isMissingRpcMethod } from './gateway-rpc'
@@ -32,8 +32,8 @@ export class McpOAuthCancelled extends Error {
 const defaultSleep = (milliseconds: number) => new Promise<void>(resolve => window.setTimeout(resolve, milliseconds))
 const UPDATE_BACKEND = 'Update the Hermes backend to support Desktop MCP OAuth callbacks.'
 
-/** The browser and redirect listener live on the Desktop machine, even when
- *  the token-exchanging gateway is remote. Never fall back to its REST callback. */
+/** Remote gateways require the Desktop callback bridge. An explicitly local
+ *  gateway can host its own loopback listener when that capability is absent. */
 export async function completeMcpDesktopOAuth({
   serverName,
   profile,
@@ -43,10 +43,12 @@ export async function completeMcpDesktopOAuth({
   timeoutMs = 360_000
 }: CompleteOptions): Promise<McpOAuthFlow> {
   const deadline = Date.now() + timeoutMs
-  const rpc = mcpOAuthRpc(profile)
+  const scope = capabilityScoped(profile)
+  const rpc = mcpOAuthRpc(scope)
   const bridge = window.hermesDesktop.mcpOauth
 
-  if (!bridge) {
+  // A legacy null connection can resolve to a remote registry primary.
+  if (!bridge && scope.connectionId !== 'local') {
     throw new Error('Update Hermes Desktop to support MCP OAuth callbacks.')
   }
 
@@ -75,9 +77,13 @@ export async function completeMcpDesktopOAuth({
 
   try {
     checkCancelled()
-    listener = await bridge.listen()
-    checkCancelled()
-    const started = await request('start', { client_redirect_uri: listener.redirectUri })
+
+    if (bridge) {
+      listener = await bridge.listen()
+      checkCancelled()
+    }
+
+    const started = await request('start', listener ? { client_redirect_uri: listener.redirectUri } : {})
     sessionId = started.session_id
     authUrl = started.auth_url
     // Start may have created a flow while the user cancelled. Keep its id so
@@ -90,27 +96,51 @@ export async function completeMcpDesktopOAuth({
 
     // Pre-relay backends silently ignore unknown start params. Do not open an
     // authorization URL whose DCR/PKCE flow points at a different machine.
-    if (new URL(authUrl).searchParams.get('redirect_uri') !== listener.redirectUri) {
+    const redirectUri = new URL(authUrl).searchParams.get('redirect_uri')
+
+    if (listener && redirectUri !== listener.redirectUri) {
       throw new Error(UPDATE_BACKEND)
     }
 
+    if (!listener) {
+      // Match the existing backend-hosted listener, not an arbitrary local URL.
+      const redirect = new URL(redirectUri || '')
+
+      if (
+        redirect.protocol !== 'http:' ||
+        redirect.hostname !== '127.0.0.1' ||
+        !redirect.port ||
+        Number(redirect.port) === 0 ||
+        redirect.pathname !== '/callback' ||
+        redirect.username ||
+        redirect.password ||
+        redirect.search ||
+        redirect.hash
+      ) {
+        throw new Error('OAuth server did not provide a local loopback callback URL')
+      }
+    }
+
     const flowId = sessionId
-    void bridge
-      .wait(listener.id)
-      .then(async callback => {
-        if (closed || cancelled?.()) {
-          return
-        }
 
-        if (!callback.state) {
-          throw new Error(callback.error || 'OAuth callback did not include state')
-        }
+    if (bridge && listener) {
+      void bridge
+        .wait(listener.id)
+        .then(async callback => {
+          if (closed || cancelled?.()) {
+            return
+          }
 
-        await request('callback', { session_id: flowId, ...callback })
-      })
-      .catch(error => {
-        relayError = error
-      })
+          if (!callback.state) {
+            throw new Error(callback.error || 'OAuth callback did not include state')
+          }
+
+          await request('callback', { session_id: flowId, ...callback })
+        })
+        .catch(error => {
+          relayError = error
+        })
+    }
 
     await window.hermesDesktop.openExternal(authUrl)
     let pollFailures = 0
@@ -177,7 +207,7 @@ export async function completeMcpDesktopOAuth({
 
     // Stop the native waiter first: its synthetic cancellation is NOT a
     // provider callback and must never race cleanup back onto the gateway.
-    if (listener) {
+    if (bridge && listener) {
       await bridge.cancel(listener.id).catch(() => {})
     }
 

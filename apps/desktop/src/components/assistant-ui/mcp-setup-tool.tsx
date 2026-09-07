@@ -1,10 +1,10 @@
-import { capabilityScoped } from '@/api/client'
-;('use client')
+'use client'
 
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { capabilityScoped } from '@/api/client'
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'

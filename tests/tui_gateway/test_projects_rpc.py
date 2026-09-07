@@ -888,3 +888,126 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
 
 
+def test_scoped_session_rows_ignore_recency_window(monkeypatch, tmp_path):
+    """A project's sessions must appear via ``session_rows`` no matter how many
+    OTHER sessions exist - the query is folder-scoped, not window-scoped."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    repo = tmp_path / "repos" / "scoped-repo"
+    other = tmp_path / "repos" / "other"
+    repo.mkdir(parents=True)
+    other.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home})
+
+    project = _create_project(launch_home, "Scoped", repo, use=True)
+    _create_session(launch_home, "scoped-session", repo)
+    # Enough OTHER sessions to overflow any sane recency window.
+    for i in range(30):
+        _create_session(launch_home, f"other-{i}", other)
+
+    with _serving_launch_profile(launch_home):
+        rows = _call(
+            "projects.session_rows", {"project_id": project["id"], "limit": 50})
+        counts = _call("projects.exact_counts")
+
+    assert rows["total"] == 1, rows["total"]
+    assert [s["id"] for s in rows["sessions"]] == ["scoped-session"]
+    assert counts["counts"][project["id"]] == 1
+
+    with _serving_launch_profile(launch_home):
+        # Pagination: a limit of 0 rows still reports the exact total.
+        # Offset past the end: an empty page still reports the exact total
+        # (the plugin's Load-more termination contract).
+        page = _call("projects.session_rows", {"project_id": project["id"], "limit": 1, "offset": 1})
+        # Home bucket refuses cleanly (windowed drill-in covers it).
+        resp = server._methods["projects.session_rows"](1, {"project_id": "__no_project__"})
+    assert page["total"] == 1 and page["sessions"] == []
+    assert resp["error"]["code"] == 5063
+
+
+def test_scoped_session_rows_track_folder_moves(monkeypatch, tmp_path):
+    """A session moved INTO a project folder appears; one moved OUT disappears.
+    Membership is folder state, not creation-time state."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    repo = tmp_path / "repos" / "moves"
+    outside = tmp_path / "repos" / "outside"
+    repo.mkdir(parents=True)
+    outside.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home})
+
+    project = _create_project(launch_home, "Moves", repo, use=True)
+    _create_session(launch_home, "moved-in", outside)
+
+    from hermes_state import SessionDB
+    db = SessionDB(db_path=launch_home / "state.db")
+    db.update_session_cwd("moved-in", str(repo))
+    db.close()
+
+    with _serving_launch_profile(launch_home):
+        rows = _call("projects.session_rows", {"project_id": project["id"], "limit": 50})
+    assert [s["id"] for s in rows["sessions"]] == ["moved-in"]
+
+
+def test_scoped_rows_exclude_archived_sessions(monkeypatch, tmp_path):
+    """Archived sessions must not surface in scoped rows or counts (the tree's
+    own filter set excludes them)."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    repo = tmp_path / "repos" / "archived"
+    repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home})
+
+    project = _create_project(launch_home, "Archived", repo, use=True)
+    _create_session(launch_home, "live-session", repo)
+    from hermes_state import SessionDB
+    db = SessionDB(db_path=launch_home / "state.db")
+    db.create_session("archived-session", "cli", cwd=str(repo))
+    db.append_message("archived-session", "user", "to be archived")
+    db.set_session_archived("archived-session", True)
+    db.close()
+
+    with _serving_launch_profile(launch_home):
+        rows = _call("projects.session_rows", {"project_id": project["id"], "limit": 50})
+        counts = _call("projects.exact_counts")
+
+    assert rows["total"] == 1, rows["total"]
+    assert [s["id"] for s in rows["sessions"]] == ["live-session"]
+    assert counts["counts"][project["id"]] == 1
+
+
+def test_scoped_rows_folderless_project_returns_empty_page(monkeypatch, tmp_path):
+    """An explicit project with no folders is a zero-session page, not an error."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home})
+
+    with _serving_launch_profile(launch_home):
+        created = _call("projects.create", {"name": "Folderless"})["project"]
+        rows = _call("projects.session_rows", {"project_id": created["id"], "limit": 50})
+
+    assert rows["total"] == 0 and rows["sessions"] == []
+
+
+def test_excluded_paths_never_mint_auto_projects(monkeypatch, tmp_path):
+    """Sessions under a desktop.repo_scan_exclude_paths entry must not surface as
+    auto projects: the exclusion policy feeds the tree's junk filters."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    excluded = tmp_path / "repos" / "excluded"
+    kept = tmp_path / "repos" / "kept"
+    excluded.mkdir(parents=True)
+    kept.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home})
+
+    import yaml
+    cfg = launch_home / "config.yaml"
+    cfg.write_text(yaml.safe_dump({"desktop": {"repo_scan_exclude_paths": [str(excluded)]}}))
+
+    _create_session(launch_home, "excluded-session", excluded)
+    _create_session(launch_home, "kept-session", kept)
+
+    with _serving_launch_profile(launch_home):
+        tree = _call("projects.tree")
+
+    auto_roots = [p["path"] for p in tree["projects"] if p.get("isAuto")]
+    assert str(kept) in auto_roots, auto_roots
+    assert str(excluded) not in auto_roots, auto_roots
+    # The excluded session falls to Home, not a phantom project.
+    home = next(p for p in tree["projects"] if p.get("isNoProject"))
+    assert home["sessionCount"] == 1

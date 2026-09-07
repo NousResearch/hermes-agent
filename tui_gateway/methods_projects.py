@@ -137,9 +137,53 @@ def _non_workspace_dirs() -> set[str]:
     return {os.path.normcase(os.path.realpath(path)) for path in candidates if path}
 
 
+_EXCLUDE_CACHE: tuple[tuple[str, ...], tuple[str, ...]] | None = None
+
+
+def _normalised_excludes() -> tuple[str, ...]:
+    """``desktop.repo_scan_exclude_paths`` normalised once per config generation
+    (expanduser, home-relative abspath, realpath, normcase) - so `~/x`, `x` and
+    `/home/u/x` spell the same exclusion. The config loader is already
+    mtime-cached; this extra cache spares the per-session tree loop from
+    re-running realpath on every entry for every row. Empty entries are dropped;
+    a filesystem-root entry excludes its children too (rstrip keeps the prefix
+    join at exactly one separator)."""
+    global _EXCLUDE_CACHE
+    # _repo_discovery_policy() already coerces the value to list[str] via
+    # _paths(); guard anyway - the failure mode (TypeError inside a per-session
+    # junk check) breaks every tree build.
+    raw_value = _repo_discovery_policy().get("exclude_paths") or []
+    raw_entries = tuple(raw_value) if isinstance(raw_value, list) else ()
+    if _EXCLUDE_CACHE is not None and _EXCLUDE_CACHE[0] == raw_entries:
+        return _EXCLUDE_CACHE[1]
+    home = os.path.expanduser("~")
+    norm: list[str] = []
+    for raw in raw_entries:
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        ex = os.path.normcase(os.path.realpath(
+            os.path.abspath(os.path.join(home, os.path.expanduser(raw)))))
+        if ex:
+            norm.append(ex.rstrip(os.sep) or ex)
+    _EXCLUDE_CACHE = (raw_entries, tuple(norm))
+    return _EXCLUDE_CACHE[1]
+
+
+def _policy_excluded(path: str) -> bool:
+    """True when ``path`` sits at/under a ``desktop.repo_scan_exclude_paths`` entry."""
+    if not path:
+        return False
+    real = os.path.normcase(os.path.realpath(path)).rstrip(os.sep) or path
+    for ex in _normalised_excludes():
+        if real == ex or real.startswith(ex + os.sep):
+            return True
+    return False
+
+
 def _is_repo_junk(root: str) -> bool:
-    """A git root never auto-surfaced as a project: a non-workspace dir or anything under
-    HERMES_HOME. User-created projects pointing there are still honored."""
+    """A git root never auto-surfaced as a project: a non-workspace dir, anything under
+    HERMES_HOME, or a policy-excluded path. User-created projects pointing there are
+    still honored (explicit folders bypass the junk filter)."""
     if not root:
         return True
     from hermes_constants import get_hermes_home
@@ -148,18 +192,24 @@ def _is_repo_junk(root: str) -> bool:
     return (
         os.path.normcase(real) in _non_workspace_dirs()
         or real == hermes_home
-        or real.startswith(hermes_home + os.sep))
+        or real.startswith(hermes_home + os.sep)
+        or _policy_excluded(root))
 
 
 def _is_session_cwd_junk(cwd: str) -> bool:
-    """A non-git cwd that stays in flat Recents. A DESCENDANT of HERMES_HOME may be an
-    intentional prose/data workspace, so only HERMES_HOME itself is excluded here."""
+    """A non-git cwd that never auto-surfaces. Junk cwds fall to the Home bucket
+    (``_auto_buckets`` routes them to homeless), so a policy-excluded non-git
+    folder - e.g. a deleted explicit project's folder - lands its sessions in
+    Home instead of re-minting a path-only auto project. Explicit projects are
+    unaffected: folder-index ownership runs before any junk filter. A DESCENDANT
+    of HERMES_HOME may be an intentional prose/data workspace, so only
+    HERMES_HOME itself is excluded here."""
     if not cwd:
         return True
     from hermes_constants import get_hermes_home
     real = os.path.normcase(os.path.realpath(cwd))
     hermes_home = os.path.normcase(os.path.realpath(str(get_hermes_home())))
-    return real in _non_workspace_dirs() or real == hermes_home
+    return real in _non_workspace_dirs() or real == hermes_home or _policy_excluded(cwd)
 
 
 def _repo_discovery_policy(raw: dict | None = None) -> dict:
@@ -328,6 +378,186 @@ def _project_tree_row(r: dict) -> dict:
         **{k: r.get(k) for k in ("actual_cost_usd", "estimated_cost_usd", "model")},
         is_active=False, **{k: r.get(k) for k in ("cwd", "git_branch", "git_repo_root")})
     return row
+
+
+# ── Folder-scoped project queries (no recency window) ─────────────────────────
+# The tree builder walks the N most recent sessions, so on busy accounts an old
+# project's sessions fall out of the window and read as zero. These two RPCs query
+# by folder membership directly: cost follows the project's own history, not the
+# account's. ``session_rows`` is the paginated drill-in; ``exact_counts`` feeds the
+# overview badges.
+
+# Hard cap on candidate rows per drill-in call: the WHERE already bounds the
+# scan to the project's own history, this only bounds the transfer. total
+# comes from the grouped scan, so counts stay exact past the cap; the plugin
+# hides Load more once a page returns zero rows.
+_SCOPED_CANDIDATE_CAP = 50_000
+
+
+def _scoped_folder_clause(folders: list) -> tuple:
+    """(sql, params) matching sessions whose cwd OR stored repo root sits at/under any
+    project folder - a SUPERSET of the tree's members for this project (rows whose
+    deepest owner is another project are filtered out in Python afterwards). LIKE
+    wildcards in paths are escaped (paths legitimately contain ``_``/``%``)."""
+    from hermes_state_common import escape_like
+    arms: list = []
+    params: list = []
+    for folder in folders:
+        base = str(folder or "").rstrip("/\\")
+        if not base:
+            continue
+        esc = escape_like(base)
+        for col in ("s.cwd", "s.git_repo_root"):
+            arms.append(f"({col} = ? OR {col} LIKE ? ESCAPE '\\' OR {col} LIKE ? ESCAPE '\\')")
+            params.extend([base, f"{esc}/%", f"{esc}\\\\%"])
+    if not arms:
+        return "1 = 0", []
+    return "(" + " OR ".join(arms) + ")", params
+
+
+def _scoped_base_where() -> tuple:
+    """Base visibility filters - the tree's own set (archived/hidden excluded, min 1
+    message, no cron/kanban, no subagent/compression children)."""
+    from hermes_state_sessions import _session_filter_where, _where_sql
+    clauses, params = _session_filter_where(
+        exclude_children=True, exclude_sources=list(_PROJECT_TREE_EXCLUDED_SOURCES),
+        min_message_count=1)
+    clauses.append("s.hidden = 0")
+    return _where_sql(clauses, " "), params
+
+
+def _scoped_row(r) -> dict:
+    """Shape a raw scoped-query row like the tree's own rows (preview + projection)."""
+    from hermes_state_common import _shape_preview
+    d = dict(r)
+    d["preview"] = _shape_preview(d.pop("_preview_raw", ""))
+    return _project_tree_row(d)
+
+
+def _scoped_owner(cwd, repo, index):
+    """The tree's ownership rule: longest folder match wins over candidates
+    [cwd, repo_root]; ties keep cwd (max() keeps the first maximum). Returns
+    the owning project dict or None."""
+    candidates = [cwd, repo] if repo and repo != cwd else [cwd]
+    hits = [index.match(t) for t in candidates if t]
+    if not hits:
+        return None
+    return max(hits, key=lambda hit: hit[1])[0]
+
+
+def _scoped_grouped_counts(db, pdb, conn) -> tuple:
+    """ONE grouped scan of (cwd, repo_root) pairs across ALL history, plus the folder
+    index over explicit projects - cost follows distinct workspaces, not session or
+    project counts. Reuses the injected projects.db connection (no second open)."""
+    from tui_gateway.project_tree import _FolderIndex
+
+    where, where_params = _scoped_base_where()
+    rows = db._read_rows(
+        f"""SELECT s.cwd AS cwd, s.git_repo_root AS repo, COUNT(*) AS n
+            FROM sessions s {where}
+            GROUP BY s.cwd, s.git_repo_root""", where_params)
+    projects = [p.to_dict() for p in pdb.list_projects(conn)]
+    return rows, _FolderIndex(projects)
+
+
+@_projects_method("projects.exact_counts")
+def _(rid, params, pdb, conn) -> dict:
+    """{project_id: exact session count} across ALL history for every explicit project,
+    using the tree's ownership rule so badges and drill-in can never disagree."""
+    counts: dict = {}
+    with _profile_db(params) as db:
+        if db is None:
+            return _ok(rid, {"counts": counts})
+        rows, index = _scoped_grouped_counts(db, pdb, conn)
+        for r in rows:
+            owner = _scoped_owner(r["cwd"], r["repo"], index)
+            if owner is not None:
+                counts[owner["id"]] = counts.get(owner["id"], 0) + int(r["n"])
+    return _ok(rid, {"counts": counts})
+
+
+@_projects_method("projects.session_rows")
+def _(rid, params, pdb, conn) -> dict:
+    """Paginated session rows for ONE project, folder-scoped - exact regardless of how
+    many sessions the account holds, and ownership-faithful to the tree (deepest folder
+    match over cwd/repo candidates). ``id`` may be an explicit project id/slug or an
+    auto-project's repo path; the Home bucket refuses (the windowed drill-in covers it)."""
+    project_id = str(params.get("id") or params.get("project_id") or "").strip()
+    if not project_id:
+        raise ValueError("id required")
+    raw_limit = params.get("limit")
+    limit = min(max(int(raw_limit) if raw_limit is not None else 50, 1), 500)
+    offset = max(int(params.get("offset") or 0), 0)
+
+    if project_id == "__no_project__":
+        raise ValueError("home bucket is not folder-scoped")
+
+    proj = pdb.get_project(conn, project_id)
+    if proj is not None:
+        proj_id = proj.id
+        folders = [f.path for f in proj.folders if f.path]
+        if not folders:
+            return _ok(rid, {"sessions": [], "total": 0, "limit": limit, "offset": offset})
+    elif project_id.startswith("p_"):
+        raise _NoProject
+    else:
+        proj_id = None  # auto project: tree keys it by repo root path
+        folders = [project_id]
+
+    from tui_gateway.project_tree import _FolderIndex
+    from hermes_state_sessions import _PREVIEW_COL_SQL
+    from hermes_state_common import _sql_session_last_active
+
+    with _profile_db(params) as db:
+        if db is None:
+            return _ok(rid, {"sessions": [], "total": 0, "limit": limit, "offset": offset})
+
+        # Grouped scan for the exact total + folder index for ownership filtering.
+        grouped, index = _scoped_grouped_counts(db, pdb, conn)
+        total = 0
+        for r in grouped:
+            owner = _scoped_owner(r["cwd"], r["repo"], index)
+            if proj_id is not None:
+                if owner is not None and owner["id"] == proj_id:
+                    total += int(r["n"])
+            elif owner is None:
+                # Auto project: the tree only places UNOWNED sessions there, so
+                # rows claimed by an explicit project never count toward it.
+                # Both candidates must count: the candidate SQL matches on
+                # cwd OR repo, so a row whose cwd sits outside the auto folder
+                # but whose repo root sits inside still belongs to the page.
+                if _cand_under(r["cwd"], folders) or _cand_under(r["repo"], folders):
+                    total += int(r["n"])
+
+        # Candidate rows via scoped SQL (no LIMIT: bounded by this project's own
+        # history - the design premise), then filter + paginate in Python.
+        where, where_params = _scoped_base_where()
+        clause, clause_params = _scoped_folder_clause(folders)
+        where += f" AND {clause}"
+        rows = db._read_rows(
+            f"""SELECT {db._compact_session_cols()}, {_PREVIEW_COL_SQL},
+                        {_sql_session_last_active("s")} AS last_active
+                FROM sessions s {where}
+                ORDER BY last_active DESC, s.started_at DESC, s.id DESC
+                LIMIT {_SCOPED_CANDIDATE_CAP}""",
+            [*where_params, *clause_params])
+        keep = []
+        for r in rows:
+            owner = _scoped_owner(r["cwd"], r["git_repo_root"], index)
+            if proj_id is not None:
+                if owner is not None and owner["id"] == proj_id:
+                    keep.append(r)
+            elif owner is None:
+                keep.append(r)
+        sessions = [_scoped_row(r) for r in keep[offset:offset + limit]]
+        return _ok(rid, {"sessions": sessions, "total": total, "limit": limit, "offset": offset})
+
+
+def _cand_under(cand: str, folders: list) -> bool:
+    """candidate path at/under any auto-project folder (normalised separators)."""
+    norm = lambda p: str(p or "").replace("\\", "/").rstrip("/")
+    c = norm(cand)
+    return bool(c) and any(c == norm(f) or c.startswith(norm(f) + "/") for f in folders)
 
 
 def _project_tree_inputs(

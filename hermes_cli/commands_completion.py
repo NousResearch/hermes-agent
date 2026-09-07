@@ -43,11 +43,6 @@ def _personalities_from_cli_config() -> Dict[str, Any]:
     return _personalities_memo[1]
 
 
-def _short_desc(info: Mapping[str, Any], default: str) -> str:
-    """Full description, passed through to the completion menu."""
-    return str(info.get("description", default))
-
-
 def _file_size_label(path: str) -> str:
     """Return a compact human-readable file size, or '' on error."""
     try:
@@ -334,7 +329,7 @@ class SlashCommandCompleter(Completer):
             # Exact match: trailing space keeps the dropdown open for the next stacked token.
             yield _completion(
                 f"{cmd} " if cmd == word_key else cmd, current_word, cmd,
-                f"⚡ {_short_desc(info, 'Skill command')}")
+                f"⚡ {info.get('description', 'Skill command')}")
 
     @staticmethod
     def _completion_text(cmd_name: str, word: str) -> str:
@@ -454,16 +449,16 @@ class SlashCommandCompleter(Completer):
             if cmd[1:].startswith(word):
                 skill_count = len(info.get("skills", []))
                 yield _cmd_completion(
-                    cmd[1:], f"▣ {_short_desc(info, 'Skill bundle')} ({skill_count} skills)")
+                    cmd[1:], f"▣ {info.get('description', 'Skill bundle')} ({skill_count} skills)")
         for cmd, info in self._iter_skill_commands().items():
             if cmd[1:].startswith(word):
-                yield _cmd_completion(cmd[1:], f"⚡ {_short_desc(info, 'Skill command')}")
+                yield _cmd_completion(cmd[1:], f"⚡ {info.get('description', 'Skill command')}")
         try:
             from hermes_cli.plugins import get_plugin_commands
             for cmd_name, cmd_info in get_plugin_commands().items():
                 if cmd_name.startswith(word):
                     yield _cmd_completion(
-                        cmd_name, f"🔌 {_short_desc(cmd_info, 'Plugin command')}")
+                        cmd_name, f"🔌 {cmd_info.get('description', 'Plugin command')}")
         except Exception:
             pass
 

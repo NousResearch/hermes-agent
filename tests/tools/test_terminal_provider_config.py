@@ -8,7 +8,7 @@ from agent.terminal_env_provider import TerminalEnvironmentProvider
 
 def test_plugin_factory_receives_resolved_backend_config(monkeypatch):
     import hermes_cli.config as config_module
-    import tools.terminal_tool as terminal_tool
+    import tools.terminal_tool_backends as terminal_tool_backends
 
     received = {}
 
@@ -42,12 +42,12 @@ def test_plugin_factory_receives_resolved_backend_config(monkeypatch):
         lambda **_kwargs: raw_config,
     )
     monkeypatch.setattr(
-        terminal_tool,
+        terminal_tool_backends,
         "_get_plugin_env_provider",
         lambda name: Provider() if name == "configured_box" else None,
     )
 
-    terminal_tool._create_environment(
+    terminal_tool_backends._create_environment(
         "configured_box",
         "",
         "~",
@@ -64,7 +64,7 @@ def test_plugin_factory_receives_resolved_backend_config(monkeypatch):
 
 def test_plugin_factory_fails_when_profile_config_cannot_be_read(monkeypatch):
     import hermes_cli.config as config_module
-    import tools.terminal_tool as terminal_tool
+    import tools.terminal_tool_backends as terminal_tool_backends
 
     class Provider(TerminalEnvironmentProvider):
         name = "configured_box"
@@ -84,13 +84,13 @@ def test_plugin_factory_fails_when_profile_config_cannot_be_read(monkeypatch):
         lambda **_kwargs: (_ for _ in ()).throw(PermissionError("config unreadable")),
     )
     monkeypatch.setattr(
-        terminal_tool,
+        terminal_tool_backends,
         "_get_plugin_env_provider",
         lambda name: Provider() if name == "configured_box" else None,
     )
 
-    with pytest.raises(terminal_tool.PluginTerminalEnvironmentError) as exc_info:
-        terminal_tool._create_environment("configured_box", "", "~", 60)
+    with pytest.raises(terminal_tool_backends.PluginTerminalEnvironmentError) as exc_info:
+        terminal_tool_backends._create_environment("configured_box", "", "~", 60)
     assert "config unreadable" not in str(exc_info.value)
 
 
@@ -99,7 +99,7 @@ def test_plugin_factory_treats_non_mapping_yaml_root_as_empty_config(
     tmp_path, monkeypatch, yaml_text
 ):
     import hermes_cli.config as config_module
-    import tools.terminal_tool as terminal_tool
+    import tools.terminal_tool_backends as terminal_tool_backends
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml_text, encoding="utf-8")
@@ -121,12 +121,12 @@ def test_plugin_factory_treats_non_mapping_yaml_root_as_empty_config(
 
     monkeypatch.setattr(config_module, "get_config_path", lambda: config_path)
     monkeypatch.setattr(
-        terminal_tool,
+        terminal_tool_backends,
         "_get_plugin_env_provider",
         lambda name: Provider() if name == "configured_box" else None,
     )
 
-    terminal_tool._create_environment("configured_box", "", "~", 60)
+    terminal_tool_backends._create_environment("configured_box", "", "~", 60)
 
     assert received == {}
 
@@ -134,6 +134,7 @@ def test_plugin_factory_treats_non_mapping_yaml_root_as_empty_config(
 def test_requirements_failure_does_not_log_provider_exception_value(monkeypatch, caplog):
     import hermes_cli.config as config_module
     import tools.terminal_tool as terminal_tool
+    import tools.terminal_tool_backends as terminal_tool_backends
 
     class Provider(TerminalEnvironmentProvider):
         name = "configured_box"
@@ -146,7 +147,7 @@ def test_requirements_failure_does_not_log_provider_exception_value(monkeypatch,
 
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "configured_box"})
     monkeypatch.setattr(
-        terminal_tool,
+        terminal_tool_backends,
         "_get_plugin_env_provider",
         lambda name: Provider() if name == "configured_box" else None,
     )
@@ -164,6 +165,7 @@ def test_requirements_failure_does_not_log_provider_exception_value(monkeypatch,
 def test_runtime_resolver_failure_does_not_leak_provider_exception_value(monkeypatch, caplog):
     import hermes_cli.config as config_module
     import tools.terminal_tool as terminal_tool
+    import tools.terminal_tool_backends as terminal_tool_backends
 
     class Provider(TerminalEnvironmentProvider):
         name = "configured_box"
@@ -179,7 +181,7 @@ def test_runtime_resolver_failure_does_not_leak_provider_exception_value(monkeyp
 
     monkeypatch.setenv("TERMINAL_ENV", "configured_box")
     monkeypatch.setattr(
-        terminal_tool,
+        terminal_tool_backends,
         "_get_plugin_env_provider",
         lambda name: Provider() if name == "configured_box" else None,
     )

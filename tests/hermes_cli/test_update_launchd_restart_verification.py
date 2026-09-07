@@ -287,13 +287,20 @@ class TestInvokingProfileIsVerifiedLikeItsSiblings:
         assert calls["restart"] == 0
         assert calls["verify"] == 0
 
-    def test_unregistered_label_is_left_alone(self, monkeypatch):
-        """No launchd registration on this host means nothing to restart."""
+    def test_unregistered_label_is_restarted_not_skipped(self, monkeypatch):
+        """A booted-out job (plist present, deregistered) must be RESTARTED.
+
+        FLIPPED by the #74973 fix (salvage #75021): this test used to pin
+        'registered=False → nothing to restart', which was precisely the
+        silent-skip bug — launchctl list is session-scoped and non-zero
+        for booted-out jobs whose plist very much still wants a gateway;
+        launchd_restart() owns the bootout/bootstrap ladder for that state.
+        """
         calls = _patch_launchd_env(monkeypatch, registered=False)
 
-        assert _run_fleet_restart() == ([], [])
-        assert calls["restart"] == 0
-        assert calls["verify"] == 0
+        assert _run_fleet_restart() == ([LABEL], [])
+        assert calls["restart"] == 1
+        assert calls["verify"] == 1
 
 
 class TestIncompleteFleetWarningIsPlatformCorrect:

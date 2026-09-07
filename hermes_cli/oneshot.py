@@ -1,59 +1,49 @@
 """Oneshot (-z) mode: send a prompt, get the final content block, exit.
 
-Bypasses cli.py entirely.  No banner, no spinner, no session_id line,
-no stderr chatter.  Just the agent's final text to stdout.
-
-Toolsets = explicit --toolsets when provided, otherwise whatever the user has
-configured for "cli" in `hermes tools`.
-Rules / memory / AGENTS.md / preloaded skills = same as a normal chat turn.
-Approvals = auto-bypassed (HERMES_YOLO_MODE=1 is set for the call).
-Working directory = the user's CWD (AGENTS.md etc. resolve from there as usual).
-
-Model / provider selection mirrors `hermes chat`:
-    - Both optional. If omitted, use the user's configured default.
-    - If both given, pair them exactly as given.
-    - If only --model given, auto-detect the provider that serves it.
-    - If only --provider given, error out (ambiguous — caller must pick a model).
-
-Env var fallbacks (used when the corresponding arg is not passed):
-    - HERMES_INFERENCE_MODEL
+Toolsets = explicit --toolsets, else the user's "cli" toolsets from `hermes tools`. Rules /
+memory / AGENTS.md / preloaded skills = same as a normal chat turn. Approvals are auto-bypassed
+(HERMES_YOLO_MODE=1). Model/provider mirror `hermes chat`: both optional; only --model → auto-detect
+the provider; only --provider → error (ambiguous).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from gateway.session_context import declare_stateless_channel
 from hermes_cli.fallback_config import get_fallback_chain
 
+_ALL_TOOLSETS = {"all", "*"}
+
+# Keys copied from the run result into the ``--usage-file`` report. ``service_tier`` is a
+# billing-audit field: the tier REQUESTED via request_overrides.extra_body (None when unset), so
+# batch pipelines can verify the tier they pay for went out on the wire.
+_USAGE_KEYS = (
+    "estimated_cost_usd", "cost_status", "cost_source", "input_tokens", "output_tokens",
+    "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "api_calls",
+    "model", "provider", "session_id", "completed",
+)
+
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
+    """Split repeated/comma-separated toolset flags into a clean list (``None`` when empty)."""
     if not toolsets:
         return None
-
-    raw_items = [toolsets] if isinstance(toolsets, str) else toolsets
-    if not isinstance(raw_items, (list, tuple)):
-        raw_items = [raw_items]
-
-    normalized: list[str] = []
-    for item in raw_items:
-        if isinstance(item, str):
-            normalized.extend(part.strip() for part in item.split(","))
-        else:
-            normalized.append(str(item).strip())
-
-    return [item for item in normalized if item] or None
+    items = toolsets if isinstance(toolsets, (list, tuple)) else [toolsets]
+    parts = [str(item).split(",") if isinstance(item, str) else [str(item)] for item in items]
+    return [p.strip() for chunk in parts for p in chunk if p.strip()] or None
 
 
 def _normalize_skills(skills: object = None) -> list[str]:
     """Normalize repeated/comma-separated skill flags and preserve order."""
-    normalized = _normalize_toolsets(skills) or []
-    return list(dict.fromkeys(normalized))
+    return list(dict.fromkeys(_normalize_toolsets(skills) or []))
 
 
 def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
@@ -64,22 +54,38 @@ def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
 
     from agent.skill_commands import build_preloaded_skills_prompt
 
-    skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
-        parsed_skills
-    )
+    skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(parsed_skills)
     if missing_skills:
         missing_display = ", ".join(missing_skills)
-        if loaded_skills:
-            logging.warning(
-                "Unknown skill(s) requested, skipping: %s. Continuing with: %s. "
-                "List available skills with `hermes skills list`.",
-                missing_display,
-                ", ".join(loaded_skills),
-            )
-        else:
+        if not loaded_skills:
             raise ValueError(f"Unknown skill(s): {missing_display}")
-
+        logging.warning(
+            "Unknown skill(s) requested, skipping: %s. Continuing with: %s. "
+            "List available skills with `hermes skills list`.",
+            missing_display,
+            ", ".join(loaded_skills),
+        )
     return skills_prompt or None
+
+
+def _configured_mcp_servers() -> tuple[set[str], set[str]]:
+    """``(enabled, disabled)`` MCP server names from config; both empty on any error."""
+    try:
+        from hermes_cli.config import read_raw_config
+        from hermes_cli.tools_config import _parse_enabled_flag
+
+        cfg = read_raw_config()
+        mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+        enabled: set[str] = set()
+        disabled: set[str] = set()
+        for name, server_cfg in mcp_servers.items():
+            if not isinstance(server_cfg, dict):
+                continue
+            target = enabled if _parse_enabled_flag(server_cfg.get("enabled", True), default=True) else disabled
+            target.add(str(name))
+        return enabled, disabled
+    except Exception:
+        return set(), set()
 
 
 def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
@@ -103,13 +109,11 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
             plugin_valid = [name for name in unresolved if validate_toolset(name)]
         except Exception:
             plugin_valid = []
+        built_in.extend(plugin_valid)
+        unresolved = [name for name in unresolved if name not in plugin_valid]
 
-        if plugin_valid:
-            built_in.extend(plugin_valid)
-            unresolved = [name for name in unresolved if name not in plugin_valid]
-
-    if any(name in {"all", "*"} for name in built_in):
-        ignored = [name for name in normalized if name not in {"all", "*"}]
+    if any(name in _ALL_TOOLSETS for name in built_in):
+        ignored = [name for name in normalized if name not in _ALL_TOOLSETS]
         if ignored:
             sys.stderr.write(
                 "hermes -z: --toolsets all enables every toolset; "
@@ -117,26 +121,7 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
             )
         return None, None
 
-    mcp_names: set[str] = set()
-    mcp_disabled: set[str] = set()
-    if unresolved:
-        try:
-            from hermes_cli.config import read_raw_config
-            from hermes_cli.tools_config import _parse_enabled_flag
-
-            cfg = read_raw_config()
-            mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
-            for name, server_cfg in mcp_servers.items():
-                if not isinstance(server_cfg, dict):
-                    continue
-                if _parse_enabled_flag(server_cfg.get("enabled", True), default=True):
-                    mcp_names.add(str(name))
-                else:
-                    mcp_disabled.add(str(name))
-        except Exception:
-            mcp_names = set()
-            mcp_disabled = set()
-
+    mcp_names, mcp_disabled = _configured_mcp_servers() if unresolved else (set(), set())
     mcp_valid = [name for name in unresolved if name in mcp_names]
     disabled = [name for name in unresolved if name in mcp_disabled]
     unknown = [name for name in unresolved if name not in mcp_names and name not in mcp_disabled]
@@ -149,47 +134,23 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
             "hermes -z: ignoring disabled MCP servers (set enabled: true in config.yaml to use): "
             f"{', '.join(disabled)}\n"
         )
-
     if not valid:
         return None, "hermes -z: --toolsets did not contain any valid toolsets.\n"
-
     return valid, None
 
 
 def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] = None) -> None:
     """Best-effort JSON usage report for pipelines (``-z --usage-file``).
 
-    Written even on failure so callers can always account for spend. Never
-    raises — a broken usage write must not mask the run's own outcome.
+    Written even on failure so callers can always account for spend. Never raises — a broken usage
+    write must not mask the run's own outcome.
     """
     if not path:
         return
     try:
-        import json
-
-        report = {
-            "estimated_cost_usd": result.get("estimated_cost_usd"),
-            "cost_status": result.get("cost_status"),
-            "cost_source": result.get("cost_source"),
-            "input_tokens": result.get("input_tokens"),
-            "output_tokens": result.get("output_tokens"),
-            "cache_read_tokens": result.get("cache_read_tokens"),
-            "cache_write_tokens": result.get("cache_write_tokens"),
-            "reasoning_tokens": result.get("reasoning_tokens"),
-            "total_tokens": result.get("total_tokens"),
-            "api_calls": result.get("api_calls"),
-            "model": result.get("model"),
-            "provider": result.get("provider"),
-            "session_id": result.get("session_id"),
-            "completed": result.get("completed"),
-            "failed": bool(result.get("failed")) or failure is not None,
-            # Billing-audit field: the service tier this run REQUESTED via
-            # request_overrides.extra_body (e.g. OpenAI "flex"). None when
-            # unset. Lets batch pipelines verify the tier they think they're
-            # paying for actually went out on the wire (July 2026 incident:
-            # a config-matching bug silently dropped flex -> 2.3x billing).
-            "service_tier": result.get("service_tier"),
-        }
+        report = {key: result.get(key) for key in _USAGE_KEYS}
+        report["failed"] = bool(result.get("failed")) or failure is not None
+        report["service_tier"] = result.get("service_tier")
         if failure is not None:
             report["failure"] = failure
         out = Path(path).expanduser()
@@ -209,33 +170,16 @@ def run_oneshot(
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
-    Args:
-        prompt: The user message to send.
-        model: Optional model override. Falls back to HERMES_INFERENCE_MODEL
-            env var, then config.yaml's model.default / model.model.
-        provider: Optional provider override. Falls back to config.yaml's
-            model.provider, then "auto".
-        toolsets: Optional comma-separated string or iterable of toolsets.
-        skills: Optional repeated/comma-separated skill identifiers to preload.
-        usage_file: Optional path; when set, a JSON usage report (estimated
-            cost, token counts, model, api_calls) is written there after the
-            run — even when the run fails — so pipelines can account for
-            spend per invocation.
-
-    Returns the exit code.  The caller owns process termination.
+    Model/provider fall back to ``HERMES_INFERENCE_MODEL`` and config.yaml. ``usage_file`` gets a
+    JSON usage report even when the run fails. Returns the exit code; the caller owns process
+    termination.
     """
-    # Silence every stdlib logger for the duration.  AIAgent, tools, and
-    # provider adapters all log to stderr through the root logger; file
-    # handlers added by setup_logging() keep working (they're attached to
-    # the root logger's handler list, not affected by level), but no
-    # bytes reach the terminal.
+    # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
+    # root logger. File handlers from setup_logging() keep working (level-independent).
     logging.disable(logging.CRITICAL)
 
-    # --provider without --model is ambiguous: carrying the user's configured
-    # model across to a different provider is usually wrong (that provider may
-    # not host it), and silently picking the provider's catalog default hides
-    # the mismatch.  Require the caller to be explicit.  Validate BEFORE the
-    # stderr redirect so the message actually reaches the terminal.
+    # --provider without --model is ambiguous (the provider may not host the configured model, and
+    # picking its catalog default hides the mismatch). Validate BEFORE the stderr redirect.
     env_model_early = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
     if provider and not ((model or "").strip() or env_model_early):
         sys.stderr.write(
@@ -250,58 +194,41 @@ def run_oneshot(
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
-    # Auto-approve any shell / tool approvals.  Non-interactive by
-    # definition — a prompt would hang forever.
+    # Non-interactive by definition — an approval prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
 
-    # One-shot prints a single final response and exits: there is no later turn
-    # for a detached subagent's completion to re-enter, and nothing here drains
-    # process_registry.completion_queue (only cli.py's interactive process_loop
-    # and the gateway watchers do). Left unbound, async_delivery_supported()
-    # defaults True, delegate_task is forced background, and every subagent
-    # result is discarded. Declaring the channel stateless routes delegate_task
-    # to its inline/synchronous path. See declare_stateless_channel().
+    # Nothing here drains process_registry.completion_queue (only cli.py's process_loop and the
+    # gateway watchers do), so left unbound delegate_task would be forced background and every
+    # subagent result discarded. Stateless routes it to the inline/synchronous path.
     declare_stateless_channel()
 
-    # Redirect stderr AND stdout to devnull for the entire call tree.
-    # We'll print the final response to the real stdout at the end.
+    # Redirect stderr AND stdout for the entire call tree; the final response goes to the real
+    # stdout at the end.
     real_stdout = sys.stdout
     real_stderr = sys.stderr
-    devnull = open(os.devnull, "w", encoding="utf-8")
 
     response: Optional[str] = None
     result: dict = {}
     failure: BaseException | None = None
-    try:
-        with redirect_stdout(devnull), redirect_stderr(devnull):
-            try:
-                response, result = _run_agent(
-                    prompt,
-                    model=model,
-                    provider=provider,
-                    toolsets=explicit_toolsets,
-                    use_config_toolsets=use_config_toolsets,
-                    skills=skills,
-                )
-            except BaseException as exc:  # noqa: BLE001
-                # Capture anything that escapes the agent (including OSError
-                # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
-                # KeyboardInterrupt, SystemExit, etc.) so we can surface it on
-                # the real stderr instead of crashing past the redirect with a
-                # traceback that the caller never sees. A silent exit in a
-                # cron / SSH / subprocess context is the worst failure mode.
-                # See #30623.
-                failure = exc
-    finally:
+    with open(os.devnull, "w", encoding="utf-8") as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
         try:
-            devnull.close()
-        except Exception:
-            pass
+            response, result = _run_agent(
+                prompt,
+                model=model,
+                provider=provider,
+                toolsets=explicit_toolsets,
+                use_config_toolsets=use_config_toolsets,
+                skills=skills,
+            )
+        except BaseException as exc:  # noqa: BLE001
+            # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
+            # KeyboardInterrupt, SystemExit, ...) so it reaches the real stderr instead of dying
+            # silently past the redirect — the worst failure mode in cron / SSH / subprocess use.
+            failure = exc
 
     if failure is not None:
-        # Re-raise control-flow exceptions so the parent handles them as usual
-        # (Ctrl-C / explicit sys.exit() inside the agent).
+        # Control-flow exceptions (Ctrl-C / sys.exit inside the agent) re-raise to the parent.
         if isinstance(failure, (KeyboardInterrupt, SystemExit)):
             _write_usage_file(usage_file, result, failure=repr(failure))
             raise failure
@@ -312,39 +239,30 @@ def run_oneshot(
 
     _write_usage_file(usage_file, result)
 
-    # Model text can contain lone UTF-16 surrogates (invalid in UTF-8). Writing
-    # those to a real stdout TextIO raises UnicodeEncodeError and aborts with
-    # exit 1 after the turn already completed — scrub to U+FFFD first.
-    # See #80366.
     if response:
+        # Lone UTF-16 surrogates would raise UnicodeEncodeError on a real stdout and abort with
+        # exit 1 after the turn already completed — scrub to U+FFFD first.
+        # Model text can contain lone UTF-16 surrogates (invalid in UTF-8). See #80366.
         from agent.message_sanitization import _sanitize_surrogates
 
         response = _sanitize_surrogates(response)
-
-    if response:
         real_stdout.write(response)
         if not response.endswith("\n"):
             real_stdout.write("\n")
         real_stdout.flush()
 
-    if (result.get("failed") or result.get("partial")) and not (response or "").strip():
-        return 2
-
     if not (response or "").strip():
+        if result.get("failed") or result.get("partial"):
+            return 2
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
         return 1
-
     return 0
 
 
 def _create_session_db_for_oneshot():
-    """Best-effort SessionDB for ``hermes -z`` / oneshot mode.
-
-    Oneshot bypasses ``HermesCLI._init_agent()``, so it must wire the SQLite
-    session store itself. Without this, the ``session_search``/recall tool is
-    advertised but every call returns "Session database not available.".
-    """
+    """Best-effort SessionDB — oneshot bypasses ``HermesCLI._init_agent()``, so it must wire the
+    SQLite store itself or ``session_search`` is advertised but always unavailable."""
     try:
         from hermes_state import SessionDB
 
@@ -352,6 +270,74 @@ def _create_session_db_for_oneshot():
     except Exception as exc:
         logging.debug("SQLite session store not available for oneshot mode: %s", exc)
         return None
+
+
+@dataclass
+class _ModelChoice:
+    model: str
+    provider: str | None
+    base_url: str | None = None
+    api_key: str | None = None
+
+
+def _configured_model(model_cfg: object) -> str:
+    if isinstance(model_cfg, str):
+        return model_cfg
+    raw = model_cfg.get("default") or model_cfg.get("model") or ""
+    if isinstance(raw, dict):
+        from hermes_cli.config import split_model_config_default
+
+        return split_model_config_default(raw)[0]
+    return str(raw or "")
+
+
+def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optional[str]) -> _ModelChoice:
+    """Effective model = arg → env → config; provider = arg → auto-detect → config/env.
+
+    Auto-detection only runs when the model was explicitly requested (arg or env var) — same
+    semantic as ``/model <name>`` — because the configured default provider may not host it.
+    Config-sourced models are the "use my defaults" path and keep the configured provider.
+    """
+    from hermes_cli.models import detect_provider_for_model
+
+    model_cfg = cfg.get("model") or {}
+    env_model = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
+    explicit_model = (model or "").strip() or env_model
+    choice = _ModelChoice(explicit_model or _configured_model(model_cfg), (provider or "").strip() or None)
+    if choice.provider is not None or not explicit_model:
+        return choice
+
+    # DIRECT_ALIASES (config.yaml ``model_aliases:``) map a user alias to (model, provider,
+    # base_url) for endpoints outside any catalog (local servers, custom proxies, ...).
+    try:
+        from hermes_cli import model_switch as _ms
+        _ms._ensure_direct_aliases()
+        direct = _ms.DIRECT_ALIASES.get(explicit_model.strip().lower())
+    except Exception:
+        direct = None
+    if direct is None:
+        cfg_provider = ""
+        if isinstance(model_cfg, dict):
+            cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        current_provider = cfg_provider or os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto"
+        detected = detect_provider_for_model(explicit_model, current_provider)
+        if detected:
+            choice.provider, choice.model = detected
+        return choice
+
+    choice.model = direct.model
+    choice.provider = direct.provider
+    # Resolve through the SAME owner the interactive `/model` path uses: passing `direct.provider`
+    # with a URL-bearing alias would let a label like `anthropic` keep the alias's base_url yet
+    # fall back to the live vendor token — a bearer credential crossing an origin boundary. The
+    # helper forces bare `custom` for URL-bearing aliases and carries the alias's own key.
+    try:
+        choice.provider, choice.api_key = _ms.direct_alias_runtime_request(direct)
+    except Exception:
+        choice.api_key = None
+    if direct.base_url:
+        choice.base_url = direct.base_url.rstrip("/")
+    return choice
 
 
 def _run_agent(
@@ -362,147 +348,64 @@ def _run_agent(
     use_config_toolsets: bool = True,
     skills: object = None,
 ) -> tuple[str, dict]:
-    """Build an AIAgent exactly like a normal CLI chat turn would, then
-    run a single conversation.  Returns ``(final_response, run_result)``."""
-    # Imports are local so they don't run when hermes is invoked for
-    # other commands (keeps top-level CLI startup cheap).
+    """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
+    ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
     from hermes_cli.config import load_config
-    from hermes_cli.models import detect_provider_for_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
 
     cfg = load_config()
-
-    # Resolve effective model: explicit arg → env var → config.
-    model_cfg = cfg.get("model") or {}
-    if isinstance(model_cfg, str):
-        cfg_model = model_cfg
-    else:
-        _raw = model_cfg.get("default") or model_cfg.get("model") or ""
-        if isinstance(_raw, dict):
-            from hermes_cli.config import split_model_config_default
-            cfg_model, _ = split_model_config_default(_raw)
-        else:
-            cfg_model = str(_raw or "")
-
-    env_model = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
-    effective_model = (model or "").strip() or env_model or cfg_model
-
-    # Resolve effective provider: explicit arg → (auto-detect from model if
-    # model was explicit) → env / config (handled inside resolve_runtime_provider).
-    #
-    # When --model is given without --provider, auto-detect the provider that
-    # serves that model — same semantic as `/model <name>` in an interactive
-    # session.  Without this, resolve_runtime_provider() would fall back to
-    # the user's configured default provider, which may not host the model
-    # the caller just asked for.
-    effective_provider = (provider or "").strip() or None
-    explicit_base_url_from_alias: Optional[str] = None
-    if effective_provider is None and (model or env_model):
-        # Only auto-detect when the model was explicitly requested via arg or
-        # env var (not when it came from config — that's the "use my defaults"
-        # path and the configured provider is already correct).
-        explicit_model = (model or "").strip() or env_model
-        if explicit_model:
-            # First check DIRECT_ALIASES populated from config.yaml `model_aliases:`.
-            # These map a user-defined alias to (model, provider, base_url) for
-            # endpoints not in any catalog (local servers, custom proxies, etc.).
-            try:
-                from hermes_cli import model_switch as _ms
-                _ms._ensure_direct_aliases()
-                direct = _ms.DIRECT_ALIASES.get(explicit_model.strip().lower())
-            except Exception:
-                direct = None
-            if direct is not None:
-                effective_model = direct.model
-                effective_provider = direct.provider
-                if direct.base_url:
-                    explicit_base_url_from_alias = direct.base_url.rstrip("/")
-            else:
-                cfg_provider = ""
-                if isinstance(model_cfg, dict):
-                    cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-                current_provider = (
-                    cfg_provider
-                    or os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower()
-                    or "auto"
-                )
-                detected = detect_provider_for_model(explicit_model, current_provider)
-                if detected:
-                    effective_provider, effective_model = detected
-
+    choice = _resolve_model_and_provider(cfg, model, provider)
     runtime = resolve_runtime_provider(
-        requested=effective_provider,
-        target_model=effective_model or None,
-        explicit_base_url=explicit_base_url_from_alias,
+        requested=choice.provider,
+        target_model=choice.model or None,
+        explicit_base_url=choice.base_url,
+        explicit_api_key=choice.api_key,
     )
 
-    # Pull in explicit toolsets when provided; otherwise use whatever the user
-    # has enabled for "cli". sorted() gives stable ordering for config-derived
-    # sets; explicit values preserve user order.
+    # sorted() gives stable ordering for config-derived sets; explicit values preserve user order.
     toolsets_list = _normalize_toolsets(toolsets)
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
-    # Ensure MCP tools are discovered before building the agent.  Oneshot
-    # bypasses cli.py's _prepare_agent_startup MCP background path and
-    # HermesCLI._init_agent's wait — it builds AIAgent directly here, so the
-    # tool snapshot at construction time misses any MCP server that hasn't
-    # registered yet.  This helper starts discovery if needed (idempotent) and
-    # bounded-waits with the larger single-query bound (default 15s) because
-    # there is only ONE turn and no between-turns late-binding refresh (#38448).
+    # Oneshot builds AIAgent directly, bypassing cli.py's MCP background discovery and
+    # _init_agent's wait, so the construction-time tool snapshot would miss late MCP servers.
+    # Idempotent start + bounded wait with the single-query bound (there is no later turn).
+    # Ensure MCP tools are discovered before building the agent. This helper starts discovery if needed
+    # (idempotent) and bounded-waits with the larger single-query bound (default 15s) because there is only
+    # ONE turn and no between-turns late-binding refresh (#38448).
     from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
 
-    ensure_mcp_discovery_before_agent_build(
-        logger=logging.getLogger(__name__),
-        single_query=True,
-    )
+    ensure_mcp_discovery_before_agent_build(logger=logging.getLogger(__name__), single_query=True)
 
     skills_prompt = _build_preloaded_skills_prompt(skills)
 
     session_db = _create_session_db_for_oneshot()
-    # The try spans agent construction (not just ``chat``) so the SQLite store
-    # opened above is always closed — including when ``AIAgent(...)`` itself
-    # raises on a provider/config error. The one-shot exit path hard-exits via
-    # os._exit and skips finalizers, so an un-closed connection here would leak.
+    # The try spans agent construction (not just ``chat``) so the store is always closed, even when
+    # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
     agent = None
     try:
-        # Read the effective fallback chain from profile config so oneshot
-        # workers honour the same merge semantics as interactive CLI and
-        # gateway sessions.
-        _fb = get_fallback_chain(cfg)
-
         agent = AIAgent(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),
             requested_provider=runtime.get("requested_provider"),
             api_mode=runtime.get("api_mode"),
-            model=effective_model,
+            model=choice.model,
             enabled_toolsets=toolsets_list,
             quiet_mode=True,
             platform="cli",
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
-            fallback_model=_fb or None,
+            fallback_model=get_fallback_chain(cfg) or None,
             ephemeral_system_prompt=skills_prompt,
-            # Interactive callbacks are intentionally NOT wired beyond this
-            # one.  In oneshot mode there's no user sitting at a terminal:
-            #   - clarify  → returns a synthetic "pick a default" instruction
-            #                so the agent continues instead of stalling on
-            #                the tool's built-in "not available" error
-            #   - sudo password prompt → terminal_tool gates on
-            #                HERMES_INTERACTIVE which we never set
-            #   - shell-hook approval → auto-approved via HERMES_ACCEPT_HOOKS=1
-            #                (set above); also falls back to deny on non-tty
-            #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
-            #   - skill secret capture → returns gracefully when no callback set
+            # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
+            # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
+            # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.
             clarify_callback=_oneshot_clarify_callback,
         )
-
-        # Belt-and-braces: make sure AIAgent doesn't invoke any streaming
-        # display callbacks that would bypass our stdout capture.
+        # Belt-and-braces: no streaming display callbacks may bypass our stdout capture.
         agent.suppress_status_output = True
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
@@ -510,58 +413,50 @@ def _run_agent(
         result = agent.run_conversation(prompt)
         return (result.get("final_response") or "", result)
     finally:
-        # Ordering deliberately mirrors gateway/run.py:_cleanup_agent_resources,
-        # NOT cli.py:_run_cleanup — oneshot has no _active_agent_ref and must
-        # close the agent explicitly because the hard-exit path skips finalizers.
-        if agent is not None:
-            # Linger (bounded) for background processes this turn spawned with
-            # notify_on_complete=true BEFORE agent.close(): close() calls
-            # process_registry.kill_all(task_id) and the dying parent owns the
-            # children's stdout pipes, so exiting now destroys in-flight
-            # deliveries — including Bot Mode handoff replies dispatched from
-            # a short-lived recipient (#90879).
-            try:
-                from tools.process_registry import process_registry
+        _close_agent(agent, session_db)
 
-                process_registry.wait_for_pending_completions(None)
-            except Exception:
-                logging.debug("oneshot background completion wait failed", exc_info=True)
-            try:
-                session_messages = getattr(agent, "_session_messages", None)
-                if isinstance(session_messages, list):
-                    agent.shutdown_memory_provider(session_messages)
-                else:
-                    agent.shutdown_memory_provider()
-            except Exception:
-                logging.debug("oneshot memory/context cleanup failed", exc_info=True)
-            try:
-                agent.close()
-            except Exception:
-                logging.debug("oneshot agent cleanup failed", exc_info=True)
-        # agent.close() calls session_db.end_session() but leaves the connection
-        # open; close it here to checkpoint the WAL before os._exit skips
-        # finalizers.
-        if session_db is not None:
-            try:
-                session_db.close()
-            except Exception:
-                logging.debug("oneshot session store cleanup failed", exc_info=True)
+
+def _quietly(what: str, fn) -> None:
+    """Run a cleanup step, logging (never raising) on failure."""
+    try:
+        fn()
+    except Exception:
+        logging.debug("oneshot %s failed", what, exc_info=True)
+
+
+def _linger_for_background_completions() -> None:
+    # Linger (bounded) for background processes this turn spawned with notify_on_complete=true BEFORE
+    # agent.close(): close() calls process_registry.kill_all(task_id) and the dying parent owns the
+    # children's stdout pipes, so exiting now destroys in-flight deliveries — including Bot Mode handoff
+    # replies dispatched from a short-lived recipient (#90879).
+    from tools.process_registry import process_registry
+
+    process_registry.wait_for_pending_completions(None)
+
+
+def _close_agent(agent, session_db) -> None:
+    """Teardown mirroring gateway/run.py:_cleanup_agent_resources (NOT cli.py:_run_cleanup):
+    oneshot has no _active_agent_ref and the hard-exit path skips finalizers."""
+    if agent is not None:
+        # Linger (bounded) for notify_on_complete background processes BEFORE agent.close():
+        # close() kill_all()s the task and the dying parent owns the children's stdout pipes, so
+        # exiting now destroys in-flight deliveries (e.g. Bot Mode handoff replies).
+        _quietly("background completion wait", _linger_for_background_completions)
+        session_messages = getattr(agent, "_session_messages", None)
+        memory_args = (session_messages,) if isinstance(session_messages, list) else ()
+        _quietly("memory/context cleanup", lambda: agent.shutdown_memory_provider(*memory_args))
+        _quietly("agent cleanup", lambda: agent.close())
+    # agent.close() ends the session but leaves the connection open; close it to checkpoint the WAL.
+    if session_db is not None:
+        _quietly("session store cleanup", lambda: session_db.close())
 
 
 def _oneshot_clarify_callback(question: str, choices=None, multi_select=False) -> str:
-    """Clarify is disabled in oneshot mode — tell the agent to pick a
-    default and proceed instead of stalling or erroring."""
+    """Clarify is disabled in oneshot mode — tell the agent to pick a default and proceed."""
     if choices:
-        if multi_select:
-            return (
-                f"[oneshot mode: no user available. Pick the best subset from "
-                f"{choices} using your own judgment and continue.]"
-            )
+        what = "subset" if multi_select else "option"
         return (
-            f"[oneshot mode: no user available. Pick the best option from "
+            f"[oneshot mode: no user available. Pick the best {what} from "
             f"{choices} using your own judgment and continue.]"
         )
-    return (
-        "[oneshot mode: no user available. Make the most reasonable "
-        "assumption you can and continue.]"
-    )
+    return "[oneshot mode: no user available. Make the most reasonable assumption you can and continue.]"

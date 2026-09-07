@@ -174,6 +174,23 @@ def run_oneshot(
     JSON usage report even when the run fails. Returns the exit code; the caller owns process
     termination.
     """
+    # Non-interactive one-shot: register in the process-identity ledger so machine-wide scans
+    # (`hermes update`, Desktop sweeps) can classify this process instead of guessing from cmdline
+    # archaeology. "worker" is deliberately NOT in REAPABLE_PURPOSES, so reapers leave it alone —
+    # registration is identification only. Windows: self-attach to a KILL_ON_JOB_CLOSE job so tool
+    # child trees die with this process (mirrors gateway/run.py). Best-effort + fail-safe by design.
+    try:
+        from hermes_cli.process_identity import (
+            attach_self_to_kill_on_close_job,
+            register_self,
+        )
+
+        register_self("worker")
+        if sys.platform == "win32":
+            attach_self_to_kill_on_close_job()
+    except Exception:
+        pass  # identity must never break a one-shot run
+
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
     logging.disable(logging.CRITICAL)

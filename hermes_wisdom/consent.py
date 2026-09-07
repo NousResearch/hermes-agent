@@ -557,6 +557,9 @@ class WisdomConsent:
                 "publication_state": result.get("publication_state")
                 if isinstance(result, dict)
                 else None,
+                "portal_url": result.get("portal_url")
+                if isinstance(result, dict)
+                else None,
             }
         except WisdomConflict:
             state, outcome = "stale", {"reason": "package_or_authority_changed"}

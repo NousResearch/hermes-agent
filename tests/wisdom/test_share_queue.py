@@ -167,6 +167,11 @@ def test_share_is_native_local_preparation_then_separate_exact_publication(shari
     repeat = mediation.consent.resolve("org", shown["id"], actor, "confirm")
     assert first["result"] == repeat["result"]
     assert first["result"]["packaging_state"] == "queued"
+    receipt = interaction_view(first)
+    assert receipt.summary == "Preparing to share"
+    assert "Security check" not in receipt.to_text()
+    assert "Professionalism" not in receipt.to_text()
+    assert not receipt.actions
     assert len(mediation.queue.assessments("org")) == 2
     model.assert_not_called()
     assert service.client.uploaded == 0
@@ -191,6 +196,10 @@ def test_share_is_native_local_preparation_then_separate_exact_publication(shari
     assert result["state"] == "completed", result
     assert service.client.uploaded == 1
     assert service.client.publications == 1
+    receipt = interaction_view(result)
+    assert receipt.summary == "Shared"
+    assert "confirmation control" not in receipt.to_text()
+    assert "check" not in receipt.to_text().lower()
     assert (
         mediation.consent.resolve("org", final["id"], actor, "confirm")["state"]
         == "completed"
@@ -398,6 +407,45 @@ def test_private_review_pages_cover_exact_files_without_consuming_consent(sharin
         mediation.consent.resolve("org", identity, wrong, "inspect.1")
     with pytest.raises(WisdomNotFound):
         mediation.consent.resolve("org", identity, actor, "inspect.999")
+
+
+@pytest.mark.parametrize(
+    "publication,title",
+    [("published", "Shared"), ("pending_moderation", "Submitted for review")],
+)
+def test_publication_receipt_links_to_portal_without_expanding_checks(
+    publication, title
+):
+    view = interaction_view({
+        "state": "completed",
+        "operation": "publish",
+        "facts": {"editorial_name": "Skill"},
+        "result": {
+            "publication_state": publication,
+            "portal_url": "https://portal.example/review/draft",
+        },
+    })
+    assert view.summary == title
+    assert len(view.actions) == 1
+    assert view.actions[0].label == "View in Portal"
+    assert view.actions[0].url == "https://portal.example/review/draft"
+
+
+def test_packaging_prompt_contains_full_schema(sharing):
+    from hermes_wisdom.agent_led.agent import package_for_share
+
+    service, _, _, shown, model, _, _ = sharing
+    package = model.return_value
+
+    def call(messages, schema):
+        assert (
+            json.loads(messages[0]["content"].split("this exact schema:\n", 1)[1])
+            == schema
+        )
+        assert "PackagedFile" in messages[0]["content"]
+        return package.model_dump_json()
+
+    assert package_for_share({}, model_call=call) == package
 
 
 def test_packaging_failure_eventually_offers_manual_review_not_publication(sharing):

@@ -180,6 +180,66 @@ def advice_view(
 
 
 def interaction_view(result: dict) -> WisdomView:
+    outcome = result.get("result") or {}
+    if result["state"] == "completed":
+        stage = outcome.get("packaging_state")
+        publication = outcome.get("publication_state")
+        if result["operation"] == "share":
+            summary, detail = {
+                "ready": (
+                    "Ready for review",
+                    "Your proposed skill package is ready to review. Nothing has been published yet.",
+                ),
+                "failed": (
+                    "Preparation needs attention",
+                    "The skill could not be prepared. Nothing has been shared. Use /wisdom candidates to review it.",
+                ),
+            }.get(
+                stage,
+                (
+                    "Preparing to share",
+                    "Your request is queued. Hermes will bring back the package for your approval before publishing.",
+                ),
+            )
+        elif result["operation"] == "publish":
+            summary, detail = {
+                "published": (
+                    "Shared",
+                    "Your skill is now shared with your organisation.",
+                ),
+                "pending_moderation": (
+                    "Submitted for review",
+                    "Your skill is awaiting your organisation's approval.",
+                ),
+            }.get(
+                publication,
+                (
+                    "Publication needs review",
+                    "Open the skill review to check its current publication status.",
+                ),
+            )
+        else:
+            summary, detail = (
+                ("Installed" if result["operation"] == "install" else "Updated"),
+                "The requested operation is complete.",
+            )
+        actions = []
+        if outcome.get("portal_url"):
+            actions.append(WisdomAction("View in Portal", url=outcome["portal_url"]))
+        facts = result["facts"]
+        return WisdomView(
+            title="Collective Wisdom",
+            summary=summary,
+            items=[
+                WisdomItem(
+                    title=str(
+                        facts.get("editorial_name") or facts.get("slug") or "Skill"
+                    ),
+                    detail=detail,
+                )
+            ],
+            actions=actions,
+        )
     if result.get("inspection"):
         page = result["inspection"]
         navigation = (

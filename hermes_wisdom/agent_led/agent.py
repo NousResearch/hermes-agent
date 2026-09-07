@@ -112,8 +112,14 @@ def _run(
     max_attempts: int = 2,
 ) -> Any:
     call = model_call or _default_model_call
+    schema = model.model_json_schema()
     messages = [
-        {"role": "system", "content": load_prompt(prompt_name)},
+        {
+            "role": "system",
+            "content": load_prompt(prompt_name)
+            + "\nReturn one JSON object matching this exact schema:\n"
+            + json.dumps(schema, ensure_ascii=True),
+        },
         {
             "role": "user",
             "content": json.dumps(
@@ -121,7 +127,6 @@ def _run(
             ),
         },
     ]
-    schema = model.model_json_schema()
     last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         raw = call(messages, schema)

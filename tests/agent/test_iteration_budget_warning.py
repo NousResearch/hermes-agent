@@ -75,3 +75,26 @@ def test_budget_warning_reaches_model_once_via_latest_tool_result(monkeypatch, t
     snapshot = [dict(message) for message in messages]
     assert _maybe_inject_iteration_budget_warning(agent, messages) is False
     assert messages == snapshot
+
+
+def test_budget_warning_resets_for_each_turn(monkeypatch, tmp_path):
+    from agent.turn_context import _reset_per_turn_agent_state
+    from agent.turn_iteration_prep import _maybe_inject_iteration_budget_warning
+
+    agent = _make_agent(
+        tmp_path,
+        monkeypatch,
+        config_body="agent:\n  budget_warning_ratio: 0.75\n",
+    )
+
+    for turn in ("first", "second"):
+        _reset_per_turn_agent_state(agent)
+        assert agent._iteration_budget_warning_injected is False
+        assert agent.iteration_budget.used == 0
+
+        for _ in range(3):
+            assert agent.iteration_budget.consume() is True
+        messages = [{"role": "tool", "content": f"{turn} result"}]
+        assert _maybe_inject_iteration_budget_warning(agent, messages) is True
+        assert agent._iteration_budget_warning_injected is True
+        assert "You have used 3 of 4 iterations" in messages[0]["content"]

@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { selectForegroundPoolEviction, selectPoolEvictions, type PoolEvictionEntry } from './pool-eviction'
+import { type PoolEvictionEntry, selectForegroundPoolEviction, selectPoolEvictions } from './pool-eviction'
 
 const NOW = 1_000_000
 // Mirrors main.ts POOL_KEEPALIVE_FRESH_MS (4 minutes — see #95189).
@@ -19,6 +19,7 @@ const FRESH_MS = 4 * 60_000
 
 /** A spawned local backend entry (has a child process). */
 const spawned = (idleMs: number) => ({ process: { pid: 123 }, lastActiveAt: NOW - idleMs })
+
 const resident = (idleMs: number, activeTurn = false) => ({
   process: { pid: 123 },
   lastActiveAt: NOW - idleMs,

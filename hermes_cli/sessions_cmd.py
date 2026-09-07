@@ -549,8 +549,9 @@ _NEVER_ACTIVE_DEFAULT_DAYS = 30.0
 
 def _prune_never_active_keyed(db, args):
     """`prune --never-active`: drop keyed gateway rows opened and never used (mostly escaped test
-    fixtures). Separate from the shared prune/archive selector, which is pinned to `ended_at IS NOT
-    NULL` — never-closed rows sit outside it by construction.
+    fixtures), plus ACP probe shells — ACP ``session/new`` rows whose client (a model-discovery
+    probe) never prompted (#104724). Separate from the shared prune/archive selector, which is
+    pinned to `ended_at IS NOT NULL` — never-closed rows sit outside it by construction.
 
     The population is dominated by escaped test fixtures (#82770), which the hermetic-isolation guard can
     only stop from being *created* — rows already written to a developer's state.db need a sweep to leave.
@@ -567,10 +568,10 @@ def _prune_never_active_keyed(db, args):
         days = seconds / 86400.0
     candidates = db.list_never_active_keyed_sessions(older_than_days=days)
     if not candidates:
-        print(f"No never-active keyed sessions older than {days:g} day(s).")
+        print(f"No never-active sessions (keyed gateway rows or ACP probe shells) older than {days:g} day(s).")
         return
     shown = candidates if args.dry_run else candidates[:15]
-    print(f"{len(candidates)} never-active keyed session(s) older than {days:g} day(s) "
+    print(f"{len(candidates)} never-active session(s) older than {days:g} day(s) "
           "— no messages, tokens, tool calls or title:")
     for s in shown:
         print(f"  {s['id']}  {format_epoch(s.get('started_at')):<17} {(s.get('source') or '-'):<10} "

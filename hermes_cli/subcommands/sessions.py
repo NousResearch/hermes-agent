@@ -114,8 +114,10 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     _flag(sessions_prune, "--never-active",
         help="Instead of ended sessions, delete keyed gateway rows that were "
             "opened and never used (no messages, tokens, tool calls or title) "
-            "and are older than AGE (default 30 days). Ordinary prune can "
-            "never reach these — it only ever selects ended sessions")
+            "and are older than AGE (default 30 days). Also deletes ACP probe "
+            "shells — session/new rows a model-discovery client opened and never "
+            "prompted (#104724). Ordinary prune can never reach these — it only "
+            "ever selects ended sessions")
 
     sessions_archive = sessions_subparsers.add_parser(
         "archive", help="Bulk-archive (soft-hide) sessions matching filters — no deletion")

@@ -285,8 +285,10 @@ class SessionGatewayMixin:
 
     def list_never_active_keyed_sessions(self, *, older_than_days: float) -> List[Dict[str, Any]]:
         """Keyed, still-open rows with no evidence of a single turn (no messages, tokens, tool/API calls,
-        activity, or title): leaked fixtures or chats routed but never answered. Safe to drop — the gateway
-        mints a fresh session on the next message. Needs its own selector because ``bulk prune``/``archive``
+        activity, or title): leaked fixtures or chats routed but never answered — plus ACP probe shells
+        (#104724): ACP ``session/new`` rows that a model-discovery client (bb et al.) opens and never
+        prompts. Safe to drop — the gateway mints a fresh session on the next message, and an ACP probe
+        session has no continuation. Needs its own selector because ``bulk prune``/``archive``
         are pinned to ``ended_at IS NOT NULL``. ``pinned``/``archived`` = explicit keep intent.
 
         That is exactly the shape of a leaked test fixture (#82770) — and also of a chat that was routed but
@@ -298,7 +300,7 @@ class SessionGatewayMixin:
             SELECT s.id, s.session_key, s.source, s.chat_id,
                    s.chat_type, s.user_id, s.started_at
               FROM sessions s
-             WHERE s.session_key IS NOT NULL
+             WHERE (s.session_key IS NOT NULL OR LOWER(s.source) = 'acp')
                AND s.ended_at IS NULL
                AND s.title IS NULL
                AND s.last_activity_at IS NULL

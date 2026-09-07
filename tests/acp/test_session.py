@@ -262,6 +262,53 @@ class TestPersistence:
 
 
 
+    def test_create_session_does_not_persist_empty_state(self, manager):
+        """#104724: ACP session/new without a prompt must not mint a state.db row.
+
+        Model-discovery clients (bb et al.) open a session purely to read the
+        model catalog and exit; persisting on create left a permanent
+        message_count=0 shell that `hermes sessions prune` could not reach.
+        """
+        db = manager._get_db()
+        before = len(db.search_sessions(source="acp", limit=10000))
+
+        state = manager.create_session(cwd="/tmp/probe")
+
+        assert db.get_session(state.session_id) is None
+        assert len(db.search_sessions(source="acp", limit=10000)) == before
+
+    def test_update_cwd_on_empty_session_does_not_persist(self, manager):
+        """update_cwd before the first prompt must not mint a row either."""
+        state = manager.create_session(cwd="/tmp/empty")
+        manager.update_cwd(state.session_id, "/tmp/moved")
+
+        assert manager._get_db().get_session(state.session_id) is None
+
+    def test_row_is_minted_once_history_exists(self, manager):
+        """The deferral must not lose a real conversation: save after the first
+        message lands the row (with the ACP source tag)."""
+        state = manager.create_session(cwd="/tmp/real")
+        assert manager._get_db().get_session(state.session_id) is None
+
+        state.history.append({"role": "user", "content": "hello"})
+        manager.save_session(state.session_id)
+
+        row = manager._get_db().get_session(state.session_id)
+        assert row is not None
+        assert row["source"] == "acp"
+
+    def test_fork_session_persists_immediately(self, manager):
+        """fork_session copies a non-empty history into a fresh id, so its row
+        lands immediately — the deferral must not leak forked chats."""
+        parent = manager.create_session(cwd="/tmp/fork-src")
+        parent.history.append({"role": "user", "content": "forked content"})
+        manager.save_session(parent.session_id)
+
+        child = manager.fork_session(parent.session_id, cwd="/tmp/fork-dst")
+        assert child is not None
+        assert child.session_id != parent.session_id
+        assert manager._get_db().get_session(child.session_id) is not None
+
     def test_only_restores_acp_sessions(self, manager):
         """get_session should not restore non-ACP sessions from DB."""
         db = manager._get_db()

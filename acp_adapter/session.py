@@ -162,11 +162,23 @@ class SessionManager:
     # ---- public API ---------------------------------------------------------
 
     def create_session(self, cwd: str = ".") -> SessionState:
-        """Create a new session with a unique ID and a fresh AIAgent."""
+        """Create a new session with a unique ID and a fresh AIAgent.
+
+        The session is registered in memory only — the ``state.db`` row is
+        deferred until the session actually exchanges something (first
+        ``save_session`` with history, or the agent's own turn-time row
+        creation). ACP clients open a session before knowing whether a prompt
+        is coming, and some (e.g. model-discovery probes) never prompt at all;
+        persisting on create left a permanent ``message_count=0`` shell per
+        probe that no cleanup could reach (#104724).
+        """
         cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
         agent = self._make_agent(session_id=session_id, cwd=cwd)
-        state = self._install_state(session_id, agent, cwd, getattr(agent, "model", "") or "", [])
+        state = self._install_state(
+            session_id, agent, cwd, getattr(agent, "model", "") or "", [],
+            persist=False,  # deferred until the session has history (#104724)
+        )
         logger.info("Created ACP session %s (cwd=%s)", session_id, cwd)
         return state
 
@@ -293,6 +305,17 @@ class SessionManager:
 
         try:
             if db.get_session(state.session_id) is None:
+                # Defer row creation until the session has real content. ACP
+                # clients open sessions they never prompt (model-discovery
+                # probes send session/new then exit), and any other call path
+                # that persists an empty session (e.g. update_cwd before the
+                # first prompt) would otherwise mint a permanent message_count=0
+                # shell that `hermes sessions prune` cannot reach (#104724).
+                # Gate on history rather than message_count so fork_session
+                # (which deep-copies a non-empty history into a fresh id)
+                # still persists immediately.
+                if not state.history:
+                    return
                 db.create_session(session_id=state.session_id, source="acp", model=model_str,
                                   model_config={"cwd": state.cwd})
             else:

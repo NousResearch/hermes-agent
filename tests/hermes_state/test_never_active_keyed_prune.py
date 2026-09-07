@@ -147,3 +147,53 @@ class TestPrune:
         _insert(db, "keeper", age_days=1)
         assert db.prune_never_active_keyed_sessions(older_than_days=30) == (0, 0)
         assert db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+
+
+class TestAcpProbeShells:
+    """#104724: ACP session/new rows whose client never prompted (model-discovery
+    probes such as bb.dev) are never-active shells. They carry no session_key —
+    the original keyed-only selector could never reach them — so extend the
+    sweep to empty, unkeyed ACP rows specifically. Real ACP conversations (any
+    message, title, or use counters) stay protected."""
+
+    def test_selects_old_empty_acp_probe_shell(self, db):
+        _insert(db, "acp-probe", age_days=45, source="acp", session_key=None,
+                model="default-model")
+        found = db.list_never_active_keyed_sessions(older_than_days=30)
+        assert [r["id"] for r in found] == ["acp-probe"]
+
+    def test_young_acp_shell_respects_age_floor(self, db):
+        _insert(db, "acp-young", age_days=3, source="acp", session_key=None)
+        assert db.list_never_active_keyed_sessions(older_than_days=30) == []
+
+    @pytest.mark.parametrize("field,value", [
+        ("message_count", 3),
+        ("title", "kept by the user"),
+        ("last_activity_at", 1785354069.0),
+    ])
+    def test_any_sign_of_use_protects_acp_row(self, db, field, value):
+        _insert(db, "acp-real", age_days=45, source="acp", session_key=None,
+                **{field: value})
+        assert db.list_never_active_keyed_sessions(older_than_days=30) == []
+
+    def test_unkeyed_non_acp_row_still_ignored(self, db):
+        """The ACP carve-out must not generalize to every unkeyed row (e.g. a
+        bare CLI row has different lifecycle semantics)."""
+        _insert(db, "cli-row", age_days=45, session_key=None, source="cli")
+        assert db.list_never_active_keyed_sessions(older_than_days=30) == []
+
+
+class TestPruneAcpProbeShells:
+    def test_prune_deletes_acp_probe_shell_and_keeps_real_acp(self, db):
+        _insert(db, "acp-probe", age_days=45, source="acp", session_key=None)
+        _insert(db, "acp-real", age_days=45, source="acp", session_key=None,
+                message_count=3)
+        _insert(db, "keeper-young-acp", age_days=1, source="acp", session_key=None)
+
+        deleted, _ = db.prune_never_active_keyed_sessions(older_than_days=30)
+
+        assert deleted == 1
+        surviving = {
+            r[0] for r in db._conn.execute("SELECT id FROM sessions").fetchall()
+        }
+        assert surviving == {"acp-real", "keeper-young-acp"}

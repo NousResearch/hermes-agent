@@ -23,7 +23,8 @@ from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable:
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
 from hermes_constants import (
-    get_hermes_home, get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override)
+    get_default_hermes_root, get_hermes_home, get_hermes_home_override, profile_name_for_home,
+    reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
@@ -444,9 +445,30 @@ def _profile_db(params: dict | None = None):
                 db.close()
 
 
+def _canonical_profile_request(name: str) -> str:
+    """Canonicalize profile basenames emitted by older session-info payloads.
+
+    ``Path(default_home).name`` was historically sent as a profile id. Those
+    basenames are installation details, while explicit unknown profile names
+    must continue to fail closed in ``_profile_home``.
+    """
+    folded = name.casefold()
+    if folded in {".hermes", "hermes"}:
+        return "default"
+    with contextlib.suppress(OSError, RuntimeError, ValueError):
+        if folded == get_default_hermes_root().name.casefold():
+            from hermes_cli import profiles as profiles_mod
+            # A custom Hermes root can share a name with a valid named profile.
+            # Prefer that real profile when it exists; otherwise this is the
+            # legacy basename of the default root.
+            if not Path(profiles_mod.get_profile_dir(name)).is_dir():
+                return "default"
+    return name
+
+
 def _response_profile_name(profile: str | None = None) -> str:
     """Profile name for session.* payloads: the requested real non-launch profile, else the launch one."""
-    name = (profile or "").strip()
+    name = _canonical_profile_request((profile or "").strip())
     return name if name and _profile_home(name) is not None else _current_profile_name()
 
 
@@ -459,7 +481,7 @@ def _db_unavailable_error(rid, *, code: int):
 # override) so config/skills/model/persistence resolve to it. Omitted/own profile → launch profile.
 def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
-    if not (name := (profile or "").strip()):
+    if not (name := _canonical_profile_request((profile or "").strip())):
         return None
     from hermes_cli import profiles as profiles_mod
     home = Path(profiles_mod.get_profile_dir(name))
@@ -2058,9 +2080,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "stored_session_id": session_key or "", "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "version": "", "release_date": "", "update_behind": None, "update_command": "",
         "usage": _session_usage_snapshot(session),
-        "profile_name": (
-            _response_profile_name(Path(session["profile_home"]).name)
-            if isinstance(session, dict) and session.get("profile_home") else _current_profile_name()),
+        "profile_name": profile_name_for_home(sess.get("profile_home")) or _current_profile_name(),
     }
     with contextlib.suppress(Exception):
         from hermes_cli import __version__, __release_date__

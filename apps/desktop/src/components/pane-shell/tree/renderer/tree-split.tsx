@@ -73,6 +73,7 @@ function useSubtreeOverrides(paneIds: readonly string[]): TrackContext['override
 
   const snapshot = useCallback(() => {
     const all = $paneStates.get()
+
     const sig = paneIds.map(id => `${id}:${all[id]?.widthOverride ?? ''}:${all[id]?.heightOverride ?? ''}`).join('|')
 
     if (cache.current.sig !== sig) {
@@ -245,14 +246,164 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         return
       }
 
-      const a = sideFor(node.children[aIndex], kidA, 'end')
-      const b = sideFor(node.children[bIndex], kidB, 'start')
-      const a0px = a.fixed ? a.size : sizeOf(kidA)
-      const b0px = b.fixed ? b.size : sizeOf(kidB)
-      const lo = Math.max(a.min - a0px, b0px - b.max)
-      const hi = Math.min(a.max - a0px, b0px - b.min)
+      const tracks = node.children.map((child, index) => {
+        const element = container.children[index] as HTMLElement | undefined
 
+        if (!element) {
+          return null
+        }
+
+        const side = sideFor(child, element, index <= aIndex ? 'end' : 'start')
+
+        return {
+          ...side,
+          element,
+          index,
+          initial: side.fixed ? side.size : sizeOf(element),
+          // A minimized rail is its 28px strip: it neither donates nor takes,
+          // and its remembered weight must survive the gesture so restoring
+          // it brings back the size it had before it was folded.
+          minimized: child.type === 'group' && Boolean(child.minimized),
+          visible: !isCollapsed(child)
+        }
+      })
+
+      if (tracks.some(track => !track)) {
+        return
+      }
+
+      const sashTracks = tracks as Array<NonNullable<(typeof tracks)[number]>>
       const setOverride = horizontal ? setPaneWidthOverride : setPaneHeightOverride
+
+      // The seam is ONE boundary of a whole run: the side the pointer moves
+      // toward gives up space, its seam partner first. When the partner hits
+      // its floor the drag keeps going and takes from the partner's next
+      // visible sibling, and so on — a row behaves like one workspace instead
+      // of a set of unrelated boxes. Plans are absolute (from the sizes at
+      // pointerdown), so every frame is a pure function of the pointer.
+      const planFor = (requestedShift: number, allowCascade: boolean) => {
+        const toward = requestedShift >= 0 ? 1 : -1
+        const targetIndex = toward > 0 ? aIndex : bIndex
+        // The partner is the nearest VISIBLE sibling (`aIndex`/`bIndex`), not
+        // `target ± 1` — a hidden zone parked between them (the closed preview
+        // pane) is display:none and must neither donate nor block.
+        const partnerIndex = toward > 0 ? bIndex : aIndex
+        const target = sashTracks[targetIndex]
+        const next = sashTracks.map(track => track.initial)
+        let remaining = Math.min(Math.abs(requestedShift), Math.max(0, target.max - target.initial))
+        let transferred = 0
+        let cascaded = false
+        // A tool rail is locally resizable at its own seam, but must not make
+        // every unrelated seam in the row local-only. It also remains the
+        // terminal donor when reached only after another regular track.
+        const cascade = allowCascade && !target.collapseId
+
+        for (let donorIndex = partnerIndex; donorIndex >= 0 && donorIndex < sashTracks.length; donorIndex += toward) {
+          const donor = sashTracks[donorIndex]
+
+          if (!donor.visible) {
+            continue
+          }
+
+          if (donor.collapseId && donorIndex !== partnerIndex) {
+            break
+          }
+
+          const take = Math.min(remaining, Math.max(0, donor.initial - donor.min))
+          next[donorIndex] -= take
+          transferred += take
+          remaining -= take
+
+          if (take > 0 && donorIndex !== partnerIndex) {
+            cascaded = true
+          }
+
+          if (remaining === 0 || !cascade) {
+            break
+          }
+        }
+
+        next[targetIndex] += transferred
+
+        return { cascaded, moved: Math.sign(requestedShift) * transferred, sizes: next }
+      }
+
+      // One store commit on release: fixed zones get their px override
+      // (sidebar semantics), the flex run gets weights. Clamped px → weights
+      // so persisted weights match what's on screen.
+      const commitPlan = (plan: ReturnType<typeof planFor>) => {
+        const weights = [...node.weights]
+        let weightsChanged = false
+
+        sashTracks.forEach((track, index) => {
+          if (!track.visible || track.minimized) {
+            return
+          }
+
+          const px = Math.round(plan.sizes[index])
+
+          if (track.fixed) {
+            if (px !== Math.round(track.initial)) {
+              track.paneIds.forEach(id => setOverride(id, px))
+            }
+          } else {
+            weights[index] = Math.max(0.01, plan.sizes[index] / pxPerWeight)
+            weightsChanged = true
+          }
+        })
+
+        if (weightsChanged) {
+          setTreeSplitWeights(node.id, weights)
+        }
+      }
+
+      const styleSnapshots = sashTracks.map(track => track.element.getAttribute('style'))
+
+      const restoreStyles = () => {
+        sashTracks.forEach((track, index) => {
+          const style = styleSnapshots[index]
+
+          if (style === null) {
+            track.element.removeAttribute('style')
+          } else {
+            track.element.setAttribute('style', style)
+          }
+        })
+      }
+
+      // During the gesture the store is NOT written. setTreeSplitWeights /
+      // setPaneWidthOverride each mint a new tree/pane-state object, and the
+      // resulting commit walks every mounted pane — measured live on a real
+      // 2-session layout: 31 commits across a 58-frame drag, 20.7fps, with
+      // TreeNode at 490ms and Block/Ct re-parsing markdown for 620ms. The
+      // store is written ONCE on release; during the drag the run is
+      // previewed with inline styles on the same wrappers React sizes.
+      //
+      // Preview rules (learned the hard way — a wrong shape here left a
+      // phantom gap where a hidden sidebar lived):
+      //  - a FIXED track gets ONLY a flex-basis override. Its wrapper renders
+      //    as `flex: 0 1 <track>`, so basis is the whole difference; grow and
+      //    shrink stay React's.
+      //  - every visible flex track is pinned to `0 1 <px>`. The plan keeps
+      //    the run's total px constant, so no leftover gap can open.
+      //  - hidden (display:none) and minimized tracks are left untouched.
+      //  - cleanup: release restores the captured style attributes, then a
+      //    real drag commits the store once and React re-renders from it.
+      const previewPlan = (plan: ReturnType<typeof planFor>) => {
+        sashTracks.forEach((track, index) => {
+          if (!track.visible || track.minimized) {
+            return
+          }
+
+          const px = plan.sizes[index]
+
+          if (track.fixed) {
+            track.element.style.flexBasis = `${px}px`
+          } else {
+            track.element.style.flex = `0 1 ${px}px`
+          }
+        })
+      }
 
       try {
         handle.setPointerCapture?.(pointerId)
@@ -272,70 +423,26 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
       // pointermove outpaces 60fps and each write relayouts the whole pane tree,
       // so coalesce to one apply per frame (rafCoalesce commits on cleanup).
-      //
-      // During the gesture the store is NOT written. setTreeSplitWeights /
-      // setPaneWidthOverride each mint a new tree/pane-state object, and the
-      // resulting commit walks every mounted pane — measured live on a real
-      // 2-session layout: 31 commits across a 58-frame drag, 20.7fps, with
-      // TreeNode at 490ms and Block/Ct re-parsing markdown for 620ms. The
-      // store is written ONCE on release; during the drag the seam is
-      // previewed with inline styles on the same wrappers React sizes.
-      //
-      // Preview rules (learned the hard way — a wrong shape here left a
-      // phantom gap where a hidden sidebar lived):
-      //  - a FIXED side gets ONLY a flex-basis override. Its wrapper renders
-      //    as `flex: 0 1 <track>`, so basis is the whole difference; grow and
-      //    shrink stay React's. Crucially the flex partner is left untouched,
-      //    so it keeps absorbing the remainder and no leftover gap can open.
-      //  - a flex-vs-flex seam pins both sides to `0 1 <px>`. Their combined
-      //    px is constant, so sibling flex tracks see the same leftover.
-      //  - cleanup: a real drag commits the store once, and React's re-render
-      //    rewrites the `flex` shorthand, which clears the overrides (writing
-      //    the shorthand resets the longhands). A no-movement click restores
-      //    the captured style attribute instead, since nothing re-renders.
-      const applyShift = (shiftPx: number) => {
-        if (a.fixed) {
-          a.paneIds.forEach(id => setOverride(id, Math.round(a0px + shiftPx)))
-        }
-
-        if (b.fixed) {
-          b.paneIds.forEach(id => setOverride(id, Math.round(b0px - shiftPx)))
-        }
-
-        if (!a.fixed && !b.fixed) {
-          const weights = [...node.weights]
-          // Clamped px → weights so persisted weights match what's on screen.
-          weights[aIndex] = (a0px + shiftPx) / pxPerWeight
-          weights[bIndex] = (b0px - shiftPx) / pxPerWeight
-          setTreeSplitWeights(node.id, weights)
-        }
-      }
-
-      const styleA = kidA.getAttribute('style')
-      const styleB = kidB.getAttribute('style')
-
-      const previewSide = (el: HTMLElement, fixed: boolean, px: number) => {
-        if (fixed) {
-          el.style.flexBasis = `${px}px`
-        } else if (!a.fixed && !b.fixed) {
-          el.style.flex = `0 1 ${px}px`
-        }
-        // Mixed seam, flex side: untouched — it absorbs what the fixed side
-        // gives up, exactly as the track model would render it.
-      }
-
-      const previewShift = (shiftPx: number) => {
-        previewSide(kidA, a.fixed, a0px + shiftPx)
-        previewSide(kidB, b.fixed, b0px - shiftPx)
-      }
-
-      const resize = rafCoalesce(previewShift)
-      let lastShift: null | number = null
+      const resize = rafCoalesce(previewPlan)
+      // A return drag stays local only after this gesture has actually crossed
+      // a second donor. A one-pixel opposite wobble must not poison the real
+      // forward movement that follows.
+      let cascadeDirection: -1 | 1 | null = null
+      let lastPlan: null | ReturnType<typeof planFor> = null
       let done = false
 
       const onMove = (ev: PointerEvent) => {
-        lastShift = Math.max(lo, Math.min(hi, (horizontal ? ev.clientX : ev.clientY) - start))
-        resize.push(lastShift)
+        const shift = (horizontal ? ev.clientX : ev.clientY) - start
+        const direction = Math.sign(shift) as -1 | 0 | 1
+
+        const allowCascade = cascadeDirection === null || direction === cascadeDirection
+        lastPlan = planFor(shift, allowCascade)
+
+        if (cascadeDirection === null && direction !== 0 && lastPlan.cascaded) {
+          cascadeDirection = direction
+        }
+
+        resize.push(lastPlan)
       }
 
       // Ends through several racing paths (pointerup, pointercancel, window
@@ -349,35 +456,28 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         done = true
         resize.finish()
 
-        if (lastShift !== null) {
+        // Put every wrapper's inline style back exactly as React last wrote
+        // it BEFORE the store commit. React only rewrites a wrapper whose
+        // style prop changed; a preview pinned on a track the commit leaves
+        // alone (the flex run beside a zone that folded to its rail) would
+        // otherwise survive as a stale `flex: 0 1 <px>` and stop it growing.
+        // A no-movement click has no commit, so this is also its whole cleanup.
+        restoreStyles()
+
+        if (lastPlan && lastPlan.moved !== 0) {
           // Dragged a tool panel down to its collapsed header? Fold the zone
           // to its rail instead of persisting a sliver — and DON'T write the
           // sliver size, so restoring brings back the size it had before.
-          const collapsedSide =
-            (a.collapseId && a0px + lastShift <= a.floor && a.collapseId) ||
-            (b.collapseId && b0px - lastShift <= b.floor && b.collapseId) ||
-            null
+          // Only a track THIS gesture took to its floor counts: an unrelated
+          // rail already resting there must not cancel the commit.
+          const collapsedSide = sashTracks.find(
+            (track, index) => track.collapseId && track.initial > track.floor && lastPlan!.sizes[index] <= track.floor
+          )?.collapseId
 
           if (collapsedSide) {
             setTreeGroupMinimized(collapsedSide, true)
           } else {
-            // One store commit; the re-render rewrites `flex` and clears the
-            // preview overrides.
-            applyShift(lastShift)
-          }
-        } else {
-          // Click without movement: nothing will re-render, so put the
-          // wrappers' inline styles back exactly as React last wrote them.
-          if (styleA === null) {
-            kidA.removeAttribute('style')
-          } else {
-            kidA.setAttribute('style', styleA)
-          }
-
-          if (styleB === null) {
-            kidB.removeAttribute('style')
-          } else {
-            kidB.setAttribute('style', styleB)
+            commitPlan(lastPlan)
           }
         }
 

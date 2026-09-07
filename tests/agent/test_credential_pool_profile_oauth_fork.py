@@ -160,7 +160,67 @@ def test_strip_helper_is_a_noop_without_credentials(tmp_path):
     assert strip_cloned_single_use_oauth_grants(tmp_path) == {"pool": [], "providers": [], "files": []}
 
 
-# ── B. borrowed rotation commits to root, never a profile copy ───────────
+@pytest.mark.parametrize(
+    "link",
+    [
+        lambda target, alias: alias.symlink_to(target),
+        lambda target, alias: os.link(target, alias),
+    ],
+    ids=["symlink", "hardlink"],
+)
+def test_strip_helper_leaves_shared_root_auth_store_unchanged(fleet, link):
+    """A shared auth store is one grant, not a cloned credential copy."""
+    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    before = (root / "auth.json").read_text()
+    shared = _shared_profile(fleet, "shared", link=link)
+
+    assert strip_cloned_single_use_oauth_grants(shared) == {
+        "pool": [], "providers": [], "files": [],
+    }
+    assert (root / "auth.json").read_text() == before
+
+
+def test_strip_helper_fails_closed_when_root_store_cannot_be_resolved(fleet, monkeypatch):
+    """Credential hygiene must not mutate auth when store identity is unknown."""
+    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+    import hermes_constants
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    before = (root / "auth.json").read_text()
+    shared = _shared_profile(
+        fleet, "shared", link=lambda target, alias: alias.symlink_to(target))
+    monkeypatch.setattr(
+        hermes_constants, "get_default_hermes_root",
+        lambda: (_ for _ in ()).throw(OSError("root unavailable")))
+
+    assert strip_cloned_single_use_oauth_grants(shared) == {
+        "pool": [], "providers": [], "files": [],
+    }
+    assert (root / "auth.json").read_text() == before
+
+
+def test_strip_helper_fails_closed_when_store_identity_check_errors(fleet, monkeypatch):
+    """A transient stat failure must not be interpreted as two stores."""
+    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    copied = _profile(fleet, "copied")
+    (copied / "auth.json").write_text((root / "auth.json").read_text())
+    before = (copied / "auth.json").read_text()
+    monkeypatch.setattr(
+        type(copied), "samefile",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("stat unavailable")))
+
+    assert strip_cloned_single_use_oauth_grants(copied) == {
+        "pool": [], "providers": [], "files": [],
+    }
+    assert (copied / "auth.json").read_text() == before
+
 
 def test_first_profile_rotation_does_not_strand_root_or_siblings(fleet):
     from agent.credential_pool import load_pool

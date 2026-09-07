@@ -169,7 +169,8 @@ _IMAGE_CORRUPT_PATTERNS = (
 _MULTIMODAL_TOOL_CONTENT_PATTERNS = (
     "text is not set", "tool message content must be a string", "tool content must be a string",
     "tool message must be a string", "expected string, got list", "expected string, got array",
-    "tool_call.content must be string",
+    "tool_call.content must be string", "tool.content.str", "tool.content",
+    "input should be a valid string",
 )
 
 # Local-inference memory/resource-ceiling rejections (oMLX/MLX memory guard,
@@ -763,6 +764,7 @@ def _classify_400(c: _Ctx) -> Verdict:
 _STATUS_HANDLERS: Dict[int, Callable[[_Ctx], Verdict]] = {
     400: _classify_400, 401: lambda c: _V_AUTH_ROTATE, 402: lambda c: _classify_402(c.msg, dict),
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
+    422: lambda c: _first_match(c.msg, _IMAGE_TOOL_RULES) or _V_FORMAT_ERROR,
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
     503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
     529: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,

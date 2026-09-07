@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -14,8 +15,14 @@ import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
+import { Archive, ArchiveOff, FolderOpen, Loader2, Pin, Trash2 } from '@/lib/icons'
 import { confirm } from '@/store/confirm'
+import {
+  $sidebarPinnedCardRows,
+  $sidebarPinnedInProjects,
+  setSidebarPinnedCardRows,
+  setSidebarPinnedInProjects
+} from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
@@ -121,6 +128,8 @@ export function SessionsSettings() {
 
       <AutoArchiveSetting />
 
+      <PinnedDisplaySettings />
+
       <SectionHeading
         icon={Archive}
         meta={sessions.length ? String(sessions.length) : undefined}
@@ -178,6 +187,33 @@ export function SessionsSettings() {
         </div>
       )}
     </SettingsContent>
+  )
+}
+
+// Pinned-thread display preferences. Both are opt-in overrides of the default
+// "pinned rows stay compact and live only in the Pinned section" behavior.
+export function PinnedDisplaySettings() {
+  const { t } = useI18n()
+  const s = t.settings.sessions
+  const pinnedCardRows = useStore($sidebarPinnedCardRows)
+  const pinnedInProjects = useStore($sidebarPinnedInProjects)
+
+  return (
+    <div className="mb-6">
+      <SectionHeading icon={Pin} title={s.pinnedDisplayTitle} />
+      <ToggleRow
+        checked={pinnedCardRows}
+        description={s.pinnedCardRowsDesc}
+        label={s.pinnedCardRowsTitle}
+        onChange={setSidebarPinnedCardRows}
+      />
+      <ToggleRow
+        checked={pinnedInProjects}
+        description={s.pinnedInProjectsDesc}
+        label={s.pinnedInProjectsTitle}
+        onChange={setSidebarPinnedInProjects}
+      />
+    </div>
   )
 }
 

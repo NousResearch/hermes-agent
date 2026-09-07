@@ -127,9 +127,11 @@ class GatewayGoalsMixin:
         store = getattr(self, "session_store", None)
         if store is not None:
             current = store.peek_session_id(quick_key)
-            if current:
-                session_id = current
-                watch[quick_key] = (source, session_id)
+            if not current:
+                watch.pop(quick_key, None)
+                return
+            session_id = current
+            watch[quick_key] = (source, session_id)
         adapter = self._adapter_for_source(source)
         if adapter is None or not adapter._message_handler:
             return
@@ -150,12 +152,17 @@ class GatewayGoalsMixin:
             return
         event = self._synthetic_prompt_event(source, prompt)
         event.metadata["gateway_session_key"] = quick_key
+        event._heartbeat_execution_started = False
         # A pinned route skips topic recovery: no await between the idle
         # check and adapter claim. FIFO alone never wakes an idle session.
         try:
             await adapter.handle_message(event)
         finally:
-            if quick_key not in adapter._active_sessions:
+            task = getattr(adapter, "_session_tasks", {}).get(quick_key)
+            if task is not None:
+                from gateway.run_heartbeat_acceptance import settle_heartbeat_attempt
+                task.add_done_callback(lambda done: settle_heartbeat_attempt(event, mgr))
+            elif quick_key not in adapter._active_sessions:
                 mgr.abandon_fire()
 
     def _start_heartbeat_poller(self) -> None:

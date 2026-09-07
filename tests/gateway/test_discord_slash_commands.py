@@ -626,16 +626,13 @@ async def test_force_thread_wildcard_all_free_response(adapter, monkeypatch):
 
 def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
     """discord.auto_thread in config.yaml should be bridged to DISCORD_AUTO_THREAD env var."""
-    import yaml
     from pathlib import Path
 
     # Write a config.yaml the loader will find
     hermes_dir = tmp_path / ".hermes"
     hermes_dir.mkdir()
     config_path = hermes_dir / "config.yaml"
-    config_path.write_text(yaml.dump({
-        "discord": {"auto_thread": True},
-    }))
+    config_path.write_text("discord:\n  auto_thread: true\n")
 
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
@@ -653,16 +650,13 @@ def test_discord_force_thread_channels_config_bridge(monkeypatch, tmp_path):
 
     Tests both list form (YAML list) and string form in separate runs.
     """
-    import yaml
     from pathlib import Path
 
     # --- List form ---
     hermes_dir = tmp_path / ".hermes"
     hermes_dir.mkdir()
     config_path = hermes_dir / "config.yaml"
-    config_path.write_text(yaml.dump({
-        "discord": {"force_thread_channels": ["123", "456"]},
-    }))
+    config_path.write_text("discord:\n  force_thread_channels:\n    - '123'\n    - '456'\n")
 
     monkeypatch.delenv("DISCORD_FORCE_THREAD_CHANNELS", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
@@ -678,9 +672,7 @@ def test_discord_force_thread_channels_config_bridge(monkeypatch, tmp_path):
     hermes_dir_2 = tmp_path / ".hermes2"
     hermes_dir_2.mkdir()
     config_path_2 = hermes_dir_2 / "config.yaml"
-    config_path_2.write_text(yaml.dump({
-        "discord": {"force_thread_channels": "789"},
-    }))
+    config_path_2.write_text("discord:\n  force_thread_channels: '789'\n")
 
     monkeypatch.delenv("DISCORD_FORCE_THREAD_CHANNELS", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(hermes_dir_2))

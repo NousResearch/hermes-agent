@@ -282,6 +282,13 @@ async def test_recovered_mention_reuses_live_auth_and_mention_gates(adapter, mon
     )
 
 
+def test_default_config_includes_discord_force_thread_channels():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert "force_thread_channels" in DEFAULT_CONFIG["discord"]
+    assert DEFAULT_CONFIG["discord"]["force_thread_channels"] == ""
+
+
 def test_missed_message_backfill_config_stays_per_adapter():
     first_extra = _apply_yaml_config(
         {},

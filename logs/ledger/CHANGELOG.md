@@ -8,6 +8,160 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.3.0] — 2026-09-07 — hermes@922c0d670c (0 behind upstream/main)
+
+One consolidated pass (`RUN-2026-09-07-001`): a content secret-scanning layer, a
+mandatory handoff-redaction gate, a generic-persona + editions-overlay split with
+a `BRANDING.md` source of truth, an open install-model decision, a minimal
+install-and-launch path, and the final brand art. **MINOR** — new North Forge
+capability and workflow on top of upstream; no application code, no `.env`, no
+`pyproject.toml` distribution-name change; the engine runs exactly as before
+(images, docs, `.githooks/`, `scripts/`, `editions/`, ledger, and the repo-root
+`SOUL.md` example file only). While this pass was in flight a GitHub-side "sync
+fork" merged `upstream/main` into `origin/main` (`45b2795865`); this block was
+**rebased onto it** (clean — disjoint paths), so the fork is now **0 behind
+`upstream/main`** at `hermes@922c0d670c`. **Pushed to `origin/main`** — the
+review-before-push hold that ran across `NF-v0.1.2`..`NF-v0.2.2` ended here, so
+`NF-v0.2.0`..`NF-v0.3.0` are now public together.
+
+### Added
+
+- **CHG-2026-09-07-001** — Content secret-scanning layer alongside the filename
+  guard. New `.githooks/content-scan` (`git grep -P` based): three high-confidence
+  vendor families — AWS access key ids (`AKIA`/`ASIA`+16; the two AWS-doc
+  `…EXAMPLE` placeholders excluded), GitHub tokens (`gh[pousr]_`+36,
+  `github_pat_`+82; a ≥20-char single-char run excluded), structured Slack tokens
+  (`xox[bpars]-<digits>-<digits>-<secret>`, `xapp-1-…`, `xoxe.xox[bp]-…`). Modes:
+  `--commits <range>` (per-commit changed-file content — the gate; catches a key
+  added in one fork commit even if a later commit renames/deletes the file, and
+  does **not** re-flag upstream's own credential-shaped test fixtures),
+  `--tree` / `--worktree` (full manual audits). Inline `# nf-scan: allow <reason>`
+  marker for confirmed fakes on the exact line — no whole-file/path exclusions.
+  Wired into `.githooks/pre-push` (after the existing `secret-guard` calls) and
+  mirrored by a new CI workflow `.github/workflows/nf-secret-scan.yml`
+  (`content-scan --commits` on every push/PR + the scanner self-tests), so a push
+  is checked even where local hooks aren't installed. Tests:
+  `.githooks/tests/run.sh` (6 cases, throwaway repos) — a secret added-then-removed
+  in a range still fails `--commits`; the final tree alone is clean; an
+  allowlisted fixture passes while the same value without the marker is blocked;
+  token shapes are caught; placeholders/prose are not. `.githooks/install` and
+  `.githooks/README.md` updated. Paths: `.githooks/content-scan`,
+  `.githooks/pre-push`, `.githooks/install`, `.githooks/README.md`,
+  `.githooks/tests/run.sh`, `.github/workflows/nf-secret-scan.yml`. Ref: — .
+  Run: RUN-2026-09-07-001.
+- **CHG-2026-09-07-002** — Mandatory handoff redaction before
+  `scripts/collect-logs.*` zips the bundle. New `scripts/redact_handoff.py`
+  **reuses the agent's production redactor** (`agent.redact.redact_sensitive_text`,
+  `force=True`) — no new vocabulary. `collect-logs.ps1` / `.sh` now: resolve a
+  Python that can import `agent.redact` (repo `.venv`, a sibling `-venv`, or
+  PATH); copy `D:\logs\` to a **throwaway staging dir**; redact the copy (the
+  durable session reports in `D:\logs\` are left byte-for-byte intact); write
+  `redaction-report.txt` (into the bundle and back into `D:\logs\`) noting what
+  was touched with a "pattern-matching is a backstop, not a guarantee" caveat;
+  zip the staging copy. **Fail closed:** no importable redactor, or a likely
+  secret that still matches a strict AWS/GitHub/Slack recheck after redaction ⇒
+  the zip is NOT created, the run exits non-zero, names the `file:line`, and moves
+  any previous zip to `<zip>.stale`. `repo-runtime-logs/*.log` / `*.jsonl` are
+  **excluded from the bundle by default** (highest-risk, lowest-value); opt-in
+  with `-IncludeRuntimeLogs` (ps) / `--include-runtime-logs` (sh) — still
+  redacted. Paths: `scripts/redact_handoff.py`, `scripts/collect-logs.ps1`,
+  `scripts/collect-logs.sh`. Ref: — . Run: RUN-2026-09-07-001.
+- **CHG-2026-09-07-004** — `logs/ledger/decisions/DECISION-LOG.md`: opened
+  **`DECISION-2026-09-06-003`** (Install model — drive-native run-in-place vs
+  machine-local managed install), status **OPEN**. Provisional lean: drive-native
+  (matches the portable-first principle) — **not ratified**. The hardened form
+  (sealed drive, `NORTHFORGE` / `NORTHFORGE-DATA` two-volume split,
+  certify/verify/audit) is explicitly out of scope and blocks on ratification;
+  the minimal bootstrap (`CHG-2026-09-07-005`) is not blocked and ships now. Id
+  keeps the `2026-09-06` date at the owner's request for continuity with the
+  rebrand batch (opened 2026-09-07). Register row added. Paths:
+  `logs/ledger/decisions/DECISION-LOG.md`. Ref: `DECISION-2026-09-06-003`.
+  Run: RUN-2026-09-07-001.
+- **CHG-2026-09-07-005** — Minimal install-and-launch path (single-drive,
+  single-folder-tree; **not** the hardened install — see
+  `DECISION-2026-09-06-003`). `scripts/bootstrap-north-forge.ps1`: creates a
+  Python venv as a **sibling** of the checkout (`<parent>\<leaf>-venv`, never
+  inside the tree the agent operates on), a sibling data folder
+  (`<parent>\<leaf>-data`, reported as `HERMES_HOME`), and an **editable** install
+  of the checkout into that venv (`uv pip install -e .`, or
+  `python -m pip install -e .`); writes `<venv>\.nf-bootstrapped` as the ready
+  marker. `north-forge.cmd` (repo root): double-click launcher — runs the
+  bootstrap on first run, then sets `HERMES_HOME` and starts `hermes` with args
+  passed through. Tested on a fresh detached checkout: bootstrap → `hermes`
+  importable + `hermes.exe` present in ~7 s (uv cache); `hermes --version` /
+  `--help` work. No `NORTHFORGE`/`NORTHFORGE-DATA` split, no seal/verify. Paths:
+  `scripts/bootstrap-north-forge.ps1`, `north-forge.cmd`. Ref:
+  `DECISION-2026-09-06-003`. Run: RUN-2026-09-07-001.
+- **CHG-2026-09-07-006** — Final (non-placeholder) brand art from
+  `north-forge-brand-assets.zip` (confirmed to contain exactly `banner.png`,
+  `north-forge.ico`, `icon-512.png`, `icon-256.png`, `splash-alt.png`).
+  `assets/banner.png` replaced with the final banner (1510×724 PNG, compass +
+  anvil + flame, "NORTH FORGE"); this **retires the `CHG-2026-09-06-025`
+  placeholder** — the new file carries no `PLACEHOLDER` `tEXt` chunk. `README.md`
+  needed no edit — it had no placeholder note or "temporary artwork" callout
+  (that note lived only in the old PNG's metadata). Added `assets/icons/` —
+  `north-forge.ico` (Windows multi-resolution), `icon-512.png`, `icon-256.png`,
+  and `splash-alt.png` (held in reserve for a future loading screen; not wired).
+  **Icon wiring:** North Forge's own launcher (`north-forge.cmd`) and bootstrap
+  create no Start-Menu/desktop shortcut, and upstream `scripts/install.ps1`'s
+  shortcut step is application code and out of scope — so the `.ico` is staged
+  and `BRANDING.md` records that a future shortcut should point at
+  `assets/icons/north-forge.ico`; **shortcut-icon wiring is pending real shortcut
+  creation.** Images + one doc-of-record only; agent behaviour unaffected. Paths:
+  `assets/banner.png`, `assets/icons/north-forge.ico`, `assets/icons/icon-512.png`,
+  `assets/icons/icon-256.png`, `assets/icons/splash-alt.png`. Ref: — .
+  Run: RUN-2026-09-07-001.
+
+### Changed
+
+- **CHG-2026-09-07-003** — Generic root persona + editions overlay + branding
+  source of truth. `SOUL.md` (repo root) is now the **industry-neutral** chassis
+  voice (the general-purpose draft: adaptive tone, honest about uncertainty,
+  direct — no field technicians / sales reps / industry). The
+  field-service-flavoured persona moved to `editions/field-service/SOUL.md` with
+  `editions/field-service/README.md` explaining it is an **optional profile
+  overlay, applied on top of the base persona at deploy time, never a
+  replacement**; `editions/README.md` describes the `editions/` concept (additive,
+  optional, non-proprietary — vertical skill-sets stay in admin-gated repos).
+  New **`BRANDING.md`** — the source of truth for which surfaces are
+  North-Forge-owned, which are intentionally Hermes-compatible (the `hermes-agent`
+  distribution name, the `hermes` commands, workspace package names, persona code
+  constants, `HERMES_*` env vars), and which are upstream documentation left
+  pointing at Nous. The three translated READMEs (`README.es.md`,
+  `README.zh-CN.md`, `README.ur-pk.md`) reduced from full (stale, still
+  Hermes-branded) translations to **short landing pages** — North Forge banner, a
+  2–3 sentence description in the target language, and links to the canonical
+  English `README.md` and upstream's docs (incl. the `zh-Hans` docs for Chinese).
+  Repo-root `SOUL.md` is a seed/example file read by no test / installer /
+  packaging path (installers seed from `hermes_cli/default_soul.py`, untouched),
+  so this has **zero functional effect**. Paths: `SOUL.md`,
+  `editions/field-service/SOUL.md`, `editions/field-service/README.md`,
+  `editions/README.md`, `BRANDING.md`, `README.es.md`, `README.zh-CN.md`,
+  `README.ur-pk.md`. Ref: `DECISION-2026-09-06-001` (branding continuation).
+  Run: RUN-2026-09-07-001.
+
+### Unchanged (called out)
+
+- **Application code, `.env`, `pyproject.toml` distribution name, the attic
+  clone, `agent/prompt_builder.py` / `hermes_cli/default_soul.py` persona
+  constants** — untouched. Same carve-outs as `NF-v0.2.0` (`DECISION-2026-09-06-001`).
+- **`docker/SOUL.md`, `AGENTS.md`, `CONTRIBUTING*.md`, `SECURITY*.md`,
+  `website/**`** — upstream documentation, left as-is (see `BRANDING.md` §3).
+- **`assets/icons/splash-alt.png`** — added but deliberately not wired into
+  anything (future loading-screen use).
+- **The hardened install** (sealed drive / two-volume split / certification) —
+  not built; blocked on `DECISION-2026-09-06-003`.
+
+### Housekeeping
+
+- `D:\logs\GIT_HARDENING_2026-09-06.md` line 173 — an in-place redaction run
+  (before `CHG-2026-09-07-002` switched to a staging copy) had mangled
+  `secret-guard: clean` → `secret-guard: ***` (a config-key false positive on the
+  `secret-guard:` label). Restored by hand; the staging-copy design prevents
+  recurrence. `D:\logs\` is outside the repo — no tracked-file change.
+
+---
+
 ## [NF-v0.2.2] — 2026-09-06 — hermes@693641aa8b (0 behind upstream/main)
 
 Handoff tooling + a standing agent-conduct policy. **PATCH** per the version

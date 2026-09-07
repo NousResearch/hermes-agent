@@ -1,11 +1,18 @@
 #!/bin/sh
-# THE RULE: never push a real .env (or .env.<anything> / .op.env) to the repo.
-# For every ref being pushed, scan the tree at its tip AND the newly added
-# commits; abort the whole push if a forbidden file is found.
-# See .githooks/secret-guard.  Bypass (defeats the rule): git push --no-verify
+# THE RULES on push:
+#   1. never push a real .env (or .env.<anything> / .op.env)            -> secret-guard
+#   2. never push a high-confidence AWS/GitHub/Slack credential that a   -> content-scan
+#      fork commit adds, whatever commit in the pushed range introduced it
+# For every ref being pushed: secret-guard scans the tip tree + the new commits'
+# filenames; content-scan scans the CONTENT of the files the new commits changed
+# (per commit, so an add-then-delete within the range is still caught, and upstream's
+# own test fixtures are not re-flagged). Abort the whole push if either gate trips.
+# See .githooks/secret-guard and .githooks/content-scan.
+# Bypass (defeats the rules): git push --no-verify
 set -u
 dir=$(dirname "$0")
 guard="$dir/secret-guard"
+cscan="$dir/content-scan"
 remote=${1:-origin}
 zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')   # 0000... of correct length
 status=0
@@ -14,10 +21,10 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # deleting a remote ref — nothing to inspect
     [ "$local_sha" = "$zero" ] && continue
 
-    # 1) hard check: does the tip being pushed CONTAIN a forbidden file?
+    # filename gate: tip tree must not CONTAIN a forbidden .env-style path
     "$guard" --tree "$local_sha" || status=1
 
-    # 2) belt-and-suspenders: files touched by the commits new to the remote
+    # which commits are new to the remote?
     if [ "$remote_sha" = "$zero" ]; then
         new_commits=$(git rev-list "$local_sha" --not --remotes="$remote" 2>/dev/null)
     else
@@ -26,7 +33,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     if [ -n "${new_commits:-}" ]; then
         first=$(printf '%s\n' "$new_commits" | tail -1)
         parent=$(git rev-parse "$first^" 2>/dev/null || echo "$first")
-        "$guard" --range "$parent..$local_sha" || status=1
+        "$guard"  --range   "$parent..$local_sha" || status=1   # filenames touched by new commits
+        "$cscan"  --commits "$parent..$local_sha" || status=1   # credential content in new commits
     fi
 done
 

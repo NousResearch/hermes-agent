@@ -11,12 +11,13 @@ Master pointer for the project ledger. Newest first. Rules: [`README.md`](./READ
 
 | Coordinate | Value | As of |
 | --- | --- | --- |
-| Upstream base | `hermes@693641aa8b` (**0 behind** `upstream/main`) | 2026-09-06 |
-| North-Forge version | `NF-v0.2.2` (branding-pass finish + handoff tooling; local only — `NF-v0.1.1` is the last pushed) | 2026-09-06 |
+| Upstream base | `hermes@922c0d670c` (**0 behind** `upstream/main`) — a GitHub "sync fork" merged upstream into `origin/main` mid-pass; `NF-v0.3.0` rebased onto it | 2026-09-07 |
+| North-Forge version | `NF-v0.3.0` (consolidated pass: secret scanning + handoff redaction + persona/editions split + install decision + minimal bootstrap + final brand art). **Pushed** — `NF-v0.2.0`..`NF-v0.3.0` are public. | 2026-09-07 |
 | Ledger schema | `v2` | 2026-09-06 |
-| Latest run | `RUN-2026-09-06-003` — branding-pass finish (`CHG-2026-09-06-025..026`: banner asset + README sections) and handoff tooling (`CHG-2026-09-06-027..028`: `scripts/collect-logs.*` + ledger "Agent conduct" policy) | 2026-09-06 |
+| Latest run | `RUN-2026-09-07-001` — one consolidated pass (`CHG-2026-09-07-001..006`): `.githooks/content-scan` + CI, `scripts/redact_handoff.py` + collect-logs redaction gate, generic root `SOUL.md` + `editions/` + `BRANDING.md` + translated-README landing pages, `DECISION-2026-09-06-003` (OPEN), `scripts/bootstrap-north-forge.ps1` + `north-forge.cmd`, final brand banner + `assets/icons/`. | 2026-09-07 |
 | First fork commits | `NF-v0.1.0` + `NF-v0.1.1` on `origin/main` (`CHG-2026-09-06-010`); fork synced to upstream (`CHG-2026-09-06-014`) | 2026-09-06 |
-| Fork identity | **full rebrand implemented** — `NF-v0.2.0` (`CHG-2026-09-06-020..024`) + branding-pass finish `NF-v0.2.1` (`CHG-2026-09-06-025..026`: banner iconography — **placeholder art** — and README drive-facing sections); `DECISION-2026-09-06-001` DECIDED. Local only, not pushed. | 2026-09-06 |
+| Fork identity | **full rebrand** — `NF-v0.2.0` (`CHG-2026-09-06-020..024`); branding-pass finish `NF-v0.2.1`; `NF-v0.3.0` completed the branding (final banner + `assets/icons/`, generic `SOUL.md` + `editions/field-service/` overlay, `BRANDING.md` source of truth, translated-README landing pages). `DECISION-2026-09-06-001` DECIDED. Pushed. | 2026-09-07 |
+| Security guards | `.githooks/secret-guard` (filenames) + `.githooks/content-scan` (AWS/GitHub/Slack content, `--commits` gate + CI) + `scripts/redact_handoff.py` (mandatory handoff redaction, fail-closed). `CHG-2026-09-07-001/002`. | 2026-09-07 |
 
 ## Audits
 
@@ -36,6 +37,7 @@ Master pointer for the project ledger. Newest first. Rules: [`README.md`](./READ
 | ID | Area | Question | State |
 | --- | --- | --- | --- |
 | [DECISION-2026-09-06-002](./decisions/DECISION-LOG.md#decision-2026-09-06-002--attic-clone--keep-or-delete-it) | Repo hygiene | Keep or delete the attic clone (~869 MB)? | Leaning **A (delete)** — `origin/main` now carries the work; disk only |
+| [DECISION-2026-09-06-003](./decisions/DECISION-LOG.md#decision-2026-09-06-003--install-model--drive-native-run-in-place-vs-machine-local-managed-install) | Install model | Drive-native run-in-place vs machine-local managed install? | Leaning **A (drive-native)**, **not ratified**. Minimal bootstrap ships (`CHG-2026-09-07-005`); hardened form (seal / dual-volume / certify) blocked on ratification. |
 
 ## Resolved decisions
 

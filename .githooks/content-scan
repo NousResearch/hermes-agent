@@ -1,0 +1,97 @@
+#!/bin/sh
+# content-scan — block high-confidence AWS / GitHub / Slack credentials that appear
+# INSIDE pushed content. Companion to .githooks/secret-guard, which blocks .env-style
+# *filenames*; this one looks at blob *content*.
+#
+# The blocking gate (pre-push, CI) uses `--commits <range>` and scans, per commit,
+# only the files that commit added or modified — so a key added in one fork commit is
+# caught even if a later fork commit renames or deletes the file, while upstream's own
+# test fixtures (never touched by the fork) are not re-flagged on every push.
+# `--tree` / `--worktree` are full scans for manual audits and WILL surface upstream's
+# credential-shaped test fixtures — that is expected, not a finding.
+#
+# Deliberately narrow: three vendor families, each a high-confidence shape.
+#   AWS   : AKIA/ASIA + 16 upper/digit  (the two AWS-doc "…EXAMPLE" placeholders excluded)
+#   GitHub: gh[pousr]_ + 36+ base62 · github_pat_ + 82   (a >=20-char single-char run excluded)
+#   Slack : xox[bpars]- + digits-digits-secret · xapp-1-… · xoxe.xox[bp]-…
+# This is a commit gate, not a full redactor — scripts/redact_handoff.py reuses the
+# agent's full production vocabulary for the handoff bundle.
+#
+# Usage:
+#   content-scan --commits <a>..<b>     per-commit changed-file content across the range  (the gate)
+#   content-scan --commits <sha>        one commit's changed-file content
+#   content-scan --tree    <ref>        every text blob in <ref>'s tree                    (manual audit)
+#   content-scan --worktree            tracked text files on disk                          (manual audit)
+#
+# Exit 0 = clean · 1 = a credential was found · 2 = bad invocation.
+#
+# Allowlist a CONFIRMED fake / fixture value with an inline marker on the SAME line:
+#   aws_example = "AKIA................"   # nf-scan: allow  <reason>
+# No whole-file or path exclusions — the allowlist stays small and line-by-line.
+
+set -u
+
+MARKER='nf-scan: allow'
+
+# PCRE, three families. Prefix-anchored; placeholder shapes excluded inline.
+P_AWS='AKIA(?!IOSFODNN7EXAMPLE)(?!EXAMPLE)[0-9A-Z]{16}'
+P_GH='gh[pousr]_(?!(.)\1{19})[A-Za-z0-9]{36,}|github_pat_[0-9A-Za-z_]{82}'
+P_SLACK='xox[bpars]-[0-9]{9,}-[0-9]{9,}-[A-Za-z0-9]{20,}|xapp-1-[A-Z0-9]+-[0-9]+-[a-f0-9]{16,}|xoxe\.xox[bp]-[0-9]+-[A-Za-z0-9]{20,}'
+
+HITS=$(mktemp 2>/dev/null || printf '/tmp/nfcs.%s' "$$")
+: > "$HITS"
+trap 'rm -f "$HITS"' EXIT
+
+# $1 = tree-ish ("" = working tree); remaining args = pathspec.
+# git grep prefixes each line with "<tree-ish>:" when a tree-ish is given, so the
+# commit / ref context is already in the output.
+_scan() {
+    _ref=$1; shift
+    if [ -n "$_ref" ]; then
+        _out=$(LC_ALL=C git grep -P -n -I -e "$P_AWS" -e "$P_GH" -e "$P_SLACK" "$_ref" -- "$@" 2>/dev/null) || return 0
+    else
+        _out=$(LC_ALL=C git grep -P -n -I -e "$P_AWS" -e "$P_GH" -e "$P_SLACK" -- "$@" 2>/dev/null) || return 0
+    fi
+    printf '%s\n' "$_out" | while IFS= read -r hit; do
+        [ -n "$hit" ] || continue
+        case $hit in *"$MARKER"*) continue ;; esac
+        printf '  %s\n' "$(printf '%s' "$hit" | cut -c1-170)" >> "$HITS"
+    done
+}
+
+_report() {
+    [ -s "$HITS" ] || { printf 'content-scan: clean — no AWS/GitHub/Slack credentials in %s\n' "$1"; return 0; }
+    printf '\n\033[31m✖ content-scan: credential-shaped strings in %s\033[0m\n' "$1" >&2
+    sort -u "$HITS" >&2
+    cat >&2 <<EOF
+
+  These match a high-confidence AWS / GitHub / Slack credential pattern.
+  REAL secret: remove it, rotate it, rewrite history so the blob is gone from every
+  pushed commit. CONFIRMED fake/fixture: add an inline "# ${MARKER} <reason>" comment
+  on that exact line. Real override: git push --no-verify (defeats the gate).
+EOF
+    return 1
+}
+
+mode=${1:-}
+case "$mode" in
+    --commits)
+        rng=${2:?--commits needs <a>..<b> or <sha>}
+        commits=$(git rev-list "$rng" 2>/dev/null || git rev-parse "$rng" 2>/dev/null)
+        for c in $commits; do
+            paths=$(git diff-tree --no-commit-id --name-only -r --diff-filter=d "$c" 2>/dev/null)
+            [ -n "$paths" ] || continue
+            # shellcheck disable=SC2086
+            _scan "$c" $paths
+        done
+        _report "commits ${rng}" ;;
+    --tree)
+        ref=${2:?--tree needs a ref}
+        _scan "$ref" .
+        _report "tree of ${ref}" ;;
+    --worktree)
+        _scan "" .
+        _report "the working tree" ;;
+    *)
+        sed -n '2,30p' "$0"; exit 2 ;;
+esac

@@ -17,6 +17,49 @@ gains a `Superseded-by:` / `Supersedes:` link.
 
 ## Open
 
+### DECISION-2026-09-06-003 — Install model — drive-native run-in-place vs machine-local managed install?
+
+- **Opened:** 2026-09-07 · **Base:** hermes@693641aa8b (0 behind upstream/main)
+- **Run:** RUN-2026-09-07-001
+- **Id note:** the `2026-09-06` date in the id is kept at the owner's request, for
+  continuity with the `-001` / `-002` rebrand batch; the entry was actually opened
+  2026-09-07. (The daily-reset id rule in `README.md` is relaxed here by owner call.)
+- **Source:** the consolidated pass of 2026-09-07 (step 4); the "portable-first"
+  principle in [[north-forge-architecture]]; the minimal bootstrap shipped this
+  pass (`CHG-2026-09-07-005`).
+- **Confidence:** Field-Reasoned — the two shapes and their trade-offs are as
+  stated; nothing here is implemented or ratified beyond the *minimal* bootstrap.
+- **Supersedes:** —
+- **The call:** when North Forge is deployed on a drive, does it **run in place
+  from the drive** (portable, self-contained, nothing installed on the host) or
+  does it perform a **managed install into a machine-local location**
+  (`~/.hermes`, `%LOCALAPPDATA%\hermes`) the way upstream's installer does?
+- **Options:**
+  - **A — Drive-native run-in-place:** the venv and `HERMES_HOME` data folder live
+    as siblings of the checkout on the same drive; nothing is written to the host;
+    unplug and move to another machine. Matches portable-first. Cost: slower cold
+    start, venv rebuild if the drive path changes, no host PATH integration.
+  - **B — Machine-local managed install:** bootstrap installs into `~/.hermes` /
+    `%LOCALAPPDATA%\hermes` like upstream — faster, host PATH integration,
+    survives drive re-lettering. Cost: leaves state on every host it touches; not
+    portable; contradicts portable-first.
+  - **C — Hybrid:** drive-native by default, an opt-in flag for a machine install.
+    Most flexible; more surface to build and document.
+- **Leaning:** **A (drive-native)**, provisionally — consistent with the
+  portable-first principle already established. **Explicitly not ratified.** The
+  *hardened* form of A — sealing the drive, the dual-volume
+  `NORTHFORGE` / `NORTHFORGE-DATA` split, and the certify / verify / audit
+  machinery — is **out of scope** for the current pass and waits for real
+  ratification of this decision. What ships now (`CHG-2026-09-07-005`,
+  `scripts/bootstrap-north-forge.ps1` + `north-forge.cmd`) is only the *minimal*
+  single-drive, single-folder-tree bootstrap + launcher: enough to make a fresh
+  clone launch, deliberately **not** built on the unratified hardened design.
+- **Blocking:** the hardened install / seal / dual-volume / certification work —
+  do not start it until this is `DECIDED`. **Not** blocking: the minimal
+  bootstrap, which ships now.
+- **Owner:** Kenneth C. Walker Jr.
+- **Status:** OPEN
+
 ### DECISION-2026-09-06-002 — Attic clone — keep or delete it?
 
 - **Opened:** 2026-09-06 · **Base:** hermes@693641aa8b (0 behind upstream/main)
@@ -101,3 +144,4 @@ gains a `Superseded-by:` / `Supersedes:` link.
 | --- | --- | --- | --- | --- | --- |
 | DECISION-2026-09-06-001 | 2026-09-06 | Fork identity | Rebrand vs thin downstream? | DECIDED — B (full rebrand), landed `NF-v0.2.0` (CHG-2026-09-06-020..024) | 2026-09-06 |
 | DECISION-2026-09-06-002 | 2026-09-06 | Repo hygiene | Keep or delete the attic clone? | OPEN — leaning A (delete) | — |
+| DECISION-2026-09-06-003 | 2026-09-07 | Install model | Drive-native run-in-place vs machine-local managed install? | OPEN — leaning A (drive-native); hardened form (seal / dual-volume / certify) awaits ratification | — |

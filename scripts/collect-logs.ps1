@@ -9,10 +9,19 @@
       <OutDir>\repo-state.txt      git snapshot - HEAD, branch, ahead/behind origin & upstream,
                                    uncommitted files, recent commits
       <OutDir>\HANDOFF-INDEX.md    generated manifest + the completeness-check results
-      <OutDir>\repo-runtime-logs\  any <repo>\logs\*.log / *.jsonl  (only created if such files exist)
-      <OutDir>\*.md               LEFT UNTOUCHED - the plain-language session reports humans drop here
+      <OutDir>\redaction-report.txt what the mandatory redaction pass touched (see below)
+      <OutDir>\repo-runtime-logs\  <repo>\logs\*.log / *.jsonl  - EXCLUDED by default
+                                   (highest-risk, lowest-value); pass -IncludeRuntimeLogs to include
+      <OutDir>\*.md               LEFT UNTOUCHED by staging - the plain-language session reports
+                                   humans drop here (but the redaction pass below still scans them)
 
-    then compresses <OutDir> to <OutDir>.zip (default D:\logs.zip), overwriting any prior copy,
+    Before zipping, EVERY text file in <OutDir> is run through the agent's production
+    credential redactor (scripts\redact_handoff.py -> agent.redact). If a likely secret
+    SURVIVES redaction, the zip is NOT created: the run fails, names the file:line, and
+    leaves any previous zip renamed to <OutDir>.zip.stale. Pattern-matching is a backstop,
+    not a guarantee.
+
+    Then compresses <OutDir> to <OutDir>.zip (default D:\logs.zip), overwriting any prior copy,
     writes <OutDir>.zip.sha256 next to it, and prints a PASS / WARN / FAIL completeness report.
 
     Legacy nested bundles (<OutDir>\north-forge-agent-logs-*.zip) are removed - the live
@@ -27,14 +36,17 @@
     -RepoRoot  parent folder of this script's folder      (...\north-forge-agent)
     -OutDir    <root of the repo's drive>\logs            (D:\north-forge-agent  ->  D:\logs)
 
-  EXIT CODE   0 = no FAIL (WARN is allowed).   1 = at least one FAIL - the bundle is incomplete.
-  REQUIRES    PowerShell 5.1+.  git is used if on PATH; without it the git snapshot is skipped
-              and the completeness report says so - the ledger copy and zip still build.
+  EXIT CODE   0 = no FAIL (WARN is allowed).   1 = at least one FAIL - the bundle is incomplete
+              or the redaction gate blocked the zip.
+  REQUIRES    PowerShell 5.1+.  git is used if on PATH; without it the git snapshot is skipped.
+              A Python that can import agent.redact is REQUIRED for the redaction gate - the
+              repo .venv, a sibling bootstrap venv, or python on PATH. No zip without it.
 #>
 [CmdletBinding()]
 param(
     [string]$OutDir,
     [string]$RepoRoot,
+    [switch]$IncludeRuntimeLogs,
     [switch]$Quiet
 )
 
@@ -105,15 +117,21 @@ if ($bad.Count -gt 0) { Add-Check 'FAIL' ("ledger missing/empty: {0}" -f ($bad -
 if ($auditCount -lt 1) { Add-Check 'WARN' 'ledger has no AUDIT- file' } else { Add-Check 'OK' "ledger carries $auditCount audit(s), $tmplCount template(s)" }
 if ($tmplCount -lt 4)  { Add-Check 'WARN' "ledger templates/ has only $tmplCount file(s) - expected 4 (audit/change/decision/error)" }
 
-# --- 2. repo runtime logs (only if any) ----------------------------
+# --- 2. repo runtime logs (EXCLUDED by default) -------------------
 $RtDst = Join-Path $OutDir 'repo-runtime-logs'
 if (Test-Path -LiteralPath $RtDst) { Remove-Item -LiteralPath $RtDst -Recurse -Force }
 $rtLogs = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'logs') -File -ErrorAction SilentlyContinue |
     Where-Object { $_.Extension -eq '.log' -or $_.Extension -eq '.jsonl' })
-if ($rtLogs.Count -gt 0) {
-    New-Item -ItemType Directory -Path $RtDst -Force | Out-Null
-    $rtLogs | Copy-Item -Destination $RtDst -Force
-    Add-Check 'OK' ("copied {0} repo runtime log(s) into repo-runtime-logs\" -f $rtLogs.Count)
+if ($IncludeRuntimeLogs) {
+    if ($rtLogs.Count -gt 0) {
+        New-Item -ItemType Directory -Path $RtDst -Force | Out-Null
+        $rtLogs | Copy-Item -Destination $RtDst -Force
+        Add-Check 'WARN' ("-IncludeRuntimeLogs: copied {0} repo runtime log(s) - high-risk content, still redacted before zip" -f $rtLogs.Count)
+    } else {
+        Add-Check 'OK' '-IncludeRuntimeLogs set, but no repo runtime *.log / *.jsonl exist'
+    }
+} elseif ($rtLogs.Count -gt 0) {
+    Add-Check 'OK' ("{0} repo runtime log(s) EXCLUDED (default) - pass -IncludeRuntimeLogs to include" -f $rtLogs.Count)
 }
 
 # --- 3. drop legacy nested bundles -------------------------------
@@ -221,9 +239,66 @@ if ($ledgerMax -and -not $reportMax) {
     Add-Check 'WARN' "ledger active ($ledgerMax) but no dated session report found"
 }
 
-# --- 6. write HANDOFF-INDEX.md (before zipping) ---------------
-$IndexPath = Join-Path $OutDir 'HANDOFF-INDEX.md'
-$staged = @(Get-ChildItem -LiteralPath $OutDir -Recurse -File | Where-Object { $_.FullName -ne $IndexPath })
+# --- 5b. resolve a Python that can import agent.redact -----------
+$RedactPy = Join-Path $RepoRoot 'scripts\redact_handoff.py'
+$pyCandidates = @(
+    (Join-Path $RepoRoot '.venv\Scripts\python.exe'),
+    (Join-Path (Split-Path -Parent $RepoRoot) ((Split-Path -Leaf $RepoRoot) + '-venv\Scripts\python.exe')),
+    'python', 'python3'
+)
+$py = $null
+foreach ($cand in $pyCandidates) {
+    $exe = $cand
+    if ($cand -notmatch '[\\/]') {
+        $cmd = Get-Command $cand -ErrorAction SilentlyContinue
+        if (-not $cmd) { continue }
+        $exe = $cmd.Source
+    } elseif (-not (Test-Path -LiteralPath $exe)) { continue }
+    & $exe -c "import sys; sys.path.insert(0, r'$RepoRoot'); import agent.redact" 2>$null
+    if ($LASTEXITCODE -eq 0) { $py = $exe; break }
+}
+
+# --- 5c. build a throwaway STAGING COPY and redact IT (not D:\logs\) ---
+# The durable session reports in <OutDir> are left byte-for-byte intact; only the
+# copy that goes into the zip is redacted. Fails closed: no redactor, or a likely
+# secret that survives redaction, => no zip.
+$redactionFailed = $false
+$StageParent = Join-Path ([System.IO.Path]::GetTempPath()) ("nf-handoff-" + [guid]::NewGuid().ToString('N').Substring(0, 10))
+$StageDir    = Join-Path $StageParent $OutLeaf
+New-Item -ItemType Directory -Path $StageDir -Force | Out-Null
+Get-ChildItem -LiteralPath $OutDir -Force | Where-Object {
+    $_.Name -notlike '*.zip' -and $_.Name -notlike '*.zip.*' -and $_.Name -ne 'HANDOFF-INDEX.md' -and $_.Name -ne 'redaction-report.txt'
+} | Copy-Item -Destination $StageDir -Recurse -Force
+
+if (-not $py) {
+    Add-Check 'FAIL' 'handoff redaction could not run - no Python that imports agent.redact (repo .venv / sibling -venv / PATH). Run scripts\bootstrap-north-forge.ps1.'
+    $redactionFailed = $true
+} else {
+    & $py $RedactPy $StageDir
+    $rc = $LASTEXITCODE
+    $rep = Join-Path $StageDir 'redaction-report.txt'
+    $summary = ''
+    if (Test-Path -LiteralPath $rep) {
+        Copy-Item -LiteralPath $rep -Destination (Join-Path $OutDir 'redaction-report.txt') -Force  # keep a record in D:\logs\
+        $rtxt = Get-Content -LiteralPath $rep -Raw
+        $m1 = [regex]::Match($rtxt, 'files redacted\s*:\s*(\d+)')
+        $m2 = [regex]::Match($rtxt, 'text files scanned\s*:\s*(\d+)')
+        if ($m1.Success -and $m2.Success) { $summary = "$($m1.Groups[1].Value) of $($m2.Groups[1].Value) file(s) redacted" }
+    }
+    if ($rc -eq 0) {
+        Add-Check 'OK' ("handoff redaction: {0}, 0 survivors (agent.redact; backstop only; D:\logs\ sources untouched)" -f ($(if ($summary) { $summary } else { 'done' })))
+    } elseif ($rc -eq 3) {
+        Add-Check 'FAIL' 'handoff redaction: likely secret(s) SURVIVED - see redaction-report.txt. Zip NOT created; fix the named file:line in D:\logs\.'
+        $redactionFailed = $true
+    } else {
+        Add-Check 'FAIL' ("handoff redaction failed (exit {0}) - see stderr. Zip NOT created." -f $rc)
+        $redactionFailed = $true
+    }
+}
+
+# --- 6. write HANDOFF-INDEX.md into the staging copy ---------
+$IndexPath = Join-Path $StageDir 'HANDOFF-INDEX.md'
+$staged = @(Get-ChildItem -LiteralPath $StageDir -Recurse -File | Where-Object { $_.FullName -ne $IndexPath })
 $idx = New-Object System.Text.StringBuilder
 [void]$idx.AppendLine("# Handoff bundle - $($stamp.ToString('yyyy-MM-dd'))")
 [void]$idx.AppendLine('')
@@ -243,9 +318,16 @@ if ($gitOk) {
 [void]$idx.AppendLine('## Contents')
 [void]$idx.AppendLine('')
 foreach ($f in ($staged | Sort-Object FullName)) {
-    $rel = $f.FullName.Substring($OutDir.Length).TrimStart('\').Replace('\','/')
+    $rel = $f.FullName.Substring($StageDir.Length).TrimStart('\').Replace('\','/')
     [void]$idx.AppendLine(("- ``{0}``  ({1:N0} bytes, {2:yyyy-MM-dd HH:mm})" -f $rel, $f.Length, $f.LastWriteTime))
 }
+[void]$idx.AppendLine('')
+[void]$idx.AppendLine('## Redaction')
+[void]$idx.AppendLine('')
+[void]$idx.AppendLine('Every text file in this bundle was run through the agent''s production credential')
+[void]$idx.AppendLine('redactor (`agent.redact`) on a throwaway copy before zipping - the source files in')
+[void]$idx.AppendLine('D:\logs\ are left intact. See `redaction-report.txt` for what was touched.')
+[void]$idx.AppendLine('Pattern-matching is a backstop, not a guarantee - treat the bundle as sensitive.')
 [void]$idx.AppendLine('')
 [void]$idx.AppendLine('## Completeness self-check')
 [void]$idx.AppendLine('')
@@ -261,38 +343,48 @@ if ($failN -gt 0) { $state = 'INCOMPLETE' }
 [void]$idx.AppendLine(("**{0}** - {1} OK, {2} WARN, {3} FAIL" -f $state, $okN, $warnN, $failN))
 Write-TextFile $IndexPath $idx.ToString()
 
-# --- 7. zip <OutDir> -> <OutDir>.zip -------------------------
-if (Test-Path -LiteralPath $Zip) { Remove-Item -LiteralPath $Zip -Force }
-Compress-Archive -Path $OutDir -DestinationPath $Zip -Force
-$zipItem = Get-Item -LiteralPath $Zip
-$sha = (Get-FileHash -LiteralPath $Zip -Algorithm SHA256).Hash
-Set-Content -LiteralPath ($Zip + '.sha256') -Value ("{0}  {1}" -f $sha, (Split-Path -Leaf $Zip)) -Encoding ASCII
-
-# --- 8. post-zip verification -----------------------------
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zipRel = @()
-$za = [System.IO.Compression.ZipFile]::OpenRead($Zip)
-try {
-    foreach ($e in $za.Entries) {
-        if ($e.FullName.EndsWith('/')) { continue }
-        $n = $e.FullName.Replace('\','/')
-        $n = $n -replace ('^' + [regex]::Escape($OutLeaf) + '/'), ''
-        $zipRel += $n
+# --- 7. zip the STAGING COPY -> <OutDir>.zip  (skipped if the redaction gate failed) ---
+if ($redactionFailed) {
+    if (Test-Path -LiteralPath $Zip) {
+        Move-Item -LiteralPath $Zip -Destination ($Zip + '.stale') -Force
+        if (Test-Path -LiteralPath ($Zip + '.sha256')) { Remove-Item -LiteralPath ($Zip + '.sha256') -Force }
+        Add-Check 'FAIL' ("previous zip preserved as {0}.stale - it is NOT the current handoff" -f (Split-Path -Leaf $Zip))
     }
-} finally { $za.Dispose() }
-$stageRel = @($staged | ForEach-Object { $_.FullName.Substring($OutDir.Length).TrimStart('\').Replace('\','/') })
-$stageRel += 'HANDOFF-INDEX.md'
-$onlyStage = @($stageRel | Where-Object { $zipRel -notcontains $_ })
-$onlyZip   = @($zipRel   | Where-Object { $stageRel -notcontains $_ })
-if ($onlyStage.Count -eq 0 -and $onlyZip.Count -eq 0) {
-    Add-Check 'OK' ("{0} contains every staged file ({1} entries)" -f (Split-Path -Leaf $Zip), $zipRel.Count)
 } else {
-    if ($onlyStage.Count -gt 0) { Add-Check 'FAIL' ("not in zip: {0}" -f ($onlyStage -join ', ')) }
-    if ($onlyZip.Count -gt 0)   { Add-Check 'FAIL' ("in zip but not staged: {0}" -f ($onlyZip -join ', ')) }
+    if (Test-Path -LiteralPath $Zip) { Remove-Item -LiteralPath $Zip -Force }
+    if (Test-Path -LiteralPath ($Zip + '.stale')) { Remove-Item -LiteralPath ($Zip + '.stale') -Force }
+    Compress-Archive -Path $StageDir -DestinationPath $Zip -Force
+    $zipItem = Get-Item -LiteralPath $Zip
+    $sha = (Get-FileHash -LiteralPath $Zip -Algorithm SHA256).Hash
+    Set-Content -LiteralPath ($Zip + '.sha256') -Value ("{0}  {1}" -f $sha, (Split-Path -Leaf $Zip)) -Encoding ASCII
+
+    # --- 8. post-zip verification (against the staging copy) --
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zipRel = @()
+    $za = [System.IO.Compression.ZipFile]::OpenRead($Zip)
+    try {
+        foreach ($e in $za.Entries) {
+            if ($e.FullName.EndsWith('/')) { continue }
+            $n = $e.FullName.Replace('\','/')
+            $n = $n -replace ('^' + [regex]::Escape($OutLeaf) + '/'), ''
+            $zipRel += $n
+        }
+    } finally { $za.Dispose() }
+    $stageRel = @($staged | ForEach-Object { $_.FullName.Substring($StageDir.Length).TrimStart('\').Replace('\','/') })
+    $stageRel += 'HANDOFF-INDEX.md'
+    $onlyStage = @($stageRel | Where-Object { $zipRel -notcontains $_ })
+    $onlyZip   = @($zipRel   | Where-Object { $stageRel -notcontains $_ })
+    if ($onlyStage.Count -eq 0 -and $onlyZip.Count -eq 0) {
+        Add-Check 'OK' ("{0} contains every staged file ({1} entries)" -f (Split-Path -Leaf $Zip), $zipRel.Count)
+    } else {
+        if ($onlyStage.Count -gt 0) { Add-Check 'FAIL' ("not in zip: {0}" -f ($onlyStage -join ', ')) }
+        if ($onlyZip.Count -gt 0)   { Add-Check 'FAIL' ("in zip but not staged: {0}" -f ($onlyZip -join ', ')) }
+    }
+    Add-Check 'OK' ("{0} = {1:N0} bytes, SHA256 {2}..." -f (Split-Path -Leaf $Zip), $zipItem.Length, $sha.Substring(0,16))
 }
-$maxInput = ($staged | Measure-Object LastWriteTime -Maximum).Maximum
-if ($zipItem.LastWriteTime -lt $maxInput) { Add-Check 'FAIL' 'zip is older than a file it should contain - rebuild' }
-Add-Check 'OK' ("{0} = {1:N0} bytes, SHA256 {2}..." -f (Split-Path -Leaf $Zip), $zipItem.Length, $sha.Substring(0,16))
+
+# --- cleanup the throwaway staging copy -----------------
+if (Test-Path -LiteralPath $StageParent) { Remove-Item -LiteralPath $StageParent -Recurse -Force -ErrorAction SilentlyContinue }
 
 # --- 9. report -------------------------------------------
 $failN = @($checks | Where-Object { $_.Level -eq 'FAIL' }).Count

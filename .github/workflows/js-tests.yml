@@ -163,4 +163,10 @@ jobs:
         # ``--passWithNoTests`` is deliberately NOT set: an empty selection
         # here means the filter stopped matching, and a green job that ran
         # nothing is the failure mode this lane exists to end.
-        run: npx vitest run --project electron windows
+        #
+        # Two projects: ``electron`` (normal file parallelism) and
+        # ``electron-live`` (``electron/**/*.windows-live.test.ts``, forced
+        # serial — those files spawn real PowerShell/WMI process trees against
+        # the live OS process table and starve each other under the default
+        # parallelism). ``--project`` can be repeated in one invocation.
+        run: npx vitest run --project electron --project electron-live windows

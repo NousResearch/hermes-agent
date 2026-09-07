@@ -2707,21 +2707,26 @@ def _systemd_watchdog_seconds(hermes_home: str | Path | None = None) -> int:
 
 
 def _append_node_dir_for_service(path_entries: list[str], hermes_root: Path | None = None) -> None:
-    """Append the Node dir a service unit should use: managed ``<hermes_root>/node`` (profile-scoped)
-    first — a unit survives reboots, so baking a shell-PATH Node is permanent breakage — else PATH lookup."""
+    """Put the Node dirs a service unit should use first.
+
+    A unit survives reboots, so selecting a shell-PATH Node is permanent breakage.  ``node/bin``
+    can already be present from the generic service path builder; move it rather than merely
+    avoiding a duplicate, otherwise a legacy ``/usr/bin/node`` can still win.
+    """
     from hermes_constants import (hermes_managed_node_tree_present, iter_hermes_node_dirs)
     managed_node_present = hermes_managed_node_tree_present(hermes_root)
+    managed_entries = []
     for directory in iter_hermes_node_dirs(hermes_root) if managed_node_present else ():
-        entry = str(directory)
         try:
-            present = directory.is_dir()
+            if directory.is_dir():
+                managed_entries.append(str(directory))
         except OSError:
-            present = False
-        if present and entry not in path_entries:
-            path_entries.append(entry)
+            continue
 
     # With managed Node present, consulting the invoker's PATH would make a system unit depend on who ran sudo.
     if managed_node_present:
+        path_entries[:] = [entry for entry in path_entries if entry not in managed_entries]
+        path_entries[:0] = managed_entries
         return
 
     resolved_node = shutil.which("node")
@@ -2768,10 +2773,12 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         working_dir = str(hermes_home) if hermes_home else _remap_path_for_user(working_dir, home_dir)
         venv_dir = _remap_path_for_user(venv_dir, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
-        # Managed Node for the TARGET user's tree, prepended so it outranks remapped shell-PATH entries.
+        # Managed Node for the TARGET user's tree must outrank every generic service entry.  In
+        # particular, node/bin is often already present from _build_service_path_dirs(); retaining
+        # that copy later in PATH lets an older /usr/bin/node win.
         _target_node_entries: list[str] = []
         _append_node_dir_for_service(_target_node_entries, Path(hermes_home) if hermes_home else None)
-        path_entries = [e for e in _target_node_entries if e not in path_entries] + path_entries
+        path_entries = _target_node_entries + [e for e in path_entries if e not in _target_node_entries]
         user_home = Path(home_dir)
         identity_lines = f"User={username}\nGroup={group_name}\n"
         env_lines = (

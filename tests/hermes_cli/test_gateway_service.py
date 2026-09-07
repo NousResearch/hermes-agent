@@ -1239,6 +1239,20 @@ class TestSystemUnitHermesHome:
 
         assert entries == ["/opt/external-node/bin"]
 
+    def test_managed_node_entries_outrank_an_existing_system_node_path(self, tmp_path):
+        """The managed bin dir must move ahead of an older node already in PATH."""
+        managed_root = tmp_path / ".hermes"
+        managed_bin = managed_root / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        node = managed_bin / "node"
+        node.write_text("#!/bin/sh\n")
+        node.chmod(0o755)
+        entries = ["/usr/bin", str(managed_bin), "/custom/bin", str(managed_root / "node")]
+
+        gateway_cli._append_node_dir_for_service(entries, managed_root)
+
+        assert entries == [str(managed_bin), str(managed_root / "node"), "/usr/bin", "/custom/bin"]
+
     def test_managed_node_makes_system_unit_independent_of_callers_path(
         self, monkeypatch, tmp_path
     ):
@@ -1273,6 +1287,36 @@ class TestSystemUnitHermesHome:
         assert root_unit == user_unit
         assert str(managed_bin) in root_unit
         assert "/root/bin" not in root_unit
+
+    def test_system_unit_prioritizes_target_managed_node_when_bin_is_already_generic(
+        self, monkeypatch, tmp_path
+    ):
+        """A generic node/bin entry must not leave an older system Node ahead of it."""
+        target_home = tmp_path / "home" / "alice"
+        target_hermes = target_home / ".hermes"
+        root_hermes = tmp_path / "root" / ".hermes"
+        managed_bin = target_hermes / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        node = managed_bin / "node"
+        node.write_text("#!/bin/sh\n")
+        node.chmod(0o755)
+        root_hermes.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "root"))
+        monkeypatch.setenv("HERMES_HOME", str(root_hermes))
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", str(target_home)),
+        )
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: root_hermes)
+        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: ["/venv/bin", str(managed_bin)])
+        monkeypatch.setattr(gateway_cli, "_build_user_local_paths", lambda home, existing: ["/usr/bin"])
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+        path = next(line for line in unit.splitlines() if line.startswith('Environment="PATH=')).split("PATH=", 1)[1][:-1]
+
+        assert path.split(":")[:2] == [str(managed_bin), str(target_hermes / "node")]
 
     def test_node_path_lookup_remains_fallback_without_managed_node(
         self, monkeypatch, tmp_path

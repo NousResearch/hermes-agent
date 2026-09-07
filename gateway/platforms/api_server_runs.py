@@ -432,6 +432,12 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         conversation_history = await self._conversation_history_for_session(str(session_id))
     run_id = requested_run_id or f"run_{uuid.uuid4().hex}"
     if requested_run_id and run_id in self._run_owners:
+        # History loading above can yield to an identical concurrent admission.
+        outcome, record = self._run_idempotency_store.lookup(
+            idempotency_scope, idempotency_key, idempotency_fingerprint,
+            retention_until=_room_retention_until(request))
+        if outcome == "conflict" or (outcome == "reused" and record is not None):
+            return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
         return _json_error(
             _openai_error, "Client run_id is already reserved",
             code="idempotency_key_conflict", status=409)

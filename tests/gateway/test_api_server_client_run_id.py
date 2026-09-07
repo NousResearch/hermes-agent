@@ -88,6 +88,45 @@ async def test_client_run_id_http_admission_survives_retries_and_collisions(tmp_
             instance._run_idempotency_store.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("headers", [{}, {"Idempotency-Key": "explicit-key"}])
+async def test_simultaneous_identical_client_ids_replay_after_history_loading(tmp_path, headers):
+    adapter = _make_adapter(api_key="test-owner")
+    _use_idempotency_db(adapter, tmp_path / "runs.db")
+    arrived = 0
+    both_arrived = asyncio.Event()
+
+    async def load_history(_session_id):
+        nonlocal arrived
+        arrived += 1
+        if arrived == 2:
+            both_arrived.set()
+        await asyncio.wait_for(both_arrived.wait(), timeout=5)
+        return []
+
+    agent = MagicMock()
+    agent.run_conversation.return_value = {"final_response": "done"}
+    agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+    body = {"run_id": "run_" + "d" * 32, "session_id": "test-session", "input": "same request"}
+    try:
+        with patch.object(adapter, "_create_agent", return_value=agent), patch.object(
+            adapter, "_conversation_history_for_session", side_effect=load_history
+        ):
+            async with TestClient(TestServer(_create_runs_app(adapter))) as client:
+                replies = await asyncio.gather(*[
+                    client.post("/v1/runs", json=body, headers={**headers, "Authorization": "Bearer test-owner"})
+                    for _ in range(2)
+                ])
+                assert [reply.status for reply in replies] == [202, 202]
+                assert [(await reply.json())["run_id"] for reply in replies] == [body["run_id"]] * 2
+                assert sum(reply.headers.get("Idempotency-Replayed") == "true" for reply in replies) == 1
+                await asyncio.gather(*list(adapter._active_run_tasks.values()))
+                assert agent.run_conversation.call_count == 1
+    finally:
+        await asyncio.gather(*list(adapter._active_run_tasks.values()), return_exceptions=True)
+        adapter._run_idempotency_store.close()
+
+
 @pytest.mark.parametrize("scope,key", [("profile-b", "key-a"), ("profile-a", "key-b")])
 def test_client_run_id_collision_keeps_original_owner_and_store_usable(tmp_path, scope, key):
     store = RunIdempotencyStore(str(tmp_path / "runs.db"))

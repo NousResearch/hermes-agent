@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import path from 'node:path'
 
 import type { UpdateMarkerClaim } from './update-marker'
+import { windowsPowerShellExecutable } from './windows-powershell-path'
 
 /** Transfer a repair claim without exposing an absent marker to another updater. */
 export async function transferUpdateMarkerIfOwnedBy(
@@ -42,7 +43,7 @@ try {
 
   return new Promise(resolve => {
     execFile(
-      path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      windowsPowerShellExecutable(),
       ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
       { windowsHide: true, timeout: 5_000 },
       error => resolve(!error)

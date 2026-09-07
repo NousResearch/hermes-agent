@@ -4,6 +4,7 @@ import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 import { hiddenWindowsChildOptions } from './windows-child-options'
+import { windowsPowerShellExecutable } from './windows-powershell-path'
 import { queryWindowsProcessCreatedAt } from './windows-process-identity'
 
 export const WINDOWS_HANDOFF_ENV = {
@@ -261,7 +262,7 @@ export function wrapHandoffForDetachedConsole(
       'start',
       '',
       '/min',
-      path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      windowsPowerShellExecutable(),
       '-NoProfile',
       '-NonInteractive',
       '-ExecutionPolicy',

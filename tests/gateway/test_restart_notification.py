@@ -77,7 +77,6 @@ async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path
     # run.py); it uses that module's top-level atomic_json_write import.
     import gateway.slash_commands as gateway_slash
     monkeypatch.setattr(gateway_slash, "atomic_json_write", _fake_atomic_json_write)
-    monkeypatch.setattr(gateway_run, "atomic_json_write", _fake_atomic_json_write)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)

@@ -14,6 +14,11 @@ import importlib
 
 import pytest
 
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource
+
 gateway_run = importlib.import_module("gateway.run")
 _build_document_context_note = gateway_run._build_document_context_note
 
@@ -26,6 +31,54 @@ class TestTextDocumentNote:
         assert "notes.txt" in note
         assert "/cache/doc_notes.txt" in note
         assert "included below" in note
+
+    def test_non_inlined_text_note_tells_agent_to_read_cached_path(self):
+        note = _build_document_context_note(
+            "notes.txt",
+            "/cache/doc_notes.txt",
+            "text/plain",
+            content_inlined=False,
+        )
+        assert "included below" not in note
+        assert "/cache/doc_notes.txt" in note
+        assert "read" in note.lower()
+
+    @pytest.mark.asyncio
+    async def test_event_contract_marks_non_inlined_text_and_preserves_path(self):
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
+        )
+        runner.adapters = {}
+        runner._pending_native_image_paths_by_session = {}
+        runner._session_model_overrides = {}
+        runner._session_reasoning_overrides = {}
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="text-document",
+            chat_type="dm",
+            user_id="42",
+            user_name="Tester",
+        )
+        event = MessageEvent(
+            text="summarize this",
+            message_type=MessageType.DOCUMENT,
+            source=source,
+            media_urls=["/cache/notes.txt"],
+            media_types=["text/plain"],
+            media_text_inlined=[False],
+        )
+
+        prepared = await runner._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+        assert prepared is not None
+        assert "/cache/notes.txt" in prepared
+        assert "included below" not in prepared
+        assert "read the cached file" in prepared.lower()
 
 
 class TestBinaryDocumentNote:

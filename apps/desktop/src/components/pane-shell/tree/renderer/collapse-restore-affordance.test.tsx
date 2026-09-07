@@ -182,9 +182,7 @@ describe('docked tool tile — collapsing keeps the restore chip', () => {
   it('chevron-collapse of a row-docked tile keeps the tab as a restore handle', () => {
     render(<LiveTreeGroup index={1} parentAxis="row" />)
 
-    fireEvent.click(
-      globalThis.document.querySelector('[data-tree-group="g-routines"] button[aria-label="Minimize"]')!
-    )
+    fireEvent.click(globalThis.document.querySelector('[data-tree-group="g-routines"] button[aria-label="Minimize"]')!)
 
     expect(zoneAt(1).minimized).toBe(true)
     expect(tabEl('hermes-bots:routines')).toBeTruthy()

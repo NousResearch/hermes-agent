@@ -191,6 +191,45 @@ describe('useSessionTileDelegate resumeTile', () => {
 
     expect(runtimeId).toBe('runtime-a')
     expect(requestGateway).not.toHaveBeenCalled()
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+  })
+
+  it('merges persisted messages into a warm tile on explicit reopen (#96183)', async () => {
+    const stateA = {
+      busy: false,
+      messages: [{ id: 'm1', parts: [{ type: 'text', text: 'old' }], role: 'user' }],
+      storedSessionId: 'stored-a'
+    }
+
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-a', 'runtime-a']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-a', stateA]]) }
+    const updateSessionState = vi.fn((_id, updater) => updater(stateA))
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      messages: [
+        { id: 'm1', content: 'old', role: 'user' },
+        { id: 'm2', content: 'cron delivery', role: 'user' }
+      ],
+      session_id: 'stored-a'
+    } as never)
+
+    renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef, updateSessionState })
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-a', { refreshTranscript: true })
+
+    expect(runtimeId).toBe('runtime-a')
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect(getLatestSessionMessages).toHaveBeenCalled()
+    expect(updateSessionState).toHaveBeenCalled()
+
+    const updater = updateSessionState.mock.calls[0][1] as (state: typeof stateA) => {
+      messages: Array<{ parts?: Array<{ text?: string }> }>
+    }
+
+    const next = updater(stateA)
+    const texts = next.messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+
+    expect(texts.some(text => text.includes('cron delivery'))).toBe(true)
   })
 
   it('falls through to a real resume when the warm binding has no transcript (post-wake empty tile)', async () => {

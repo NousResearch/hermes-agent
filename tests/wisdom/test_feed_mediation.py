@@ -76,6 +76,66 @@ def event(category="new_skill", version=2):
     }
 
 
+@pytest.mark.parametrize("relevance", ["recommend", "digest"])
+def test_qualified_candidate_keeps_sharing_controls_with_advisory_assessment(
+    mediation, monkeypatch, relevance
+):
+    from hermes_wisdom.mediation_view import advice_view, delivery_groups
+
+    instance, actor, _, _ = mediation
+    instance.service.local_candidate_events.return_value = [
+        {
+            "id": "qualified",
+            "organization_id": "org",
+            "session_id": "session",
+            "skill_id": "local",
+            "content_hash": "hash",
+            "qualification": "high_usage",
+        }
+    ]
+    instance.ingest()
+    identity = instance.queue.assessments("org")[0]["id"]
+    monkeypatch.setattr(
+        instance, "inspect", lambda org, job: {"assessment_id": job["id"]}
+    )
+    present = Mock(
+        return_value={
+            "id": "consent",
+            "operation": "share",
+            "facts": {"slug": "local", "source_hash": "hash"},
+            "actions": ["defer", "inspect", "confirm"],
+        }
+    )
+    monkeypatch.setattr(instance.consent, "present", present)
+    assessor = Mock(
+        return_value={
+            identity: {
+                "title": "Qualified local skill",
+                "explanation": "Limited team relevance.",
+                "relevance": relevance,
+            }
+        }
+    )
+    items = instance.prepare("org", actor, runtime={}, history=[], assessor=assessor)
+    assert len(items) == 1
+    assert items[0]["advice"]["relevance"] == relevance
+    present.assert_called_once()
+    groups = delivery_groups(items)
+    assert groups == [items]
+    view = advice_view(groups[0])
+    assert [a.label for a in view.items[0].actions] == [
+        "Not Now",
+        "Review first",
+        "Share",
+    ]
+    assert view.items[0].actions[-1].primary
+    assert "Limited team relevance." in view.to_text()
+    if relevance == "digest":
+        assert "Hermes assessment:" in view.to_text()
+        assert "Hermes recommendation:" not in view.to_text()
+    instance.service.approve_candidate.assert_not_called()
+
+
 def enqueue(instance, category="new_skill"):
     instance.service.notifications.return_value = {"events": [event(category)]}
     assert instance.ingest() == "org"

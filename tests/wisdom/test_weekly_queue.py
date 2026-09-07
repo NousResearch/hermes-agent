@@ -225,6 +225,32 @@ def test_later_week_does_not_repeat_an_unchanged_recommendation(weekly):
     assert "release-notes" in next_week["excluded"]["previously_handled"]
 
 
+def test_weekly_selection_does_not_duplicate_an_immediate_qualification(weekly):
+    service, mediation, _, _, _ = weekly
+    _, job = claim(weekly)
+    source = job["reference"]["candidates"][0]
+    identity = mediation.queue.enqueue(
+        "org-1",
+        "candidate:immediate",
+        {
+            "kind": "candidate",
+            "event_id": "immediate",
+            "local_skill_id": source["local_skill_id"],
+            "content_hash": source["content_hash"],
+        },
+        origin_session="session",
+    )
+    process_weekly_review(
+        mediation, "org-1", job, runtime={}, history=[], reviewer=reviewer
+    )
+    rows = mediation.queue.assessments("org-1")
+    assert len(rows) == 2
+    assert (
+        next(row for row in rows if row["id"] == job["id"])["advice"]["selected"] == []
+    )
+    assert next(row for row in rows if row["id"] == identity)["state"] == "pending"
+
+
 def test_weekly_selected_session_model_has_no_tools_or_auxiliary_fallback(monkeypatch):
     call = Mock(
         return_value=SimpleNamespace(
@@ -397,8 +423,9 @@ def test_new_org_has_its_own_weekly_identity_and_old_owner_cannot_commit(weekly)
     assert len(mediation.queue.assessments("org-2")) == 1
 
 
-def test_qualification_is_supporting_evidence_not_a_second_proactive_card(
-    weekly, monkeypatch
+@pytest.mark.parametrize("qualification", ["high_usage", "refinement", "weekly_usage"])
+def test_qualification_queues_once_in_its_originating_session(
+    weekly, monkeypatch, qualification
 ):
     service, mediation, _, _, _ = weekly
     monkeypatch.setattr(
@@ -411,12 +438,26 @@ def test_qualification_is_supporting_evidence_not_a_second_proactive_card(
             "payload": {"skill_name": "release-notes"},
             "content_hash": "hash",
             "skill_id": "local",
+            "session_id": "originating-session",
+            "qualification": qualification,
         }
     ]
     service.notifications.return_value = {"events": []}
     assert mediation.ingest() == "org-1"
-    assert mediation.queue.assessments("org-1") == []
-    service.local_candidate_events.assert_called_once()
+    assert mediation.ingest() == "org-1"
+    jobs = mediation.queue.assessments("org-1")
+    assert len(jobs) == 1
+    assert jobs[0]["event_key"] == "candidate:old-signal"
+    assert jobs[0]["origin_session"] == "originating-session"
+    assert jobs[0]["reference"] == {
+        "kind": "candidate",
+        "event_id": "old-signal",
+        "content_hash": "hash",
+        "local_skill_id": "local",
+    }
+    service.local_candidate_events.return_value = []
+    mediation.ingest()
+    assert mediation.queue.assessments("org-1")[0]["state"] == "retired"
 
 
 @pytest.mark.parametrize(

@@ -217,13 +217,9 @@ class WisdomMediation:
         from .weekly_queue import enqueue_weekly_review
 
         enqueue_weekly_review(self.service)
-        # Deterministic qualification remains local evidence/manual activity.
-        # Only the leased weekly selection creates proactive candidate advice.
-        candidates = [
-            event
-            for event in self.service.local_candidate_events()
-            if (event.get("payload") or {}).get("agent_led_weekly")
-        ]
+        # Immediate qualification and weekly selection share the same event
+        # identity, ownership and consent path.
+        candidates = self.service.local_candidate_events()
         self.queue.retire_candidates(
             org,
             {
@@ -646,9 +642,8 @@ class WisdomMediation:
                 "explanation": "Hermes could not assess this skill's relevance to your setup. You can still review its details manually. Nothing has been changed.",
             }
             interaction = None
-            if (
-                job["reference"]["kind"] != "notice"
-                and advice["relevance"] == "recommend"
+            if job["reference"]["kind"] != "notice" and (
+                reference["kind"] == "candidate" or advice["relevance"] == "recommend"
             ):
                 try:
                     if not self.queue.renew(org, job["id"], job["lease_token"]):

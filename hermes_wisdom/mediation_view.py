@@ -9,8 +9,16 @@ from .review_presentation import full_review_text
 
 def delivery_groups(items: list[dict]) -> list[list[dict]]:
     """Keep recommendations actionable and below native message limits."""
-    recommended = [[item] for item in items if item["advice"]["relevance"] != "digest"]
-    digest = [item for item in items if item["advice"]["relevance"] == "digest"]
+    recommended = [
+        [item]
+        for item in items
+        if item.get("interaction") or item["advice"]["relevance"] != "digest"
+    ]
+    digest = [
+        item
+        for item in items
+        if not item.get("interaction") and item["advice"]["relevance"] == "digest"
+    ]
     # At most three bounded summaries in a digest message.
     return recommended + [digest[i : i + 3] for i in range(0, len(digest), 3)]
 
@@ -41,7 +49,7 @@ def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
     has_digest = False
     for item in items:
         advice = item["advice"]
-        if advice["relevance"] == "digest":
+        if advice["relevance"] == "digest" and not item.get("interaction"):
             has_digest = True
             view.items.append(
                 WisdomItem(
@@ -53,7 +61,11 @@ def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
         unavailable = advice.get("assessment_status") == "unavailable"
         interaction = item.get("interaction")
         detail = (
-            "Assessment unavailable: " if unavailable else "Hermes recommendation: "
+            "Assessment unavailable: "
+            if unavailable
+            else "Hermes assessment: "
+            if advice["relevance"] == "digest"
+            else "Hermes recommendation: "
         ) + advice["explanation"]
         actions = []
         if interaction:

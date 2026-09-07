@@ -3020,10 +3020,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
                 ensure_installed(log_failures=False) is None and is_platform_supported()
                 and (self.config.get("security", {}) or {}).get("tirith_enabled", True)
             ):
-                _cprint(
-                    f"  {_DIM}⚠ tirith security scanner enabled but not available "
-                    f"— command scanning will use pattern matching only{_RST}"
+                warning = (
+                    "⚠ tirith security scanner enabled but not available "
+                    "— command scanning will use pattern matching only"
                 )
+                if self.tool_progress_mode == "off":
+                    print(f"  {warning}", file=sys.stderr)
+                else:
+                    _cprint(f"  {_DIM}{warning}{_RST}")
         except Exception:
             pass
 

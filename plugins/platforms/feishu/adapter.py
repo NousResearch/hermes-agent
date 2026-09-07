@@ -3043,6 +3043,21 @@ class FeishuAdapter(BasePlatformAdapter):
         action = "added" if "created" in event_type else "removed"
         synthetic_text = f"reaction:{action}:{emoji_type}"
 
+        # Reactions become agent turns, so they must clear the same
+        # admission gate as a text message from this operator in this chat:
+        # DM allowlist, group policy (allowlist / admin_only / disabled /
+        # per-chat rules) and bot-sender policy. Without this, anyone who
+        # can see a bot message in a group can wake the agent by reacting,
+        # even under FEISHU_GROUP_POLICY=allowlist. A reaction has no
+        # mention payload, so mention gating is not applied.
+        reject = self._admit_reaction(user_id_obj, chat_id=chat_id, chat_type=chat_type_raw)
+        if reject is not None:
+            logger.debug(
+                "[Feishu] dropping reaction %s:%s on %s: %s",
+                action, emoji_type, message_id, reject,
+            )
+            return
+
         sender_profile = await self._resolve_sender_profile(user_id_obj)
         chat_info = await self.get_chat_info(chat_id)
         source = self.build_source(
@@ -4416,6 +4431,36 @@ class FeishuAdapter(BasePlatformAdapter):
         if rule and rule.require_mention is not None:
             return rule.require_mention
         return self._require_mention
+
+    def _admit_reaction(
+        self, user_id_obj: Any, *, chat_id: str, chat_type: str
+    ) -> Optional[RejectReason]:
+        """Admission for a reaction that would become a synthetic agent turn.
+
+        DMs go through ``_admit`` unchanged (allowlist / allow-all / pairing
+        intake). Groups apply self-echo and ``_allow_group_message`` (global
+        policy, per-chat ``group_rules``, admins) but skip the mention
+        requirement, because a reaction carries no @ payload.
+        """
+        sender = SimpleNamespace(sender_type="user", sender_id=user_id_obj)
+        message = SimpleNamespace(
+            chat_type=chat_type or "p2p",
+            chat_id=chat_id,
+            mentions=None,
+            content="",
+            message_type="text",
+        )
+        is_group = message.chat_type != "p2p"
+        if not is_group:
+            return self._admit(sender, message)
+        # Group: apply policy without the mention requirement.
+        sender_ids = _sender_identity(sender)
+        self_ids = frozenset(v for v in (self._bot_open_id, self._bot_user_id) if v)
+        if self_ids and sender_ids & self_ids:
+            return "self_echo"
+        if not self._allow_group_message(user_id_obj, chat_id, is_bot=False):
+            return "group_policy_rejected"
+        return None
 
     # --- Group policy ---------------------------------------------------------
 

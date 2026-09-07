@@ -566,3 +566,124 @@ def test_handle_message_event_data_forwards_sender_when_admitted():
     assert captured.get("sender_id") is sender.sender_id
     assert captured.get("is_bot") is True
     assert captured.get("message_id") == "om_bot_ok"
+
+
+# --- Reaction routing must clear the same admission gate -------------------
+
+
+def _reaction_adapter(**kwargs):
+    """Adapter whose GET-message lookup says the reacted-to message is ours."""
+    adapter = make_adapter_skeleton(**kwargs)
+    adapter._app_id = "cli_self_app"
+    adapter._client = SimpleNamespace(
+        im=SimpleNamespace(
+            v1=SimpleNamespace(
+                message=SimpleNamespace(
+                    get=lambda _req: SimpleNamespace(
+                        success=lambda: True,
+                        data=SimpleNamespace(
+                            items=[
+                                SimpleNamespace(
+                                    sender=SimpleNamespace(id="cli_self_app"),
+                                    chat_id=adapter._reaction_chat_id,
+                                    chat_type=adapter._reaction_chat_type,
+                                )
+                            ]
+                        ),
+                    )
+                )
+            )
+        )
+    )
+    adapter._build_get_message_request = lambda _mid: object()
+
+    async def _run_blocking(func, *args):
+        return func(*args)
+
+    adapter._run_blocking = _run_blocking
+
+    async def _resolve_sender_profile(user_id_obj, *, is_bot=False):
+        return {"user_id": getattr(user_id_obj, "open_id", None), "user_name": "U", "user_id_alt": None}
+
+    adapter._resolve_sender_profile = _resolve_sender_profile
+
+    async def _get_chat_info(_chat_id):
+        return {"name": "Chat", "type": None}
+
+    adapter.get_chat_info = _get_chat_info
+    adapter._resolve_channel_prompt = lambda *_a, **_k: None
+    adapter.build_source = lambda **kw: SimpleNamespace(**kw)
+    routed: list = []
+
+    async def _handle_message_with_guards(event):
+        routed.append(event)
+
+    adapter._handle_message_with_guards = _handle_message_with_guards
+    adapter._routed = routed
+    return adapter
+
+
+def _reaction_data(open_id: str):
+    return SimpleNamespace(
+        event=SimpleNamespace(
+            message_id="om_bot_msg",
+            operator_type="user",
+            user_id=SimpleNamespace(open_id=open_id, user_id=None, union_id=None),
+            reaction_type=SimpleNamespace(emoji_type="THUMBSUP"),
+        )
+    )
+
+
+def _run_reaction(adapter, open_id: str, *, chat_id: str, chat_type: str):
+    import asyncio
+
+    adapter._reaction_chat_id = chat_id
+    adapter._reaction_chat_type = chat_type
+    asyncio.run(adapter._handle_reaction_event("im.message.reaction.created_v1", _reaction_data(open_id)))
+    return adapter._routed
+
+
+def test_group_reaction_from_non_allowlisted_user_is_dropped(monkeypatch):
+    """FEISHU_GROUP_POLICY=allowlist must gate reactions like text (#bypass)."""
+    adapter = _reaction_adapter(group_policy="allowlist")
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    assert _run_reaction(adapter, "ou_stranger", chat_id="oc_g", chat_type="group") == []
+
+
+def test_group_reaction_from_allowlisted_user_is_routed(monkeypatch):
+    adapter = _reaction_adapter(group_policy="allowlist")
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    routed = _run_reaction(adapter, "ou_owner", chat_id="oc_g", chat_type="group")
+    assert len(routed) == 1
+    assert routed[0].text == "reaction:added:THUMBSUP"
+
+
+def test_group_reaction_ignores_mention_requirement(monkeypatch):
+    """require_mention applies to text; a reaction has no @ payload."""
+    adapter = _reaction_adapter(group_policy="open", require_mention=True)
+    routed = _run_reaction(adapter, "ou_anyone", chat_id="oc_g", chat_type="group")
+    assert len(routed) == 1
+
+
+def test_group_reaction_respects_per_chat_disabled_rule(monkeypatch):
+    from plugins.platforms.feishu.adapter import FeishuGroupRule
+
+    adapter = _reaction_adapter(group_policy="open")
+    adapter._group_rules = {"oc_locked": FeishuGroupRule(policy="disabled")}
+    assert _run_reaction(adapter, "ou_anyone", chat_id="oc_locked", chat_type="group") == []
+
+
+def test_dm_reaction_from_non_allowlisted_user_is_dropped(monkeypatch):
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+    adapter = _reaction_adapter()
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    assert _run_reaction(adapter, "ou_stranger", chat_id="oc_dm", chat_type="p2p") == []
+
+
+def test_dm_reaction_from_allowlisted_user_is_routed(monkeypatch):
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+    adapter = _reaction_adapter()
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    assert len(_run_reaction(adapter, "ou_owner", chat_id="oc_dm", chat_type="p2p")) == 1

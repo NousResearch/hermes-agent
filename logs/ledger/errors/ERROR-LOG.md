@@ -137,6 +137,35 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 
 ---
 
+### ERR-2026-09-07-001 — LOW — `bootstrap-north-forge.ps1` cross-volume slow path
+
+- **Opened:** 2026-09-07 · **Base:** hermes@61d30533f7 (13 behind upstream/main)
+- **Run:** RUN-2026-09-07-002
+- **Source:** `FIRST-LAUNCH-WITNESS_2026-09-07` (AGENT E's first-launch run on `E:\`) —
+  measured, not fixed by that agent (witness scope, no edit authority).
+- **Confidence:** Confirmed Fact — timed on two drives: `E:\` first run 395.7 s
+  wall (uv reported `Installed 67 packages in 6m 25s`); `D:\` after the fix 7.4 s
+  cold / 5.0 s warm (`Installed 67 packages in 740ms`).
+- **What:** `scripts/bootstrap-north-forge.ps1` let uv's package cache stay at its
+  default location under `%LOCALAPPDATA%` on `C:` while building the venv on the
+  checkout's own drive (`E:\north-forge-agent-venv`, `D:\north-forge-agent-venv`).
+  uv installs by hardlinking from cache into the venv; across volumes the hardlink
+  fails and uv full-copies every package instead (`warning: Failed to hardlink
+  files; falling back to full copy`). Net: a first `north-forge.cmd` double-click
+  took **~6.5 min** instead of the "~7 s" `CHG-2026-09-07-005` advertised.
+- **Exposure / impact:** performance and first-impression only — the bootstrap
+  produced a correct venv, just slowly, with a warning that reads like a failure.
+- **Resolved:** 2026-09-07 — `CHG-2026-09-07-008`: the script now sets
+  `$env:UV_CACHE_DIR` to a sibling of the venv (`<parent>\.uv-cache`, same volume)
+  before the uv calls, unless the operator already set it. Re-measured on `D:\`:
+  link step `740ms`, total 5–7 s, warning gone, sibling venv `hermes.exe
+  --version` works.
+- **Status:** RESOLVED. Note: `scripts/collect-logs.*` and the `.sh` bootstrap
+  variant are unaffected (no `.sh` bootstrap exists); if one is added it needs the
+  same `UV_CACHE_DIR` line.
+
+---
+
 ## Register (quick scan)
 
 | ID | Date | Sev | Area | Summary | Status | Resolved by |
@@ -146,3 +175,4 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 | ERR-2026-09-06-003 | 2026-09-06 | MEDIUM | Secret hygiene | `.gitignore` missed `.env.production` / `.env.<name>` | RESOLVED | CHG-2026-09-06-007 |
 | ERR-2026-09-06-004 | 2026-09-06 | LOW | Repo hygiene | Stray `%SystemDrive%` Windows cache tree in root (recurred; guard held) | RESOLVED | CHG-2026-09-06-009 / -012 |
 | ERR-2026-09-06-005 | 2026-09-06 | LOW | Repo hygiene | pytest/mock artifacts (`MagicMock/`, `C:Users…`, `logs.zip`) in working tree | RESOLVED | CHG-2026-09-06-011 / -012 |
+| ERR-2026-09-07-001 | 2026-09-07 | LOW | Bootstrap tooling | `bootstrap-north-forge.ps1` let uv cache sit on `C:` while venv built on the checkout drive → cross-volume full-copy, ~6.5 min first run | RESOLVED | CHG-2026-09-07-008 |

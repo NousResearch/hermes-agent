@@ -8,6 +8,100 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.4.0] — 2026-09-07 — hermes@61d30533f7 (13 behind upstream/main)
+
+First pass to touch **application code** for identity (`RUN-2026-09-07-002`). The
+rebrand had so far been documentation, tooling, and art only (`BRANDING.md` §2
+kept the seeded persona and the CLI banner/help text as "intentionally
+Hermes-compatible"). `AGENT E`'s first-launch witness run (`FIRST-LAUNCH-WITNESS_2026-09-07`)
+confirmed the consequence: a first-time user who bootstraps with `north-forge.cmd`
+gets an agent that says *"You are Hermes Agent, built by Nous Research"* and a
+`hermes --version` / `--help` banner reading *"Hermes Agent"* — no North Forge
+anywhere in the running product. This pass moves those specific surfaces into
+North Forge's identity and re-files them in `BRANDING.md`; it also fixes the
+cross-volume bootstrap slow path the same witness run measured (`ERR-2026-09-07-001`).
+**MINOR** — a North Forge identity surface extended into the runtime; the engine,
+repo layout, the `hermes` command name, `HERMES_*` env vars, and the
+`hermes-agent` distribution name are all unchanged, and no behaviour changes
+except what the agent calls itself. Not pushed pending review (higher-stakes than
+a docs pass). HEAD `61d30533f7` is level with `origin/main` but `upstream/main`
+has moved **13 commits** since `NF-v0.3.0` was cut this morning — a sync is a
+separate task, not folded in here.
+
+### Changed
+
+- **CHG-2026-09-07-007** — Identity surfaces moved from `BRANDING.md` category 2
+  (Hermes-compatible, do not touch) to category 1 (North-Forge-owned identity),
+  and rebranded:
+  - **Seeded / fallback persona identity line.** `hermes_cli/default_soul.py`
+    `DEFAULT_SOUL_MD` (seeded into `HERMES_HOME/SOUL.md` on first run) and
+    `agent/prompt_builder.py` `DEFAULT_AGENT_IDENTITY` (in-memory fallback when no
+    SOUL.md is present, e.g. `skip_context_files` / subagent) — first sentence
+    changed from *"You are Hermes Agent, built by Nous Research."* to *"You are
+    North Forge, an adaptive AI agent (built on the Hermes Agent engine by Nous
+    Research)."* Engine attribution kept (BRANDING.md honesty principle). The rest
+    of the behaviour spec (reply-sizing rule, named prohibitions, earned-depth) is
+    upstream's and is untouched; the two constants remain **byte-identical** (712
+    chars) as `default_soul.py`'s own header comment requires. `_LEGACY_TEMPLATE_SOULS`
+    / `_SCAFFOLD_*` in the same file were **not** touched — they must stay
+    Hermes-verbatim to keep auto-upgrade detection working. Not added to
+    `_LEGACY_TEMPLATE_SOULS`: the outgoing text, so homes seeded between the fork
+    start and this commit keep the old persona until edited — deliberate (that
+    list carries a "never silently overwrite a user's SOUL.md" guarantee; the
+    handful of such homes are all disposable test installs). Flagged for review.
+  - **CLI display name.** `hermes_cli/banner.py` `format_banner_version_label()`
+    and `hermes_cli/_parser.py` top-level parser `description`: *"Hermes Agent
+    v0.21.0 …"* → *"North Forge v0.21.0 …"*, *"Hermes Agent - AI assistant with
+    tool-calling capabilities"* → *"North Forge - AI assistant …"*. The version
+    number, the `· upstream <sha>` suffix, the `Install directory` / `Install
+    method` / `Python` / `OpenAI SDK` lines, and **every `hermes …` example** in
+    the help epilogue are unchanged (that is the command name — stays). Two
+    degraded-path echoes of the same label updated to match:
+    `hermes_cli/_startup_fast.py` (import-failure fallback) and `cli.py`
+    (`HERMES_FAST_STARTUP_BANNER=1` fast banner).
+  - **`BRANDING.md`** — two new category-1 rows for the above; the old category-2
+    row (`DEFAULT_AGENT_IDENTITY`, `DEFAULT_SOUL_MD` — "untouched") replaced with a
+    narrower one covering only what still must stay Hermes-verbatim
+    (`HERMES_AGENT_HELP_GUIDANCE`, the legacy-SOUL detection strings). The
+    command name, env vars, and distribution name rows in category 2 are
+    unchanged.
+  - **Tests** updated for the new literal: `tests/hermes_cli/test_startup_fast_guards.py`
+    (`"Hermes Agent v"` → `"North Forge v"`, 2 assertions),
+    `tests/hermes_cli/test_banner.py` (1 assertion).
+    `tests/agent/test_prompt_builder.py::test_empty_dir_loads_seeded_global_soul`
+    still passes unchanged — the new persona line still contains "Hermes Agent"
+    (in the engine-attribution clause).
+  - **Deliberately left as "Hermes"** (BRANDING.md category 3 / out of this pass's
+    named scope, flagged for a follow-up decision): the `update` / `uninstall` /
+    `acp` subcommand help blurbs ("Update Hermes Agent…"), the `/version` REPL
+    command description (`hermes_cli/commands.py`), `acp_adapter/commands.py`'s ACP
+    version string, and the `⚕ NOUS HERMES` / "AI Agent Framework" startup splash
+    art in `cli.py`. `website/**` docs that quote the old fallback text are
+    category 3 and stay.
+  - Paths: `hermes_cli/default_soul.py`, `agent/prompt_builder.py`,
+    `hermes_cli/banner.py`, `hermes_cli/_parser.py`, `hermes_cli/_startup_fast.py`,
+    `cli.py`, `BRANDING.md`, `tests/hermes_cli/test_startup_fast_guards.py`,
+    `tests/hermes_cli/test_banner.py`. Ref: `DECISION-2026-09-06-001`,
+    `FIRST-LAUNCH-WITNESS_2026-09-07`. Run: RUN-2026-09-07-002.
+
+### Fixed
+
+- **CHG-2026-09-07-008** — `scripts/bootstrap-north-forge.ps1` first-run time on a
+  drive-native checkout: **~6.5 min → 5–7 s**. Root cause (`ERR-2026-09-07-001`):
+  uv installs by hardlinking packages from its cache into the venv, but uv's
+  default cache sits under `%LOCALAPPDATA%` on `C:` while a drive-native checkout
+  builds its venv on the checkout's own drive — cross-volume, so uv fell back to a
+  full byte copy of all 67 packages ("Failed to hardlink files; falling back to
+  full copy"). Fix: before the `uv venv` / `uv pip install` calls, set
+  `$env:UV_CACHE_DIR = Join-Path $parent '.uv-cache'` (a sibling of the venv, so
+  always the same volume) unless the operator already set `UV_CACHE_DIR`.
+  Measured on `D:\`: install/link step `Installed 67 packages in 740ms` (was
+  `6m 25s` on the `E:\` witness run); total bootstrap 7.4 s cold cache / 5.0 s
+  warm; the hardlink-failure warning is gone; sibling venv `hermes.exe --version`
+  works and shows the new North Forge banner. Paths:
+  `scripts/bootstrap-north-forge.ps1`. Ref: `ERR-2026-09-07-001`,
+  `FIRST-LAUNCH-WITNESS_2026-09-07`. Run: RUN-2026-09-07-002.
+
 ## [NF-v0.3.0] — 2026-09-07 — hermes@922c0d670c (0 behind upstream/main)
 
 One consolidated pass (`RUN-2026-09-07-001`): a content secret-scanning layer, a

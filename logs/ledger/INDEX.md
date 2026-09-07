@@ -11,10 +11,10 @@ Master pointer for the project ledger. Newest first. Rules: [`README.md`](./READ
 
 | Coordinate | Value | As of |
 | --- | --- | --- |
-| Upstream base | `hermes@922c0d670c` (**0 behind** `upstream/main`) — a GitHub "sync fork" merged upstream into `origin/main` mid-pass; `NF-v0.3.0` rebased onto it | 2026-09-07 |
-| North-Forge version | `NF-v0.3.0` (consolidated pass: secret scanning + handoff redaction + persona/editions split + install decision + minimal bootstrap + final brand art). **Pushed** — `NF-v0.2.0`..`NF-v0.3.0` are public. | 2026-09-07 |
+| Upstream base | `hermes@61d30533f7` — level with `origin/main`, but **13 behind `upstream/main`** (upstream moved after `NF-v0.3.0` was cut the same morning; last synced `hermes@922c0d670c`). A sync is unstarted. | 2026-09-07 |
+| North-Forge version | `NF-v0.4.0` (first application-code identity pass: seeded/fallback persona line + `hermes --version` / `--help` display name → North Forge; `BRANDING.md` recategorized; bootstrap cross-volume slow path fixed). **NOT pushed** — held for review. `NF-v0.2.0`..`NF-v0.3.0` are public. | 2026-09-07 |
 | Ledger schema | `v2` | 2026-09-06 |
-| Latest run | `RUN-2026-09-07-001` — one consolidated pass (`CHG-2026-09-07-001..006`): `.githooks/content-scan` + CI, `scripts/redact_handoff.py` + collect-logs redaction gate, generic root `SOUL.md` + `editions/` + `BRANDING.md` + translated-README landing pages, `DECISION-2026-09-06-003` (OPEN), `scripts/bootstrap-north-forge.ps1` + `north-forge.cmd`, final brand banner + `assets/icons/`. | 2026-09-07 |
+| Latest run | `RUN-2026-09-07-002` — identity-into-runtime pass (`CHG-2026-09-07-007` + `-008`, `ERR-2026-09-07-001`): `DEFAULT_SOUL_MD` / `DEFAULT_AGENT_IDENTITY` and the CLI version/help banner now say North Forge; `BRANDING.md` §1/§2 re-filed; `bootstrap-north-forge.ps1` pins `UV_CACHE_DIR` to the venv's volume. Held for review. Prior: `RUN-2026-09-07-001` (`CHG-2026-09-07-001..006`). | 2026-09-07 |
 | First fork commits | `NF-v0.1.0` + `NF-v0.1.1` on `origin/main` (`CHG-2026-09-06-010`); fork synced to upstream (`CHG-2026-09-06-014`) | 2026-09-06 |
 | Fork identity | **full rebrand** — `NF-v0.2.0` (`CHG-2026-09-06-020..024`); branding-pass finish `NF-v0.2.1`; `NF-v0.3.0` completed the branding (final banner + `assets/icons/`, generic `SOUL.md` + `editions/field-service/` overlay, `BRANDING.md` source of truth, translated-README landing pages). `DECISION-2026-09-06-001` DECIDED. Pushed. | 2026-09-07 |
 | Security guards | `.githooks/secret-guard` (filenames) + `.githooks/content-scan` (AWS/GitHub/Slack content, `--commits` gate + CI) + `scripts/redact_handoff.py` (mandatory handoff redaction, fail-closed). `CHG-2026-09-07-001/002`. | 2026-09-07 |
@@ -53,3 +53,4 @@ Master pointer for the project ledger. Newest first. Rules: [`README.md`](./READ
 | ERR-2026-09-06-003 | MEDIUM | `.gitignore` missed `.env.production` / `.env.<name>` | CHG-2026-09-06-007 |
 | ERR-2026-09-06-004 | LOW | Stray `%SystemDrive%` Windows cache tree in repo root (recurred; guard held) | CHG-2026-09-06-009 / -012 |
 | ERR-2026-09-06-005 | LOW | pytest/mock artifacts (`MagicMock/`, `C:Users…`, `logs.zip`) in working tree | CHG-2026-09-06-011 / -012 |
+| ERR-2026-09-07-001 | LOW | `bootstrap-north-forge.ps1` uv cache on `C:` vs venv on checkout drive → cross-volume full-copy, ~6.5 min first run | CHG-2026-09-07-008 |

@@ -69,6 +69,19 @@ if ((Test-Path -LiteralPath $hermes) -and (Test-Path -LiteralPath $marker) -and 
 
 $uv = Get-Command uv -ErrorAction SilentlyContinue
 
+# --- keep uv's cache on the venv's volume --------------------------
+# uv installs by HARDLINKING packages from its cache into the venv. When the cache
+# is on a different volume than the venv (uv's default cache is under the user's
+# %LOCALAPPDATA% on C:, but a drive-native checkout builds its venv on the
+# checkout's own drive) the hardlink fails and uv falls back to a full byte copy of
+# every package - first-run bootstrap took ~6.5 min instead of seconds on an E:\
+# test. Pin the cache to a sibling of the venv so the two always share a volume.
+# An operator who has already set UV_CACHE_DIR keeps their choice.
+if ($uv -and -not $env:UV_CACHE_DIR) {
+    $env:UV_CACHE_DIR = Join-Path $parent '.uv-cache'
+    Write-Host "  cache: $env:UV_CACHE_DIR   (same volume as the venv -> hardlink, not copy)"
+}
+
 # --- venv ------------------------------------------------------------
 if ($Force -and (Test-Path -LiteralPath $VenvDir)) {
     Write-Host "removing existing venv (-Force)..."

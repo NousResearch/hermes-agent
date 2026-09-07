@@ -32,8 +32,6 @@ afterEach(() => {
 })
 
 async function renderKeysSettings(view: 'settings' | 'tools', route = '/settings') {
-  const { KeysSettings } = await import('./keys-settings')
-
   await act(async () => {
     render(
       <MemoryRouter initialEntries={[route]}>
@@ -52,6 +50,10 @@ function DeepLinkButton({ target }: { target: string }) {
     </button>
   )
 }
+
+// Load stable modules during collection, after mock fixtures are initialized.
+// Cold transforms must not consume a behavioral test or hook deadline.
+const { KeysSettings } = await import('./keys-settings')
 
 describe('KeysSettings', () => {
   it('fetches env vars for the active profile (undefined, never null) when unscoped', async () => {
@@ -107,8 +109,6 @@ describe('KeysSettings', () => {
       BRAVE_SEARCH_API_KEY: envVar('tool', { description: 'Search the web with Brave.' }),
       FIRECRAWL_API_KEY: envVar('tool', { description: 'Crawl and extract websites.' })
     })
-
-    const { KeysSettings } = await import('./keys-settings')
 
     render(
       <MemoryRouter initialEntries={['/settings?tab=keys']}>

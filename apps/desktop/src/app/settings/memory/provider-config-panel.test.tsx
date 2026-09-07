@@ -109,10 +109,12 @@ afterEach(() => {
 })
 
 async function renderPanel(provider = 'honcho') {
-  const { ProviderConfigPanel } = await import('./provider-config-panel')
-
   return render(<ProviderConfigPanel provider={provider} />)
 }
+
+// Load stable modules during collection, after mock fixtures are initialized.
+// Cold transforms must not consume a behavioral test or hook deadline.
+const { ProviderConfigPanel } = await import('./provider-config-panel')
 
 describe('ProviderConfigPanel', () => {
   it('renders the declared inline fields generically', async () => {

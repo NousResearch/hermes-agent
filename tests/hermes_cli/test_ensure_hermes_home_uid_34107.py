@@ -133,3 +133,50 @@ class TestSecureDirChown:
         with patch.object(cfg.os, "chown") as mock_chown:
             cfg._secure_dir(d)
         mock_chown.assert_not_called()
+
+
+class TestBrokenSymlinkSubdirs:
+    """#104771: a subdir under HERMES_HOME that is a symlink to a target that
+    does not exist yet (dotfiles-managed: GNU Stow / Chezmoi / git repos) used
+    to crash ensure_hermes_home() with FileExistsError — pathlib's
+    mkdir(exist_ok=True) treats the broken link as "exists, not a dir" and
+    re-raises EEXIST."""
+
+    def test_broken_symlink_subdir_does_not_crash(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        target = tmp_path / "external-repo" / "hooks"  # does not exist yet
+        (tmp_path / "hooks").symlink_to(target)
+
+        from hermes_cli.config import ensure_hermes_home
+
+        ensure_hermes_home()
+
+        # The link is preserved and its target directory now exists; the
+        # rest of the skeleton is created as usual.
+        assert (tmp_path / "hooks").is_symlink()
+        assert (tmp_path / "hooks").resolve().is_dir()
+        assert (tmp_path / "skills").is_dir()
+        assert (tmp_path / "sessions").is_dir()
+
+    def test_healthy_symlink_subdir_left_alone(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        target = tmp_path / "real-hooks"
+        target.mkdir()
+        (tmp_path / "hooks").symlink_to(target)
+
+        from hermes_cli.config import ensure_hermes_home
+
+        ensure_hermes_home()
+
+        assert (tmp_path / "hooks").is_symlink()
+        assert (tmp_path / "hooks").resolve() == target
+
+    def test_plain_subdirs_still_secured(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from hermes_cli.config import ensure_hermes_home
+
+        ensure_hermes_home()
+
+        mode = (tmp_path / "skills").stat().st_mode & 0o777
+        assert mode == 0o700

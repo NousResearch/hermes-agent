@@ -676,6 +676,25 @@ def ensure_hermes_home():
         _secure_dir(home)
         for subdir in _HERMES_HOME_SUBDIRS:
             d = home / subdir
+            if d.is_symlink():
+                # A dotfiles-managed subdir (~/.hermes/hooks etc. via GNU Stow /
+                # Chezmoi / a git repo). Two constraints:
+                #   * mkdir(exist_ok=True) refuses a BROKEN link — pathlib's
+                #     is_dir() follows the link to the missing target, returns
+                #     False, and re-raises the EEXIST as FileExistsError, which
+                #     crashed every startup until the target appeared (#104771).
+                #     Create the link's TARGET instead so the skeleton is
+                #     complete either way.
+                #   * Do not chmod the link: os.chmod follows symlinks and
+                #     would fight the dotfiles manager over the target's
+                #     permissions (see also the _secure_dir symlink skip).
+                try:
+                    d.mkdir(parents=True, exist_ok=True)
+                except FileExistsError:
+                    if not d.is_symlink():
+                        raise
+                    d.resolve().mkdir(parents=True, exist_ok=True)
+                continue
             d.mkdir(parents=True, exist_ok=True)
             _secure_dir(d)
         _ensure_default_soul_md(home)

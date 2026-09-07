@@ -297,8 +297,15 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
             scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
           )}
         >
+          {/* Each section is its own framed sibling, separated by one hairline
+              (styles.css, `[data-status-section]`). Without the seam two
+              adjacent sections read as a single block: the billing wall runs
+              into session control, and a plugin's status line looks like a
+              footnote of the group above it rather than its own status. */}
           {sections.map(section => (
-            <div key={section.key}>{section.node}</div>
+            <div data-status-section="" key={section.key}>
+              {section.node}
+            </div>
           ))}
         </div>
       )}

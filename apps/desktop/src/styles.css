@@ -1700,6 +1700,19 @@ body.guest-pointer-lock :is(webview, iframe) {
   padding-inline: 5px;
 }
 
+/* Status-stack section seams. Each section in the stack (billing wall, session
+   control, subagents, background, previews, the queue) is a framed sibling;
+   one hairline between them is what keeps two adjacent sections from reading
+   as a single block.
+
+   `:not(:empty)` on BOTH sides is load-bearing: a section can render null (a
+   contribution slot with no active plugin, an empty preview block) and still
+   leave its wrapper in the DOM, so a plain `* + *` rule would draw a seam with
+   nothing on one side of it. */
+[data-slot='composer-status-stack'] [data-status-section]:not(:empty) ~ [data-status-section]:not(:empty) {
+  border-top: 1px solid var(--ui-stroke-tertiary);
+}
+
 /* Popped-out (floating) composer: compact width + an even 5px transparent grab
    platform. The higher-specificity selector resets the base rule's padding-bottom
    so the inset is equal on all four sides (not 5px sides / shell-pad bottom). */

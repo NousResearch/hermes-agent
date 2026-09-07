@@ -2556,6 +2556,14 @@ function Install-Venv {
         return
     }
 
+    # Recover the original generation before discovery can fail. Keep recovery
+    # outside the new transaction's catch so a failed restore is never mistaken
+    # for a partial first install. Builds on the retry fix in #103771.
+    if (Get-PendingVenvBackup) {
+        Write-Warn "Reconciling unfinished venv transaction before retrying"
+        Restore-VenvBackup
+    }
+
     # Re-resolve the interpreter before creating the venv.  Under Hermes-Setup.exe
     # each stage runs in its own powershell.exe, so the fallback the `python`
     # stage picked (e.g. 3.12 when 3.11 is absent) did NOT propagate into this
@@ -2672,11 +2680,20 @@ function Install-Venv {
         # interpreter and no rollback source. Abort with the previous install
         # intact so the user can close holders and retry.
         $venvBackupName = "venv.stale.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+        # Publish a complete recovery pointer before parking the original. A
+        # crash before publication leaves the original untouched; a crash after
+        # parking leaves an intact pointer to it (#103771).
+        Write-PendingVenvBackup -BackupName $venvBackupName
         try {
             Rename-Item -LiteralPath "venv" -NewName $venvBackupName -ErrorAction Stop
             $venvParked = $true
         } catch {
             $renameErr = $_.Exception.Message
+            try {
+                Restore-VenvBackup
+            } catch {
+                throw "Could not move the existing venv aside ($renameErr). Recovery failed: $($_.Exception.Message)"
+            }
             throw (
                 "Could not move the existing venv aside ($renameErr). " +
                 "A process still has the install directory open (often a non-Hermes " +
@@ -2732,21 +2749,11 @@ function Install-Venv {
     # committed after Install-Dependencies' baseline-import gate passes -- the
     # bootstrap runs the stages as separate processes, and every dependency
     # tier (or the import validation) can still fail after this stage
-    # succeeds. Record the parked backup so the dependency stage can restore
-    # it on failure and commit its cleanup only after validation (#83149).
+    # succeeds. The marker was published before parking the original so an
+    # interruption cannot strand the only rollback source without a pointer.
     if ($venvParked) {
-        Set-Content -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Value $venvBackupName -Encoding ascii
         Write-Info "Previous venv parked at $venvBackupName until the dependency install is verified"
     }
-
-    # Clean up parked venvs from previous installs whose handles have since
-    # been released. Best-effort -- a still-held tree just stays for next time.
-    # The backup parked THIS run is excluded: it is the rollback source until
-    # Install-Dependencies commits the transaction.
-    Get-ChildItem -Directory -Filter "venv.stale.*" -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -ne $venvBackupName } | ForEach-Object {
-            Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
-        }
 
     # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
     # the user's shell). uv honours UV_PYTHON over an existing venv for the
@@ -2760,21 +2767,15 @@ function Install-Venv {
         $originalError = $_
         $rollbackError = $null
 
-        if ($venvParked -and $venvBackupName -and (Test-Path -LiteralPath $venvBackupName)) {
+        if ($venvParked) {
             try {
-                if (Test-Path -LiteralPath "venv") {
-                    $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
-                    Rename-Item -LiteralPath "venv" -NewName $failedVenvName -ErrorAction Stop
-                    Write-Warn "Failed replacement parked at $failedVenvName"
-                }
-                Rename-Item -LiteralPath $venvBackupName -NewName "venv" -ErrorAction Stop
-                Write-Warn "Restored previous virtual environment after failed recreate"
+                Restore-VenvBackup
             } catch {
                 $rollbackError = $_.Exception.Message
             }
 
             if ($rollbackError) {
-                throw "Virtual environment recreate failed: $($originalError.Exception.Message). Rollback failed: $rollbackError. Previous venv remains at $venvBackupName."
+                throw "Virtual environment recreate failed: $($originalError.Exception.Message). Rollback failed: $rollbackError. Recovery evidence was retained."
             }
         } elseif (-not $venvHadExistingVenv -and (Test-Path -LiteralPath "venv")) {
             # Preserve a partial first install too. This branch must not touch a
@@ -2812,60 +2813,157 @@ function Install-Venv {
     Write-Success "Virtual environment ready (Python $($resolvedPython.Version))"
 }
 
+function Get-VenvTransactionDirectory {
+    param([string]$LiteralPath)
+    try {
+        $item = Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+    } catch [System.Management.Automation.ItemNotFoundException] {
+        return $null
+    }
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Venv recovery requires an ordinary directory: $LiteralPath. Existing recovery evidence was retained."
+    }
+    return $item
+}
+
 function Get-PendingVenvBackup {
-    # Rollback source recorded by Install-Venv (#83149). Returns the parked
-    # directory name, or $null when there is nothing to roll back to. A marker
-    # pointing at a directory that no longer exists is stale -- drop it.
+    # Validate ownership before any provisioning or directory mutation. Accept
+    # only a complete installer-generated name, with an optional final newline
+    # for markers written by previous versions.
+    $live = Get-VenvTransactionDirectory -LiteralPath (Join-Path $InstallDir "venv")
     $markerPath = Join-Path $InstallDir "venv.pending-backup"
-    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $null }
-    $name = (Get-Content -LiteralPath $markerPath -ErrorAction SilentlyContinue | Select-Object -First 1)
-    if ($name) { $name = $name.Trim() }
-    if (-not $name -or -not (Test-Path -LiteralPath (Join-Path $InstallDir $name))) {
-        Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+    try {
+        $marker = Get-Item -LiteralPath $markerPath -Force -ErrorAction Stop
+    } catch [System.Management.Automation.ItemNotFoundException] {
+        return $null
+    }
+    if ($marker.PSIsContainer -or ($marker.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Invalid venv recovery marker at $markerPath. Existing recovery evidence was retained."
+    }
+    # Get-Content auto-detects and strips a BOM even with -Encoding ascii. Decode
+    # the bytes directly so non-ASCII encodings cannot bypass the complete match.
+    [string]$content = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($markerPath))
+    $match = [regex]::Match($content, '\A(venv\.stale\.[0-9]{14}-[0-9a-f]{32})(?:\r?\n)?\z')
+    if (-not $match.Success) {
+        throw "Invalid venv recovery marker at $markerPath. Existing recovery evidence was retained."
+    }
+    $name = $match.Groups[1].Value
+    $backup = Get-VenvTransactionDirectory -LiteralPath (Join-Path $InstallDir $name)
+    if (-not $backup) {
+        if (-not $live) {
+            throw "Venv recovery cannot find the original at $name or the live venv. The marker was retained."
+        }
+        # Interrupted before parking, or after restoring but before clearing.
+        # The original remains at venv; never turn this state into a fresh install.
+        Remove-Item -LiteralPath $markerPath -Force -ErrorAction Stop
         return $null
     }
     return $name
 }
 
+function Write-PendingVenvBackup {
+    param([string]$BackupName)
+    $temporary = Join-Path $InstallDir ("venv.pending-backup.{0}.tmp" -f [Guid]::NewGuid().ToString("N"))
+    try {
+        Set-Content -LiteralPath $temporary -Value $BackupName -Encoding ascii -NoNewline -ErrorAction Stop
+        Rename-Item -LiteralPath $temporary -NewName "venv.pending-backup" -ErrorAction Stop
+    } finally {
+        if (Test-Path -LiteralPath $temporary) {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Complete-VenvTransaction {
-    # Commit: dependency install + baseline imports passed, so the previous
-    # venv is no longer needed as a rollback source. Best-effort delete; a
-    # tree still held open just stays parked for the next install's sweep.
     $backupName = Get-PendingVenvBackup
     if (-not $backupName) { return }
     $backupPath = Join-Path $InstallDir $backupName
-    Remove-Item -LiteralPath $backupPath -Recurse -Force -ErrorAction SilentlyContinue
-    if (Test-Path -LiteralPath $backupPath) {
-        Write-Warn "Old venv parked at $backupName (a process still holds files in it); it will be cleaned up on the next install"
+    # Commit before cleanup. An interruption during deletion must never leave
+    # a marker that can restore the partly deleted generation on the next run.
+    Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction Stop
+    try {
+        # Inspect one directory at a time so the preflight itself cannot follow
+        # a junction. Retain the whole backup if any descendant is a reparse
+        # point, or if inspection fails; this is optional cleanup of one owned tree.
+        $directories = New-Object 'System.Collections.Generic.Queue[string]'
+        $directories.Enqueue($backupPath)
+        while ($directories.Count -gt 0) {
+            $directory = $directories.Dequeue()
+            [void](Get-VenvTransactionDirectory -LiteralPath $directory)
+            foreach ($item in (Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)) {
+                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                    throw "The backup contains a reparse point at $($item.FullName)"
+                }
+                if ($item.PSIsContainer) { $directories.Enqueue($item.FullName) }
+            }
+        }
+        Remove-Item -LiteralPath $backupPath -Recurse -Force -ErrorAction Stop
+    } catch {
+        Write-Warn "Old venv retained at $backupName; cleanup was skipped or incomplete: $($_.Exception.Message)"
     }
-    Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction SilentlyContinue
 }
 
 function Restore-VenvBackup {
-    # Rollback: the dependency stage failed after Install-Venv replaced the
-    # venv. Park the unusable replacement and restore the previous working
-    # venv so Hermes (and the venv-blocker probe) stay usable (#83149).
     $backupName = Get-PendingVenvBackup
     if (-not $backupName) { return }
-    try {
-        if (Test-Path -LiteralPath (Join-Path $InstallDir "venv")) {
-            $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
-            Rename-Item -LiteralPath (Join-Path $InstallDir "venv") -NewName $failedVenvName -ErrorAction Stop
-            Write-Warn "Failed replacement parked at $failedVenvName"
-        }
-        Rename-Item -LiteralPath (Join-Path $InstallDir $backupName) -NewName "venv" -ErrorAction Stop
-        Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction SilentlyContinue
-        Write-Warn "Restored previous virtual environment after failed dependency install"
-    } catch {
-        Write-Warn "Could not restore previous venv (still parked at $backupName): $($_.Exception.Message)"
+    # Any failed rename or marker removal propagates. Keep the original and
+    # recovery pointer until restoration is complete, including process death
+    # between the final rename and marker removal.
+    if (Test-Path -LiteralPath (Join-Path $InstallDir "venv")) {
+        $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+        Rename-Item -LiteralPath (Join-Path $InstallDir "venv") -NewName $failedVenvName -ErrorAction Stop
+        Write-Warn "Failed replacement parked at $failedVenvName"
     }
+    Rename-Item -LiteralPath (Join-Path $InstallDir $backupName) -NewName "venv" -ErrorAction Stop
+    Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction Stop
+    Write-Warn "Restored previous virtual environment"
+}
+
+function Assert-VenvBaselineImports {
+    $venvPython = "$InstallDir\venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPython)) {
+        throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, close Hermes processes and preserve existing venv directories before retrying. Do not delete venv in place."
+    }
+    # Relax EAP=Stop while running the import probe.  Python writes
+    # deprecation warnings and import-system info to stderr; under
+    # EAP=Stop the 2>&1 merge wraps those as ErrorRecord objects and
+    # throws even when the imports succeed.  $LASTEXITCODE is the
+    # reliable signal (it's 0 iff the python invocation exited 0,
+    # regardless of what was written to stderr).
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-Null
+        $importExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    if ($importExitCode -ne 0) {
+        $sibling = "$InstallDir\.venv"
+        $hint = if (Test-Path $sibling) {
+            "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Close Hermes processes, preserve the existing venv, and rerun the installer so the transactional recovery path can move directories safely."
+        } else {
+            "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+        }
+        throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
+    }
+    Write-Success "Baseline imports verified in venv"
 }
 
 function Install-Dependencies {
     Write-Info "Installing dependencies..."
     
     Push-Location $InstallDir
-    
+
+    try {
+    if (-not $NoVenv -and -not (Get-PendingVenvBackup)) {
+        # The bootstrap retries this exact stage after a no-frame host exit.
+        # Rollback may already have restored the original and cleared its marker;
+        # never let that retry install packages into the only working generation.
+        # Direct dependency-stage invocations need the same recovery boundary.
+        Install-Venv
+    }
+
     if (-not $NoVenv) {
         # Tell uv to install into our venv (no activation needed)
         $env:VIRTUAL_ENV = "$InstallDir\venv"
@@ -2896,11 +2994,8 @@ function Install-Dependencies {
     # when the lockfile is stale, missing, or out-of-sync with the
     # current extras spec, NOT because they're equivalent in posture.
     #
-    # Everything through the baseline-import gate runs inside the venv
-    # transaction opened by Install-Venv (#83149): on any failure the parked
-    # previous venv is restored before the error propagates, and the parked
-    # tree is deleted only after the imports prove the replacement usable.
-    try {
+    # All mandatory checks and dependency repairs remain inside the transaction
+    # opened by Install-Venv (#83149), including the dashboard syntax gate.
     if (Test-Path "uv.lock") {
         Write-Info "Trying tier: hash-verified (uv.lock) ..."
         # Critical flag choice: `--extra all`, NOT `--all-extras`.
@@ -3007,53 +3102,7 @@ except Exception:
         throw "Failed to install hermes-agent package even with no extras. Inspect the uv pip install output above."
     }
 
-    # Baseline-import gate. Even if a tier reported success above, the
-    # actual deps may have landed somewhere other than $InstallDir\venv\
-    # (e.g. uv 0.5+ syncing into a sibling .venv\ when UV_PROJECT_ENVIRONMENT
-    # isn't set, leaving venv\ empty and hermes.exe broken with
-    # `ModuleNotFoundError: No module named 'dotenv'` on first run).
-    # We probe via the venv's own python so a misdirected sync is caught
-    # here, not 30 seconds later when the user runs `hermes`.
-    if (-not $NoVenv) {
-        $venvPython = "$InstallDir\venv\Scripts\python.exe"
-        if (-not (Test-Path $venvPython)) {
-            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, close Hermes processes and preserve existing venv directories before retrying. Do not delete venv in place."
-        }
-        # Relax EAP=Stop while running the import probe.  Python writes
-        # deprecation warnings and import-system info to stderr; under
-        # EAP=Stop the 2>&1 merge wraps those as ErrorRecord objects and
-        # throws even when the imports succeed.  $LASTEXITCODE is the
-        # reliable signal (it's 0 iff the python invocation exited 0,
-        # regardless of what was written to stderr).
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-Null
-        $importExitCode = $LASTEXITCODE
-        $ErrorActionPreference = $prevEAP
-        if ($importExitCode -ne 0) {
-            $sibling = "$InstallDir\.venv"
-            $hint = if (Test-Path $sibling) {
-                "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Close Hermes processes, preserve the existing venv, and rerun the installer so the transactional recovery path can move directories safely."
-            } else {
-                "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
-            }
-            throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
-        }
-        Write-Success "Baseline imports verified in venv"
-    }
-
-    # Commit the venv transaction: the dependency install completed and the
-    # baseline imports passed, so the previous venv is no longer needed as a
-    # rollback source (#83149).
-    Complete-VenvTransaction
-    } catch {
-        # Dependency install or import validation failed: restore the previous
-        # working venv (parked by Install-Venv) before surfacing the error, so
-        # a failed update leaves Hermes and its blocker probe usable.
-        Restore-VenvBackup
-        Pop-Location
-        throw
-    }
+    if (-not $NoVenv) { Assert-VenvBaselineImports }
 
     if (-not $NoVenv) {
         # uv on Windows can register hermes.exe in dist-info/RECORD but fail to
@@ -3136,11 +3185,28 @@ print(','.join(scripts))
         }
     }
     
-    Pop-Location
-    
+    if (-not $NoVenv) {
+        # Entry-point and optional web repairs can change dependencies after the
+        # first probe. Validate their final state before retiring the original.
+        Assert-VenvBaselineImports
+        Complete-VenvTransaction
+    }
+    } catch {
+        $originalError = $_
+        if (-not $NoVenv) {
+            try {
+                Restore-VenvBackup
+            } catch {
+                throw "Dependency installation failed: $($originalError.Exception.Message). Rollback failed: $($_.Exception.Message). Recovery evidence was retained."
+            }
+        }
+        throw $originalError
+    } finally {
+        Pop-Location
+    }
+
     Write-Success "All dependencies installed"
 }
-
 function Install-HermesCommandLaunchers {
     param(
         [Parameter(Mandatory=$true)] [string]$Root,

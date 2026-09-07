@@ -79,12 +79,12 @@ class TestQuerySessionListingSearch:
 class TestSessionVisibilityPolicy:
     """One shared automation deny-list across every resume surface.
 
-    The local classic CLI caller still passes source="cli" with only
-    kanban/tool exclusions (see cli_session_mixin._list_recent_sessions).
-    Shared policy must treat that local ``cli`` label as provenance: the
-    listing becomes cross-source and denies the reviewed automation set
-    (cron/tool/kanban/subagent) without hiding ACP/webhook/custom, while a
-    gateway caller constrained by source + session_key is never widened.
+    The local classic CLI caller passes source="cli" with no gateway lane
+    (see cli_session_mixin._list_recent_sessions). Shared policy must treat
+    that local ``cli`` label as provenance: the listing becomes cross-source
+    and denies the reviewed automation set (cron/tool/kanban/subagent)
+    without hiding ACP/webhook/custom, while a gateway caller constrained by
+    source + session_key is never widened.
     """
 
     @pytest.fixture
@@ -106,10 +106,11 @@ class TestSessionVisibilityPolicy:
         db.close()
 
     def test_classic_cli_is_cross_source_but_denies_automation(self, db):
-        """Mirror the current CLISessionMixin call shape (source="cli",
-        include_all_sources=False, kanban/tool exclusions): the shared policy
-        widens the local cli label to provenance and hides every automation
-        source, while ACP/webhook/custom stay visible."""
+        """The CLISessionMixin call shape (source="cli", no lane): the shared
+        policy widens the local cli label to provenance and hides every
+        automation source, while ACP/webhook/custom stay visible. Caller
+        exclusions are additive — a narrower legacy list still ends up denying
+        the full automation set."""
         from hermes_cli.session_listing import AUTOMATION_SOURCES
 
         rows = query_session_listing(

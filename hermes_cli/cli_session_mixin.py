@@ -323,12 +323,12 @@ class CLISessionMixin:
         if not self._session_db:
             return []
         try:
-            from hermes_cli.session_listing import query_session_listing
+            from hermes_cli.session_listing import AUTOMATION_SOURCES, query_session_listing
 
             return query_session_listing(
                 self._session_db, source="cli", current_session_id=self.session_id,
                 include_all_sources=False, include_unnamed=True, limit=limit,
-                exclude_sources=["kanban", "tool"])
+                exclude_sources=sorted(AUTOMATION_SOURCES))
         except Exception:
             return []
 

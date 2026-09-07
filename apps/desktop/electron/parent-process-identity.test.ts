@@ -5,7 +5,8 @@ import { test, vi } from 'vitest'
 import {
   createParentStartMarkerResolver,
   electronProcessStartMarker,
-  parentWatchdogEnv
+  parentWatchdogEnv,
+  spawnTag
 } from './parent-process-identity'
 
 test('electronProcessStartMarker uses Electron creation time only for its own PID', () => {
@@ -60,14 +61,26 @@ test('parentWatchdogEnv emits an exact identity when the marker is available', (
   assert.deepEqual(parentWatchdogEnv(42, 'winms:1723456789123', 'nonce-1'), {
     HERMES_PARENT_NONCE: 'nonce-1',
     HERMES_PARENT_PID: '42',
-    HERMES_PARENT_START_MARKER: 'winms:1723456789123'
+    HERMES_PARENT_START_MARKER: 'winms:1723456789123',
+    // Spawn tag mirrored by hermes_cli/process_identity.py — spawner create
+    // time in seconds derived from the same winms marker.
+    HERMES_SPAWN: 'v1:-:serve:42:1723456789.123'
   })
 })
 
 test('parentWatchdogEnv atomically falls back to PID-only identity', () => {
   assert.deepEqual(parentWatchdogEnv(42, null, 'unused-nonce'), {
-    HERMES_PARENT_PID: '42'
+    HERMES_PARENT_PID: '42',
+    // Marker probe failed → spawn tag still present, create time unknown.
+    HERMES_SPAWN: 'v1:-:serve:42:-'
   })
   assert.throws(() => parentWatchdogEnv(42, '', 'nonce-1'), /marker and nonce must be non-empty/)
   assert.throws(() => parentWatchdogEnv(42, 'winms:1723456789123', ''), /marker and nonce must be non-empty/)
+})
+
+test('spawnTag derives seconds from a winms marker and dashes without one', () => {
+  assert.equal(spawnTag(42, 'winms:1723456789123'), 'v1:-:serve:42:1723456789.123')
+  assert.equal(spawnTag(42, null), 'v1:-:serve:42:-')
+  assert.equal(spawnTag(42, 'win:638908765432100000'), 'v1:-:serve:42:-')
+  assert.equal(spawnTag(42, 'winms:garbage'), 'v1:-:serve:42:-')
 })

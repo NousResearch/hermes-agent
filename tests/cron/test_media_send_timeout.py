@@ -14,11 +14,8 @@ Covers two salvaged fixes:
 
 import pytest
 
-from cron.scheduler import (
-    _DEFAULT_MEDIA_SEND_TIMEOUT,
-    _get_media_send_timeout,
-    _send_media_via_adapter,
-)
+from cron.scheduler_script import _DEFAULT_MEDIA_SEND_TIMEOUT, _get_media_send_timeout
+from cron.scheduler_delivery import _send_media_via_adapter
 
 
 class TestMediaSendTimeoutResolution:
@@ -66,7 +63,7 @@ class TestEmptyReasonFallback:
 
         monkeypatch.setattr(
             "gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
-            staticmethod(lambda files: [(str(media), False)]),
+            staticmethod(lambda files, session_key="": [(str(media), False)]),
         )
 
         def boom(coro, loop):

@@ -10,7 +10,8 @@
 #   nixosModules.nix        the service user and group, stateDir,
 #                           addToSystemPackages, container mode, tmpfiles,
 #                           system.activationScripts, system systemd units
-#   homeManagerModules.nix  hermesHome, installPackage, home.activation,
+#   homeManagerModules.nix  hermesHome, programs.hermes-agent (the CLI and
+#                           the desktop application), home.activation,
 #                           systemd.user.services, launchd.agents
 #
 # The split is by scope, not by feature. Code that needs root or a system
@@ -540,6 +541,70 @@ let
             header that is different from the address that the server bound
             to. This is a defence against DNS rebinding. Bind to the name or
             the address that your clients use.
+
+            If the name or the address is not available when the unit starts,
+            set `waitFor` as well.
+          '';
+        };
+
+        waitFor = mkOption {
+          type = types.nullOr (
+            types.enum [
+              "hostname"
+              "interface"
+            ]
+          );
+          default = null;
+          description = ''
+            Wait for the bind target before the backend starts.
+
+            The backend binds to `host` immediately by default. The bind fails
+            when the target is not ready, because uvicorn cannot bind a name
+            that does not resolve, or an address that no interface holds. A
+            unit that starts at boot can lose this race against the daemon
+            that supplies the target, such as tailscaled or a VPN client.
+
+            A systemd user unit cannot order itself after a system unit.
+            `After=` and `Requires=` are silent no-ops across that boundary.
+            Thus the wait is a poll, and not a dependency.
+
+            The values are:
+
+            - `null` — bind immediately. `Restart=on-failure` retries the unit
+              until the target is ready.
+            - `"hostname"` — poll until `host` resolves, then bind to `host`.
+              Use this for a name, such as a Tailscale MagicDNS name.
+            - `"interface"` — poll until `interfaceName` has an IPv4 address,
+              then bind to that address. Use this when the address changes,
+              and a name for it does not exist.
+
+            CAUTION: The `"interface"` value ignores `host`. The unit binds to
+            the address of the interface.
+          '';
+          example = "hostname";
+        };
+
+        interfaceName = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            The interface to take the bind address from.
+
+            This option is necessary when `waitFor` is `"interface"`, and it
+            has no effect for the other values.
+          '';
+          example = "tailscale0";
+        };
+
+        waitTimeout = mkOption {
+          type = types.ints.positive;
+          default = 120;
+          description = ''
+            The time in seconds to wait for the bind target.
+
+            The unit stops with an error after this time. It does not bind to
+            a different address, because a fallback address can expose the
+            backend more widely than you intend.
           '';
         };
 
@@ -554,8 +619,58 @@ let
           default = [ ];
           description = "More command-line arguments for the backend command.";
         };
+
+        sessionTokenFile = mkOption {
+          # The type is `str` and not `path` for the same reason that
+          # environmentFiles uses `str`. A Nix path literal copies the secret
+          # into the Nix store, which all users can read. Use a runtime path
+          # from sops-nix or agenix instead.
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            The path to a file that holds the session token of the backend,
+            on one line.
+
+            The backend reads the file at each start and gives the value to
+            HERMES_DASHBOARD_SESSION_TOKEN. That token authorizes the /api
+            routes and the /api/ws socket. Hermes Desktop presents the same
+            value, so the application reaches this backend and starts no
+            second one.
+
+            Without this option the backend makes a new token at each start,
+            which no other process can know.
+
+            CAUTION: The file must hold the raw token and nothing else. Give
+            it mode 0600. Do not use a Nix path literal, because that copies
+            the secret into the Nix store.
+          '';
+          example = literalExpression ''config.sops.secrets."hermes/desktop-token".path'';
+        };
       };
     };
+
+  # ── The removal of installPackage ───────────────────────────────────────
+  # The programs./services. split replaced this option. It defaulted to true,
+  # so a person who never named it still got the command line, and a silent
+  # removal leaves them with no `hermes` on the PATH and no message. The
+  # module refuses the configuration with this text.
+  #
+  # A function, and not a literal in the module, so a check can call the same
+  # code and read the real message. A check that matched the source text of
+  # the module would pass while the message was wrong.
+  installPackageRemovedMessage =
+    value:
+    ''
+      services.hermes-agent.installPackage was removed. Hermes now
+      separates the installation from the services, which is the
+      Home Manager convention:
+
+        programs.hermes-agent.enable = ${lib.boolToString (value != false)};  # the hermes CLI, and HERMES_HOME for your shells
+        programs.hermes-agent.desktop.enable = true;  # the desktop application
+
+      `services.hermes-agent` keeps the state, the configuration and
+      the daemons. Remove `installPackage` and add the line above.
+    '';
 
   # ── Package resolution ──────────────────────────────────────────────────
   effectivePackage =
@@ -783,19 +898,137 @@ let
     ]
     ++ cfg.extraArgs;
 
-  backendArgv =
-    cfg:
+  # The command line of the backend, without the wait.
+  backendCommand =
+    cfg: host:
     [
       "${effectivePackage cfg}/bin/hermes"
       cfg.backend.mode
       "--host"
-      cfg.backend.host
+      host
       "--port"
       (toString cfg.backend.port)
       # CAUTION: A service must not try to open a browser when it starts.
       "--no-open"
     ]
     ++ cfg.backend.extraArgs;
+
+  # The launcher that reads the session token, waits for the bind target,
+  # then starts the backend.
+  #
+  # The token cannot go in the unit environment. A systemd `Environment=`
+  # value and a launchd EnvironmentVariables value both land in the Nix
+  # store, which all users can read. Thus the launcher reads the file at
+  # start time. launchd has no EnvironmentFile, so a script is the one shape
+  # that works on both hosts.
+  #
+  # `exec` on the last line keeps hermes as the MainPID of the unit. No shell
+  # stays in the cgroup, and the restart logic of systemd sees the real
+  # process.
+  backendLauncher =
+    { pkgs, cfg }:
+    # The bind address is known only at start time, but escapeShellArgs quotes
+    # each argument. Thus the command line is built with a placeholder, and the
+    # placeholder becomes the shell variable after the quoting.
+    pkgs.writeShellScript "hermes-backend-launch" (
+      builtins.replaceStrings [ "@HOST@" ] [ ''"$_target"'' ] ''
+        set -euo pipefail
+
+        _timeout=${toString cfg.backend.waitTimeout}
+        _waited=0
+
+        ${lib.optionalString (cfg.backend.sessionTokenFile != null) ''
+          # Read the token, and never put it on a command line. A command
+          # line is visible to each process on the host.
+          _token_file=${lib.escapeShellArg cfg.backend.sessionTokenFile}
+
+          if [ ! -r "$_token_file" ]; then
+            echo "hermes-backend: cannot read the session token file '$_token_file'. The unit stops." >&2
+            echo "hermes-backend: backend.sessionTokenFile must name a runtime path that this user can read." >&2
+            exit 1
+          fi
+
+          HERMES_DASHBOARD_SESSION_TOKEN="$(${pkgs.coreutils}/bin/tr -d '\r\n' < "$_token_file")"
+          export HERMES_DASHBOARD_SESSION_TOKEN
+
+          if [ -z "$HERMES_DASHBOARD_SESSION_TOKEN" ]; then
+            echo "hermes-backend: the session token file '$_token_file' is empty. The unit stops." >&2
+            exit 1
+          fi
+        ''}
+        ${
+          if cfg.backend.waitFor == null then
+            ''
+              _target=${lib.escapeShellArg cfg.backend.host}
+              _how="the configured address"
+            ''
+          else if cfg.backend.waitFor == "hostname" then
+            ''
+              _target=${lib.escapeShellArg cfg.backend.host}
+              _how="hostname"
+
+              while :; do
+                if ${pkgs.getent}/bin/getent hosts "$_target" >/dev/null 2>&1; then
+                  break
+                fi
+
+                if [ "$_waited" -ge "$_timeout" ]; then
+                  echo "hermes-backend: '$_target' did not resolve after ''${_timeout}s. The unit stops." >&2
+                  exit 1
+                fi
+
+                if [ "$_waited" = 0 ]; then
+                  echo "hermes-backend: waits for '$_target' to resolve..." >&2
+                fi
+                ${pkgs.coreutils}/bin/sleep 2
+                _waited=$(( _waited + 2 ))
+              done
+            ''
+          else
+            ''
+              _iface=${lib.escapeShellArg cfg.backend.interfaceName}
+              _how="interface $_iface"
+
+              while :; do
+                _target="$(${pkgs.iproute2}/bin/ip -4 -oneline addr show dev "$_iface" 2>/dev/null \
+                             | ${pkgs.gawk}/bin/awk '{print $4}' \
+                             | ${pkgs.coreutils}/bin/cut -d/ -f1 \
+                             | ${pkgs.coreutils}/bin/head -n1 || true)"
+
+                if [ -n "''${_target:-}" ]; then
+                  break
+                fi
+
+                if [ "$_waited" -ge "$_timeout" ]; then
+                  echo "hermes-backend: interface '$_iface' had no IPv4 address after ''${_timeout}s. The unit stops." >&2
+                  echo "hermes-backend: a fallback address can expose the backend more widely than you intend." >&2
+                  exit 1
+                fi
+
+                if [ "$_waited" = 0 ]; then
+                  echo "hermes-backend: waits for an IPv4 address on '$_iface'..." >&2
+                fi
+                ${pkgs.coreutils}/bin/sleep 2
+                _waited=$(( _waited + 2 ))
+              done
+            ''
+        }
+
+        echo "hermes-backend: binds to $_target:${toString cfg.backend.port} (from $_how)" >&2
+
+        exec ${lib.escapeShellArgs (backendCommand cfg "@HOST@")}
+      ''
+    );
+
+  backendArgv =
+    { pkgs, cfg }:
+    # A plain argv is enough only when nothing must run before the backend.
+    # A wait needs the address at start time, and a token must be read from
+    # a file that the store must never hold. Either one needs the launcher.
+    if cfg.backend.waitFor == null && cfg.backend.sessionTokenFile == null then
+      backendCommand cfg cfg.backend.host
+    else
+      [ "${backendLauncher { inherit pkgs cfg; }}" ];
 
   backendDescription =
     cfg:
@@ -884,6 +1117,20 @@ let
       }
     ];
 
+  # The backend wait needs an interface name when it polls an interface.
+  backendBindAssertions =
+    { cfg, optionPath }:
+    [
+      {
+        assertion = cfg.backend.waitFor != "interface" || cfg.backend.interfaceName != null;
+        message = "${optionPath}.backend.interfaceName must be set when backend.waitFor is \"interface\".";
+      }
+      {
+        assertion = cfg.backend.waitFor == "interface" || cfg.backend.interfaceName == null;
+        message = "${optionPath}.backend.interfaceName has no effect unless backend.waitFor is \"interface\".";
+      }
+    ];
+
   # The subdirectories of HERMES_HOME that both modules make.
   stateSubdirs = [
     "cron"
@@ -896,10 +1143,12 @@ in
 {
   inherit
     backendArgv
+    backendBindAssertions
     backendDescription
     deepConfigType
     effectivePackage
     gatewayArgv
+    installPackageRemovedMessage
     mcpServerType
     mcpServersToConfig
     mkConfigFiles

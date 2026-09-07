@@ -6,6 +6,7 @@ import { type CodeEditorApi } from '@/components/chat/code-editor'
 import { JsonDocumentEditor } from '@/components/chat/json-document-editor'
 import { LogTail } from '@/components/chat/log-tail'
 import { PageLoader } from '@/components/page-loader'
+import { AvatarChip } from '@/components/ui/avatar-chip'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ErrorBanner } from '@/components/ui/error-state'
@@ -33,7 +34,7 @@ import {
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { compactNumber } from '@/lib/format'
-import { brandFor, brandGlyphStyle } from '@/lib/mcp-brands'
+import { brandFor } from '@/lib/mcp-brands'
 import { estimateServerTokens, serverUsageCount } from '@/lib/mcp-cost'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import { type McpImportEntry, parseMcpImport } from '@/lib/mcp-import'
@@ -1757,41 +1758,28 @@ function McpLogs({
 // Avatars + list rows
 // ---------------------------------------------------------------------------
 
-// Brand glyphs for well-known MCP providers, exactly the Messaging avatar
-// treatment (simpleicons on a 16% brand tint) — shared with the composer
-// suggestion pills and inline setup card via lib/mcp-brands. Unknown servers
-// fall back to the same letter monogram Messaging uses.
-
-// PlatformAvatar (messaging), copied 1:1 — same size, radius, type scale, and
-// brand-tint treatment — plus a status dot overlay. Identity ladder: curated
-// brand glyph → letter monogram. We deliberately do NOT fetch remote favicons:
-// a configured MCP URL can be a private/internal host, and hitting Google's
-// favicon service for it would leak that hostname off-box.
+// The shared identity chip (`ui/avatar-chip`) plus a status dot. Identity
+// ladder: curated brand glyph (lib/mcp-brands, shared with the composer
+// suggestion pills and the inline setup card) → letter monogram. Nothing here
+// reaches the network for a mark: a configured MCP URL can be a private host,
+// and the connector card's favicon rung only ever reads a public site's own
+// markup, never a third-party icon service.
 function McpAvatar({ className, name, status }: { className?: string; name: string; status: ServerStatus }) {
-  const brand = brandFor(name)
-
   return (
-    <span
-      className={cn(
-        'relative inline-grid size-6 shrink-0 place-items-center rounded-md text-[length:var(--conversation-caption-font-size)] font-medium',
-        !brand && 'bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)',
-        className
-      )}
-      style={brand ? { backgroundColor: `color-mix(in srgb, ${brand.color} 16%, transparent)` } : undefined}
-    >
-      {brand ? (
-        <brand.Icon aria-hidden className="size-3.5" style={brandGlyphStyle(brand)} />
-      ) : (
-        name.charAt(0).toUpperCase()
-      )}
-      <span
-        aria-hidden
-        className={cn(
-          'absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-(--ui-chat-surface-background)',
-          STATUS_DOT[status]
-        )}
-      />
-    </span>
+    <AvatarChip
+      brand={brandFor(name)}
+      className={className}
+      name={name}
+      overlay={
+        <span
+          aria-hidden
+          className={cn(
+            'absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-(--ui-chat-surface-background)',
+            STATUS_DOT[status]
+          )}
+        />
+      }
+    />
   )
 }
 

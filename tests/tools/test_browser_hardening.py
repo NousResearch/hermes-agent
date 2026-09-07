@@ -5,6 +5,9 @@ import re
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tools import browser_tool_install as bt_install
+from tools import browser_tool_session as bt_session
+from tools import browser_tool_lifecycle as bt_lifecycle
 
 
 # ---------------------------------------------------------------------------
@@ -19,8 +22,8 @@ def _reset_caches():
     bt._cached_command_timeout = None
     bt._command_timeout_resolved = False
     # lru_cache for _discover_homebrew_node_dirs
-    if hasattr(bt._discover_homebrew_node_dirs, "cache_clear"):
-        bt._discover_homebrew_node_dirs.cache_clear()
+    if hasattr(bt_install._discover_homebrew_node_dirs, "cache_clear"):
+        bt_install._discover_homebrew_node_dirs.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -56,16 +59,15 @@ class TestFindAgentBrowserCache:
     def test_cached_after_first_call(self):
         import tools.browser_tool as bt
         with patch("shutil.which", return_value="/usr/bin/agent-browser"), \
-             patch("tools.browser_tool.agent_browser_runnable", return_value=True):
-            result1 = bt._find_agent_browser()
-            result2 = bt._find_agent_browser()
+             patch("tools.browser_tool_install.agent_browser_runnable", return_value=True):
+            result1 = bt_install._find_agent_browser()
+            result2 = bt_install._find_agent_browser()
         assert result1 == result2 == "/usr/bin/agent-browser"
         assert bt._agent_browser_resolved is True
 
 
     def test_not_found_cached_raises_on_subsequent(self):
         """After FileNotFoundError, subsequent calls should raise from cache."""
-        import tools.browser_tool as bt
         from pathlib import Path
 
         original_exists = Path.exists
@@ -79,10 +81,10 @@ class TestFindAgentBrowserCache:
              patch("os.path.isdir", return_value=False), \
              patch.object(Path, "exists", mock_exists):
             with pytest.raises(FileNotFoundError):
-                bt._find_agent_browser()
+                bt_install._find_agent_browser()
         # Second call should also raise (from cache)
         with pytest.raises(FileNotFoundError, match="cached"):
-            bt._find_agent_browser()
+            bt_install._find_agent_browser()
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +133,7 @@ class TestSessionInactivityTimeout:
 class TestHomebrewNodeDirsCache:
 
     def test_lru_cached(self):
-        from tools.browser_tool import _discover_homebrew_node_dirs
+        from tools.browser_tool_install import _discover_homebrew_node_dirs
         assert hasattr(_discover_homebrew_node_dirs, "cache_info"), \
             "_discover_homebrew_node_dirs should be decorated with lru_cache"
 
@@ -179,8 +181,7 @@ class TestRecordingSessionsThreadSafety:
 
     def test_emergency_cleanup_clears_under_lock(self):
         """_recording_sessions.clear() in emergency cleanup should be under _cleanup_lock."""
-        import tools.browser_tool as bt
-        src = inspect.getsource(bt._emergency_cleanup_all_sessions)
+        src = inspect.getsource(bt_lifecycle._emergency_cleanup_all_sessions)
         # Find the with _cleanup_lock block and verify _recording_sessions.clear() is inside
         lock_pos = src.find("_cleanup_lock")
         clear_pos = src.find("_recording_sessions.clear()")
@@ -196,16 +197,17 @@ class TestRecordingSessionsThreadSafety:
 class TestTruncateSnapshot:
 
     def test_short_snapshot_unchanged(self):
-        from tools.browser_tool import _truncate_snapshot
+        from tools.browser_tool_snapshot import _truncate_snapshot
         short = '- heading "Example" [ref=e1]\n- link "More" [ref=e2]'
         assert _truncate_snapshot(short) == short
 
     def test_long_snapshot_truncated_at_line_boundary(self):
-        from tools.browser_tool import SNAPSHOT_SUMMARIZE_THRESHOLD, _truncate_snapshot
+        from tools.browser_tool import DEFAULT_SNAPSHOT_THRESHOLD
+        from tools.browser_tool_snapshot import _truncate_snapshot
         # Create a snapshot that exceeds the summarize threshold
         lines = [f'- item "Element {i}" [ref=e{i}]' for i in range(1000)]
         snapshot = "\n".join(lines)
-        assert len(snapshot) > SNAPSHOT_SUMMARIZE_THRESHOLD
+        assert len(snapshot) > DEFAULT_SNAPSHOT_THRESHOLD
 
         result = _truncate_snapshot(snapshot, max_chars=200)
         assert "truncated" in result.lower()
@@ -218,7 +220,7 @@ class TestTruncateSnapshot:
     def test_stored_snapshot_is_secret_redacted(self):
         """Page-rendered secrets must not land unmasked on disk."""
         from pathlib import Path
-        from tools.browser_tool import _store_full_snapshot
+        from tools.browser_tool_snapshot import _store_full_snapshot
 
         fake_key = "sk-" + "STOREDSNAPSHOTSECRET1234567890"
         snapshot = f'- text "API key: {fake_key}"\n' + "\n".join(
@@ -229,22 +231,55 @@ class TestTruncateSnapshot:
         content = Path(stored).read_text(encoding="utf-8")
         assert "STOREDSNAPSHOTSECRET" not in content
 
-    def test_extract_relevant_content_appends_stored_pointer(self):
-        """LLM-summarized snapshots also point at the stored full text."""
-        from unittest.mock import MagicMock
-        from tools.browser_tool import _extract_relevant_content
+    def test_stored_snapshot_refuses_planted_symlink(self, tmp_path, monkeypatch):
+        """A pre-planted symlink at the content-hash path must not be
+        followed to its target — only the link itself may be replaced.
+
+        Mirrors web_tools._store_full_text's use of write_text_exclusive
+        (overwrite=True) for the same cache/web directory and naming
+        scheme: a legitimate re-snapshot of the same page state safely
+        replaces a same-path symlink with a real file, never writing
+        through it onto whatever the link points at.
+        """
+        import hashlib
+        from pathlib import Path
+        from tools.browser_tool_snapshot import _store_full_snapshot
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        snapshot = "\n".join(f"- line {i}" for i in range(50))
+        # No secret-like content, so redact_sensitive_text leaves it
+        # unchanged and the digest is predictable from the raw text.
+        digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()[:10]
+
+        cache_dir = tmp_path / "cache" / "web"
+        cache_dir.mkdir(parents=True)
+        victim = tmp_path / "victim.txt"
+        victim.write_text("original", encoding="utf-8")
+        planted = cache_dir / f"browser-snapshot-{digest}.txt"
+        planted.symlink_to(victim)
+
+        stored = _store_full_snapshot(snapshot)
+        assert stored is not None
+        assert victim.read_text(encoding="utf-8") == "original"  # link target untouched
+        assert not planted.is_symlink()  # link replaced by a real file
+        assert Path(stored).read_text(encoding="utf-8") == snapshot
+
+    def test_truncated_snapshot_appends_stored_pointer(self):
+        """Truncated snapshots point at the stored full text for read_file paging."""
+        from tools.browser_tool_snapshot import _truncate_snapshot
 
         snapshot = "\n".join(f'- item "Element {i}" [ref=e{i}]' for i in range(400))
-        mock_resp = MagicMock()
-        mock_resp.choices = [MagicMock()]
-        mock_resp.choices[0].message.content = "Summary with button [ref=e5]"
+        result = _truncate_snapshot(snapshot, max_chars=500)
 
-        with patch("tools.browser_tool.call_llm", return_value=mock_resp):
-            result = _extract_relevant_content(snapshot, "find the button")
-
-        assert result.startswith("Summary with button")
-        assert "Full snapshot" in result
+        assert "truncated" in result.lower()
         assert "read_file" in result
+
+    def test_no_llm_summarization_path_remains(self):
+        """Snapshots must never route through an auxiliary LLM (truncate-and-store only)."""
+        import tools.browser_tool as bt
+
+        assert not hasattr(bt, "_extract_relevant_content")
+        assert not hasattr(bt, "_get_extraction_model")
 
 
 # ---------------------------------------------------------------------------
@@ -268,11 +303,10 @@ class TestScrollOptimization:
 class TestEmptyStdoutFailure:
 
     def test_empty_stdout_returns_failure(self):
-        """Verify _run_browser_command returns failure on empty stdout."""
-        import tools.browser_tool as bt
-        src = inspect.getsource(bt._run_browser_command)
+        """Verify the command-output interpreter returns failure on empty stdout."""
+        src = inspect.getsource(bt_session._interpret_browser_command_output)
         assert "returned no output" in src, \
-            "_run_browser_command should treat empty stdout as failure"
+            "_interpret_browser_command_output should treat empty stdout as failure"
 
     def test_empty_ok_commands_is_module_level_frozenset(self):
         """_EMPTY_OK_COMMANDS should be a module-level frozenset, not defined inside a function."""

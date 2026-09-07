@@ -73,10 +73,14 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
 class TestMaxTurnsResolution:
     """max_turns must always resolve to a positive integer, never None."""
 
-    def test_default_max_turns_is_integer(self):
+    def test_default_max_turns_is_unlimited(self):
+        # Default is now unlimited (max_turns caused more problems than it
+        # solved). Still a positive int (the sys.maxsize sentinel), so loop
+        # conditions like `count < max_iterations` keep working.
+        import sys
         cli = _make_cli()
         assert isinstance(cli.max_turns, int)
-        assert cli.max_turns == 500
+        assert cli.max_turns == sys.maxsize
 
     def test_explicit_max_turns_honored(self):
         cli = _make_cli(max_turns=25)
@@ -460,6 +464,25 @@ class TestNestedDictModelDefaultPairing:
         assert "Tier:" in output
         assert "unrestricted" in output
         assert "Slash commands: all available" in output
+
+    def test_provider_prefixed_startup_model_overrides_stale_provider(self):
+        cli = _make_cli(
+            config_overrides={
+                "model": {
+                    "default": "anthropic/claude-opus-4.6",
+                    "provider": "anthropic",
+                },
+                "providers": {
+                    "nous": {
+                        "base_url": "https://inference-api.nousresearch.com/v1",
+                    },
+                },
+            },
+            model="nous/deepseek-v4-pro",
+        )
+
+        assert cli.model == "deepseek-v4-pro"
+        assert cli.requested_provider == "nous"
 
 
 class TestRootLevelProviderOverride:

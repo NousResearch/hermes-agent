@@ -48,6 +48,12 @@ outputs:
   installer:
     description: Run the PowerShell installer tests on a Windows runner.
     value: ${{ steps.classify.outputs.installer }}
+  desktop_updater:
+    description: Run the Windows desktop-update hand-off (windows.ps1) integration tests.
+    value: ${{ steps.classify.outputs.desktop_updater }}
+  rust:
+    description: Run `cargo test` for the Tauri bootstrap installer.
+    value: ${{ steps.classify.outputs.rust }}
   mcp_catalog:
     description: Require MCP catalog security review label.
     value: ${{ steps.classify.outputs.mcp_catalog }}

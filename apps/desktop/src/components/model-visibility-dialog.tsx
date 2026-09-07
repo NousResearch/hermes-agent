@@ -32,6 +32,7 @@ interface ModelVisibilityDialogProps {
   onOpenChange: (open: boolean) => void
   onOpenProviders: () => void
   open: boolean
+  ownerConnectionId?: string
   profile?: string
   sessionId?: string | null
 }
@@ -41,6 +42,7 @@ export function ModelVisibilityDialog({
   onOpenChange,
   onOpenProviders,
   open,
+  ownerConnectionId,
   profile = 'default',
   sessionId
 }: ModelVisibilityDialogProps) {
@@ -51,8 +53,8 @@ export function ModelVisibilityDialog({
   const collapsedProviders = useStore($collapsedProviders)
 
   const modelOptions = useQuery({
-    queryKey: modelOptionsQueryKey(profile, sessionId),
-    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway: gw, sessionId }),
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
+    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway: gw, profile, sessionId }),
     enabled: open
   })
 

@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { makeNousCloudBackendDownError } from './backend-health'
 import {
   apiRequestRegistryConnectionId,
   AT_COOKIE_VARIANTS,
@@ -34,6 +35,7 @@ import {
   normalizeRemoteHeaders,
   normalizeSshConfig,
   normAuthMode,
+  pathForRegistryBackendRequest,
   pathWithGlobalRemoteProfile,
   pathWithProfileScope,
   profileHasRemoteConnection,
@@ -48,7 +50,8 @@ import {
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
   tokenPreview,
-  translateSelfProfileQuery
+  translateSelfProfileQuery,
+  withTransientRetries
 } from './connection-config'
 
 // --- connectionScopeKey / normAuthMode ---
@@ -331,10 +334,10 @@ const ROUTES = [
     expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
   },
   {
-    name: 'a renamed primary profile still owns the window backend',
+    name: 'a renamed primary profile on a global remote is still scoped on the wire',
     profile: ' coder ',
     opts: { primaryProfile: 'coder', globalRemote: true },
-    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
   },
   {
     name: 'an unset profile resolves to the primary',
@@ -482,6 +485,35 @@ test('pathWithProfileScope keeps an explicit profile query and no-ops on empty p
   assert.equal(pathWithProfileScope('/api/cron/jobs', null), '/api/cron/jobs')
 })
 
+test('pathForRegistryBackendRequest uses the resolved registry backend scope', () => {
+  assert.equal(
+    pathForRegistryBackendRequest('/api/fs/read-data-url?path=%2Fsrv%2Fimage.png', 'research', {
+      sharedRemote: true
+    }),
+    '/api/fs/read-data-url?path=%2Fsrv%2Fimage.png&profile=research'
+  )
+  assert.equal(
+    pathForRegistryBackendRequest('/api/fs/download?path=%2Fsrv%2Freport.pdf&profile=mara', 'mara', {
+      remoteProfile: 'default'
+    }),
+    '/api/fs/download?path=%2Fsrv%2Freport.pdf&profile=default'
+  )
+  assert.equal(
+    pathForRegistryBackendRequest('/api/fs/download?path=%2Fsrv%2Freport.pdf', 'mara', {
+      remoteProfile: 'default'
+    }),
+    '/api/fs/download?path=%2Fsrv%2Freport.pdf'
+  )
+  assert.equal(
+    pathForRegistryBackendRequest(
+      '/api/profiles/sessions/sidebar?recents_profile=research&recents_exclude=cron%2Cdesktop',
+      'research',
+      { remoteProfile: 'remote-research' }
+    ),
+    '/api/profiles/sessions/sidebar?recents_profile=remote-research&recents_exclude=cron%2Cdesktop'
+  )
+})
+
 // --- pathWithGlobalRemoteProfile ---
 
 test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => {
@@ -494,14 +526,14 @@ test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => 
   )
 })
 
-test('pathWithGlobalRemoteProfile skips the primary profile, which the remote already serves', () => {
+test('pathWithGlobalRemoteProfile scopes the primary label because the dashboard launch home may differ', () => {
   assert.equal(
     pathWithGlobalRemoteProfile('/api/model/info', 'coder', {
       globalRemote: true,
       primaryProfile: 'coder',
       profileRemoteOverride: false
     }),
-    '/api/model/info'
+    '/api/model/info?profile=coder'
   )
 })
 
@@ -580,8 +612,23 @@ test('translateSelfProfileQuery rewrites the self-profile filter into the backen
   )
 })
 
+test('translateSelfProfileQuery rewrites sidebar recents_profile aliases for managed SSH', () => {
+  assert.equal(
+    translateSelfProfileQuery(
+      '/api/profiles/sessions/sidebar?recents_profile=research&recents_limit=20&cron_limit=50&messaging_limit=100',
+      'research',
+      'remote-research'
+    ),
+    '/api/profiles/sessions/sidebar?recents_profile=remote-research&recents_limit=20&cron_limit=50&messaging_limit=100'
+  )
+})
+
 test('translateSelfProfileQuery leaves cross-profile and unfiltered paths untouched', () => {
   assert.equal(translateSelfProfileQuery('/api/cron/jobs?profile=all', 'mara', 'default'), '/api/cron/jobs?profile=all')
+  assert.equal(
+    translateSelfProfileQuery('/api/profiles/sessions/sidebar?recents_profile=all', 'mara', 'default'),
+    '/api/profiles/sessions/sidebar?recents_profile=all'
+  )
   assert.equal(
     translateSelfProfileQuery('/api/cron/jobs?profile=worker', 'mara', 'default'),
     '/api/cron/jobs?profile=worker'
@@ -1133,6 +1180,54 @@ test('gateway ticket failures classify only explicit auth rejection statuses as 
   assert.equal(serverFailure.needsOauthLogin, undefined)
 })
 
+test('withTransientRetries retries transport blips but not auth rejections', async () => {
+  const sleeps: number[] = []
+  let transportAttempts = 0
+
+  const ticket = await withTransientRetries(
+    async () => {
+      transportAttempts += 1
+
+      if (transportAttempts < 3) {
+        throw Object.assign(new Error('500: unavailable'), { statusCode: 500 })
+      }
+
+      return 'tkt-ok'
+    },
+    {
+      delaysMs: [10, 10],
+      sleep: async (ms: number) => {
+        sleeps.push(ms)
+      }
+    }
+  )
+
+  assert.equal(ticket, 'tkt-ok')
+  assert.equal(transportAttempts, 3)
+  assert.deepEqual(sleeps, [10, 10])
+
+  let authAttempts = 0
+  await assert.rejects(
+    () =>
+      withTransientRetries(
+        async () => {
+          authAttempts += 1
+          throw Object.assign(new Error('401: rejected'), { statusCode: 401 })
+        },
+        {
+          delaysMs: [10],
+          sleep: async () => undefined
+        }
+      ),
+    (err: any) => {
+      assert.equal(err.statusCode, 401)
+
+      return true
+    }
+  )
+  assert.equal(authAttempts, 1)
+})
+
 test('gateway WS URL IPC result serializes success and the auth-vs-transport matrix', async () => {
   assert.deepEqual(await gatewayWsUrlIpcResult(async () => 'wss://gateway.example.com/api/ws?ticket=fresh'), {
     ok: true,
@@ -1166,4 +1261,84 @@ test('resolveTestWsUrl (oauth) requires a mintTicket function', async () => {
     () => resolveTestWsUrl('https://gw.example.com', 'oauth', null),
     /mintTicket function is required/
   )
+})
+
+test('gatewayTicketFailure preserves a structured 503 statusCode as a transport failure', () => {
+  const source = new Error('upstream unavailable') as any
+  source.statusCode = 503
+
+  const wrapped = gatewayTicketFailure(source, 'auth message', 'transport message')
+
+  assert.equal(wrapped.message, 'transport message')
+  assert.equal((wrapped as any).statusCode, 503)
+  assert.equal((wrapped as any).needsOauthLogin, undefined)
+  assert.equal((wrapped as any).cause, source)
+})
+
+test('gatewayTicketFailure keeps 401 and 403 as reauth with needsOauthLogin', () => {
+  for (const code of [401, 403]) {
+    const source = new Error(`HTTP ${code}`) as any
+    source.statusCode = code
+
+    const wrapped = gatewayTicketFailure(source, 'auth message', 'transport message')
+
+    assert.equal(wrapped.message, 'auth message')
+    assert.equal((wrapped as any).needsOauthLogin, true)
+    assert.equal((wrapped as any).statusCode, code)
+    assert.equal((wrapped as any).cause, source)
+  }
+})
+
+test('gatewayTicketFailure only copies an integer statusCode, not a message prefix', () => {
+  // A legacy "503: ..." message carries no structured statusCode; the Cloud
+  // classifier (makeNousCloudBackendDownError) handles the prefix at the mint
+  // boundary. The wrapper must not invent an integer from the message.
+  const source = new Error('503: Service Unavailable') as any
+
+  const wrapped = gatewayTicketFailure(source, 'auth message', 'transport message')
+
+  assert.equal((wrapped as any).statusCode, undefined)
+  assert.equal((wrapped as any).needsOauthLogin, undefined)
+})
+
+// OAuth integration regression (#85373): the WS-ticket mint boundary runs
+// BEFORE waitForHermesReady. This mirrors main.ts buildRemoteConnection's
+// catch — classify a Nous Cloud server fault via the shared factory, else
+// fall through to gatewayTicketFailure. Proves the production composition:
+//   1. Cloud + OAuth ticket mint + 503  -> actionable Cloud-down error
+//   2. Cloud + OAuth ticket mint + 401  -> reauth (never Cloud-down)
+test('OAuth ticket-mint 503 surfaces the Cloud-down error (startup boundary)', () => {
+  const baseUrl = 'https://ares-3009.agents.nousresearch.com'
+  const ticketErr = new Error('upstream unavailable') as any
+  ticketErr.statusCode = 503
+
+  // The exact production sequence from main.ts.
+  const cloudError = makeNousCloudBackendDownError(baseUrl, ticketErr)
+
+  if (cloudError !== null) {
+    assert.equal((cloudError as any).isCloudBackendDown, true)
+    assert.equal((cloudError as any).statusCode, 503)
+    assert.ok(cloudError.message.includes('Nous Cloud agent ares-3009.agents.nousresearch.com is down'))
+
+    return
+  }
+
+  const wrapped = gatewayTicketFailure(ticketErr, 'auth', 'transport')
+
+  assert.fail(`expected Cloud-down classification, got wrapper: ${wrapped.message}`)
+})
+
+test('OAuth ticket-mint 401 stays on the reauth path (never Cloud-down)', () => {
+  const baseUrl = 'https://ares-3009.agents.nousresearch.com'
+  const ticketErr = new Error('Unauthorized') as any
+  ticketErr.statusCode = 401
+
+  const cloudError = makeNousCloudBackendDownError(baseUrl, ticketErr)
+  assert.equal(cloudError, null, 'a 401 must not become a Cloud-down error')
+
+  const wrapped = gatewayTicketFailure(ticketErr, 'auth message', 'transport message')
+
+  assert.equal(wrapped.message, 'auth message')
+  assert.equal((wrapped as any).needsOauthLogin, true)
+  assert.equal((wrapped as any).statusCode, 401)
 })

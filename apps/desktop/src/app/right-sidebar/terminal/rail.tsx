@@ -29,7 +29,7 @@ import {
 } from './terminals'
 
 const RAIL_ACTION =
-  'grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring [-webkit-app-region:no-drag]'
+  'grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring [-webkit-app-region:no-drag]'
 
 /** Thin icon "bookmark" strip blended into the terminal surface, shown whenever a
  *  terminal exists. Each square is a tab (name + hotkey on hover); close via the

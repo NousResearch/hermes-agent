@@ -199,6 +199,21 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
         "gateway.status.remove_pid_file",
         lambda: _pid_state.update(alive=False),
     )
+    # Ownership guard (#89315): legitimate same-home replace fixture —
+    # bound record for target pid 42 in this home.
+    monkeypatch.setattr(
+        "gateway.status._read_pid_record",
+        lambda path=None: {
+            "pid": 42,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 0,
+            "hermes_home": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
+    )
     monkeypatch.setattr(
         "gateway.status.release_all_scoped_locks", lambda **kwargs: 0
     )

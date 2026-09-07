@@ -31496,6 +31496,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pending = None
             if result and adapter and session_key:
                 pending_event = _dequeue_pending_event(adapter, session_key)
+                if result.get("compression_exhausted") and pending_event is not None:
+                    # The outer handler owns the compression-exhausted reset.
+                    # Put the untouched event back so BasePlatformAdapter's
+                    # post-handler drain starts it only after that reset has
+                    # installed a fresh session. Do this before overflow
+                    # promotion and media preparation to preserve FIFO order
+                    # and every piece of native event metadata.
+                    adapter._pending_messages[session_key] = pending_event
+                    logger.info(
+                        "Deferring queued follow-up for session %s until after "
+                        "the compression-exhausted session reset",
+                        session_key,
+                    )
+                    return result
                 # /queue overflow: after consuming the adapter's "next-up"
                 # slot, promote the next queued event into it so the
                 # recursive run's drain will see it.  This keeps the slot

@@ -65,6 +65,18 @@ class CaptureQueuedNativeImageAgent:
         }
 
 
+class CompressionExhaustedAgent(CaptureQueuedNativeImageAgent):
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).calls.append(message)
+        return {
+            "final_response": "context exhausted",
+            "messages": [{"role": "user", "content": "oversized"}],
+            "api_calls": 1,
+            "failed": True,
+            "compression_exhausted": True,
+        }
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     runner = object.__new__(gateway_run.GatewayRunner)
@@ -149,3 +161,77 @@ async def test_queued_followup_uses_pending_event_session_key_for_native_images(
     assert queued_message[0]["type"] == "text"
     assert queued_message[0]["text"].startswith("describe this")
     assert any(part.get("type") == "image_url" for part in queued_message)
+
+
+@pytest.mark.asyncio
+async def test_compression_exhaustion_defers_queued_event_for_fresh_session(
+    monkeypatch, tmp_path
+):
+    CompressionExhaustedAgent.calls = []
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = CompressionExhaustedAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    adapter = CaptureAdapter()
+    runner = _make_runner(adapter)
+    session_key = "agent:main:telegram:group:-1001"
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+    )
+    pending_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    pending_event = MessageEvent(
+        text="answer this after reset",
+        message_type=MessageType.PHOTO,
+        source=pending_source,
+        media_urls=[str(tmp_path / "queued-image.png")],
+        media_types=["image/png"],
+        raw_message={"native": "metadata"},
+        message_id="queued-after-exhaustion",
+        platform_update_id=4242,
+    )
+    overflow_event = MessageEvent(
+        text="second in fifo",
+        message_type=MessageType.TEXT,
+        source=pending_source,
+        message_id="queued-second",
+    )
+    runner._enqueue_fifo(session_key, pending_event, adapter)
+    runner._enqueue_fifo(session_key, overflow_event, adapter)
+
+    result = await runner._run_agent(
+        message="oversized turn",
+        context_prompt="",
+        history=[{"role": "user", "content": "old context"}],
+        source=source,
+        session_id="bloated-session",
+        session_key=session_key,
+    )
+
+    assert result["compression_exhausted"] is True
+    assert len(CompressionExhaustedAgent.calls) == 1, (
+        "the queued turn must not recurse into the exhausted session"
+    )
+    assert adapter._pending_messages[session_key] is pending_event, (
+        "the exact native event must survive for the post-reset adapter drain"
+    )
+    assert runner._queued_events[session_key] == [overflow_event], (
+        "deferral must not promote or reorder later FIFO events"
+    )

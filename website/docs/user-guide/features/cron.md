@@ -264,6 +264,28 @@ What they do:
 
 **Name-based lookup.** All four mutating verbs (`pause`, `resume`, `run`, `remove`, `edit`) plus the agent's `cronjob` tool now accept a job **name** (case-insensitive) in place of the hex ID. The agent and CLI both prefer an exact ID match if one exists; ambiguous name matches (multiple jobs sharing the same name) are refused with the full list of candidate IDs so you can pick one explicitly. Names are not unique, so this guard is load-bearing — it prevents silently mutating the wrong job when two share a name.
 
+### Creating a job paused (safe canary)
+
+Create a canary without a create-then-pause scheduling race:
+
+```bash
+hermes cron create "every 1h" "Post the digest" --paused --paused-reason "Awaiting review"
+hermes cron resume <job_id>
+```
+
+`--paused` stores `enabled: false`, `state: paused`, `next_run_at: null`, a pause
+timestamp and an auditable reason in the first locked write, without registering a
+trigger. Omit the reason to store "Created paused; awaiting operator approval."
+Omit `--paused` to retain normal enabled creation. `--paused-reason` requires
+`--paused`; invalid values are rejected before persistence.
+
+The same `paused` boolean and optional `paused_reason` string are accepted by
+`cron.jobs.create_job`, the cron management tool's `create` action, the gateway
+`POST /api/jobs`, and the dashboard `POST /api/cron/jobs`. Resume schedules the next
+future run. Pausing prevents automatic fires, not operator overrides: existing
+explicit **Run now** / force-run behavior remains available and can resume and run
+the job. It is not a security boundary against an operator who can run jobs.
+
 ## Agent-managed scheduling (cron jobs that manage cron jobs)
 
 By default, agents launched *by* the scheduler cannot use the `cronjob` tool —

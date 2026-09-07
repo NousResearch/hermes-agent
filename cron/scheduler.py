@@ -3415,6 +3415,8 @@ def create_job_with_scheduler_registration(**kwargs) -> dict:
     from cron.scheduler_provider import resolve_cron_scheduler
 
     job = create_job(**kwargs)
+    if not job.get("enabled", True):
+        return job
     try:
         resolve_cron_scheduler().register_job(job)
     except Exception as exc:

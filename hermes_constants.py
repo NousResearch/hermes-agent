@@ -221,7 +221,14 @@ def profile_name_for_home(path: str | Path | None) -> str | None:
         named = named_profile_home(current)
     except (OSError, RuntimeError, ValueError):
         return None
-    return named.name if named is not None else None
+    if named is not None:
+        return named.name
+    # Session records already carry a validated profile home. Preserve the
+    # established basename behavior for isolated test/custom roots whose
+    # parent is the conventional profiles directory but lacks root markers.
+    if current.parent.name == "profiles" and current.name and not current.name.startswith("."):
+        return current.name
+    return None
 
 
 def profile_tombstone_path(profile_home: Path) -> Path:

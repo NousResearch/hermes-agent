@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from gateway.run_turn_runner import TurnRunner
 from gateway.pre_delivery import PreDeliveryGate
+from gateway.turn_context import TurnContext
 
 
 
@@ -82,6 +84,25 @@ async def test_quarantine_stops_non_success_terminal_shapes(result_shape):
 
 
 @pytest.mark.asyncio
+async def test_evaluator_turn_identity_is_scoped_to_gateway_context():
+    base = SimpleNamespace(
+        source=SimpleNamespace(platform="discord", chat_id="chat-a"),
+        session_key="session-1", run_generation=7, inbound_message_id="same-id",
+    )
+    other = SimpleNamespace(
+        source=SimpleNamespace(platform="telegram", chat_id="chat-b"),
+        session_key="session-2", run_generation=7, inbound_message_id="same-id",
+    )
+
+    first = TurnRunner._evaluator_turn_id(cast("TurnContext", base))
+    second = TurnRunner._evaluator_turn_id(cast("TurnContext", other))
+
+    assert first is not None
+    assert second is not None
+    assert first != second
+
+
+@pytest.mark.asyncio
 async def test_release_then_finish_delivers_only_approved_rewrite():
     adapter = _adapter()
     consumer = GatewayStreamConsumer(
@@ -91,7 +112,6 @@ async def test_release_then_finish_delivers_only_approved_rewrite():
     task = asyncio.create_task(consumer.run())
     consumer.on_delta("unvalidated draft")
     await asyncio.sleep(0.08)
-    consumer.release_content_delivery()
     consumer.finish("approved final")
     await task
 
@@ -112,7 +132,24 @@ async def test_release_is_ordered_after_queued_commentary():
     # must not flip a shared flag ahead of the earlier commentary event.
     consumer.on_delta("unvalidated draft")
     consumer.on_commentary("unvalidated commentary")
-    consumer.release_content_delivery()
+    consumer.finish("approved final")
+    await task
+
+    assert adapter.draft_calls == []
+    adapter.send.assert_awaited_once()
+    assert adapter.send.call_args.kwargs["content"] == "approved final"
+
+
+@pytest.mark.asyncio
+async def test_approved_final_keeps_segment_backlog_quarantined_until_release():
+    adapter = _adapter()
+    consumer = GatewayStreamConsumer(
+        adapter, "chat-1", StreamConsumerConfig(transport="auto", chat_type="dm", cursor=""),
+    )
+    consumer.quarantine_content_delivery()
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta("unvalidated segment")
+    consumer.on_segment_break()
     consumer.finish("approved final")
     await task
 

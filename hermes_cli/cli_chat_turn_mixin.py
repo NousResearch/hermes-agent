@@ -423,6 +423,14 @@ class CLIChatTurnMixin:
             self._prompt_duration = max(0.0, time.time() - self._prompt_start_time)
             self._prompt_start_time = None
         self._last_turn_finished_at = time.time()  # status bar idle time
+        # Walkie-Talkie presence is refreshed at the turn boundary, never from
+        # the per-keystroke render path. This restores the pre-refactor G7 contract.
+        try:
+            from hermes_cli.peer_presence import clear_peer_presence_cache
+
+            clear_peer_presence_cache()
+        except Exception:
+            pass
         # AsyncOpenAI clients bound to the worker's now-closed loop would crash
         # prompt_toolkit's loop from __del__ on GC.
         try:

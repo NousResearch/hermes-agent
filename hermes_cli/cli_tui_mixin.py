@@ -353,7 +353,7 @@ class CLITuiMixin:
         try:
             from hermes_cli.peer_presence import peer_presence_pill
 
-            pill = peer_presence_pill(force=True)  # KENSEI CUSTOM: fresh every repaint
+            pill = peer_presence_pill()
             if pill:
                 return [("class:peer-presence", pill + " ")] + [("class:prompt", symbol)]
         except Exception:

@@ -649,6 +649,17 @@ def _dispatch_authorized_once(
             callback()
 
     block_message, block_error_type = scope_block, "tool_scope_block"
+    if block_message is None and getattr(agent, "ephemeral", False):
+        from agent.agent_runtime_helpers import (
+            check_ephemeral_provider_memory_block,
+            check_ephemeral_tool_block,
+        )
+        block_message = check_ephemeral_tool_block(ref.name, ref.args)
+        if block_message is None:
+            block_message = check_ephemeral_provider_memory_block(agent, ref.name)
+        if block_message is not None:
+            block_error_type = "ephemeral_block"
+
     if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731

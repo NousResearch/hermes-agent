@@ -234,6 +234,7 @@ def _build_child_agent(
                 session_db=child_session_db, parent_session_id=parent_sid, request_overrides=request_overrides,
                 tool_progress_callback=child_progress_cb,
                 iteration_budget=None,  # fresh budget per subagent
+                ephemeral=bool(getattr(parent_agent, "ephemeral", False)),
             )
         except BaseException:
             # No child close() will ever run: release the dedicated handle here.

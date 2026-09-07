@@ -2180,6 +2180,118 @@ def _pre_tool_block_message(agent, function_name, function_args, effective_task_
         return None, function_args
 
 
+# ---------------------------------------------------------------------------
+# Ephemeral session tool-write guard
+# ---------------------------------------------------------------------------
+_EPHEMERAL_BLOCKED_TOOL_ACTIONS: Dict[str, Optional[frozenset]] = {
+    "memory": frozenset({"add", "replace", "remove"}),
+    "skill_manage": frozenset({
+        "create", "edit", "patch", "delete", "write_file", "remove_file",
+    }),
+    "cronjob": frozenset({"create", "update", "remove", "pause", "resume", "run"}),
+    "cronjob_manage": frozenset({"create", "update", "remove", "pause", "resume", "run"}),
+    "kanban_create": None,
+    "kanban_comment": None,
+    "kanban_attach": None,
+    "kanban_attach_url": None,
+    "kanban_link": None,
+    "kanban_unblock": None,
+    "kanban_complete": None,
+    "kanban_block": None,
+    "kanban_heartbeat": None,
+}
+
+_EPHEMERAL_UNLISTED = object()
+
+
+def check_ephemeral_tool_block(
+    function_name: str, function_args: Dict[str, Any]
+) -> Optional[str]:
+    """Return an error string if this call writes durable state in an
+    ephemeral session, else ``None``.
+
+    Read-side actions return ``None`` so they execute normally.
+    """
+    blocked_actions = _EPHEMERAL_BLOCKED_TOOL_ACTIONS.get(
+        function_name, _EPHEMERAL_UNLISTED
+    )
+    if blocked_actions is _EPHEMERAL_UNLISTED:
+        return None
+    if blocked_actions is None:
+        # The whole tool is a write.
+        return (
+            f"'{function_name}' is blocked in this temporary chat. "
+            "Temporary chats leave no trace: nothing is saved to the session "
+            "store, memory, skills, or task boards. Read-side tools still "
+            "work. Start a normal chat (/new) if you want to save this."
+        )
+
+    action = function_args.get("action")
+    if function_name == "memory":
+        operations = function_args.get("operations")
+        if isinstance(operations, list) and operations:
+            action = next(
+                (
+                    op.get("action")
+                    for op in operations
+                    if isinstance(op, dict) and op.get("action") in blocked_actions
+                ),
+                None,
+            )
+            if action is None:
+                return None
+        elif action not in blocked_actions:
+            return None
+    elif function_name == "skill_manage":
+        operations = function_args.get("operations")
+        if isinstance(operations, list) and operations:
+            action = next(
+                (op.get("action") for op in operations if isinstance(op, dict) and op.get("action")),
+                "batch",
+            )
+        elif action not in blocked_actions:
+            # skill_manage has no read-only actions; fail closed on any action/unknown action
+            action = action or "create"
+    elif function_name in {"cronjob", "cronjob_manage"}:
+        if action not in blocked_actions:
+            return None
+
+    if action not in blocked_actions and function_name != "skill_manage":
+        return None
+
+    return (
+        f"'{function_name}' action '{action}' is blocked in this temporary chat. "
+        "Temporary chats leave no trace: nothing is saved to the session store, "
+        "memory, or skills. Read-only actions on this tool still work. "
+        "Start a normal chat (/new) if you want to save this."
+    )
+
+
+def check_ephemeral_provider_memory_block(
+    agent, function_name: str
+) -> Optional[str]:
+    """Return an error string if this call is a write-side external
+    memory-provider tool in an ephemeral session, else ``None``.
+
+    Provider tools (hindsight_retain, supermemory_store, ...) are not in the
+    static _EPHEMERAL_BLOCKED_TOOL_ACTIONS table because their names come
+    from plugins the core cannot enumerate. Classification is delegated to
+    the owning provider via MemoryManager.is_write_tool(), which fails
+    closed: undeclared tools count as writes.
+    """
+    manager = getattr(agent, "_memory_manager", None)
+    if manager is None:
+        return None
+    if not (manager.has_tool(function_name) and manager.is_write_tool(function_name)):
+        return None
+    return (
+        f"'{function_name}' is blocked in this temporary chat: it writes to "
+        "external memory, which outlives the conversation. Temporary chats "
+        "leave no trace. Read-only memory tools still work. "
+        "Start a normal chat (/new) if you want to save this."
+    )
+
+
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
                  tool_call_id: Optional[str] = None, messages: list = None,
                  pre_tool_block_checked: bool = False,
@@ -2194,6 +2306,14 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     )
     if not isinstance(function_args, dict):
         function_args = {}
+
+    if getattr(agent, "ephemeral", False):
+        _ephemeral_block = check_ephemeral_tool_block(function_name, function_args)
+        if _ephemeral_block is None:
+            _ephemeral_block = check_ephemeral_provider_memory_block(agent, function_name)
+        if _ephemeral_block is not None:
+            return json.dumps({"error": _ephemeral_block}, ensure_ascii=False)
+
     hook_ids = tool_hook_ids(agent, effective_task_id, tool_call_id)
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:
@@ -3208,7 +3328,7 @@ __all__ = [
     "switch_model", "invoke_tool", "repair_tool_call", "sanitize_api_messages",
     "looks_like_codex_intermediate_ack", "copy_reasoning_content_for_api", "cleanup_dead_connections",
     "extract_api_error_context", "apply_pending_steer_to_tool_results", "_iter_pool_sockets",
-    "force_close_tcp_sockets",
+    "force_close_tcp_sockets", "check_ephemeral_tool_block", "check_ephemeral_provider_memory_block",
 ]
 
 

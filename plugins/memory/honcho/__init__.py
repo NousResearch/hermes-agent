@@ -650,6 +650,13 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             return []
         return list(ALL_TOOL_SCHEMAS)
 
+    def read_only_tool_names(self) -> frozenset:
+        # honcho_profile and honcho_conclude are read/write hybrids
+        # (profile updates the peer card when `card` is passed; conclude
+        # creates/deletes conclusions). Classification is per tool name, so
+        # both stay blocked in temporary chats, including their read modes.
+        return frozenset({"honcho_search", "honcho_reasoning", "honcho_context"})
+
     def _empty_profile_hint(self, peer: str) -> Dict[str, Any]:
         """Diagnostic hint for an empty honcho_profile card, so the model can explain WHY
         instead of surfacing a cryptic "no facts" to the user. Likely causes, in order:

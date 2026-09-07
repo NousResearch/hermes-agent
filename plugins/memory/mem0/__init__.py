@@ -281,6 +281,11 @@ class Mem0MemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return list(TOOL_SCHEMAS)
 
+    def read_only_tool_names(self) -> frozenset:
+        # mem0_add/update/delete mutate the backend and stay blocked in
+        # temporary chats.
+        return frozenset({"mem0_search"})
+
     # -- tool handlers: (required params, error label, body, client-error policy) ---
     # Client errors (bad ID / not found) never trip the breaker, except for mem0_add
     # where they count as failures; update/delete answer them with "Memory not found".

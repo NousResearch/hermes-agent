@@ -634,6 +634,13 @@ def save_goal(session_id: str, state: GoalState) -> None:
     """Persist a goal to SessionDB. No-op if DB unavailable."""
     if not session_id:
         return
+    try:
+        from hermes_state import is_session_ephemeral
+
+        if is_session_ephemeral(session_id):
+            return
+    except Exception:
+        pass
     db = _get_session_db()
     if db is None:
         _warn_dropped_write("GoalManager", "goal", session_id)

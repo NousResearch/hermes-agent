@@ -157,6 +157,22 @@ HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
     "(or read it yourself if you have a way to fetch web content)."
 )
 
+EPHEMERAL_SESSION_GUIDANCE = (
+    "TEMPORARY CHAT: this conversation is ephemeral and leaves no trace. "
+    "The transcript is not written to the session store, no JSON snapshot is "
+    "kept, and nothing from it is extracted into long-term memory. It cannot "
+    "be resumed or found by session search later.\n"
+    "Write-side tool actions are blocked accordingly: memory (add/replace/"
+    "remove), skill_manage (create/edit/patch/delete/write_file/remove_file), "
+    "and cronjob (create/update/remove/pause/resume). Do not attempt them. "
+    "Reading still works normally — memory, skill_view, skills_list, "
+    "session_search, and every other tool are unaffected, as are file and "
+    "terminal writes (a temporary chat hides the conversation, it does not "
+    "sandbox the machine).\n"
+    "If the user asks you to remember something, tell them plainly that this "
+    "chat is temporary and offer to start a normal chat instead."
+)
+
 
 # Memory guidance (#95681, consolidated): ONE block from ONE builder. The opening frame adapts to which
 # stores config enables; everything else is written exactly once. Leads with the positive posture (save

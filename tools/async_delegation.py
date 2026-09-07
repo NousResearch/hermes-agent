@@ -160,6 +160,16 @@ def _capture_routing_origin() -> Dict[str, Any]:
 
 
 def _persist_dispatch(record: Dict[str, Any]) -> None:
+    try:
+        from hermes_state import is_session_ephemeral
+
+        if any(
+            is_session_ephemeral(str(record.get(key) or ""))
+            for key in ("origin_session_id", "parent_session_id", "session_key")
+        ):
+            return
+    except Exception:
+        pass
     now = time.time()
     try:
         from gateway.status import get_process_start_time
@@ -181,6 +191,11 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
              record.get("parent_session_id"), record["dispatched_at"], now, os.getpid(), owner_started_at,
              json.dumps(task_payload), record.get("origin_session_id", "")))
     _prune_durable_records()
+
+
+def _delete_durable_delegation(delegation_id: str) -> None:
+    with _DB_LOCK, _transaction() as conn:
+        conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
 
 
 def _prune_durable_records() -> None:

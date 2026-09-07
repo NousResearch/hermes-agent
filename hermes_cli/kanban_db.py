@@ -1253,6 +1253,22 @@ def create_task(
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
+    if assignee:
+        # The tool surface validates profiles, but direct Python callers can
+        # reach this primitive too. Reject unknown owners only for a live
+        # Hermes home; isolated test homes intentionally use synthetic names.
+        try:
+            from hermes_constants import get_hermes_home
+            from hermes_cli.profiles import profile_exists
+
+            hermes_home = get_hermes_home()
+            if (hermes_home / "profiles").is_dir() and not profile_exists(assignee):
+                raise ValueError(
+                    f"assignee profile {assignee!r} does not exist; "
+                    "select an installed profile before creating work"
+                )
+        except ImportError:
+            pass
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:

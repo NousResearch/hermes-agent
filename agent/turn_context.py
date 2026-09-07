@@ -152,11 +152,15 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
         from agent.message_content import flatten_message_text
         from agent.title_generator import maybe_auto_title
 
-        # Turn's user message as text; image-only turns yield "" and are skipped.
-        user_text = ""
+        # Turn's user message as text; image-only turns yield "" and are skipped. display_kind
+        # (model-switch / personality-switch / async-delegation-complete / internal-notification /
+        # ...) travels with it so a synthetic marker turn is never fed to the titler as if a person
+        # typed it (see is_titleable_user_message's display_kind guard).
+        user_text, display_kind = "", None
         for msg in reversed(messages or []):
             if isinstance(msg, dict) and msg.get("role") == "user":
                 user_text = flatten_message_text(msg.get("content")).strip()
+                display_kind = msg.get("display_kind")
                 break
         if not user_text:
             return
@@ -189,6 +193,7 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
                 getattr(agent, "model", None) == main_runtime["model"]
                 and getattr(agent, "provider", None) == main_runtime["provider"]
             ),
+            display_kind=display_kind,
         )
     except Exception:
         logger.debug("Turn-start auto-title dispatch failed", exc_info=True)

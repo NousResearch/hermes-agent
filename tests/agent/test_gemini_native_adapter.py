@@ -249,6 +249,41 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
 
 
 # ---------------------------------------------------------------------------
+# is_gemini_model() tests
+# ---------------------------------------------------------------------------
+
+def test_is_gemini_model_detects_native_gemini_models():
+    """Native Gemini models are detected by name."""
+    from agent.gemini_native_adapter import is_gemini_model
+    assert is_gemini_model("gemini-3.7-flash") is True
+    assert is_gemini_model("gemini-2.5-flash") is True
+    assert is_gemini_model("gemini-3-pro") is True
+
+
+def test_is_gemini_model_detects_aggregator_prefixed_models():
+    """Gemini models relayed through aggregators are detected by name."""
+    from agent.gemini_native_adapter import is_gemini_model
+    assert is_gemini_model("google/gemini-3.7-flash") is True
+    assert is_gemini_model("gemini/gemini-2.5-flash") is True
+
+
+def test_is_gemini_model_rejects_non_gemini_models():
+    """Non-Gemini models are not detected as Gemini."""
+    from agent.gemini_native_adapter import is_gemini_model
+    assert is_gemini_model("claude-sonnet-4") is False
+    assert is_gemini_model("gpt-4o") is False
+    assert is_gemini_model("llama-3.1-70b") is False
+
+
+def test_is_gemini_model_handles_empty_and_case():
+    """Empty strings and case variations are handled."""
+    from agent.gemini_native_adapter import is_gemini_model
+    assert is_gemini_model("") is False
+    assert is_gemini_model(None) is False
+    assert is_gemini_model("GEMINI-3.7-flash") is True
+
+
+# ---------------------------------------------------------------------------
 # X-Goog-Api-Client header tests
 # ---------------------------------------------------------------------------
 

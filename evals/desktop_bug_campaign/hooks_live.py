@@ -20,6 +20,8 @@ p.add_argument('--tool', choices=['write_file', 'terminal'], default='write_file
 p.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[2])
 a = p.parse_args()
 out = Path(a.output).absolute()
+if out.exists() and any(out.iterdir()):
+    raise SystemExit('Use a fresh output directory; prior evidence must not be reused.')
 out.mkdir(parents=True, exist_ok=True)
 home = out / 'home'
 home.mkdir(exist_ok=True)
@@ -102,20 +104,25 @@ try:
                     raise RuntimeError(event)
                 return event['result']
     for label in ['default', 'alpha', 'beta', 'alpha', 'unapproved']:
+        hook_log = out / (label + '-hooks.jsonl')
+        calls_before = len(hook_log.read_text().splitlines()) if hook_log.exists() else 0
         session = rpc('session.create', {'source': 'gui', 'profile': '' if label == 'default' else label, 'cwd': str(out)})
         sid = session['session_id']
         rpc('prompt.submit', {'session_id': sid, 'text': f'{label} probe: write the protected file'})
         deadline = time.monotonic() + 100
+        completed = False
         while time.monotonic() < deadline:
             event = json.loads(ws.recv(timeout=100))
             events.append(event)
             data = event.get('params', {})
-            if data.get('type') in ('turn.complete', 'message.complete', 'agent.error', 'turn.error'):
+            if data.get('session_id') == sid and data.get('type') == 'message.complete':
+                completed = data.get('payload', {}).get('status') == 'complete'
                 break
-        results.append({'profile': label, 'written': (out / (label + '-protected.txt')).exists(), 'hook_calls': len((out / (label + '-hooks.jsonl')).read_text().splitlines()) if (out / (label + '-hooks.jsonl')).exists() else 0})
+        assert completed, f'{label}: no successful completion for {sid}'
+        results.append({'profile': label, 'written': (out / (label + '-protected.txt')).exists(), 'hook_calls': len(hook_log.read_text().splitlines()) if hook_log.exists() else 0, 'hook_calls_before': calls_before})
         print(results[-1], flush=True)
     ws.close()
-    assert all(not row['written'] and row['hook_calls'] > 0 for row in results if row['profile'] != 'unapproved'), 'consented profile hook did not protect write_file'
+    assert all(not row['written'] and row['hook_calls'] - row['hook_calls_before'] == 1 for row in results if row['profile'] != 'unapproved'), 'consented profile hook did not protect the tool exactly once'
     assert results[-1]['written'] and results[-1]['hook_calls'] == 0, 'unapproved hook executed'
 finally:
     proc.terminate()
@@ -127,6 +134,6 @@ finally:
     provider.shutdown()
     (out / 'events.json').write_text(json.dumps(events, indent=2))
     (out / 'requests.json').write_text(json.dumps(requests, indent=2))
-    receipt = {'sha': subprocess.check_output(['git', '-C', str(a.repo), 'rev-parse', 'HEAD'], stdin=subprocess.DEVNULL, text=True).strip(), 'command': cmd, 'results': results, 'provider_requests': len(requests)}
+    receipt = {'sha': subprocess.check_output(['git', '-C', str(a.repo), 'rev-parse', 'HEAD'], stdin=subprocess.DEVNULL, text=True).strip(), 'source_blob': subprocess.check_output(['git', '-C', str(a.repo), 'hash-object', 'tui_gateway/server.py'], stdin=subprocess.DEVNULL, text=True).strip(), 'tool': a.tool, 'process_exit': proc.returncode, 'command': cmd, 'results': results, 'provider_requests': len(requests)}
     (out / 'receipt.json').write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt, indent=2))

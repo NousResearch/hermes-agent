@@ -2275,7 +2275,7 @@ def _make_agent(
         with contextlib.suppress(Exception):
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()
-    # Agent creation already holds the session's profile scope, unlike serve startup.
+    # Load hooks alongside the same profile config used to construct this agent.
     from agent.shell_hooks import register_from_config
     register_from_config(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)

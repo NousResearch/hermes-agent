@@ -25,6 +25,44 @@ pytest.importorskip("numpy")
 
 
 class TestSentenceChunker:
+    @pytest.mark.parametrize("first_min_len", [None, 1, 6])
+    @pytest.mark.parametrize("split_at", range(6))
+    def test_first_threshold_ends_at_first_nonempty_emission(self, first_min_len, split_at):
+        c = ts.SentenceChunker(first_min_len=first_min_len)
+        assert c.feed("<think>private</think>") == []
+        assert c.flush() == []  # An empty flush must not consume the first-sentence override.
+        opener = "Yes. "
+        opening = c.feed(opener[:split_at]) + c.feed(opener[split_at:])
+        assert opening == ([opener] if first_min_len == 1 else [])
+        middle = c.feed("OK. ")
+        assert middle == (["Yes. OK. "] if first_min_len == 6 else [])
+        rest = c.feed("This is the longer sentence. Tail")
+        expected_rest = {1: "OK. This is the longer sentence. ",
+                         6: "This is the longer sentence. "}.get(first_min_len,
+                         "Yes. OK. This is the longer sentence. ")
+        assert rest == [expected_rest]
+        assert c.flush() == ["Tail"]
+        assert c.flush() == []
+        assert "".join(opening + middle + rest + ["Tail"]) == "Yes. OK. This is the longer sentence. Tail"
+
+        # Several sentences in one delta obey the same first-only rule.
+        batched = ts.SentenceChunker(first_min_len=first_min_len)
+        assert batched.feed("Yes. OK. This is the longer sentence. ") == opening + middle + rest
+
+        # An idle flush of a nonempty tail counts as the first emitted sentence.
+        idle = ts.SentenceChunker(first_min_len=first_min_len)
+        assert idle.feed("Hi") == []
+        assert idle.flush() == ["Hi"]
+        assert idle.feed("OK. ") == []
+
+        # After an opener, restore the configured global minimum, not a hard-coded 20.
+        configured = ts.SentenceChunker.from_config({"streaming": {
+            "min_len": 6, "first_sentence_min_chars": 1,
+        }})
+        assert configured.feed("Yes. ") == ["Yes. "]
+        assert configured.feed("OK. ") == []
+        assert configured.feed("Fine. ") == ["OK. Fine. "]
+
     def test_cuts_sentence_the_moment_its_boundary_arrives(self):
         c = ts.SentenceChunker()
         assert c.feed("This is the first full") == []
@@ -488,7 +526,13 @@ def test_streamer_tempfile_fallback_after_reinit_exhausted(monkeypatch):
     sys.platform == "darwin",
     reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
 )
-def test_hybrid_first_sentence_streamed_individually(monkeypatch):
+@pytest.mark.parametrize("streaming, expected", [
+    ({}, ["Yes. OK. Fine. This is the next full sentence."]),
+    ({"first_sentence_min_chars": 1}, ["Yes.", "OK. Fine. This is the next full sentence."]),
+    ({"min_len": 6}, ["Yes. OK.", "Fine. This is the next full sentence."]),
+    ({"min_len": 6, "first_sentence_min_chars": 1}, ["Yes.", "OK. Fine.", "This is the next full sentence."]),
+])
+def test_hybrid_first_sentence_streamed_individually(monkeypatch, streaming, expected):
     """The first sentence must get its own stream() call for low TTFA."""
     from tools import tts_tool
     from tools.tts_tool_speaker import stream_tts_to_speaker
@@ -507,7 +551,10 @@ def test_hybrid_first_sentence_streamed_individually(monkeypatch):
             yield b"\x00\x00" * 10
 
     sd, out = _sd_mock()
-    q = _drain_queue(["This is the first complete sentence."])
+    text = "Yes. OK. Fine. This is the next full sentence."
+    config = {"streaming": streaming}
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: config)
+    q = _drain_queue([text])
     stop, done = threading.Event(), threading.Event()
 
     with patch("tools.tts_streaming.resolve_streaming_provider",
@@ -515,9 +562,7 @@ def test_hybrid_first_sentence_streamed_individually(monkeypatch):
          patch.object(tts_tool, "_import_sounddevice", return_value=sd):
         stream_tts_to_speaker(q, stop, done)
 
-    assert len(stream_calls) == 1, (
-        f"single sentence should trigger 1 stream() call, got {stream_calls}"
-    )
+    assert stream_calls == expected
     assert done.is_set()
 
 

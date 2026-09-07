@@ -20,6 +20,49 @@ from gateway.streaming_tts_consumer import StreamingTTSConsumer
 from tools.tts_streaming import SentenceChunker
 
 
+@pytest.mark.parametrize("value", [None, 1, 6, 20, 0, -1, True, "1", 1.5, float("inf")])
+@pytest.mark.parametrize("min_len", [6, 20])
+def test_profile_first_sentence_threshold_preserves_later_batching(value, min_len, tmp_path, monkeypatch):
+    import yaml
+    from tools.tts_tool import _load_tts_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+        "tts": {"streaming": {"min_len": min_len, "first_sentence_min_chars": value}},
+    }))
+    calls = []
+
+    class TrackingStreamer(FakeStreamer):
+        def stream(self, text):
+            calls.append(text)
+            yield from super().stream(text)
+
+    monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: TrackingStreamer())
+
+    async def run(loop):
+        adapter = FakeVoiceAdapter()
+        consumer = StreamingTTSConsumer(adapter, "chat", _load_tts_config(), loop)
+        consumer.on_delta("Yes. ")
+        first_threshold = value if type(value) is int and value > 0 else min_len
+        tuned = first_threshold == 1
+        assert consumer._queue.qsize() == (1 if tuned else 0)
+        consumer.on_delta("OK. This is the longer sentence. Tail")
+        consumer.start()
+        consumer.finish()
+        assert await consumer.wait_complete()
+        if tuned:
+            expected = ["Yes.", "OK. This is the longer sentence."]
+        elif first_threshold == 6:
+            expected = ["Yes. OK.", "This is the longer sentence."]
+        else:
+            expected = ["Yes. OK. This is the longer sentence."]
+        assert calls == expected + ["Tail"]
+        assert adapter.finish_count == 1
+        assert consumer.completed and not consumer.partial
+
+    _run_test(run)
+
+
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
@@ -674,28 +717,26 @@ class TestGatewayOuterFinalisationNoNameError:
 
 
 class TestStreamingMinLenConfig:
-    """``tts.streaming.min_len`` tunes the chunker's first-sentence
-    threshold (#96927): the hard-coded 20 chars suits English but for CJK
-    is one-to-two full clauses, so short openers always buffered and the
-    first audible audio was delayed by ~one LLM sentence."""
+    """The shared whole-response threshold preserves the gateway's existing config behavior."""
 
     def test_default_when_unset(self):
-        from gateway.streaming_tts_consumer import _streaming_min_len
+        from tools.tts_streaming import _streaming_min_len
 
         assert _streaming_min_len({}) == 20
         assert _streaming_min_len({"streaming": {}}) == 20
         assert _streaming_min_len({"streaming": "not-a-dict"}) == 20
 
     def test_configured_value_passes_through(self):
-        from gateway.streaming_tts_consumer import _streaming_min_len
+        from tools.tts_streaming import _streaming_min_len
 
         assert _streaming_min_len({"streaming": {"min_len": 6}}) == 6
 
     def test_invalid_values_fall_back_and_floor_at_one(self):
-        from gateway.streaming_tts_consumer import _streaming_min_len
+        from tools.tts_streaming import _streaming_min_len
 
         assert _streaming_min_len({"streaming": {"min_len": "bogus"}}) == 20
         assert _streaming_min_len({"streaming": {"min_len": None}}) == 20
+        assert _streaming_min_len({"streaming": {"min_len": float("inf")}}) == 20
         # A misconfigured 0 must not disable chunking entirely (every
         # boundary would emit, including single-char fragments).
         assert _streaming_min_len({"streaming": {"min_len": 0}}) == 1

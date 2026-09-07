@@ -23,34 +23,6 @@ logger = logging.getLogger("gateway.streaming_tts_consumer")
 _ABORT = object()
 _DONE = object()
 
-# Default first-sentence threshold for the chunker, in characters. Tuned for
-# English, where a meaningful clause rarely fits in fewer than 20. For CJK
-# text 20 characters is one-to-two full clauses, so short openers ("嗯，好的。")
-# always buffer and ride with the second sentence, delaying the first audible
-# audio by about one LLM sentence — the most latency-sensitive moment of a
-# voice interaction (#96927). Note: pure-CJK replies only benefit from a lower
-# value once full-width terminators are split as boundaries (#78477, in
-# flight); today the chunker cuts on ASCII ".!?"+whitespace only.
-_DEFAULT_STREAMING_MIN_LEN = 20
-
-
-def _streaming_min_len(tts_config: Dict[str, Any]) -> int:
-    """Read ``tts.streaming.min_len`` (first-sentence threshold, chars).
-
-    Invalid values fall back to the default rather than failing the voice
-    path; the floor is 1 so a misconfigured 0 cannot disable chunking
-    entirely (every boundary would emit, including single-char fragments).
-    """
-    streaming_cfg = tts_config.get("streaming")
-    if not isinstance(streaming_cfg, dict):
-        return _DEFAULT_STREAMING_MIN_LEN
-    try:
-        value = int(streaming_cfg.get("min_len", _DEFAULT_STREAMING_MIN_LEN))
-    except (TypeError, ValueError):
-        return _DEFAULT_STREAMING_MIN_LEN
-    return max(1, value)
-
-
 class StreamingTTSConsumer:
     """Consumes LLM text deltas and produces streaming PCM audio for an adapter."""
 
@@ -61,7 +33,8 @@ class StreamingTTSConsumer:
         self._adapter, self._chat_id, self._loop, self._metadata = adapter, chat_id, loop, metadata
         # Resolved once; None => inactive, gateway falls back to whole-file TTS.
         self._streamer = resolve_streaming_provider(tts_config)
-        self._chunker = SentenceChunker(min_len=_streaming_min_len(tts_config))
+        # Pure-CJK terminators still need the separate sentence splitter fix (#78477).
+        self._chunker = SentenceChunker.from_config(tts_config)
         self._audio_format = audio_format or AudioFormat() if self._streamer is None else (
             AudioFormat(**{f: int(getattr(self._streamer, f, getattr(AudioFormat, f)))
                            for f in ("sample_rate", "channels", "sample_width")})

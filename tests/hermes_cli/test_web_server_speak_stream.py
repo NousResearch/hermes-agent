@@ -61,20 +61,30 @@ def _patch_provider(monkeypatch, streamer, cap=4000):
 
 
 
-def test_streams_pcm_frames_then_end(stream_client, monkeypatch):
+@pytest.mark.parametrize("streaming, expected", [
+    ({}, ["Yes. OK. Fine. This is the next full sentence."]),
+    ({"first_sentence_min_chars": 1}, ["Yes.", "OK. Fine. This is the next full sentence."]),
+    ({"min_len": 6}, ["Yes. OK.", "Fine. This is the next full sentence."]),
+    ({"min_len": 6, "first_sentence_min_chars": 1}, ["Yes.", "OK. Fine.", "This is the next full sentence."]),
+])
+def test_streams_pcm_frames_then_end(stream_client, monkeypatch, streaming, expected):
     streamer = _FakeStreamer([b"\x01\x02\x03\x04", b"\x05\x06"])
     _patch_provider(monkeypatch, streamer)
+    config = {"streaming": streaming}
+    monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: config)
+    text = "Yes. OK. Fine. This is the next full sentence."
 
     with stream_client.websocket_connect(_url()) as conn:
         start = conn.receive_json()
         assert start == {"type": "start", "sample_rate": 24000, "channels": 1}
 
-        conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
-        assert conn.receive_bytes() == b"\x01\x02\x03\x04"
-        assert conn.receive_bytes() == b"\x05\x06"
+        conn.send_text(json.dumps({"text": text, "done": True}))
+        for _ in expected:
+            assert conn.receive_bytes() == b"\x01\x02\x03\x04"
+            assert conn.receive_bytes() == b"\x05\x06"
         assert conn.receive_json() == {"type": "end"}
 
-    assert streamer.requests == ["Hello there."]
+    assert streamer.requests == expected
 
 
 
@@ -120,5 +130,3 @@ def test_split_text_respects_cap_and_preserves_content():
     joined = " ".join(pieces)
     for word in text.replace(".", "").split():
         assert word in joined
-
-

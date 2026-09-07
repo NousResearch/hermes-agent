@@ -257,7 +257,7 @@ def test_build_system_requires_exempt_from_exclude_newer():
     and filters it — and because build requirements are exact-pinned there
     is no older candidate to fall back to, so the project cannot even be
     BUILT from a git checkout ("No solution found when resolving:
-    setuptools==83.0.0", observed on released v0.20.0).
+    setuptools==84.0.0", observed on released v0.20.0).
 
     Exempting an exact-pinned build requirement costs nothing: the version
     cannot move without a reviewed pin bump, so exclude-newer adds no float

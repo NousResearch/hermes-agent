@@ -205,9 +205,12 @@ def _configured_model_ids(cfg_models) -> list[str]:
 
 def _discover_named_custom_models(provider_info: dict, api_key: str, configured_models: list, explicit_catalog: bool):
     """Live catalog probe for a named custom endpoint (native ``/api/tags`` for Ollama).
-    Returns ``(models, native_catalog_empty)``; persists the live catalog as a side effect."""
+    Returns ``(models, native_catalog_empty, resolved_base_url)``; the resolved URL is the
+    base that actually answered the probe (it may differ from the configured URL via the
+    ``/v1`` fallback) so the caller can persist a URL the runtime transport can use
+    (#89334). Persists the live catalog as a side effect."""
     from hermes_cli.config import normalize_extra_headers
-    from hermes_cli.models import fetch_api_models, _get_ollama_native_headers
+    from hermes_cli.models import fetch_api_models, probe_api_models, _get_ollama_native_headers
     from hermes_cli.models_local import (
         fetch_ollama_local_models,
         _normalize_openai_base_url,
@@ -240,6 +243,7 @@ def _discover_named_custom_models(provider_info: dict, api_key: str, configured_
     use_native = should_use_ollama_native_catalog(native_catalog_provider, base_url, headers=candidate_headers or None)
     native_headers_arg = candidate_headers or None if use_native else (extra_headers or None)
     native_catalog_empty = False
+    resolved_base_url = ""
     if use_native:
         if explicit_catalog and configured_models:
             live_models = configured_models
@@ -250,7 +254,13 @@ def _discover_named_custom_models(provider_info: dict, api_key: str, configured_
                 live_models = fetch_api_models(api_key, _normalize_openai_base_url(base_url), headers=native_headers_arg, **fetch_kwargs)
                 native_catalog_empty = False
     else:
-        live_models = fetch_api_models(api_key, base_url, headers=native_headers_arg, **fetch_kwargs)
+        # Probe directly (instead of fetch_api_models) so the caller can see WHICH base
+        # URL answered: when the exact URL 404s and the /v1 fallback succeeds, persisting
+        # the raw URL makes every runtime request 404 (#89334). fetch_api_models drops
+        # the probe's resolved_base_url, so it cannot serve this path.
+        probe = probe_api_models(api_key, base_url, request_headers=native_headers_arg, **fetch_kwargs)
+        live_models = probe.get("models")
+        resolved_base_url = str(probe.get("resolved_base_url") or "").strip()
     models = configured_models if explicit_catalog else [] if native_catalog_empty else (live_models or configured_models)
     # Persist the live catalog to the custom_providers entry so no-probe surfaces
     # (dashboard, desktop, ACP) show the full list; mirrors model_switch.py's
@@ -261,7 +271,7 @@ def _discover_named_custom_models(provider_info: dict, api_key: str, configured_
             _save_discovered_models_to_config(
                 base_url, live_models, api_mode=api_mode, headers=extra_headers or None,
                 credential_identity=_entry_credentials(provider_info, "key_env", "api_key_env")[2])
-    return models, native_catalog_empty
+    return models, native_catalog_empty, resolved_base_url
 
 
 def _pick_named_custom_model(name: str, models: list, saved_model: str):
@@ -331,12 +341,13 @@ def _model_flow_named_custom(config, provider_info):
     print()
 
     native_catalog_empty = False
+    resolved_base_url = ""
     if not discover:
         # Never probe. The active model is a usable sole choice, not a catalog.
         models = configured_models or ([saved_model] if saved_model else [])
         print(f"Using configured models (discover_models: false): {len(models)}")
     else:
-        models, native_catalog_empty = _discover_named_custom_models(provider_info, api_key, configured_models, explicit_catalog)
+        models, native_catalog_empty, resolved_base_url = _discover_named_custom_models(provider_info, api_key, configured_models, explicit_catalog)
 
     if models:
         model_name = _pick_named_custom_model(name, models, saved_model)
@@ -383,6 +394,25 @@ def _model_flow_named_custom(config, provider_info):
         provider_entry = providers_cfg.get(provider_key) if isinstance(providers_cfg, dict) else None
         if isinstance(provider_entry, dict):
             provider_entry["default_model"] = model_name
+            if resolved_base_url and resolved_base_url.rstrip("/") != base_url.rstrip("/"):
+                # The catalog probe only answered via the /v1 fallback (or with /v1
+                # stripped): the stored URL would 404 at runtime because the
+                # OpenAI transport appends /chat/completions to it (#89334).
+                # Persist the verified URL in whichever key the entry already uses
+                # (base_url/url/api), mirroring the anonymous wizard's "Saving the
+                # working base URL instead" behavior.
+                for url_key in ("base_url", "url", "api"):
+                    stored = provider_entry.get(url_key)
+                    if isinstance(stored, str) and stored.strip():
+                        provider_entry[url_key] = resolved_base_url.rstrip("/")
+                        break
+                else:
+                    provider_entry["base_url"] = resolved_base_url.rstrip("/")
+                base_url = resolved_base_url.rstrip("/")
+                print(
+                    f"Endpoint verification worked at {base_url}/models, not the "
+                    f"configured URL — saving the verified base URL for {name}."
+                )
             # Only persist an inline api_key when the user originally had one
             # (literal or ``${VAR}``). Entries relying on ``key_env`` must not get
             # a synthesized api_key — the runtime resolves key_env directly and

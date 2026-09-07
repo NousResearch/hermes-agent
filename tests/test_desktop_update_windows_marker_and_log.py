@@ -86,7 +86,9 @@ def test_marker_self_test_adopts_only_the_exact_desktop_claim(tmp_path: Path) ->
     marker.write_text(expected.replace(str(started_at), str(started_at - 1)), encoding="utf-8", newline="")
     refused = _run_marker_claim(install_root, desktop_pid, started_at)
 
-    assert refused.returncode == 8, refused.stdout + refused.stderr
+    # 9 = step 0 refused the claim and changed nothing; 8 is upstream's
+    # post-mutation "the updated runtime failed verification".
+    assert refused.returncode == 9, refused.stdout + refused.stderr
     assert marker.read_text(encoding="utf-8") == expected.replace(
         str(started_at), str(started_at - 1)
     )
@@ -203,7 +205,7 @@ def test_nonce_launch_fails_closed_when_the_ack_cannot_be_written(tmp_path: Path
 
     result = _run_full_handoff(tmp_path, "-HandoffNonce", NONCE)
 
-    assert result.returncode == 8, result.stdout + result.stderr
+    assert result.returncode == 9, result.stdout + result.stderr
     log = (tmp_path / "logs" / "desktop-update-handoff.log").read_text(encoding="utf-8")
     assert "could not acknowledge the hand-off" in log, log
     assert "sent no nonce" not in log, "a nonce WAS sent; this is not the legacy path"

@@ -80,7 +80,8 @@ function bucketStart(ts: number, { kind, step }: Unit): number {
   return Math.floor(d.getTime() / 1000)
 }
 
-const populatedStarts = (stamps: number[], u: Unit): number[] => [...new Set(stamps.map(t => bucketStart(t, u)))].sort((a, b) => a - b)
+const populatedStarts = (stamps: number[], u: Unit): number[] =>
+  [...new Set(stamps.map(t => bucketStart(t, u)))].sort((a, b) => a - b)
 
 // "Nice ticks" for time (à la D3/Heckbert): aim for a target ring count that
 // grows ~log2 with the span, then snap to the calendar interval whose POPULATED
@@ -118,7 +119,9 @@ function bucketLabel(ts: number, { kind, step }: Unit): string {
   try {
     const d = new Date(ts * 1000)
 
-    return step >= 12 ? String(d.getUTCFullYear()) : d.toLocaleDateString(undefined, { month: 'short', timeZone: 'UTC', year: 'numeric' })
+    return step >= 12
+      ? String(d.getUTCFullYear())
+      : d.toLocaleDateString(undefined, { month: 'short', timeZone: 'UTC', year: 'numeric' })
   } catch {
     return formatDate(ts)
   }
@@ -138,7 +141,10 @@ interface Layout {
 // or one instant): keep the legacy continuous mapping so nothing regresses.
 function evenLayout(recById: Map<string, number>, minTs: null | number, maxTs: null | number, timed: boolean): Layout {
   const rings: Ring[] = Array.from({ length: RING_STEPS + 1 }, (_, i) => ({
-    label: timed && minTs !== null && maxTs !== null ? formatDate(Math.round(minTs + (maxTs - minTs) * (i / RING_STEPS))) : null,
+    label:
+      timed && minTs !== null && maxTs !== null
+        ? formatDate(Math.round(minTs + (maxTs - minTs) * (i / RING_STEPS)))
+        : null,
     r: ringRadius(i),
     ratio: recForRatio(i / RING_STEPS)
   }))
@@ -163,7 +169,13 @@ function evenLayout(recById: Map<string, number>, minTs: null | number, maxTs: n
 
 // One equal-width ring per POPULATED calendar bucket; a bucket's nodes fill the
 // band INSIDE their ring (fanned by angle) and ignite staggered across it.
-function buildLayout(graph: StarmapGraph, recById: Map<string, number>, minTs: null | number, maxTs: null | number, timed: boolean): Layout {
+function buildLayout(
+  graph: StarmapGraph,
+  recById: Map<string, number>,
+  minTs: null | number,
+  maxTs: null | number,
+  timed: boolean
+): Layout {
   const stamps = graph.nodes.map(n => Number(n.timestamp)).filter(Number.isFinite)
 
   if (!(timed && minTs !== null && maxTs !== null && maxTs > minTs && stamps.length)) {
@@ -184,7 +196,12 @@ function buildLayout(graph: StarmapGraph, recById: Map<string, number>, minTs: n
   // decouples a ring's ignite moment from its position — a bursty gap makes a
   // ring appear bands ahead of the nodes that belong to it. Labels stay real dates.
   const last = Math.max(1, starts.length - 1)
-  const rings: Ring[] = starts.map((s, i) => ({ label: bucketLabel(s, unit), r: ringRadius(i), ratio: recForRatio(i / last) }))
+
+  const rings: Ring[] = starts.map((s, i) => ({
+    label: bucketLabel(s, unit),
+    r: ringRadius(i),
+    ratio: recForRatio(i / last)
+  }))
 
   // A node's bucket is its ring; undated nodes (rare, in an otherwise-timed
   // graph) fall to the newest ring so they still appear.

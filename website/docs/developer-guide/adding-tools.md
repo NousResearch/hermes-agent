@@ -14,7 +14,7 @@ If you want a personal, project-local, or otherwise custom tool without
 modifying Hermes core, use the plugin route instead:
 
 - [Plugins](/user-guide/features/plugins)
-- [Build a Hermes Plugin](/guides/build-a-hermes-plugin)
+- [Build a Hermes Plugin](/developer-guide/plugins)
 
 Default to plugins for most custom tool creation. Only follow this page when
 you explicitly want to ship a new built-in tool in `tools/` and `toolsets.py`.
@@ -181,7 +181,7 @@ registry.register(
 
 ## Agent-Loop Intercepted Tools
 
-Some tools (`todo`, `memory`, `session_search`, `delegate_task`) need access to per-session agent state. These are intercepted by `run_agent.py` before reaching the registry. The registry still holds their schemas, but `dispatch()` returns a fallback error if the intercept is bypassed.
+Some tools (`todo`, `memory`, `session_search`, `delegate_task`) need access to per-session agent state. These are intercepted by the agent loop (`agent/tool_executor.py`, called from `agent/conversation_loop.py`) before reaching the registry. The registry still holds their schemas, but `dispatch()` returns a fallback error if the intercept is bypassed.
 
 ## Optional: Setup Wizard Integration
 

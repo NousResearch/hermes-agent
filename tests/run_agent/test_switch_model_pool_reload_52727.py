@@ -213,6 +213,7 @@ class TestSwitchModelReloadsCredentialPool:
             )
 
         # The switch itself completed (provider/model updated) even though
-        # the pool reload failed.
+        # the pool reload failed, without retaining the old provider's pool.
         assert agent.provider == "groq"
         assert agent.model == "llama-3.3-70b"
+        assert agent._credential_pool is None

@@ -1,3 +1,4 @@
+import { fmtDate } from '@/lib/time'
 import type { StarmapNode } from '@/types/hermes'
 
 export function formatDate(ts?: null | number): string {
@@ -6,7 +7,7 @@ export function formatDate(ts?: null | number): string {
   }
 
   try {
-    return new Date(ts * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+    return fmtDate.format(new Date(ts * 1000))
   } catch {
     return 'unknown'
   }

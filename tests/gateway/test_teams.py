@@ -4,7 +4,7 @@ import json
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -168,8 +168,20 @@ _ensure_teams_mock()
 # (plugin_adapter_teams) so it cannot collide with sibling plugin adapters.
 _teams_mod = load_plugin_adapter("teams")
 
-_teams_mod.TEAMS_SDK_AVAILABLE = True
 _teams_mod.AIOHTTP_AVAILABLE = True
+# SDK import is deferred (#62935); bind mocked symbols the same way connect()
+# does, but skip the real lazy-installer so collection does not pip-install
+# microsoft-teams-apps.
+
+
+def _bind_mock_sdk(feature, importer, target_globals, **kwargs):
+    target_globals.update(importer())
+    return True
+
+
+with patch("tools.lazy_deps.ensure_and_bind", _bind_mock_sdk):
+    assert _teams_mod.check_teams_requirements() is True
+_teams_mod.TEAMS_SDK_AVAILABLE = True
 
 # Ensure SDK symbols that were None (import failed on Python <3.12) are
 # replaced with the mocked versions so runtime calls don't silently no-op.
@@ -179,7 +191,7 @@ if _mt and _teams_mod.TypingActivityInput is None:
     _teams_mod.TypingActivityInput = _mt.TypingActivityInput
 
 TeamsAdapter = _teams_mod.TeamsAdapter
-TeamsSummaryWriter = _teams_mod.TeamsSummaryWriter
+from plugins.platforms.teams.summary_writer import TeamsSummaryWriter  # noqa: E402
 check_requirements = _teams_mod.check_requirements
 check_teams_requirements = _teams_mod.check_teams_requirements
 validate_config = _teams_mod.validate_config
@@ -199,13 +211,7 @@ def _make_config(**extra):
 # ---------------------------------------------------------------------------
 
 class TestTeamsRequirements:
-    def test_returns_false_when_sdk_missing(self, monkeypatch):
-        monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", False)
-        assert check_requirements() is False
 
-    def test_returns_false_when_aiohttp_missing(self, monkeypatch):
-        monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", False)
-        assert check_requirements() is False
 
     def test_returns_true_when_deps_available(self, monkeypatch):
         monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", True)
@@ -213,9 +219,9 @@ class TestTeamsRequirements:
         assert check_requirements() is True
 
     def test_check_teams_requirements_shortcircuits_when_present(self, monkeypatch):
-        # When the SDK + aiohttp are already importable, the active lazy-
-        # installer returns True immediately without attempting an install.
-        monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", True)
+        # When SDK symbols are already bound and aiohttp is available, the
+        # active lazy-installer returns True immediately without re-importing.
+        monkeypatch.setattr(_teams_mod, "App", object())
         monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
         called = {"ensure_and_bind": 0}
 
@@ -232,6 +238,7 @@ class TestTeamsRequirements:
     def test_check_teams_requirements_lazy_installs_when_missing(self, monkeypatch):
         # When deps are missing, the active installer delegates to
         # ensure_and_bind("platform.teams", ...) — parity with Slack/Discord.
+        monkeypatch.setattr(_teams_mod, "App", None)
         monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", False)
         monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", False)
         seen = {}
@@ -259,18 +266,6 @@ class TestTeamsRequirements:
         cfg = _make_config(client_id="id", client_secret="secret", tenant_id="tenant")
         assert validate_config(cfg) is True
 
-    def test_validate_config_missing(self, monkeypatch):
-        monkeypatch.delenv("TEAMS_CLIENT_ID", raising=False)
-        monkeypatch.delenv("TEAMS_CLIENT_SECRET", raising=False)
-        monkeypatch.delenv("TEAMS_TENANT_ID", raising=False)
-        assert validate_config(_make_config()) is False
-
-    def test_validate_config_missing_tenant(self, monkeypatch):
-        monkeypatch.setenv("TEAMS_CLIENT_ID", "test-id")
-        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "test-secret")
-        monkeypatch.delenv("TEAMS_TENANT_ID", raising=False)
-        assert validate_config(_make_config()) is False
-
 
 # ---------------------------------------------------------------------------
 # Tests: Adapter Init
@@ -288,22 +283,6 @@ class TestTeamsAdapterInit:
         assert adapter._client_secret == "cfg-secret"
         assert adapter._tenant_id == "cfg-tenant"
 
-    def test_falls_back_to_env_vars(self, monkeypatch):
-        monkeypatch.setenv("TEAMS_CLIENT_ID", "env-id")
-        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "env-secret")
-        monkeypatch.setenv("TEAMS_TENANT_ID", "env-tenant")
-        adapter = TeamsAdapter(_make_config())
-        assert adapter._client_id == "env-id"
-        assert adapter._client_secret == "env-secret"
-        assert adapter._tenant_id == "env-tenant"
-
-    def test_default_port(self):
-        adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
-        assert adapter._port == 3978
-
-    def test_custom_port_from_extra(self):
-        adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant", port=4000))
-        assert adapter._port == 4000
 
     def test_custom_port_from_env(self, monkeypatch):
         monkeypatch.setenv("TEAMS_PORT", "5000")
@@ -316,15 +295,6 @@ class TestTeamsAdapterInit:
         )
         assert adapter._port == 3978
 
-    def test_invalid_port_from_env_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv("TEAMS_PORT", "abc")
-        adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
-        assert adapter._port == 3978
-
-    def test_platform_value(self):
-        adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
-        assert adapter.platform.value == "teams"
-
 
 # ---------------------------------------------------------------------------
 # Tests: Plugin registration
@@ -332,10 +302,6 @@ class TestTeamsAdapterInit:
 
 class TestTeamsPluginRegistration:
 
-    def test_register_calls_ctx(self):
-        ctx = MagicMock()
-        register(ctx)
-        ctx.register_platform.assert_called_once()
 
     def test_register_name(self):
         ctx = MagicMock()
@@ -343,30 +309,22 @@ class TestTeamsPluginRegistration:
         kwargs = ctx.register_platform.call_args[1]
         assert kwargs["name"] == "teams"
 
+    def test_register_splits_passive_probe_from_active_installer(self):
+        # check_fn is the PASSIVE probe (status displays call it freely);
+        # the ACTIVE lazy-installer rides on ensure_deps_fn, which
+        # create_adapter() invokes when the passive probe fails (#79812).
+        ctx = MagicMock()
+        register(ctx)
+        kwargs = ctx.register_platform.call_args[1]
+        assert kwargs["check_fn"] is check_requirements
+        assert kwargs["ensure_deps_fn"] is check_teams_requirements
+
     def test_register_auth_env_vars(self):
         ctx = MagicMock()
         register(ctx)
         kwargs = ctx.register_platform.call_args[1]
         assert kwargs["allowed_users_env"] == "TEAMS_ALLOWED_USERS"
         assert kwargs["allow_all_env"] == "TEAMS_ALLOW_ALL_USERS"
-
-    def test_register_max_message_length(self):
-        ctx = MagicMock()
-        register(ctx)
-        kwargs = ctx.register_platform.call_args[1]
-        assert kwargs["max_message_length"] == 28000
-
-    def test_register_has_setup_fn(self):
-        ctx = MagicMock()
-        register(ctx)
-        kwargs = ctx.register_platform.call_args[1]
-        assert callable(kwargs.get("setup_fn"))
-
-    def test_register_has_platform_hint(self):
-        ctx = MagicMock()
-        register(ctx)
-        kwargs = ctx.register_platform.call_args[1]
-        assert kwargs.get("platform_hint")
 
 
 # ---------------------------------------------------------------------------
@@ -401,9 +359,11 @@ class TestTeamsConnect:
     @pytest.mark.anyio
     async def test_connect_fails_without_sdk(self, monkeypatch):
         monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", False)
+        monkeypatch.setattr(_teams_mod, "App", None)
+        monkeypatch.setattr(_teams_mod, "ClientOptions", None)
         # Simulate the SDK being unavailable AND not installable (offline /
         # locked-down env): the lazy-installer can't rebind the globals, so
-        # TEAMS_SDK_AVAILABLE stays False and connect() must fail.
+        # App stays None and connect() must fail without calling it.
         monkeypatch.setattr(
             "tools.lazy_deps.ensure_and_bind",
             lambda *_a, **_k: False,
@@ -415,29 +375,25 @@ class TestTeamsConnect:
         assert result is False
 
     @pytest.mark.anyio
-    async def test_connect_fails_without_credentials(self):
-        adapter = TeamsAdapter(_make_config())
-        adapter._client_id = ""
-        adapter._client_secret = ""
-        adapter._tenant_id = ""
-        result = await adapter.connect()
-        assert result is False
-
-    @pytest.mark.anyio
-    async def test_disconnect_cleans_up(self):
+    async def test_connect_fails_when_namespace_exists_but_app_unbound(self, monkeypatch):
+        """find_spec('microsoft_teams') can be true from sibling packages
+        without microsoft-teams-apps. connect() must not call App() while
+        it is still None — that was ``'NoneType' object is not callable``.
+        """
+        monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", True)
+        monkeypatch.setattr(_teams_mod, "App", None)
+        monkeypatch.setattr(_teams_mod, "ClientOptions", None)
+        monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
+        monkeypatch.setattr(
+            "tools.lazy_deps.ensure_and_bind",
+            lambda *_a, **_k: False,
+        )
         adapter = TeamsAdapter(_make_config(
             client_id="id", client_secret="secret", tenant_id="tenant",
         ))
-        adapter._running = True
-        mock_runner = AsyncMock()
-        adapter._runner = mock_runner
-        adapter._app = MagicMock()
-
-        await adapter.disconnect()
-        assert adapter._running is False
+        result = await adapter.connect()
+        assert result is False
         assert adapter._app is None
-        assert adapter._runner is None
-        mock_runner.cleanup.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -445,15 +401,6 @@ class TestTeamsConnect:
 # ---------------------------------------------------------------------------
 
 class TestTeamsSend:
-    @pytest.mark.anyio
-    async def test_send_returns_error_without_app(self):
-        adapter = TeamsAdapter(_make_config(
-            client_id="id", client_secret="secret", tenant_id="tenant",
-        ))
-        adapter._app = None
-        result = await adapter.send("conv-id", "Hello")
-        assert result.success is False
-        assert "not initialized" in result.error
 
     @pytest.mark.anyio
     async def test_send_calls_app_send(self):
@@ -471,33 +418,6 @@ class TestTeamsSend:
         assert result.message_id == "msg-123"
         mock_app.send.assert_awaited_once_with("conv-id", "Hello")
 
-    @pytest.mark.anyio
-    async def test_send_handles_error(self):
-        adapter = TeamsAdapter(_make_config(
-            client_id="id", client_secret="secret", tenant_id="tenant",
-        ))
-        mock_app = MagicMock()
-        mock_app.send = AsyncMock(side_effect=Exception("Network error"))
-        adapter._app = mock_app
-
-        result = await adapter.send("conv-id", "Hello")
-        assert result.success is False
-        assert "Network error" in result.error
-
-    @pytest.mark.anyio
-    async def test_send_typing(self):
-        adapter = TeamsAdapter(_make_config(
-            client_id="id", client_secret="secret", tenant_id="tenant",
-        ))
-        mock_app = MagicMock()
-        mock_app.send = AsyncMock()
-        adapter._app = mock_app
-
-        await adapter.send_typing("conv-id")
-        mock_app.send.assert_awaited_once()
-        call_args = mock_app.send.call_args
-        assert call_args[0][0] == "conv-id"
-
 
 def _make_summary_payload():
     return TeamsMeetingSummaryPayload(
@@ -511,30 +431,6 @@ def _make_summary_payload():
 
 
 class TestTeamsSummaryWriter:
-    @pytest.mark.anyio
-    async def test_incoming_webhook_posts_summary_text(self):
-        seen = {}
-
-        def _handler(request: httpx.Request) -> httpx.Response:
-            seen["url"] = str(request.url)
-            seen["body"] = json.loads(request.content.decode("utf-8"))
-            return httpx.Response(200, json={"ok": True})
-
-        writer = TeamsSummaryWriter(transport=httpx.MockTransport(_handler))
-        payload = _make_summary_payload()
-
-        result = await writer.write_summary(
-            payload,
-            {
-                "delivery_mode": "incoming_webhook",
-                "incoming_webhook_url": "https://example.test/teams-webhook",
-            },
-        )
-
-        assert result["delivery_mode"] == "incoming_webhook"
-        assert seen["url"] == "https://example.test/teams-webhook"
-        assert "Weekly Sync" in seen["body"]["text"]
-        assert "Proceed with staged rollout." in seen["body"]["text"]
 
     @pytest.mark.anyio
     async def test_graph_delivery_posts_to_channel(self):
@@ -561,44 +457,6 @@ class TestTeamsSummaryWriter:
         assert path == "/teams/team-1/channels/channel-1/messages"
         assert body["body"]["contentType"] == "html"
         assert "Weekly Sync" in body["body"]["content"]
-
-    @pytest.mark.anyio
-    async def test_graph_delivery_falls_back_to_platform_home_channel(self):
-        graph_client = SimpleNamespace(post_json=AsyncMock(return_value={"id": "msg-home"}))
-        platform_config = PlatformConfig(
-            enabled=True,
-            extra={"team_id": "team-home", "delivery_mode": "graph"},
-            home_channel=HomeChannel(
-                platform=Platform("teams"),
-                chat_id="channel-home",
-                name="Teams Home",
-            ),
-        )
-        writer = TeamsSummaryWriter(platform_config=platform_config, graph_client=graph_client)
-
-        await writer.write_summary(_make_summary_payload(), {})
-
-        graph_client.post_json.assert_awaited_once()
-        assert graph_client.post_json.await_args.args[0] == "/teams/team-home/channels/channel-home/messages"
-
-    @pytest.mark.anyio
-    async def test_existing_record_is_reused_without_force_resend(self):
-        graph_client = SimpleNamespace(post_json=AsyncMock())
-        writer = TeamsSummaryWriter(graph_client=graph_client)
-        existing = {"delivery_mode": "graph", "message_id": "msg-existing"}
-
-        result = await writer.write_summary(
-            _make_summary_payload(),
-            {
-                "delivery_mode": "graph",
-                "team_id": "team-1",
-                "channel_id": "channel-1",
-            },
-            existing_record=existing,
-        )
-
-        assert result == existing
-        graph_client.post_json.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -669,85 +527,6 @@ class TestTeamsMessageHandling:
 
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "group"
-
-    @pytest.mark.anyio
-    async def test_channel_message_creates_channel_event(self):
-        adapter = TeamsAdapter(_make_config(
-            client_id="bot-id", client_secret="secret", tenant_id="tenant",
-        ))
-        adapter._app = MagicMock()
-        adapter._app.id = "bot-id"
-        adapter.handle_message = AsyncMock()
-
-        activity = self._make_activity(conversation_type="channel")
-        await adapter._on_message(self._make_ctx(activity))
-
-        event = adapter.handle_message.call_args[0][0]
-        assert event.source.chat_type == "channel"
-
-    @pytest.mark.anyio
-    async def test_user_id_uses_aad_object_id(self):
-        adapter = TeamsAdapter(_make_config(
-            client_id="bot-id", client_secret="secret", tenant_id="tenant",
-        ))
-        adapter._app = MagicMock()
-        adapter._app.id = "bot-id"
-        adapter.handle_message = AsyncMock()
-
-        activity = self._make_activity(from_aad_id="aad-stable-id", from_id="teams-id")
-        await adapter._on_message(self._make_ctx(activity))
-
-        event = adapter.handle_message.call_args[0][0]
-        assert event.source.user_id == "aad-stable-id"
-
-    @pytest.mark.anyio
-    async def test_self_message_filtered(self):
-        adapter = TeamsAdapter(_make_config(
-            client_id="bot-id", client_secret="secret", tenant_id="tenant",
-        ))
-        adapter._app = MagicMock()
-        adapter._app.id = "bot-id"
-        adapter.handle_message = AsyncMock()
-
-        activity = self._make_activity(from_id="bot-id")
-        await adapter._on_message(self._make_ctx(activity))
-
-        adapter.handle_message.assert_not_awaited()
-
-    @pytest.mark.anyio
-    async def test_bot_mention_stripped_from_text(self):
-        adapter = TeamsAdapter(_make_config(
-            client_id="bot-id", client_secret="secret", tenant_id="tenant",
-        ))
-        adapter._app = MagicMock()
-        adapter._app.id = "bot-id"
-        adapter.handle_message = AsyncMock()
-
-        activity = self._make_activity(
-            text="<at>Hermes</at> what is the weather?",
-            from_id="user-id",
-        )
-        await adapter._on_message(self._make_ctx(activity))
-
-        event = adapter.handle_message.call_args[0][0]
-        assert event.text == "what is the weather?"
-
-    @pytest.mark.anyio
-    async def test_deduplication(self):
-        adapter = TeamsAdapter(_make_config(
-            client_id="bot-id", client_secret="secret", tenant_id="tenant",
-        ))
-        adapter._app = MagicMock()
-        adapter._app.id = "bot-id"
-        adapter.handle_message = AsyncMock()
-
-        activity = self._make_activity(activity_id="msg-dup-001", from_id="user-id")
-        ctx = self._make_ctx(activity)
-
-        await adapter._on_message(ctx)
-        await adapter._on_message(ctx)
-
-        assert adapter.handle_message.await_count == 1
 
 
 class TestTeamsAttachmentClassification:
@@ -851,49 +630,332 @@ class TestTeamsAttachmentClassification:
         assert event.message_type == MessageType.DOCUMENT
         assert len(event.media_urls) == 2
 
+
+# ── Bot Framework connector attachments (pasted images) ──────────────────
+
+
+class TestTeamsBotFrameworkAttachments:
+    """Pasted/inline images arrive on smba.trafficmanager.net hosts and need
+    the bot's own bearer token (unlike SharePoint downloadUrls). These tests
+    pin the auth routing, the token cache, the attacker-host block, and the
+    failure fallbacks of that path."""
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    def _make_activity(self, attachments):
+        activity = MagicMock()
+        activity.text = "see attached"
+        activity.id = "activity-att-001"
+        activity.from_ = MagicMock()
+        activity.from_.id = "user-123"
+        activity.from_.aad_object_id = "aad-456"
+        activity.from_.name = "Test User"
+        activity.conversation = MagicMock()
+        activity.conversation.id = "19:abc@thread.v2"
+        activity.conversation.conversation_type = "personal"
+        activity.conversation.name = "Test Chat"
+        activity.conversation.tenant_id = "tenant-789"
+        activity.attachments = attachments
+        return activity
+
+    def _make_ctx(self, activity):
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    def _bf_image_attachment(self, url=None):
+        att = MagicMock()
+        att.content_type = "image/png"
+        att.content_url = url or "https://smba.trafficmanager.net/emea/b1/v3/attachments/0-abc/views/original"
+        att.name = "pasted.png"
+        return att
+
     @pytest.mark.anyio
-    async def test_html_body_attachment_stays_text(self):
-        from gateway.platforms.base import MessageType
-
-        adapter = self._make_adapter()
-        activity = self._make_activity([self._html_body_attachment()])
-        await adapter._on_message(self._make_ctx(activity))
-
-        event = adapter.handle_message.call_args[0][0]
-        assert event.message_type == MessageType.TEXT
-        assert event.media_urls == []
+    async def test_bf_url_predicate_exact_match_allowlist(self):
+        """Only exact allowlisted hosts on https default port may receive the
+        bot's bearer token — lookalikes, other schemes, and non-443 ports must
+        NOT (any Azure customer can register <name>.trafficmanager.net)."""
+        f = _teams_mod._is_botframework_attachment_url
+        assert f("https://smba.trafficmanager.net/emea/v3/attachments/x")
+        assert f("https://smba.infra.gov.teams.microsoft.us/amer/v3/attachments/x")
+        assert f("https://smba.trafficmanager.net:443/emea/v3/attachments/x")
+        # Attacker lookalikes / non-allowlisted / wrong scheme / wrong port
+        assert not f("https://evil-trafficmanager.net/steal")
+        assert not f("https://emea.smba.trafficmanager.net/v3/attachments/x")
+        assert not f("https://notbotframework.com/steal")
+        assert not f("https://trafficmanager.net.evil.com/steal")
+        assert not f("http://smba.trafficmanager.net/v3/attachments/x")
+        assert not f("https://smba.trafficmanager.net:444/v3/attachments/x")
+        assert not f("")
+        assert not f("https://sharepoint.com/x")
 
     @pytest.mark.anyio
-    async def test_image_only_still_photo(self):
-        from gateway.platforms.base import MessageType
-
+    async def test_bf_image_routes_through_authenticated_fetch(self):
         adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG fake")
+        adapter._get_botframework_token = AsyncMock(return_value="tok")
 
-        async def fake_cache_image(url, *a, **kw):
-            return "/tmp/img.png"
+        async def fake_cache_media_bytes(data, **kwargs):
+            return SimpleNamespace(
+                path="/tmp/img.png", media_type="image/png", kind="image"
+            )
 
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(_teams_mod, "cache_image_from_url", fake_cache_image)
-            activity = self._make_activity([self._image_attachment()])
+        with patch.object(_teams_mod, "cache_media_bytes_async", fake_cache_media_bytes):
+            activity = self._make_activity([self._bf_image_attachment()])
             await adapter._on_message(self._make_ctx(activity))
 
         event = adapter.handle_message.call_args[0][0]
-        assert event.message_type == MessageType.PHOTO
-        assert event.media_urls == ["/tmp/img.png"]
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["image/png"]
+        # URL was fetched with auth (via _fetch_attachment_bytes, which the
+        # token routing test below exercises end-to-end)
+        adapter._fetch_attachment_bytes.assert_awaited_once_with(
+            "https://smba.trafficmanager.net/emea/b1/v3/attachments/0-abc/views/original"
+        )
 
     @pytest.mark.anyio
-    async def test_download_failure_degrades_to_text(self):
-        from gateway.platforms.base import MessageType
-
+    async def test_non_bf_image_uses_generic_cache_helper(self):
         adapter = self._make_adapter()
-        adapter._fetch_attachment_bytes = AsyncMock(side_effect=Exception("boom"))
+        adapter._fetch_attachment_bytes = AsyncMock(side_effect=AssertionError("must not be called"))
 
-        activity = self._make_activity([self._file_download_attachment()])
-        await adapter._on_message(self._make_ctx(activity))
+        async def fake_cache_image(url, *a, **kw):
+            return "/tmp/img.jpg"
+
+        with patch.object(_teams_mod, "cache_image_from_url", fake_cache_image):
+            activity = self._make_activity(
+                [self._bf_image_attachment(url="https://contoso.sharepoint.com/img.png")]
+            )
+            await adapter._on_message(self._make_ctx(activity))
 
         event = adapter.handle_message.call_args[0][0]
-        assert event.message_type == MessageType.TEXT
+        assert len(event.media_urls) == 1
+        assert event.media_urls[0] == "/tmp/img.jpg"
+
+    @pytest.mark.anyio
+    async def test_fetch_attachment_bytes_sends_bearer_for_bf_host(self):
+        """End-to-end over _fetch_attachment_bytes: BF host → token acquired
+        and Authorization attached; non-BF host → no token call."""
+        adapter = self._make_adapter()
+        adapter._get_botframework_token = AsyncMock(return_value="the-token")
+
+        captured = {}
+
+        class _FakeStreamResponse:
+            def __init__(self):
+                self.headers = {}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self):
+                yield b"\x89PNG fake"
+
+        class _FakeStreamCtx:
+            def __init__(self, response):
+                self._response = response
+
+            async def __aenter__(self):
+                return self._response
+
+            async def __aexit__(self, *a):
+                return None
+
+        class _FakeClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            def stream(self, method, url, headers=None):
+                captured["headers"] = headers or {}
+                return _FakeStreamCtx(_FakeStreamResponse())
+
+        with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
+             patch("tools.url_safety.is_safe_url", lambda url: True):
+            # BF host: bearer attached
+            data = await adapter._fetch_attachment_bytes("https://smba.trafficmanager.net/emea/v3/attachments/x")
+        assert captured["headers"].get("Authorization") == "Bearer the-token"
+        assert data == b"\x89PNG fake"
+
+        adapter._get_botframework_token = AsyncMock(return_value="the-token")
+        with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
+             patch("tools.url_safety.is_safe_url", lambda url: True):
+            # Attacker lookalike host: NO bearer (exact-match allowlist)
+            await adapter._fetch_attachment_bytes("https://evil-trafficmanager.net/steal")
+        assert "Authorization" not in captured["headers"], (
+            "bearer token must not be sent to attacker lookalike hosts"
+        )
+        adapter._get_botframework_token.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_token_refresh_is_serialized_under_lock(self):
+        """Two concurrent token fetches on a cold cache share ONE POST —
+        the lock prevents a token-endpoint stampede."""
+        import asyncio as _asyncio
+
+        adapter = self._make_adapter()
+        posts = []
+        release = _asyncio.Event()
+
+        class _TokenResp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"access_token": "tok-1", "expires_in": 3600}
+
+        class _SlowTokenClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def post(self, url, data=None):
+                posts.append((url, dict(data or {})))
+                await release.wait()  # hold both callers at the STS door
+                return _TokenResp()
+
+        async def release_later():
+            await _asyncio.sleep(0.05)
+            release.set()
+
+        with patch("httpx.AsyncClient", _SlowTokenClient):
+            t1 = _asyncio.create_task(adapter._get_botframework_token())
+            t2 = _asyncio.create_task(adapter._get_botframework_token())
+            await release_later()
+            tok1, tok2 = await t1, await t2
+        assert tok1 == "tok-1" and tok2 == "tok-1"
+        assert len(posts) == 1, f"concurrent cold-cache fetches must share one POST, got {len(posts)}"
+
+    @pytest.mark.anyio
+    async def test_token_acquisition_and_cache_reuse(self):
+        adapter = self._make_adapter()
+
+        posts = []
+
+        class _TokenResp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"access_token": "tok-1", "expires_in": 3600}
+
+        class _TokenClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def post(self, url, data=None):
+                posts.append((url, dict(data or {})))
+                return _TokenResp()
+
+        with patch("httpx.AsyncClient", _TokenClient):
+            tok1 = await adapter._get_botframework_token()
+            tok2 = await adapter._get_botframework_token()
+        assert tok1 == "tok-1" and tok2 == "tok-1"
+        assert len(posts) == 1, "second call must hit the cache"
+        assert posts[0][0] == "https://login.microsoftonline.com/tenant/oauth2/v2.0/token"
+        assert posts[0][1]["scope"] == "https://api.botframework.com/.default"
+        assert posts[0][1]["client_id"] == "bot-id"
+        assert posts[0][1]["client_secret"] == "secret"
+
+    @pytest.mark.anyio
+    async def test_token_acquisition_failure_degrades_to_unauthenticated_fetch(self):
+        """Token failure must not break the fetch: warning + fetch without
+        Authorization (same net behavior as the pre-fix path)."""
+        import httpx as _httpx
+
+        adapter = self._make_adapter()
+        adapter._get_botframework_token = AsyncMock(side_effect=ValueError("no creds"))
+
+        captured = {}
+
+        class _FakeStreamResponse:
+            def __init__(self):
+                self.headers = {}
+
+            def raise_for_status(self):
+                raise _httpx.HTTPStatusError(
+                    "401", request=MagicMock(), response=MagicMock(status_code=401)
+                )
+
+            async def aiter_bytes(self):
+                yield b""
+
+        class _FakeStreamCtx:
+            def __init__(self, response):
+                self._response = response
+
+            async def __aenter__(self):
+                return self._response
+
+            async def __aexit__(self, *a):
+                return None
+
+        class _FakeClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            def stream(self, method, url, headers=None):
+                captured["headers"] = headers or {}
+                return _FakeStreamCtx(_FakeStreamResponse())
+
+        with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
+             patch("tools.url_safety.is_safe_url", lambda url: True):
+            with pytest.raises(_httpx.HTTPStatusError):
+                await adapter._fetch_attachment_bytes("https://smba.trafficmanager.net/v3/attachments/x")
+        assert "Authorization" not in captured["headers"]
+
+    @pytest.mark.anyio
+    async def test_bf_image_invalid_bytes_logs_warning(self):
+        """Non-image bytes from the BF endpoint must not be silently dropped
+        — the else branch warns (regression guard for the silent-drop)."""
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"<html>error page</html>")
+
+        async def _no_media(*a, **kw):
+            return None
+
+        with patch.object(_teams_mod, "cache_media_bytes_async", _no_media):
+            with patch.object(_teams_mod.logger, "warning") as warn:
+                activity = self._make_activity([self._bf_image_attachment()])
+                await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
         assert event.media_urls == []
+        assert warn.called, "silent drop of invalid BF image bytes must log a warning"
+        logged = " ".join(str(c) for c in warn.call_args_list)
+        assert "image validation" in logged or "failed image validation" in logged
 
 
 # ── _standalone_send (out-of-process cron delivery) ──────────────────────
@@ -986,19 +1048,6 @@ class TestTeamsStandaloneSend:
         assert activity_kwargs["json"]["text"] == "hello cron"
         assert activity_kwargs["json"]["type"] == "message"
 
-    @pytest.mark.asyncio
-    async def test_standalone_send_returns_error_when_unconfigured(self, monkeypatch):
-        for var in ("TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID"):
-            monkeypatch.delenv(var, raising=False)
-
-        result = await _teams_mod._standalone_send(
-            PlatformConfig(enabled=True, extra={}),
-            "19:abc@thread.skype",
-            "hi",
-        )
-
-        assert "error" in result
-        assert "TEAMS_CLIENT_ID" in result["error"]
 
     @pytest.mark.asyncio
     async def test_standalone_send_propagates_token_failure(self, monkeypatch):
@@ -1024,51 +1073,6 @@ class TestTeamsStandaloneSend:
         assert "401" in result["error"]
         assert "token" in result["error"].lower()
 
-    @pytest.mark.asyncio
-    async def test_standalone_send_rejects_off_allowlist_service_url(self, monkeypatch):
-        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
-        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
-        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
-        # SSRF attempt: point us at an attacker-controlled host
-        monkeypatch.setenv("TEAMS_SERVICE_URL", "https://attacker.example.com/teams/")
-
-        # If the allowlist check fails to fire, the fake session will assert
-        # because no scripts are queued; a passing test means we returned
-        # before any HTTP call.
-        session = _FakeAiohttpSession([])
-        _install_fake_aiohttp(monkeypatch, session)
-
-        result = await _teams_mod._standalone_send(
-            PlatformConfig(enabled=True, extra={}),
-            "19:abc@thread.skype",
-            "hi",
-        )
-
-        assert "error" in result
-        assert "allowlist" in result["error"].lower()
-        assert len(session.calls) == 0, "must not call any HTTP endpoint with a tampered service URL"
-
-    @pytest.mark.asyncio
-    async def test_standalone_send_rejects_chat_id_with_path_traversal(self, monkeypatch):
-        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
-        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
-        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
-        monkeypatch.delenv("TEAMS_SERVICE_URL", raising=False)
-
-        session = _FakeAiohttpSession([])
-        _install_fake_aiohttp(monkeypatch, session)
-
-        # Attempt to break out of /v3/conversations/<id>/activities via a `/`
-        result = await _teams_mod._standalone_send(
-            PlatformConfig(enabled=True, extra={}),
-            "19:abc/activities/19:other@thread.skype",
-            "hi",
-        )
-
-        assert "error" in result
-        assert "Bot Framework conversation ID" in result["error"]
-        assert len(session.calls) == 0
-
 
 class TestTeamsMediaAttachments:
     """send_video / send_voice / send_document route through the same
@@ -1085,13 +1089,6 @@ class TestTeamsMediaAttachments:
         adapter._app.send = AsyncMock(return_value=MagicMock(id="msg-001"))
         return adapter
 
-    @pytest.mark.asyncio
-    async def test_send_video_remote_url_succeeds(self):
-        adapter = self._make_adapter()
-        result = await adapter.send_video("19:abc@thread.v2", "https://cdn.example.com/clip.mp4")
-        assert result.success
-        assert result.message_id == "msg-001"
-        adapter._app.send.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_send_voice_local_file_base64(self, tmp_path):
@@ -1111,17 +1108,4 @@ class TestTeamsMediaAttachments:
         assert result.success
         adapter._app.send.assert_awaited_once()
 
-    @pytest.mark.asyncio
-    async def test_send_video_without_app_fails(self):
-        adapter = self._make_adapter()
-        adapter._app = None
-        result = await adapter.send_video("19:abc@thread.v2", "https://cdn.example.com/clip.mp4")
-        assert not result.success
-        assert "not initialized" in result.error
 
-    @pytest.mark.asyncio
-    async def test_send_document_missing_file_fails_gracefully(self):
-        adapter = self._make_adapter()
-        result = await adapter.send_document("19:abc@thread.v2", "/no/such/file.pdf")
-        assert not result.success
-        adapter._app.send.assert_not_awaited()

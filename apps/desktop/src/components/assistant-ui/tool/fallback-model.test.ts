@@ -8,6 +8,7 @@ import {
   countDiffLineStats,
   inlineDiffFromResult,
   MAX_TOOL_RENDER_CHARS,
+  prettyJson,
   type ToolPart
 } from './fallback-model'
 
@@ -75,6 +76,76 @@ describe('buildToolView terminal exit-code status', () => {
       'error'
     )
   })
+
+  it('keeps the command and exit code for the terminal transcript', () => {
+    const view = buildToolView(
+      part({
+        args: { command: 'npm run check --workspace=apps/desktop' },
+        result: { exit_code: 0, output: 'done' },
+        toolName: 'terminal'
+      }),
+      ''
+    )
+
+    expect(view.terminalCommand).toBe('npm run check --workspace=apps/desktop')
+    expect(view.terminalExitCode).toBe(0)
+  })
+})
+
+describe('buildToolView browser_exec step label', () => {
+  const bexec = (code: string) =>
+    buildToolView(part({ args: { code }, result: undefined, toolName: 'browser_exec' }), '')
+
+  it('uses the leading # comment as the title', () => {
+    expect(bexec('# Searching Amazon for paper towels\nnew_tab("https://amazon.com")').title).toBe(
+      'Searching Amazon for paper towels'
+    )
+  })
+
+  it('falls back to the generic title when code has no leading comment', () => {
+    const view = bexec('new_tab("https://amazon.com")')
+
+    expect(view.title).not.toBe('')
+    expect(view.title).not.toContain('new_tab')
+  })
+
+  it('truncates long labels and keeps the ellipsis', () => {
+    const long = `# ${'x'.repeat(120)}`
+
+    expect(bexec(long).title.length).toBeLessThanOrEqual(80)
+    expect(bexec(long).title.endsWith('…')).toBe(true)
+  })
+
+  it('keeps the label after the result arrives', () => {
+    const view = buildToolView(
+      part({
+        args: { code: '# Checking workspace persistence\nprint(1)' },
+        result: { output: 'ok', success: true },
+        toolName: 'browser_exec'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('Checking workspace persistence')
+  })
+})
+
+describe('buildToolView web-search query', () => {
+  it('keeps the query separate from structured search results', () => {
+    const view = buildToolView(
+      part({
+        args: { query: 'Hermes Agent Desktop tool calls' },
+        result: { web: [{ snippet: 'Desktop docs', title: 'Hermes docs', url: 'https://example.com/docs' }] },
+        toolName: 'web_search'
+      }),
+      ''
+    )
+
+    expect(view.searchQuery).toBe('Hermes Agent Desktop tool calls')
+    expect(view.searchHits).toEqual([
+      { snippet: 'Desktop docs', title: 'Hermes docs', url: 'https://example.com/docs' }
+    ])
+  })
 })
 
 describe('buildToolView browser_navigate title', () => {
@@ -89,7 +160,7 @@ describe('buildToolView browser_navigate title', () => {
     )
 
     expect(view.status).toBe('error')
-    expect(view.title).toBe('Failed to open hermes-agent.nousresearch.com')
+    expect(view.title).toBe('Failed to open hermes-agent.nousresearch.com/docs')
   })
 
   it('shows opened title on success', () => {
@@ -103,7 +174,7 @@ describe('buildToolView browser_navigate title', () => {
     )
 
     expect(view.status).toBe('success')
-    expect(view.title).toBe('Opened hermes-agent.nousresearch.com')
+    expect(view.title).toBe('Opened hermes-agent.nousresearch.com/docs')
   })
 })
 
@@ -307,6 +378,28 @@ describe('buildToolView title actions', () => {
     expect(view.titleAction).toEqual({ prefix: '', text: 'Running', suffix: ' pnpm run lint' })
   })
 
+  it('never stutters the verb or echoes the command when the backend context is a phrased label', () => {
+    // Older backends stamped tool.start with a *phrased* label
+    // ("Running sleep 70 + 2 commands") rather than a raw arg preview, and the
+    // desktop merges that into args.context. The row must still prepend its own
+    // verb exactly once, show the real command in the `$` transcript, and not
+    // repeat either string as detail.
+    const command = 'sleep 70; echo "a"; echo "b"'
+
+    const view = buildToolView(
+      part({
+        args: { command, context: 'Running sleep 70 + 2 commands' },
+        result: { exit_code: 0 },
+        toolName: 'terminal'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('Ran sleep 70 + 2 commands')
+    expect(view.terminalCommand).toBe(command)
+    expect(view.detail).toBe('')
+  })
+
   it('uses the runtime locale for title text and action placement', () => {
     setRuntimeI18nLocale('ja')
 
@@ -342,20 +435,56 @@ describe('clampForDisplay', () => {
 })
 
 // A large tool result (e.g. a 100KB read_file during a `/learn` run) must not
-// be serialized into the rendered rawResult at full size — that JSON.stringify
-// payload is what floods the renderer when many rows stack up.
-describe('buildToolView caps serialized result size', () => {
-  it('clamps rawResult for an oversized result', () => {
+// be serialized at full size — that JSON.stringify payload is what floods the
+// renderer. buildToolView no longer prettyJson's every result eagerly; the
+// web_search drilldown serializes lazily via prettyJson, which clamps.
+describe('prettyJson caps serialized result size', () => {
+  it('clamps an oversized result', () => {
     const huge = 'y'.repeat(MAX_TOOL_RENDER_CHARS * 3)
-    const view = buildToolView(part({ result: { content: huge }, toolName: 'read_file' }), '')
+    const out = prettyJson({ content: huge })
 
-    expect(view.rawResult.length).toBeLessThanOrEqual(MAX_TOOL_RENDER_CHARS + 200)
-    expect(view.rawResult).toContain('truncated')
+    expect(out.length).toBeLessThanOrEqual(MAX_TOOL_RENDER_CHARS + 200)
+    expect(out).toContain('truncated')
   })
 })
 
 describe('countDiffLineStats', () => {
   it('counts added and removed lines', () => {
     expect(countDiffLineStats(`--- a/x\n+++ b/x\n@@\n-old\n+new\n context\n+another`)).toEqual({ added: 2, removed: 1 })
+  })
+})
+
+describe('buildToolView memory status', () => {
+  const memory = (overrides: Partial<Parameters<typeof part>[0]> = {}) =>
+    buildToolView(part({ toolName: 'memory', ...overrides }), '')
+
+  it('treats an explicit success payload as success even with isError', () => {
+    const view = memory({
+      isError: true,
+      result: {
+        success: true,
+        entry_count: 13,
+        message: 'Applied 1 operation(s).',
+        duration_s: 0.003
+      }
+    })
+
+    expect(view.status).toBe('success')
+    expect(view.title).toBe('Saved to memory')
+    expect(view.countLabel).toBe('13 entries')
+    expect(view.subtitle).toBe('Applied 1 operation(s).')
+  })
+
+  it('uses soft warning copy for over-budget refusals, not "Saved"', () => {
+    const view = memory({
+      result: {
+        success: false,
+        error: 'Memory is full (2,200/2,200). Consolidate before adding more.'
+      }
+    })
+
+    expect(view.status).toBe('warning')
+    expect(view.title).toBe('Memory write noted')
+    expect(view.subtitle).toContain('Memory is full')
   })
 })

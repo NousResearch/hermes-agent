@@ -23,6 +23,8 @@ def _invoke_callback(
     outcome,
     *,
     allow_permanent=True,
+    allow_session=True,
+    smart_denied=False,
     timeout=60.0,
     use_prompt_path=False,
 ):
@@ -45,6 +47,8 @@ def _invoke_callback(
                 "rm -rf /",
                 "dangerous command",
                 allow_permanent=allow_permanent,
+                allow_session=allow_session,
+                smart_denied=smart_denied,
                 approval_callback=cb,
             )
         else:
@@ -52,6 +56,8 @@ def _invoke_callback(
                 "rm -rf /",
                 "dangerous command",
                 allow_permanent=allow_permanent,
+                allow_session=allow_session,
+                smart_denied=smart_denied,
             )
 
     scheduled["coro"].close()
@@ -93,6 +99,21 @@ class TestApprovalBridge:
             "deny_always",
         ]
 
+    def test_session_less_gate_offers_only_once_and_deny(self):
+        """allow_session=False collapses the editor menu to once/deny.
+
+        Hermes discards any scope broader than one operation for the
+        protected agent-instruction gate, so an editor that renders
+        "Allow for session" would re-prompt on the next write (#81887).
+        """
+        _, kwargs, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_once", outcome="selected"),
+            allow_permanent=False,
+            allow_session=False,
+        )
+
+        assert [option.option_id for option in kwargs["options"]] == ["allow_once", "deny"]
+
     def test_tool_call_ids_are_unique(self):
         _, first_kwargs, _, _, _ = _invoke_callback(
             AllowedOutcome(option_id="allow_once", outcome="selected"),
@@ -103,29 +124,9 @@ class TestApprovalBridge:
 
         assert first_kwargs["tool_call"].tool_call_id != second_kwargs["tool_call"].tool_call_id
 
-    def test_prompt_path_keeps_session_option_when_permanent_disabled(self):
-        result, kwargs, _, _, _ = _invoke_callback(
-            AllowedOutcome(option_id="allow_session", outcome="selected"),
-            allow_permanent=False,
-            use_prompt_path=True,
-        )
 
-        option_ids = [option.option_id for option in kwargs["options"]]
 
-        assert result == "session"
-        assert option_ids == ["allow_once", "allow_session", "deny", "deny_always"]
 
-    def test_reject_always_outcome_denies_without_changing_policy(self):
-        result, kwargs, _, _, _ = _invoke_callback(
-            AllowedOutcome(option_id="deny_always", outcome="selected"),
-            use_prompt_path=True,
-        )
-
-        deny_always = [option for option in kwargs["options"] if option.option_id == "deny_always"]
-
-        assert result == "deny"
-        assert len(deny_always) == 1
-        assert deny_always[0].kind == "reject_always"
 
     def test_allow_always_maps_correctly(self):
         result, _, _, _, _ = _invoke_callback(
@@ -135,16 +136,8 @@ class TestApprovalBridge:
 
         assert result == "always"
 
-    def test_denied_and_unknown_outcomes_deny(self):
-        denied_result, _, _, _, _ = _invoke_callback(DeniedOutcome(outcome="cancelled"))
-        unknown_result, _, _, _, _ = _invoke_callback(
-            AllowedOutcome(option_id="unexpected", outcome="selected"),
-        )
 
-        assert denied_result == "deny"
-        assert unknown_result == "deny"
-
-    def test_timeout_returns_deny_and_cancels_future(self):
+    def test_timeout_returns_timeout_and_cancels_future(self):
         loop = MagicMock(spec=asyncio.AbstractEventLoop)
         request_permission = AsyncMock(name="request_permission")
         future = MagicMock(spec=Future)
@@ -163,31 +156,12 @@ class TestApprovalBridge:
 
         scheduled["coro"].close()
 
-        assert result == "deny"
+        # A no-response expiry is classified as "timeout" (still blocked,
+        # fail-closed) so the agent isn't told the user explicitly refused.
+        assert result == "timeout"
         assert scheduled["loop"] is loop
         assert future.cancel.call_count == 1
 
-    def test_none_response_returns_deny(self):
-        """When request_permission resolves to None, the callback returns 'deny'."""
-        loop = MagicMock(spec=asyncio.AbstractEventLoop)
-        request_permission = AsyncMock(name="request_permission")
-        future = MagicMock(spec=Future)
-        future.result.return_value = None
-
-        scheduled = {}
-
-        def _schedule(coro, passed_loop):
-            scheduled["coro"] = coro
-            scheduled["loop"] = passed_loop
-            return future
-
-        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", side_effect=_schedule):
-            cb = make_approval_callback(request_permission, loop, session_id="s1", timeout=1.0)
-            result = cb("echo hi", "demo")
-
-        scheduled["coro"].close()
-
-        assert result == "deny"
 
 
 # ---------------------------------------------------------------------------

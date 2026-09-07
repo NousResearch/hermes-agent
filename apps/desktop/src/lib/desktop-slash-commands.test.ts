@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  type CommandCatalogMeta,
+  type CommandsCatalogLike,
   desktopSkinSlashCompletions,
+  type DesktopSlashArgumentMode,
+  desktopSlashCommandArgumentMode,
   desktopSlashDescription,
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
@@ -9,10 +13,67 @@ import {
   isDesktopSlashSuggestion,
   isModelPickerCommand,
   isPickerCommand,
-  resolveDesktopCommand
+  rankSkillCommands,
+  rememberDesktopCommandsCatalog,
+  resolveDesktopCommand,
+  slashCompletionGroup
 } from './desktop-slash-commands'
 
+function registryCatalog(
+  modes: Record<string, DesktopSlashArgumentMode | null>,
+  aliases: Record<string, string> = {}
+): CommandsCatalogLike {
+  const commands: Record<string, CommandCatalogMeta> = {}
+  const canon: Record<string, string> = {}
+
+  for (const [name, argument_mode] of Object.entries(modes)) {
+    commands[name] = { argument_mode, desktop: null }
+    canon[name] = name
+  }
+
+  for (const [alias, target] of Object.entries(aliases)) {
+    commands[alias] = commands[target]
+    canon[alias] = target
+  }
+
+  return { commands, canon }
+}
+
+const REGISTRY_CATALOG = registryCatalog(
+  {
+    '/approvals': 'options',
+    '/review': 'text',
+    '/refine': 'text',
+    '/usage': null,
+    '/version': null,
+    '/agents': null,
+    '/steer': 'text',
+    '/stop': null,
+    '/bg': 'text',
+    '/btw': 'text',
+    '/debug': null,
+    '/goal': 'mixed',
+    '/personality': 'options',
+    '/queue': 'text',
+    '/retry': null,
+    '/rollback': null,
+    '/tools': 'options',
+    '/undo': null,
+    '/loop': 'mixed',
+    '/lcm': 'text'
+  },
+  { '/tasks': '/agents', '/background': '/bg', '/q': '/queue', '/proactive': '/loop' }
+)
+
 describe('desktop slash command curation', () => {
+  beforeEach(() => {
+    rememberDesktopCommandsCatalog(REGISTRY_CATALOG)
+  })
+
+  afterEach(() => {
+    rememberDesktopCommandsCatalog(undefined)
+  })
+
   it('keeps core desktop chat commands in suggestions', () => {
     expect(isDesktopSlashSuggestion('/new')).toBe(true)
     expect(isDesktopSlashSuggestion('/branch')).toBe(true)
@@ -21,6 +82,34 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/version')).toBe(true)
     expect(isDesktopSlashSuggestion('/yolo')).toBe(true)
     expect(isDesktopSlashCommand('/yolo')).toBe(true)
+    expect(isDesktopSlashSuggestion('/approvals')).toBe(true)
+    expect(isDesktopSlashCommand('/approvals')).toBe(true)
+    expect(resolveDesktopCommand('/approvals')?.surface).toEqual({ kind: 'exec' })
+    expect(isDesktopSlashSuggestion('/review')).toBe(true)
+    expect(isDesktopSlashCommand('/review')).toBe(true)
+    expect(resolveDesktopCommand('/review')?.surface).toEqual({ kind: 'exec' })
+    expect(resolveDesktopCommand('/review')?.argumentMode).toBe('text')
+  })
+
+  it('treats registry and plugin commands as exec when the catalog says so', () => {
+    expect(resolveDesktopCommand('/refine')?.argumentMode).toBe('text')
+    expect(isDesktopSlashSuggestion('/refine')).toBe(true)
+    expect(isDesktopSlashSuggestion('/background')).toBe(false)
+    expect(isDesktopSlashCommand('/bg')).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/bg')).toBe('text')
+    expect(isDesktopSlashCommand('/btw')).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/btw')).toBe('text')
+    expect(resolveDesktopCommand('/lcm')?.surface).toEqual({ kind: 'exec' })
+    expect(desktopSlashCommandArgumentMode('/lcm')).toBe('text')
+  })
+
+  it('groups complete.slash rows by backend kind, not the desktop table', () => {
+    // A registry command the table has never heard of is still a command.
+    expect(slashCompletionGroup('/refine', 'command')).toBe('Commands')
+    expect(slashCompletionGroup('/docx', 'skill')).toBe('Skills')
+    // Older backends omit kind — fall back to the table.
+    expect(slashCompletionGroup('/new')).toBe('Commands')
+    expect(slashCompletionGroup('/docx')).toBe('Skills')
   })
 
   it('surfaces skill and quick commands (extensions) in suggestions and lets them run', () => {
@@ -31,13 +120,33 @@ describe('desktop slash command curation', () => {
 
   it('hides terminal, messaging, and dedicated-UI commands from suggestions', () => {
     expect(isDesktopSlashSuggestion('/clear')).toBe(false)
-    expect(isDesktopSlashSuggestion('/compact')).toBe(false)
+    expect(isDesktopSlashSuggestion('/density')).toBe(false)
     expect(isDesktopSlashSuggestion('/redraw')).toBe(false)
     expect(isDesktopSlashSuggestion('/approve')).toBe(false)
     expect(isDesktopSlashSuggestion('/model')).toBe(false)
     expect(isDesktopSlashSuggestion('/skills')).toBe(false)
     expect(isDesktopSlashSuggestion('/voice')).toBe(false)
     expect(isDesktopSlashSuggestion('/curator')).toBe(false)
+  })
+
+  it('/voice points at the composer voice button instead of the generic advanced message', () => {
+    // /voice arms server-side capture — on the desktop the composer's own
+    // voice conversation (mic menu / Ctrl+B) is the surface. A user typing
+    // /voice must be told where the button IS, not shrugged at.
+    expect(resolveDesktopCommand('/voice')?.surface).toEqual({ kind: 'unavailable', reason: 'composer-voice' })
+    expect(isDesktopSlashCommand('/voice')).toBe(false)
+
+    const message = desktopSlashUnavailableMessage('/voice')
+    expect(message).toContain('microphone button')
+    expect(message).toContain('Ctrl+B')
+  })
+
+  it('routes /compact to /compress (context compression), not the TUI display toggle', () => {
+    expect(resolveDesktopCommand('/compact')?.name).toBe('/compress')
+    expect(isDesktopSlashCommand('/compact')).toBe(true)
+    // Alias stays out of the popover so /compress is the single visible entry.
+    expect(isDesktopSlashSuggestion('/compact')).toBe(false)
+    expect(isDesktopSlashSuggestion('/compress')).toBe(true)
   })
 
   it('surfaces /tools, /save, and /personality on the desktop', () => {
@@ -54,12 +163,27 @@ describe('desktop slash command curation', () => {
 
   it('routes /pet through the desktop action handler and drops /pets', () => {
     expect(resolveDesktopCommand('/pet')?.surface).toEqual({ kind: 'action', action: 'pet' })
-    expect(resolveDesktopCommand('/pet')?.args).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/pet')).toBe('options')
     expect(isDesktopSlashSuggestion('/pet')).toBe(true)
     expect(isDesktopSlashCommand('/pet')).toBe(true)
     expect(resolveDesktopCommand('/pets')?.surface).toEqual({ kind: 'unavailable', reason: 'settings' })
     expect(isDesktopSlashSuggestion('/pets')).toBe(false)
     expect(isDesktopSlashCommand('/pets')).toBe(false)
+  })
+
+  it('routes /wake through the desktop wake action instead of the slash worker', () => {
+    expect(resolveDesktopCommand('/wake')?.surface).toEqual({ kind: 'action', action: 'wake' })
+    expect(desktopSlashCommandArgumentMode('/wake')).toBe('options')
+    expect(isDesktopSlashSuggestion('/wake')).toBe(true)
+    expect(isDesktopSlashCommand('/wake')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/wake')).toBeNull()
+  })
+
+  it('routes /stop through the desktop action that cancels the active turn', () => {
+    expect(resolveDesktopCommand('/stop')?.surface).toEqual({ kind: 'action', action: 'stop' })
+    expect(isDesktopSlashSuggestion('/stop')).toBe(true)
+    expect(isDesktopSlashCommand('/stop')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/stop')).toBeNull()
   })
 
   it('treats /browser as an executable action command (local-gateway connect)', () => {
@@ -70,7 +194,96 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/browser')).toBeNull()
     expect(resolveDesktopCommand('/browser')?.surface).toEqual({ kind: 'action', action: 'browser' })
     // Bare /browser expands to its sub-action options in the popover.
-    expect(resolveDesktopCommand('/browser')?.args).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/browser')).toBe('options')
+  })
+
+  it('routes /compress through the session-compression action', () => {
+    // /compress must be an action (session.compress RPC), not exec: the slash
+    // worker route times out on large sessions (#44456).
+    expect(resolveDesktopCommand('/compress')?.surface).toEqual({ kind: 'action', action: 'compress' })
+    expect(desktopSlashCommandArgumentMode('/compress')).toBe('text')
+    expect(isDesktopSlashCommand('/compress')).toBe(true)
+    expect(isDesktopSlashSuggestion('/compress')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/compress')).toBeNull()
+    // /compact is an alias — executes but stays out of the popover.
+    expect(resolveDesktopCommand('/compact')?.surface).toEqual({ kind: 'action', action: 'compress' })
+    expect(isDesktopSlashCommand('/compact')).toBe(true)
+    expect(isDesktopSlashSuggestion('/compact')).toBe(false)
+  })
+
+  it('routes only stateless session commands through dedicated gateway RPCs', () => {
+    const expected = {
+      '/save': 'session.save',
+      '/status': 'session.status'
+    } as const
+
+    for (const [name, rpcName] of Object.entries(expected)) {
+      const surface = resolveDesktopCommand(name)?.surface
+      expect(surface?.kind).toBe('rpc')
+
+      if (surface?.kind !== 'rpc') {
+        continue
+      }
+
+      expect(surface.rpc).toBe(rpcName)
+      expect(surface.buildParams({ arg: 'topic A', command: name, name: name.slice(1), sessionId: 's-1' })).toEqual({
+        session_id: 's-1'
+      })
+    }
+  })
+
+  it('keeps commands with richer CLI semantics on the slash worker', () => {
+    for (const name of ['/agents', '/steer', '/usage']) {
+      expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
+    }
+  })
+
+  it('still routes commands without dedicated RPCs through exec()', () => {
+    // /btw is an action (prompt.btw) — the slash-worker print never reached Desktop.
+    const execNames = [
+      '/bg',
+      '/debug',
+      '/goal',
+      '/personality',
+      '/queue',
+      '/retry',
+      '/rollback',
+      '/tools',
+      '/undo',
+      '/version'
+    ]
+
+    for (const name of execNames) {
+      expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
+    }
+  })
+
+  it('routes /btw to the prompt.btw side-question action', () => {
+    expect(resolveDesktopCommand('/btw')?.surface).toEqual({ kind: 'action', action: 'btw' })
+    expect(isDesktopSlashCommand('/btw')).toBe(true)
+    expect(isDesktopSlashSuggestion('/btw')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/btw')).toBeNull()
+  })
+
+  it('distinguishes free prose from finite slash option lists', () => {
+    expect(desktopSlashCommandArgumentMode('/goal')).toBe('mixed')
+    expect(desktopSlashCommandArgumentMode('/steer')).toBe('text')
+    expect(desktopSlashCommandArgumentMode('/queue')).toBe('text')
+    expect(desktopSlashCommandArgumentMode('/personality')).toBe('options')
+    expect(desktopSlashCommandArgumentMode('/handoff')).toBe('options')
+    expect(desktopSlashCommandArgumentMode('/version')).toBeNull()
+  })
+
+  it('routes /journey (and aliases) to the memory graph overlay action', () => {
+    expect(resolveDesktopCommand('/journey')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(resolveDesktopCommand('/memory-graph')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(resolveDesktopCommand('/learning')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(isDesktopSlashCommand('/journey')).toBe(true)
+    expect(isDesktopSlashCommand('/memory-graph')).toBe(true)
+    expect(isDesktopSlashSuggestion('/journey')).toBe(true)
+    // Aliases execute but stay out of the popover.
+    expect(isDesktopSlashSuggestion('/memory-graph')).toBe(false)
+    expect(desktopSlashUnavailableMessage('/journey')).toBeNull()
   })
 
   it('allows aliases to execute without cluttering the popover', () => {
@@ -197,5 +410,58 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })
     // Skill / quick commands aren't in the registry.
     expect(resolveDesktopCommand('/gif-search')).toBeNull()
+  })
+})
+
+describe('rankSkillCommands', () => {
+  const rows = [
+    { text: '/research' },
+    { text: '/research-paper-writing' },
+    { text: '/work' },
+    { text: '/ship-it' },
+    { text: '/manim-video' },
+    { text: '/docx' }
+  ]
+
+  const skills = {
+    '/research': { usage: 60, origin: 'local' as const },
+    '/research-paper-writing': { usage: 0, origin: 'bundled' as const },
+    '/work': { usage: 172, origin: 'local' as const },
+    '/manim-video': { usage: 0, origin: 'bundled' as const },
+    '/docx': { usage: 0, origin: 'local' as const }
+  }
+
+  it('puts the most-used skill first and breaks ties alphabetically', () => {
+    expect(rankSkillCommands(rows, skills).map(row => row.text)).toEqual([
+      '/work',
+      '/research',
+      '/docx',
+      '/manim-video',
+      '/research-paper-writing',
+      '/ship-it'
+    ])
+  })
+
+  it('drops never-used built-ins when browsing, keeping everything else', () => {
+    const browsing = rankSkillCommands(rows, skills, { pruneUnusedBuiltins: true }).map(row => row.text)
+
+    expect(browsing).toEqual(['/work', '/research', '/docx', '/ship-it'])
+    // A user's own unused skill survives — only shipped-and-ignored goes.
+    expect(browsing).toContain('/docx')
+    // Unclassified rows (quick commands, skills newer than the map) survive too.
+    expect(browsing).toContain('/ship-it')
+  })
+
+  it('leaves the backend order untouched when the catalog carries no usage', () => {
+    expect(rankSkillCommands(rows, undefined, { pruneUnusedBuiltins: true })).toEqual(rows)
+  })
+
+  it('ranks an alias by the canonical command it resolves to', () => {
+    const ranked = rankSkillCommands([{ text: '/sessions' }, { text: '/research' }], {
+      '/research': { usage: 5, origin: 'local' },
+      '/resume': { usage: 900, origin: 'local' }
+    })
+
+    expect(ranked.map(row => row.text)).toEqual(['/sessions', '/research'])
   })
 })

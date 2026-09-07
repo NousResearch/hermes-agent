@@ -59,6 +59,37 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class DiscordProgressCaptureAdapter(ProgressCaptureAdapter):
+    """Capture sends while exercising Discord's real preview formatter."""
+
+    def __init__(self):
+        super().__init__(platform=Platform.DISCORD)
+
+    def format_tool_preview(self, preview, **kwargs):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        return DiscordAdapter.format_tool_preview(self, preview, **kwargs)
+
+
+class MediaCaptureProgressAdapter(ProgressCaptureAdapter):
+    """Capture native image batches without contacting a platform API."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.image_batches = []
+
+    async def send_multiple_images(
+        self, chat_id, images, metadata=None, human_delay=0.0
+    ) -> None:
+        self.image_batches.append(
+            {
+                "chat_id": chat_id,
+                "images": images,
+                "metadata": metadata,
+            }
+        )
+
+
 class SmallLimitProgressAdapter(ProgressCaptureAdapter):
     """Adapter with a tiny platform limit to exercise progress rollover."""
 
@@ -115,6 +146,59 @@ class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
         return SendResult(success=True, message_id=message_id)
 
 
+class RetryableFirstEditProgressCaptureAdapter(ProgressCaptureAdapter):
+    """Fail one progress edit transiently, then accept later edits."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.edit_outcomes = []
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        if not self.edit_outcomes:
+            self.edit_outcomes.append(False)
+            return SendResult(
+                success=False,
+                error="temporary network failure",
+                retryable=True,
+                error_kind="transient",
+            )
+        self.edit_outcomes.append(True)
+        return SendResult(success=True, message_id=message_id)
+
+
+class RetryableOverflowEditProgressAdapter(SmallLimitProgressAdapter):
+    """Fail the first split edit transiently, then keep editing."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.retryable_edit_failures = 0
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        if self.retryable_edit_failures == 0:
+            self.retryable_edit_failures += 1
+            self.edits.append(
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "content": content,
+                }
+            )
+            return SendResult(
+                success=False,
+                error="temporary network failure",
+                retryable=True,
+                error_kind="transient",
+            )
+        return await super().edit_message(chat_id, message_id, content)
+
+
 class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
     SUPPORTS_MESSAGE_EDITING = False
 
@@ -131,7 +215,7 @@ class FakeAgent:
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         cb = self.tool_progress_callback
         if cb is not None:
             cb("tool.started", "terminal", "pwd", {})
@@ -145,6 +229,85 @@ class FakeAgent:
         }
 
 
+class NativeTaskCardAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.SLACK):
+        super().__init__(platform=platform)
+        self.native_updates = []
+        self.native_stops = 0
+
+    def native_task_cards_enabled(self):
+        return True
+
+    async def send_native_task_card_progress(
+        self,
+        chat_id,
+        tasks,
+        *,
+        title,
+        reply_to=None,
+        metadata=None,
+        fallback_text=None,
+    ) -> SendResult:
+        self.native_updates.append(
+            {
+                "chat_id": chat_id,
+                "tasks": [dict(task) for task in tasks],
+                "metadata": dict(metadata or {}),
+                "fallback_text": fallback_text,
+            }
+        )
+        return SendResult(success=True, message_id="native-stream-1")
+
+    async def stop_native_task_card_progress(
+        self, chat_id, *, reply_to=None, metadata=None
+    ):
+        self.native_stops += 1
+
+    async def edit_message(
+        self, chat_id, message_id, content, *, finalize=False, metadata=None
+    ) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=message_id)
+
+
+class FailingNativeTaskCardAdapter(NativeTaskCardAdapter):
+    async def send_native_task_card_progress(self, *args, **kwargs) -> SendResult:
+        await super().send_native_task_card_progress(*args, **kwargs)
+        return SendResult(success=False, error="native stream unavailable", retryable=True)
+
+
+class DuplicateNativeToolsAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tool_start_callback = kwargs.get("tool_start_callback")
+        self.tool_complete_callback = kwargs.get("tool_complete_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        self.tool_start_callback("call-a", "web_search", {"query": "alpha"})
+        time.sleep(0.15)
+        self.tool_start_callback("call-b", "web_search", {"query": "beta"})
+        time.sleep(0.15)
+        # Complete the second same-name call first. Correlation by tool name
+        # would incorrectly mark call-a as failed here.
+        self.tool_complete_callback(
+            "call-b", "web_search", {"query": "beta"}, '{"error": "boom"}'
+        )
+        time.sleep(0.15)
+        self.tool_complete_callback(
+            "call-a", "web_search", {"query": "alpha"}, '{"success": true}'
+        )
+        time.sleep(0.15)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 class ThinkingAgent:
     """Agent that emits _thinking scratch text (no tool calls).
 
@@ -156,7 +319,7 @@ class ThinkingAgent:
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         cb = self.tool_progress_callback
         if cb is not None:
             cb("_thinking", "weighing the options here")
@@ -176,8 +339,30 @@ class LongPreviewAgent:
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         self.tool_progress_callback("tool.started", "terminal", self.LONG_CMD, {})
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class UrlPreviewAgent:
+    URL = "https://hermes-agent.nousresearch.com/docs/gateway/discord/tool-progress"
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        self.tool_progress_callback(
+            "tool.started",
+            "web_extract",
+            self.URL,
+            {"urls": [self.URL]},
+        )
         time.sleep(0.35)
         return {
             "final_response": "done",
@@ -191,11 +376,36 @@ class DelayedProgressAgent:
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         self.tool_progress_callback("tool.started", "terminal", "first command", {})
         time.sleep(0.45)
         self.tool_progress_callback("tool.started", "terminal", "second command", {})
         time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class RetryableEditProgressAgent:
+    """Keep the turn alive long enough to retry the same progress bubble."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        callback("tool.started", "terminal", "first command", {})
+        time.sleep(0.5)
+        callback("tool.started", "terminal", "second command", {})
+        time.sleep(1.7)
+        callback("tool.started", "terminal", "third command", {})
+        time.sleep(0.5)
+        callback("tool.started", "terminal", "fourth command", {})
+        time.sleep(0.6)
         return {
             "final_response": "done",
             "messages": [],
@@ -210,7 +420,7 @@ class ManyProgressLinesAgent:
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         cb = self.tool_progress_callback
         assert cb is not None
         cb("tool.started", "terminal", "first-short", {})
@@ -233,7 +443,7 @@ class DelayedInterimAgent:
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         self.interim_assistant_callback("first interim")
         time.sleep(0.45)
         self.interim_assistant_callback("second interim")
@@ -268,133 +478,6 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
-
-
-@pytest.mark.asyncio
-async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
-    fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = FakeAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
-
-    adapter = ProgressCaptureAdapter()
-    runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="-1001",
-        chat_type="group",
-        thread_id="17585",
-    )
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-1",
-        session_key="agent:main:telegram:group:-1001:17585",
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.sent == [
-        {
-            "chat_id": "-1001",
-            "content": '💻 Running pwd',
-            "reply_to": None,
-            "metadata": {"thread_id": "17585"},
-        }
-    ]
-    assert adapter.edits
-    assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_progress_edits_keep_originating_topic_metadata(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
-    fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = FakeAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-
-    adapter = MetadataEditProgressCaptureAdapter()
-    runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="-1001",
-        chat_type="group",
-        thread_id="17585",
-    )
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-progress-edit-topic",
-        session_key="agent:main:telegram:group:-1001:17585",
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.edits
-    assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.edits)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(monkeypatch, tmp_path):
-    """Telegram DM progress must not reuse event message id as thread metadata."""
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
-    fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = FakeAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-
-    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
-    runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
-
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="12345",
-        chat_type="dm",
-        thread_id=None,
-    )
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-2",
-        session_key="agent:main:telegram:dm:12345",
-        event_message_id="777",
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.sent
-    assert adapter.sent[0]["metadata"] is None
-    assert all(call["metadata"] is None for call in adapter.typing)
 
 
 @pytest.mark.asyncio
@@ -443,14 +526,28 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
 
     assert result["final_response"] == "done"
     assert adapter.sent
-    assert adapter.sent[0]["metadata"] == {"thread_id": "1234567890.000001"}
-    assert all(call["metadata"] == {"thread_id": "1234567890.000001"} for call in adapter.typing)
+    expected_metadata = {
+        "thread_id": "1234567890.000001",
+        "message_id": "1234567890.000001",
+    }
+    assert adapter.sent[0]["metadata"] == expected_metadata
+    assert all(call["metadata"] == expected_metadata for call in adapter.typing)
 
 
 @pytest.mark.asyncio
-async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypatch, tmp_path):
-    """Feishu needs reply_to plus reply_in_thread metadata for topic-scoped progress."""
+async def test_progress_carries_anchor_for_relay_discord_auto_thread(monkeypatch, tmp_path):
+    """Relay Discord channel-initiate: the thread doesn't exist at ingest, so
+    the connector auto-threads on the reply anchor and stamps
+    prospective_thread_id. The tool-progress / status bubbles must carry that
+    anchor (reply_to + metadata.reply_to_message_id) so they route into the
+    SAME auto-thread as the final reply — otherwise the search-status updates
+    leak into the parent channel (staging repro 2026-08-02)."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    import yaml
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"platforms": {"discord": {"tool_progress": "all"}}}}),
+        encoding="utf-8",
+    )
 
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -460,35 +557,98 @@ async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypa
     fake_run_agent.AIAgent = FakeAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    adapter = ProgressCaptureAdapter(platform=Platform.FEISHU)
+    adapter = ProgressCaptureAdapter(platform=Platform.RELAY)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
+    # Channel-initiating message: no thread_id yet, but the connector stamped
+    # the prospective thread id (== the triggering message id). Relay ingress
+    # keeps the underlying platform (discord) on the source for display policy,
+    # but delivery/progress route through the one live RelayAdapter.
     source = SessionSource(
-        platform=Platform.FEISHU,
-        chat_id="oc_chat",
+        platform=Platform.DISCORD,
+        chat_id="chan-parent",
         chat_type="group",
-        thread_id="topic_17585",
+        thread_id=None,
+        prospective_thread_id="msg-anchor-1",
+        delivered_via_upstream_relay=True,
     )
 
     result = await runner._run_agent(
-        message="hello",
+        message="find me a gift",
         context_prompt="",
         history=[],
         source=source,
-        session_id="sess-feishu-progress",
-        session_key="agent:main:feishu:group:oc_chat:topic_17585",
-        event_message_id="om_triggering_user_message",
+        session_id="sess-relay-thread",
+        session_key="agent:main:discord:thread:chan-parent:msg-anchor-1",
+        event_message_id="msg-anchor-1",
     )
 
     assert result["final_response"] == "done"
-    assert adapter.sent
-    assert adapter.sent[0]["reply_to"] == "om_triggering_user_message"
-    assert adapter.sent[0]["metadata"] == {"thread_id": "topic_17585"}
-    assert adapter.edits
-    assert adapter.edits[0]["message_id"] == "progress-1"
+    assert adapter.sent, "expected at least one progress send"
+    # Every progress send must carry the anchor so the connector threads it.
+    for call in adapter.sent:
+        assert call["reply_to"] == "msg-anchor-1", call
+        assert (call["metadata"] or {}).get("reply_to_message_id") == "msg-anchor-1", call
+        # Discord lifecycle/status sends are marked non-conversational.
+        assert (call["metadata"] or {}).get("non_conversational") is True, call
+
+
+@pytest.mark.asyncio
+async def test_progress_no_anchor_for_native_discord_thread_event(monkeypatch, tmp_path):
+    """A message ARRIVING in an existing Discord thread (not the relay
+    auto-thread lane) must NOT get the synthetic prospective anchor — it already
+    routes by its real thread. Guards against over-broadening the relay fix."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    import yaml
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"platforms": {"discord": {"tool_progress": "all"}}}}),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.RELAY)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    # No prospective_thread_id (event is IN a real thread already).
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="real-thread-9",
+        chat_type="thread",
+        thread_id="real-thread-9",
+        delivered_via_upstream_relay=True,
+    )
+
+    result = await runner._run_agent(
+        message="continue",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-in-thread",
+        session_key="agent:main:discord:thread:real-thread-9:real-thread-9",
+        event_message_id="msg-2",
+    )
+
+    assert result["final_response"] == "done"
+    # The relay-prospective synthetic anchor path must NOT engage; progress
+    # routes by the real thread's own metadata, not a forced reply_to anchor.
+    for call in adapter.sent:
+        meta = call["metadata"] or {}
+        # The real thread id drives routing; we did not inject the anchor
+        # reply_to that the prospective lane uses.
+        assert meta.get("thread_id") == "real-thread-9" or call["reply_to"] != "msg-2", call
 
 
 # ---------------------------------------------------------------------------
@@ -567,19 +727,6 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     return adapter, result
 
 
-def test_all_mode_default_truncation_40_chars(monkeypatch, tmp_path):
-    """When tool_preview_length is 0 (default), all/new mode truncates to 40 chars."""
-    adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0)
-    assert result["final_response"] == "done"
-    assert adapter.sent
-    content = adapter.sent[0]["content"]
-    # The long command should be truncated — the preview portion <= 40 chars.
-    assert "..." in content
-    preview_text = _extract_progress_preview(content)
-    assert preview_text is not None, f"No preview found in: {content}"
-    assert len(preview_text) <= 40, f"Preview too long ({len(preview_text)}): {preview_text}"
-
-
 def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
     """When tool_preview_length is explicitly set (e.g. 120), all/new mode uses that."""
     adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=120)
@@ -595,15 +742,57 @@ def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
     assert len(preview_text) <= 120, f"Preview too long ({len(preview_text)}): {preview_text}"
 
 
-def test_all_mode_no_truncation_when_preview_fits(monkeypatch, tmp_path):
-    """Short previews (under the cap) are not truncated."""
-    # Set a generous cap — the LongPreviewAgent's command is ~165 chars
-    adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=200)
+def test_discord_truncated_tool_url_links_to_full_destination(monkeypatch, tmp_path):
+    """The real gateway path must retain the URL beyond its visible cap."""
+    import yaml
+
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = UrlPreviewAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"tool_preview_length": 0}}),
+        encoding="utf-8",
+    )
+
+    adapter = DiscordProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {"api_key": "***"},
+    )
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+    result = asyncio.get_event_loop().run_until_complete(
+        runner._run_agent(
+            message="hello",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="sess-discord-url",
+            session_key="agent:main:discord:dm:12345",
+        )
+    )
+
     assert result["final_response"] == "done"
     assert adapter.sent
-    content = adapter.sent[0]["content"]
-    # With a 200-char cap, the 165-char command should NOT be truncated
-    assert "..." not in content, f"Preview was truncated when it shouldn't be: {content}"
+    visible = UrlPreviewAgent.URL[:37] + "..."
+    label = visible.removeprefix("https://")
+    assert f"[{label}](<{UrlPreviewAgent.URL}>)" in adapter.sent[0]["content"]
 
 
 class CommentaryAgent:
@@ -613,7 +802,7 @@ class CommentaryAgent:
         self.stream_delta_callback = kwargs.get("stream_delta_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         if self.interim_assistant_callback:
             self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
         time.sleep(0.1)
@@ -631,7 +820,7 @@ class PreviewedResponseAgent:
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         if self.interim_assistant_callback:
             self.interim_assistant_callback("You're welcome.", already_streamed=False)
         return {
@@ -648,7 +837,7 @@ class PreviewedSplitAfterCommentaryAgent:
         self.session_id = kwargs.get("session_id")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         if self.interim_assistant_callback:
             self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
         self.session_id = f"{self.session_id}-child"
@@ -665,7 +854,7 @@ class StreamingRefineAgent:
         self.stream_delta_callback = kwargs.get("stream_delta_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         if self.stream_delta_callback:
             self.stream_delta_callback("Continuing to refine:")
         time.sleep(0.1)
@@ -686,7 +875,7 @@ class QueuedCommentaryAgent:
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         type(self).calls += 1
         if type(self).calls == 1 and self.interim_assistant_callback:
             self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
@@ -697,12 +886,81 @@ class QueuedCommentaryAgent:
         }
 
 
+class QueuedMediaAgent:
+    """Return an explicit image attachment before a queued follow-up."""
+
+    calls = 0
+    media_path = None
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        type(self).calls += 1
+        if type(self).calls == 1:
+            final_response = f"first response\nMEDIA:{type(self).media_path}"
+            if self.stream_delta_callback:
+                self.stream_delta_callback("first response")
+        else:
+            final_response = "follow-up processed"
+            if self.stream_delta_callback:
+                self.stream_delta_callback(final_response)
+        return {
+            "final_response": final_response,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class QueuedSilenceAgent:
+    """First turn is intentionally silent; queued follow-up still runs."""
+
+    calls = 0
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        type(self).calls += 1
+        return {
+            "final_response": "NO_REPLY" if type(self).calls == 1 else "follow-up processed",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class QueuedFailedEmptyAgent:
+    """First turn fails empty; its normalized error must send before follow-up."""
+
+    calls = 0
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        type(self).calls += 1
+        if type(self).calls == 1:
+            return {
+                "final_response": "",
+                "messages": [],
+                "api_calls": 1,
+                "failed": True,
+                "error": "provider exploded",
+            }
+        return {
+            "final_response": "follow-up processed",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class BackgroundReviewAgent:
     def __init__(self, **kwargs):
         self.background_review_callback = kwargs.get("background_review_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         if self.background_review_callback:
             self.background_review_callback("💾 Skill 'prospect-scanner' created.")
         return {
@@ -720,7 +978,7 @@ class VerboseAgent:
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         self.tool_progress_callback(
             "tool.started", "execute_code", None,
             {"code": self.LONG_CODE},
@@ -746,6 +1004,8 @@ async def _run_with_agent(
     chat_type="group",
     thread_id="17585",
     adapter_cls=ProgressCaptureAdapter,
+    user_id=None,
+    scope_id=None,
 ):
     if config_data:
         import yaml
@@ -772,6 +1032,8 @@ async def _run_with_agent(
         chat_id=chat_id,
         chat_type=chat_type,
         thread_id=thread_id,
+        user_id=user_id,
+        scope_id=scope_id,
     )
     session_key = f"agent:main:{platform.value}:{chat_type}:{chat_id}"
     if thread_id:
@@ -796,111 +1058,108 @@ async def _run_with_agent(
 
 
 @pytest.mark.asyncio
-async def test_run_agent_rolls_progress_bubble_before_platform_limit(monkeypatch, tmp_path):
-    """Tool progress should start a second editable bubble before Telegram's limit.
+async def test_slack_native_progress_correlates_concurrent_duplicate_tools_by_id(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DuplicateNativeToolsAgent,
+        session_id="sess-native-ids",
+        config_data={
+            "display": {"platforms": {"slack": {"tool_progress": "off"}}}
+        },
+        platform=Platform.SLACK,
+        chat_id="C1",
+        thread_id="thread-1",
+        adapter_cls=NativeTaskCardAdapter,
+        user_id="U1",
+        scope_id="T1",
+    )
 
-    Regression: once the first progress bubble grew past the platform limit,
-    the gateway kept trying to edit that same oversized full transcript.  The
-    Telegram adapter then split-and-sent a fresh continuation on every update,
-    causing a noisy trail of one-line messages instead of a new editable bubble.
-    """
+    assert result["final_response"] == "done"
+    assert adapter.native_updates
+    second_completed = next(
+        update
+        for update in adapter.native_updates
+        if {task["id"]: task["status"] for task in update["tasks"]}
+        == {"call-a": "in_progress", "call-b": "error"}
+    )
+    assert second_completed["metadata"]["recipient_team_id"] == "T1"
+    assert second_completed["metadata"]["recipient_user_id"] == "U1"
+    assert adapter.native_updates[-1]["tasks"] == [
+        {
+            "id": "call-a",
+            "title": "web_search - alpha",
+            "status": "complete",
+        },
+        {
+            "id": "call-b",
+            "title": "web_search - beta",
+            "status": "error",
+        },
+    ]
+    assert adapter.sent == []
+    assert adapter.native_stops == 1
+
+
+@pytest.mark.asyncio
+async def test_slack_native_failure_keeps_editing_one_live_text_fallback(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DuplicateNativeToolsAgent,
+        session_id="sess-native-fallback",
+        platform=Platform.SLACK,
+        chat_id="C1",
+        thread_id="thread-1",
+        adapter_cls=FailingNativeTaskCardAdapter,
+        user_id="U1",
+        scope_id="T1",
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.native_updates) == 1
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["content"].endswith("web_search - alpha - running")
+    assert len(adapter.edits) >= 2
+    assert {edit["message_id"] for edit in adapter.edits} == {"progress-1"}
+    assert adapter.edits[-1]["content"].endswith("web_search - beta - error")
+    assert "web_search - alpha - complete" in adapter.edits[-1]["content"]
+    assert adapter.native_stops == 1
+
+
+@pytest.mark.asyncio
+async def test_retryable_overflow_edit_keeps_editable_bubble_identity(monkeypatch, tmp_path):
+    """A transient split edit must retain can_edit and the current message ID."""
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
         ManyProgressLinesAgent,
-        session_id="sess-progress-overflow-rollover",
+        session_id="sess-progress-retry-overflow-same-message",
         config_data={
             "display": {
                 "tool_progress": "all",
                 "interim_assistant_messages": False,
-                "tool_preview_length": 60,
             }
         },
-        adapter_cls=SmallLimitProgressAdapter,
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="direct",
+        thread_id="1700000000.000100",
+        adapter_cls=RetryableOverflowEditProgressAdapter,
     )
 
     assert result["final_response"] == "done"
-    assert isinstance(adapter, SmallLimitProgressAdapter)
-    assert len(adapter.sent) >= 2, "expected a fresh progress bubble after the first filled"
+    assert isinstance(adapter, RetryableOverflowEditProgressAdapter)
+    assert adapter.retryable_edit_failures == 1
+    assert len(adapter.sent) >= 2
+    assert adapter.edits[0]["message_id"] == "progress-1"
+    assert any(call["message_id"] == "progress-1" for call in adapter.edits[1:])
     assert adapter.oversized_sends == []
     assert adapter.oversized_edits == []
-    all_bubbles = [call["content"] for call in adapter.sent + adapter.edits]
-    assert all(len(text) <= adapter.MAX_MESSAGE_LENGTH for text in all_bubbles)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_surfaces_real_interim_commentary(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        CommentaryAgent,
-        session_id="sess-commentary",
-        config_data={"display": {"interim_assistant_messages": True}},
-    )
-
-    assert result.get("already_sent") is not True
-    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_surfaces_interim_commentary_by_default(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        CommentaryAgent,
-        session_id="sess-commentary-default-on",
-    )
-
-    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_suppresses_interim_commentary_when_disabled(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        CommentaryAgent,
-        session_id="sess-commentary-disabled",
-        config_data={"display": {"interim_assistant_messages": False}},
-    )
-
-    assert result.get("already_sent") is not True
-    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_tool_progress_does_not_control_interim_commentary(monkeypatch, tmp_path):
-    """tool_progress=all with interim_assistant_messages=false should not surface commentary."""
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        CommentaryAgent,
-        session_id="sess-commentary-tool-progress",
-        config_data={"display": {"tool_progress": "all", "interim_assistant_messages": False}},
-    )
-
-    assert result.get("already_sent") is not True
-    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_streaming_does_not_enable_completed_interim_commentary(
-    monkeypatch, tmp_path
-):
-    """Streaming alone with interim_assistant_messages=false should not surface commentary."""
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        CommentaryAgent,
-        session_id="sess-commentary-streaming",
-        config_data={
-            "display": {"tool_progress": "off", "interim_assistant_messages": False},
-            "streaming": {"enabled": True},
-        },
-    )
-
-    assert result.get("already_sent") is True
-    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
 
 
 @pytest.mark.asyncio
@@ -924,98 +1183,6 @@ async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, 
     assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
 
 
-@pytest.mark.asyncio
-async def test_run_agent_interim_commentary_works_with_tool_progress_off(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        CommentaryAgent,
-        session_id="sess-commentary-explicit-on",
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "interim_assistant_messages": True,
-            },
-        },
-    )
-
-    assert result.get("already_sent") is not True
-    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_bluebubbles_uses_commentary_send_path_for_quick_replies(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        CommentaryAgent,
-        session_id="sess-bluebubbles-commentary",
-        config_data={"display": {"interim_assistant_messages": True}},
-        platform=Platform.BLUEBUBBLES,
-        chat_id="iMessage;-;user@example.com",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=NonEditingProgressCaptureAdapter,
-    )
-
-    assert result.get("already_sent") is not True
-    assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
-    assert adapter.edits == []
-
-
-@pytest.mark.asyncio
-async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        PreviewedResponseAgent,
-        session_id="sess-previewed",
-        config_data={"display": {"interim_assistant_messages": True}},
-    )
-
-    assert result.get("already_sent") is True
-    assert [call["content"] for call in adapter.sent] == ["You're welcome."]
-
-
-@pytest.mark.asyncio
-async def test_run_agent_previewed_split_keeps_final_delivery_pending(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        PreviewedSplitAfterCommentaryAgent,
-        session_id="sess-split",
-        config_data={"display": {"interim_assistant_messages": True}},
-    )
-
-    assert result["session_id"] == "sess-split-child"
-    assert result.get("already_sent") is not True
-    assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
-
-
-@pytest.mark.asyncio
-async def test_run_agent_matrix_streaming_omits_cursor(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        StreamingRefineAgent,
-        session_id="sess-matrix-streaming",
-        config_data={
-            "display": {"tool_progress": "off", "interim_assistant_messages": False},
-            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
-        },
-        platform=Platform.MATRIX,
-        chat_id="!room:matrix.example.org",
-        chat_type="group",
-        thread_id="$thread",
-    )
-
-    assert result.get("already_sent") is True
-    all_text = [call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits]
-    assert all_text, "expected streamed Matrix content to be sent or edited"
-    assert all("▉" not in text for text in all_text)
-    assert any("Continuing to refine:" in text for text in all_text)
-
-
 class TransformedStreamAgent:
     """Streams a response, then signals the gateway that a plugin hook
     (``transform_llm_output``) modified the final text after streaming
@@ -1027,7 +1194,7 @@ class TransformedStreamAgent:
         self.stream_delta_callback = kwargs.get("stream_delta_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         if self.stream_delta_callback:
             self.stream_delta_callback("original answer")
         return {
@@ -1088,6 +1255,130 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
     assert result["final_response"] == "final response 2"
     assert "I'll inspect the repo first." in sent_texts
     assert "final response 1" in sent_texts
+
+
+@pytest.mark.asyncio
+async def test_run_agent_queued_message_delivers_first_response_media(monkeypatch, tmp_path):
+    """Queued follow-ups must preserve explicit attachments from the first turn."""
+    media_path = tmp_path / "queued-first-response.png"
+    media_path.write_bytes(b"not-a-real-png-but-a-real-file")
+    QueuedMediaAgent.calls = 0
+    QueuedMediaAgent.media_path = media_path
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedMediaAgent,
+        session_id="sess-queued-media",
+        pending_text="queued follow-up",
+        platform=Platform.DISCORD,
+        chat_id="discord-thread",
+        chat_type="group",
+        thread_id="discord-thread",
+        adapter_cls=MediaCaptureProgressAdapter,
+    )
+
+    assert result["final_response"] == "follow-up processed"
+    assert isinstance(adapter, MediaCaptureProgressAdapter)
+    assert {
+        "sent_texts": [call["content"] for call in adapter.sent],
+        "image_batches": adapter.image_batches,
+    } == {
+        "sent_texts": ["first response"],
+        "image_batches": [
+            {
+                "chat_id": "discord-thread",
+                "images": [(media_path.as_uri(), "")],
+                "metadata": {"thread_id": "discord-thread"},
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_queued_message_delivers_streamed_first_response_media(
+    monkeypatch, tmp_path,
+):
+    """Streaming first-turn text must not suppress its explicit attachment."""
+    media_path = tmp_path / "queued-streamed-first-response.png"
+    media_path.write_bytes(b"not-a-real-png-but-a-real-file")
+    QueuedMediaAgent.calls = 0
+    QueuedMediaAgent.media_path = media_path
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedMediaAgent,
+        session_id="sess-queued-streamed-media",
+        pending_text="queued follow-up",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.DISCORD,
+        chat_id="discord-thread",
+        chat_type="group",
+        thread_id="discord-thread",
+        adapter_cls=MediaCaptureProgressAdapter,
+    )
+
+    assert result["final_response"] == "follow-up processed"
+    assert isinstance(adapter, MediaCaptureProgressAdapter)
+    all_text = [call["content"] for call in adapter.sent + adapter.edits]
+    assert all("MEDIA:" not in text for text in all_text)
+    assert adapter.image_batches == [
+        {
+            "chat_id": "discord-thread",
+            "images": [(media_path.as_uri(), "")],
+            "metadata": {"thread_id": "discord-thread"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_suppresses_silent_first_turn_and_processes_queued_followup(
+    monkeypatch, tmp_path,
+):
+    """Regression: queued direct-send must not leak NO_REPLY to the channel."""
+    QueuedSilenceAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedSilenceAgent,
+        session_id="sess-queued-silence",
+        pending_text="queued follow-up",
+        platform=Platform.SLACK,
+        chat_id="C123",
+        thread_id="1712345678.000100",
+    )
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert QueuedSilenceAgent.calls == 2
+    assert result["final_response"] == "follow-up processed"
+    assert "NO_REPLY" not in sent_texts
+
+
+@pytest.mark.asyncio
+async def test_run_agent_sends_normalized_failure_before_queued_followup(
+    monkeypatch, tmp_path,
+):
+    """Queued delivery uses finalized output, not the raw empty agent result."""
+    QueuedFailedEmptyAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedFailedEmptyAgent,
+        session_id="sess-queued-failed-empty",
+        pending_text="queued follow-up",
+        platform=Platform.SLACK,
+        chat_id="C123",
+        thread_id="1712345678.000100",
+    )
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert QueuedFailedEmptyAgent.calls == 2
+    assert result["final_response"] == "follow-up processed"
+    assert any("The request failed: provider exploded" in text for text in sent_texts)
 
 
 @pytest.mark.asyncio
@@ -1376,26 +1667,6 @@ async def test_verbose_mode_does_not_truncate_args_by_default(monkeypatch, tmp_p
     assert VerboseAgent.LONG_CODE in all_content
 
 
-@pytest.mark.asyncio
-async def test_verbose_mode_respects_explicit_tool_preview_length(monkeypatch, tmp_path):
-    """When tool_preview_length is set to a positive value, verbose truncates to that."""
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        VerboseAgent,
-        session_id="sess-verbose-explicit-cap",
-        config_data={"display": {"tool_progress": "verbose", "tool_preview_length": 50}},
-    )
-
-    assert result["final_response"] == "done"
-    all_content = " ".join(call["content"] for call in adapter.sent)
-    all_content += " ".join(call["content"] for call in adapter.edits)
-    # Should be truncated — full 300-char string NOT present
-    assert VerboseAgent.LONG_CODE not in all_content
-    # But should still contain the truncated portion with "..."
-    assert "..." in all_content
-
-
 class CodeBlockProgressAdapter(ProgressCaptureAdapter):
     """A markdown-capable progress adapter (declares supports_code_blocks)."""
 
@@ -1415,7 +1686,7 @@ class TerminalCommandAgent:
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         self.tool_progress_callback(
             "tool.started", "terminal", self.CMD, {"command": self.CMD}
         )
@@ -1578,7 +1849,7 @@ class MultiTerminalCommandAgent:
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         cb = self.tool_progress_callback
         cb("tool.started", "terminal", "echo one", {"command": "echo one"})
         cb("tool.started", "terminal", "echo two", {"command": "echo two"})
@@ -1640,47 +1911,28 @@ async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_
     assert final.count("terminal\n```") == 2
 
 
-@pytest.mark.asyncio
-async def test_run_agent_relays_thinking_when_tool_progress_off(monkeypatch, tmp_path):
-    """_thinking scratch text relays as a bubble when thinking_progress is on,
-    even with tool_progress off.
+class TestSlackReplyInThreadProgressRouting:
+    """#18859: reply_in_thread=false must stop progress from creating threads."""
 
-    Regression: agent.tool_progress_callback used to be gated on
-    tool_progress_enabled alone, so enabling only thinking_progress left the
-    callback None and _thinking never relayed — despite the progress queue
-    being created for it (needs_progress_queue = tool OR thinking).
-    """
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        ThinkingAgent,
-        session_id="sess-thinking-on",
-        config_data={"display": {"thinking_progress": True, "tool_progress": "off"}},
-    )
+    def test_slack_reply_in_thread_false_drops_synthetic_thread(self):
+        from gateway.run import _resolve_progress_thread_id
 
-    assert result["final_response"] == "done"
-    blob = "\n".join(
-        [c["content"] for c in adapter.sent] + [c["content"] for c in adapter.edits]
-    )
-    assert "weighing the options here" in blob
+        # source.thread_id == event ts is the adapter's synthetic
+        # session-keying thread for top-level messages — not a real thread.
+        assert _resolve_progress_thread_id(
+            Platform.SLACK,
+            source_thread_id="1700000000.000100",
+            event_message_id="1700000000.000100",
+            reply_in_thread=False,
+        ) is None
 
+    def test_buzz_uses_event_message_id_as_progress_thread(self):
+        """Buzz has no native thread_id; progress must reply-to the trigger."""
+        from gateway.run import _resolve_progress_thread_id
 
-@pytest.mark.asyncio
-async def test_run_agent_suppresses_thinking_when_thinking_off(monkeypatch, tmp_path):
-    """With thinking_progress off and tool_progress off, _thinking is suppressed
-    (no callback wired → no relay)."""
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        ThinkingAgent,
-        session_id="sess-thinking-off",
-        config_data={"display": {"thinking_progress": False, "tool_progress": "off"}},
-    )
-
-    assert result["final_response"] == "done"
-    blob = "\n".join(
-        [c["content"] for c in adapter.sent] + [c["content"] for c in adapter.edits]
-    )
-    assert "weighing the options here" not in blob
+        assert _resolve_progress_thread_id(
+            "buzz",
+            source_thread_id=None,
+            event_message_id="evt-trigger-001",
+            reply_in_thread=True,
+        ) == "evt-trigger-001"

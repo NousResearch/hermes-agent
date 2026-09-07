@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, X, Check } from "lucide-react";
+import { ExternalLink, X, Check, Copy } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { CopyButton } from "@nous-research/ui/ui/components/command-block";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
 import { cn, themedBody } from "@/lib/utils";
@@ -30,9 +30,13 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
   const [start, setStart] = useState<OAuthStartResponse | null>(null);
   const [pkceCode, setPkceCode] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   const isMounted = useRef(true);
   const pollTimer = useRef<number | null>(null);
+  const copyResetTimer = useRef<number | null>(null);
   const { t } = useI18n();
 
   // Initiate flow on mount
@@ -59,27 +63,60 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
     return () => {
       isMounted.current = false;
       if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
+      if (copyResetTimer.current !== null)
+        window.clearTimeout(copyResetTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Tick the countdown
+  // When the sign-in window lapses locally, the backend poller usually has
+  // the real story (e.g. "Portal sign-in is required before the device code
+  // can be approved") — but its next poll tick is up to 2s away. Rather than
+  // preempt it with a bare "expired", ask the poll endpoint once, then fall
+  // back to guidance that names the common cause (sign-in stalled in the
+  // opened tab) instead of a dead-end.
+  const handleLocalExpiry = async () => {
+    if (!isMounted.current) return;
+    let backendMessage: string | null = null;
+    if (start && start.flow === "device_code") {
+      try {
+        const resp = await api.pollOAuthSession(provider.id, start.session_id);
+        if (resp.error_message) backendMessage = resp.error_message;
+        else if (resp.status === "pending") {
+          // Still pending server-side: the local countdown fired early
+          // (clock skew or a stalled tab). Keep the session alive for the
+          // poller instead of killing it with a wrong "expired".
+          if (isMounted.current) setPhase("polling");
+          return;
+        }
+      } catch {
+        // Poll endpoint unreachable — fall through to generic guidance.
+      }
+    }
+    if (!isMounted.current) return;
+    setPhase("error");
+    setErrorMsg(backendMessage || t.oauth.sessionExpiredNoError);
+  };
+
+  // Tick the countdown down to zero — never further. What happens AT zero
+  // is owned by the lapse effect below, so the updater stays pure.
   useEffect(() => {
     if (secondsLeft === null) return;
+    if (secondsLeft <= 0) return;
     if (phase === "approved" || phase === "error") return;
     const tick = window.setInterval(() => {
       if (!isMounted.current) return;
-      setSecondsLeft((s) => {
-        if (s !== null && s <= 1) {
-          setPhase("error");
-          setErrorMsg(t.oauth.sessionExpired);
-          return 0;
-        }
-        return s !== null && s > 0 ? s - 1 : 0;
-      });
+      setSecondsLeft((s) => (s !== null && s > 0 ? s - 1 : 0));
     }, 1000);
     return () => window.clearInterval(tick);
-  }, [secondsLeft, phase, t]);
+  }, [secondsLeft, phase]);
+
+  useEffect(() => {
+    if (secondsLeft !== 0) return;
+    if (phase === "approved" || phase === "error") return;
+    void handleLocalExpiry();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [secondsLeft, phase]);
 
   // Device-code: poll backend every 2s
   useEffect(() => {
@@ -161,6 +198,24 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
     const r = s % 60;
     return `${m}:${String(r).padStart(2, "0")}`;
   };
+
+  const handleCopyDeviceCode = async (code: string) => {
+    if (copyResetTimer.current !== null) {
+      window.clearTimeout(copyResetTimer.current);
+      copyResetTimer.current = null;
+    }
+    const copied = await copyTextToClipboard(code);
+    if (!isMounted.current) return;
+    setCopyStatus(copied ? "copied" : "failed");
+    copyResetTimer.current = window.setTimeout(() => {
+      if (isMounted.current) setCopyStatus("idle");
+      copyResetTimer.current = null;
+    }, 2000);
+  };
+
+  const deviceCode = start?.flow === "device_code" ? start.user_code : "";
+  const verificationUrl =
+    start?.flow === "device_code" ? start.verification_url : "";
 
   return (
     <div
@@ -262,35 +317,32 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
               </p>
               <div className="flex items-center justify-between gap-2 border border-border bg-secondary/30 p-4">
                 <code className="font-mono-ui text-2xl tracking-widest text-foreground">
-                  {
-                    (
-                      start as Extract<
-                        OAuthStartResponse,
-                        { flow: "device_code" }
-                      >
-                    ).user_code
-                  }
+                  {deviceCode}
                 </code>
-                <CopyButton
-                  text={
-                    (
-                      start as Extract<
-                        OAuthStartResponse,
-                        { flow: "device_code" }
-                      >
-                    ).user_code
+                <Button
+                  size="sm"
+                  outlined
+                  className="shrink-0 uppercase"
+                  onClick={() => void handleCopyDeviceCode(deviceCode)}
+                  prefix={
+                    copyStatus === "copied" ? (
+                      <Check className="h-4 w-4" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )
                   }
-                />
+                  aria-label={t.oauth.copyCode}
+                >
+                  {copyStatus === "copied" ? t.oauth.copied : t.oauth.copyCode}
+                </Button>
               </div>
+              {copyStatus === "failed" && (
+                <p className="text-xs text-destructive">
+                  {t.oauth.copyFailed}
+                </p>
+              )}
               <a
-                href={
-                  (
-                    start as Extract<
-                      OAuthStartResponse,
-                      { flow: "device_code" }
-                    >
-                  ).verification_url
-                }
+                href={verificationUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
@@ -329,6 +381,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
                     setErrorMsg(null);
                     setStart(null);
                     setPkceCode("");
+                    setSecondsLeft(null);
                     setPhase("starting");
                     api
                       .startOAuthLogin(provider.id)

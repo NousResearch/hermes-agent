@@ -1,6 +1,8 @@
 import { atom } from 'nanostores'
 
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
+import { capitalize } from '@/lib/text'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
@@ -67,11 +69,7 @@ export function cleanPetName(prompt: string): string {
   const meaningful = words.filter(w => !NAME_STOPWORDS.has(w.toLowerCase()))
   const picked = (meaningful.length ? meaningful : words).slice(0, 3)
 
-  const name = picked
-    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(' ')
-    .slice(0, 28)
-    .trim()
+  const name = picked.map(capitalize).join(' ').slice(0, 28).trim()
 
   return name || 'Pet'
 }
@@ -183,12 +181,6 @@ export const $petGenPreview = atom<PetInfo | null>(null)
 export const $petGenInput = atom('')
 export const $petGenRefImage = atom<string | null>(null)
 export const $petGenRefName = atom('')
-
-function isMissingMethod(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-
-  return /method not found|-32601|unknown method|no such method/i.test(message)
-}
 
 /** Clear all generation state (before a fresh run). */
 export function resetPetGen(): void {
@@ -442,7 +434,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
       return false
     }
 
-    if (isMissingMethod(e)) {
+    if (isMissingRpcMethod(e)) {
       $petGenStatus.set('stale')
     } else {
       $petGenStatus.set('error')

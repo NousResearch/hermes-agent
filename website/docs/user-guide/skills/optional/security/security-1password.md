@@ -1,21 +1,21 @@
 ---
-title: "1Password — Set up and use 1Password CLI (op)"
+title: "1Password — Set up op CLI, sign in, and read or inject secrets"
 sidebar_label: "1Password"
-description: "Set up and use 1Password CLI (op)"
+description: "Set up op CLI, sign in, and read or inject secrets"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # 1Password
 
-Set up and use 1Password CLI (op). Use when installing the CLI, enabling desktop app integration, signing in, and reading/injecting secrets for commands.
+Set up op CLI, sign in, and read or inject secrets.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/security/1password` |
-| Path | `optional-skills/security/1password` |
+| Path | `optional-skills/security\1password` |
 | Version | `1.0.0` |
 | Author | arceus77-7, enhanced by Hermes Agent |
 | License | MIT |
@@ -149,7 +149,7 @@ echo "db_password: {{ op://app-prod/db/password }}" | op inject
 ### Run a command with secret env var
 
 ```bash
-export DB_PASSWORD="op://app-prod/db/password"
+export DB_PASSWORD="op://app-prod/db/password"  # example op:// reference, resolved by `op run`
 op run -- sh -c '[ -n "$DB_PASSWORD" ] && echo "DB_PASSWORD is set" || echo "DB_PASSWORD missing"'
 ```
 

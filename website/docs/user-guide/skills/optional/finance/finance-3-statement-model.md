@@ -1,21 +1,21 @@
 ---
-title: "3 Statement Model"
+title: "3 Statement Model — Build integrated IS/BS/CF financial workbooks in Excel"
 sidebar_label: "3 Statement Model"
-description: "Build fully-integrated 3-statement models (IS, BS, CF) in Excel with working capital schedules, D&A roll-forwards, debt schedule, and the plugs that make cas..."
+description: "Build integrated IS/BS/CF financial workbooks in Excel"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # 3 Statement Model
 
-Build fully-integrated 3-statement models (IS, BS, CF) in Excel with working capital schedules, D&A roll-forwards, debt schedule, and the plugs that make cash and retained earnings tie. Pairs with excel-author.
+Build integrated IS/BS/CF financial workbooks in Excel.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/finance/3-statement-model` |
-| Path | `optional-skills/finance/3-statement-model` |
+| Path | `optional-skills/finance\3-statement-model` |
 | Version | `1.0.0` |
 | Author | Anthropic (adapted by Nous Research) |
 | License | Apache-2.0 |
@@ -194,7 +194,7 @@ Use a scenario toggle (dropdown) in the Assumptions tab with CHOOSE or INDEX/MAT
 
 ## SEC Filings Data Extraction
 
-If the template specifically requires pulling data from SEC filings (10-K, 10-Q), see [references/sec-filings.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/finance/3-statement-model/references/sec-filings.md) for detailed extraction guidance. This reference is only needed when populating templates with public company data from regulatory filings.
+If the template specifically requires pulling data from SEC filings (10-K, 10-Q), see [references/sec-filings.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/finance\3-statement-model/references/sec-filings.md) for detailed extraction guidance. This reference is only needed when populating templates with public company data from regulatory filings.
 
 ## Completing Model Templates
 
@@ -327,7 +327,7 @@ This section consolidates all validation checks and audit procedures for complet
 
 ### Core Linkages (Must Always Hold)
 
-See [references/formulas.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/finance/3-statement-model/references/formulas.md) for all formula details.
+See [references/formulas.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/finance\3-statement-model/references/formulas.md) for all formula details.
 
 | Check | Formula | Expected Result |
 |-------|---------|-----------------|

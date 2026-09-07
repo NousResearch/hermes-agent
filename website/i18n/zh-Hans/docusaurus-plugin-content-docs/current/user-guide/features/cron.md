@@ -113,12 +113,12 @@ cronjob(
 设置 `workdir` 后：
 
 - 该目录中的 `AGENTS.md`、`CLAUDE.md` 和 `.cursorrules` 会被注入系统 prompt（发现顺序与交互式 CLI 相同）
-- `terminal`、`read_file`、`write_file`、`patch`、`search_files` 和 `execute_code` 均以该目录为工作目录（通过 `TERMINAL_CWD`）
+- `terminal`、`read_file`、`write_file`、`patch`、`search_files` 和 `execute_code` 均以该目录为工作目录
 - 路径必须是已存在的绝对目录——相对路径和不存在的目录在创建/更新时会被拒绝
 - 编辑时传入 `--workdir ""`（或工具中的 `workdir=""`）可清除该设置并恢复原有行为
 
-:::note 串行化
-设置了 `workdir` 的任务在调度器 tick 时串行运行，而非在并行池中运行。这是有意为之——`TERMINAL_CWD` 是进程全局变量，两个 workdir 任务同时运行会互相破坏各自的 cwd。无 workdir 的任务仍像以前一样并行运行。
+:::note 隔离
+每次 agent 运行都会将其 `workdir` 绑定到该次运行的唯一任务标识。设置了 workdir 的任务因此可使用正常的并行池，不会修改进程全局终端状态，也不会在并发运行之间泄漏路径。如需限制 cron 的总并发量，请设置 `cron.max_parallel_jobs`。
 :::
 
 ## 在指定 profile 中运行 cron 任务
@@ -244,7 +244,13 @@ hermes cron status
 6. 投递最终响应
 7. 更新运行元数据和下次调度时间
 
-`~/.hermes/cron/.tick.lock` 处的文件锁防止重叠的调度器 tick 重复运行同一批任务。
+`~/.hermes/cron/.tick.lock` 文件锁可防止重叠的调度器 tick 重复运行同一批任务。
+
+### 执行历史
+
+Hermes 会在执行器或调度提供程序分派之前，将每次已领取的 cron 尝试记录到当前 profile 的 `~/.hermes/cron/executions.db`。尝试会依次进入 `claimed`、`running`，然后进入不可变的终态：`completed`、`failed` 或 `unknown`。重启后，只有原 PID 与进程启动时间指纹能够证明所有者已经消失时，Hermes 才会将遗留尝试标记为 `unknown`。未知尝试仅用于审计，绝不会自动重跑。
+
+使用 `hermes cron runs [job-id] --limit 20`（别名：`history`）查看最近的尝试。终态历史有界，活动尝试不会被清理；快速备份也包含该账本。
 
 ## 投递选项
 

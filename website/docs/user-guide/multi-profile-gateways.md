@@ -11,7 +11,9 @@ across profiles, preventing the host from sleeping, and recovering from common
 launchd/systemd quirks.
 
 If you only run one Hermes agent, you don't need this page — see
-[Profiles](./profiles.md) for the basics.
+[Profiles](./profiles.md) for the basics. And if your instances live on
+*different* machines that one desktop app should reach simultaneously, see
+[Connecting Desktop to Many Hermes Instances](./multi-connection-desktop.md).
 
 ## When to use this
 
@@ -142,18 +144,44 @@ POST http://host:8644/p/coder/webhooks/<route>
 An unknown or unconfigured profile in the prefix returns `404`. Because the one
 shared listener already serves every profile this way, a **secondary profile
 must not enable a port-binding platform itself** — doing so is a config error
-and the gateway refuses to start, naming the profile and platform:
+that skips the entire secondary profile while the default and other healthy
+profiles continue. The warning names the skipped profile and every conflicting
+platform:
 
 ```
-Profile 'coder' enables the port-binding platform 'webhook', but
-gateway.multiplex_profiles is on. ... Remove platforms.webhook from profile
-'coder's config.yaml (configure it only on the default profile).
+Skipping secondary profile 'coder' due to port-binding config error: Profile
+'coder' enables port-binding platform(s) webhook, but gateway.multiplex_profiles
+is on. ... Remove these platform entries from profile 'coder's config.yaml or
+configure them only on the default profile.
 ```
 
 Port-binding platforms covered by this rule: `webhook`, `api_server`,
-`msgraph_webhook`, `feishu`, `wecom_callback`, `bluebubbles`, `sms`. Configure
-any of these **only on the default profile**; every profile is reachable through
-its `/p/<profile>/` prefix.
+`msgraph_webhook`, `feishu`, `wecom_callback`, `bluebubbles`, `sms`,
+`whatsapp_cloud`, `line`, `teams`. Configure any of these **only on the default profile**;
+every profile is reachable through its `/p/<profile>/` prefix.
+
+Authentication follows the profile named in the URL. Unprefixed endpoints keep
+using the default listener's existing credentials.
+
+- `/p/coder/...` API-server requests must use `API_SERVER_KEY` from
+  `~/.hermes/profiles/coder/.env`; the default listener key is rejected.
+- A webhook route that targets `coder` must declare `profile: coder` beside
+  its existing route-specific `secret` in the default profile's
+  `config.yaml`. That secret is then accepted only at
+  `/p/coder/webhooks/<route>` and is rejected on every other profile prefix.
+- Webhook routes without `profile` remain default-profile routes and are not
+  reachable through a named profile prefix.
+
+Keep port-binding platforms disabled in secondary profile configs. The shared
+listener and its route definitions stay on the default profile; profile
+binding controls which profile each authenticated webhook route may execute.
+Named API requests fail closed when the target profile has no
+`API_SERVER_KEY`.
+
+Only this shared-listener conflict degrades to a skipped profile. Security
+configuration errors remain fatal: for example, an `open` own-policy platform
+without `GATEWAY_ALLOW_ALL_USERS` or its platform-specific allow-all opt-in
+still aborts gateway startup rather than silently dropping the unsafe profile.
 
 #### 3. Per-credential platforms still need their own token per profile
 
@@ -185,9 +213,110 @@ keep working.
 Per-profile `.env` credential isolation is preserved and, if anything,
 stricter: a profile's keys are resolved from its own scope and are never unioned
 into a shared environment (this also means subprocesses like MCP servers and
-Kanban workers only ever see their own profile's secrets). Kanban,
+Kanban workers only ever see their own profile's secrets). Terminal settings
+(`terminal.backend`, `terminal.cwd`, `terminal.docker_volumes`,
+`terminal.docker_shared_container_key`, SSH targets, …) are likewise resolved
+per profile on every routed turn: a profile that omits a terminal key gets the
+documented default, never the launch profile's value, and a profile whose
+`config.yaml`/`.env` cannot be parsed has terminal execution refused rather than
+run under another profile's sandbox policy. Kanban,
 profile-scoped skills/memory/SOUL, and model routing all behave per-profile
 exactly as they do with separate gateways.
+
+### Serving selected profiles
+
+By default, `gateway.multiplex_profiles: true` serves every valid named profile
+on the host. To keep unrelated profiles installed without starting their
+adapters or cron jobs, set `gateway.multiplex_profile_allowlist`:
+
+```yaml
+gateway:
+  multiplex_profiles: true
+  multiplex_profile_allowlist:
+    - worker
+    - guest
+```
+
+The default profile is always served and does not need to be listed. An unset
+allowlist preserves the historical serve-all behavior; an empty list serves
+only the default profile. Names are normalized and deduplicated. Invalid list
+entries or names that are not installed are skipped with a warning. A malformed
+non-list value fails safely to default-only.
+
+The resulting served set also controls `/p/<profile>/` API and webhook prefixes,
+runtime status, profile-route eligibility, and which profiles the in-process
+cron scheduler ticks. A named profile outside the allowlist may still run its
+own standalone gateway.
+
+### Routing shared-bot chats to profiles (`profile_routes`)
+
+Multiplexing selects a profile per **credential** (each profile's own bot
+token) or per **URL prefix** (`/p/<profile>/` for HTTP platforms). When several
+communities share **one** bot token — for example one Discord bot serving many
+guilds — you can additionally route specific guilds/channels/threads to
+different profiles with `gateway.profile_routes`:
+
+```yaml
+gateway:
+  multiplex_profiles: true
+  profile_routes:
+    # An entire Discord server → one profile
+    - name: acme-server
+      platform: discord
+      guild_id: "1234567890"
+      profile: acme
+
+    # One channel in that server → a different profile
+    - name: acme-support
+      platform: discord
+      guild_id: "1234567890"
+      chat_id: "9876543210"
+      profile: acme-support
+
+    # A Telegram group (no guild concept — chat_id only)
+    - name: tg-group
+      platform: telegram
+      chat_id: "-1001234567890"
+      profile: tg-profile
+
+    # A WhatsApp DM — write the phone number; JID and LID forms also match
+    - name: owner-whatsapp
+      platform: whatsapp
+      chat_id: "15551234567"
+      profile: owner
+```
+
+Routes are matched most-specific-first (`thread_id` > `chat_id` > `guild_id`),
+all declared fields must hold (AND), and a route keyed on a channel also
+matches threads/forum posts whose parent is that channel. Messages that match
+no route stay on the default/active profile. The routed profile gets the full
+per-profile isolation described above (config, skills, memory, credentials,
+session namespace). Routing works on every platform adapter, not just Discord.
+
+On WhatsApp and WhatsApp Cloud, a `chat_id` route matches across user-identity
+forms: a bare phone number (`15551234567`), a JID
+(`15551234567@s.whatsapp.net`), and a LID (`…@lid`) all refer to the same
+person once the bridge has paired them (the same canonicalization session keys
+and adapter allowlists already use). You can put the phone number in
+`profile_routes` and inbound DMs still match whether WhatsApp delivers a JID or
+a LID. Without a LID mapping yet, the number form still matches a JID (the
+suffix is stripped) but cannot resolve an unknown LID — that inbound falls
+through to the default profile until the mapping appears. Group chats
+(`…@g.us`) are not sender identities and still match exactly. Telegram numeric
+ids are unchanged.
+
+`profile_routes` requires `gateway.multiplex_profiles: true`; with
+multiplexing off the routes are ignored. If an explicit route matches but its
+target profile is not installed or is outside `multiplex_profile_allowlist`,
+the gateway rejects that ingress and logs the route and target. It does not run
+the default profile. Traffic that matches no route keeps the historical
+default-profile behavior.
+
+Cron jobs owned by a routed profile deliver through the shared bot too, but
+only to targets an enabled route with a `chat_id`/`thread_id` maps to that
+profile — a routed profile's job targeting an unrouted chat (or a chat routed
+to another profile) is never sent through the shared bot. Guild-only routes do
+not qualify a cron target; add a `chat_id` route for the delivery channel.
 
 ## Start, stop, or restart all gateways at once
 

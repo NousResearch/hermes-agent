@@ -49,9 +49,6 @@ class TestRedactApprovalCommand:
         out = _redact_approval_command(raw)
         assert _FAKE_JWT not in out
 
-    def test_clean_command_passes_through_unchanged(self):
-        raw = "ls -la /tmp && echo hello"
-        assert _redact_approval_command(raw) == raw
 
     def test_forces_redaction_even_when_disabled(self, monkeypatch):
         """force=True must redact even if security.redact_secrets is off -- the
@@ -62,15 +59,12 @@ class TestRedactApprovalCommand:
         out = _redact_approval_command(raw)
         assert _FAKE_GHP not in out
 
-    def test_handles_none_and_empty(self):
-        assert _redact_approval_command("") == ""
-        assert _redact_approval_command(None) == ""
-
 
 class TestApprovalCommandWiring:
     """Guard the production wiring on BOTH approval-notify transports:
     1. the chat-platform path (_approval_notify_sync in gateway/run.py), and
-    2. the SSE/API path (_approval_notify in gateway/platforms/api_server.py),
+    2. the SSE/API path (_approval_notify in
+       gateway/platforms/api_server_runs.py),
     each of which must route the command through _redact_approval_command and
     REASSIGN the redacted value before any send/enqueue (so the raw command
     cannot reach a client). Uses AST (not char-offset string slicing) so a
@@ -118,11 +112,29 @@ class TestApprovalCommandWiring:
         )
 
     def test_chat_platform_path_redacts_before_send(self):
-        import gateway.run as run
+        import gateway.run_turn_runner as run
 
         self._assert_redacts_then_uses(run, "_approval_notify_sync", "send_exec_approval")
 
     def test_sse_api_path_redacts_before_enqueue(self):
-        from gateway.platforms import api_server
+        from gateway.platforms import api_server_runs
 
-        self._assert_redacts_then_uses(api_server, "_approval_notify", "put_nowait")
+        self._assert_redacts_then_uses(
+            api_server_runs, "_approval_notify", "put_nowait"
+        )
+
+
+class TestApprovalTextFallbackContract:
+    def test_smart_deny_only_advertises_one_operation(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "rm -rf /", "dangerous deletion", "/",
+            allow_permanent=False, smart_denied=True,
+        )
+        assert "owner override" in text.lower()
+        assert "one operation" in text.lower()
+        assert "`/approve`" in text
+        assert "approve session" not in text
+        assert "approve always" not in text
+

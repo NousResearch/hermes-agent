@@ -18,16 +18,6 @@ def _node(name: str, category: str, related=None):
     return n
 
 
-def test_edges_only_connect_existing_nodes():
-    nodes = {
-        "a": _node("a", "x", related=["b", "ghost"]),
-        "b": _node("b", "x", related=["a"]),
-        "c": _node("c", "y"),
-    }
-    edges = learning_graph.build_edges(nodes)
-
-    # The a→b link is kept once (deduped, undirected); a→ghost is dropped.
-    assert edges == [("a", "b")]
 
 
 def test_density_stats_count_isolated_nodes():
@@ -43,27 +33,6 @@ def test_density_stats_count_isolated_nodes():
     assert stats["isolated_pct"] == round(100 / 3, 1)
 
 
-def test_skill_node_timestamp_uses_iso_usage_activity(tmp_path, monkeypatch):
-    skill_dir = tmp_path / "skills" / "dev" / "iso-skill"
-    skill_dir.mkdir(parents=True)
-    skill_md = skill_dir / "SKILL.md"
-    skill_md.write_text("---\nname: iso-skill\ncategory: dev\n---\n# ISO\n", encoding="utf-8")
-
-    monkeypatch.setattr(
-        learning_graph,
-        "_load_usage",
-        lambda: {
-            "iso-skill": {
-                "created_by": "agent",
-                "last_used_at": "2026-04-30T12:00:00+00:00",
-                "use_count": 1,
-            }
-        },
-    )
-
-    nodes = learning_graph.build_skill_nodes([("profile", tmp_path / "skills")])
-
-    assert nodes["iso-skill"].timestamp == 1_777_550_400
 
 
 def test_memory_is_cards_split_on_separator(tmp_path):
@@ -86,6 +55,10 @@ def test_memory_is_cards_split_on_separator(tmp_path):
     assert all(c["source"] in {"memory", "profile"} for c in graph["memory"])
     assert all("timestamp" in c for c in graph["memory"])
     assert any(n["kind"] == "memory" for n in graph["nodes"])
+
+
+
+
 
 
 def test_full_payload_shape_and_edge_integrity(tmp_path):

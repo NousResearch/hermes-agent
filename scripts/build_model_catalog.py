@@ -33,10 +33,29 @@ sys.path.insert(0, REPO_ROOT)
 # Ensure HERMES_HOME is set for imports that touch it at module level.
 os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
 
-from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS  # noqa: E402
+from hermes_cli.models import (  # noqa: E402
+    OPENROUTER_MODELS,
+    PREFERRED_SILENT_DEFAULT_MODEL,
+    _PROVIDER_MODELS,
+)
 
 OUTPUT_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "model-catalog.json")
 CATALOG_VERSION = 1
+
+
+def _openrouter_entry(mid: str, desc: str) -> dict:
+    entry: dict = {"id": mid, "description": desc}
+    if mid == PREFERRED_SILENT_DEFAULT_MODEL:
+        entry["description"] = desc or "default"
+        entry["default"] = True
+    return entry
+
+
+def _nous_entry(mid: str) -> dict:
+    entry: dict = {"id": mid}
+    if mid == PREFERRED_SILENT_DEFAULT_MODEL:
+        entry["default"] = True
+    return entry
 
 
 def build_catalog() -> dict:
@@ -53,11 +72,13 @@ def build_catalog() -> dict:
                     "display_name": "OpenRouter",
                     "note": (
                         "Descriptions drive picker badges. Live /api/v1/models "
-                        "filters curated ids by tool-calling support and free pricing."
+                        "filters curated ids by tool-calling support and free pricing. "
+                        'The entry labeled "default": true is the model Hermes '
+                        "silently lands on when the user never picked one."
                     ),
                 },
                 "models": [
-                    {"id": mid, "description": desc}
+                    _openrouter_entry(mid, desc)
                     for mid, desc in OPENROUTER_MODELS
                 ],
             },
@@ -66,11 +87,13 @@ def build_catalog() -> dict:
                     "display_name": "Nous Portal",
                     "note": (
                         "Free-tier gating is determined live via Portal pricing "
-                        "(partition_nous_models_by_tier), not this manifest."
+                        "(partition_nous_models_by_tier), not this manifest. "
+                        'The entry labeled "default": true is the model Hermes '
+                        "silently lands on when the user never picked one."
                     ),
                 },
                 "models": [
-                    {"id": mid}
+                    _nous_entry(mid)
                     for mid in _PROVIDER_MODELS.get("nous", [])
                 ],
             },

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
+import { removeDeletedEnvVarFromState } from "@/lib/env-state";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -65,6 +66,7 @@ const PROVIDER_GROUPS: { prefix: string; name: string; priority: number }[] = [
   { prefix: "OPENCODE_ZEN_", name: "OpenCode Zen", priority: 11 },
   { prefix: "OPENROUTER_", name: "OpenRouter", priority: 12 },
   { prefix: "XIAOMI_", name: "Xiaomi MiMo", priority: 13 },
+  { prefix: "UPSTAGE_", name: "Upstage Solar", priority: 14 },
 ];
 
 function getProviderGroup(key: string): string {
@@ -721,14 +723,7 @@ export default function EnvPage() {
         setSaving(key);
         try {
           await api.deleteEnvVar(key);
-          setVars((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  [key]: { ...prev[key], is_set: false, redacted_value: null },
-                }
-              : prev,
-          );
+          setVars((prev) => removeDeletedEnvVarFromState(prev, key));
           setEdits((prev) => {
             const n = { ...prev };
             delete n[key];

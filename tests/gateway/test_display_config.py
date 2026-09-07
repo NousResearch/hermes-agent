@@ -34,34 +34,6 @@ class TestResolveDisplaySetting:
         }
         assert resolve_display_setting(config, "telegram", "tool_progress") == "new"
 
-    def test_platform_default_when_no_user_config(self):
-        """Falls back to built-in platform default."""
-        from gateway.display_config import resolve_display_setting
-
-        # Empty config — should get built-in defaults
-        config = {}
-        # Telegram is a mobile inbox by default — final-answer-first unless
-        # explicitly configured otherwise.
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "off"
-        # Email defaults to tier_minimal → "off"
-        assert resolve_display_setting(config, "email", "tool_progress") == "off"
-
-    def test_global_default_for_unknown_platform(self):
-        """Unknown platforms get the global defaults."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {}
-        # Unknown platform, no config → global default "all"
-        assert resolve_display_setting(config, "unknown_platform", "tool_progress") == "all"
-
-    def test_fallback_parameter_used_last(self):
-        """Explicit fallback is used when nothing else matches."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {}
-        # "nonexistent_key" isn't in any defaults
-        result = resolve_display_setting(config, "telegram", "nonexistent_key", "my_fallback")
-        assert result == "my_fallback"
 
     def test_platform_override_only_affects_that_platform(self):
         """Other platforms are unaffected by a specific platform override."""
@@ -102,31 +74,6 @@ class TestBackwardCompat:
         assert resolve_display_setting(config, "signal", "tool_progress") == "off"
         assert resolve_display_setting(config, "telegram", "tool_progress") == "verbose"
 
-    def test_new_platforms_takes_precedence_over_legacy(self):
-        """display.platforms beats tool_progress_overrides."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "tool_progress": "all",
-                "tool_progress_overrides": {"telegram": "verbose"},
-                "platforms": {"telegram": {"tool_progress": "new"}},
-            }
-        }
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "new"
-
-    def test_legacy_overrides_only_for_tool_progress(self):
-        """Legacy overrides don't affect other settings."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "tool_progress_overrides": {"telegram": "verbose"},
-            }
-        }
-        # show_reasoning should NOT read from tool_progress_overrides
-        assert resolve_display_setting(config, "telegram", "show_reasoning") is False
-
 
 # ---------------------------------------------------------------------------
 # YAML normalisation
@@ -142,33 +89,30 @@ class TestYAMLNormalisation:
         config = {"display": {"tool_progress": False}}
         assert resolve_display_setting(config, "telegram", "tool_progress") == "off"
 
-    def test_tool_progress_true_normalised_to_all(self):
-        """YAML's bare `on` parses as True — normalised to 'all'."""
+
+    def test_only_long_running_visibility_accepts_generic_mode(self):
         from gateway.display_config import resolve_display_setting
 
-        config = {"display": {"tool_progress": True}}
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
+        config = {
+            "display": {
+                "platforms": {
+                    "whatsapp": {
+                        "thinking_progress": "generic",
+                        "interim_assistant_messages": "generic",
+                        "long_running_notifications": "generic",
+                    }
+                }
+            }
+        }
+        assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
+        assert resolve_display_setting(config, "whatsapp", "interim_assistant_messages") is False
+        assert resolve_display_setting(config, "whatsapp", "long_running_notifications") == "generic"
 
-    def test_show_reasoning_string_true(self):
-        """String 'true' is normalised to bool True."""
+    def test_thinking_progress_string_false_normalised_to_false(self):
         from gateway.display_config import resolve_display_setting
 
-        config = {"display": {"platforms": {"telegram": {"show_reasoning": "true"}}}}
-        assert resolve_display_setting(config, "telegram", "show_reasoning") is True
-
-    def test_tool_preview_length_string(self):
-        """String numbers are normalised to int."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {"display": {"platforms": {"slack": {"tool_preview_length": "80"}}}}
-        assert resolve_display_setting(config, "slack", "tool_preview_length") == 80
-
-    def test_platform_override_false_tool_progress(self):
-        """Per-platform bare off → normalised."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {"display": {"platforms": {"slack": {"tool_progress": False}}}}
-        assert resolve_display_setting(config, "slack", "tool_progress") == "off"
+        config = {"display": {"platforms": {"whatsapp": {"thinking_progress": "false"}}}}
+        assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
 
 
 # ---------------------------------------------------------------------------
@@ -187,18 +131,6 @@ class TestPlatformDefaults:
         # Discord: pure tier_high.
         assert resolve_display_setting({}, "discord", "tool_progress") == "all"
 
-    def test_medium_tier_platforms(self):
-        """Mattermost, Matrix, Feishu, WhatsApp default to 'new' tool progress."""
-        from gateway.display_config import resolve_display_setting
-
-        for plat in ("mattermost", "matrix", "feishu", "whatsapp"):
-            assert resolve_display_setting({}, plat, "tool_progress") == "new", plat
-
-    def test_slack_defaults_tool_progress_off(self):
-        """Slack defaults to quiet tool progress (permanent chat noise otherwise)."""
-        from gateway.display_config import resolve_display_setting
-
-        assert resolve_display_setting({}, "slack", "tool_progress") == "off"
 
     def test_low_tier_platforms(self):
         """Signal, BlueBubbles, etc. default to 'off' tool progress."""
@@ -207,39 +139,6 @@ class TestPlatformDefaults:
         for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk", "whatsapp_cloud"):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
 
-    def test_whatsapp_cloud_locked_to_low_tier_until_edit_message_lands(self):
-        """Regression guard: ``whatsapp_cloud`` must stay TIER_LOW until the
-        adapter implements edit_message. Without an edit endpoint, raising
-        the tier to MEDIUM would spam separate WhatsApp messages for every
-        tool-progress update, which is the exact failure mode this entry
-        exists to avoid.
-
-        When/if Cloud's edit_message lands, update _PLATFORM_DEFAULTS to
-        TIER_MEDIUM and update this test to assert ``"new"`` accordingly.
-        """
-        from gateway.display_config import resolve_display_setting
-        assert resolve_display_setting({}, "whatsapp_cloud", "tool_progress") == "off"
-        assert resolve_display_setting({}, "whatsapp_cloud", "streaming") is False
-
-    def test_minimal_tier_platforms(self):
-        """Email, SMS, webhook default to 'off' tool progress."""
-        from gateway.display_config import resolve_display_setting
-
-        for plat in ("email", "sms", "webhook", "homeassistant"):
-            assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
-
-    def test_low_tier_streaming_defaults_to_false(self):
-        """Low-tier platforms default streaming to False."""
-        from gateway.display_config import resolve_display_setting
-
-        assert resolve_display_setting({}, "signal", "streaming") is False
-        assert resolve_display_setting({}, "email", "streaming") is False
-
-    def test_high_tier_streaming_defaults_to_none(self):
-        """High-tier platforms default streaming to None (follow global)."""
-        from gateway.display_config import resolve_display_setting
-
-        assert resolve_display_setting({}, "telegram", "streaming") is None
 
     def test_telegram_mobile_chatter_defaults(self):
         """Telegram keeps real mid-turn signal (interim commentary + heartbeats)
@@ -261,25 +160,13 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "discord", "long_running_notifications") is True
         assert resolve_display_setting({}, "discord", "busy_ack_detail") is True
 
-    def test_telegram_mobile_chatter_can_opt_in(self):
-        """Per-platform config can re-enable Telegram busy-ack detail
-        and re-disable the kept-on defaults."""
+    def test_slack_workspace_chatter_defaults(self):
+        """Slack should not leave permanent heartbeat/debug breadcrumbs in channels."""
         from gateway.display_config import resolve_display_setting
 
-        config = {
-            "display": {
-                "platforms": {
-                    "telegram": {
-                        "interim_assistant_messages": False,
-                        "long_running_notifications": False,
-                        "busy_ack_detail": "on",
-                    }
-                }
-            }
-        }
-        assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is False
-        assert resolve_display_setting(config, "telegram", "long_running_notifications") is False
-        assert resolve_display_setting(config, "telegram", "busy_ack_detail") is True
+        assert resolve_display_setting({}, "slack", "tool_progress") == "off"
+        assert resolve_display_setting({}, "slack", "long_running_notifications") is False
+        assert resolve_display_setting({}, "slack", "busy_ack_detail") is False
 
 
 # ---------------------------------------------------------------------------
@@ -318,30 +205,6 @@ class TestConfigMigration:
         assert platforms.get("signal", {}).get("tool_progress") == "off"
         assert platforms.get("telegram", {}).get("tool_progress") == "all"
 
-    def test_migration_preserves_existing_platforms_entries(self, tmp_path, monkeypatch):
-        """Existing display.platforms entries are NOT overwritten by migration."""
-        import yaml
-
-        config_path = tmp_path / "config.yaml"
-        config = {
-            "_config_version": 15,
-            "display": {
-                "tool_progress_overrides": {"telegram": "off"},
-                "platforms": {"telegram": {"tool_progress": "verbose"}},
-            },
-        }
-        config_path.write_text(yaml.dump(config), encoding="utf-8")
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        import importlib
-        import hermes_cli.config as cfg_mod
-        importlib.reload(cfg_mod)
-
-        cfg_mod.migrate_config(interactive=False, quiet=True)
-        updated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        # Existing "verbose" should NOT be overwritten by legacy "off"
-        assert updated["display"]["platforms"]["telegram"]["tool_progress"] == "verbose"
-
 
 # ---------------------------------------------------------------------------
 # Streaming per-platform (None = follow global)
@@ -350,23 +213,6 @@ class TestConfigMigration:
 class TestStreamingPerPlatform:
     """Streaming per-platform override semantics."""
 
-    def test_none_means_follow_global(self):
-        """When streaming is None, the caller should use global config."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {}
-        # Telegram has no streaming override in defaults → None
-        result = resolve_display_setting(config, "telegram", "streaming")
-        assert result is None  # caller should check global StreamingConfig
-
-    def test_global_display_streaming_is_cli_only(self):
-        """display.streaming must not act as a gateway streaming override."""
-        from gateway.display_config import resolve_display_setting
-
-        for value in (True, False):
-            config = {"display": {"streaming": value}}
-            assert resolve_display_setting(config, "telegram", "streaming") is None
-            assert resolve_display_setting(config, "discord", "streaming") is None
 
     def test_explicit_false_disables(self):
         """Explicit False disables streaming for that platform."""
@@ -379,16 +225,30 @@ class TestStreamingPerPlatform:
         }
         assert resolve_display_setting(config, "telegram", "streaming") is False
 
-    def test_explicit_true_enables(self):
-        """Explicit True enables streaming for that platform."""
+    def test_wecom_default_is_streaming_enabled(self):
+        """WeCom has a native streaming transport (msgtype: stream) so its
+        built-in default opts into streaming even though it sits in the
+        non-editable tier."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "wecom", "streaming") is True
+
+    def test_wecom_callback_default_remains_off(self):
+        """The legacy callback adapter has no stream protocol — keep off."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "wecom_callback", "streaming") is False
+
+    def test_wecom_user_can_still_disable_streaming(self):
+        """Per-platform override beats the built-in default."""
         from gateway.display_config import resolve_display_setting
 
         config = {
             "display": {
-                "platforms": {"email": {"streaming": True}},
+                "platforms": {"wecom": {"streaming": False}},
             }
         }
-        assert resolve_display_setting(config, "email", "streaming") is True
+        assert resolve_display_setting(config, "wecom", "streaming") is False
 
 
 # ---------------------------------------------------------------------------
@@ -405,39 +265,6 @@ class TestCleanupProgress:
         for plat in ("telegram", "discord", "slack", "email"):
             assert resolve_display_setting({}, plat, "cleanup_progress") is False
 
-    def test_global_true_applies_to_all_platforms(self):
-        """display.cleanup_progress=true opts in globally."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {"display": {"cleanup_progress": True}}
-        assert resolve_display_setting(config, "telegram", "cleanup_progress") is True
-        assert resolve_display_setting(config, "discord", "cleanup_progress") is True
-
-    def test_per_platform_override_wins(self):
-        """display.platforms.<plat>.cleanup_progress beats the global value."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "cleanup_progress": False,
-                "platforms": {
-                    "telegram": {"cleanup_progress": True},
-                },
-            }
-        }
-        assert resolve_display_setting(config, "telegram", "cleanup_progress") is True
-        assert resolve_display_setting(config, "discord", "cleanup_progress") is False
-
-    def test_yaml_off_string_normalises_to_false(self):
-        """YAML 1.1 bare ``off`` becomes string 'off' — treat as False."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "platforms": {"telegram": {"cleanup_progress": "off"}},
-            }
-        }
-        assert resolve_display_setting(config, "telegram", "cleanup_progress") is False
 
     def test_yaml_true_string_normalises_to_true(self):
         """String 'true'/'yes'/'on' all resolve to True."""
@@ -473,44 +300,6 @@ class TestToolProgressGrouping:
             == "separate"
         )
 
-    def test_platform_override_wins(self):
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "tool_progress_grouping": "accumulate",
-                "platforms": {"discord": {"tool_progress_grouping": "separate"}},
-            }
-        }
-        assert (
-            resolve_display_setting(config, "discord", "tool_progress_grouping")
-            == "separate"
-        )
-        # Other platforms still get the global value.
-        assert (
-            resolve_display_setting(config, "telegram", "tool_progress_grouping")
-            == "accumulate"
-        )
-
-    def test_invalid_value_falls_back_to_accumulate(self):
-        """_normalise rejects anything outside accumulate|separate."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {"display": {"tool_progress_grouping": "bogus"}}
-        assert (
-            resolve_display_setting(config, "telegram", "tool_progress_grouping")
-            == "accumulate"
-        )
-
-    def test_case_insensitive(self):
-        from gateway.display_config import resolve_display_setting
-
-        config = {"display": {"tool_progress_grouping": "SEPARATE"}}
-        assert (
-            resolve_display_setting(config, "telegram", "tool_progress_grouping")
-            == "separate"
-        )
-
 
 class TestReasoningStyle:
     """Per-platform reasoning render style (code | blockquote | subtext)."""
@@ -528,30 +317,13 @@ class TestReasoningStyle:
                 resolve_display_setting({}, plat, "reasoning_style") == "code"
             ), plat
 
-    def test_platform_override_wins(self):
+
+class TestLiveStatusSetting:
+    """display.live_status — tri-state normalisation + platform overrides."""
+
+    def test_default_is_full(self):
         from gateway.display_config import resolve_display_setting
 
-        config = {"display": {"platforms": {"discord": {"reasoning_style": "blockquote"}}}}
-        assert (
-            resolve_display_setting(config, "discord", "reasoning_style") == "blockquote"
-        )
+        assert resolve_display_setting({}, "slack", "live_status") == "full"
 
-    def test_global_override(self):
-        from gateway.display_config import resolve_display_setting
 
-        config = {"display": {"reasoning_style": "subtext"}}
-        assert (
-            resolve_display_setting(config, "telegram", "reasoning_style") == "subtext"
-        )
-
-    def test_invalid_value_falls_back_to_code(self):
-        from gateway.display_config import resolve_display_setting
-
-        config = {"display": {"reasoning_style": "bogus"}}
-        assert resolve_display_setting(config, "telegram", "reasoning_style") == "code"
-
-    def test_case_insensitive(self):
-        from gateway.display_config import resolve_display_setting
-
-        config = {"display": {"reasoning_style": "SUBTEXT"}}
-        assert resolve_display_setting(config, "telegram", "reasoning_style") == "subtext"

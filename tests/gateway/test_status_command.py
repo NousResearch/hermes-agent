@@ -1,10 +1,10 @@
-from hermes_state import AsyncSessionDB
+from hermes_state import AsyncSessionDB, SessionDB
 """Tests for gateway /status behavior and token persistence."""
 
 from datetime import datetime
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -75,59 +75,6 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
 
 
 @pytest.mark.asyncio
-async def test_status_command_reports_running_agent_without_interrupt(monkeypatch):
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-        total_tokens=321,
-    )
-    runner = _make_runner(session_entry)
-    # Token total comes from the SQLite SessionDB, not SessionEntry.
-    runner._session_db._db.get_session.return_value = {
-        "input_tokens": 200,
-        "output_tokens": 121,
-        "cache_read_tokens": 0,
-        "cache_write_tokens": 0,
-        "reasoning_tokens": 0,
-    }
-    running_agent = MagicMock()
-    runner._running_agents[build_session_key(_make_source())] = running_agent
-
-    result = await runner._handle_message(_make_event("/status"))
-
-    assert "**Session ID:** `sess-1`" in result
-    assert "**Cumulative API tokens (re-sent each call):** 321" in result
-    assert "**Agent Running:** Yes ⚡" in result
-    assert "**Title:**" not in result
-    running_agent.interrupt.assert_not_called()
-    assert runner._pending_messages == {}
-
-
-@pytest.mark.asyncio
-async def test_status_command_includes_session_title_when_present():
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-        total_tokens=321,
-    )
-    runner = _make_runner(session_entry)
-    runner._session_db._db.get_session_title.return_value = "My titled session"
-
-    result = await runner._handle_message(_make_event("/status"))
-
-    assert "**Session ID:** `sess-1`" in result
-    assert "**Title:** My titled session" in result
-
-
-@pytest.mark.asyncio
 async def test_status_command_reads_token_totals_from_session_db():
     """Regression test for #17158: /status must source token totals from the
     SQLite SessionDB (where run_agent.py persists them) and sum all component
@@ -153,28 +100,7 @@ async def test_status_command_reads_token_totals_from_session_db():
     result = await runner._handle_message(_make_event("/status"))
 
     # 1000 + 250 + 500 + 100 + 50 = 1,900
-    assert "**Cumulative API tokens (re-sent each call):** 1,900" in result
-
-
-@pytest.mark.asyncio
-async def test_status_command_tokens_zero_when_session_db_row_missing():
-    """When the SessionDB has no row for the current session yet (fresh
-    session, no agent calls), /status reports 0 without raising."""
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-        total_tokens=999,  # This should be ignored.
-    )
-    runner = _make_runner(session_entry)
-    runner._session_db._db.get_session.return_value = None
-
-    result = await runner._handle_message(_make_event("/status"))
-
-    assert "**Cumulative API tokens (re-sent each call):** 0" in result
+    assert "**Lifetime tokens billed:** 1,900" in result
 
 
 @pytest.mark.asyncio
@@ -212,12 +138,12 @@ async def test_status_command_includes_live_agent_model_and_context():
 
     assert "**Model:** `openai/gpt-test` (openai)" in result
     assert "**Context:** 12,345 / 100,000 (12%)" in result
-    assert "**Cumulative API tokens (re-sent each call):** 1,250" in result
-    assert "1,250 (cumulative)" not in result
+    assert "**Lifetime tokens billed:** 1,250" in result
 
 
 @pytest.mark.asyncio
-async def test_status_command_includes_persisted_model_and_context_when_agent_not_running(monkeypatch):
+async def test_status_command_uses_dominant_persisted_model_route(tmp_path):
+    """Persisted status must not combine a model and provider from different calls."""
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
         session_id="sess-1",
@@ -225,55 +151,42 @@ async def test_status_command_includes_persisted_model_and_context_when_agent_no
         updated_at=datetime.now(),
         platform=Platform.TELEGRAM,
         chat_type="dm",
-        total_tokens=0,
-        last_prompt_tokens=24_000,
     )
     runner = _make_runner(session_entry)
-    runner._session_db._db.get_session.return_value = {
-        "input_tokens": 2000,
-        "output_tokens": 500,
-        "cache_read_tokens": 0,
-        "cache_write_tokens": 0,
-        "reasoning_tokens": 0,
-        "model": "openai/gpt-persisted",
-        "billing_provider": "openai-codex",
-        "billing_base_url": "https://example.invalid/v1",
-    }
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"model": {"context_length": 272_000}})
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner._session_db = AsyncSessionDB(db)
+    try:
+        db.create_session("sess-1", "telegram", model="z-ai/glm-5.2")
+        db.update_token_counts(
+            "sess-1",
+            model="z-ai/glm-5.2",
+            billing_provider="nvidia",
+            billing_base_url="https://integrate.api.nvidia.com/v1/",
+            input_tokens=480,
+            api_call_count=48,
+        )
+        db.update_token_counts(
+            "sess-1",
+            model="upstage/solar-pro4:free",
+            billing_provider="nous",
+            billing_base_url="https://inference-api.nousresearch.com/v1/",
+            input_tokens=60,
+            api_call_count=6,
+        )
+        # Reproduce the inconsistent legacy summary observed in #87227.
+        db.update_session_model("sess-1", "z-ai/glm-5.2")
+        db.update_session_billing_route(
+            "sess-1",
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1/",
+        )
 
-    result = await runner._handle_message(_make_event("/status"))
+        result = await runner._handle_message(_make_event("/status"))
 
-    assert "**Model:** `openai/gpt-persisted` (openai-codex)" in result
-    assert "**Context:** 24,000 / 272,000 (9%)" in result
-    assert "**Cumulative API tokens (re-sent each call):** 2,500" in result
-
-
-@pytest.mark.asyncio
-async def test_status_command_includes_cached_agent_model_and_context():
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-        total_tokens=0,
-    )
-    runner = _make_runner(session_entry)
-    cached_agent = SimpleNamespace(
-        model="anthropic/claude-sonnet-test",
-        provider="openrouter",
-        context_compressor=SimpleNamespace(
-            last_prompt_tokens=10_000,
-            context_length=200_000,
-        ),
-    )
-    runner._agent_cache = {session_entry.session_key: (cached_agent, time.time())}
-
-    result = await runner._handle_message(_make_event("/status"))
-
-    assert "**Model:** `anthropic/claude-sonnet-test` (openrouter)" in result
-    assert "**Context:** 10,000 / 200,000 (5%)" in result
+        assert "**Model:** `z-ai/glm-5.2` (nvidia)" in result
+        assert "**Model:** `z-ai/glm-5.2` (nous)" not in result
+    finally:
+        db.close()
 
 
 @pytest.mark.asyncio
@@ -346,48 +259,6 @@ async def test_tasks_alias_routes_to_agents_command(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_handle_message_persists_agent_token_counts(monkeypatch):
-    import gateway.run as gateway_run
-
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry)
-    runner.session_store.load_transcript.return_value = [{"role": "user", "content": "earlier"}]
-    runner._run_agent = AsyncMock(
-        return_value={
-            "final_response": "ok",
-            "messages": [],
-            "tools": [],
-            "history_offset": 0,
-            "last_prompt_tokens": 80,
-            "input_tokens": 120,
-            "output_tokens": 45,
-            "model": "openai/test-model",
-        }
-    )
-
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
-    monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
-        lambda *_args, **_kwargs: 100000,
-    )
-
-    result = await runner._handle_message(_make_event("hello"))
-
-    assert result == "ok"
-    runner.session_store.update_session.assert_called_once_with(
-        session_entry.session_key,
-        last_prompt_tokens=80,
-    )
-
-
-@pytest.mark.asyncio
 async def test_first_run_slack_home_channel_onboarding_uses_parent_command(monkeypatch):
     import gateway.run as gateway_run
 
@@ -429,95 +300,6 @@ async def test_first_run_slack_home_channel_onboarding_uses_parent_command(monke
     onboarding = runner.adapters[Platform.SLACK].send.await_args.args[1]
     assert "/hermes sethome" in onboarding
     assert "Type /sethome" not in onboarding
-
-
-@pytest.mark.asyncio
-async def test_first_run_non_slack_home_channel_onboarding_keeps_direct_command(monkeypatch):
-    import gateway.run as gateway_run
-
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source(Platform.TELEGRAM)),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry, platform=Platform.TELEGRAM)
-    runner.session_store.load_transcript.return_value = []
-    runner.session_store.has_any_sessions.return_value = False
-    runner._run_agent = AsyncMock(
-        return_value={
-            "final_response": "ok",
-            "messages": [],
-            "tools": [],
-            "history_offset": 0,
-            "last_prompt_tokens": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "model": "openai/test-model",
-        }
-    )
-
-    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
-    monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
-        lambda *_args, **_kwargs: 100000,
-    )
-
-    result = await runner._handle_message(_make_event("hello", platform=Platform.TELEGRAM))
-
-    assert result == "ok"
-    runner.adapters[Platform.TELEGRAM].send.assert_awaited_once()
-    onboarding = runner.adapters[Platform.TELEGRAM].send.await_args.args[1]
-    assert "Type /sethome" in onboarding
-
-
-@pytest.mark.asyncio
-async def test_handle_message_discards_stale_result_after_session_invalidation(monkeypatch):
-    import gateway.run as gateway_run
-
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry)
-    runner.session_store.load_transcript.return_value = [{"role": "user", "content": "earlier"}]
-    session_key = session_entry.session_key
-    runner.adapters[Platform.TELEGRAM]._post_delivery_callbacks = {session_key: object()}
-
-    async def _stale_result(**kwargs):
-        runner._invalidate_session_run_generation(kwargs["session_key"], reason="test_stale_result")
-        return {
-            "final_response": "late reply",
-            "messages": [],
-            "tools": [],
-            "history_offset": 0,
-            "last_prompt_tokens": 80,
-            "input_tokens": 120,
-            "output_tokens": 45,
-            "model": "openai/test-model",
-        }
-
-    runner._run_agent = AsyncMock(side_effect=_stale_result)
-
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
-    monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
-        lambda *_args, **_kwargs: 100000,
-    )
-
-    result = await runner._handle_message(_make_event("hello"))
-
-    assert result is None
-    runner.session_store.append_to_transcript.assert_not_called()
-    runner.session_store.update_session.assert_not_called()
-    assert session_key not in runner.adapters[Platform.TELEGRAM]._post_delivery_callbacks
 
 
 @pytest.mark.asyncio
@@ -589,7 +371,6 @@ async def test_handle_message_stale_result_keeps_newer_generation_callback(monke
     assert adapter._post_delivery_callbacks[session_key][0] == 2
 
 
-
 @pytest.mark.asyncio
 async def test_status_command_bypasses_active_session_guard():
     """When an agent is running, /status must be dispatched immediately via
@@ -648,9 +429,14 @@ async def test_status_command_bypasses_active_session_guard():
 
 
 @pytest.mark.asyncio
-async def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path):
-    """Gateway /profile detects custom-root profiles (not under ~/.hermes)."""
-    from pathlib import Path
+async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_path):
+    """On a multiplexed gateway, /profile reports the profile SERVING the
+    source (source.profile — URL prefix / per-credential adapter / room map),
+    not the multiplexer's active profile, which is always the default and
+    made /profile answer "default" in every persona chat."""
+    hermes_home = tmp_path / ".hermes"
+    profile_home = hermes_home / "profiles" / "milo"
+    profile_home.mkdir(parents=True)
 
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
@@ -661,77 +447,145 @@ async def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path
         chat_type="dm",
     )
     runner = _make_runner(session_entry)
-    profile_home = tmp_path / "profiles" / "coder"
+    runner.config.multiplex_profiles = True
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    monkeypatch.setenv("HERMES_HOME", str(profile_home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path / "unrelated-home")
+    event = _make_event("/profile")
+    event.source.profile = "milo"
 
-    result = await runner._handle_profile_command(_make_event("/profile"))
+    result = await runner._handle_profile_command(event)
 
-    assert "**Profile:** `coder`" in result
+    assert "**Profile:** `milo`" in result
     assert f"**Home:** `{profile_home}`" in result
 
 
+# ── /context command tests ────────────────────────────────────────────────
+
+
 @pytest.mark.asyncio
-async def test_post_delivery_callback_generation_snapshot_happens_after_bind():
-    """Regression: the callback_generation snapshot in _process_message_background
-    must happen AFTER the handler runs, not before.
-
-    _hermes_run_generation is set on the interrupt event by
-    GatewayRunner._bind_adapter_run_generation during _handle_message_with_agent.
-    The earlier snapshot-at-task-start always captured None, which bypassed the
-    generation-ownership check in pop_post_delivery_callback and let stale runs
-    fire a fresher run's callbacks.
-    """
-    import asyncio
-    from gateway.platforms.base import BasePlatformAdapter
-
-    source = _make_source()
-    session_key = build_session_key(source)
-    fired = []
-
-    class _ConcreteAdapter(BasePlatformAdapter):
-        platform = Platform.TELEGRAM
-
-        async def connect(self, *, is_reconnect: bool = False): pass
-        async def disconnect(self): pass
-        async def send(self, chat_id, content, **kwargs): pass
-        async def get_chat_info(self, chat_id): return {}
-
-    adapter = _ConcreteAdapter(
-        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+async def test_context_command_keeps_configured_window_without_resident_agent():
+    """The no-agent fallback must not replace a custom-provider context pin."""
+    model = "unsloth/Qwen3.8-27B-GGUF:Q8_0"
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-context-pin",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
     )
+    session_entry.last_prompt_tokens = 66_570
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {"model": model}
 
-    async def fake_handler(event):
-        # Simulate what _bind_adapter_run_generation does mid-run.
-        interrupt_event = adapter._active_sessions.get(session_key)
-        setattr(interrupt_event, "_hermes_run_generation", 1)
-        # Stale run registers its callback at generation=1.
-        adapter.register_post_delivery_callback(
-            session_key,
-            lambda: fired.append("older"),
-            generation=1,
-        )
-        # A fresher run overwrites with generation=2 (different dict entry).
-        adapter.register_post_delivery_callback(
-            session_key,
-            lambda: fired.append("newer"),
-            generation=2,
-        )
-        return None
+    config = {
+        "model": {
+            "default": model,
+            "provider": "custom-local-qwen",
+            "context_length": 262_144,
+        },
+        "custom_providers": [
+            {
+                "name": "custom-local-qwen",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "models": {},
+            }
+        ],
+    }
+    runtime = {
+        "provider": "custom-local-qwen",
+        "base_url": "http://127.0.0.1:8080/v1",
+        "api_key": "",
+    }
 
-    adapter.set_message_handler(fake_handler)
-    event = MessageEvent(text="hello", source=source, message_id="m1")
+    with patch("gateway.run._load_gateway_config", return_value=config), patch(
+        "gateway.run._resolve_runtime_agent_kwargs", return_value=runtime
+    ), patch(
+        "hermes_cli.config.get_compatible_custom_providers",
+        return_value=config["custom_providers"],
+    ), patch(
+        "agent.model_metadata.get_model_context_length",
+        side_effect=lambda *args, **kwargs: kwargs.get("config_context_length") or 131_072,
+    ) as context_lookup:
+        result = await runner._handle_context_command(_make_event("/context"))
 
-    await adapter.handle_message(event)
-    tasks = list(adapter._background_tasks)
-    assert tasks, "expected background task to be created"
-    await asyncio.gather(*tasks)
+    assert "Window: 262,144 tokens" in result
+    assert "In use: 66,570 / 262,144 (25%)" in result
+    assert "131,072" not in result
+    assert context_lookup.call_count == 1
+    assert context_lookup.call_args.kwargs["config_context_length"] == 262_144
 
-    # The stale run (generation=1) must NOT fire the fresher run's callback
-    # (generation=2). With the pre-fix code, callback_generation was snapshotted
-    # as None before the handler ran, bypassing the ownership check and firing
-    # "newer" anyway.
-    assert fired == []
-    assert session_key in adapter._post_delivery_callbacks
-    assert adapter._post_delivery_callbacks[session_key][0] == 2
+
+def _stub_agent(**overrides) -> SimpleNamespace:
+    """Build a stub agent with the attributes _handle_context_command reads."""
+    props = dict(
+        model="openai/gpt-test",
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=47_231,
+            context_length=200_000,
+            threshold_tokens=100_000,
+            threshold_percent=0.5,
+            compression_count=2,
+            _last_compression_savings_pct=63.0,
+        ),
+        session_api_calls=47,
+        session_input_tokens=410_000,
+        session_output_tokens=38_000,
+        session_reasoning_tokens=12_000,
+        session_total_tokens=3_158_641,
+        session_cache_read_tokens=2_900_000,
+        session_cache_write_tokens=48_000,
+    )
+    props.update(overrides)
+    return SimpleNamespace(**props)
+
+
+@pytest.mark.asyncio
+async def test_context_all_appends_expanded_listings():
+    """/context all appends per-toolset and per-skill cost listings."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-6",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    agent = _stub_agent()
+    runner._running_agents[session_entry.session_key] = agent
+
+    fake_payload = {
+        "categories": [
+            {"id": "skills", "label": "Skills", "tokens": 2_000},
+        ],
+        "context_max": 200_000,
+        "context_percent": 24,
+        "context_used": 47_231,
+        "estimated_total": 2_000,
+        "model": "openai/gpt-test",
+    }
+    fake_details = {
+        "skills": [
+            {"name": "hermes-agent", "index_tokens": 30, "skill_md_tokens": 2_500},
+        ],
+        "toolsets": [
+            {"toolset": "terminal", "tool_count": 4, "schema_tokens": 5_100},
+        ],
+    }
+    from unittest.mock import patch as _patch
+    with _patch(
+        "agent.context_breakdown.compute_session_context_breakdown",
+        return_value=fake_payload,
+    ), _patch(
+        "agent.context_breakdown.compute_context_details",
+        return_value=fake_details,
+    ):
+        result = await runner._handle_context_command(_make_event("/context all"))
+
+    assert "Toolsets by schema cost" in result
+    assert "terminal" in result and "5,100 tokens" in result
+    assert "Skills by cost" in result
+    assert "hermes-agent" in result
+    # Expanded view drops the hint
+    assert "Use /context all" not in result

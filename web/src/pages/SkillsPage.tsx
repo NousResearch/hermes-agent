@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState, useMemo, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import {
   Package,
   Search,
@@ -201,7 +201,7 @@ export default function SkillsPage() {
   /* ---- Refresh toolsets after a config change ---- */
   const refreshToolsets = async () => {
     try {
-      const tsets = await api.getToolsets();
+      const tsets = await api.getToolsets(selectedProfile || undefined);
       setToolsets(tsets);
     } catch {
       /* non-fatal: the drawer already toasted on the failing write */

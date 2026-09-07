@@ -10,6 +10,8 @@
  * header is a small regex.
  */
 
+import { capitalize } from '@/lib/text'
+
 export type CommitGroupId = 'new' | 'fixed' | 'faster' | 'improved' | 'other'
 
 export interface CommitGroup {
@@ -110,7 +112,7 @@ function tidySubject(subject: string): string {
     return cleaned
   }
 
-  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+  return capitalize(cleaned)
 }
 
 /**

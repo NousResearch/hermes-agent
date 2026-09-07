@@ -6,7 +6,9 @@ Config + Server + asyncio.run to capture kwargs without starting an event loop.
 
 import asyncio
 import contextlib
+import sys
 
+import pytest
 import uvicorn
 
 from hermes_cli import web_server
@@ -69,25 +71,84 @@ def _stub_uvicorn(monkeypatch):
     return captured
 
 
-def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):
-    """WS ping must be configured so half-open connections (reverse-proxy 524,
-    dropped tunnels) raise WebSocketDisconnect into the reaping path (#32377).
+def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch):
+    captured = _stub_uvicorn(monkeypatch)
 
-    Loopback binds (the Desktop case) get a longer window to ride out
-    GIL-pressure event-loop stalls (#48445/#50005). The invariant asserted
-    here is that ping stays enabled (non-None, positive) and the timeout is
-    never shorter than the interval — not a frozen literal, which churns every
-    time the window is retuned."""
+    web_server.start_server(
+        host="127.0.0.1",
+        port=0,
+        open_browser=False,
+        ssh_session_token="s" * 64,
+        ssh_owner_nonce="0123456789abcdef",
+    )
+
+    assert web_server._SESSION_TOKEN == "s" * 64
+    assert web_server._SSH_OWNER_NONCE == "0123456789abcdef"
+    assert captured["port"] == 0
+
+
+def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
+    """Loopback binds (the Desktop case) MUST disable uvicorn's protocol-level
+    keepalive ping so an event-loop stall can never trigger a false disconnect.
+
+    uvicorn's ws ping runs on the same event loop as agent turns. A single
+    synchronous GIL-holding call on a worker thread can starve that loop for
+    minutes, so the loop can't process the pong and uvicorn kills an
+    otherwise-healthy local connection (#53773 "event loop stalled 226.3s",
+    #48445/#50005). On loopback there is no network/proxy path where a
+    half-open connection can occur — a dead local client tears the socket down
+    with a real FIN/RST that surfaces as WebSocketDisconnect regardless — so
+    the ping provides no liveness value and only harms. Assert it is disabled.
+    """
     captured = _stub_uvicorn(monkeypatch)
 
     # Loopback bind => no auth gate, so this reaches the Config constructor.
     web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert captured["ws_ping_interval"] is None
+    assert captured["ws_ping_timeout"] is None
+
+
+def test_start_server_accepts_base64_desktop_attachments_above_preview_limit(monkeypatch):
+    """The gateway frame cap must fit the Desktop attachment default after
+    base64 expansion and JSON framing; uvicorn's 16 MiB default would reject
+    the request before ``file.attach`` can stage it.
+    """
+    captured = _stub_uvicorn(monkeypatch)
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    raw_attachment_bytes = 256 * 1024 * 1024
+    base64_bytes = ((raw_attachment_bytes + 2) // 3) * 4
+    assert captured["ws_max_size"] > base64_bytes
+
+
+def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):
+    """Non-loopback (public) binds MUST keep the ws ping enabled so half-open
+    connections (reverse-proxy 524, dropped Cloudflare Tunnel) raise
+    WebSocketDisconnect into the reaping path (#32377).
+
+    The invariant asserted here is that ping stays enabled (non-None, positive)
+    and the timeout is never shorter than the interval — not a frozen literal,
+    which churns every time the window is retuned. Loopback disables the ping
+    (see test_start_server_disables_ws_ping_on_loopback); this covers the
+    public-bind half-open case, so the auth gate is active here.
+    """
+    captured = _stub_uvicorn(monkeypatch)
+
+    # Non-loopback bind so the _is_loopback branch selects the enabled-ping
+    # window. Neutralize the auth gate so start_server reaches uvicorn.Config
+    # without requiring a registered provider (a real public bind would raise
+    # SystemExit here). The ping window keys off the host, not the auth flag.
+    monkeypatch.setattr(web_server, "should_require_auth", lambda *a, **k: False)
+    web_server.start_server(host="0.0.0.0", port=0, open_browser=False)
 
     assert captured["ws_ping_interval"] and captured["ws_ping_interval"] > 0
     assert captured["ws_ping_timeout"] and captured["ws_ping_timeout"] > 0
     assert captured["ws_ping_timeout"] >= captured["ws_ping_interval"]
 
 
+@pytest.mark.windows_only
 def test_start_server_runs_on_uvicorns_loop_factory(monkeypatch):
     """The dashboard/desktop backend must serve uvicorn on the loop *uvicorn*
     selects, not the interpreter default.
@@ -103,12 +164,11 @@ def test_start_server_runs_on_uvicorns_loop_factory(monkeypatch):
     This asserts the behavioral contract: on Windows the loop factory the runner
     receives is the one uvicorn's own Config produced, and bare ``asyncio.run``
     is never the serve path when the loop-factory runner exists.
+
+    Windows-only: faking ``sys.platform`` selected the branch but left the
+    proactor/selector loop policy this exists for entirely absent.
     """
     _stub_uvicorn(monkeypatch)
-
-    # The fix only changes behavior on win32; simulate it so the Windows branch
-    # is actually exercised on a POSIX CI host.
-    monkeypatch.setattr(web_server.sys, "platform", "win32")
 
     # The fake Config (installed by _stub_uvicorn) returns its ``_loop_factory``
     # from get_loop_factory(). Pin a sentinel so we can assert it is threaded
@@ -148,15 +208,17 @@ def test_start_server_runs_on_uvicorns_loop_factory(monkeypatch):
 
 
 def test_start_server_keeps_bare_asyncio_run_on_posix(monkeypatch):
-    """POSIX behavior must be byte-for-byte unchanged: serve via the plain
-    ``asyncio.run(_serve())`` path, never the Windows loop-factory branch.
+    """POSIX continues to serve via the plain ``asyncio.run(_serve())`` path,
+    never the Windows loop-factory branch.
 
-    The #50641 fix is intentionally win32-scoped to keep the blast radius
-    minimal — Python's default loop on POSIX is already a SelectorEventLoop
-    (or uvloop), which is what uvicorn serves on, so there is nothing to fix.
+    The #50641 fix is intentionally win32-scoped to keep the loop selection
+    unchanged — Python's default loop on POSIX is already a SelectorEventLoop
+    (or uvloop), which is what uvicorn serves on.
+
+    No platform patching: the Linux CI host is already POSIX, so this asserts
+    the real host's serve path.
     """
     _stub_uvicorn(monkeypatch)
-    monkeypatch.setattr(web_server.sys, "platform", "linux")
 
     # If the Windows branch were taken, the loop-factory runner would fire.
     runner_called = {"hit": False}
@@ -182,3 +244,97 @@ def test_start_server_keeps_bare_asyncio_run_on_posix(monkeypatch):
     assert runner_called["hit"] is False, (
         "POSIX must not take the Windows loop-factory branch"
     )
+
+
+def test_start_server_treats_posix_keyboardinterrupt_as_clean_shutdown(monkeypatch):
+    """Ctrl+C is the normal foreground-dashboard shutdown path.
+
+    Uvicorn re-raises captured SIGINT as ``KeyboardInterrupt`` after it has
+    restored the original signal handlers.  The dashboard should treat that as a
+    clean user-requested shutdown instead of leaking a traceback to the terminal.
+    """
+    _stub_uvicorn(monkeypatch)
+
+    def _raise_keyboard_interrupt(coro):
+        coro.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(asyncio, "run", _raise_keyboard_interrupt)
+
+    # Catch rather than let it escape: pytest treats a propagating
+    # KeyboardInterrupt as a session abort, not a test failure, so a
+    # regression here would kill the run instead of reporting red.
+    try:
+        web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+    except KeyboardInterrupt:
+        pytest.fail(
+            "start_server must treat serve-time KeyboardInterrupt as a clean "
+            "shutdown, not propagate it"
+        )
+
+
+@pytest.mark.windows_only
+def test_start_server_treats_windows_keyboardinterrupt_as_clean_shutdown(monkeypatch):
+    """Console Ctrl+C on the Windows loop-factory branch is a clean exit too.
+
+    Same bug class as the POSIX branch: ``capture_signals()`` re-raises the
+    captured SIGINT after graceful shutdown, which surfaces as
+    ``KeyboardInterrupt`` out of the loop-factory runner.  The serve call must
+    swallow exactly that and return.
+
+    Windows-only per the no-platform-faking rule (tests/conftest.py): the
+    branch is selected by the real host, and the runner import
+    (``uvicorn._compat.asyncio_run``) resolves inside ``start_server``, after
+    the monkeypatch below is installed.
+    """
+    _stub_uvicorn(monkeypatch)
+
+    def _raise_keyboard_interrupt(coro, *, loop_factory=None):
+        coro.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        "uvicorn._compat.asyncio_run", _raise_keyboard_interrupt, raising=False
+    )
+
+    try:
+        web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+    except KeyboardInterrupt:
+        pytest.fail(
+            "start_server must treat serve-time KeyboardInterrupt as a clean "
+            "shutdown on the Windows branch, not propagate it"
+        )
+
+
+@pytest.mark.windows_only
+def test_start_server_treats_windows_fallback_keyboardinterrupt_as_clean_shutdown(
+    monkeypatch,
+):
+    """The pre-0.36 fallback runner shares the clean Ctrl+C contract.
+
+    When ``uvicorn._compat.asyncio_run`` is unavailable (uvicorn predates the
+    loop-factory API), the Windows branch falls back to bare ``asyncio.run``
+    under a hand-installed selector policy — still inside the same
+    ``capture_signals()`` re-raise, so its ``KeyboardInterrupt`` must be
+    swallowed identically. Forcing the ``_compat`` import to fail (None in
+    ``sys.modules`` halts the import) is what actually selects the fallback:
+    merely patching ``asyncio.run`` alongside a successful import would leave
+    this path untested.
+    """
+    _stub_uvicorn(monkeypatch)
+
+    monkeypatch.setitem(sys.modules, "uvicorn._compat", None)
+
+    def _raise_keyboard_interrupt(coro):
+        coro.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(asyncio, "run", _raise_keyboard_interrupt)
+
+    try:
+        web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+    except KeyboardInterrupt:
+        pytest.fail(
+            "start_server must treat serve-time KeyboardInterrupt as a clean "
+            "shutdown on the Windows pre-0.36 fallback, not propagate it"
+        )

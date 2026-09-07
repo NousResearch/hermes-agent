@@ -22,7 +22,7 @@ We value contributions in this order:
 
 ## Common contribution paths
 
-- Building a custom/local tool without modifying Hermes core? Start with [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md)
+- Building a custom/local tool without modifying Hermes core? Start with [Build a Hermes Plugin](../developer-guide/plugins/index.md)
 - Building a new built-in core tool for Hermes itself? Start with [Adding Tools](./adding-tools.md)
 - Building a new skill? Start with [Creating Skills](./creating-skills.md)
 - Building a new inference provider? Start with [Adding Providers](./adding-providers.md)
@@ -31,12 +31,12 @@ We value contributions in this order:
 
 ### Prerequisites
 
-| Requirement | Notes |
-|-------------|-------|
-| **Git** | With the `git-lfs` extension installed |
-| **Python 3.11+** | uv will install it if missing |
-| **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
-| **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
+| Requirement          | Notes                                                                                         |
+| -------------------- | --------------------------------------------------------------------------------------------- |
+| **Git**              | With the `git-lfs` extension installed                                                        |
+| **Python 3.11–3.13** | uv will install it if missing                                                                 |
+| **uv**               | Fast Python package manager ([install](https://docs.astral.sh/uv/))                           |
+| **Node.js 26+**      | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
 
 ### Install with the standard installer
 
@@ -64,6 +64,14 @@ After that, create branches and run tests from that checkout:
 ```bash
 git checkout -b fix/description
 scripts/run_tests.sh
+```
+
+You can also run a fully isolated Hermes instance (throwaway HERMES_HOME, separate Electron
+userData, distinct Electron app name to avoid the single-instance lock):
+
+```bash
+scripts/dev-sandbox.sh python -m hermes_cli.main
+scripts/dev-sandbox.sh --persistent python -m hermes_cli.main desktop  # state survives restarts, but lives in the worktree :)
 ```
 
 ### Manual clone fallback
@@ -143,7 +151,7 @@ See **[Platform Support](../getting-started/platform-support.md)**. Native Windo
 
 When contributing code, keep these rules in mind:
 
-- **Don't add unguarded `signal.SIGKILL` references.** It's not defined on Windows.  Either route through `gateway.status.terminate_pid(pid, force=True)` (the centralized primitive that does `taskkill /T /F` on Windows and SIGKILL on POSIX), or fall back with `getattr(signal, "SIGKILL", signal.SIGTERM)`.
+- **Don't add unguarded `signal.SIGKILL` references.** It's not defined on Windows. Either route through `gateway.status.terminate_pid(pid, force=True)` (the centralized primitive that does `taskkill /T /F` on Windows and SIGKILL on POSIX), or fall back with `getattr(signal, "SIGKILL", signal.SIGTERM)`.
 - **Catch `OSError` alongside `ProcessLookupError` on `os.kill(pid, 0)` probes.** Windows raises `OSError` (WinError 87, "parameter is incorrect") for an already-gone PID instead of `ProcessLookupError`.
 - **Don't force the terminal to POSIX semantics.** `os.setsid`, `os.killpg`, `os.getpgid`, `os.fork` all raise on Windows — gate them with `if sys.platform != "win32":` or `if os.name != "nt":`.
 - **Open files with an explicit `encoding="utf-8"`.** The Python default on Windows is the system locale (often cp1252), which mojibakes or crashes on non-Latin text.
@@ -151,23 +159,7 @@ When contributing code, keep these rules in mind:
 
 Key patterns:
 
-### 1. `termios` and `fcntl` are Unix-only
-
-Always catch both `ImportError` and `NotImplementedError`:
-
-```python
-try:
-    from simple_term_menu import TerminalMenu
-    menu = TerminalMenu(options)
-    idx = menu.show()
-except (ImportError, NotImplementedError):
-    # Fallback: numbered menu
-    for i, opt in enumerate(options):
-        print(f"  {i+1}. {opt}")
-    idx = int(input("Choice: ")) - 1
-```
-
-### 2. File encoding
+### 1. File encoding
 
 Some environments may save `.env` files in non-UTF-8 encodings:
 
@@ -178,7 +170,7 @@ except UnicodeDecodeError:
     load_dotenv(env_path, encoding="latin-1")
 ```
 
-### 3. Process management
+### 2. Process management
 
 `os.setsid()`, `os.killpg()`, and signal handling differ across platforms:
 
@@ -188,7 +180,7 @@ if platform.system() != "Windows":
     kwargs["preexec_fn"] = os.setsid
 ```
 
-### 4. Path separators
+### 3. Path separators
 
 Use `pathlib.Path` instead of string concatenation with `/`.
 
@@ -198,15 +190,15 @@ Hermes has terminal access. Security matters.
 
 ### Existing Protections
 
-| Layer | Implementation |
-|-------|---------------|
-| **Sudo password piping** | Uses `shlex.quote()` to prevent shell injection |
-| **Dangerous command detection** | Regex patterns in `tools/approval.py` with user approval flow |
-| **Cron prompt injection** | Scanner blocks instruction-override patterns |
-| **Write deny list** | Protected paths resolved via `os.path.realpath()` to prevent symlink bypass |
-| **Skills guard** | Security scanner for hub-installed skills |
-| **Code execution sandbox** | Child process runs with API keys stripped |
-| **Container hardening** | Docker: all capabilities dropped, no privilege escalation, PID limits |
+| Layer                           | Implementation                                                              |
+| ------------------------------- | --------------------------------------------------------------------------- |
+| **Sudo password piping**        | Uses `shlex.quote()` to prevent shell injection                             |
+| **Dangerous command detection** | Regex patterns in `tools/approval.py` with user approval flow               |
+| **Cron prompt injection**       | Scanner blocks instruction-override patterns                                |
+| **Write deny list**             | Protected paths resolved via `os.path.realpath()` to prevent symlink bypass |
+| **Skills guard**                | Security scanner for hub-installed skills                                   |
+| **Code execution sandbox**      | Child process runs with API keys stripped                                   |
+| **Container hardening**         | Docker: all capabilities dropped, no privilege escalation, PID limits       |
 
 ### Contributing Security-Sensitive Code
 
@@ -238,6 +230,7 @@ refactor/description   # Code restructuring
 ### PR Description
 
 Include:
+
 - **What** changed and **why**
 - **How to test** it
 - **What platforms** you tested on
@@ -251,28 +244,50 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 <type>(<scope>): <description>
 ```
 
-| Type | Use for |
-|------|---------|
-| `fix` | Bug fixes |
-| `feat` | New features |
-| `docs` | Documentation |
-| `test` | Tests |
-| `refactor` | Code restructuring |
-| `chore` | Build, CI, dependency updates |
+| Type       | Use for                       |
+| ---------- | ----------------------------- |
+| `fix`      | Bug fixes                     |
+| `feat`     | New features                  |
+| `docs`     | Documentation                 |
+| `test`     | Tests                         |
+| `refactor` | Code restructuring            |
+| `chore`    | Build, CI, dependency updates |
 
 Scopes: `cli`, `gateway`, `tools`, `skills`, `agent`, `install`, `whatsapp`, `security`
 
 Examples:
+
 ```
 fix(cli): prevent crash in save_config_value when model is a string
 feat(gateway): add WhatsApp multi-user session isolation
 fix(security): prevent shell injection in sudo password piping
 ```
 
+### Repo-local review checklists: `.agents/checks/*.md`
+
+Projects built on (or reviewed by) Hermes can keep reviewer checklists inside the repository under `.agents/checks/`. Each file is a focused, plain-markdown checklist that an agent loads before reviewing a change touching the matching area:
+
+```
+.agents/
+  checks/
+    security.md        # e.g. "grep the diff for shell interpolation; check subprocess calls quote args"
+    migrations.md      # e.g. "every schema change ships a backfill and a rollback note"
+    public-api.md      # e.g. "exported signatures changed? flag for semver review"
+```
+
+Conventions that make these work well:
+
+- **One concern per file**, named after the concern. Small files get read in full; a monolithic `checklist.md` gets skimmed.
+- **Write checks as verifiable actions** ("run X and confirm Y"), not aspirations ("code should be secure").
+- **State the trigger at the top** — which paths or change types the checklist applies to — so an agent (or human) can skip irrelevant ones cheaply.
+- Keep them in version control next to the code they guard: they evolve with the codebase, and a PR that changes the rules changes the checklist in the same diff.
+
+When you ask Hermes to review a PR in a repository that has `.agents/checks/`, tell it (or teach it via a skill) to read the relevant checklists first and report against them. This gives review agents the project-specific bar that generic review prompts miss.
+
 ## Reporting Issues
 
 - Use [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
-- Include: OS, Python version, Hermes version (`hermes version`), full error traceback
+- Include: OS, Python version, Hermes version (`hermes --version`), full error traceback
 - Include steps to reproduce
 - Check existing issues before creating duplicates
 - For security vulnerabilities, please report privately

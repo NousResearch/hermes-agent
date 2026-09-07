@@ -97,6 +97,16 @@ export const en: Translations = {
     currentProfileOption: "this dashboard ({name})",
     managingProfileBanner:
       "Managing profile \u201c{name}\u201d \u2014 config, keys, skills, MCPs, model, and new chats apply to that profile.",
+    memoryOomRestartBanner:
+      "Your agent restarted unexpectedly, most likely because it ran out of memory. Long sessions and many concurrent tasks increase memory use.",
+    memoryCriticalBanner:
+      "Your agent is almost out of memory and may restart. Consider closing idle sessions or upgrading its memory.",
+    memoryElevatedBanner: "Your agent is running low on memory.",
+    diskCriticalBanner:
+      "Your agent's disk is almost full. New messages, memories, and settings may fail to save.",
+    diskElevatedBanner:
+      "Your agent's disk is filling up. Consider clearing old sessions or expanding its storage.",
+    dismiss: "Dismiss",
   },
 
   status: {
@@ -144,8 +154,14 @@ export const en: Translations = {
     title: "Sessions",
     history: "History",
     overview: "Overview",
+    filterChats: "Chats",
+    filterAutomation: "Automation",
+    filterAll: "All",
+    sourceFilter: "Session source",
+    anySource: "Any source",
     searchPlaceholder: "Search message content...",
     noSessions: "No sessions yet",
+    noSessionsInFilter: "No sessions in this filter",
     noMatch: "No sessions match your search",
     startConversation: "Start a conversation to see it here",
     noMessages: "No messages",
@@ -501,20 +517,25 @@ export const en: Translations = {
   oauth: {
     title: "Provider Logins (OAuth)",
     providerLogins: "Provider Logins (OAuth)",
-    description: "{connected} of {total} OAuth providers connected. Login flows currently run via the CLI; click Copy command and paste into a terminal to set up.",
+    description:
+      "{connected} of {total} OAuth providers connected. Use Login for dashboard-supported flows; CLI commands remain available for external or fallback setup.",
     connected: "Connected",
     expired: "Expired",
-    notConnected: "Not connected. Run {command} in a terminal.",
+    notConnected: "Not connected. Use Login when available, or run {command} in a terminal.",
     runInTerminal: "in a terminal.",
     noProviders: "No OAuth-capable providers detected.",
     login: "Login",
     disconnect: "Disconnect",
     managedExternally: "Managed externally",
     copied: "Copied ✓",
+    copyCode: "Copy code",
+    copyFailed: "Could not copy automatically. Select the code and copy it manually.",
     cli: "Copy",
     copyCliCommand: "Copy CLI command (for external / fallback)",
     connect: "Connect",
     sessionExpires: "Session expires in {time}",
+    sessionExpiredNoError:
+      "Sign-in expired without reaching the provider. This usually means the sign-in page stalled in the opened tab (server-side issue) — finish signing in there, then click Retry. If it keeps failing, use an API key or the CLI fallback instead.",
     initiatingLogin: "Initiating login flow…",
     exchangingCode: "Exchanging code for tokens…",
     connectedClosing: "Connected! Closing…",
@@ -808,6 +829,12 @@ export const en: Translations = {
       "Mark this task as blocked? The worker's claim is released.",
     confirmScheduled:
       "Move this task to Scheduled? Use this for known time delays rather than human blockers.",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     completionSummary:
       "Completion summary for {label}. This is stored as the task result.",
     completionSummaryRequired:
@@ -825,5 +852,29 @@ export const en: Translations = {
       "workspace path (optional, derived from assignee if blank)",
     logTruncated: "(showing last 100 KB — full log at ",
     logAt: ")",
+    newTaskTitle: "New task — {column}",
+    taskTitleLabel: "Title",
+    assigneeLabel: "Assignee",
+    assigneeLabelHint: "(blank = dispatcher picks)",
+    skillsLabel: "Skills",
+    skillsLabelHint: "(optional, comma-separated)",
+    parentLabel: "Parent task",
+    parentLabelHint: "(child stays blocked until the parent is done)",
+    create: "Create",
+    boardSettings: "Settings",
+    boardSettingsTitle:
+      "Board settings — name, description, and the default project directory new tasks inherit",
+    boardSettingsTitleFor: "Board settings — {name}",
+    projectDirectoryOverrideHint:
+      "New tasks inherit this as their workspace default; each task can still override it in the create dialog.",
+    saving: "Saving…",
+    commentHint:
+      "Comments reach the worker on its next run or kanban_show() — no need to block the task first.",
+    commentHintTitle:
+      "Comments are the channel for talking to a task's worker. They land on the thread immediately — no need to block the task first. A running worker picks the thread up on its next kanban_show() or respawn; blocking is only for when you want the worker to STOP and wait for your input.",
+    trash: {
+      confirmTitle: "Delete task?",
+      confirmManyTitle: "Delete {n} tasks?",
+    },
   },
 };

@@ -15,13 +15,12 @@ Zero-install localhost tunnels over SSH via Pinggy.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/devops/pinggy-tunnel` |
-| Path | `optional-skills/devops/pinggy-tunnel` |
+| Path | `optional-skills/devops\pinggy-tunnel` |
 | Version | `0.1.0` |
 | Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Pinggy`, `Tunnel`, `Networking`, `SSH`, `Webhook`, `Localhost` |
-| Related skills | `cloudflared-quick-tunnel`, `webhook-subscriptions` |
 
 ## Reference: full SKILL.md
 
@@ -97,7 +96,7 @@ curl -sI http://127.0.0.1:8000/ | head -1
 # expect HTTP/1.x 200 (or any non-connection-refused response)
 ```
 
-If nothing is listening yet, start it first (e.g. `python3 -m http.server 8000 --bind 127.0.0.1`). Pinggy will happily return a URL pointed at nothing — the user will see 502 until the origin comes up.
+If nothing is listening yet, start it first (e.g. `python -m http.server 8000 --bind 127.0.0.1`). Pinggy will happily return a URL pointed at nothing — the user will see 502 until the origin comes up.
 
 ### 2. Launch the tunnel as a background process
 
@@ -221,7 +220,7 @@ class H(http.server.BaseHTTPRequestHandler):
     def log_message(self,*a,**k): pass
 http.server.HTTPServer(("127.0.0.1", 18080), H).serve_forever()
 PY
-nohup python3 /tmp/webhook-server.py >/tmp/webhook-server.log 2>&1 &
+nohup python /tmp/webhook-server.py >/tmp/webhook-server.log 2>&1 &
 echo $! >/tmp/webhook-server.pid
 
 # 2. Tunnel — bearer-token-gate so randos can't pollute the capture log
@@ -246,7 +245,7 @@ Use when a remote MCP client (Claude Desktop on another machine, a teammate's ed
 
 ```bash
 # 1. Start the MCP server in HTTP mode (example: a FastMCP server on port 8765)
-nohup python3 my_mcp_server.py --transport http --port 8765 \
+nohup python my_mcp_server.py --transport http --port 8765 \
     >/tmp/mcp-server.log 2>&1 &
 echo $! >/tmp/mcp-server.pid
 
@@ -307,7 +306,7 @@ ssh -p 443 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 
 ```bash
 # End-to-end: spin up a trivial origin, tunnel it, hit it, tear down
-python3 -m http.server 18000 --bind 127.0.0.1 >/tmp/origin.log 2>&1 &
+python -m http.server 18000 --bind 127.0.0.1 >/tmp/origin.log 2>&1 &
 ORIGIN_PID=$!
 
 nohup ssh -p 443 \

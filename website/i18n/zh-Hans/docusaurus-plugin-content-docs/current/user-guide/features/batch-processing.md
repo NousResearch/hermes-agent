@@ -68,7 +68,6 @@ python batch_runner.py --list_distributions
 | `--resume` | `false` | 从断点恢复 |
 | `--verbose` | `false` | 启用详细日志 |
 | `--max_samples` | 全部 | 仅处理数据集中前 N 条样本 |
-| `--max_tokens` | 模型默认值 | 每次模型响应的最大 token 数 |
 
 ### 供应商路由（OpenRouter）
 
@@ -83,7 +82,7 @@ python batch_runner.py --list_distributions
 
 | 参数 | 说明 |
 |-----------|-------------|
-| `--reasoning_effort` | 推理力度：`none`、`minimal`、`low`、`medium`、`high`、`xhigh` |
+| `--reasoning_effort` | 推理力度：`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra` |
 | `--reasoning_disabled` | 完全禁用推理/思考 token |
 
 ### 高级选项

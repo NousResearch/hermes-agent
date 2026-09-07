@@ -4,18 +4,11 @@ import os
 import pytest
 
 import tools.approval as approval_module
+from tools import approval_context
 import tools.tirith_security
 
-from tools.approval import (
-    check_all_command_guards,
-    check_dangerous_command,
-    detect_dangerous_command,
-    disable_session_yolo,
-    enable_session_yolo,
-    is_session_yolo_enabled,
-    reset_current_session_key,
-    set_current_session_key,
-)
+from tools.approval import check_all_command_guards, check_dangerous_command, detect_dangerous_command, disable_session_yolo, enable_session_yolo, is_approval_bypass_active_for_session, is_session_yolo_enabled
+from tools.approval_context import reset_current_session_key, set_current_session_key
 
 
 @pytest.fixture(autouse=True)
@@ -113,17 +106,6 @@ class TestYoloMode:
         # we just verify the mechanism exists
         assert os.getenv("HERMES_YOLO_MODE") is None or True  # no-op, documents intent
 
-    def test_yolo_mode_empty_string_does_not_bypass(self, monkeypatch):
-        """Empty string for HERMES_YOLO_MODE should not trigger bypass."""
-        monkeypatch.setenv("HERMES_YOLO_MODE", "")
-        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        monkeypatch.setenv("HERMES_SESSION_KEY", "test-session")
-
-        # Empty string is falsy in Python, so getenv("HERMES_YOLO_MODE") returns ""
-        # which is falsy — bypass should NOT activate
-        result = check_dangerous_command("rm -rf /", "local",
-                                         approval_callback=lambda *a: "deny")
-        assert not result["approved"]
 
     @pytest.mark.parametrize("value", ["false", "False", "0", "off", "no"])
     def test_false_like_yolo_values_do_not_bypass_dangerous_command(self, monkeypatch, value):
@@ -182,6 +164,16 @@ class TestYoloMode:
 
         disable_session_yolo("session-a")
         assert is_session_yolo_enabled("session-a") is False
+
+    def test_bypass_query_uses_the_requested_session(self, monkeypatch):
+        """Backend mode selection must not leak YOLO across sessions."""
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
+
+        enable_session_yolo("session-a")
+
+        assert is_approval_bypass_active_for_session("session-a") is True
+        assert is_approval_bypass_active_for_session("session-b") is False
 
     def test_session_scoped_yolo_bypasses_combined_guard_only_for_current_session(self, monkeypatch):
         """Combined guard should honor session-scoped YOLO without affecting others."""

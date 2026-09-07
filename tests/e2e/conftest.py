@@ -228,6 +228,24 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     # Disable destructive slash confirm gate so /new executes immediately
     runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": False}}
 
+    # Keep /new hermetic: the real _reset_notice_session_info resolves provider
+    # credentials and may probe model context length over the network. CI has no
+    # credentials, so resolution walks the whole fallback chain and can exceed
+    # send_and_capture's poll window on slow runners (flaked in run 28856659216,
+    # telegram param only — first parametrization pays the cold-resolution cost).
+    runner._reset_notice_session_info = lambda source: ""
+
+    # Keep the agent-turn path hermetic: _run_post_turn_hooks runs the /goal
+    # continuation, whose SessionDB warm-up constructs a REAL SessionDB on an
+    # executor thread at the turn boundary. On a cold/loaded CI runner that
+    # state.db init can exceed send_and_capture's 2s poll window, so the send
+    # lands after the assertion — the "Expected 'mock' to have been called
+    # once. Called 0 times." flake on
+    # test_plaintext_restart_gateway_in_group_stays_plain_text[telegram]
+    # (issue #92130; e.g. runs 32802504263 / 32799192528 / 32796821900).
+    # e2e tests exercise gateway command dispatch, not post-turn goal hooks.
+    runner._run_post_turn_hooks = AsyncMock()
+
     runner.pairing_store = MagicMock()
     runner.pairing_store._is_rate_limited = MagicMock(return_value=False)
     runner.pairing_store.generate_code = MagicMock(return_value="ABC123")

@@ -1,3 +1,6 @@
+// Importing the apps barrel registers the reference widget apps at startup.
+import '../sdk/apps/index.js'
+
 import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { Fragment, memo, useEffect, useMemo, useRef } from 'react'
@@ -19,6 +22,7 @@ import {
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
+import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from '../sdk/host.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
@@ -92,7 +96,14 @@ export const PetPane = memo(function PetPane() {
   }
 
   return (
-    <NoSelect bottom={PET_BOTTOM} flexShrink={0} paddingLeft={PET_PAD_LEFT} paddingTop={1} position="absolute" right={PET_RIGHT}>
+    <NoSelect
+      bottom={PET_BOTTOM}
+      flexShrink={0}
+      paddingLeft={PET_PAD_LEFT}
+      paddingTop={1}
+      position="absolute"
+      right={PET_RIGHT}
+    >
       {kitty ? <PetKitty color={kitty.color} placeholder={kitty.placeholder} /> : null}
       {!kitty && grid ? <PetSprite grid={grid} /> : null}
     </NoSelect>
@@ -132,14 +143,15 @@ const TranscriptPane = memo(function TranscriptPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
   const ui = useStore($uiState)
   const petBox = useStore($petBox)
+  const railCols = useAmbientRailWidth('left') + useAmbientRailWidth('right')
 
   // Keep transcript text clear of the floating pet, responsively:
   //  - wide terminals: reserve a right gutter so lines wrap to the pet's left
   //    (as long as enough width is left for comfortable reading);
   //  - narrow terminals: keep full width and reserve bottom rows instead, so
   //    the newest lines sit above the pet rather than getting cramped.
-  const useGutter = !!petBox && composer.cols - petBox.width >= MIN_GUTTER_BODY_COLS
-  const bodyCols = useGutter && petBox ? composer.cols - petBox.width : composer.cols
+  const useGutter = !!petBox && composer.cols - railCols - petBox.width >= MIN_GUTTER_BODY_COLS
+  const bodyCols = Math.max(28, (useGutter && petBox ? composer.cols - petBox.width : composer.cols) - railCols)
   const petBandRows = petBox && !useGutter ? petBox.height : 0
 
   // LiveTodoPanel rides as a child of the latest user-message row so it
@@ -220,6 +232,7 @@ const TranscriptPane = memo(function TranscriptPane({
                   })}
                   sections={ui.sections}
                   t={ui.theme}
+                  timestamps={ui.timestamps}
                 />
               )}
 
@@ -351,6 +364,7 @@ const ComposerPane = memo(function ComposerPane({
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />
+      <AmbientDock placement="dock-top" />
 
       <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
         <FloatingOverlays
@@ -404,12 +418,20 @@ const ComposerPane = memo(function ComposerPane({
               <Box flexGrow={0} flexShrink={0} height={inputHeight} width={inputColumns}>
                 {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
                 <TextInput
+                  accentColor={ui.theme.color.accent}
+                  color={ui.theme.color.text}
                   columns={inputColumns}
                   mouseApiRef={inputMouseRef}
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
                   placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                  // Exactly the "(and N more toolsets…)" tone. `muted` is a
+                  // MID-luminance family tone, so it reads receded on both
+                  // poles even when polarity detection is wrong (transparent
+                  // terminals lie about their background); anything blended
+                  // toward the resolved surface inherits that wrong polarity.
+                  placeholderColor={ui.theme.color.muted}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />
@@ -425,6 +447,7 @@ const ComposerPane = memo(function ComposerPane({
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>⚕ {ui.status}</Text>}
 
+      <AmbientDock placement="dock-bottom" />
       <StatusRulePane at="bottom" composer={composer} status={status} />
     </NoSelect>
   )
@@ -466,10 +489,13 @@ const StatusRulePane = memo(function StatusRulePane({
   return (
     <Box marginTop={at === 'top' ? 1 : 0}>
       <StatusRule
+        battery={ui.battery ? ui.batteryStatus : null}
         bgCount={ui.bgTasks.size}
         busy={ui.busy}
         cols={composer.cols}
+        compacting={ui.compacting}
         cwdLabel={status.cwdLabel}
+        focusView={ui.focusView}
         indicatorStyle={ui.indicatorStyle}
         lastTurnEndedAt={status.lastTurnEndedAt}
         liveSessionCount={ui.liveSessionCount}
@@ -479,7 +505,9 @@ const StatusRulePane = memo(function StatusRulePane({
         notice={ui.notice}
         onSessionCountClick={() => patchOverlayState({ sessions: true })}
         sessionStartedAt={status.sessionStartedAt}
+        sessionTitle={status.sessionTitle}
         status={ui.status}
+        statusBarFields={ui.statusBarFields}
         statusColor={status.statusColor}
         t={ui.theme}
         turnStartedAt={status.turnStartedAt}
@@ -511,6 +539,7 @@ export const AppLayout = memo(function AppLayout({
     <Shell {...shellProps}>
       <Box flexDirection="column" flexGrow={1} position="relative">
         <Box flexDirection="row" flexGrow={1}>
+          {!overlay.agents && !overlay.journey && <AmbientRail side="left" />}
           {overlay.agents ? (
             <PerfPane id="agents">
               <AgentsOverlayPane />
@@ -524,6 +553,7 @@ export const AppLayout = memo(function AppLayout({
               <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
             </PerfPane>
           )}
+          {!overlay.agents && !overlay.journey && <AmbientRail side="right" />}
         </Box>
 
         {!overlay.agents && !overlay.journey && (
@@ -533,6 +563,7 @@ export const AppLayout = memo(function AppLayout({
                 cols={composer.cols}
                 onApprovalChoice={actions.answerApproval}
                 onClarifyAnswer={actions.answerClarify}
+                onClarifyQuestionAnswer={actions.answerClarifyQuestion}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
               />
@@ -552,6 +583,8 @@ export const AppLayout = memo(function AppLayout({
 
         {!overlay.agents && <PetPane />}
       </Box>
+
+      <ActiveWidgetSlot />
     </Shell>
   )
 })

@@ -16,7 +16,7 @@ A useful report includes:
 - A concise description and severity assessment.
 - The affected component, identified by file path and line range
   (e.g. `path/to/file.py:120-145`).
-- Environment details (`hermes version`, commit SHA, OS, Python
+- Environment details (`hermes --version`, commit SHA, OS, Python
   version).
 - A reproduction against `main` or the latest release.
 - A statement of which trust boundary in §2 is crossed.
@@ -177,9 +177,12 @@ authorization model, but the rules below apply uniformly.
 
 **Surfaces in Hermes Agent:**
 
-- **Gateway platform adapters.** Messaging integrations in
-  `gateway/platforms/` (Telegram, Discord, Slack, email, SMS, etc.)
-  and analogous adapters shipped as plugins.
+- **Gateway platform adapters.** Most messaging integrations ship as
+  bundled plugins under `plugins/platforms/<name>/` (Telegram, Discord,
+  Slack, email, SMS, etc.). Shared base types and a smaller set of
+  legacy/direct adapters live under `gateway/platforms/`
+  (`base.py`, Signal, API server, webhooks, …), with discovery and
+  deferred loading via `gateway/platform_registry.py`.
 - **Network-exposed HTTP surfaces.** The API server adapter, the
   dashboard plugin, the kanban plugin's HTTP endpoints, and any
   other plugin that binds a listening socket.

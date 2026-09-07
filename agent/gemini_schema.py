@@ -23,10 +23,60 @@ def _stringify_enum_value(item: Any) -> Any:
     return item if isinstance(item, str) else None
 
 
+def _inline_local_schema_refs(
+    schema: Any,
+    definitions: Dict[str, Any] | None = None,
+    resolving: frozenset[str] = frozenset(),
+) -> Any:
+    """Inline local ``$defs`` / ``definitions`` references for Gemini.
+
+    Gemini's function-schema subset does not support ``$ref``.  Resolve only
+    local definition references; external references remain unsupported and
+    are subsequently stripped by the normal schema sanitizer.
+    """
+
+    if isinstance(schema, list):
+        return [
+            _inline_local_schema_refs(item, definitions, resolving)
+            for item in schema
+        ]
+    if not isinstance(schema, dict):
+        return schema
+
+    if definitions is None:
+        candidate_defs = schema.get("$defs") or schema.get("definitions")
+        definitions = candidate_defs if isinstance(candidate_defs, dict) else {}
+
+    ref = schema.get("$ref")
+    if isinstance(ref, str):
+        prefix, _, name = ref.rpartition("/")
+        if prefix in {"#/$defs", "#/definitions"} and name in definitions:
+            siblings = {
+                key: _inline_local_schema_refs(value, definitions, resolving)
+                for key, value in schema.items()
+                if key != "$ref"
+            }
+            if name in resolving:
+                return {"type": "object", **siblings}
+            target = _inline_local_schema_refs(
+                definitions[name], definitions, resolving | {name}
+            )
+            if isinstance(target, dict):
+                return {**target, **siblings}
+            return siblings
+
+    return {
+        key: _inline_local_schema_refs(value, definitions, resolving)
+        for key, value in schema.items()
+        if key not in {"$defs", "definitions"}
+    }
+
+
 def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
     """Gemini-compatible copy of a tool parameter schema: keeps only the documented subset
     (drops e.g. ``$schema`` / ``additionalProperties``) and recursively sanitizes nested
     ``properties`` / ``items`` / ``anyOf``."""
+    schema = _inline_local_schema_refs(schema)
     if not isinstance(schema, dict):
         return {}
     cleaned: Dict[str, Any] = {}

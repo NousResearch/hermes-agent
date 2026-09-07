@@ -14,6 +14,11 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
+from importlib.util import find_spec
+
+if find_spec("mcp.server.fastmcp") is None:
+    pytestmark = pytest.mark.skip(reason="legacy FastMCP server API is unavailable with MCP 2.0")
+
 # Pre-import the real mcp SDK before adding the scripts directory to sys.path.
 # The scripts dir contains a local mcp/ package that shadows the installed SDK.
 import mcp as _real_mcp

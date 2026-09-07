@@ -7,7 +7,8 @@ or:   python3 tests/test_semantic_judge.py
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "scripts", "semantic_regression"))
 
 from semantic_judge import crash_filter  # noqa: E402
 from semantic_judge.judge import _validate  # noqa: E402

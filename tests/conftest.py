@@ -31,6 +31,18 @@ from pathlib import Path
 
 import pytest
 
+# A few script-focused tests temporarily prepend ``scripts/`` to sys.path.
+# That directory contains a local namespace/package named ``mcp`` which must
+# not shadow the installed MCP SDK for later collection. Import the real SDK
+# and its shared submodules before any test module can alter the path.
+try:
+    import mcp as _real_mcp
+    import mcp.shared  # noqa: F401
+    import mcp.shared.auth  # noqa: F401
+    import mcp.types  # noqa: F401
+except ImportError:
+    _real_mcp = None
+
 # Ensure project root is importable
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:

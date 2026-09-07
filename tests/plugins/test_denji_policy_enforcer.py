@@ -6,15 +6,22 @@ from pathlib import Path
 from hermes_cli.config import load_config
 from hermes_cli.profile_activity_ledger import append_event
 
-# The plugin is in the plugins dir, we need to import its handler
-# Since it's a plugin, we can import it from the path or if installed.
-# For testing, we import from the source path.
+# Load the plugin from this checkout without a bare ``__init__`` import. The
+# latter collides with ``tests/__init__.py`` during full-suite collection and
+# the old absolute path silently tested a different checkout.
+import importlib.util
 import sys
-plugin_path = "/home/kensei/repos/KenseiAgent/plugins/denji-policy-enforcer"
-if plugin_path not in sys.path:
-    sys.path.append(plugin_path)
 
-from __init__ import pre_tool_call_handler, _engine
+PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "denji-policy-enforcer"
+_PLUGIN_SPEC = importlib.util.spec_from_file_location(
+    "denji_policy_enforcer_under_test", PLUGIN_DIR / "__init__.py"
+)
+assert _PLUGIN_SPEC and _PLUGIN_SPEC.loader
+_PLUGIN = importlib.util.module_from_spec(_PLUGIN_SPEC)
+sys.modules[_PLUGIN_SPEC.name] = _PLUGIN
+_PLUGIN_SPEC.loader.exec_module(_PLUGIN)
+pre_tool_call_handler = _PLUGIN.pre_tool_call_handler
+_engine = _PLUGIN._engine
 
 @pytest.fixture
 def mock_hermes_home(tmp_path):

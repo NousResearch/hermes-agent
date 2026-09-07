@@ -143,6 +143,31 @@ def test_start_flow_rejects_bad_client_redirect(monkeypatch):
     )
 
 
+def test_start_flow_preserves_worker_startup_error(monkeypatch):
+    monkeypatch.setattr(mcp_oauth_sessions, "_sessions", {})
+    flows = []
+
+    def worker(session_id, *_args):
+        flow = mcp_oauth_sessions._sessions[session_id]["flow"]
+        flows.append(flow)
+        flow.mark_error("dynamic client registration failed")
+        flow.mark_worker_done()
+
+    monkeypatch.setattr(mcp_oauth_sessions, "_worker", worker)
+
+    with pytest.raises(RuntimeError, match="dynamic client registration failed"):
+        mcp_oauth_sessions.start_flow(
+            str(get_hermes_home()),
+            "startup-error",
+            {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+            client_redirect_uri="http://127.0.0.1:8412/callback",
+            url_timeout=2,
+        )
+
+    assert flows
+    assert flows[0].snapshot()["error"] == "dynamic client registration failed"
+
+
 # ---------------------------------------------------------------------------
 # deliver_callback_flow: relay accept/reject semantics
 # ---------------------------------------------------------------------------

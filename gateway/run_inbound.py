@@ -527,10 +527,9 @@ class GatewayInboundMixin:
 
         if canonical_command:
             _handled, _result, _command = await self._hm_dispatch_quick_and_plugin_commands(
-                event, source, _evt_cmd
+                event, source, _evt_cmd, plugin_command=canonical_command
             )
-            if _handled:
-                return True, _result
+            return True, _result
 
         # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
         # photo-only follow-up; adapter-level batching absorbs them.
@@ -731,9 +730,10 @@ class GatewayInboundMixin:
 
     async def _hm_resolve_command(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
-    ) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
+    ) -> Tuple[bool, Optional[str], Optional[str], Optional[str], Optional[str]]:
         """Resolve the slash command (aliases, access gate, hooks) → ``(handled, result, command,
-        canonical)``; when ``handled`` the caller returns ``result`` as-is (may be None)."""
+        canonical, plugin_command)``; when ``handled`` the caller returns ``result`` as-is (may be
+        None). ``plugin_command`` is the exact registered identity used for authorization."""
         from hermes_cli.commands import (
             is_gateway_known_command,
             resolve_command as _resolve_cmd,
@@ -743,10 +743,11 @@ class GatewayInboundMixin:
         def _canon(cmd):
             # Aliases resolve to the canonical name so dispatch and hook names don't depend on them.
             _def = _resolve_cmd(cmd) if cmd else None
-            return _def, (_def.name if _def else _resolve_plugin_command(cmd) or cmd)
+            _plugin = None if _def else _resolve_plugin_command(cmd)
+            return _def, (_def.name if _def else _plugin or cmd), _plugin
 
         command = event.get_command()
-        _cmd_def, canonical = _canon(command)
+        _cmd_def, canonical, plugin_command = _canon(command)
 
         # Expand alias quick commands before built-in dispatch so targets like /model openai/gpt-5.5
         # --provider openrouter reach the /model handler. Built-ins keep precedence: aliases only
@@ -757,27 +758,31 @@ class GatewayInboundMixin:
                 new_command = self._hm_expand_alias_quick_command(event, qcmd)
                 if new_command is not None:
                     command = new_command
-                    _cmd_def, canonical = _canon(command)
+                    _cmd_def, canonical, plugin_command = _canon(command)
 
         if not (command and canonical and is_gateway_known_command(canonical)):
-            return False, None, command, canonical
+            return False, None, command, canonical, plugin_command
 
         # Per-platform slash access control: only active when the operator set ``allow_admin_from``
         # for the source's scope; then non-admins get ``user_allowed_commands`` plus the
         # /help, /whoami floor. Plain chat is never gated.
         _denied = self._check_slash_access(source, canonical)
         if _denied is not None:
-            return True, _denied, command, canonical
+            return True, _denied, command, canonical, plugin_command
 
         _handled, _result, new_command = await self._hm_command_hooks(
             event, source, _quick_key, command, canonical
         )
         if _handled:
-            return True, _result, command, canonical
+            return True, _result, command, canonical, plugin_command
         if new_command is not None:
             command = new_command
-            _cmd_def, canonical = _canon(command)
-        return False, None, command, canonical
+            _cmd_def, canonical, plugin_command = _canon(command)
+            if canonical and is_gateway_known_command(canonical):
+                _denied = self._check_slash_access(source, canonical)
+                if _denied is not None:
+                    return True, _denied, command, canonical, plugin_command
+        return False, None, command, canonical, plugin_command
 
     async def _hm_confirm_destructive(self, event, command: str, detail: str, handler) -> Tuple[bool, Optional[str]]:
         async def _execute():
@@ -964,10 +969,12 @@ class GatewayInboundMixin:
             return f"Quick command error: {e}"
 
     async def _hm_dispatch_quick_and_plugin_commands(
-        self, event: "MessageEvent", source: SessionSource, command: Optional[str]
+        self, event: "MessageEvent", source: SessionSource, command: Optional[str], *,
+        plugin_command: Optional[str] = None,
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """Drain gate, user-defined quick commands (exec/alias) and plugin slash commands →
-        ``(handled, result, command)``; an alias quick command rewrites ``command``."""
+        ``(handled, result, command)``; an alias quick command rewrites ``command``. A resolved
+        ``plugin_command`` is the registered identity already used for access control and hooks."""
         if self._draining:
             return True, f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now.", command
 
@@ -994,20 +1001,32 @@ class GatewayInboundMixin:
             if new_command is None:
                 return True, f"Quick command '/{command}' has no target defined.", command
             command = new_command  # Fall through to normal command dispatch below
+            from hermes_cli.commands import resolve_plugin_command
+            plugin_command = resolve_plugin_command(command)
+            if plugin_command:
+                _denied = self._check_slash_access(source, plugin_command)
+                if _denied is not None:
+                    return True, _denied, command
 
-        # Plugin-registered slash commands. Underscores normalize to hyphens so Telegram's
-        # underscored autocomplete form matches plugin commands registered with hyphens.
-        if command:
+        # Plugin-registered slash commands use the exact registered identity resolved before the
+        # access gate. Never independently normalize the raw spelling here: exact underscore and
+        # hyphen registrations may coexist as distinct capabilities.
+        if plugin_command:
             try:
                 from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
-                    result = plugin_handler(event.get_command_args().strip())
-                    if asyncio.iscoroutine(result):
-                        result = await result
-                    return True, str(result) if result else None, command
+                plugin_handler = get_plugin_command_handler(plugin_command)
+                if plugin_handler is None:
+                    logger.error(
+                        "Resolved plugin command /%s has no registered handler", plugin_command
+                    )
+                    return True, f"Plugin command `/{plugin_command}` could not be dispatched.", command
+                result = plugin_handler(event.get_command_args().strip())
+                if asyncio.iscoroutine(result):
+                    result = await result
+                return True, str(result) if result else None, command
             except Exception as e:
-                logger.warning("Plugin command dispatch failed: %s", e)
+                logger.warning("Plugin command /%s dispatch failed: %s", plugin_command, e)
+                return True, f"Plugin command `/{plugin_command}` could not be dispatched.", command
         return False, None, command
 
     def _hm_bundle_slash_rewrite(
@@ -1151,11 +1170,15 @@ class GatewayInboundMixin:
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
     ) -> Tuple[bool, Optional[str]]:
         """Idle path: resolve + dispatch slash commands; rewriting commands fall through to the agent."""
-        _handled, _result, command, canonical = await self._hm_resolve_command(event, source, _quick_key)
+        _handled, _result, command, canonical, plugin_command = await self._hm_resolve_command(
+            event, source, _quick_key
+        )
         if not _handled:
             _handled, _result = await self._hm_dispatch_canonical_command(event, source, _quick_key, canonical)
         if not _handled:
-            _handled, _result, command = await self._hm_dispatch_quick_and_plugin_commands(event, source, command)
+            _handled, _result, command = await self._hm_dispatch_quick_and_plugin_commands(
+                event, source, command, plugin_command=plugin_command
+            )
         if not _handled:
             _result = self._hm_skill_slash_rewrite(event, source, _quick_key, command)
             _handled = _result is not None

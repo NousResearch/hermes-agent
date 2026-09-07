@@ -188,16 +188,24 @@ async def test_group_only_gating_leaves_dm_unrestricted():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("command_name", ["rozmilo-override", "rozmilo_override"])
-async def test_non_admin_runs_idle_plugin_command_by_canonical_name(
-    monkeypatch, command_name
+@pytest.mark.parametrize(
+    ("registered_names", "command_name", "allowed_name", "other_name"),
+    [
+        (("danger-admin", "danger_admin"), "danger_admin", "danger_admin", "danger-admin"),
+        (("danger-admin", "danger_admin"), "danger-admin", "danger-admin", "danger_admin"),
+        (("foo_bar",), "foo_bar", "foo_bar", None),
+        (("foo-bar",), "foo_bar", "foo-bar", None),
+    ],
+)
+async def test_idle_plugin_dispatch_uses_authorized_registered_identity(
+    monkeypatch, registered_names, command_name, allowed_name, other_name
 ):
     from hermes_cli import plugins as plugins_module
 
     runner = _make_runner(
         platform_extra={
             "allow_admin_from": ["111"],
-            "user_allowed_commands": ["rozmilo-override"],
+            "user_allowed_commands": [allowed_name],
         }
     )
     runner._run_agent = AsyncMock(
@@ -205,36 +213,45 @@ async def test_non_admin_runs_idle_plugin_command_by_canonical_name(
     )
     access_check = MagicMock(wraps=runner._check_slash_access)
     runner._check_slash_access = access_check
-    handler = MagicMock(return_value="override card-528")
+    handlers = {
+        name: MagicMock(return_value=f"handled {name}")
+        for name in registered_names
+    }
+    lookup_names = []
+
+    def _get_handler(name):
+        lookup_names.append(name)
+        return handlers.get(name)
+
     monkeypatch.setattr(
         plugins_module,
         "get_plugin_commands",
-        lambda: {"rozmilo-override": {"description": "Override the active run"}},
+        lambda: {name: {"description": name} for name in registered_names},
     )
-    monkeypatch.setattr(
-        plugins_module,
-        "get_plugin_command_handler",
-        lambda name: handler if name == "rozmilo-override" else None,
-    )
+    monkeypatch.setattr(plugins_module, "get_plugin_command_handler", _get_handler)
     source = _make_source(user_id="999")
 
     result = await runner._handle_message(
-        _make_event(f"/{command_name} card-528", source)
+        _make_event(f"/{command_name} payload", source)
     )
 
-    assert result == "override card-528"
-    access_check.assert_called_once_with(source, "rozmilo-override")
+    assert result == f"handled {allowed_name}"
+    access_check.assert_called_once_with(source, allowed_name)
     runner.hooks.emit_collect.assert_awaited_once()
     hook_name, hook_context = runner.hooks.emit_collect.await_args.args
-    assert hook_name == "command:rozmilo-override"
-    assert hook_context["command"] == "rozmilo-override"
+    assert hook_name == f"command:{allowed_name}"
+    assert hook_context["command"] == allowed_name
     assert hook_context["raw_command"] == command_name
-    handler.assert_called_once_with("card-528")
+    assert lookup_names == [allowed_name]
+    handlers[allowed_name].assert_called_once_with("payload")
+    if other_name is not None:
+        handlers[other_name].assert_not_called()
     runner._run_agent.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_non_admin_is_denied_unlisted_idle_plugin_command(monkeypatch):
+@pytest.mark.parametrize("busy", [False, True])
+async def test_non_admin_is_denied_unlisted_plugin_command(monkeypatch, busy):
     from hermes_cli import plugins as plugins_module
 
     runner = _make_runner(
@@ -251,13 +268,107 @@ async def test_non_admin_is_denied_unlisted_idle_plugin_command(monkeypatch):
     )
     monkeypatch.setattr(plugins_module, "get_plugin_command_handler", lambda _name: handler)
 
+    source = _make_source(user_id="999")
+    running_agent = MagicMock()
+    if busy:
+        runner._running_agents[build_session_key(source)] = running_agent
+
     result = await runner._handle_message(
-        _make_event("/rozmilo_override card-528", _make_source(user_id="999"))
+        _make_event("/rozmilo_override card-528", source)
     )
 
     assert result is not None
     assert "⛔ /rozmilo-override is admin-only here" in result
     handler.assert_not_called()
+    running_agent.interrupt.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("registered_names", "command_name", "allowed_name", "other_name"),
+    [
+        (("danger-admin", "danger_admin"), "danger_admin", "danger_admin", "danger-admin"),
+        (("danger-admin", "danger_admin"), "danger-admin", "danger-admin", "danger_admin"),
+        (("foo_bar",), "foo_bar", "foo_bar", None),
+        (("foo-bar",), "foo_bar", "foo-bar", None),
+    ],
+)
+async def test_busy_plugin_dispatch_uses_authorized_registered_identity(
+    monkeypatch, registered_names, command_name, allowed_name, other_name
+):
+    from hermes_cli import plugins as plugins_module
+
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": [allowed_name],
+        }
+    )
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("plugin command leaked to the agent")
+    )
+    access_check = MagicMock(wraps=runner._check_slash_access)
+    runner._check_slash_access = access_check
+    handlers = {
+        name: MagicMock(return_value=f"handled {name}")
+        for name in registered_names
+    }
+    lookup_names = []
+
+    def _get_handler(name):
+        lookup_names.append(name)
+        return handlers.get(name)
+
+    monkeypatch.setattr(
+        plugins_module,
+        "get_plugin_commands",
+        lambda: {name: {"description": name} for name in registered_names},
+    )
+    monkeypatch.setattr(plugins_module, "get_plugin_command_handler", _get_handler)
+    source = _make_source(user_id="999")
+    running_agent = MagicMock()
+    runner._running_agents[build_session_key(source)] = running_agent
+
+    result = await runner._handle_message(
+        _make_event(f"/{command_name} payload", source)
+    )
+
+    assert result == f"handled {allowed_name}"
+    access_check.assert_called_once_with(source, allowed_name)
+    assert lookup_names == [allowed_name]
+    handlers[allowed_name].assert_called_once_with("payload")
+    if other_name is not None:
+        handlers[other_name].assert_not_called()
+    running_agent.interrupt.assert_not_called()
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy", [False, True])
+async def test_recognized_plugin_without_handler_fails_closed(monkeypatch, busy):
+    from hermes_cli import plugins as plugins_module
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("recognized plugin command leaked to the agent")
+    )
+    monkeypatch.setattr(
+        plugins_module,
+        "get_plugin_commands",
+        lambda: {"foo_bar": {"description": "literal underscore"}},
+    )
+    monkeypatch.setattr(plugins_module, "get_plugin_command_handler", lambda _name: None)
+    source = _make_source(user_id="999")
+    running_agent = MagicMock()
+    if busy:
+        runner._running_agents[build_session_key(source)] = running_agent
+
+    result = await runner._handle_message(_make_event("/foo_bar", source))
+
+    assert result is not None
+    assert "Plugin command `/foo_bar` could not be dispatched" in result
+    running_agent.interrupt.assert_not_called()
+    runner._run_agent.assert_not_called()
 
 
 @pytest.mark.asyncio

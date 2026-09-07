@@ -166,6 +166,24 @@ GOOGLE_CHAT_MAX_BYTES=16777216                  # 16 MiB — cap on in-flight me
 The project ID also falls back to `GOOGLE_CLOUD_PROJECT`, and the SA path falls
 back to `GOOGLE_APPLICATION_CREDENTIALS` — use whichever convention you prefer.
 
+Hermes accepts two Google credential JSON types at that path:
+
+- `type: service_account` — a downloaded service-account key (the official Chat quickstart).
+- `type: external_account` — a Workload Identity Federation / ADC config (no long-lived key).
+
+Do **not** point `GOOGLE_CHAT_SERVICE_ACCOUNT_JSON` at a WIF file and expect the
+service-account key parser to work. WIF configs have `audience` / `token_url`, not
+`client_email` / `token_uri`. Older Hermes always called
+`from_service_account_info` and failed with:
+
+```text
+Service account info was not in the expected format, missing fields client_email, token_uri.
+```
+
+Leave `GOOGLE_CHAT_SERVICE_ACCOUNT_JSON` unset when using WIF and set
+`GOOGLE_APPLICATION_CREDENTIALS` to the `external_account` cred-config instead.
+mTLS WIF from the Hermes venv also needs `pyOpenSSL`.
+
 Under a [multi-profile gateway](../multi-profile-gateways.md), every
 `GOOGLE_CHAT_*` setting is read from the routed profile's own `.env`; a
 secondary profile never inherits the default profile's project, subscription,
@@ -345,6 +363,13 @@ evicts only that user's cache. Users don't disrupt each other.
 3. Check `hermes gateway` logs for `[GoogleChat] Connected`. If you see
    `[GoogleChat] Config validation failed`, the error message tells you which
    env var to fix.
+
+**`Service account info was not in the expected format, missing fields client_email, token_uri`**
+
+The configured JSON is a WIF `external_account` file, but Hermes was parsing it
+as a downloaded service-account key. Point `GOOGLE_APPLICATION_CREDENTIALS` at
+the WIF cred-config and leave `GOOGLE_CHAT_SERVICE_ACCOUNT_JSON` unset, or use
+a real `type: service_account` key. Current Hermes loads both types.
 
 **Bot replies but an error message appears instead of the agent's answer.**
 

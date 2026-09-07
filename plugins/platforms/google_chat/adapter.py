@@ -224,10 +224,42 @@ class _SACredentialError(Exception):
         self.kind, self.detail = kind, detail
 
 
+def _credentials_from_info(info: Dict[str, Any]) -> Any:
+    """Build credentials from a parsed Google credential JSON dict.
+
+    Official quickstart keys are ``type: service_account``. WIF / ADC configs
+    are ``type: external_account``. Calling ``from_service_account_info`` on a
+    WIF file raises ``MalformedError: missing fields client_email, token_uri``.
+    """
+    if not isinstance(info, dict):
+        raise _SACredentialError("file_invalid", ValueError("credential JSON must be an object"))
+    cred_type = info.get("type")
+    if cred_type == "service_account":
+        if service_account is None:
+            raise _SACredentialError("adc_no_auth")
+        return service_account.Credentials.from_service_account_info(info, scopes=_CHAT_SCOPES)
+    if cred_type == "external_account":
+        try:
+            import google.auth as google_auth
+        except ImportError as exc:
+            raise _SACredentialError("adc_no_auth") from exc
+        loader = getattr(google_auth, "load_credentials_from_dict", None)
+        if loader is None:
+            raise _SACredentialError("unsupported_type")
+        credentials, _project = loader(info, scopes=_CHAT_SCOPES)
+        logger.info("[GoogleChat] Loaded external_account (WIF) credentials")
+        return credentials
+    raise _SACredentialError("unsupported_type")
+
+
 def _load_sa_credentials_from(sa_value: Optional[str]) -> Any:
-    """Build SA credentials from a path / inline JSON, or fall back to ADC.
+    """Build credentials from a path / inline JSON, or fall back to ADC.
+
+    Accepts ``type: service_account`` (downloaded key) and
+    ``type: external_account`` (Workload Identity Federation / ADC config).
     Raises ``_SACredentialError`` with kind in {inline_invalid, not_found,
-    file_invalid, adc_foreign, adc_no_auth, adc_failed}."""
+    file_invalid, unsupported_type, adc_foreign, adc_no_auth, adc_failed}.
+    """
     if sa_value:
         if sa_value.lstrip().startswith("{"):
             try:
@@ -242,7 +274,7 @@ def _load_sa_credentials_from(sa_value: Optional[str]) -> Any:
                     info = json.load(fh)
             except json.JSONDecodeError as exc:
                 raise _SACredentialError("file_invalid", exc) from exc
-        return service_account.Credentials.from_service_account_info(info, scopes=_CHAT_SCOPES)
+        return _credentials_from_info(info)
     # No explicit SA — ADC (Cloud Run / GCE workload identity, or gcloud ADC login).
     if _adc_would_borrow_foreign_credentials():
         raise _SACredentialError("adc_foreign")
@@ -321,6 +353,8 @@ _SA_ERROR_MESSAGES = {
                     "GOOGLE_APPLICATION_CREDENTIALS, or install google-auth to use Application Default Credentials."),
     "adc_failed": ("No Service Account credentials configured and Application Default Credentials are unavailable. Set "
                    "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON or run ``gcloud auth application-default login``. ADC error: {exc}"),
+    "unsupported_type": ("Google credential JSON type is not supported. Use type 'service_account' "
+                         "(downloaded SA key) or 'external_account' (Workload Identity Federation / ADC config)."),
 }
 
 
@@ -416,14 +450,18 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
     # -- configuration -------------------------------------------------------
     def _load_sa_credentials(self) -> Any:
-        """SA credentials: ``extra['service_account_json']`` → GOOGLE_APPLICATION_CREDENTIALS → ADC.
+        """Credentials: extra JSON → GOOGLE_CHAT_SERVICE_ACCOUNT_JSON → GOOGLE_APPLICATION_CREDENTIALS → ADC.
 
-        Priority: 1. Explicit ``extra['service_account_json']`` (path or inline JSON) 2. 3. Application
-        Default Credentials via ``google.auth.default()`` — works on Cloud Run / GCE / GKE with a workload
-        identity attached, or locally via ``gcloud auth application-default login``. Lets operators run the
-        gateway in GCP without managing SA key files. Pattern lifted from PR #14965.
+        The JSON may be ``type: service_account`` (downloaded key) or
+        ``type: external_account`` (WIF / ADC config). ADC via
+        ``google.auth.default()`` covers Cloud Run / GCE / GKE workload identity
+        and local ``gcloud auth application-default login``.
         """
-        sa_path = self.config.extra.get("service_account_json") or _get_scoped_secret("GOOGLE_APPLICATION_CREDENTIALS")
+        sa_path = (
+            self.config.extra.get("service_account_json")
+            or _get_scoped_secret("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
+            or _get_scoped_secret("GOOGLE_APPLICATION_CREDENTIALS")
+        )
         try:
             credentials = _load_sa_credentials_from(sa_path)
         except _SACredentialError as err:
@@ -1637,6 +1675,8 @@ _STANDALONE_SA_ERRORS = {
                     "not in this profile's secret scope"),
     "adc_no_auth": "no SA credentials configured and google-auth is not installed for ADC fallback",
     "adc_failed": "no SA credentials configured and Application Default Credentials are unavailable: {exc}",
+    "unsupported_type": ("credential JSON type is not supported; use type 'service_account' or "
+                         "'external_account'"),
 }
 
 

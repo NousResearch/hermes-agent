@@ -1378,6 +1378,25 @@ platform_toolsets:
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
 
+# WhatsApp-specific settings (config.yaml top-level, not under platforms:):
+#
+# whatsapp:
+#   require_mention: true            # Stay silent in groups until Hermes is directly mentioned
+#   # Store unmentioned messages from permitted groups as passive context.
+#   # This is intentionally opt-in: group participants' messages are retained.
+#   observe_unmentioned_group_messages: false
+#   # Make observed context from all permitted WhatsApp groups available when
+#   # Hermes is mentioned in a group, and to the owner DMs listed below.
+#   share_observed_group_context: false
+#   # Private WhatsApp IDs allowed to query the shared observed group context.
+#   # These IDs must also pass normal WhatsApp DM authorization.
+#   observed_group_context_dm_allow_from:
+#     - "<your-whatsapp-jid-or-phone-number>"
+#   observed_group_context_retention_days: 30
+#   # allowlist (default) | open. `open` observes every group Hermes may serve;
+#   # it requires the corresponding explicit WhatsApp allow-all opt-in.
+#   group_policy: allowlist
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
 #

@@ -899,6 +899,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
     def _on_event(event: Any) -> None:  # TTFB/activity touch — once per SSE event.
         now = time.time()
+        # Lifecycle frames can precede text, so the first accepted parsed event is the Responses
+        # equivalent of Chat Completions' first chunk. Preserve the per-attempt reset and never let
+        # a retired worker overwrite the timestamp owned by a newer request.
+        if getattr(agent, "_last_api_first_chunk_at", None) is None and _request_is_current():
+            agent._last_api_first_chunk_at = now
         has_progress = _codex_event_has_content(event)
         if watchdog_state is not None:
             with watchdog_state.lock:

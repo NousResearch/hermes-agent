@@ -163,6 +163,64 @@ platforms:
 
 When enabled, attachment and inline parts are skipped before payload decoding. The email body text is still processed normally.
 
+## Delivery Behaviors (Optional)
+
+These opt-in behaviors shape how the email adapter sends replies. All are disabled by default and configured under `platforms.email.extra` in your `config.yaml` — no persona or routing logic is hardcoded.
+
+### Inbox Persona (`channel_prompt`)
+
+Give the agent a standing system prompt for all inbound-email conversations:
+
+```yaml
+platforms:
+  email:
+    extra:
+      channel_prompt: |
+        You answer email for this address. Be concise and factual.
+        Never quote prices unless they are listed below. ...
+```
+
+Equivalent forms: the `EMAIL_CHANNEL_PROMPT` environment variable, or the shared per-channel mechanism (email treats the whole inbox as one channel named `inbox`):
+
+```yaml
+platforms:
+  email:
+    channel_prompts:
+      inbox: |
+        You answer email for this address. ...
+```
+
+### Escalation Routing (`escalation_marker`)
+
+If the agent's response starts with the escalation marker (default `[ESCALATE]`), the reply is **not** emailed to the sender. Instead a notification is routed to another connected platform — a human-approval path for email-managed inboxes:
+
+```yaml
+platforms:
+  email:
+    extra:
+      escalation_marker: "[ESCALATE]"   # default; set "" to disable
+      escalation_deliver: telegram      # any configured platform
+      escalation_chat: "123456789"      # optional; blank = platform's home channel
+      escalation_thread_id: "42"        # optional; Telegram forum topic
+```
+
+The escalation ping is prefixed with the original sender (`[EMAIL ESCALATION — sender@example.com]`) so the receiving chat knows who the question came from. Routing reuses the same cross-platform delivery mechanism as the webhook platform: the target platform must be connected, and a blank `escalation_chat` falls back to its home channel. If the response starts with the marker but no target platform is configured, the email is sent normally (with a warning logged).
+
+### Duplicate-Send Suppression (`dedupe_window_seconds`)
+
+The gateway's final-send path can invoke `send()` twice for one response (final send plus stream-consumer flush), producing duplicate emails. Identical (recipient, body) pairs within the window are sent once:
+
+```yaml
+platforms:
+  email:
+    extra:
+      dedupe_window_seconds: 20   # default 20; set 0 to disable
+```
+
+### Internal-Block Stripping
+
+Some model providers prepend the agent's internal `💭` reasoning block to the final response. The adapter always strips any leading `💭` block before delivery — it never reaches the recipient and cannot defeat marker-based escalation routing. This is always-on and has no configuration.
+
 ---
 
 ## Access Control
@@ -218,6 +276,7 @@ Email access is stricter by default than chat-style platforms:
 | `EMAIL_IMAP_PORT` | No | `993` | IMAP server port |
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP server port |
 | `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
+| `EMAIL_CHANNEL_PROMPT` | No | — | Inbox-wide system prompt (persona) for email conversations |
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |

@@ -37,3 +37,7 @@ optional_env:
     description: "Default address for cron / notification delivery"
     prompt: "Home address"
     password: false
+  - name: EMAIL_CHANNEL_PROMPT
+    description: "Inbox-wide system prompt (persona) for email conversations"
+    prompt: "Inbox persona prompt (optional)"
+    password: false

@@ -4,7 +4,9 @@ receives, SMTP sends. Configured via EMAIL_* env vars or ``platforms.email`` in 
 import asyncio
 import email as email_lib
 from contextlib import contextmanager, suppress
+import hashlib
 import imaplib
+import time
 import logging
 import os
 import re
@@ -22,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.platforms.base import (BasePlatformAdapter, MessageEvent, MessageType, SendResult,
-                                    cache_document_from_bytes, cache_image_from_bytes)
+                                    cache_document_from_bytes, cache_image_from_bytes, resolve_channel_prompt)
 from gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
 from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port
@@ -162,6 +164,37 @@ def _send_imap_id(imap: "imaplib.IMAP4") -> None:
                          '"vendor" "NousResearch" "support-email" "noreply@nousresearch.com")')
     except Exception as e:  # noqa: BLE001 — best-effort, never fatal
         logger.debug("[Email] IMAP ID command not accepted: %s", e)
+
+
+def _strip_internal_prefix(content: str) -> str:
+    """Strip internal reasoning/directive blocks before delivery.
+
+    Some model providers prepend the agent's internal ``💭`` reasoning block
+    to the final response. That block is internal — it must never reach an
+    email recipient, and it would defeat marker-based routing such as
+    ``escalation_marker``. Removes any leading ``💭`` block (including a
+    fenced-code body inside it) that precedes the real message.
+    """
+    text = (content or "").lstrip()
+    while text.startswith("💭"):
+        lines = text.split("\n")
+        in_fence = False
+        end_idx = None
+        for i, line in enumerate(lines):
+            if i == 0:
+                continue
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            if line.strip():
+                end_idx = i
+                break
+        if end_idx is None:
+            return ""  # block runs to the end — nothing usable remains
+        text = "\n".join(lines[end_idx:]).strip()
+    return text
 
 
 def _is_automated_sender(address: str, headers: dict) -> bool:
@@ -357,6 +390,27 @@ class EmailAdapter(BasePlatformAdapter):
             self._require_authenticated_sender = not _esecret_bool("EMAIL_TRUST_FROM_HEADER", False)
         # Optional authserv-id pinning Authentication-Results to the operator's own server (defeats an injected header sorting first).
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
+        # Inbox persona: inbox-wide system prompt, the email equivalent of the
+        # ``channel_prompts`` mechanism on chat platforms (email has one channel —
+        # the inbox). Accepts ``channel_prompt`` / EMAIL_CHANNEL_PROMPT, or the
+        # shared ``channel_prompts: {inbox: ...}`` dict style.
+        self._channel_prompt = (extra.get("channel_prompt", "") or _get_secret("EMAIL_CHANNEL_PROMPT", "")
+                                or resolve_channel_prompt(extra, "inbox") or "").strip() or None
+        # Escalation routing: a response starting with *escalation_marker* is routed to
+        # another platform's chat (e.g. Telegram) instead of being emailed to the sender
+        # — a human/approval path for inbound-email sessions. Mirrors the webhook
+        # platform's cross-platform ``deliver``. Only ``escalation_deliver`` is required;
+        # an empty ``escalation_chat`` falls back to the target platform's home channel.
+        self._escalation_marker = str(extra.get("escalation_marker", "[ESCALATE]") or "").strip() or None
+        self._escalation_deliver = str(extra.get("escalation_deliver", "") or "").strip() or None
+        self._escalation_chat = str(extra.get("escalation_chat", "") or "").strip() or None
+        self._escalation_thread_id = str(extra.get("escalation_thread_id", "") or "").strip() or None
+        # Duplicate-send suppression: the gateway's final-send path can invoke send()
+        # twice for one response (final-send + stream-consumer flush); identical
+        # (chat, content) within this window is treated as one send. Set 0 to disable.
+        _dedupe_raw = extra.get("dedupe_window_seconds")
+        self._dedupe_window = float(_dedupe_raw) if _dedupe_raw is not None else 20.0
+        self._last_sends: Dict[Any, float] = {}
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
@@ -639,7 +693,7 @@ class EmailAdapter(BasePlatformAdapter):
             message_type=MessageType.DOCUMENT if "document" in kinds else MessageType.PHOTO if "image" in kinds else MessageType.TEXT,
             source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name),
             media_urls=[att["path"] for att in attachments], media_types=[att["media_type"] for att in attachments],
-            reply_to_message_id=msg_data["in_reply_to"] or None)
+            reply_to_message_id=msg_data["in_reply_to"] or None, channel_prompt=self._channel_prompt)
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
         await self.handle_message(event)
 
@@ -652,8 +706,76 @@ class EmailAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send an email reply to the given address."""
+        """Send an email reply to the given address.
+
+        Applies three optional, config-driven behaviors before delivery:
+        internal-block stripping (always), escalation-marker routing, and
+        duplicate-send suppression. All are no-ops unless configured via
+        ``platforms.email.extra`` keys (see docs/user-guide/messaging/email.md).
+        """
+        content = _strip_internal_prefix(content)
+        marker = self._escalation_marker
+        if marker and content.lstrip().startswith(marker):
+            escalate_text = content.lstrip()[len(marker):].lstrip()
+            if self._escalation_deliver:
+                return await self._deliver_escalation(
+                    self._escalation_deliver, self._escalation_chat or "", escalate_text, chat_id)
+            logger.warning("[Email] Escalation marker present but escalation_deliver not configured — falling back to email reply.")
+        # Guard: refuse to "email" non-address targets (e.g. a numeric chat id from the
+        # home-channel bootstrap) — SMTP would fail with a bogus recipient.
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", chat_id or ""):
+            logger.warning("[Email] Skipping send to non-email chat_id=%r (%d chars) — not an email address",
+                           chat_id, len(content or ""))
+            return SendResult(success=True, message_id=None)
+        # Duplicate-send suppression (see __init__).
+        now = time.monotonic()
+        key = (chat_id, hashlib.sha256(content.encode("utf-8", "replace")).hexdigest())
+        prev_ts = self._last_sends.get(key)
+        if prev_ts is not None and (now - prev_ts) < self._dedupe_window:
+            logger.info("[Email] Duplicate send suppressed (chat=%s, %.1fs since last) — skipping", chat_id, now - prev_ts)
+            return SendResult(success=True, message_id=None)
+        self._last_sends[key] = now
+        for stale in [k for k, ts in self._last_sends.items() if (now - ts) >= self._dedupe_window]:
+            self._last_sends.pop(stale, None)
         return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
+
+    async def _deliver_escalation(self, platform_name: str, target_chat: str, text: str, original_sender: str) -> SendResult:
+        """Route an escalation ping to another platform's chat (mirrors the webhook
+        platform's cross-platform ``deliver``): uses the gateway runner's registered
+        adapter for the target platform; blank *target_chat* falls back to that
+        platform's home channel."""
+        runner = getattr(self, "gateway_runner", None)
+        if not runner:
+            return SendResult(success=False, error="No gateway runner for cross-platform delivery")
+        try:
+            target_platform = Platform(platform_name)
+        except ValueError:
+            return SendResult(success=False, error=f"Unknown platform: {platform_name}")
+        adapter = None  # default adapters first; multiplex may park a platform on a secondary profile
+        for amap in (runner.adapters, *[m for m in (getattr(runner, "_profile_adapters", None) or {}).values() if isinstance(m, dict)]):
+            if isinstance(amap, dict) and amap.get(target_platform):
+                adapter = amap[target_platform]
+                break
+        if not adapter:
+            return SendResult(success=False, error=f"Platform {platform_name} not connected")
+        if not target_chat:
+            home = runner.config.get_home_channel(target_platform)
+            if not home:
+                return SendResult(success=False, error=f"No escalation chat or home channel for {platform_name}")
+            target_chat = home.chat_id
+        # One ping per (target, text) per dedupe window — the final-send/stream-flush
+        # double-invocation applies to the escalation path too.
+        now = time.monotonic()
+        key = ("esc", platform_name, target_chat, hashlib.sha256(text.encode("utf-8", "replace")).hexdigest())
+        prev_ts = self._last_sends.get(key)
+        if prev_ts is not None and (now - prev_ts) < self._dedupe_window:
+            logger.info("[Email] Duplicate escalation suppressed (%s->%s) — skipping", platform_name, target_chat)
+            return SendResult(success=True, message_id=None)
+        self._last_sends[key] = now
+        ping = f"[EMAIL ESCALATION — {original_sender}]\n{text}"
+        metadata = {"thread_id": self._escalation_thread_id} if self._escalation_thread_id else None
+        logger.info("[Email] Escalation routing: platform=%s chat=%s", platform_name, target_chat)
+        return await adapter.send(target_chat, ping, metadata=metadata)
 
     def _message_id_domain(self) -> str:
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""

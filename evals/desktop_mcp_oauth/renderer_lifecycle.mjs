@@ -187,6 +187,10 @@ try {
     )
     assert(!rpcCalls.some(m => m.method === 'mcp.servers.oauth.callback'), 'no callback after abandonment')
   }
+  if (scenario === 'approved') {
+    assert(approved && hasScope, 'Skills must complete OAuth through its native listener')
+    assert(!requests.some(r => r.path.endsWith('/auth')), 'native flow must not use REST auth')
+  }
   assert.deepEqual(errors, [])
 } finally {
   await browser.close()

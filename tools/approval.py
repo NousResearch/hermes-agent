@@ -1013,10 +1013,18 @@ def check_all_command_guards(command: str, env_type: str,
     session_key = get_current_session_key()
     if tirith_result["action"] in {"block", "warn"}:
         findings = tirith_result.get("findings") or []
-        rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
-        tirith_key = f"tirith:{rule_id}"
-        if not is_approved(session_key, tirith_key):
-            warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
+        _skip_low_warn = False
+        if tirith_result["action"] == "warn" and findings:
+            _severities = {str(f.get("severity", "")).strip().upper() for f in findings}
+            # Only skip when all findings carry an explicit, low-risk severity.
+            # A missing or empty severity must fail-closed (show the warning).
+            if _severities and all(s in {"LOW", "INFO"} for s in _severities):
+                _skip_low_warn = True
+        if not _skip_low_warn:
+            rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
+            tirith_key = f"tirith:{rule_id}"
+            if not is_approved(session_key, tirith_key):
+                warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
     if is_dangerous and not is_approved(session_key, pattern_key):
         warnings.append((pattern_key, description, False))
     if not warnings:

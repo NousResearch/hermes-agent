@@ -2598,6 +2598,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self.streaming_enabled = display.get("streaming", False)
         self.show_timestamps = display.get("timestamps", False)
         self.timestamp_format = display.get("timestamp_format", "%H:%M")
+        _rb = str(display.get("response_box", "boxed")).strip().lower()
+        self.response_box = _rb if _rb in {"boxed", "plain"} else "boxed"
         _frm = str(display.get("final_response_markdown", "strip")).strip().lower()
         self.final_response_markdown = _frm if _frm in {"render", "strip", "raw"} else "strip"
 

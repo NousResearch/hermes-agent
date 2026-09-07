@@ -1193,6 +1193,9 @@ class TestInterimAssistantMessageConfig:
     def test_default_config_enables_interim_assistant_messages(self):
         assert DEFAULT_CONFIG["display"]["interim_assistant_messages"] is True
 
+    def test_default_config_response_box_is_boxed(self):
+        assert DEFAULT_CONFIG["display"]["response_box"] == "boxed"
+
     def test_migrate_to_v15_supplies_interim_message_gate_at_read_time(
         self, tmp_path, capsys
     ):

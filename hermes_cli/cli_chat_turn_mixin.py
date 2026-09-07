@@ -216,7 +216,7 @@ class CLIChatTurnMixin:
 
     def _chat_setup_turn_audio(self, turn, message, voice_input):
         """Arm the full-duplex listener and the streaming-TTS pipeline for this turn (voice mode only)."""
-        from cli import _ACCENT, _RST, _STREAM_PAD, _cprint, datetime
+        from cli import _STREAM_PAD, _cprint, datetime
         # Continuous voice mode: arm the mic NOW (utterance-submit), not at TTS playback —
         # it spans generation (speech interrupts the turn) and playback (speech cuts TTS)
         # and disarms itself when the turn is done. See _voice_full_duplex_listener.
@@ -246,9 +246,8 @@ class CLIChatTurnMixin:
                     label = " ⚕ Hermes "
                     if self.show_timestamps:
                         label = f"{label}{datetime.now().strftime(self.timestamp_format)} "
-                    w = self._scrollback_box_width(getattr(self.console, "width", 80))
-                    fill = w - 2 - self._status_bar_display_width(label)
-                    _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+                    self._print_response_box_open(
+                        label, width=getattr(self.console, "width", 80))
                 _cprint(f"{_STREAM_PAD}{sentence.rstrip()}")
 
             turn.tts_thread = threading.Thread(
@@ -598,7 +597,7 @@ class CLIChatTurnMixin:
     def _chat_print_response_panel(self, turn, response):
         """Response box (close TTS-drawn box / post-stream transform / Rich Panel), then billing CTA."""
         from cli import (
-            ChatConsole, _ACCENT, _RST, _cprint, _maybe_remap_for_light_mode, _post_stream_transform_output,
+            ChatConsole, _cprint, _maybe_remap_for_light_mode, _post_stream_transform_output,
             _render_final_assistant_content,
         )
         if response and not (turn.result and turn.result.get("response_previewed", False)):
@@ -617,7 +616,7 @@ class CLIChatTurnMixin:
             already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
             if turn.use_streaming_tts and turn.box_opened and not is_error_response:
                 # Text already printed sentence-by-sentence; just close the box.
-                _cprint(f"\n{_ACCENT}╰{'─' * (self._scrollback_box_width() - 2)}╯{_RST}")
+                self._print_response_box_close(leading_newline=True)
             elif already_streamed:
                 # _flush_stream() already closed the streamed box; a post-stream transform
                 # hook shows a suffix for append-only changes, else the full replacement.
@@ -625,12 +624,10 @@ class CLIChatTurnMixin:
                 if _post_stream_text.strip():
                     _cprint(_post_stream_text)
             else:
-                ChatConsole().print(Panel(
+                self._print_assistant_response(
                     _render_final_assistant_content(response, mode=self.final_response_markdown),
-                    title=f"[{_resp_color} bold]{label}[/]", title_align="left", border_style=_resp_color,
-                    style=_resp_text, box=rich_box.HORIZONTALS, padding=(1, 0),
-                    width=self._scrollback_box_width(),
-                ))
+                    label=label, resp_color=_resp_color, resp_text=_resp_text, padding=(1, 0),
+                )
 
             # Billing CTA pins the single action (Nous → /topup, others → billing page) so it
             # stays visible instead of scrolling away inside the response prose.

@@ -1800,6 +1800,14 @@ display:
   #   false: Wait for the full response before rendering
   streaming: true
 
+  # Assistant response framing in the classic CLI (prompt_toolkit TUI).
+  # Full-width box-drawing borders wrap badly in multiplexers (herdr, tmux
+  # splits, etc.) whose pane width differs from the client's. Plain keeps
+  # the skinned response text color and a short label, without the borders.
+  #   boxed: Rounded box around the reply (default)
+  #   plain: Label + colored text, no box borders
+  # response_box: boxed   # boxed | plain
+
   # Show [HH:MM] timestamps on user input and assistant response labels.
   # timestamps: false
 

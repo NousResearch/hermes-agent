@@ -797,6 +797,11 @@ DEFAULT_CONFIG = {
         "streaming": False,
         "timestamps": False,      # message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format, e.g. "%b-%d %H:%M"
+        # Classic CLI assistant-response framing. Full-width box-drawing borders wrap
+        # badly in multiplexers (herdr, tmux splits) whose pane width differs from the
+        # client's; plain keeps the skinned response color and a short label, no borders.
+        # boxed (default) | plain
+        "response_box": "boxed",
         "final_response_markdown": "strip",  # render | strip | raw
         # Preserve recent classic-CLI output across Ctrl+L, /redraw and resize clears; disable if an
         # emulator misbehaves with replayed scrollback.

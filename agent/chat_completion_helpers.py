@@ -339,7 +339,10 @@ def _payload_chars(value: Any, image_cost: int) -> int:
     if value is None:
         return 0
     if isinstance(value, dict):
-        if value.get("type") in _IMAGE_PART_TYPES and any(k in value for k in ("image_url", "image", "source", "file_id")):
+        part_type = value.get("type")
+        # JSON-Schema nodes may hold a sub-schema (``properties.type``) or a multi-type list
+        # under the "type" key; only scalar content-part types can ever match (#104793).
+        if isinstance(part_type, str) and part_type in _IMAGE_PART_TYPES and any(k in value for k in ("image_url", "image", "source", "file_id")):
             return _image_part_chars(value, image_cost)
         return sum(len(str(k)) + 6 + _payload_chars(v, image_cost) for k, v in value.items())
     if isinstance(value, list):

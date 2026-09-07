@@ -175,6 +175,27 @@ test('abort restoration keeps retries excluded while allowing its backend start 
   assert.equal(state.phase, 'idle')
 })
 
+// Both sides of the handoff record the spawn-to-ack gap: windows.ps1 logs its
+// own seconds since HERMES_UPDATE_STARTED_AT, and this is the Desktop's half.
+// The ack budget is a fixed 10 s, so a failing handoff is only diagnosable if
+// at least one side says how long it actually waited.
+test('the spawn-to-ack latency is logged whether or not the handoff lands', async () => {
+  const lines: string[] = []
+
+  const capture = (line: string) => {
+    lines.push(line)
+  }
+
+  await applyWindowsUpdate({}, deps({ phase: 'idle' }, { log: capture }))
+  assert.match(lines.at(-1) ?? '', /updater handoff acknowledged \d+ ms after spawn/)
+
+  await applyWindowsUpdate({}, deps({ phase: 'idle' }, { log: capture, authenticate: async () => false }))
+  assert.ok(
+    lines.some(line => /updater handoff unacknowledged \d+ ms after spawn/.test(line)),
+    'the failing path is the one the number is needed for'
+  )
+})
+
 test('an aborted handoff reports the failure before it starts restoring', async () => {
   const state: WindowsUpdateState = { phase: 'idle' }
   const events: string[] = []

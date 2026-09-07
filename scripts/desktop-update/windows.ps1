@@ -2060,7 +2060,12 @@ try {
             # bundle unrecoverable through the UI, so proceed as before.
             Write-HandoffLog "hand-off is unacknowledged: the caller sent no nonce (desktop predates the ack protocol); proceeding without $AckPath"
         } elseif (Write-HandoffAck $PID $startedAt) {
-            Write-HandoffLog "wrote hand-off ack $AckPath"
+            # The Desktop's ack budget is a fixed 10s from its spawn. When a
+            # hand-off starts failing, the only question is whether we were slow
+            # to get here or never arrived -- so put the number in the log. The
+            # Desktop logs the same gap in ms from its side.
+            $ackLatency = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $desktopStartedAt
+            Write-HandoffLog "wrote hand-off ack $AckPath (${ackLatency}s after the desktop's claim)"
         } else {
             # A caller that DID send a nonce is waiting for this ack and will
             # refuse the hand-off without it. Exiting while it stays alive and

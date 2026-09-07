@@ -500,11 +500,22 @@ export async function applyWindowsUpdate<TTransport, TLaunch>(
     }
 
     const runAuthorized = deps.runAuthorized ?? runAuthorizedUpdateMutation
+    const spawnedAt = Date.now()
     const launched = runAuthorized(permit, () => deps.launch(permit, prepared, claim!))
     // Attach process observation before authentication can yield.
     const observation = deps.observe(launched.launch)
 
     const [authenticated, observed] = await Promise.all([deps.authenticate(launched.launch, claim), observation])
+
+    // Both sides of the handoff log this gap (windows.ps1 logs its own seconds
+    // since HERMES_UPDATE_STARTED_AT). The ack budget is a fixed 10 s, so when
+    // a handoff starts failing the only question that matters is whether the
+    // script was slow to reach its claim or never got there at all -- and
+    // without a number on either side, neither log could answer it.
+    deps.log(
+      `[updates] updater handoff ${authenticated ? 'acknowledged' : 'unacknowledged'} ` +
+      `${Date.now() - spawnedAt} ms after spawn`
+    )
 
     if (!authenticated || !observed.ok) {
       const error = authenticated ? 'updater-spawn-failed' : 'update-handoff-unacknowledged'

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "entry": "install.ps1",
+  "files": [
+    "install.ps1",
+    "browser-ensure.ps1",
+    "runtime-policy.ps1"
+  ],
+  "kill_track": {
+    "install.ps1": 4388
+  }
+}

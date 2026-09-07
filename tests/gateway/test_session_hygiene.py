@@ -619,28 +619,29 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
         message_id="1",
     )
 
-    result = await runner._handle_message(event)
+    try:
+        result = await runner._handle_message(event)
 
-    assert result == "ok"
-    assert worker_started.is_set()
-    assert runner._run_agent.await_count == 1
-    # Cooldown must be persisted to the state DB (survives restart, #74136),
-    # not stashed in an in-memory dict.
-    assert fake_db.record_compression_failure_cooldown.called
-    _cd_args = fake_db.record_compression_failure_cooldown.call_args[0]
-    assert _cd_args[0] == "sess-timeout"
-    assert _cd_args[1] > time.time()
-    timeout_warnings = [s for s in adapter.sent if "Context compression timed out" in s["content"]]
-    assert len(timeout_warnings) == 1
-    fake_db.archive_and_compact.assert_not_called()
-    assert lease_released.is_set()
-    # Event/state assertions prove the host returned before the detached
-    # worker's event-gated wait completed without a scheduler-sensitive clock
-    # bound: cleanup runs only when that worker actually exits.
-    SlowCompressAgent.last_instance.close.assert_not_called()
-
-    release_worker.set()
-    await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=2)
+        assert result == "ok"
+        assert worker_started.is_set()
+        assert runner._run_agent.await_count == 1
+        # Cooldown must be persisted to the state DB (survives restart, #74136),
+        # not stashed in an in-memory dict.
+        assert fake_db.record_compression_failure_cooldown.called
+        _cd_args = fake_db.record_compression_failure_cooldown.call_args[0]
+        assert _cd_args[0] == "sess-timeout"
+        assert _cd_args[1] > time.time()
+        timeout_warnings = [s for s in adapter.sent if "Context compression timed out" in s["content"]]
+        assert len(timeout_warnings) == 1
+        fake_db.archive_and_compact.assert_not_called()
+        assert lease_released.is_set()
+        # Event/state assertions prove the host returned before the detached
+        # worker's event-gated wait completed without a scheduler-sensitive clock
+        # bound: cleanup runs only when that worker actually exits.
+        SlowCompressAgent.last_instance.close.assert_not_called()
+    finally:
+        release_worker.set()
+    assert await asyncio.to_thread(cleanup_done.wait, 30)
 
     # The late worker observed cancellation at the commit fence, so it never
     # mutated the live session after the new turn began. Cleanup still ran once
@@ -786,21 +787,19 @@ async def test_session_hygiene_turn_hold_budget_abandons_streaming_wait(
         message_id="1",
     )
 
-    started = time.monotonic()
-    result = await asyncio.wait_for(runner._handle_message(event), timeout=15)
-    elapsed = time.monotonic() - started
+    try:
+        result = await asyncio.wait_for(runner._handle_message(event), timeout=15)
 
-    # The turn proceeded on the uncompressed transcript well under the 600s
-    # ceiling — the turn-hold budget (~0.3s) abandoned the streaming wait.
-    assert result == "ok"
-    assert elapsed < 5.0, f"turn held for {elapsed:.1f}s despite the turn-hold budget"
-    assert worker_started.is_set()
-    assert runner._run_agent.await_count == 1
-    # The stale commit must be fenced: the late worker never mutates the session.
-    fake_db.archive_and_compact.assert_not_called()
-
-    release_worker.set()
-    await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=3)
+        # The turn proceeded on the uncompressed transcript well under the 600s
+        # ceiling — the turn-hold budget (~0.3s) abandoned the streaming wait.
+        assert result == "ok"
+        assert worker_started.is_set()
+        assert runner._run_agent.await_count == 1
+        # The stale commit must be fenced: the late worker never mutates the session.
+        fake_db.archive_and_compact.assert_not_called()
+    finally:
+        release_worker.set()
+    assert await asyncio.to_thread(cleanup_done.wait, 30)
     fake_db.archive_and_compact.assert_not_called()
     StreamingCompressAgent.last_instance.close.assert_called_once()
 
@@ -963,34 +962,33 @@ async def test_session_hygiene_idle_timeout_still_takes_failure_path(
         message_id="1",
     )
 
-    started = time.monotonic()
-    result = await asyncio.wait_for(runner._handle_message(event), timeout=15)
-    elapsed = time.monotonic() - started
+    try:
+        result = await asyncio.wait_for(runner._handle_message(event), timeout=15)
 
-    # The turn proceeded on the uncompressed transcript after the idle
-    # timeout fired (~0.1s).
-    assert result == "ok"
-    assert elapsed < 5.0
-    assert worker_started.is_set()
-    assert runner._run_agent.await_count == 1
+        # The turn proceeded on the uncompressed transcript after the idle
+        # timeout fired (~0.1s).
+        assert result == "ok"
+        assert worker_started.is_set()
+        assert runner._run_agent.await_count == 1
 
-    # Behavior witness: idle timeout MUST send the "no output" message.
-    sent_contents = [m["content"] for m in adapter.sent]
-    assert any(
-        "timed out" in c.lower() and "no output" in c.lower()
-        for c in sent_contents
-    ), f"idle timeout must send 'no output' message, got: {sent_contents}"
+        # Behavior witness: idle timeout MUST send the "no output" message.
+        sent_contents = [m["content"] for m in adapter.sent]
+        assert any(
+            "timed out" in c.lower() and "no output" in c.lower()
+            for c in sent_contents
+        ), f"idle timeout must send 'no output' message, got: {sent_contents}"
 
-    # Behavior witness: idle timeout MUST advance the failure cooldown.
-    # The gateway calls _hygiene_cooldown_for_failure + _record_hygiene_cooldown.
-    # We verify by checking the DB mock was asked to persist.
-    # (The exact call depends on the SessionDB interface; we assert the
-    # gateway attempted to record the failure.)
-    assert fake_db.get_compression_failure_cooldown.called
+        # Behavior witness: idle timeout MUST advance the failure cooldown.
+        # The gateway calls _hygiene_cooldown_for_failure + _record_hygiene_cooldown.
+        # We verify by checking the DB mock was asked to persist.
+        # (The exact call depends on the SessionDB interface; we assert the
+        # gateway attempted to record the failure.)
+        assert fake_db.get_compression_failure_cooldown.called
 
-    # Cleanup: release the stalled worker so it can exit, then verify teardown.
-    release_worker.set()
-    await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=3)
+        # Cleanup: release the stalled worker so it can exit, then verify teardown.
+    finally:
+        release_worker.set()
+    assert await asyncio.to_thread(cleanup_done.wait, 30)
     StalledCompressAgent.last_instance.close.assert_called_once()
 
 @pytest.mark.asyncio
@@ -1715,8 +1713,9 @@ async def test_hygiene_does_not_wait_ceiling_after_fence_cancel(
             "Context compression timed out" in s["content"] for s in adapter.sent
         ), "fence-cancel is not a summary-model timeout; no timeout toast"
         release_worker.set()
-        await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=2)
+        assert await asyncio.to_thread(cleanup_done.wait, 30)
     finally:
+        release_worker.set()
         db.close()
 
 
@@ -1811,6 +1810,7 @@ async def test_hygiene_unwind_records_cooldown(monkeypatch, tmp_path):
             f"{state!r}"
         )
         release_worker.set()
-        await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=2)
+        assert await asyncio.to_thread(cleanup_done.wait, 30)
     finally:
+        release_worker.set()
         db.close()

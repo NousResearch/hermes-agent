@@ -3568,6 +3568,27 @@ class TestPreLlmFeasibilityCheck:
 
         assert compressor._prellm_skip_count == 0
 
+    def test_compression_count_resets_on_session_reset(self, compressor):
+        """``/new`` and ``/reset`` rotate session_id and call ``on_session_reset()``.
+
+        ``compression_count`` is the user-visible tally in the status bar and TUI gateway
+        payload; a prior session's compressions must not leak into the new session's count.
+        """
+        compressor.compression_count = 7
+
+        compressor.on_session_reset()
+
+        assert compressor.compression_count == 0
+
+    def test_compression_count_resets_on_session_end(self, compressor):
+        """Session-end (CLI exit, gateway expiry, session-id rotation) runs the same shared
+        reset path. The counter must clear so a subsequent session does not start at N."""
+        compressor.compression_count = 3
+
+        compressor.on_session_end("s-old", [])
+
+        assert compressor.compression_count == 0
+
     def test_skip_fires_on_fat_tail_small_middle(self, compressor):
         """The target scenario from #60451: a tool-heavy transcript whose
         protected tail already holds most of the tokens, leaving a tiny

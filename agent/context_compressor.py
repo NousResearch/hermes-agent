@@ -1851,6 +1851,9 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         # Callers read this to know compression was attempted but aborted (freeze until manual /compress).
         self._last_compress_aborted = self._last_compress_refused_would_grow = False
         self._context_probed = self._context_probe_persistable = False
+        # Per-session observability counter — displayed in the CLI status bar and TUI gateway payload.
+        # Stale counts from the prior session must not leak into the new one.
+        self.compression_count = 0
         self._reset_real_usage_pairing()
         self._last_compression_telemetry = self._active_compression_telemetry = None
         self._compression_telemetry_seed = None

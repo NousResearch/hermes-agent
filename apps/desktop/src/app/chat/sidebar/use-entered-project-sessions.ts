@@ -17,7 +17,9 @@ export function useEnteredProjectSessions(
   const [loading, setLoading] = useState(false)
   const [retryToken, setRetryToken] = useState(0)
 
-  useEffect(() => { setProject(null) }, [projectId, scope])
+  useEffect(() => {
+    setProject(null)
+  }, [projectId, scope])
 
   useEffect(() => {
     let cancelled = false
@@ -32,11 +34,25 @@ export function useEnteredProjectSessions(
 
     setLoading(true)
     void fetchProjectSessions(projectId)
-      .then(next => { if (!cancelled) { setProject(next) } })
-      .catch(() => { if (!cancelled) { setFailed(true) } })
-      .finally(() => { if (!cancelled) { setLoading(false) } })
+      .then(next => {
+        if (!cancelled) {
+          setProject(next)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFailed(true)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false)
+        }
+      })
 
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [projectId, ready, treeRevision, scope, retryToken])
 
   return { project, failed, loading, retry: () => setRetryToken(token => token + 1) }

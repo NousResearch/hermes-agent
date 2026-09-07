@@ -121,15 +121,38 @@ def run_cli(repo, mode):
             oauth.update(client_id="fixture-client", client_secret="fixture-client-secret")
         config = {"mcp_servers": {"fixture": {"url": base + "/mcp", "auth": "oauth", "oauth": oauth}}}
         (home / "config.yaml").write_text(json.dumps(config))
+        previous = {}
+        if mode == "persistence":
+            token_dir = home / "mcp-tokens"
+            token_dir.mkdir()
+            previous = {"fixture.json": '{"access_token":"old-fixture","token_type":"Bearer"}',
+                        "fixture.client.json": '{"client_id":"old-client"}',
+                        "fixture.meta.json": '{"issuer":"https://old.example"}'}
+            for filename, value in previous.items():
+                (token_dir / filename).write_text(value)
         env = {key: value for key, value in os.environ.items()
                if not key.startswith("HERMES_") and not any(part in key for part in ("API_KEY", "TOKEN", "SECRET"))}
         env.update(HOME=str(home), HERMES_HOME=str(home), PYTHONPATH=str(repo), PYTHONDONTWRITEBYTECODE="1")
         command = ["reauth", "fixture"] if mode == "preregistered" else ["login", "fixture", "--flow", "device"]
-        result = subprocess.run([sys.executable, "-m", "hermes_cli.main", "mcp", *command],
+        argv = [sys.executable, "-m", "hermes_cli.main", "mcp", *command]
+        if mode == "persistence":
+            # Inject a filesystem write error after real registration/metadata writes.
+            argv = [sys.executable, "-c", '''
+from tools import mcp_oauth
+write = mcp_oauth._write_json
+def fail_token(path, data):
+    if path.name == "fixture.json":
+        raise OSError("fixture disk failure")
+    return write(path, data)
+mcp_oauth._write_json = fail_token
+from hermes_cli.main import main
+main()
+''', "mcp", *command]
+        result = subprocess.run(argv,
                                 cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=40)
         token_path = home / "mcp-tokens" / "fixture.json"
         refresh_output = None
-        if token_path.exists():
+        if token_path.exists() and not previous:
             tokens = json.loads(token_path.read_text())
             tokens["expires_at"] = time.time() - 60
             token_path.write_text(json.dumps(tokens))
@@ -137,7 +160,8 @@ def run_cli(repo, mode):
                                        cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
             refresh_output = refreshed.stdout + refreshed.stderr
         return {"mode": mode, "returncode": result.returncode, "output": result.stdout + result.stderr,
-                "token_persisted": token_path.exists(), "refresh_output": refresh_output, "wire": wire}
+                "token_persisted": token_path.exists(), "refresh_output": refresh_output, "wire": wire,
+                "state_preserved": all((home / "mcp-tokens" / k).read_text() == v for k, v in previous.items())}
 
 
 if __name__ == "__main__":

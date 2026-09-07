@@ -24,11 +24,12 @@ def test_device_login_registers_authorizes_and_persists(mode):
         assert not any(row["path"] == "/register" for row in result["wire"])
 
 
-@pytest.mark.parametrize("mode", ["denied", "expiry", "unsupported", "issuer", "resource", "malformed"])
+@pytest.mark.parametrize("mode", ["denied", "expiry", "unsupported", "issuer", "resource", "malformed", "persistence"])
 def test_device_login_failure_does_not_persist_or_disclose_credentials(mode):
     result = run_cli(Path(__file__).resolve().parents[2], mode)
     assert "unrecognized arguments" not in result["output"], result
-    assert not result["token_persisted"], result
+    assert result["state_preserved"], result
+    assert result["token_persisted"] == (mode == "persistence"), result
     assert "Authentication failed" in result["output"], result
     assert "fixture-device-secret" not in result["output"], result
     assert "Authenticated" not in result["output"], result

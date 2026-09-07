@@ -2,12 +2,8 @@ import assert from 'node:assert/strict'
 
 import { describe, it } from 'vitest'
 
-import {
-  buildExactTerminateScript,
-  createWindowsHolderTerminator,
-  parseTerminateScriptOutput,
-  TERMINATE_JOB_WRAPPER_COMMAND
-} from './windows-process-terminate'
+import { createWindowsHolderTerminator, parseTerminateScriptOutput } from './windows-process-terminate'
+import { buildExactTerminateScript, TERMINATE_JOB_WRAPPER_COMMAND } from './windows-process-terminate-scripts'
 import type { ForceReleaseHolder } from './windows-update-force-release'
 
 describe('exact terminate script: executable-under-install-root authorization', () => {

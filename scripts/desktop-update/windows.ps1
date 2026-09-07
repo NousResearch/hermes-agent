@@ -128,11 +128,16 @@ $ErrorActionPreference = "Continue"
 # and after the update we must hand focus TO the relaunched Desktop (a
 # WMI-spawned process starts unfocused). AllowSetForegroundWindow lets us
 # pass our foreground right on to the new Hermes.exe pid.
+#
+# MoveFileEx is here for the ack: Windows PowerShell 5.1 runs on .NET
+# Framework, which has no File.Move overwrite overload, and the Win32 call is
+# the only way to REPLACE a file in a single directory operation.
 try {
     Add-Type -Namespace HermesHandoff -Name Win32 -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int dwProcessId);
 [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+[DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, int dwFlags);
 '@ -ErrorAction Stop
     $script:Win32 = $true
 } catch { $script:Win32 = $false }
@@ -754,11 +759,32 @@ function Write-HandoffAck([int]$OwnerPid, [int64]$OwnerCreatedAt) {
         $body = "$HandoffNonce`n$OwnerPid`n$OwnerCreatedAt`n"
         $temp = "$AckPath.tmp-$PID"
         [System.IO.File]::WriteAllText($temp, $body, (New-Object System.Text.UTF8Encoding($false)))
-        # Publish atomically: a half-written ack must never be readable.
-        [System.IO.File]::Copy($temp, $AckPath, $true)
-        [System.IO.File]::Delete($temp)
+        # Publish by RENAME, not by copy. File.Copy(..., overwrite) truncates
+        # the destination and rewrites it in place, so a Desktop that opens the
+        # ack between those two steps reads an empty or partial file -- and the
+        # reader's rule is EXACTLY three lines, so a torn ack reads as "no ack"
+        # and the hand-off it was proving is refused. MoveFileEx with
+        # MOVEFILE_REPLACE_EXISTING (0x1) swaps the directory entry in one
+        # operation: a reader sees the whole old ack or the whole new one.
+        $published = $false
+        if ($script:Win32) {
+            $published = [HermesHandoff.Win32]::MoveFileEx($temp, $AckPath, 1)
+        }
+        if (-not $published) {
+            # No P/Invoke available. .NET Framework has no overwrite overload,
+            # so unlink first; still a rename, so no partial body is ever
+            # readable. NOT Move-Item -- given a destination that is a
+            # directory it moves the file INSIDE it and reports success, which
+            # would turn "the ack could not be published" into a silent pass.
+            if ([System.IO.File]::Exists($AckPath)) { [System.IO.File]::Delete($AckPath) }
+            [System.IO.File]::Move($temp, $AckPath)
+        }
+        # The whole point is that the Desktop can read this. Anything that
+        # left it unreadable is a failed ack, not a written one.
+        if (-not [System.IO.File]::Exists($AckPath)) { throw "the ack was not published to $AckPath" }
         return $true
     } catch {
+        if ($temp) { try { [System.IO.File]::Delete($temp) } catch {} }
         Write-HandoffLog "could not write hand-off ack ($AckPath): $($_.Exception.Message)"
         return $false
     }

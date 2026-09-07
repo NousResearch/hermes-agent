@@ -117,6 +117,32 @@ def test_claim_acknowledges_the_handoff_with_the_desktops_nonce(tmp_path: Path) 
 
 
 @pytest.mark.windows_only
+def test_the_ack_is_published_by_rename_over_any_stale_one(tmp_path: Path) -> None:
+    """The ack used to be published with File.Copy(..., overwrite), which
+    truncates the destination and rewrites it in place -- a Desktop reading
+    between those two steps sees a partial body, and the reader's exactly-three
+    -lines rule turns that into "no ack" and refuses a hand-off that happened.
+    A rename leaves no window and no temp file behind."""
+    install_root = tmp_path / "hermes-agent"
+    install_root.mkdir()
+    marker = tmp_path / ".hermes-update-in-progress"
+    ack = tmp_path / ".hermes-update-in-progress.ack"
+    started_at = 1_700_000_000
+    desktop_pid = os.getpid()
+    marker.write_text(f"{desktop_pid}\n{started_at}\n", encoding="utf-8", newline="")
+    # A longer stale body: an in-place rewrite would leave its tail behind.
+    ack.write_text("stale" * 40 + "\n", encoding="utf-8", newline="")
+
+    result = _run_marker_claim(install_root, desktop_pid, started_at)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    published = ack.read_text(encoding="utf-8")
+    assert published.splitlines() == [NONCE, *marker.read_text(encoding="utf-8").splitlines()]
+    assert "stale" not in published, "the stale ack must be replaced whole, not overwritten in place"
+    assert not list(tmp_path.glob(".hermes-update-in-progress.ack.tmp-*")), "no temp file may survive"
+
+
+@pytest.mark.windows_only
 def test_claim_without_a_nonce_adopts_the_marker_but_writes_no_ack(tmp_path: Path) -> None:
     """A nonce-less caller is a Desktop predating the ack protocol. It has no
     way to verify an ack, so none is written -- and the claim still happens,

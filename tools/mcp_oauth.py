@@ -295,7 +295,8 @@ class HermesTokenStorage:
         ``fixup(data)`` may rewrite the raw dict before validation."""
         data = _read_json(path)
         cls = _sdk_class(sdk_name) if data is not None else None
-        if cls is not None and sdk_name == "OAuthMetadata" and data.get("device_authorization_endpoint"):
+        if (cls is not None and sdk_name == "OAuthMetadata" and isinstance(data, dict)
+                and data.get("device_authorization_endpoint")):
             from tools.mcp_oauth_device import DeviceOAuthMetadata
             cls = DeviceOAuthMetadata
         if cls is None:

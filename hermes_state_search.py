@@ -970,14 +970,16 @@ class SessionSearchMixin:
                     with self._read_ctx() as conn:
                         rows = conn.execute(sql, list(contexts)).fetchall()
                     for row in rows:
-                        contexts[row["match_id"]].append({
-                            "role": row["role"],
-                            "content": _flatten_text(self._decode_content(row["content"]))[:200],
-                        })
+                        contexts[row["match_id"]].append(row)
                 except Exception:
                     contexts = {}
                 for match in batch:
-                    match["context"] = contexts.get(match["id"], [])
+                    try:
+                        match["context"] = [
+                            {"role": row["role"], "content": _flatten_text(self._decode_content(row["content"]))[:200]}
+                            for row in contexts.get(match["id"], [])]
+                    except Exception:
+                        match["context"] = []
         # No route selects full content; the pop guards any future one that does.
         for match in matches:
             match.pop("content", None)

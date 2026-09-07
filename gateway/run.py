@@ -3154,27 +3154,10 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
 _SESSION_DB_UNPINNED = object()
 
 
-# Agent-facing sidecar note per auto-reset reason (default: idle).
+# Only explicit suspension can replace a routed conversation.
 _AUTO_RESET_CONTEXT_NOTES = {
     "suspended": "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]",
-    "daily": "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]",
-    "resume_pending_expired": "[System note: The previous gateway session could not be recovered after a restart (API recovery timed out). This is a fresh conversation — use /resume to restore history if needed.]",
-    "idle": "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]",
 }
-
-
-def _auto_reset_reason_text(reset_reason: str, policy) -> str:
-    """Human-readable cause for the user-facing auto-reset notice."""
-    if reset_reason == "suspended":
-        return "previous session was stopped or interrupted"
-    if reset_reason == "resume_pending_expired":
-        return "gateway restart recovery timed out"
-    if reset_reason == "daily":
-        return f"daily schedule at {policy.at_hour}:00"
-    hours = policy.idle_minutes // 60
-    mins = policy.idle_minutes % 60
-    duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
-    return f"inactive for {duration}"
 
 
 def _write_runtime_status_quiet(**fields: Any) -> None:

@@ -19,7 +19,7 @@ _RETRY_HINT = "  Re-run 'hermes honcho setup' to retry, or choose an API key ins
 _INHERITED_KEYS = (
     "recallMode", "writeFrequency", "sessionStrategy", "contextTokens",
     "dialecticReasoningLevel", "dialecticDynamic", "dialecticMaxChars",
-    "messageMaxChars", "dialecticMaxInputChars", "saveMessages", "observation",
+    "messageMaxChars", "dialecticMaxInputChars", "saveMessages", "saveAssistantMessages", "observation",
     "recallSync",
 )
 # clone_honcho_for_profile also carries the operator's runtime-to-peer routing intent.

@@ -43,16 +43,16 @@ Context is injected into the **user message** at API-call time (not the system p
 Two independent layers, each on its own cadence:
 
 **Layer 1 — Base context** (refreshed every `contextCadence` turns):
-1. **SESSION SUMMARY** — from `session.context(summary=True)`, placed first
-2. **User Representation** — Honcho's evolving model of the user
-3. **User Peer Card** — key facts snapshot
-4. **AI Self-Representation** — Honcho's model of the AI peer
-5. **AI Identity Card** — AI peer facts
+1. **User Peer Card** — curated user facts
+2. **AI Identity Card** — curated AI peer facts
+3. **SESSION SUMMARY** — from `session.context(summary=True)`
+4. **User Representation** — Honcho's evolving model of the user
+5. **AI Self-Representation** — Honcho's model of the AI peer
 
 **Layer 2 — Dialectic supplement** (fired every `dialecticCadence` turns):
 Multi-pass `.chat()` reasoning about the user, appended after base context.
 
-Both layers are joined, then truncated to fit `contextTokens` budget via `_truncate_to_budget` (tokens × 4 chars, word-boundary safe).
+Both layers are joined, then truncated to fit `contextTokens` budget via `_truncate_to_budget` (tokens × 4 chars, word-boundary safe). Curated cards come first so generated summaries and representations cannot crowd them out of the budget; an unusually large card can still be truncated.
 
 ### Current-Query Recall (opt-in)
 
@@ -246,6 +246,11 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 |-----|------|---------|-------------|
 | `writeFrequency` | string/int | `"async"` | `"async"` (background), `"turn"` (sync per turn), `"session"` (batch on end), or integer N (every N turns) |
 | `saveMessages` | bool | `true` | Persist messages to Honcho API. When `false`, all automatic writes are skipped — raw turns (`sync_turn`), conclusion mirroring (`on_memory_write`), and session-end/shutdown flushes — while read and tools paths stay fully functional. |
+| `saveAssistantMessages` | bool | `true` | Include assistant replies in raw turn persistence. When `false`, only user messages are saved from each eligible turn. Host block overrides root. `saveMessages` remains the master gate; conclusion mirroring and explicit tools keep their existing behavior. |
+
+Observation settings control which peers form observations; they do not filter raw messages from storage or search. Use `saveAssistantMessages: false` to exclude assistant replies from future raw turn writes. Existing stored messages are unchanged.
+
+Automatic turn capture excludes machine deliveries identified by their leading Bot Chat relay or background-process completion/watch-match format, including the assistant response to that delivery. Human messages that discuss or quote these formats within ordinary text remain eligible for capture.
 
 ### Session Resolution
 

@@ -35,7 +35,10 @@ _INTERNAL_GATEWAY_TURN_RE = re.compile(
     r"\[CONTEXT SUMMARY\]:?|"
     r"\[PRIOR CONTEXT[^\]]*\]|"
     r"\[Your active task list was preserved across context compression\]|"
-    r"\[IMPORTANT: Background process \d+ matched watch pattern[^\n]*|"
+    r"Message from 🤖 [^\n]+ \(@[^\s()]+\):|"
+    r"\[IMPORTANT: Background process (?:proc_[\w-]+|\d+) "
+    r"(?:matched watch pattern|completed normally|exited|failed to start|marked lost because|terminated by)\b|"
+    r"\[IMPORTANT: \d+ background processes completed for this session\.|"
     r"A background fan-out of \d+ subagent\(s\) you dispatched earlier has finished\.|"
     r"A background subagent you dispatched earlier has finished\."
     r")",
@@ -76,13 +79,13 @@ _PROMPT_HEADERS = {
     ),
 }
 
-# (context key, section header) for the injected base-context block, in display order.
+# Curated cards precede generated text so a large summary/representation cannot crowd them out.
 _CONTEXT_SECTIONS = (
+    ("card", "User Peer Card"),
+    ("ai_card", "AI Identity Card"),
     ("summary", "Session Summary"),
     ("representation", "User Representation"),
-    ("card", "User Peer Card"),
     ("ai_representation", "AI Self-Representation"),
-    ("ai_card", "AI Identity Card"),
 )
 
 _PREWARM_QUERY = "Summarize what you know about this user. Focus on preferences, current projects, and working style."
@@ -505,12 +508,18 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         """Truncate text to the context_tokens budget (≈4 chars/token) at a word boundary."""
         if not self._config or not self._config.context_tokens:
             return text
-        budget_chars = self._config.context_tokens * 4
+        budget_chars = max(0, self._config.context_tokens * 4)
         if len(text) <= budget_chars:
             return text
-        truncated = text[:budget_chars]
+        suffix = " …"
+        if budget_chars <= len(suffix):
+            return suffix[:budget_chars]
+        content_budget = budget_chars - len(suffix)
+        truncated = text[:content_budget]
         last_space = truncated.rfind(" ")
-        return (truncated[:last_space] if last_space > budget_chars * 0.8 else truncated) + " …"
+        if last_space > content_budget * 0.8:
+            truncated = truncated[:last_space]
+        return truncated.rstrip() + suffix
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire background prefetch threads for the upcoming turn.
@@ -598,7 +607,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Record the conversation turn in Honcho (non-blocking), chunking messages that
-        exceed the Honcho API limit. Honors saveMessages: false."""
+        exceed the Honcho API limit. Honors saveMessages and saveAssistantMessages."""
         if not self._writes_enabled():
             return
         if _is_internal_gateway_turn(user_content):
@@ -609,7 +618,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
-        clean_assistant_content = sanitize_context(assistant_content or "").strip()
+        clean_assistant_content = (sanitize_context(assistant_content or "").strip()
+                                   if getattr(self._config, "save_assistant_messages", True) else "")
         # Skip only when the whole turn is empty: an interrupted or tool-only turn can have
         # an empty assistant side, and the user's message must still be persisted.
         if not clean_user_content and not clean_assistant_content:

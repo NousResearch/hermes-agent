@@ -304,6 +304,29 @@ class TestCloneHonchoForProfile:
         assert "pinUserPeer" not in new_block
         assert "pinPeerName" not in new_block
 
+    def test_clone_preserves_disabled_assistant_capture_on_disk(self, monkeypatch, tmp_path):
+        from pathlib import Path
+        import plugins.memory.honcho.cli as honcho_cli
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(honcho_cli, "_ensure_peer_exists", lambda host_key=None: True)
+        config_path = home / "honcho.json"
+        config_path.write_text(json.dumps({
+            "saveAssistantMessages": True,
+            "hosts": {"hermes": {"saveMessages": True, "saveAssistantMessages": False}},
+        }))
+
+        assert honcho_cli.clone_honcho_for_profile("coder") is True
+
+        saved = json.loads(config_path.read_text())
+        original = saved["hosts"]["hermes"]
+        cloned = saved["hosts"]["hermes_coder"]
+        for key in ("saveMessages", "saveAssistantMessages"):
+            assert cloned[key] is original[key]
+
 
 class TestSetupWizardDeploymentShape:
     """The gateway identity-mapping tree writes pinUserPeer / userPeerAliases /

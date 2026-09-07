@@ -53,7 +53,7 @@ AI-native cross-session user modeling with dialectic reasoning, session-scoped c
 
 **Tools (5):** `honcho_profile` (read/update peer card), `honcho_search` (semantic search), `honcho_context` (session context — summary, representation, card, messages), `honcho_reasoning` (LLM-synthesized), `honcho_conclude` (create/delete conclusions)
 
-**Architecture:** Two-layer context injection — a base layer (session summary + representation + peer card, refreshed on `contextCadence`) plus a dialectic supplement (LLM reasoning, refreshed on `dialecticCadence`). The dialectic automatically selects cold-start prompts (general user facts) vs. warm prompts (session-scoped context) based on whether base context exists.
+**Architecture:** Two-layer context injection — a base layer (curated user and AI cards first, followed by session summary and representations, refreshed on `contextCadence`) plus a dialectic supplement (LLM reasoning, refreshed on `dialecticCadence`). Cards take priority when the combined context is truncated to the token budget. The dialectic automatically selects cold-start prompts (general user facts) vs. warm prompts (session-scoped context) based on whether base context exists.
 
 **Three orthogonal config knobs** control cost and depth independently:
 
@@ -91,10 +91,11 @@ The legacy `hermes honcho setup` command still works (it now redirects to `herme
 | `dialecticDepthLevels` | `null` | Optional array of reasoning levels per pass, e.g. `["minimal", "low", "medium"]`. Overrides proportional defaults |
 | `dialecticReasoningLevel` | `'low'` | Base reasoning level: `minimal`, `low`, `medium`, `high`, `max` |
 | `dialecticDynamic` | `true` | When `true`, model can override reasoning level per-call via tool param |
-| `dialecticMaxChars` | `600` | Max chars of dialectic result injected into system prompt |
+| `dialecticMaxChars` | `600` | Max chars of dialectic result included in injected memory context |
 | `recallMode` | `'hybrid'` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
 | `writeFrequency` | `'async'` | When to flush messages: `async` (background thread), `turn` (sync), `session` (batch on end), or integer N |
-| `saveMessages` | `true` | Whether to persist messages to Honcho API |
+| `saveMessages` | `true` | Master gate for automatic writes: raw turns, mirrored conclusions, and session-end/shutdown flushes. Reads and explicit tools remain available |
+| `saveAssistantMessages` | `true` | Include assistant replies in raw turn writes. Set `false` to save only user messages from eligible turns. Host block overrides root; requires `saveMessages: true` |
 | `observationMode` | `'directional'` | `directional` (all on) or `unified` (shared pool). Override with `observation` object |
 | `messageMaxChars` | `25000` | Max chars per message (chunked if exceeded) |
 | `dialecticMaxInputChars` | `10000` | Max chars for dialectic query input to `peer.chat()` |

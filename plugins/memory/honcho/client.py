@@ -297,6 +297,7 @@ def _behavior_fields(look: _HostLookup, explicitly_configured: bool) -> dict[str
         "user_peer_aliases": look.string_map("userPeerAliases"),
         "runtime_peer_prefix": look.string("runtimePeerPrefix"),
         "save_messages": look.pick_set("saveMessages", True),
+        "save_assistant_messages": look.flag("saveAssistantMessages", default=True),
         "write_frequency": write_frequency,
         "context_tokens": look.parsed("contextTokens", int, None),
         "dialectic_reasoning_level": look.pick("dialecticReasoningLevel") or "low",
@@ -349,6 +350,7 @@ class HonchoClientConfig:
     # Toggles
     enabled: bool = False
     save_messages: bool = True
+    save_assistant_messages: bool = True  # raw assistant turns; save_messages remains the master write gate
     write_frequency: str | int = "async"  # "async" | "turn" | "session" | every-N-turns int
     context_tokens: int | None = None  # prefetch budget; None = uncapped
     # Dialectic (peer.chat) settings

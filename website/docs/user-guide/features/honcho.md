@@ -54,12 +54,12 @@ Get an API key at [honcho.dev](https://honcho.dev).
 
 ### Two-Layer Context Injection
 
-Every turn (in `hybrid` or `context` mode), Honcho assembles two layers of context injected into the system prompt:
+Every turn (in `hybrid` or `context` mode), Honcho assembles two layers of context injected into the user message at API-call time. A static system header describes the memory mode, preserving the cached system prompt:
 
-1. **Base context** — session summary, user representation, user peer card, AI self-representation, and AI identity card. Refreshed on `contextCadence`. This is the "who is this user" layer.
+1. **Base context** — user peer card, AI identity card, session summary, user representation, and AI self-representation, in that order. Refreshed on `contextCadence`. This is the "who is this user" layer.
 2. **Dialectic supplement** — LLM-synthesized reasoning about the user's current state and needs. Refreshed on `dialecticCadence`. This is the "what matters right now" layer.
 
-Both layers are concatenated and truncated to the `contextTokens` budget (if set).
+Both layers are concatenated and truncated to the `contextTokens` budget (if set). Curated cards precede generated context so long summaries and representations cannot crowd them out; an unusually large card can still be truncated.
 
 ### Cold/Warm Prompt Selection
 
@@ -121,10 +121,11 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 | `dialecticDepthLevels` | `null` | Optional array of reasoning levels per pass, e.g. `["minimal", "low", "medium"]`. Overrides proportional defaults |
 | `dialecticReasoningLevel` | `'low'` | Base reasoning level: `minimal`, `low`, `medium`, `high`, `max` |
 | `dialecticDynamic` | `true` | When `true`, model can override reasoning level per-call via tool param |
-| `dialecticMaxChars` | `600` | Max chars of dialectic result injected into system prompt |
+| `dialecticMaxChars` | `600` | Max chars of dialectic result included in injected memory context |
 | `recallMode` | `'hybrid'` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
 | `writeFrequency` | `'async'` | When to flush messages: `async` (background thread), `turn` (sync), `session` (batch on end), or integer N |
-| `saveMessages` | `true` | Whether to persist messages to Honcho API |
+| `saveMessages` | `true` | Master gate for automatic writes: raw turns, mirrored conclusions, and session-end/shutdown flushes. Reads and explicit tools remain available |
+| `saveAssistantMessages` | `true` | Include assistant replies in raw turn writes. Set `false` to save only user messages from eligible turns. Host block overrides root; requires `saveMessages: true` |
 | `observationMode` | `'directional'` | `directional` (all on) or `unified` (shared pool). Override with `observation` object for granular control |
 | `messageMaxChars` | `25000` | Max chars per message sent via `add_messages()`. Chunked if exceeded |
 | `dialecticMaxInputChars` | `10000` | Max chars for dialectic query input to `peer.chat()` |
@@ -133,6 +134,10 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 | `userPeerAliases` | `{}` | Gateway only. Map of runtime IDs to peers (`{"7654321": "alice"}`). Many-to-one |
 | `runtimePeerPrefix` | `""` | Gateway only. Namespaces unknown runtime IDs (`telegram_7654321`) when no alias matches |
 
+`saveAssistantMessages` affects future raw turn writes; it does not remove existing messages or disable conclusion mirroring and explicit memory tools. Observation modes control peer observations, so `unified` alone does not exclude raw assistant messages from storage or search.
+
+Automatic turn capture skips Bot Chat relay and background-process completion/watch-match deliveries recognized at the start of the message, along with the assistant response to that delivery. Human discussion that merely mentions those formats within ordinary text is retained.
+
 **Session strategy** controls how Honcho sessions map to your work:
 - `per-session` — each `hermes` run gets a fresh session. Clean starts, memory via tools. Recommended for new users.
 - `per-directory` — one Honcho session per working directory. Context accumulates across runs.
@@ -140,7 +145,7 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 - `global` — single session across all directories.
 
 **Recall mode** controls how memory flows into conversations:
-- `hybrid` — context auto-injected into system prompt AND tools available (model decides when to query).
+- `hybrid` — context auto-injected into the user message and tools available (model decides when to query).
 - `context` — auto-injection only, tools hidden.
 - `tools` — tools only, no auto-injection. Agent must explicitly call `honcho_reasoning`, `honcho_search`, etc.
 

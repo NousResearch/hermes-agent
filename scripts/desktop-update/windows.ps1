@@ -1607,18 +1607,37 @@ exit 3
     # Prints a line, then polls the hand-off log for that line while it is
     # still alive: exit 9 = the line was streamed before the step exited,
     # exit 10 = it was not (the pre-streaming behaviour: dump after exit).
+    #
+    # Every line of this child script is indented, including its closing
+    # braces. Indentation is meaningless to the child (it is written to a
+    # .ps1 and run), but a brace in COLUMN 0 anywhere inside a -SelfTest
+    # block ends that block early for the source-contract tests that strip
+    # the fixtures out of this file before asserting on the real hand-off.
+    # That is a file-shape rule for the whole block, not a reason to
+    # compress a loop onto one line.
     $liveLogSource = @'
-param([int]$WaitSeconds, [string]$HandoffLog)
-Write-Output "live line one"
-[Console]::Out.Flush()
-$deadline = (Get-Date).AddSeconds($WaitSeconds)
-$seenAt = $null
-# Single-line loop on purpose: a closing brace in column 0 inside this
-# here-string would end the -SelfTest block early for the source-contract tests.
-while ((Get-Date) -lt $deadline) { if ($null -eq $seenAt) { try { if ((Get-Content -LiteralPath $HandoffLog -Raw -ErrorAction Stop) -match "livelog\| live line one") { $seenAt = Get-Date } } catch {} } elseif (((Get-Date) - $seenAt).TotalSeconds -ge 5) { break }; Start-Sleep -Milliseconds 250 }
-Write-Output "live line two"
-[Console]::Out.Flush()
-if ($null -ne $seenAt) { exit 9 } else { exit 10 }
+    param([int]$WaitSeconds, [string]$HandoffLog)
+    Write-Output "live line one"
+    [Console]::Out.Flush()
+    $deadline = (Get-Date).AddSeconds($WaitSeconds)
+    $seenAt = $null
+    while ((Get-Date) -lt $deadline) {
+        if ($null -eq $seenAt) {
+            try {
+                $log = Get-Content -LiteralPath $HandoffLog -Raw -ErrorAction Stop
+                if ($log -match "livelog\| live line one") { $seenAt = Get-Date }
+            } catch {
+                # The hand-off log may not exist yet on the first passes.
+            }
+        } elseif (((Get-Date) - $seenAt).TotalSeconds -ge 5) {
+            # Seen, and held for 5s: the step is demonstrably still running.
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    Write-Output "live line two"
+    [Console]::Out.Flush()
+    if ($null -ne $seenAt) { exit 9 } else { exit 10 }
 '@
     [System.IO.File]::WriteAllText($childPs1, $childSource)
     [System.IO.File]::WriteAllText($floodPs1, $floodSource)

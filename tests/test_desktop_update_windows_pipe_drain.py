@@ -46,6 +46,7 @@ cannot execute the PowerShell hand-off.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -122,6 +123,56 @@ class TestIdleWatchdogCountsUpdateLogGrowth:
             "growing update.log is NOT killed by the idle watchdog"
         )
         assert "silent but logging" in src
+
+
+class TestSelfTestBlocksStayStrippable:
+    """The ``-SelfTest*`` fixtures must strip cleanly out of the script.
+
+    ``tests/test_desktop_update_windows_python_handoff.py`` removes those
+    blocks before asserting on the real hand-off ("every Invoke-HermesStep
+    must drive python.exe, never the hermes.exe shim"), and its non-greedy
+    match ends at the first closing brace in COLUMN 0. Anything inside a
+    block that starts a line with ``}`` — a child script's loop brace inside
+    a here-string, most easily — truncates the strip, and fixture text then
+    reaches a rule that believes it is reading production source. The rule
+    starts reporting the fixture's own PowerShell target and the real
+    invariant stops being checked.
+
+    This asserts the consumer's contract directly rather than the shape of
+    any one line, so the fixtures can be written as readable multi-line
+    PowerShell (their here-string bodies are indented, which the child
+    scripts do not care about) instead of being flattened onto one
+    300-character line to dodge the regex.
+    """
+
+    # Text that exists ONLY inside a -SelfTest* block. If the strip stops
+    # early, at least one of these survives into the "production" source.
+    FIXTURE_ONLY_MARKERS = (
+        "Invoke-HermesStep $powershell",
+        "PIPE-DRAIN SELF-TEST",
+        "silent but logging",
+        "live line one",
+    )
+
+    def test_fixture_blocks_strip_without_leaking_into_production_source(self):
+        src = WINDOWS_PS1.read_text(encoding="utf-8").replace("\r\n", "\n")
+        for marker in self.FIXTURE_ONLY_MARKERS:
+            assert marker in src, (
+                f"{marker!r} is no longer in windows.ps1 — this guard is "
+                "pinned to the -SelfTestPipeDrain fixture and needs updating "
+                "with it"
+            )
+
+        stripped = re.sub(r"\nif \(\$SelfTest\w+\) \{.*?\n\}\n", "\n", src, flags=re.S)
+
+        leaked = [marker for marker in self.FIXTURE_ONLY_MARKERS if marker in stripped]
+        assert not leaked, (
+            "the -SelfTest* block strip used by "
+            "tests/test_desktop_update_windows_python_handoff.py ended early, "
+            f"leaking fixture text into the production-source rules: {leaked}. "
+            "A line inside a -SelfTest* block now starts with '}' in column 0 "
+            "— indent the fixture's here-string body so its braces do not."
+        )
 
 
 @pytest.mark.windows_only

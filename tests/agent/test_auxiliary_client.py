@@ -77,9 +77,11 @@ def _clean_env(monkeypatch):
     import agent.auxiliary_client as _aux_mod
     _aux_mod._aux_unhealthy_until.clear()
     _aux_mod._aux_unhealthy_logged_at.clear()
+    _aux_mod._aux_unhealthy_reason.clear()
     yield
     _aux_mod._aux_unhealthy_until.clear()
     _aux_mod._aux_unhealthy_logged_at.clear()
+    _aux_mod._aux_unhealthy_reason.clear()
 
 
 @pytest.fixture
@@ -1150,6 +1152,57 @@ class TestOpenRouterPaidLaneGuard:
         assert not _is_free_model(None)
 
 
+class TestUnhealthyReasonReporting:
+    """Issue #105150: the unhealthy-mark WARNING must state the real cause.
+    "payment / credit error" is only for actual 402-class provider responses;
+    no-credential skips never make a request and must not claim one did."""
+
+    def test_no_credential_marks_unhealthy_without_payment_error(self, monkeypatch, caplog):
+        """No OpenRouter key + empty pool → the mark says 'no credential configured'."""
+        import logging
+
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {}}), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            client, model = _try_openrouter()
+
+        assert client is None
+        assert model is None
+        marks = [r.getMessage() for r in caplog.records
+                 if "marking openrouter unhealthy" in r.getMessage()]
+        assert len(marks) == 1
+        assert "no credential configured" in marks[0]
+        assert "payment / credit error" not in marks[0]
+
+    def test_default_reason_keeps_payment_wording(self, caplog):
+        """Callers that don't pass a reason (real 402 path) keep the payment wording."""
+        import logging
+
+        import agent.auxiliary_client as _aux_mod
+        with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            _aux_mod._mark_provider_unhealthy("openrouter", ttl=60)
+
+        marks = [r.getMessage() for r in caplog.records
+                 if "marking openrouter unhealthy" in r.getMessage()]
+        assert len(marks) == 1
+        assert "payment / credit error" in marks[0]
+
+    def test_skip_log_reports_recorded_reason(self, caplog):
+        """The per-minute skip INFO reports the recorded reason, not a payment claim."""
+        import logging
+
+        import agent.auxiliary_client as _aux_mod
+        _aux_mod._mark_provider_unhealthy("openrouter", ttl=90, reason="no credential configured")
+        with caplog.at_level(logging.INFO, logger="agent.auxiliary_client"):
+            _aux_mod._log_skip_unhealthy("openrouter", task="chat")
+
+        skips = [r.getMessage() for r in caplog.records
+                 if "skipping openrouter" in r.getMessage()]
+        assert len(skips) == 1
+        assert "no credential configured" in skips[0]
+        assert "payment error" not in skips[0]
+
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 
@@ -1799,6 +1852,7 @@ class TestStaleFallbackCandidateSkip:
         assert mock_fb.call_args_list[1].kwargs.get("reason") == "stale fallback credential"
         mock_mark.assert_called_once_with(
             "anthropic", base_url="https://api.anthropic.com",
+            reason="stale/unrefreshable credential",
         )
         assert stale_fb.chat.completions.create.call_count == 1
         assert healthy_fb.chat.completions.create.call_count == 1

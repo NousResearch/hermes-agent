@@ -20,6 +20,30 @@ approval:
   blocklist_message: "Hierdie opdrag is op die onvoorwaardelike blokkeerlys en kan nie goedgekeur word nie."
 
 gateway:
+  group_presentation:
+    action: "{label}: {command}"
+    actions: "Aksies"
+    help: "Hulp"
+    view_group: "Bekyk groep"
+    view_bot: "Bekyk Bot"
+    view_bots: "Bekyk Bots"
+    message_bot: "Stuur aan hierdie Bot"
+    send_message: "Stuur boodskap"
+    retry_work: "Herprobeer onvoltooide werk"
+    retry_commands: "Herprobeer mislukte opdragte"
+    stop_work: "Stop werk"
+    page: "Bladsy {current} van {total}"
+    go_to_page: "Gaan na bladsy {page}"
+    recent: "Onlangse boodskappe"
+    recent_latest: "Onlangse boodskappe · laaste {age}"
+    age_now: "pas"
+    age_minutes: "{count} min gelede"
+    age_hours: "{count} u gelede"
+    age_days: "{count} d gelede"
+    help_pages: "{command} - Bekyk 'n bladsy groepgesprekke."
+    help_bot: "{command} - Bekyk 'n Bot en sy boodskapopdrag."
+    help_retry: "{command} - Herprobeer uitgestelde of onbevestigde take, of mislukte Desktop-opdragte. Aksies kan herhaal word; nie herstuur of herkoppel nie."
+
   group_home:
     cancel_late: "Stoor het reeds begin; toestemming kan gestoor word. Die keuselys is gekanselleer. Gebruik {command_prefix}sethome om toestemming terug te stel."
     saving: "Stoor het reeds begin. Die vorige keuselys is gekanselleer; wag totdat dit klaar is en voer dan {command_prefix}group weer uit."

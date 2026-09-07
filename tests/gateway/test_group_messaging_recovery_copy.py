@@ -28,9 +28,9 @@ def test_uncertain_task_has_context_next_to_retry(tmp_path, monkeypatch, remote,
         service.status = lambda *_: pytest.fail("remote detail used local status")
     result = messaging.format_room_detail(service, room)
     assert (WARNING in result) == (state == "indeterminate")
-    assert ("Retry:" in result) == (state != "settled")
+    assert ("Retry unfinished work:" in result) == (state != "settled")
     if state == "indeterminate":
-        assert result.index(WARNING) < result.index("Retry:")
+        assert result.index(WARNING) < result.index("Retry unfinished work:")
     assert not service.sent and not service.stopped and not service.retried
 
 
@@ -41,7 +41,7 @@ def test_classic_command_failure_keeps_its_existing_explanation(tmp_path):
     result = messaging.format_room_detail(_FakeService(db), room)
     assert WARNING not in result
     assert "The latest command could not be applied" in result
-    assert "Retry:" in result
+    assert "Retry failed commands:" in result
 
 
 @pytest.mark.parametrize("remote", [False, True])
@@ -67,7 +67,7 @@ def test_reconnect_hint_is_conditional_and_preserves_work_controls(
         service.status = lambda *_: pytest.fail("remote detail used local status")
     result = messaging.format_room_detail(service, room)
     assert (RECONNECT_HINT in result) is needs_reauthorization
-    assert "Retry: `/group 1 retry`" in result
-    assert ("Stop: `/group 1 stop`" in result) is working
+    assert "Retry unfinished work: `/group 1 retry`" in result
+    assert ("Stop work: `/group 1 stop`" in result) is working
     assert ("work queued or running" in result) is working
     assert not service.sent and not service.stopped and not service.retried

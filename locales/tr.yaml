@@ -20,6 +20,30 @@ approval:
   blocklist_message: "Bu komut koşulsuz engelleme listesinde ve onaylanamaz."
 
 gateway:
+  group_presentation:
+    action: "{label}: {command}"
+    actions: "İşlemler"
+    help: "Yardım"
+    view_group: "Grubu görüntüle"
+    view_bot: "Botu görüntüle"
+    view_bots: "Botları görüntüle"
+    message_bot: "Bu Bota mesaj gönder"
+    send_message: "Mesaj gönder"
+    retry_work: "Tamamlanmamış işi yeniden dene"
+    retry_commands: "Başarısız komutları yeniden dene"
+    stop_work: "İşi durdur"
+    page: "Sayfa {current} / {total}"
+    go_to_page: "{page}. sayfaya git"
+    recent: "Son mesajlar"
+    recent_latest: "Son mesajlar · en son {age}"
+    age_now: "az önce"
+    age_minutes: "{count} dk önce"
+    age_hours: "{count} sa önce"
+    age_days: "{count} gün önce"
+    help_pages: "{command} - Grup sohbetlerinin bir sayfasını görüntüle."
+    help_bot: "{command} - Bir Botu ve mesaj komutunu görüntüle."
+    help_retry: "{command} - Ertelenmiş veya onaylanmamış görevleri ya da başarısız Desktop komutlarını yeniden dene. İşlemleri tekrarlayabilir; yeniden gönderme veya bağlanma değildir."
+
   group_home:
     cancel_late: "Kaydetme zaten başladı; onay kaydedilebilir. Seçici iptal edildi. Onayı sıfırlamak için {command_prefix}sethome kullanın."
     saving: "Kaydetme zaten başladı. Önceki seçici iptal edildi; tamamlanmasını bekleyip {command_prefix}group komutunu yeniden çalıştırın."

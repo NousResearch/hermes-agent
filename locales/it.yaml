@@ -20,6 +20,30 @@ approval:
   blocklist_message: "Questo comando è nella lista di blocco incondizionata e non può essere approvato."
 
 gateway:
+  group_presentation:
+    action: "{label}: {command}"
+    actions: "Azioni"
+    help: "Aiuto"
+    view_group: "Visualizza gruppo"
+    view_bot: "Visualizza Bot"
+    view_bots: "Visualizza Bot del gruppo"
+    message_bot: "Scrivi a questo Bot"
+    send_message: "Invia messaggio"
+    retry_work: "Riprova il lavoro incompleto"
+    retry_commands: "Riprova i comandi non riusciti"
+    stop_work: "Interrompi lavoro"
+    page: "Pagina {current} di {total}"
+    go_to_page: "Vai alla pagina {page}"
+    recent: "Messaggi recenti"
+    recent_latest: "Messaggi recenti · ultimo {age}"
+    age_now: "adesso"
+    age_minutes: "{count} min fa"
+    age_hours: "{count} h fa"
+    age_days: "{count} g fa"
+    help_pages: "{command} - Visualizza una pagina di chat di gruppo."
+    help_bot: "{command} - Visualizza un Bot e il suo comando di messaggio."
+    help_retry: "{command} - Riprova attività rinviate o non confermate, o comandi Desktop non riusciti. Può ripetere azioni; non reinvia né riconnette."
+
   group_home:
     cancel_late: "Il salvataggio è già iniziato; il consenso potrebbe essere salvato. La selezione è annullata. Usa {command_prefix}sethome per azzerare il consenso."
     saving: "Il salvataggio è già iniziato. La selezione precedente è annullata; attendi il completamento, poi esegui di nuovo {command_prefix}group."

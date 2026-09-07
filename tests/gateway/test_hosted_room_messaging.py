@@ -364,12 +364,12 @@ def test_classic_room_projection_is_listed_with_recent_activity(tmp_path, monkey
     detail = format_room_detail(service, rooms[0])
     assert "💬 **Desktop planning**" in detail
     assert "🟡 waiting for Desktop" in detail
-    assert "• **Reviewer:** The rollout needs a rollback step." in detail
+    assert "• **Reviewer**" in detail and "The rollout needs a rollback step." in detail
     listing = format_room_list(service)
     assert listing.startswith("👥 **Group Chats**\n")
-    assert "🧭 **Controls**\nCheck: `/group <number>`" in listing
-    assert "Send: `/group <number> send <message>`" in listing
-    assert "Stop: `/group <number> stop`" in listing
+    assert "Actions\nView group: `/group <number>`" in listing
+    assert "Send message: `/group <number> send <message>`" not in listing
+    assert "Stop work: `/group <number> stop`" not in listing
 
 
 @pytest.mark.asyncio
@@ -496,7 +496,7 @@ def test_participant_gateway_lists_reads_and_controls_remote_room(
     detail = format_room_detail(service, rooms[0])
     assert "💬 **Release planning**" in detail
     assert "🟡 work queued or running" in detail
-    assert "• **Reviewer:** Ready." in detail
+    assert "• **Reviewer**" in detail and "Ready." in detail
     assert "A" * 43 not in repr(rooms)
     assert (
         send_to_room(
@@ -1139,7 +1139,7 @@ async def test_group_list_keyword_uses_the_same_helpful_listing(tmp_path, monkey
     result = await _runner()._handle_rooms_command(_event("/group list"))
 
     assert result.startswith("👥 **Group Chats**\n")
-    assert "🧭 **Controls**\nCheck: `/group <number>`" in result
+    assert "Actions\nView group: `/group <number>`" in result
 
 
 @pytest.mark.asyncio
@@ -1181,7 +1181,7 @@ async def test_bare_group_uses_native_picker_and_selection_refreshes_detail(
 
     assert "💬 **Release room**" in detail
     assert "🤖 **Bots**" in detail
-    assert "🧭 **Controls**" in detail
+    assert "Actions" in detail
 
     hosted_rooms.disband_room(
         db,
@@ -1298,7 +1298,7 @@ async def test_group_bot_controls_fall_back_to_rich_text(tmp_path, monkeypatch):
     detail = await _runner()._handle_rooms_command(_event("/group 1 bot 2"))
 
     assert "🤖 **Bots in Release room**" in listing
-    assert "🧭 **Controls**" in listing
+    assert "Actions" in listing
     assert detail.startswith("🤖 **Operations**")
     assert "Message this Bot: `/group 1 send @ops <message>`" in detail
 
@@ -1360,9 +1360,9 @@ async def test_group_list_pages_keep_every_stable_number_reachable(
     first = await _runner()._handle_rooms_command(_event("/group list"))
     second = await _runner()._handle_rooms_command(_event("/group list 2"))
 
-    assert "page 1 of 2" in first
-    assert "More: `/group list 2`" in first
-    assert "page 2 of 2" in second
+    assert "Page 1 of 2" in first
+    assert "Go to page 2: `/group list 2`" in first
+    assert "Page 2 of 2" in second
     assert "9. Room 9" in second
     assert "10. Room 10" in second
 
@@ -1496,20 +1496,20 @@ def test_room_list_and_detail_are_bounded_and_user_facing(tmp_path):
     listing = format_room_list(service)
     assert "👥 **Group Chats**" in listing
     assert "🟡 **1. Release room** · waiting for its Bots · 2 Bots" in listing
-    assert "🧭 **Controls**\nCheck: `/group <number>`" in listing
-    assert "Send: `/group <number> send <message>`" in listing
-    assert "Retry: `/group <number> retry`" in listing
-    assert "Stop: `/group <number> stop`" in listing
+    assert "Actions\nView group: `/group <number>`" in listing
+    assert "Send message: `/group <number> send <message>`" not in listing
+    assert "Retry unfinished work: `/group <number> retry`" not in listing
+    assert "Stop work: `/group <number> stop`" not in listing
     detail = format_room_detail(service, release)
-    assert "**Signal:** Please inspect the release" in detail
-    assert "**Operations:** The release is ready" in detail
+    assert "**Signal**" in detail and "Please inspect the release" in detail
+    assert "**Operations**" in detail and "The release is ready" in detail
     assert "🤖 **Bots**" in detail
     assert "• Operations (`@ops`)" in detail
-    assert "Send: `/group 1 send <message>`" in detail
-    assert "\n\n────────\n🧭 **Controls**\nSend:" in detail
-    assert "Retry:" not in detail
-    assert "Stop:" not in detail
-    assert "Message one Bot: `/group 1 send @handle <message>`" in detail
+    assert "Send message: `/group 1 send <message>`" in detail
+    assert "\n\nActions\nSend message:" in detail
+    assert "Retry unfinished work:" not in detail
+    assert "Stop work:" not in detail
+    assert "Help: `/group help`" in detail
 
 
 def test_room_picker_choices_are_bounded_stable_and_user_facing(tmp_path):
@@ -1548,7 +1548,7 @@ def test_group_bot_picker_and_details_expose_only_useful_controls(tmp_path):
     ]
     assert "🤖 **Bots in Release room**" in listing
     assert "2. **Operations** · `@ops`" in listing
-    assert "Bot details: `/group 1 bot <number>`" in listing
+    assert "View Bot: `/group 1 bot <number>`" in listing
     assert detail.startswith("🤖 **Operations**")
     assert "Message this Bot: `/group 1 send @ops <message>`" in detail
     assert "Stop" not in detail
@@ -1758,10 +1758,10 @@ def test_group_detail_deferred_attention_preserves_healthy_work(tmp_path, monkey
     backend = MessagingRoomBackend(db_path=db, service=service)
     assert backend.status(release["room_id"])["needs_attention"] is True
     detail = format_room_detail(backend, room)
-    assert "Retry: `/group 1 retry`" in detail
+    assert "Retry unfinished work: `/group 1 retry`" in detail
     assert ("needs attention" in detail) is not working
     assert ("work queued or running" in detail) is working
-    assert ("Stop: `/group 1 stop`" in detail) is working
+    assert ("Stop work: `/group 1 stop`" in detail) is working
     service.room_status = {"working": False, "blocked": False, "pending_actions": []}
     assert backend.status(release["room_id"])["needs_attention"] is False
     assert "needs attention" not in format_room_detail(backend, room)
@@ -1772,19 +1772,19 @@ def test_group_detail_only_offers_actions_that_match_current_state(tmp_path):
     service = _FakeService(db)
 
     idle = format_room_detail(service, release)
-    assert "Send: `/group 1 send <message>`" in idle
-    assert "Retry:" not in idle
-    assert "Stop:" not in idle
+    assert "Send message: `/group 1 send <message>`" in idle
+    assert "Retry unfinished work:" not in idle
+    assert "Stop work:" not in idle
 
     service.room_status = {"running": True, "working": True, "blocked": False}
     working = format_room_detail(service, release)
-    assert "Stop: `/group 1 stop`" in working
-    assert "Retry:" not in working
+    assert "Stop work: `/group 1 stop`" in working
+    assert "Retry unfinished work:" not in working
 
     service.room_status = {"running": True, "working": False, "blocked": True}
     blocked = format_room_detail(service, release)
-    assert "Retry:" not in blocked
-    assert "Stop:" not in blocked
+    assert "Retry unfinished work:" not in blocked
+    assert "Stop work:" not in blocked
 
     service.room_status = {
         "running": True,
@@ -1793,7 +1793,7 @@ def test_group_detail_only_offers_actions_that_match_current_state(tmp_path):
         "pending_actions": [{"kind": "retry", "task_id": "task-1"}],
     }
     retryable = format_room_detail(service, release)
-    assert "Retry: `/group 1 retry`" in retryable
+    assert "Retry unfinished work: `/group 1 retry`" in retryable
 
     service.room_status = {
         "running": True,
@@ -1804,7 +1804,7 @@ def test_group_detail_only_offers_actions_that_match_current_state(tmp_path):
     stopping = format_room_detail(service, release)
     assert "🟡 stopping" in stopping
     assert "needs attention" not in stopping
-    assert "Stop:" not in stopping
+    assert "Stop work:" not in stopping
 
     service.room_status = {
         "running": False,
@@ -1830,7 +1830,7 @@ def test_group_detail_only_offers_actions_that_match_current_state(tmp_path):
         "log": [],
     }
     pending = format_room_detail(service, classic)
-    assert "Stop: `/group 3 stop`" in pending
+    assert "Stop work: `/group 3 stop`" in pending
 
 
 def test_group_detail_surfaces_exact_pending_approval_commands(tmp_path):

@@ -20,6 +20,30 @@ approval:
   blocklist_message: "此命令位于无条件拦截列表中，无法被批准。"
 
 gateway:
+  group_presentation:
+    action: "{label}: {command}"
+    actions: "操作"
+    help: "帮助"
+    view_group: "查看群组"
+    view_bot: "查看 Bot"
+    view_bots: "查看 Bot 列表"
+    message_bot: "给此 Bot 发消息"
+    send_message: "发送消息"
+    retry_work: "重试未完成的工作"
+    retry_commands: "重试失败的命令"
+    stop_work: "停止工作"
+    page: "第 {current} 页，共 {total} 页"
+    go_to_page: "前往第 {page} 页"
+    recent: "最近消息"
+    recent_latest: "最近消息 · 最新于 {age}"
+    age_now: "刚刚"
+    age_minutes: "{count} 分钟前"
+    age_hours: "{count} 小时前"
+    age_days: "{count} 天前"
+    help_pages: "{command} - 查看群聊列表的一页。"
+    help_bot: "{command} - 查看 Bot 及其消息命令。"
+    help_retry: "{command} - 重试已推迟或未确认的任务，或失败的 Desktop 命令。可能重复执行操作；不是重新发送或重新连接。"
+
   group_home:
     cancel_late: "保存已开始，因此同意可能仍会保存。已取消选择界面。可用 {command_prefix}sethome 重置同意。"
     saving: "保存已开始。已取消旧的选择界面；请等待保存完成后重新运行 {command_prefix}group。"

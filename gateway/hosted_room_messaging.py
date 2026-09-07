@@ -22,6 +22,10 @@ from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_controls, hosted_room_links
 from gateway import hosted_rooms
+from gateway.hosted_room_messaging_presentation import (
+    action as _action, actions as _actions, event_age, recent_heading,
+    text as _presentation_text,
+)
 from gateway.hosted_room_control_client import (
     RoomControlClientError,
     RoomControlHTTPClient,
@@ -582,19 +586,16 @@ def format_room_bot_list(
     for index, member in enumerate(members, start=1):
         member_name = _room_member_name(member)
         handle = _room_member_handle(member)
-        lines.append(
+        lines.extend(["",
             f"{index}. **{_plain_display_label(member_name)}**"
             + (f" · `@{handle}`" if handle else "")
-        )
+        ])
     if not members:
         lines.append("No Bots are available in this Group Chat.")
-    lines.extend([
-        "",
-        "────────",
-        "🧭 **Controls**",
-        f"Bot details: `{room_command} {reference} bot <number>`",
-        f"Back to Group Chat: `{room_command} {reference}`",
-    ])
+    details = [_action("view_bot", f"{room_command} {reference} bot <number>")] if members else []
+    lines.extend(_actions(room_command, *details,
+        _action("view_group", f"{room_command} {reference}"),
+    ))
     return "\n".join(lines)
 
 
@@ -652,33 +653,14 @@ def format_room_bot_detail(
     ]
     if handle:
         lines.append(f"Handle: `@{handle}`")
-    lines.extend(["", "────────", "🧭 **Controls**"])
+    controls = []
     if handle:
-        lines.append(
-            f"Message this Bot: `{room_command} {reference} send @{handle} <message>`"
-        )
-    lines.extend([
-        f"All Bots: `{room_command} {reference} bots`",
-        f"Back to Group Chat: `{room_command} {reference}`",
-    ])
+        controls.append(_action("message_bot", f"{room_command} {reference} send @{handle} <message>"))
+    lines.extend(_actions(room_command, *controls,
+        _action("view_bots", f"{room_command} {reference} bots"),
+        _action("view_group", f"{room_command} {reference}"),
+    ))
     return "\n".join(lines)
-
-
-def _room_has_targetable_handle(room: Mapping[str, Any]) -> bool:
-    raw_members = room.get("members")
-    if not isinstance(raw_members, list):
-        return False
-    return any(
-        isinstance(raw, Mapping)
-        and bool(
-            re.sub(
-                r"[^A-Za-z0-9_.-]",
-                "",
-                _clean_line(raw.get("handle"), limit=48).lstrip("@"),
-            )
-        )
-        for raw in raw_members[:MAX_GROUP_MEMBERS]
-    )
 
 
 def _remote_control_link(service: Any, room: Mapping[str, Any]):
@@ -1255,7 +1237,7 @@ def format_room_list(
 
     rooms = list_messaging_rooms(service) if rooms is None else list(rooms)
     if not rooms:
-        return "👥 **No Group Chats yet**\nCreate one in Hermes Desktop first."
+        return "\n".join(["👥 **No Group Chats yet**", "Create one in Hermes Desktop first.", *_actions(rooms_command)])
     rooms = sorted(rooms, key=lambda room: int(room.get("messaging_ref") or 0))
     if not isinstance(page, int) or page < 1:
         raise RoomControlError("Page numbers start at 1.")
@@ -1264,12 +1246,9 @@ def format_room_list(
         raise RoomControlError(f"There are only {page_count} Group Chat pages.")
     start = (page - 1) * MAX_ROOM_CHOICES
     visible_rooms = rooms[start : start + MAX_ROOM_CHOICES]
-    heading = (
-        "Group Chats"
-        if page_count == 1
-        else f"Group Chats — page {page} of {page_count}"
-    )
-    lines = [f"👥 **{heading}**"]
+    lines = ["👥 **Group Chats**"]
+    if page_count > 1:
+        lines.append(_presentation_text("page", current=page, total=page_count))
     for room in visible_rooms:
         name = _clean_line(room.get("name") or room.get("room_id"), limit=72)
         member_count = _room_member_count(room)
@@ -1280,20 +1259,11 @@ def format_room_list(
             f"{_plain_display_label(name, limit=72)}** · "
             f"{status} · {member_count} Bot{'s' if member_count != 1 else ''}"
         )
+    if page > 1:
+        lines.extend(["", _action("go_to_page", f"{rooms_command} list {page - 1}", page=page - 1)])
     if page < page_count:
-        lines.extend(["", f"More: `{rooms_command} list {page + 1}`"])
-    elif page > 1:
-        lines.extend(["", f"Previous: `{rooms_command} list {page - 1}`"])
-    lines.extend([
-        "",
-        "────────",
-        "🧭 **Controls**",
-        f"Check: `{rooms_command} <number>`",
-        f"Send: `{rooms_command} <number> send <message>`",
-        f"Bots: `{rooms_command} <number> bots`",
-        f"Retry: `{rooms_command} <number> retry`",
-        f"Stop: `{rooms_command} <number> stop`",
-    ])
+        lines.extend(["", _action("go_to_page", f"{rooms_command} list {page + 1}", page=page + 1)])
+    lines.extend(_actions(rooms_command, _action("view_group", f"{rooms_command} <number>")))
     return "\n".join(lines)
 
 
@@ -1422,7 +1392,8 @@ def format_room_detail(
     if participant_lines:
         lines.extend(["", "🤖 **Bots**", *participant_lines])
     if visible:
-        lines.extend(["", "🕘 **Recent activity**"])
+        now = time.time()
+        lines.extend(["", recent_heading(visible, desktop=desktop_mode, now=now)])
         for event in visible:
             if desktop_mode:
                 source = (
@@ -1438,10 +1409,9 @@ def format_room_detail(
                 )
                 label = _event_label(event, member_names)
                 text = payload.get("text")
-            lines.append(
-                f"• **{_plain_display_label(label, limit=48)}:** "
-                f"{_plain_preview_text(text)}"
-            )
+            age = event_age(event, desktop=desktop_mode, now=now)
+            lines.extend(["", f"• **{_plain_display_label(label, limit=48)}**"
+                          + (f" · {age}" if age else ""), _plain_preview_text(text)])
     else:
         lines.extend(["", "No messages yet."])
     from gateway.hosted_room_messaging_approvals import format_pending_approvals
@@ -1485,17 +1455,14 @@ def format_room_detail(
             )
             + " Retry here or open this Group Chat in Hermes Desktop."
         )
-    lines.extend(["", "────────", "🧭 **Controls**"])
-    lines.append(f"Send: `{room_command} {room_reference(room)} send <message>`")
-    lines.append(f"Bots: `{room_command} {room_reference(room)} bots`")
+    reference = room_reference(room)
+    controls = [_action("send_message", f"{room_command} {reference} send <message>"),
+                _action("view_bots", f"{room_command} {reference} bots")]
     if show_retry:
-        lines.append(f"Retry: `{room_command} {room_reference(room)} retry`")
+        controls.append(_action("retry_commands" if desktop_mode else "retry_work", f"{room_command} {reference} retry"))
     if show_stop:
-        lines.append(f"Stop: `{room_command} {room_reference(room)} stop`")
-    if _room_has_targetable_handle(room):
-        lines.append(
-            f"Message one Bot: `{room_command} {room_reference(room)} send @handle <message>`"
-        )
+        controls.append(_action("stop_work", f"{room_command} {reference} stop"))
+    lines.extend(_actions(room_command, *controls))
     return "\n".join(lines)
 
 

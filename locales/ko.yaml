@@ -20,6 +20,30 @@ approval:
   blocklist_message: "이 명령은 무조건 차단 목록에 있으며 승인할 수 없습니다."
 
 gateway:
+  group_presentation:
+    action: "{label}: {command}"
+    actions: "작업"
+    help: "도움말"
+    view_group: "그룹 보기"
+    view_bot: "Bot 보기"
+    view_bots: "Bot 목록 보기"
+    message_bot: "이 Bot에 메시지 보내기"
+    send_message: "메시지 보내기"
+    retry_work: "미완료 작업 재시도"
+    retry_commands: "실패한 명령 재시도"
+    stop_work: "작업 중지"
+    page: "{current} / {total} 페이지"
+    go_to_page: "{page}페이지로 이동"
+    recent: "최근 메시지"
+    recent_latest: "최근 메시지 · 최신 {age}"
+    age_now: "방금"
+    age_minutes: "{count}분 전"
+    age_hours: "{count}시간 전"
+    age_days: "{count}일 전"
+    help_pages: "{command} - 그룹 채팅 페이지를 봅니다."
+    help_bot: "{command} - Bot과 메시지 명령을 봅니다."
+    help_retry: "{command} - 연기되거나 확인되지 않은 작업 또는 실패한 Desktop 명령을 재시도합니다. 동작이 반복될 수 있으며 재전송이나 재연결이 아닙니다."
+
   group_home:
     cancel_late: "저장이 이미 시작되어 동의가 저장될 수 있습니다. 선택 화면은 취소했습니다. 동의를 초기화하려면 {command_prefix}sethome을 사용하세요."
     saving: "저장이 이미 시작되었습니다. 이전 선택 화면은 취소했습니다. 저장이 끝난 뒤 {command_prefix}group을 다시 실행하세요."

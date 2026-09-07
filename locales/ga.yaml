@@ -24,6 +24,30 @@ approval:
   blocklist_message: "Tá an t-ordú seo ar an liosta cosc gan choinníoll agus ní féidir é a cheadú."
 
 gateway:
+  group_presentation:
+    action: "{label}: {command}"
+    actions: "Gníomhartha"
+    help: "Cabhair"
+    view_group: "Féach ar an ngrúpa"
+    view_bot: "Féach ar Bot"
+    view_bots: "Féach ar na Bots"
+    message_bot: "Seol chuig an Bot seo"
+    send_message: "Seol teachtaireacht"
+    retry_work: "Bain triail eile as obair neamhchríochnaithe"
+    retry_commands: "Bain triail eile as orduithe teipthe"
+    stop_work: "Stop an obair"
+    page: "Leathanach {current} de {total}"
+    go_to_page: "Téigh go leathanach {page}"
+    recent: "Teachtaireachtaí le déanaí"
+    recent_latest: "Teachtaireachtaí le déanaí · is déanaí {age}"
+    age_now: "díreach anois"
+    age_minutes: "{count} nóim ó shin"
+    age_hours: "{count} u ó shin"
+    age_days: "{count} lá ó shin"
+    help_pages: "{command} - Féach ar leathanach comhráite grúpa."
+    help_bot: "{command} - Féach ar Bot agus a ordú teachtaireachta."
+    help_retry: "{command} - Bain triail eile as tascanna curtha siar nó neamhdheimhnithe, nó orduithe Desktop teipthe. Féadfar gníomhartha a athdhéanamh; ní athsheoladh ná athnascadh é."
+
   group_home:
     cancel_late: "Tá an sábháil tosaithe cheana; d’fhéadfadh an toiliú a bheith sábháilte. Tá an roghnóir curtha ar ceal. Úsáid {command_prefix}sethome chun an toiliú a athshocrú."
     saving: "Tá an sábháil tosaithe cheana. Tá an seanroghnóir curtha ar ceal; fan go gcríochnóidh an sábháil agus rith {command_prefix}group arís ansin."

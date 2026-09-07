@@ -20,6 +20,30 @@ approval:
   blocklist_message: "Este comando está en la lista de bloqueo incondicional y no se puede aprobar."
 
 gateway:
+  group_presentation:
+    action: "{label}: {command}"
+    actions: "Acciones"
+    help: "Ayuda"
+    view_group: "Ver grupo"
+    view_bot: "Ver Bot"
+    view_bots: "Ver Bots"
+    message_bot: "Escribir a este Bot"
+    send_message: "Enviar mensaje"
+    retry_work: "Reintentar trabajo pendiente"
+    retry_commands: "Reintentar comandos fallidos"
+    stop_work: "Detener trabajo"
+    page: "Página {current} de {total}"
+    go_to_page: "Ir a la página {page}"
+    recent: "Mensajes recientes"
+    recent_latest: "Mensajes recientes · último {age}"
+    age_now: "ahora mismo"
+    age_minutes: "hace {count} min"
+    age_hours: "hace {count} h"
+    age_days: "hace {count} d"
+    help_pages: "{command} - Ver una página de chats de grupo."
+    help_bot: "{command} - Ver un Bot y su comando de mensaje."
+    help_retry: "{command} - Reintentar tareas aplazadas o sin confirmar, o comandos Desktop fallidos. Puede repetir acciones; no reenvía ni reconecta."
+
   group_home:
     cancel_late: "El guardado ya ha comenzado; el consentimiento puede quedar guardado. Se cancela el selector. Usa {command_prefix}sethome para restablecer el consentimiento."
     saving: "El guardado ya ha comenzado. Se cancela el selector anterior; espera a que termine y ejecuta {command_prefix}group de nuevo."

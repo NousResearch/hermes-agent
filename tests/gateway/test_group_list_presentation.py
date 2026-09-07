@@ -25,7 +25,7 @@ def test_group_entries_have_blank_lines_and_keep_navigation(command):
     assert "1. Planning 1" in blocks[1] and "2. Planning 2" not in blocks[1]
     assert "2. Planning 2" in blocks[2] and "1. Planning 1" not in blocks[2]
     assert f"`{command} <number>`" in rendered
-    assert f"`{command} <number> send <message>`" in rendered
+    assert f"Help: `{command} help`" in rendered
     if command == "!group":
         assert "/group" not in rendered
     whatsapp = WhatsAppBehaviorMixin().format_message(rendered)
@@ -41,7 +41,7 @@ def test_group_page_spacing_preserves_limits_and_safe_names():
     assert len(rendered) < 4096
     assert rendered.count(" · connected · ") == MAX_ROOM_CHOICES
     assert f"{MAX_ROOM_CHOICES + 1}. Planning" not in rendered
-    assert "\n\nMore: `!group list 2`" in rendered
+    assert "\n\nGo to page 2: `!group list 2`" in rendered
     last = format_room_list(None, rooms=rooms, rooms_command="!group", page=2)
     assert f"{MAX_ROOM_CHOICES + 1}. Planning" in last
-    assert "\n\nPrevious: `!group list 1`" in last
+    assert "\n\nGo to page 1: `!group list 1`" in last

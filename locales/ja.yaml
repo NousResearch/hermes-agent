@@ -20,6 +20,30 @@ approval:
   blocklist_message: "このコマンドは無条件ブロックリストに含まれており、承認できません。"
 
 gateway:
+  group_presentation:
+    action: "{label}: {command}"
+    actions: "操作"
+    help: "ヘルプ"
+    view_group: "グループを表示"
+    view_bot: "Botを表示"
+    view_bots: "Bot一覧を表示"
+    message_bot: "このBotにメッセージ"
+    send_message: "メッセージを送信"
+    retry_work: "未完了の作業を再試行"
+    retry_commands: "失敗したコマンドを再試行"
+    stop_work: "作業を停止"
+    page: "{current} / {total} ページ"
+    go_to_page: "{page} ページへ"
+    recent: "最近のメッセージ"
+    recent_latest: "最近のメッセージ · 最新 {age}"
+    age_now: "たった今"
+    age_minutes: "{count}分前"
+    age_hours: "{count}時間前"
+    age_days: "{count}日前"
+    help_pages: "{command} - グループチャットのページを表示。"
+    help_bot: "{command} - Botとメッセージ送信コマンドを表示。"
+    help_retry: "{command} - 延期・未確認のタスク、または失敗したDesktopコマンドを再試行。操作が繰り返される場合があります。再送信や再接続ではありません。"
+
   group_home:
     cancel_late: "保存はすでに始まっているため、同意が保存される場合があります。選択画面はキャンセルしました。同意をリセットするには {command_prefix}sethome を使ってください。"
     saving: "保存はすでに始まっています。以前の選択画面はキャンセルしました。保存の完了を待ってから {command_prefix}group を再実行してください。"

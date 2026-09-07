@@ -305,15 +305,19 @@ class GroupChatSlashCommandsMixin:
 
     @staticmethod
     def _group_chat_help(command: str) -> str:
+        from gateway.hosted_room_messaging_presentation import text
+
         return "\n".join([
             "**Group Chats**",
             "",
             f"`{command}` - Choose a Group Chat.",
+            text("help_pages", command=f"`{command} list <page>`"),
             f"`{command} 7` - Check recent activity.",
             f"`{command} 7 bots` - See who's in the group.",
+            text("help_bot", command=f"`{command} 7 bot <number>`"),
             f"`{command} 7 send <message>` - Send a message to the group.",
             f"`{command} 7 stop` - Stop the current work.",
-            f"`{command} 7 retry` - Retry work that needs attention.",
+            text("help_retry", command=f"`{command} 7 retry`"),
             f"`{command} 7 approvals` - Check requests for your approval.",
             f"`{command} 7 permissions` - Manage remembered approvals.",
             "",

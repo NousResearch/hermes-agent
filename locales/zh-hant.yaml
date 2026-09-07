@@ -20,6 +20,30 @@ approval:
   blocklist_message: "此指令位於無條件封鎖清單中，無法被批准。"
 
 gateway:
+  group_presentation:
+    action: "{label}: {command}"
+    actions: "操作"
+    help: "說明"
+    view_group: "檢視群組"
+    view_bot: "檢視 Bot"
+    view_bots: "檢視 Bot 清單"
+    message_bot: "傳訊給此 Bot"
+    send_message: "傳送訊息"
+    retry_work: "重試未完成的工作"
+    retry_commands: "重試失敗的命令"
+    stop_work: "停止工作"
+    page: "第 {current} 頁，共 {total} 頁"
+    go_to_page: "前往第 {page} 頁"
+    recent: "最近訊息"
+    recent_latest: "最近訊息 · 最新於 {age}"
+    age_now: "剛剛"
+    age_minutes: "{count} 分鐘前"
+    age_hours: "{count} 小時前"
+    age_days: "{count} 天前"
+    help_pages: "{command} - 檢視群組聊天清單的一頁。"
+    help_bot: "{command} - 檢視 Bot 及其訊息命令。"
+    help_retry: "{command} - 重試已延後或未確認的任務，或失敗的 Desktop 命令。可能重複執行操作；不是重新傳送或重新連線。"
+
   group_home:
     cancel_late: "儲存已開始，因此同意仍可能被儲存。已取消選擇畫面。可用 {command_prefix}sethome 重設同意。"
     saving: "儲存已開始。已取消舊的選擇畫面；請等待儲存完成後重新執行 {command_prefix}group。"

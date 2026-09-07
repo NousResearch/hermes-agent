@@ -20,6 +20,30 @@ approval:
   blocklist_message: "Dieser Befehl steht auf der unbedingten Sperrliste und kann nicht genehmigt werden."
 
 gateway:
+  group_presentation:
+    action: "{label}: {command}"
+    actions: "Aktionen"
+    help: "Hilfe"
+    view_group: "Gruppe ansehen"
+    view_bot: "Bot ansehen"
+    view_bots: "Bots ansehen"
+    message_bot: "Diesem Bot schreiben"
+    send_message: "Nachricht senden"
+    retry_work: "Unvollständige Arbeit wiederholen"
+    retry_commands: "Fehlgeschlagene Befehle wiederholen"
+    stop_work: "Arbeit stoppen"
+    page: "Seite {current} von {total}"
+    go_to_page: "Zu Seite {page}"
+    recent: "Letzte Nachrichten"
+    recent_latest: "Letzte Nachrichten · zuletzt {age}"
+    age_now: "gerade eben"
+    age_minutes: "vor {count} Min."
+    age_hours: "vor {count} Std."
+    age_days: "vor {count} Tagen"
+    help_pages: "{command} - Eine Seite der Gruppenchats ansehen."
+    help_bot: "{command} - Einen Bot und seinen Nachrichtenbefehl ansehen."
+    help_retry: "{command} - Zurückgestellte oder unbestätigte Aufgaben bzw. fehlgeschlagene Desktop-Befehle wiederholen. Aktionen können erneut erfolgen; kein erneutes Senden oder Verbinden."
+
   group_home:
     cancel_late: "Das Speichern hat bereits begonnen; die Zustimmung kann gespeichert werden. Die Auswahl ist abgebrochen. Mit {command_prefix}sethome setzt du die Zustimmung zurück."
     saving: "Das Speichern hat bereits begonnen. Die alte Auswahl ist abgebrochen; warte bis zum Abschluss und führe dann {command_prefix}group erneut aus."

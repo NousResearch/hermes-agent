@@ -20,6 +20,30 @@ approval:
   blocklist_message: "Ez a parancs a feltétel nélküli tiltólistán van, és nem hagyható jóvá."
 
 gateway:
+  group_presentation:
+    action: "{label}: {command}"
+    actions: "Műveletek"
+    help: "Súgó"
+    view_group: "Csoport megtekintése"
+    view_bot: "Bot megtekintése"
+    view_bots: "Botok megtekintése"
+    message_bot: "Üzenet ennek a Botnak"
+    send_message: "Üzenet küldése"
+    retry_work: "Befejezetlen munka újrapróbálása"
+    retry_commands: "Sikertelen parancsok újrapróbálása"
+    stop_work: "Munka leállítása"
+    page: "{current}. oldal / {total}"
+    go_to_page: "Ugrás a(z) {page}. oldalra"
+    recent: "Legutóbbi üzenetek"
+    recent_latest: "Legutóbbi üzenetek · legutóbbi {age}"
+    age_now: "most"
+    age_minutes: "{count} perce"
+    age_hours: "{count} órája"
+    age_days: "{count} napja"
+    help_pages: "{command} - Csoportos beszélgetések egy oldalának megtekintése."
+    help_bot: "{command} - Bot és az üzenetküldő parancsa megtekintése."
+    help_retry: "{command} - Elhalasztott vagy nem megerősített feladatok, illetve sikertelen Desktop-parancsok újrapróbálása. Megismételhet műveleteket; nem újraküldés vagy újracsatlakozás."
+
   group_home:
     cancel_late: "A mentés már elkezdődött; a hozzájárulás mentésre kerülhet. A választó megszakítva. A hozzájárulást a {command_prefix}sethome paranccsal állíthatod vissza."
     saving: "A mentés már elkezdődött. A korábbi választó megszakítva; várd meg a mentés végét, majd futtasd újra a {command_prefix}group parancsot."

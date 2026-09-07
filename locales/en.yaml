@@ -30,6 +30,30 @@ approval:
   blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
 
 gateway:
+  group_presentation:
+    action: "{label}: {command}"
+    actions: "Actions"
+    help: "Help"
+    view_group: "View group"
+    view_bot: "View Bot"
+    view_bots: "View Bots"
+    message_bot: "Message this Bot"
+    send_message: "Send message"
+    retry_work: "Retry unfinished work"
+    retry_commands: "Retry failed commands"
+    stop_work: "Stop work"
+    page: "Page {current} of {total}"
+    go_to_page: "Go to page {page}"
+    recent: "Recent messages"
+    recent_latest: "Recent messages · latest {age}"
+    age_now: "just now"
+    age_minutes: "{count}m ago"
+    age_hours: "{count}h ago"
+    age_days: "{count}d ago"
+    help_pages: "{command} - View a page of Group Chats."
+    help_bot: "{command} - View a Bot and its message command."
+    help_retry: "{command} - Retry deferred or unconfirmed tasks, or failed Desktop commands. May repeat actions; not resend or reconnect."
+
   group_home:
     cancel_late: "Saving has already started, so consent may be saved. The chooser is cancelled. Use {command_prefix}sethome to reset consent."
     saving: "Saving has already started. The old chooser is cancelled; wait for saving to finish, then run {command_prefix}group again."

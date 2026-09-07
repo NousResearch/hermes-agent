@@ -20,6 +20,30 @@ approval:
   blocklist_message: "Cette commande est sur la liste de blocage inconditionnel et ne peut pas être approuvée."
 
 gateway:
+  group_presentation:
+    action: "{label}: {command}"
+    actions: "Actions"
+    help: "Aide"
+    view_group: "Voir le groupe"
+    view_bot: "Voir le Bot"
+    view_bots: "Voir les Bots"
+    message_bot: "Écrire à ce Bot"
+    send_message: "Envoyer un message"
+    retry_work: "Relancer le travail inachevé"
+    retry_commands: "Relancer les commandes en échec"
+    stop_work: "Arrêter le travail"
+    page: "Page {current} sur {total}"
+    go_to_page: "Aller à la page {page}"
+    recent: "Messages récents"
+    recent_latest: "Messages récents · dernier : {age}"
+    age_now: "à l'instant"
+    age_minutes: "il y a {count} min"
+    age_hours: "il y a {count} h"
+    age_days: "il y a {count} j"
+    help_pages: "{command} - Voir une page de discussions de groupe."
+    help_bot: "{command} - Voir un Bot et sa commande de message."
+    help_retry: "{command} - Relancer les tâches reportées ou non confirmées, ou les commandes Desktop en échec. Peut répéter des actions ; ni renvoi ni reconnexion."
+
   group_home:
     cancel_late: "L’enregistrement a déjà commencé ; le consentement peut être enregistré. Le sélecteur est annulé. Utilisez {command_prefix}sethome pour réinitialiser le consentement."
     saving: "L’enregistrement a déjà commencé. L’ancien sélecteur est annulé ; attendez la fin, puis relancez {command_prefix}group."

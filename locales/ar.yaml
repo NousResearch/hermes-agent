@@ -25,6 +25,30 @@ approval:
   blocklist_message: "هذا الأمر مدرج في قائمة الحظر غير المشروطة ولا يمكن الموافقة عليه."
 
 gateway:
+  group_presentation:
+    action: "{label}: {command}"
+    actions: "إجراءات"
+    help: "مساعدة"
+    view_group: "عرض المجموعة"
+    view_bot: "عرض البوت"
+    view_bots: "عرض البوتات"
+    message_bot: "مراسلة هذا البوت"
+    send_message: "إرسال رسالة"
+    retry_work: "إعادة محاولة العمل غير المكتمل"
+    retry_commands: "إعادة محاولة الأوامر الفاشلة"
+    stop_work: "إيقاف العمل"
+    page: "الصفحة {current} من {total}"
+    go_to_page: "الانتقال إلى الصفحة {page}"
+    recent: "الرسائل الأخيرة"
+    recent_latest: "الرسائل الأخيرة · الأحدث {age}"
+    age_now: "الآن"
+    age_minutes: "منذ {count} د"
+    age_hours: "منذ {count} س"
+    age_days: "منذ {count} يوم"
+    help_pages: "{command} - عرض صفحة من المحادثات الجماعية."
+    help_bot: "{command} - عرض بوت وأمر مراسلته."
+    help_retry: "{command} - إعادة محاولة المهام المؤجلة أو غير المؤكدة، أو أوامر Desktop الفاشلة. قد تتكرر الإجراءات؛ ليست إعادة إرسال أو اتصال."
+
   group_home:
     cancel_late: "بدأ الحفظ بالفعل، لذا قد تُحفظ الموافقة. أُلغي عرض الاختيار. استخدم {command_prefix}sethome لإعادة ضبط الموافقة."
     saving: "بدأ الحفظ بالفعل. أُلغي عرض الاختيار السابق؛ انتظر اكتمال الحفظ ثم شغّل {command_prefix}group مجددًا."

@@ -28,8 +28,13 @@ try {
   $current = $reader.ReadToEnd()
   $reader.Dispose()
   if ($current -cne $expected) { exit 2 }
+  # Write BEFORE truncating. Truncating first leaves a zero-length marker if
+  # this process dies mid-transaction, and an empty marker blocks every later
+  # launch until the dwell-and-CAS self-heal notices it (B2). Growing then
+  # shrinking never exposes an empty file at any instant.
   $stream.Position = 0
   $stream.Write($next, 0, $next.Length)
+  $stream.Flush($true)
   $stream.SetLength($next.Length)
   $stream.Flush($true)
 } catch { exit 2 } finally { if ($stream) { $stream.Dispose() } }

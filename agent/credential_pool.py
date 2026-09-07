@@ -756,7 +756,8 @@ def _write_through_provider_state_to_global_root(
 
 def _singleton_target_for_entry(pool: "CredentialPool", entry: "PooledCredential") -> Optional[Path]:
     """Root ``.anthropic_oauth.json`` when *entry* is a borrowed hermes_pkce row, else None."""
-    if entry.source != "hermes_pkce" or entry.id not in getattr(pool, "_borrowed_root_ids", ()):
+    borrowed_ids = getattr(pool, "_borrowed_root_ids", None) or ()
+    if entry.source != "hermes_pkce" or entry.id not in borrowed_ids:
         return None
     try:
         from agent.anthropic_credentials import _root_hermes_oauth_file
@@ -917,7 +918,7 @@ class CredentialPool:
         self._current_id: Optional[str] = None
         # Ids of rows read via the global-root fallback (single-use OAuth
         # providers only); set by load_pool(), consumed by add_entry().
-        self._borrowed_root_ids: Set[str] = set()
+        self._borrowed_root_ids: Optional[Set[str]] = None
         self._strategy = get_pool_strategy(provider)
         # RLock: _replace_entry/_persist self-acquire it so the DEFERRED
         # single-use-token refresh path (network I/O outside the lock by
@@ -2229,15 +2230,18 @@ class CredentialPool:
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
             borrowed_ids = getattr(self, "_borrowed_root_ids", None)
-            if borrowed_ids:
+            if borrowed_ids is not None:
                 # ``hermes -p <profile> auth add <single-use provider>``: the
                 # profile claims its OWN credential. Persist only profile-owned
-                # rows — copying the borrowed root grant alongside would fork
+                # rows — copying any borrowed root grant alongside would fork
                 # its single-use refresh token (#100339). Once the profile owns
                 # rows, the root fallback for this provider is shadowed.
+                # When root has no rows yet (borrowed_ids is empty set), this
+                # fresh grant must persist to the profile store rather than
+                # routing to the update-only root merge (#103694).
                 self._entries = [e for e in self._entries if e.id not in borrowed_ids]
                 write_credential_pool(self.provider, [e.to_dict() for e in self._entries])
-                self._borrowed_root_ids = set()
+                self._borrowed_root_ids = None
             else:
                 self._persist()
             return entry

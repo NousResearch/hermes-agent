@@ -16,8 +16,10 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_constants import (
-    get_hermes_home, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
+    get_default_hermes_root, get_hermes_home, get_skills_dir, is_wsl,
+    reset_hermes_home_override, set_hermes_home_override,
 )
+from typing import List, Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
@@ -1569,25 +1571,108 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
                              read_path=str(cwd_path / ".cursorrules"))
 
 
+def _cross_profile_context_owner(cwd_path: Path) -> Optional[str]:
+    """Return the foreign named profile that owns *cwd_path*, if any."""
+
+    def _profile_under(path: Path, profiles_root: Path) -> Optional[str]:
+        try:
+            parts = path.relative_to(profiles_root).parts
+        except ValueError:
+            return None
+        return parts[0] if parts else None
+
+    try:
+        active_home = Path(os.path.abspath(os.path.expanduser(str(get_hermes_home()))))
+        if active_home.parent.name == "profiles":
+            profiles_root = active_home.parent
+            active_profile = active_home.name
+        else:
+            profiles_root = Path(
+                os.path.abspath(
+                    os.path.expanduser(str(get_default_hermes_root() / "profiles"))
+                )
+            )
+            active_profile = "default"
+
+        logical_target = Path(os.path.abspath(os.path.expanduser(str(cwd_path))))
+        candidates = (
+            (logical_target, profiles_root),
+            (cwd_path.resolve(), profiles_root.resolve()),
+        )
+        for target, root in candidates:
+            target_profile = _profile_under(target, root)
+            if target_profile and target_profile != active_profile:
+                return target_profile
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    return None
+
+
 def build_context_files_prompt(
-    cwd: Optional[str] = None, skip_soul: bool = False, context_length: Optional[int] = None,
-    allow_install_tree_fallback: bool = False, home_override: "Path | None" = None,
+    cwd: Optional[str] = None,
+    skip_soul: bool = False,
+    context_length: Optional[int] = None,
+    allow_install_tree_fallback: bool = False,
+    allow_cross_profile_context: bool = False,
+    home_override: "Path | None" = None,
 ) -> str:
     """Discover and load context files for the system prompt (each capped, see ``_get_context_file_max_chars``).
 
-    Only ONE project context type loads, first found wins: .hermes.md/HERMES.md (walk to git root) →
-    AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
-    from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
+    Priority (first found wins — only ONE project context type is loaded):
+      1. .hermes.md / HERMES.md  (walk to git root)
+      2. AGENTS.md / agents.md   (merged chain: git root → cwd)
+      3. CLAUDE.md / claude.md   (cwd only)
+      4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+
+    SOUL.md from HERMES_HOME is independent and always included when present.
+
+    Each context source is capped before injection. The cap defaults to the
+    model's context window (scaled — see ``_dynamic_context_file_max_chars``)
+    when *context_length* is provided, falling back to 20,000 chars otherwise.
+    An explicit ``context_file_max_chars`` in config.yaml always wins.
+
+    When *skip_soul* is True, SOUL.md is not included here (it was already
+    loaded via ``load_soul_md()`` for the identity slot).
+
+    Named-profile directories owned by another profile are ignored by default.
+    Set *allow_cross_profile_context* only when the caller has an explicit,
+    user-selected reason to treat that directory as project context.
     """
-    cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
-    # A FALLBACK-picked cwd inside the Hermes install tree must not gain system-prompt authority (the desktop
-    # default would load this repo's contributor AGENTS.md). An explicit cwd is honored verbatim.
-    # An explicitly configured cwd is honored verbatim — the Hermes tree is a legitimate workspace when the
-    # user deliberately points a session at it — and CLI-style surfaces pass
-    # allow_install_tree_fallback=True because their launch dir IS the user's shell cwd (developing Hermes
-    # in-tree). See #64590.
+    if cwd is None:
+        cwd = os.getcwd()
+        cwd_is_fallback = True
+    else:
+        cwd_is_fallback = False
+
+    cwd_path_raw = Path(cwd)
+    cwd_path = cwd_path_raw.resolve()
+    sections = []
+
+    # Never let a FALLBACK-picked directory inside the Hermes install/source
+    # tree gain system-prompt authority. A backend that self-spawns into that
+    # tree (the desktop app default) would otherwise load this repo's
+    # contributor AGENTS.md as authoritative project context (#64590). An
+    # explicitly configured cwd is honored verbatim — the Hermes tree is a
+    # legitimate workspace when the user deliberately points a session at it —
+    # and CLI-style surfaces pass allow_install_tree_fallback=True because
+    # their launch dir IS the user's shell cwd (developing Hermes in-tree).
     from agent.runtime_cwd import _is_install_tree
-    if cwd is None and not allow_install_tree_fallback and _is_install_tree(cwd_path):
+
+    foreign_profile = _cross_profile_context_owner(cwd_path_raw)
+    if foreign_profile and not allow_cross_profile_context:
+        logger.warning(
+            "skipping project-context discovery: working directory %s belongs "
+            "to another Hermes profile (%s)",
+            cwd_path,
+            foreign_profile,
+        )
+        sections = []
+    elif (
+        cwd_is_fallback
+        and not allow_install_tree_fallback
+        and _is_install_tree(cwd_path)
+    ):
         logger.warning(
             "skipping project-context discovery: working-directory resolution fell back to the Hermes "
             "install tree (%s) — set terminal.cwd to your project directory", cwd_path,

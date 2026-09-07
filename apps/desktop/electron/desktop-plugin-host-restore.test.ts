@@ -93,6 +93,53 @@ describe('isRelaunchableDesktopPluginHost', () => {
     assert.equal(isRelaunchableDesktopPluginHost(HOME, host({ argv: [WSCRIPT, 'C:\\elsewhere\\service-host.vbs'] }), exists), false)
     assert.equal(isRelaunchableDesktopPluginHost(HOME, host(), () => false), false)
   })
+
+  it('refuses an argv[0] that only borrows the name of a Windows Script Host', () => {
+    const exists = (target: string) => target === VBS || target.toLowerCase().endsWith('wscript.exe')
+
+    // The ledger is same-user writable and replayed at startup. A basename
+    // check let any of these become an arbitrary process launch by the desktop.
+    for (const image of [
+      'C:\\Users\\me\\Downloads\\wscript.exe',
+      'C:\\Windows\\Temp\\wscript.exe',
+      'C:\\Windows\\System32Fake\\wscript.exe',
+      'C:\\Windows\\System32\\..\\Temp\\wscript.exe',
+      'wscript.exe',
+      '..\\wscript.exe'
+    ]) {
+      assert.equal(
+        isRelaunchableDesktopPluginHost(HOME, host({ argv: [image, `"${VBS}"`] }), exists, 'C:\\Windows'),
+        false,
+        image
+      )
+    }
+
+    // The inbox hosts still qualify, in either bitness and in any casing.
+    for (const image of [
+      'C:\\Windows\\System32\\wscript.exe',
+      'C:\\WINDOWS\\system32\\WSCRIPT.EXE',
+      'C:\\Windows\\SysWOW64\\cscript.exe'
+    ]) {
+      assert.equal(
+        isRelaunchableDesktopPluginHost(HOME, host({ argv: [image, `"${VBS}"`] }), exists, 'C:\\Windows'),
+        true,
+        image
+      )
+    }
+  })
+
+  it('honours a non-default system root', () => {
+    const exists = (target: string) => target === VBS
+
+    assert.equal(
+      isRelaunchableDesktopPluginHost(HOME, host({ argv: ['D:\\Win\\System32\\wscript.exe', `"${VBS}"`] }), exists, 'D:\\Win'),
+      true
+    )
+    assert.equal(
+      isRelaunchableDesktopPluginHost(HOME, host({ argv: ['C:\\Windows\\System32\\wscript.exe', `"${VBS}"`] }), exists, 'D:\\Win'),
+      false
+    )
+  })
 })
 
 describe('record + restore', () => {

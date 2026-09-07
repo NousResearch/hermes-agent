@@ -1481,9 +1481,14 @@ class TurnRunner:
             if isinstance(fr, str) and fr.strip() and fr != "(empty)":
                 _final_for_stream = fr
         if pre_delivery_gate is not None and getattr(pre_delivery_gate, "mode", "legacy") == "shadow" and _final_for_stream is not None:
+            turn_id = getattr(ctx, "inbound_message_id", None) or (
+                f"{ctx.session_key}:{ctx.run_generation}"
+                if getattr(ctx, "session_key", None) and getattr(ctx, "run_generation", None) is not None
+                else None
+            )
             decision = pre_delivery_gate.evaluate_sync(
                 final_text=_final_for_stream,
-                metadata={"platform": getattr(ctx.source, "platform", ""), "chat_id": str(ctx.source.chat_id)},
+                metadata={"platform": getattr(ctx.source, "platform", ""), "chat_id": str(ctx.source.chat_id), "turn_id": turn_id},
             )
             logger.info(
                 "Pre-delivery shadow result: status=%s evidence_ref=%s reason=%s",
@@ -1492,9 +1497,14 @@ class TurnRunner:
             result["pre_delivery_shadow_status"] = decision.status
             result["pre_delivery_shadow_evidence_ref"] = decision.evidence_ref
         if pre_delivery_gate is not None and getattr(pre_delivery_gate, "mode", "legacy") == "strict" and _final_for_stream is not None:
+            turn_id = getattr(ctx, "inbound_message_id", None) or (
+                f"{ctx.session_key}:{ctx.run_generation}"
+                if getattr(ctx, "session_key", None) and getattr(ctx, "run_generation", None) is not None
+                else None
+            )
             decision = pre_delivery_gate.evaluate_sync(
                 final_text=_final_for_stream,
-                metadata={"platform": getattr(ctx.source, "platform", ""), "chat_id": str(ctx.source.chat_id)},
+                metadata={"platform": getattr(ctx.source, "platform", ""), "chat_id": str(ctx.source.chat_id), "turn_id": turn_id},
             )
             if not decision.allowed:
                 if stream_consumer is not None:

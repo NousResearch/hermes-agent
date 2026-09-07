@@ -63,6 +63,17 @@ def _profile_name(home: Path) -> str:
     return home.name if home.parent.name == "profiles" else "default"
 
 
+def profile_home_dir(root: Path, name: str) -> Path:
+    """Home dir for a profile name: 'default' → root, else root/profiles/<name>.
+
+    Inverts ``_hermes_root``/``_profile_name``. Used to scope a Bot Chat turn's
+    ``--in`` to the profile's OWN sessions rather than the shared home (which maps to
+    the default profile and its desktop-held live session — delivery then failed with
+    "already has a live owner" → target_busy).
+    """
+    return root if name == "default" else root / "profiles" / name
+
+
 def _handle(name: str) -> str:
     # The mention middleware aliases the default profile as @hermes.
     return "hermes" if name == "default" else name

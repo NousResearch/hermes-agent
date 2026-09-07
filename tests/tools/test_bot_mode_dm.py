@@ -267,7 +267,7 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
         "researcher",
         "chat",
         "--in",
-        "~",
+        str(home / "profiles" / "researcher"),
         "-c",
         "Bot Chat",
         "--create-if-missing",

@@ -55,6 +55,44 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
   4. On a fresh clone, run `sh .githooks/install` to re-arm the guard.
 - **Do NOT** run `git clean -x`/`-X` in this repo — it would delete `.env`.
 
+### ERR-2026-09-07-002 — LOW — Upstream test suite fails collection on Windows
+
+- **Opened:** 2026-09-07 · **Base:** hermes@a7198a8855 (0 behind upstream/main)
+- **Run:** RUN-2026-09-07-003
+- **Source:** post-rebase test run for `CHG-2026-09-07-010` (the `upstream/main` sync).
+- **Confidence:** Confirmed Fact — reproduced this session: `uv run --extra dev
+  python -m pytest tests/hermes_cli/` aborts with
+  `ERROR collecting tests/hermes_cli/test_doctor_journal_modes.py … AttributeError:
+  module 'os' has no attribute 'geteuid'` and `Interrupted: 1 error during collection`.
+- **What:** several upstream test modules evaluate `os.geteuid()` as an **eager
+  argument** to a `@pytest.mark.skipif(...)` decorator, which runs at import /
+  collection time — before the companion `@pytest.mark.skipif(os.name == "nt", …)`
+  can suppress it. `os.geteuid` does not exist on Windows, so collection of the whole
+  directory aborts. Known modules: `tests/hermes_cli/test_doctor_journal_modes.py`
+  (last touched upstream by `b818085298`), and by grep also
+  `test_ensure_acp_launcher.py`, `test_ssh_ownership_endpoint.py`,
+  `test_update_autostash.py`, `tests/plugins/platforms/photon/test_sidecar_paths.py`,
+  `tests/test_hermes_state_readonly_preflight.py`,
+  `tests/tools/test_local_cwd_permission_fallback.py`,
+  `tests/tools/test_stage2_hook_api_server_keygen.py` (not all confirmed to fail at
+  collection — some may call `geteuid()` inside a function body, which is fine).
+- **Not North Forge's:** every listed file is **byte-identical to `upstream/main`**
+  (`git diff upstream/main HEAD -- <file>` empty). NF touches none of them. This is a
+  pre-existing upstream Windows-portability defect that the `CHG-2026-09-07-010` sync
+  simply pulled in; it is **not** a regression from `RUN-2026-09-07-003` steps 2/4,
+  and North Forge's own targeted suites are green (238 passed / 4 skipped, see
+  `CHG-2026-09-07-010`).
+- **Impact:** an unfiltered `pytest` on Windows can't collect. Targeted runs
+  (`pytest <file>::<node>`) and non-Windows CI are unaffected. Low.
+- **Options for the owner (not defaulted this run):**
+  1. Carry a small local test-compat shim (e.g. a `conftest.py` `getattr(os,
+     "geteuid", lambda: -1)` fallback, or `--ignore` the offending files on Windows)
+     — keeps a full local Windows run possible, adds fork drift on every merge.
+  2. Wait for upstream to fix it; rely on Linux CI + targeted Windows runs meanwhile.
+  3. Report upstream.
+- **Status:** OPEN — documented so the `D:`→`E:` test-bed flow isn't surprised by it;
+  no NF code change made. Owner to pick an option.
+
 ---
 
 ## Resolved
@@ -176,3 +214,4 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 | ERR-2026-09-06-004 | 2026-09-06 | LOW | Repo hygiene | Stray `%SystemDrive%` Windows cache tree in root (recurred; guard held) | RESOLVED | CHG-2026-09-06-009 / -012 |
 | ERR-2026-09-06-005 | 2026-09-06 | LOW | Repo hygiene | pytest/mock artifacts (`MagicMock/`, `C:Users…`, `logs.zip`) in working tree | RESOLVED | CHG-2026-09-06-011 / -012 |
 | ERR-2026-09-07-001 | 2026-09-07 | LOW | Bootstrap tooling | `bootstrap-north-forge.ps1` let uv cache sit on `C:` while venv built on the checkout drive → cross-volume full-copy, ~6.5 min first run | RESOLVED | CHG-2026-09-07-008 |
+| ERR-2026-09-07-002 | 2026-09-07 | LOW | Upstream test compat | Upstream test files call `os.geteuid()` in an eager `skipif` decorator arg → `pytest tests/` aborts at collection on Windows. Pre-existing upstream, pulled in by the `CHG-2026-09-07-010` sync; NF touches none of the files; targeted runs green | OPEN | — (owner to pick: local shim / wait upstream) |

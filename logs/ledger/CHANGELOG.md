@@ -8,7 +8,57 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.4.2] — 2026-09-07 — hermes@a7198a8855 (0 behind upstream/main)
+
+Mechanical `upstream/main` sync (`RUN-2026-09-07-003`, step 4 of the consolidated
+pass). No rebrand or design content — a rebase only. **PATCH** (upstream sync per
+the version table). Pushed with `NF-v0.4.0`/`NF-v0.4.1` this run (force-with-lease;
+`origin/main` history rewritten from the old merge-based line to the rebased line).
+
+### Changed
+
+- **CHG-2026-09-07-010** — `git rebase upstream/main` replayed the 8 North-Forge
+  commits (`NF-v0.1.x` ledger → `NF-v0.4.1`) onto `upstream/main` tip
+  `a7198a8855`, dropping the two historical `Merge branch 'NousResearch:main'`
+  commits (`45b2795865`, `61d30533f7`) as rebase linearizes them. **Clean — zero
+  conflicts** across all 8 patches. The gap the last handoff recorded as "13
+  behind" had actually grown to **333 behind** (upstream is very active); it is
+  now **0 behind**. New HEAD line: `3887dbe70f`..`ef3467348a` on top of
+  `a7198a8855`.
+  - Verified: `git diff upstream/main HEAD` is exactly the known North-Forge delta
+    (ledger, `BRANDING.md`, `.githooks/`, `scripts/`, `editions/`, translated-README
+    landing pages, `assets/`, and the small identity touches in
+    `agent/prompt_builder.py` / `hermes_cli/{default_soul,banner,_parser,_startup_fast}.py`
+    / `cli.py`) and nothing else — no upstream change silently reverted, no NF
+    change silently dropped. Upstream did not touch `hermes_cli/default_soul.py`
+    in the 333 commits, so `CHG-2026-09-07-009`'s frozen literals rebased without
+    contest.
+  - Tests (targeted, post-rebase, `uv run --extra dev pytest`): **238 passed / 4
+    skipped** across `tests/hermes_cli/test_config.py` (incl. the 2 new
+    `test_upgrades_pre_nf_v0_4_0_*` cases and all 6 of `TestEnsureHermesHome`),
+    `test_banner.py`, `test_banner_git_state.py`, `test_startup_fast_guards.py`,
+    `test_web_profile_soul_writes.py`, `tests/agent/test_prompt_builder.py`,
+    `tests/test_install_ps1_ascii_only.py`, `tests/gateway/test_version_command.py`,
+    `tests/test_cli_skin_integration.py`. Every surface NF's identity work touches
+    is green against the new base.
+  - **Finding (not fixed here):** an unfiltered `pytest tests/hermes_cli/` now
+    aborts at *collection* on Windows — upstream test files
+    (`test_doctor_journal_modes.py` and ~7 others) call `os.geteuid()` as an eager
+    `@pytest.mark.skipif(...)` decorator argument, which raises `AttributeError`
+    on Windows before the companion `skipif(os.name == "nt")` can take effect.
+    These files are **byte-identical to `upstream/main`** — NF touches none of
+    them — so this is a pre-existing upstream Windows-only defect surfaced by the
+    sync, not a regression from steps 2 or 4. Logged as `ERR-2026-09-07-002`
+    (LOW); left for the owner to decide (carry a local test-compat shim vs. wait
+    for upstream vs. rely on Linux CI).
+  - Paths: none tracked-file (rebase only); ledger. Ref: `ERR-2026-09-07-002`.
+    Run: RUN-2026-09-07-003.
+
 ## [NF-v0.4.1] — 2026-09-07 — hermes@421c72f3bc (333 behind upstream/main)
+
+> Cut on the old merge-based line, then rebased onto `upstream/main` the same run
+> (clean) — see `NF-v0.4.2`. Post-rebase SHA `ef3467348a`, parent `376bd45b43`.
+
 
 Follow-up to `NF-v0.4.0` (`RUN-2026-09-07-003`). One deliberate loose end from
 `CHG-2026-09-07-007` closed by owner review: the seeded-persona auto-upgrade path

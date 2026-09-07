@@ -19,7 +19,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from tools.environments.base import BaseEnvironment, _ThreadedProcessHandle
+from tools.environments.base import BaseEnvironment
+from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
     FileSyncManager,
     iter_sync_files,

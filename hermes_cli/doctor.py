@@ -204,6 +204,8 @@ def check_warn(text: str, detail: str = ""):
 
 
 _PLUGIN_COMPAT_LAZY = {
+    '_check_kubernetes_backend': ('hermes_cli.doctor_tools', '_check_kubernetes_backend'),
+    '_dry_run_pod_template': ('hermes_cli.doctor_tools', '_dry_run_pod_template'),
     'FTS_STORAGE_VERSION': ('hermes_state_common', 'FTS_STORAGE_VERSION'),
     'OPENROUTER_MODELS_URL': ('hermes_constants', 'OPENROUTER_MODELS_URL'),
     'STATE_DB_SIZE_WARN_BYTES': ('hermes_cli.doctor_state', 'STATE_DB_SIZE_WARN_BYTES'),

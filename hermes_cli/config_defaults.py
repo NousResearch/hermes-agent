@@ -2023,10 +2023,7 @@ DEFAULT_CONFIG = {
         # Minimum hours between auto-maintenance runs (tracked in state.db state_meta, shared across
         # processes).
         "min_interval_hours": 24,
-        # Legacy ~/.hermes/sessions/session_{sid}.json snapshots rewritten every turn. state.db is
-        # canonical (superset); snapshots consumed GBs on heavy users. Enable only for an external
-        # tool that reads the JSON files directly.
-        "write_json_snapshots": False,
+
         # Notice about the compact FTS layout (reclaims ~60%+ of state.db). OPT-IN: legacy indexes
         # stay until `hermes sessions optimize-storage` runs, since the rebuild is disk-heavy on
         # large DBs. advise = `hermes update` prints a one-line notice with reclaimable size when a

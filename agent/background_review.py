@@ -851,7 +851,7 @@ def build_cache_parity_fork(
     # finalize the parent's still-active session row. suppress_status_output: fork status/warning
     # emits go via _print_fn/status_callback, which bypass the stdout redirect.
     review_agent._skip_mcp_refresh = review_agent._persist_disabled = review_agent.suppress_status_output = True
-    review_agent._session_json_enabled = review_agent._end_session_on_close = False
+    review_agent._end_session_on_close = False
     review_agent._session_db = None
     review_agent.session_id = agent.session_id
     # Same model only: share the warm cached system prompt (~26% cost cut; a rebuilt prompt misses

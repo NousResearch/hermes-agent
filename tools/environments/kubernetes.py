@@ -19,7 +19,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from tools.environments.base import BaseEnvironment, _ThreadedProcessHandle
+from tools.environments.base import BaseEnvironment
+from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
     FileSyncManager,
     iter_sync_files,
@@ -63,7 +64,7 @@ STARTER_SESSION_OBJECT: dict[str, Any] = {
             "workingDir": "/workspace",
             "volumeMounts": [
                 {"name": "workspace", "mountPath": "/workspace"},
-                {"name": "tmp", "mountPath": "/tmp"},
+                {"name": "tmp", "mountPath": "/tmp"},  # no-tmp: ok — Kubernetes pod filesystem contract
             ],
             "securityContext": {
                 "allowPrivilegeEscalation": False,
@@ -591,9 +592,9 @@ def preflight_spec(kcfg: dict) -> tuple:
     }
     read_only_root = (container.get("securityContext") or {}).get(
         "readOnlyRootFilesystem")
-    if read_only_root and "/tmp" not in mounts:
+    if read_only_root and "/tmp" not in mounts:  # no-tmp: ok — validating the Kubernetes pod filesystem contract
         errors.append(
-            "readOnlyRootFilesystem is true and nothing is mounted at /tmp. "
+            "readOnlyRootFilesystem is true and nothing is mounted at /tmp. "  # no-tmp: ok — operator-facing Kubernetes validation
             "init_session() writes its environment snapshot there, so cwd and "
             "environment stop persisting between commands — silently."
         )

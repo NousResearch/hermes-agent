@@ -45,6 +45,7 @@ from hermes_cli.cli_model_switch_mixin import CLIModelSwitchMixin
 from hermes_cli.cli_voice_mixin import CLIVoiceMixin
 from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
 from hermes_cli.cli_tui_mixin import CLITuiMixin
+from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
 from agent.interrupt_compat import request_hard_interrupt
 from agent.pet import render as pet_render
 
@@ -2526,7 +2527,7 @@ from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 _PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
 
 
-class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
+class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
     """Interactive REPL for the Hermes Agent."""
 
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
@@ -3377,40 +3378,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
             _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
         return True
 
-    def _owns_process_notification(self, event: dict) -> bool:
-        """Whether this session owns a delegation event (pre-compression keys resolve to their continuation; fail closed)."""
-        event_key = str(event.get("session_key") or "")
-        current_key = str(getattr(self, "session_id", "") or "")
-        if not event_key or not current_key:
-            return False
-        if event_key == current_key:
-            return True
-        try:
-            session_db = getattr(self, "_session_db", None)
-            resolved_key = (
-                session_db.resolve_resume_session_id(event_key) if session_db is not None else event_key
-            ) or event_key
-        except Exception:
-            resolved_key = event_key
-        return str(resolved_key) == current_key
-
-    def _drain_process_notifications(self, consumer: str) -> None:
-        """Queue background notifications owned by this session (drained with our stable identity so another window can't claim them)."""
-        from tools.process_registry import process_registry
-        from tools.async_delegation import claim_event_delivery, complete_event_delivery
-
-        for event, synthetic_message in process_registry.drain_notifications(
-            session_key=getattr(self, "session_id", "") or "", owns_event=self._owns_process_notification,
-        ):
-            claim = claim_event_delivery(event, consumer)
-            if claim is None:
-                continue
-            if event.get("type") == "async_delegation":
-                from tools.process_registry_notifications import SubagentNotification
-                synthetic_message = SubagentNotification(synthetic_message, event)
-            self._pending_input.put(synthetic_message)
-            complete_event_delivery(event, claim)
-
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray ``_interrupt_queue`` messages into ``_pending_input`` after every turn.
 
@@ -3474,18 +3441,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         ):
             with suppress(Exception):
                 step()
-
-    def _tui_unwrap_input(self, user_input):
-        """Unwrap ``_VoiceInputMessage`` / ``_SeededQueryMessage`` -> ``(text_or_tuple, is_voice_input, is_seeded_query)``."""
-        # Voice-transcribed messages arrive wrapped in a sentinel so only genuine STT output gets the voice
-        # prefix (#65827).
-        is_voice_input = isinstance(user_input, _VoiceInputMessage)
-        if is_voice_input:
-            user_input = user_input.text
-        is_seeded_query = isinstance(user_input, _SeededQueryMessage)
-        if is_seeded_query:
-            user_input = (user_input.text, user_input.images) if user_input.images else user_input.text
-        return user_input, is_voice_input, is_seeded_query
 
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""

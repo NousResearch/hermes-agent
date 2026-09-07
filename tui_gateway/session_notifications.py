@@ -394,7 +394,7 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
     complete_event_delivery(evt, claim)
 
 
-def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred) -> bool:
+def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, completions=None) -> bool:
     """Route one dequeued event: foreign (another live session owns it) → requeued, or onto ``deferred`` during the
     shutdown drain; unowned (addressed but unprovable — never adopt an orphan) → dropped, except delegation payloads
     deferred for a resume; ours (or ownerless legacy, kept process-global) → status.update once, then an agent turn if
@@ -432,6 +432,9 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred) -> 
         display_text = async_delegation_display_text(evt) if is_delegation else text
         _emit("status.update", sid, {"kind": "process", "text": display_text})
         emitted.add(dedup_key)
+    if evt_type == "completion" and completions is not None:
+        completions.append((evt, text))
+        return True
     if not _notif_claim_turn(session):
         queue.put(evt)
         if deferred is not None:
@@ -440,6 +443,49 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred) -> 
         return True
     _notif_dispatch_event(sid, session, evt, text)
     return True
+
+
+def _notif_dispatch_completions(sid, session, notifications, registry, deferred):
+    from tools.process_registry_notifications import ProcessNotificationBatch
+    from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+
+    if not notifications:
+        return
+    if not _notif_claim_turn(session):
+        for event, _text in notifications:
+            (deferred.append if deferred is not None else registry.completion_queue.put)(event)
+        if deferred is None:
+            time.sleep(0.25)
+        return
+    claimed = [(event, text, claim) for event, text in notifications
+               if (claim := claim_event_delivery(event, "tui-completion-batch")) is not None]
+    text = ProcessNotificationBatch(tuple((event, text) for event, text, _claim in claimed)).render(registry)
+    if text is None:
+        _notif_release_turn(session)
+    try:
+        if text is not None:
+            _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
+                          "completion batch dispatch failed")
+    except Exception:
+        for event, _text, claim in claimed:
+            release_event_delivery(event, claim)
+        return
+    for event, _text, claim in claimed:
+        complete_event_delivery(event, claim)
+
+
+def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred):
+    """One ready snapshot: ownership and UI emission per event, one turn per completion run."""
+    completions = []
+    for index, event in enumerate(events):
+        if event.get("type", "completion") != "completion":
+            _notif_dispatch_completions(sid, session, completions, registry, deferred)
+            completions = []
+        if not _notif_handle_event(sid, session, event, emitted, registry, fmt, deferred, completions):
+            for remaining in events[index + 1:]:
+                (deferred.append if deferred is not None else registry.completion_queue.put)(remaining)
+            break
+    _notif_dispatch_completions(sid, session, completions, registry, deferred)
 
 
 def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
@@ -454,9 +500,9 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     from tools.process_registry import process_registry
     from tools.process_registry_notifications import format_process_notification
     queue = process_registry.completion_queue
-    emitted: set = set()  # dedup re-queued events so one completion isn't emitted 50 times while busy
-    handle = lambda evt, deferred: _notif_handle_event(  # noqa: E731
-        sid, session, evt, emitted, process_registry, format_process_notification, deferred)
+    emitted = session.setdefault("_notification_emitted", set())
+    handle = lambda events, deferred: _notif_handle_ready(  # noqa: E731
+        sid, session, events, emitted, process_registry, format_process_notification, deferred)
     last_kanban_poll = last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
@@ -476,17 +522,23 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
             evt = queue.get(timeout=0.5)
         except Exception:
             continue
-        handle(evt, None)
+        ready = [evt]
+        for _ in range(queue.qsize()):
+            try:
+                ready.append(queue.get_nowait())
+            except Exception:
+                break
+        handle(ready, None)
     # Drain remaining events after the stop signal so nothing is lost on shutdown; foreign and orphaned-delegation
     # events are handed back to the shared queue afterwards.
     deferred: list = []
-    while not queue.empty():
+    ready = []
+    for _ in range(queue.qsize()):
         try:
-            evt = queue.get_nowait()
+            ready.append(queue.get_nowait())
         except Exception:
             break
-        if not handle(evt, deferred):
-            break
+    handle(ready, deferred)
     for evt in deferred:
         queue.put(evt)
 

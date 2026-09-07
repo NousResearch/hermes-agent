@@ -8,6 +8,7 @@ migration bookkeeping are rebuilt, not copied; the result is never installed ove
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -20,6 +21,8 @@ from hermes_state import SessionDB
 from hermes_state_common import FTS_STORAGE_VERSION, SCHEMA_VERSION
 from hermes_state_repair import _db_opens_cleanly
 
+
+logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[dict[str, Any]], None]
 _CANONICAL_TABLES = (
@@ -54,6 +57,18 @@ _MINIMUM_SPACE_HEADROOM = 256 * 1024 * 1024
 _MAX_SALVAGE_RANGE_QUERIES = 10_000
 _MIN_SQLITE_ROWID = -(2**63)
 _MAX_SQLITE_ROWID = 2**63 - 1
+
+# When the rowid bounds come back clean-empty but the source count says rows
+# exist, the residual hunt probes the small-positive rowid region explicitly:
+# a damaged low edge can hide an entire table behind an "empty" bounds probe
+# while the rows themselves are exact-lookup-readable.
+_LOW_REGION_PROBE_MAX = 4_096
+
+# Grid density for residual exact-lookup hunts. A window is probed at every
+# span//GRID_DENSITY-th rowid; a hit triggers a dense cluster sweep, so a
+# contiguous run of readable rows is fully recovered from a single hit while
+# an all-empty window costs at most GRID_DENSITY probes.
+_SALVAGE_GRID_DENSITY = 16
 
 
 class SessionRecoveryError(RuntimeError):
@@ -485,12 +500,115 @@ class _RowidRangeSalvage:
         self.insert_sql = f'{insert_prefix} INTO "{table}" ({quoted}) VALUES ({placeholders})'
         self.exact_sql = f'SELECT {quoted} FROM "{table}" WHERE rowid = ?'
         self.stopped_at_query_limit = False
+        # Rowids already recovered through some path (range copy or exact
+        # lookup) and rowids proven unreadable/missing: hunts step over both
+        # instead of re-reading, and inserts dedupe across recovery paths.
+        self.seen_rowids: set[int] = set()
+        self.failed_exact: set[int] = set()
+        # Highest rowid the range copy proved present, shared across the
+        # recursive bisection tree: the reconciliation layer reads it after a
+        # clean return to decide whether the requested window was fully covered.
+        self.last_committed_rowid: Optional[int] = None
 
     def _keep(self, values: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
         return values if self.row_filter is None else [r for r in values if self.row_filter(r, self.column_names)]
 
     def _skip(self, low: int, high: int, error: str) -> None:
         _append_skipped_range(self.result["skipped_rowid_ranges"], low, high, error)
+
+    def _insert(self, value: tuple[Any, ...], rowid: int) -> None:
+        """Insert one row, deduped by source rowid across recovery paths."""
+        if rowid in self.seen_rowids:
+            return
+        self.seen_rowids.add(rowid)
+        with _immediate_transaction(self.destination):
+            self.destination.execute(self.insert_sql, value)
+        self.result["copied_rows"] += 1
+
+    def _budget_exhausted(self, a: int, b: int) -> bool:
+        if self.result["range_queries"] < _MAX_SALVAGE_RANGE_QUERIES:
+            return False
+        self.stopped_at_query_limit = True
+        self._skip(a, b, "salvage range query limit reached")
+        return True
+
+    def _probe_and_insert(self, rowid: int) -> bool:
+        """Exact probe of one rowid; False only on budget exhaustion."""
+        if self._budget_exhausted(rowid, rowid):
+            return False
+        self.result["range_queries"] += 1
+        self.result["residual_hunt_queries"] += 1
+        try:
+            row = self.source.execute(self.exact_sql, (rowid,)).fetchone()
+        except sqlite3.DatabaseError as exc:
+            self.failed_exact.add(rowid)
+            self._skip(rowid, rowid, str(exc))
+            return True
+        if row is None:
+            self.failed_exact.add(rowid)
+            return True
+        if rowid not in self.seen_rowids:
+            value = tuple(row)
+            if self.row_filter is None or self.row_filter(value, self.column_names):
+                self._insert(value, rowid)
+                self.result["exact_lookup_recovered"] += 1
+                self.result["residual_recovered"] += 1
+            else:
+                self.result["excluded_rows"] += 1
+        return True
+
+    def exact_grid(self, lo: int, hi: int) -> None:
+        """Exact-lookup grid over ``[lo, hi]`` with cluster recovery.
+
+        Exact lookups never silently truncate (row | None | raise), so a grid
+        miss is trustworthy. The step bounds the all-empty-window cost; a hit
+        sweeps densely backward to the cluster start and forward — one grid
+        point landing mid-cluster recovers the entire contiguous run.
+        """
+        span = hi - lo + 1
+        if span <= 0:
+            return
+        step = max(1, span // _SALVAGE_GRID_DENSITY)
+        p = lo
+        while p <= hi:
+            if self._budget_exhausted(p, hi):
+                return
+            if p in self.seen_rowids or p in self.failed_exact:
+                p += step
+                continue
+            self.result["range_queries"] += 1
+            self.result["residual_hunt_queries"] += 1
+            try:
+                row = self.source.execute(self.exact_sql, (p,)).fetchone()
+            except sqlite3.DatabaseError as exc:
+                self.failed_exact.add(p)
+                self._skip(p, p, str(exc))
+                p += 1
+                continue
+            if row is not None and p not in self.seen_rowids:
+                value = tuple(row)
+                if self.row_filter is None or self.row_filter(value, self.column_names):
+                    self._insert(value, p)
+                    self.result["exact_lookup_recovered"] += 1
+                    self.result["residual_recovered"] += 1
+                else:
+                    self.result["excluded_rows"] += 1
+                # Backward dense sweep: recover the cluster part that sits before the grid hit.
+                q = p - 1
+                while q >= lo and q not in self.seen_rowids and q not in self.failed_exact:
+                    if not self._probe_and_insert(q):
+                        return  # budget exhausted
+                    q -= 1
+                p += 1  # forward dense sweep continues at the successor
+            else:
+                self.failed_exact.add(p)
+                p += step
+
+    def residual_hunt(self, a: int, b: int) -> None:
+        """Grid over ``[a, b]``; the first probe lands at ``a`` (last+1 / edge+1)."""
+        if a > b:
+            return
+        self.exact_grid(a, b)
 
     def recover_exact_rowid(self, rowid: int) -> bool:
         """Salvage one row by exact-key lookup (issue #80205).
@@ -504,21 +622,50 @@ class _RowidRangeSalvage:
         try:
             row = self.source.execute(self.exact_sql, (rowid,)).fetchone()
         except sqlite3.DatabaseError:
+            self.failed_exact.add(rowid)
             return False
         if row is None:
+            self.failed_exact.add(rowid)
             return True  # genuinely absent: nothing to skip
         value = tuple(row)
         if not self._keep([value]):
             result["excluded_rows"] += 1
             return True
-        with _immediate_transaction(self.destination):
-            self.destination.execute(self.insert_sql, value)
-        result["copied_rows"] += 1
+        self._insert(value, rowid)
         result["exact_lookup_recovered"] += 1
         return True
 
     def copy_range(self, low: int, high: int) -> None:
-        """Copy ``[low, high]``; on a read error bisect the unread remainder, exact-lookup singletons."""
+        """Copy ``[low, high]``; on a read error bisect the unread remainder.
+
+        Clean range returns are reconciled against the requested window before
+        they are trusted: on this damage class a scan can return SHORT (fewer
+        rows than the window holds, or zero) cleanly without raising, so a
+        deficit is hunted by exact rowid lookup — the primitive that never
+        answers short silently.
+        """
+        self.stopped_at_query_limit = False
+        self.last_committed_rowid = None
+        self._copy_range(low, high)
+        # Clean range return: reconcile coverage before trusting it. A scan
+        # that ended short of ``high`` without raising silently dropped rows
+        # (the D1 signature); hunt the uncovered span by exact lookup.
+        if self.last_committed_rowid is not None and self.last_committed_rowid < high:
+            logger.warning(
+                "salvage %s: clean short read in [%s, %s] stopped at %s — "
+                "hunting residual %s..%s by exact lookup",
+                self.table, low, high, self.last_committed_rowid,
+                self.last_committed_rowid + 1, high,
+            )
+            self.residual_hunt(self.last_committed_rowid + 1, high)
+        elif self.last_committed_rowid is None:
+            # Zero rows returned cleanly: either genuinely empty or entirely
+            # invisible. Bound the ambiguity with a coarse grid — exact
+            # lookups answer from a different b-tree path than the scan.
+            self.residual_hunt(low, high)
+
+    def _copy_range(self, low: int, high: int) -> None:
+        """Recursive bisection driver for ``copy_range``; shares ``last_committed_rowid``."""
         result = self.result
         if low > high:
             return
@@ -533,15 +680,40 @@ class _RowidRangeSalvage:
             while True:
                 fetched = cursor.fetchmany(self.chunk_size)
                 if not fetched:
-                    return
-                values = [tuple(row[1:]) for row in fetched]
+                    break
+                # Ghost filtering: the damage class produces stale cells with
+                # huge out-of-order rowids outside the requested window. Such a
+                # row is not real data — never insert it, never advance the
+                # coverage cursor on it.
+                real_rows = []
+                for row in fetched:
+                    rid = int(row[0])
+                    if rid < low or rid > high:
+                        result["ghost_rows_filtered"] += 1
+                        logger.warning(
+                            "salvage %s: filtered ghost rowid %s outside window [%s, %s]",
+                            self.table, rid, low, high,
+                        )
+                        continue
+                    real_rows.append(row)
+                if not real_rows:
+                    continue
+                values = [tuple(row[1:]) for row in real_rows]
                 included = self._keep(values)
-                if included:
+                new_rows = []
+                for row in real_rows:
+                    rid = int(row[0])
+                    if rid in self.seen_rowids:
+                        continue
+                    self.seen_rowids.add(rid)
+                    new_rows.append(row)
+                if new_rows:
                     with _immediate_transaction(self.destination):
-                        self.destination.executemany(self.insert_sql, included)
-                result["copied_rows"] += len(included)
+                        self.destination.executemany(self.insert_sql, [tuple(r[1:]) for r in new_rows])
+                result["copied_rows"] += len(new_rows)
                 result["excluded_rows"] += len(values) - len(included)
-                last_committed_rowid = int(fetched[-1][0])
+                last_committed_rowid = int(real_rows[-1][0])
+                self.last_committed_rowid = last_committed_rowid
                 if self.progress_cb is not None:
                     self.progress_cb({
                         "table": self.table, "copied_rows": result["copied_rows"], "source_rows": self.source_rows,
@@ -556,8 +728,11 @@ class _RowidRangeSalvage:
                     self._skip(retry_low, high, str(exc))
                 return
             midpoint = retry_low + (high - retry_low) // 2
-            self.copy_range(retry_low, midpoint)
-            self.copy_range(midpoint + 1, high)
+            self._copy_range(retry_low, midpoint)
+            self._copy_range(midpoint + 1, high)
+            return
+        # Clean range return: leave ``self.last_committed_rowid`` set so the
+        # outer ``copy_range`` can reconcile coverage against ``high``.
 
 
 def _copy_table_salvage(
@@ -565,39 +740,122 @@ def _copy_table_salvage(
     progress_cb: Optional[ProgressCallback], source_rows: Optional[int], insert_prefix: str = "INSERT",
     row_filter: Optional[Callable[[tuple[Any, ...], tuple[str, ...]], bool]] = None,
 ) -> dict[str, Any]:
-    """Best-effort rowid-range copy that continues past damaged source pages."""
+    """Best-effort rowid-range copy that continues past damaged source pages.
+
+    Damage-visibility caveat driving the reconciliation layers below: on this
+    damage class a range scan can return a SHORT result cleanly, WITHOUT
+    raising (verified on a production backup: ``BETWEEN 51 AND 100`` returned
+    10 of 49 present rows, no exception). A clean return therefore proves
+    nothing about coverage — every clean return is reconciled against the
+    requested window, and deficits are hunted with exact rowid lookups (the
+    only primitive on a damaged b-tree that never returns a short answer
+    silently: it yields the row, ``None``, or raises).
+    """
     result: dict[str, Any] = {
         "mode": "rowid_range_salvage", "source_rows": source_rows, "copied_rows": 0, "excluded_rows": 0,
         "columns": [], "range_queries": 0, "exact_lookup_recovered": 0, "skipped_rowid_ranges": [],
+        # D1 observability (see docstring): every new mechanism counts in the
+        # report so a lossy-but-"complete" salvage is visible to the caller.
+        "ghost_rows_filtered": 0, "residual_hunt_queries": 0, "residual_recovered": 0, "reconciliation_note": None,
     }
     columns = _compatible_columns(source, destination, table, result)
     if columns is None:
         return result
     bounds = _salvage_rowid_bounds(source, table)
     result["rowid_bounds"] = bounds
-    if bounds.get("empty"):
-        result["status"] = "complete"
-        return result
-    if bounds.get("low") is None or bounds.get("high") is None:
-        details = "; ".join(bounds.get("errors") or [])
-        result["status"] = "failed"
-        result["error"] = "could not determine a rowid range for salvage" + (f": {details}" if details else "")
-        return result
+    bounds_empty = bool(bounds.get("empty"))
+    domain_low = bounds.get("low")
+    domain_high = bounds.get("high")
+    total_accounted = 0
     salvage = _RowidRangeSalvage(
         source, destination, table, columns, chunk_size=chunk_size, progress_cb=progress_cb, source_rows=source_rows,
         insert_prefix=insert_prefix, row_filter=row_filter, result=result,
     )
-    salvage.copy_range(int(bounds["low"]), int(bounds["high"]))
+
+    if not bounds_empty:
+        if domain_low is None or domain_high is None:
+            details = "; ".join(bounds.get("errors") or [])
+            result["status"] = "failed"
+            result["error"] = "could not determine a rowid range for salvage" + (f": {details}" if details else "")
+            return result
+        # _salvage_rowid_bounds already gallops outward from a surviving edge
+        # (#80205) and caps the synthetic domain tail; use the caps it resolved.
+        result["rowid_bounds"] = bounds
+        salvage.copy_range(int(domain_low), int(domain_high))
+
+        # Count-driven whole-table reconciliation: the deficit is a HINT, not an
+        # error. source_rows comes from COUNT(*), an index-plan read that can
+        # disagree with the table b-tree in either direction on a damaged file.
+        # Resolve a deficit by hunting — beyond the proven bounds edges (a
+        # truncated edge probe can hide a whole tail) and re-gridding inside the
+        # domain (seen rowids are stepped over, so only gaps are probed). An
+        # unresolvable deficit terminates honestly as partial — never silent
+        # complete, never a loop.
+        total_accounted = result["copied_rows"] + result["excluded_rows"]
+        if (
+            source_rows is not None
+            and total_accounted < source_rows
+            and not salvage.stopped_at_query_limit
+        ):
+            logger.warning(
+                "salvage %s: deficit %s rows (copied %s + excluded %s < source %s) "
+                "— reconciling by exact-lookup hunts",
+                table, source_rows - total_accounted, result["copied_rows"], result["excluded_rows"], source_rows,
+            )
+            salvage.residual_hunt(int(domain_high) + 1, _MAX_SQLITE_ROWID)
+            salvage.residual_hunt(_MIN_SQLITE_ROWID, int(domain_low) - 1)
+            salvage.residual_hunt(int(domain_low), int(domain_high))
+            total_accounted = result["copied_rows"] + result["excluded_rows"]
+    else:
+        # Edge probes came back clean-empty. Do not declare an empty table when
+        # the index count says rows exist: the same short-read class can hide an
+        # entire table behind an "empty" bounds probe. Probe the full rowid
+        # domain at grid resolution, then the small-positive region densely
+        # (typical rowid home).
+        if source_rows is not None and source_rows > 0:
+            logger.warning(
+                "salvage %s: bounds probes empty but source_rows=%s — probing rowid domain by exact lookup",
+                table, source_rows,
+            )
+            salvage.residual_hunt(_MIN_SQLITE_ROWID, _MAX_SQLITE_ROWID)
+            salvage.residual_hunt(1, min(_LOW_REGION_PROBE_MAX, _MAX_SQLITE_ROWID))
+        result["status"] = "complete" if result["copied_rows"] or source_rows in (None, 0) else "partial"
+        if result["status"] == "partial":
+            result["error"] = (
+                f"copied {result['copied_rows']} and excluded {result['excluded_rows']} of {source_rows} source rows"
+            )
+        # Empty-bounds path is self-contained: the domain probe either recovered
+        # (or not) the rows hidden behind the clean-empty bounds probe, so its
+        # status decision is final. Do NOT fall through to the shared count
+        # block below — total_accounted is still its line-initialized 0 here,
+        # so a full recovery would be misreported as partial with a
+        # self-contradictory error. Preserve the observability fields the
+        # shared block would have set, then return like the original port.
+        result["skipped_rowid_span"] = sum(
+            item["high"] - item["low"] + 1 for item in result["skipped_rowid_ranges"]
+        )
+        result["query_limit_reached"] = salvage.stopped_at_query_limit
+        return result
+
     skipped_ranges = result["skipped_rowid_ranges"]
     result["skipped_rowid_span"] = sum(item["high"] - item["low"] + 1 for item in skipped_ranges)
     result["query_limit_reached"] = salvage.stopped_at_query_limit
     if skipped_ranges:
         result["status"] = "partial" if result["copied_rows"] else "failed"
         result["error"] = f"{len(skipped_ranges)} rowid range(s) skipped"
-    elif source_rows is not None and result["copied_rows"] + result["excluded_rows"] != source_rows:
+    elif source_rows is not None and total_accounted < source_rows:
+        # Deficit that survived every hunt: honest partial — the count is a
+        # hint, but an unresolved one must not be reported as complete.
         result["status"] = "partial"
         copied, excluded = result["copied_rows"], result["excluded_rows"]
         result["error"] = f"copied {copied} and excluded {excluded} of {source_rows} source rows"
+    elif source_rows is not None and total_accounted > source_rows:
+        # We provably recovered more than the (index-derived) count claimed —
+        # the count was truncated, not the copy. Not a loss; note it.
+        result["status"] = "complete"
+        result["reconciliation_note"] = (
+            f"copied+excluded {total_accounted} exceeds source_rows {source_rows}; source count was truncated/deficient"
+        )
     else:
         result["status"] = "complete"
     return result
@@ -821,12 +1079,34 @@ def _verify_row_counts(
             verification["errors"].append(message)
     counts = {table: _count_rows(conn, table) for table in _INVENTORY_TABLES if _table_columns(conn, table)}
     verification["table_counts"] = counts
-    for table in ("sessions", "messages", *_AUXILIARY_TABLES):
-        expected = expected_counts.get(table)
-        if expected is not None and counts.get(table) != expected:
-            flag(f"{table} count is {counts.get(table)}, expected {expected}", soft=allow_partial)
     cleanup = orphan_cleanup or {}
     rebuilt_sessions = int(cleanup.get("sessions_reconstructed") or 0)
+    # Reconcile expected vs actual counts for EVERY canonical table, not only
+    # sessions/messages. A short copy on any table is data loss and must surface
+    # here even when the copy-side status chain was blind to it (e.g. a
+    # truncated index count agreeing with a truncated copy). sessions/messages
+    # remain ERRORS; the rest are warnings (loss_detected) under
+    # --allow-partial, mirroring the copy-status escalation rules. In strict
+    # mode every mismatch is an error and marks loss_detected.
+    #
+    # Reconstruction-aware expected counts: when the sessions b-tree was wholly
+    # unreadable, _reconstruct_missing_sessions ADDS placeholder rows, so the
+    # output sessions count legitimately exceeds the source count (which is 0 —
+    # nothing was salvageable). The expected value is raised accordingly; the
+    # placeholder-ness is still reported as loss by the orphan_cleanup warnings.
+    # A deficit side (actual < expected + rebuilt) remains a genuine mismatch.
+    for table in (*_CANONICAL_TABLES, *_AUXILIARY_TABLES):
+        expected = expected_counts.get(table)
+        if expected is None:
+            continue
+        if table == "sessions" and rebuilt_sessions:
+            expected = expected + rebuilt_sessions
+        actual = counts.get(table)
+        if actual == expected:
+            continue
+        message = f"{table} count is {actual}, expected {expected}"
+        critical = table in ("sessions", "messages") or not allow_partial
+        flag(message, soft=allow_partial and not critical)
     retained_messages = int(cleanup.get("messages_retained") or 0)
     removed_messages = int(cleanup.get("messages_removed") or 0)
     # A wholly unreadable sessions b-tree is recoverable when every output parent was rebuilt from

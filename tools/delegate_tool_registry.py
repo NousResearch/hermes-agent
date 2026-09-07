@@ -236,7 +236,16 @@ def _list_payload(parent_agent: Any) -> Dict[str, Any]:
             "live_transcript": getattr(r.get("agent"), "_live_transcript_path", None),
         })
     payload: Dict[str, Any] = {"action": "list", "count": len(entries), "subagents": entries}
-    if not entries:
+    from tools.async_delegation import pending_delegations, pending_delegation_status
+    pending = pending_delegations(getattr(parent_agent, "session_id", None))
+    status = pending_delegation_status(pending)
+    payload["pending_delegations"] = pending
+    if status:
+        payload["note"] = (
+            status + " Results arrive between turns. If the current request depends on them, report it as pending "
+            "and end your turn; do not poll or re-dispatch to wait."
+        )
+    elif not entries:
         payload["note"] = (
             "No live subagents right now. Children that already finished "
             "have delivered (or will deliver) their results as normal "

@@ -477,16 +477,23 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
 
 def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, *, owned=False):
     """One ready snapshot: ownership and UI emission per event, one turn per completion run."""
-    completions = []
-    for index, event in enumerate(events):
-        if event.get("type", "completion") != "completion":
-            _notif_dispatch_completions(sid, session, completions, registry, deferred)
-            completions = []
-        if not _notif_handle_event(sid, session, event, emitted, registry, fmt, deferred, completions, owned=owned):
-            for remaining in events[index + 1:]:
-                (deferred.append if deferred is not None else registry.completion_queue.put)(remaining)
-            break
-    _notif_dispatch_completions(sid, session, completions, registry, deferred)
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    # Poller threads have no turn scope. Formatting, sibling snapshots and delivery claims must
+    # all read the destination profile's ledger, not whichever profile launched the desktop.
+    token = set_hermes_home_override(session.get("profile_home") or get_hermes_home())
+    try:
+        completions = []
+        for index, event in enumerate(events):
+            if event.get("type", "completion") != "completion":
+                _notif_dispatch_completions(sid, session, completions, registry, deferred)
+                completions = []
+            if not _notif_handle_event(sid, session, event, emitted, registry, fmt, deferred, completions, owned=owned):
+                for remaining in events[index + 1:]:
+                    (deferred.append if deferred is not None else registry.completion_queue.put)(remaining)
+                break
+        _notif_dispatch_completions(sid, session, completions, registry, deferred)
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:

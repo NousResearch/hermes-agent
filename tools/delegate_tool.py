@@ -630,7 +630,7 @@ DELEGATE_TASK_SCHEMA = {
             "action": _p(
                 "string",
                 "Default 'spawn'. Live control of running children: "
-                "'list' = ids/goals/status/transcripts; 'steer' = queue "
+                "'list' = ids/goals/status/transcripts plus pending completion units; 'steer' = queue "
                 "course-correction text into one child (subagent_id + "
                 "message) without stopping it; 'stop' = end one child "
                 "early (subagent_id; partial result still returns). "

@@ -760,7 +760,9 @@ class TurnRunner:
             logger.debug("Failed to attach session title callback", exc_info=True)
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
-        from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.run import (
+            _interim_metadata, _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro,
+        )
         ctx = self._ctx
         if not self._status_live():
             return
@@ -773,7 +775,10 @@ class TurnRunner:
             )
             return
         fut = self._schedule(
-            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
+            # Lifecycle status (including pending work at turn end) is not the answer. Otherwise a
+            # stream-is-the-message adapter seals the live draft before the real final can arrive.
+            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared,
+                                        _interim_metadata(ctx._status_thread_metadata)),
             f"status_callback ({event_type}) scheduling error",
         )
         if fut is not None and ctx._cleanup_progress:

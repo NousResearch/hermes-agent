@@ -132,9 +132,24 @@ def _notice_lines(results) -> "list[str]":
     return ["", *notice] if notice else []
 
 
+def _pending_delegation_lines(evt: dict) -> "list[str]":
+    """Sample siblings at formatting time, not at dispatch or inside the provider loop."""
+    from tools.async_delegation import is_interim_delegation_event, pending_delegations, pending_delegation_status
+    pending = pending_delegations(
+        evt.get("parent_session_id"),
+        exclude_delegation_id=None if is_interim_delegation_event(evt) else evt.get("delegation_id"))
+    status = pending_delegation_status(pending) or "No other delegation results are outstanding."
+    lines = ["Delegation status when this notification was prepared: " + status]
+    if pending["active"] or pending["awaiting_delivery"] or not pending["status_known"]:
+        lines.append(
+            "If the current request depends on outstanding results, report it as pending and end your turn to "
+            "receive them; do not poll or re-dispatch to wait. This snapshot is not confirmation of result incorporation.")
+    return lines
+
+
 def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool) -> "list[str]":
     """Shared preamble: title, intro, blank, dispatch time, [goal], context/toolsets, role+model."""
-    lines = [title, intro, ""]
+    lines = [title, intro, *_pending_delegation_lines(evt), ""]
     dispatched_at = evt.get("dispatched_at")
     if isinstance(dispatched_at, (int, float)):
         ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(dispatched_at))
@@ -160,6 +175,7 @@ def _format_task_failure_notice(evt: dict, deleg_id: str) -> str:
         "One subagent in a background fan-out you dispatched has failed while its siblings are still running. "
         "The batch's consolidated results will still arrive when the last sibling finishes; this is an early "
         "warning so you can re-dispatch or investigate now instead of then.",
+        *_pending_delegation_lines(evt),
         f"Task: {goal}" if goal else "",
         f"Status: {r.get('status', '?')}   Duration: {r.get('duration_seconds', '?')}s" + (f"\nError: {err}" if err else ""),
     ]

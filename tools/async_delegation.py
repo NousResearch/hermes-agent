@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
@@ -444,6 +444,54 @@ def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
 def _event_delivery(fn, evt: Dict[str, Any], claim_id: str) -> None:
     if claim_id and evt.get("type") == "async_delegation":
         fn(str(evt.get("delegation_id") or ""), claim_id)
+
+
+def pending_delegations(parent_session_id: Optional[str], *, exclude_delegation_id: Optional[str] = None) -> Dict[str, Any]:
+    """Read this conversation's outstanding completion units, including results whose children exited.
+
+    This is a delivery snapshot, NOT proof of task completion or result incorporation. A claim is still pending
+    until its consumer accepts it. Use the durable parent/compression lineage, never a reused chat/tab id or the
+    process-global live count. The ledger is committed before dispatch returns and owns delivery state even while
+    RAM still says ``finalizing``. Reads must not claim results, initialize storage, or wait for children.
+    """
+    snapshot: Dict[str, Any] = {"active": [], "awaiting_delivery": [], "status_known": bool(parent_session_id)}
+    if not parent_session_id:
+        return snapshot
+    try:
+        path = _db_path()
+        if not path.exists():
+            return snapshot
+        from hermes_state import SessionDB
+        with closing(SessionDB(path, read_only=True)) as db:
+            tables = {row[0] for row in db._read_all(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sessions', 'async_delegations')")}
+            if "async_delegations" not in tables:
+                return snapshot
+            lineage = db.get_compression_lineage(parent_session_id) if "sessions" in tables else []
+            owners = lineage or [parent_session_id]
+            rows = db._read_all(
+                "SELECT delegation_id, state FROM async_delegations WHERE delivery_state='pending' "
+                f"AND parent_session_id IN ({','.join('?' for _ in owners)}) ORDER BY delegation_id", tuple(owners))
+            for delegation_id, state in rows:
+                if delegation_id != exclude_delegation_id:
+                    key = "active" if state in _LIVE_STATES else "awaiting_delivery"
+                    snapshot[key].append(delegation_id)
+    except Exception:
+        # Status reporting is additive; a busy/unavailable store must not abort a produced answer or pretend
+        # there is no outstanding work. Keep the failure distinct from a verified empty snapshot.
+        snapshot["status_known"] = False
+        logger.debug("Could not read pending delegations for %s", parent_session_id, exc_info=True)
+    return snapshot
+
+
+def pending_delegation_status(snapshot: Dict[str, Any]) -> Optional[str]:
+    """Shared status text for turn-end, control responses and completion notifications."""
+    if not snapshot["status_known"]:
+        return "Background delegation status is unavailable."
+    active, ready = len(snapshot["active"]), len(snapshot["awaiting_delivery"])
+    if active or ready:
+        return f"Background delegations: {active} active unit(s), {ready} result(s) awaiting delivery."
+    return None
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:

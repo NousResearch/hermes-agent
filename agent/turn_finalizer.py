@@ -563,6 +563,15 @@ def finalize_turn(
         ).get("service_tier"),
         "session_id": agent.session_id,
     }
+    if completed and not interrupted:
+        from tools.async_delegation import pending_delegations, pending_delegation_status
+        pending = pending_delegations(agent.session_id)
+        status = pending_delegation_status(pending)
+        if status:
+            # ``completed`` is a turn/stream/recovery contract, not a workflow-completion flag. Release the turn
+            # so idle-only delivery can proceed; leave streamed text, cached history and exit reason untouched.
+            result["pending_delegations"] = pending
+            agent._emit_status("Turn ended. " + status)
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # Persistence failures already set failed=True; also stamp `error` so the gateway

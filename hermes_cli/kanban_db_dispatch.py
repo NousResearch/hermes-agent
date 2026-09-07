@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -66,10 +67,75 @@ DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
-_RESPAWN_GUARD_PR_URL_RE = re.compile(
-    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
+# The active-PR guard is content based, so resolve the referenced PR before
+# deferring a task. A short in-process cache keeps the dispatcher from running
+# one GitHub lookup per task on every tick. Failed lookups are cached as
+# unknown and fail closed (unknown still means "guard").
+_GITHUB_PR_URL_RE = re.compile(
+    r"https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)",
     re.IGNORECASE,
 )
+_GITHUB_PR_STATE_CACHE_TTL = 300  # 5 minutes
+_github_pr_state_cache: dict[tuple[str, str], tuple[float, Optional[str]]] = {}
+
+
+def _github_pr_state(repo: str, number: str) -> Optional[str]:
+    """Return a GitHub PR state, or ``None`` when it cannot be resolved.
+
+    ``gh`` is intentionally an optional runtime dependency. Missing ``gh``,
+    missing authentication, a network failure, malformed output, or an
+    unexpected state all resolve to ``None``; the caller fails closed and
+    preserves the original duplicate-PR protection. Only ``MERGED`` and
+    ``CLOSED`` are considered inactive.
+    """
+    key = (repo.lower(), number)
+    now = time.time()
+    cached = _github_pr_state_cache.get(key)
+    if cached is not None and now - cached[0] < _GITHUB_PR_STATE_CACHE_TTL:
+        return cached[1]
+
+    state: Optional[str] = None
+    try:
+        completed = subprocess.run(
+            ["gh", "pr", "view", number, "--repo", repo, "--json", "state"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if completed.returncode == 0:
+            payload = json.loads(completed.stdout or "{}")
+            if isinstance(payload, dict):
+                candidate = payload.get("state")
+                if isinstance(candidate, str):
+                    state = candidate.strip().upper() or None
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        # Best effort only: unknown state must not weaken the guard.
+        state = None
+
+    _github_pr_state_cache[key] = (now, state)
+    return state
+
+
+def _has_active_pr_comment(
+    conn: sqlite3.Connection, task_id: str, cutoff: int,
+) -> bool:
+    """Return whether a recent comment references an open/unknown GitHub PR."""
+    comments = conn.execute(
+        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        (task_id, cutoff),
+    ).fetchall()
+    for comment in comments:
+        body = comment["body"]
+        if not body:
+            continue
+        for match in _GITHUB_PR_URL_RE.finditer(body):
+            repo = f"{match.group(1)}/{match.group(2)}"
+            state = _github_pr_state(repo, match.group(3))
+            if state not in {"MERGED", "CLOSED"}:
+                return True
+    return False
 
 
 @dataclass
@@ -1203,14 +1269,14 @@ def check_respawn_guard(
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. A recent GitHub PR comment only guards while the referenced PR is
+    #    still active. Historical audit/evidence comments commonly retain URLs
+    #    after the PR was merged or closed; those must not strand a task.
+    #    Unknown state fails closed so an unavailable `gh` or GitHub outage
+    #    preserves the original duplicate-PR protection.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    if _has_active_pr_comment(conn, task_id, pr_cutoff):
+        return "active_pr"
 
     return None
 

@@ -52,6 +52,13 @@ Declare PR work at creation with `--completion-contract OWNER/REPO` (or an exact
 accepts the same `completion_contract`. Use `local-only` for intentionally local
 work; existing and undeclared cards retain that default. Prose URLs are not policy.
 
+The dispatcher’s duplicate-PR respawn guard resolves recent GitHub PR references
+read-only with `gh pr view`. `OPEN` (or unknown) PR state continues to defer a
+ready task; `MERGED` and `CLOSED` references in audit/evidence comments do not
+strand it. State lookup failures fail closed. `hermes kanban dispatch --json`
+reports guard-deferred task IDs and reasons, and diagnostics identifies a
+current guard separately from an ordinary missing-worker condition.
+
 After publishing, pass `metadata.published_pr` to completion. The first matching
 URL binds the card permanently; retries cannot substitute a green sibling PR.
 CLI `show --json` and `kanban_show` expose the persisted contract.

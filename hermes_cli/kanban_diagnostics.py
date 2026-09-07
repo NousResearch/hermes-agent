@@ -659,6 +659,81 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     else:
         severity = "warning"
 
+    # A recent guard event explains an otherwise stranded ready card. Ignore
+    # stale guard history once a later lifecycle event shows the task resumed.
+    latest_guard = None
+    latest_guard_index = -1
+    for index, event in enumerate(events):
+        if _event_kind(event) == "respawn_guarded":
+            latest_guard = event
+            latest_guard_index = index
+    if latest_guard is not None:
+        resumed_kinds = {
+            "claimed", "completed", "spawned", "status", "promoted",
+            "unblocked", "reclaimed", "blocked",
+        }
+        if not any(
+            _event_kind(event) in resumed_kinds
+            for event in events[latest_guard_index + 1:]
+        ):
+            guard_reason = _parse_payload(latest_guard).get("reason", "unknown")
+            guard_windows = {
+                "rate_limit_cooldown": 300,
+                "recent_success": 3600,
+                "active_pr": 86400,
+            }
+            guard_descriptions = {
+                "rate_limit_cooldown": "a rate-limit cooldown is in effect",
+                "recent_success": "a run completed recently",
+                "active_pr": "a prior worker has an active GitHub PR",
+                "blocker_auth": "the last failure was a quota/auth blocker",
+            }
+            guard_ts = _event_ts(latest_guard)
+            window = guard_windows.get(guard_reason, 0)
+            remaining = max(0, guard_ts + window - int(now)) if window else 0
+            if remaining:
+                expiry = (
+                    f"; guard expires in ~{remaining / 3600:.1f}h"
+                    if remaining >= 3600
+                    else f"; guard expires in ~{max(1, remaining // 60)}m"
+                )
+            elif window:
+                expiry = "; guard window may have elapsed on the last tick"
+            else:
+                expiry = ""
+            task_id = _task_field(task, "id", "")
+            actions = [
+                _cli_hint(
+                    "Inspect dispatcher events",
+                    f"hermes kanban events {task_id}" if task_id else "hermes kanban diagnostics",
+                    suggested=True,
+                ),
+                DiagnosticAction(
+                    kind="reassign", label="Reassign to a different worker",
+                    payload={"current_assignee": assignee},
+                ),
+            ]
+            return [Diagnostic(
+                kind="stranded_in_ready", severity=severity,
+                title=f"Ready for {age_str}: deferred by respawn guard ({guard_reason})",
+                detail=(
+                    f"The dispatcher deferred this task for {age_str} because "
+                    f"{guard_descriptions.get(guard_reason, guard_reason)}{expiry}. "
+                    "This is intentional guard behavior, not a missing worker. "
+                    "Inspect the event history and resolve the guard condition before retrying."
+                ),
+                actions=actions,
+                first_seen_at=last_ready_ts, last_seen_at=guard_ts, count=1,
+                data={
+                    "ready_since": last_ready_ts,
+                    "age_seconds": int(age_seconds),
+                    "assignee": assignee,
+                    "threshold_seconds": int(threshold_seconds),
+                    "guard_reason": guard_reason,
+                    "guard_event_ts": guard_ts,
+                },
+            )]
+
     actions = [
         DiagnosticAction(kind="reassign", label="Reassign to a different worker",
                          payload={"current_assignee": assignee}),

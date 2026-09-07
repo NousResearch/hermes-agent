@@ -156,6 +156,14 @@ def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
     return srv if ok else None
 
 
+def _recovery_error(server_name: str, exc: BaseException) -> str:
+    """Recovery callbacks only carry a name; redact using its registered server."""
+    with _core._lock:
+        server = _core._servers.get(server_name)
+        values = getattr(server, "_redaction_values", ())
+    return _sanitize_error(_exc_str(exc), values)
+
+
 def _retry_once(server_name: str, retry_call, op_description: str, what: str):
     """Re-run ``retry_call`` after a recovery step. Returns the result when the RPC completed
     (an application error is still the tool's real answer, and still a breaker strike per #10447);
@@ -163,7 +171,8 @@ def _retry_once(server_name: str, retry_call, op_description: str, what: str):
     try:
         result = retry_call()
     except Exception as retry_exc:
-        logger.warning("MCP %s/%s retry after %s failed: %s", server_name, op_description, what, retry_exc)
+        logger.warning("MCP %s/%s retry after %s failed: %s", server_name, op_description, what,
+                       _recovery_error(server_name, retry_exc))
         return None
     return _record_call_outcome(server_name, result)
 
@@ -178,7 +187,8 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
     try:
         recovered = _loop._run_on_mcp_loop(lambda: get_manager().handle_401(server_name, None), timeout=10)
     except Exception as rec_exc:
-        logger.warning("MCP OAuth '%s': recovery attempt failed: %s", server_name, rec_exc)
+        logger.warning("MCP OAuth '%s': recovery attempt failed: %s", server_name,
+                       _recovery_error(server_name, rec_exc))
         recovered = False
     if recovered:
         srv = _lookup_reconnectable_server(server_name)
@@ -231,7 +241,7 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
     if srv is None:
         return None
     logger.info("MCP server '%s': %s failed with session-expired error (%s); signalling transport reconnect "
-                "and retrying once.", server_name, op_description, exc)
+                "and retrying once.", server_name, op_description, _recovery_error(server_name, exc))
     if not _loop._signal_reconnect_and_wait(server_name, srv, op_description=op_description, timeout=15):
         logger.warning("MCP server '%s': reconnect did not ready within 15s after session-expired error; "
                        "falling through to error response.", server_name)
@@ -268,7 +278,7 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
     if srv is not None:
         action = "reconnecting without replay" if exc.in_flight else "respawning and retrying once"
         logger.info("MCP server '%s': %s found the stdio subprocess dead (%s); %s.",
-                    server_name, op_description, exc, action)
+                    server_name, op_description, _recovery_error(server_name, exc), action)
         if _mcp_loop_running():
             reconnected = _loop._signal_reconnect_and_wait(
                 server_name, srv, op_description=op_description, timeout=_core._STDIO_RESPAWN_WAIT_SEC)
@@ -287,7 +297,7 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
     except _StdioChildExited as retry_exc:
         # Died again right after respawn: broken server; run()'s budget takes it to the park.
         logger.warning("MCP server '%s': %s stdio subprocess exited again right after respawn (%s); not retrying "
-                       "further.", server_name, op_description, retry_exc)
+                       "further.", server_name, op_description, _recovery_error(server_name, retry_exc))
         if retry_exc.in_flight:
             return _strike(
                 server_name,
@@ -296,10 +306,11 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
             )
         return _strike(server_name, _STDIO_DIED_AGAIN_MSG.format(s=server_name))
     except Exception as retry_exc:
-        logger.warning("MCP %s/%s retry after stdio respawn failed: %s", server_name, op_description, retry_exc)
+        logger.warning("MCP %s/%s retry after stdio respawn failed: %s", server_name, op_description,
+                       _recovery_error(server_name, retry_exc))
         return _strike(server_name, _sanitize_error(
             f"MCP call failed after respawning the stdio subprocess for '{server_name}': "
-            f"{type(retry_exc).__name__}: {_exc_str(retry_exc)}"))
+            f"{type(retry_exc).__name__}: {_recovery_error(server_name, retry_exc)}"))
 
 
 def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float, recoverers,

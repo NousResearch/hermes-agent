@@ -236,7 +236,17 @@ class PluginDispatchMixin:
                 done.set()
 
         thread = threading.Thread(target=_runner, name=f"hermes-hook-{callback_name}"[:40], daemon=True)
-        thread.start()
+        try:
+            thread.start()
+        except RuntimeError as exc:
+            # The runner's finally cannot clear this token when OS thread creation fails.
+            with self._hook_timeout_lock:
+                if self._hook_running_callbacks.get(callback_key) is token:
+                    self._hook_running_callbacks.pop(callback_key, None)
+            logger.warning(
+                "Hook '%s' callback %s worker failed to start: %s — skipping",
+                hook_name, callback_name, exc)
+            return _HOOK_SKIPPED
         if not done.wait(timeout=timeout):  # do not join — that would reintroduce the hang
             with self._hook_timeout_lock:
                 # See #6622.

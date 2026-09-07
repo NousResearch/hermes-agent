@@ -20,12 +20,19 @@ import { execFileSync, spawn } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
+import { windowsPowerShellExecutable } from './windows-powershell-path'
 
 const isWindows = process.platform === 'win32'
 
 function spawnSleeper(): { pid: number; kill: () => void } {
-  // A real python if available (mirrors the backend shape), else powershell.
-  const child = spawn('powershell', ['-NoProfile', '-Command', 'Start-Sleep -Seconds 300'], { stdio: 'ignore' })
+  // Bare `spawn('powershell', ...)` resolves through PATH, which is exactly
+  // what this suite's own sibling module (windows-powershell-path.ts) exists
+  // to avoid for production code. Use the same absolute, windowsHide spawn
+  // here so the sleeper is not a second, unguarded copy of that lookup.
+  const child = spawn(windowsPowerShellExecutable(), ['-NoProfile', '-Command', 'Start-Sleep -Seconds 300'], {
+    stdio: 'ignore',
+    windowsHide: true
+  })
 
   if (!child.pid) {
     throw new Error('sleeper failed to spawn')
@@ -40,6 +47,26 @@ function spawnSleeper(): { pid: number; kill: () => void } {
         /* already gone */
       }
     }
+  }
+}
+
+/**
+ * Block until the OS process table itself reports the PID alive (bounded).
+ * The sleeper's `spawn()` call returning a pid proves the handle exists, not
+ * that the process table has caught up -- arm (b) below needs the LATTER
+ * before it starts a real-clock gate, or a slow-to-appear PID can retire
+ * before the 2000 ms deadline even begins, which is indistinguishable from
+ * the gate itself being broken.
+ */
+async function waitUntilObservablyAlive(pid: number, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+
+  while (!isPidAliveWindows(pid)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`sleeper pid ${pid} never became observably alive within ${timeoutMs}ms`)
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 25))
   }
 }
 
@@ -118,6 +145,13 @@ describe.skipIf(!isWindows)('waitForBackendRelease — live Windows (#74805)', (
     const holder = spawnSleeper()
 
     try {
+      // The 2000 ms deadline below is a real-clock budget for the gate's OWN
+      // dwell logic, not for the sleeper to finish appearing in the process
+      // table. Confirm the table already reports it alive first so the
+      // full window is spent proving the gate holds, never spent waiting on
+      // process-creation latency under a loaded host.
+      await waitUntilObservablyAlive(holder.pid)
+
       const result = await waitForBackendRelease(
         [holder.pid],
         {

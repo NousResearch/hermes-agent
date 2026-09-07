@@ -16,16 +16,28 @@
 # powershell dies before -File runs) and exits; only PowerShell itself -- an
 # OS component -- is "frozen".
 #
-# CONTRACT (keep in sync with apps/desktop/electron/main.ts):
-#   cmd /d /s /c start "" /min %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass
-#     -File scripts\desktop-update\windows.ps1
-#     -InstallRoot <path>   repo checkout (HERMES_HOME\hermes-agent)
-#     -Branch <ref>         branch to update against
-#     -DesktopPid <pid>     the Electron main process to wait out
-#     [-RelaunchAppPath <path>] app checkout passed to a dev Electron relaunch
-#     [-RelaunchExe <path>] Hermes.exe to start when done (omit = no relaunch)
-#     [-NoUi]               headless (tests); default shows a progress window
-#     [-NoMarkerCleanup]    leave .hermes-update-in-progress in place (tests)
+# CONTRACT. The source of truth is apps/desktop/electron/updater-process.ts
+# (wrapHandoffForDetachedConsole + WINDOWS_HANDOFF_LAUNCHER); main.ts only
+# supplies the values. NOTHING passes this script a command line directly:
+#
+#   cmd /d /s /c start "" /min <powershell.exe> -NoProfile -NonInteractive
+#     -ExecutionPolicy Bypass -EncodedCommand <fixed launcher>
+#
+# The launcher payload is a compile-time constant with no interpolation. All
+# variable data reaches it through HERMES_UPDATE_HANDOFF_* process env vars,
+# which it validates and then splats onto this script's parameters:
+#
+#   HERMES_UPDATE_HANDOFF_SCRIPT            -> the path of THIS file (required)
+#   HERMES_UPDATE_HANDOFF_INSTALL_ROOT      -> -InstallRoot     (required)
+#   HERMES_UPDATE_HANDOFF_BRANCH            -> -Branch          (required)
+#   HERMES_UPDATE_HANDOFF_DESKTOP_PID       -> -DesktopPid      (required, > 0)
+#   HERMES_UPDATE_HANDOFF_RELAUNCH_EXE      -> -RelaunchExe     (required)
+#   HERMES_UPDATE_HANDOFF_NONCE             -> -HandoffNonce    (required)
+#   HERMES_UPDATE_HANDOFF_RELAUNCH_APP_PATH -> -RelaunchAppPath (optional)
+#   HERMES_UPDATE_STARTED_AT                -> read from env; the Desktop's
+#                                              exact marker claim timestamp
+#
+# -NoUi / -NoMarkerCleanup are for tests and are never set in production.
 #
 # SAFETY POSTURE: both preflight gates FAIL CLOSED. A Desktop that never
 # exits, or a venv shim that never unlocks, aborts the hand-off without
@@ -34,15 +46,22 @@
 # .hermes-update-result.json for the relaunched Desktop to surface, and
 # relaunches the Desktop so the user is never left stranded.
 #
-# Marker: we claim HERMES_HOME\.hermes-update-in-progress with OUR pid as
-# step 0 (the wrapper cmd.exe pid the Desktop saw is useless -- it exits
-# immediately), stamped with OUR kernel creation time as the identity token
-# (HERMES_UPDATE_STARTED_AT from the Desktop predates our own process and
-# is kept for the log only).
-# hermes_cli/update_lock.py's ancestry rule lets our
+# MARKER: step 0 adopts the Desktop's exact claim in
+# HERMES_HOME\.hermes-update-in-progress under one exclusive handle,
+# replacing it with OUR pid stamped with OUR kernel creation time as the
+# identity token. (The pid the Desktop saw is the cmd.exe wrapper's and is
+# useless -- it exits immediately.) The adopt writes before truncating, so a
+# crash mid-transaction can never leave the empty marker that used to block
+# every later launch. hermes_cli/update_lock.py's ancestry rule lets our
 # `hermes update` child adopt the claim; electron/update-marker.ts parks a
 # relaunched Desktop on it. Cleanup only removes the marker while WE still
 # own it (a handoff partner that rewrote it keeps its claim).
+#
+# ACK: the Desktop cannot tell our claim from any same-user process writing a
+# plausible marker body, so after adopting we write <marker>.ack containing
+# the handoff nonce, our pid and our creation time. Only a process that was
+# given the nonce in its private env block can produce it, which is what binds
+# the claim to the updater the Desktop actually spawned.
 
 param(
     [string]$InstallRoot,
@@ -50,6 +69,7 @@ param(
     [int]$DesktopPid = 0,
     [string]$RelaunchExe = "",
     [string]$RelaunchAppPath = "",
+    [string]$HandoffNonce = "",
     [switch]$NoUi,
     [switch]$NoMarkerCleanup,
     [switch]$SelfTestUi,
@@ -90,6 +110,7 @@ try {
 $TempDir = if ($env:TEMP) { $env:TEMP } else { [System.IO.Path]::GetTempPath() }
 $HermesHome = if ($InstallRoot) { Split-Path -Parent $InstallRoot } else { $TempDir }
 $MarkerPath = Join-Path $HermesHome ".hermes-update-in-progress"
+$AckPath = "$MarkerPath.ack"
 $LogDir = Join-Path $HermesHome "logs"
 $LogPath = Join-Path $LogDir "desktop-update-handoff.log"
 $ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
@@ -641,48 +662,67 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
     } catch {}
 }
 
-function Claim-UpdateMarker([string]$Body, [string]$ExpectedBody = "") {
-    # Production adopts the Desktop's exact claim while holding one exclusive
-    # handle, so the marker is never absent and a foreign owner is untouched.
-    # The standalone marker self-test exercises the create-only path.
+function Claim-UpdateMarker([string]$Body, [string]$ExpectedBody) {
+    # ONE path, taken identically by production and by -SelfTestMarker: adopt
+    # the Desktop's exact claim while holding a single exclusive handle, so the
+    # marker is never absent and a foreign owner is never touched. Nothing here
+    # branches on a test switch -- a create-only variant used to, which meant
+    # the switch could exercise a CAS the real update never runs.
     $stream = $null
     try {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
-        if ($ExpectedBody) {
-            $stream = [System.IO.File]::Open(
-                $MarkerPath,
-                [System.IO.FileMode]::Open,
-                [System.IO.FileAccess]::ReadWrite,
-                [System.IO.FileShare]::None
-            )
-            $reader = New-Object System.IO.StreamReader(
-                $stream,
-                [System.Text.Encoding]::UTF8,
-                $true,
-                4096,
-                $true
-            )
-            $current = $reader.ReadToEnd()
-            $reader.Dispose()
-            if ($current -cne $ExpectedBody) { throw "marker owner claim changed" }
-            $stream.SetLength(0)
-            $stream.Position = 0
-        } else {
-            $stream = New-Object System.IO.FileStream(
-                $MarkerPath,
-                [System.IO.FileMode]::CreateNew,
-                [System.IO.FileAccess]::Write,
-                [System.IO.FileShare]::None
-            )
-        }
+        if ([string]::IsNullOrEmpty($ExpectedBody)) { throw "no desktop claim to adopt" }
+        $stream = [System.IO.File]::Open(
+            $MarkerPath,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+        $reader = New-Object System.IO.StreamReader(
+            $stream,
+            [System.Text.Encoding]::UTF8,
+            $true,
+            4096,
+            $true
+        )
+        $current = $reader.ReadToEnd()
+        $reader.Dispose()
+        if ($current -cne $ExpectedBody) { throw "marker owner claim changed" }
+        # Write BEFORE truncating. SetLength(0) first left a zero-length marker
+        # behind whenever this process died mid-transaction, and an empty
+        # marker blocked every later Desktop launch on "Hermes is still
+        # updating". Growing then shrinking never exposes an empty file.
+        $stream.Position = 0
         $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+        $stream.SetLength($bytes.Length)
         $stream.Flush($true)
         $stream.Dispose()
         $stream = $null
         return [System.IO.File]::ReadAllText($MarkerPath, [System.Text.Encoding]::UTF8) -eq $Body
     } catch {
         if ($stream) { try { $stream.Dispose() } catch {} }
-        Write-HandoffLog "update marker claim refused: $($_.Exception.Message)"
+        Write-HandoffLog "update marker claim refused ($MarkerPath): $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Write-HandoffAck([int]$OwnerPid, [int64]$OwnerCreatedAt) {
+    # The Desktop otherwise cannot distinguish our claim from any same-user
+    # process writing a plausible <pid>\n<createdAt> body inside its wait
+    # window. Only a process handed the nonce in its private env block can
+    # write this file, so it is what actually authenticates the hand-off.
+    if ([string]::IsNullOrWhiteSpace($HandoffNonce)) { return $false }
+    try {
+        $body = "$HandoffNonce`n$OwnerPid`n$OwnerCreatedAt`n"
+        $temp = "$AckPath.tmp-$PID"
+        [System.IO.File]::WriteAllText($temp, $body, (New-Object System.Text.UTF8Encoding($false)))
+        # Publish atomically: a half-written ack must never be readable.
+        [System.IO.File]::Copy($temp, $AckPath, $true)
+        [System.IO.File]::Delete($temp)
+        return $true
+    } catch {
+        Write-HandoffLog "could not write hand-off ack ($AckPath): $($_.Exception.Message)"
         return $false
     }
 }
@@ -711,6 +751,9 @@ function Write-UpdateReceiptState([DateTime]$SinceUtc) {
 
 function Remove-MarkerIfOwned {
     if ($NoMarkerCleanup) { return }
+    # The nonce is single-use, so a leftover ack can never authenticate a later
+    # hand-off -- but leave nothing behind for a reader to trip over either.
+    try { if (Test-Path -LiteralPath $AckPath) { [System.IO.File]::Delete($AckPath) } } catch {}
     try {
         if (-not $script:MarkerBody -or -not (Test-Path -LiteralPath $MarkerPath -PathType Leaf)) { return }
         $tombstone = "$MarkerPath.cas-release-$PID-$([Guid]::NewGuid().ToString('N'))"
@@ -1898,9 +1941,8 @@ try {
             $desktopStartedAt = 0L
         }
         $markerBody = "$PID`n$startedAt`n"
-        $createSelfTestMarker = $SelfTestMarker -and $DesktopPid -le 0
-        $expectedMarkerBody = if ($createSelfTestMarker) { "" } else { "$DesktopPid`n$desktopStartedAt`n" }
-        if (-not $createSelfTestMarker -and ($DesktopPid -le 0 -or $desktopStartedAt -le 0)) {
+        $expectedMarkerBody = "$DesktopPid`n$desktopStartedAt`n"
+        if ($DesktopPid -le 0 -or $desktopStartedAt -le 0) {
             throw "desktop marker identity is missing"
         }
         if (-not (Claim-UpdateMarker $markerBody $expectedMarkerBody)) {
@@ -1908,9 +1950,17 @@ try {
         }
         $script:MarkerBody = $markerBody
         Write-HandoffLog "claimed update marker (pid $PID, created $startedAt; desktop hand-off started at $desktopStartedAt)"
+        if (Write-HandoffAck $PID $startedAt) {
+            Write-HandoffLog "wrote hand-off ack $AckPath"
+        } else {
+            # Fail closed: without the ack the Desktop cannot attribute this
+            # claim to us, will refuse the hand-off, and would otherwise exit
+            # while we mutate the install underneath it.
+            throw "could not acknowledge the hand-off to the desktop"
+        }
     } catch {
         $finalCode = 8
-        $finalMsg = "Update aborted: could not claim the authenticated update marker. Nothing was changed."
+        $finalMsg = "Update aborted: could not claim the authenticated update marker ($MarkerPath). Nothing was changed."
         Write-HandoffLog "$finalMsg $($_.Exception.Message)"
         exit $finalCode
     }

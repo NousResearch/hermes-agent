@@ -402,6 +402,7 @@ import {
 import { waitForLocalBackendClearance } from './update-gate'
 import {
   acquireUpdateMarker,
+  markerPath,
   readLiveUpdateMarker,
   releaseUpdateMarkerIfOwnedBy,
   transferUpdateMarkerIfOwnedBy,
@@ -409,14 +410,14 @@ import {
   type UpdateMarkerClaim,
   writeUpdateMarker
 } from './update-marker'
-import { runWindowsUpdatePreflight, type UpdatePreflightOutcome, type UpdatePreflightPurpose } from './update-preflight'
+import { runWindowsUpdatePreflight, type UpdatePreflightOutcome } from './update-preflight'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   captureSpawnedUpdaterCreatedAt,
   collectRelaunchArgs,
+  createUpdateHandoffNonce,
   formatPowerShellArgvForDisplay,
   isSpawnedUpdaterGenerationActive,
-  isStagedUpdaterMarkerOwner,
   launchWindowsUpdateTransport,
   observeUpdaterHandoff,
   resolvePosixScriptHandoff,
@@ -426,6 +427,7 @@ import {
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   terminateSpawnedUpdaterIfExact,
+  WINDOWS_HANDOFF_ENV,
   windowsUpdatePrerequisiteError,
   type WindowsUpdateTransport
 } from './updater-process'
@@ -495,6 +497,9 @@ import {
 import { installWindowsSystemCaTrust } from './windows-system-ca'
 import {
   applyWindowsUpdate,
+  authenticateRecoveryUpdaterHandoff,
+  discardUpdateHandoffAck,
+  waitForAcknowledgedUpdaterClaim,
   windowsUpdateBlocksBackendStart,
   windowsUpdateIsBusy,
   type WindowsUpdateState
@@ -2486,7 +2491,12 @@ async function waitForUpdateToFinish() {
   }
 
   if (outcome === 'timeout') {
-    throw new Error('Hermes is still updating. Wait for the updater to finish, then reopen Hermes.')
+    // Always name the file. Recovery is deleting one marker, and users sat in
+    // this loop for whole sessions because no message ever said which (#B2).
+    throw new Error(
+      'Hermes is still updating. Wait for the updater to finish, then reopen Hermes. ' +
+      `If no update is running, delete this file and reopen Hermes: ${markerPath(HERMES_HOME)}`
+    )
   } else if (relaunchIntoSwappedBundle()) {
     await advanceBootProgress('backend.update-restart', 'Restarting Hermes to load the updated app…', 14)
     // Park while the scheduled exit lands so this stale build never starts a
@@ -4152,7 +4162,6 @@ function ownsDesktopUpdateClaim(claim: UpdateMarkerClaim): boolean {
 
 async function runWindowsHandoffPreflight(
   updateRoot: string,
-  purpose: UpdatePreflightPurpose,
   claim: UpdateMarkerClaim
 ): Promise<UpdatePreflightOutcome> {
   const observed = await scanVenvBlockers(updateRoot)
@@ -4161,7 +4170,7 @@ async function runWindowsHandoffPreflight(
     return { kind: 'probe-failure', error: observed.error, message: formatProbeFailedMessage() }
   }
 
-  return runWindowsUpdatePreflight(purpose, {
+  return runWindowsUpdatePreflight({
     claim,
     ownsUpdateMarker: ownsDesktopUpdateClaim,
     releaseTrackedBackendTrees: () => releaseBackendLockForUpdate(updateRoot),
@@ -4170,39 +4179,6 @@ async function runWindowsHandoffPreflight(
     terminateDesktopPluginService: service => stopDesktopPluginServiceUnit(updateRoot, service),
     terminateMcpBridge: bridge => terminateMcpBridge(updateRoot, bridge)
   })
-}
-
-async function waitForUpdaterClaim({ excludedPids, startedAfter, requiredPid, expectedCreatedAt, isActive }: {
-  excludedPids: number[]
-  startedAfter: number
-  requiredPid?: number
-  expectedCreatedAt?: number
-  isActive?: () => boolean
-}): Promise<boolean> {
-  const deadline = Date.now() + 10_000
-
-  while (Date.now() < deadline) {
-    const owner = readLiveUpdateMarker(HERMES_HOME)
-
-    if (owner?.kind === 'live' && !excludedPids.includes(owner.pid) &&
-        (requiredPid === undefined || owner.pid === requiredPid)) {
-      const createdAt = await queryWindowsProcessCreatedAt(owner.pid, {
-        timeoutMs: Math.min(1_000, Math.max(1, deadline - Date.now()))
-      })
-
-      const matches = requiredPid !== undefined && expectedCreatedAt !== undefined
-        ? isStagedUpdaterMarkerOwner(owner, { pid: requiredPid, createdAt: expectedCreatedAt }, createdAt, isActive?.() === true)
-        : createdAt != null && Math.abs(createdAt - owner.startedAt) <= 1.5 && createdAt >= startedAfter - 1.5
-
-      if (matches) {
-        return true
-      }
-    }
-
-    await new Promise(resolve => setTimeout(resolve, Math.min(100, Math.max(0, deadline - Date.now()))))
-  }
-
-  return false
 }
 
 async function restoreAbortedUpdateBackends(): Promise<void> {
@@ -4245,6 +4221,13 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     }
   }
 
+  // One secret per handoff, handed only to the updater we are about to spawn.
+  // It comes back in the ack sidecar and is what makes the marker claim
+  // attributable to that child rather than to any same-user process (#B4).
+  const handoffNonce = createUpdateHandoffNonce()
+
+  discardUpdateHandoffAck(HERMES_HOME)
+
   return applyWindowsUpdate<WindowsUpdateTransport, SpawnedWindowsUpdateLaunch>(opts, {
     state: updateState,
     hermesHome: HERMES_HOME,
@@ -4265,7 +4248,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     },
     emitProgress: emitUpdateProgress,
     preflightStateDb: () => preflightStateDb(HERMES_HOME, rememberLog),
-    runPreflight: (prepared, claim) => runWindowsHandoffPreflight(prepared.updateRoot, 'normal-update', claim),
+    runPreflight: (prepared, claim) => runWindowsHandoffPreflight(prepared.updateRoot, claim),
     stopSafeBlockers: (updateRoot, blockers) => stopSafeVenvBlockers(updateRoot, blockers),
     launch: (_permit, prepared, claim) => {
       const launch = launchWindowsUpdateTransport(
@@ -4274,6 +4257,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
           branch: prepared.branch,
           desktopPid: process.pid,
           installRoot: prepared.updateRoot,
+          nonce: handoffNonce,
           relaunchAppPath: resolveWindowsDevRelaunchAppPath(process.defaultApp, app.getAppPath()),
           relaunchExe: process.execPath
         },
@@ -4295,7 +4279,9 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       return { launch, updater: launch.handoff.scriptPath }
     },
     observe: launch => observeUpdaterHandoff(launch.child, UPDATE_HANDOFF_DWELL_MS),
-    authenticate: (launch, claim) => waitForUpdaterClaim({
+    authenticate: (launch, claim) => waitForAcknowledgedUpdaterClaim({
+      hermesHome: HERMES_HOME,
+      nonce: handoffNonce,
       excludedPids: [claim.pid, ...(launch.child.pid ? [launch.child.pid] : [])],
       startedAfter: claim.startedAt
     }),
@@ -4407,8 +4393,11 @@ async function handOffWindowsBootstrapRecoveryTransaction(reason) {
 
   const updaterStartedAfter = Math.floor(Date.now() / 1000)
   const dwellStartedAt = Date.now()
+  const recoveryNonce = createUpdateHandoffNonce()
   let createdAt: number | null = null
   let repairTransferred = false
+
+  discardUpdateHandoffAck(HERMES_HOME)
 
   const handoff = await runUpdaterHandoffTransaction({
     spawn: () => spawnUpdaterProcess(updater, updaterArgs, {
@@ -4416,6 +4405,7 @@ async function handOffWindowsBootstrapRecoveryTransaction(reason) {
       env: {
         ...process.env,
         HERMES_HOME,
+        [WINDOWS_HANDOFF_ENV.nonce]: recoveryNonce,
         PATH: pathWithHermesManagedNode(venvBin)
       },
       detached: true,
@@ -4429,6 +4419,21 @@ async function handOffWindowsBootstrapRecoveryTransaction(reason) {
 
       if (createdAt === null || !Number.isInteger(child.pid)) {return false}
 
+      // The marker transfer is a hand-over of the gate, NOT evidence. It used
+      // to run before authentication and then satisfy the very check that
+      // followed it (#B4); authenticate first, transfer only on success.
+      const authenticated = await authenticateRecoveryUpdaterHandoff({
+        hermesHome: HERMES_HOME,
+        nonce: recoveryNonce,
+        childPid: Number(child.pid),
+        childCreatedAt: createdAt,
+        desktopHoldsMarker: fullRepair,
+        startedAfter: updaterStartedAfter,
+        isChildGenerationActive: () => isSpawnedUpdaterGenerationActive(child)
+      })
+
+      if (!authenticated) {return false}
+
       if (fullRepair) {
         repairTransferred = Boolean(repairClaim) && await transferUpdateMarkerIfOwnedBy(
           HERMES_HOME,
@@ -4439,13 +4444,7 @@ async function handOffWindowsBootstrapRecoveryTransaction(reason) {
         if (!repairTransferred) {return false}
       }
 
-      return waitForUpdaterClaim({
-        excludedPids: [process.pid],
-        startedAfter: updaterStartedAfter,
-        requiredPid: child.pid,
-        expectedCreatedAt: createdAt,
-        isActive: () => isSpawnedUpdaterGenerationActive(child)
-      })
+      return true
     },
     commit: () => {
       rememberLog(

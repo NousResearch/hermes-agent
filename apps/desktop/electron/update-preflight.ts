@@ -12,8 +12,6 @@ import {
 } from './venv-blocker-scan'
 import type { ForceReleaseHolder, WindowsUpdateForceReleaseOutcome } from './windows-update-force-release'
 
-export type UpdatePreflightPurpose = 'normal-update' | 'bootstrap-recovery'
-
 export interface UpdatePreflightDeps {
   claim: UpdateMarkerClaim
   ownsUpdateMarker: (claim: UpdateMarkerClaim) => boolean
@@ -119,7 +117,6 @@ function quiesceIncompleteMessage(): string {
 }
 
 export async function runWindowsUpdatePreflight(
-  _purpose: UpdatePreflightPurpose,
   deps: UpdatePreflightDeps,
   timing: UpdatePreflightTiming = {}
 ): Promise<UpdatePreflightOutcome> {

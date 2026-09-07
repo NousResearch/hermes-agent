@@ -6,7 +6,6 @@ import { test } from 'vitest'
 
 import {
   collectRelaunchArgs,
-  isStagedUpdaterMarkerOwner,
   observeUpdaterHandoff,
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
@@ -24,17 +23,6 @@ test('dev relaunch uses Electron resolved app path independently of launch switc
   assert.equal(resolveWindowsDevRelaunchAppPath(false, appPath), undefined)
 })
 
-
-test('staged marker allows delayed acquisition only for the exact active child generation', () => {
-  const child = { pid: 123, createdAt: 100 }
-  const marker = { pid: 123, startedAt: 108 }
-  assert.equal(isStagedUpdaterMarkerOwner(marker, child, 100, true), true)
-  assert.equal(isStagedUpdaterMarkerOwner({ ...marker, pid: 124 }, child, 100, true), false)
-  assert.equal(isStagedUpdaterMarkerOwner(marker, child, 108, true), false)
-  assert.equal(isStagedUpdaterMarkerOwner(marker, child, null, true), false)
-  assert.equal(isStagedUpdaterMarkerOwner(marker, child, 100, false), false)
-  assert.equal(isStagedUpdaterMarkerOwner({ ...marker, startedAt: 95 }, child, 100, true), false)
-})
 
 test('resolveStagedUpdaterBinary still returns a stale staged updater on Windows', () => {
   // Staleness gates only the marker PRE-WRITE, never the hand-off itself:
@@ -267,6 +255,7 @@ test('authenticated Windows handoff uses the absolute inbox PowerShell path', ()
     branch: 'main',
     desktopPid: 42,
     installRoot: root,
+    nonce: 'a'.repeat(48),
     relaunchExe: String.raw`C:\Hermes\Hermes.exe`
   })
 

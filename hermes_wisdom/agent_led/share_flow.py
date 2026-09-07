@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +23,8 @@ from typing import Any, Callable
 from .agent import ModelCall, package_for_share
 from .evidence import dependency_hints, read_frontmatter
 from .history import history_path
-from .schemas import SchemaRejected, SharePackage
+from .schemas import SchemaRejected, SharePackage, PackagedFile
+from ..contract import canonical_json_bytes, sha256_address
 
 logger = logging.getLogger(__name__)
 
@@ -33,19 +35,50 @@ CREDENTIAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("slack_token", re.compile(r"\bxox[abpr]-[A-Za-z0-9-]{10,}\b")),
     ("openai_style_key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b")),
-    ("assignment", re.compile(r"(?i)\b(api[_-]?key|secret|token|password|passwd)\b\s*[:=]\s*['\"]?[A-Za-z0-9_\-/+]{16,}")),
+    (
+        "assignment",
+        re.compile(
+            r"(?i)\b(api[_-]?key|secret|token|password|passwd)\b\s*[:=]\s*['\"]?[A-Za-z0-9_\-/+]{16,}"
+        ),
+    ),
 )
 ORG_SPECIFIC_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("home_path", re.compile(r"/(?:home|Users)/[A-Za-z0-9._-]+")),
     ("internal_host", re.compile(r"\b[a-z0-9-]+\.(?:internal|corp|local|lan)\b")),
-    ("private_ip", re.compile(r"\b(?:10|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}(?:\.\d{1,3})?\b")),
+    (
+        "private_ip",
+        re.compile(
+            r"\b(?:10|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}(?:\.\d{1,3})?\b"
+        ),
+    ),
 )
-TEXT_SUFFIXES = {".md", ".txt", ".py", ".sh", ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".js", ".ts"}
+TEXT_SUFFIXES = {
+    ".md",
+    ".txt",
+    ".py",
+    ".sh",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".cfg",
+    ".ini",
+    ".js",
+    ".ts",
+}
 MAX_FILE_BYTES = 200_000
 MAX_TREE_BYTES = 1_000_000
 MAX_FILES = 64
 
-STATES = ("prepass", "packaged", "awaiting_approval", "changes_requested", "approved", "submitted", "cancelled")
+STATES = (
+    "prepass",
+    "packaged",
+    "awaiting_approval",
+    "changes_requested",
+    "approved",
+    "submitted",
+    "cancelled",
+)
 
 
 def _flows_dir() -> Path:
@@ -65,13 +98,17 @@ def _list_files(root: Path) -> list[dict[str, str]]:
         if not path.is_file() or path.stat().st_nlink != 1:
             raise SchemaRejected("packaging input must contain regular, unlinked files")
         if path.suffix.lower() not in TEXT_SUFFIXES:
-            raise SchemaRejected("unsupported packaging file; review the source before sharing")
+            raise SchemaRejected(
+                "unsupported packaging file; review the source before sharing"
+            )
         if path.stat().st_size > MAX_FILE_BYTES:
             raise SchemaRejected("packaging input file exceeds its size limit")
         try:
             content = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
-            raise SchemaRejected("packaging input must be readable UTF-8 text") from None
+            raise SchemaRejected(
+                "packaging input must be readable UTF-8 text"
+            ) from None
         total += len(content.encode("utf-8"))
         if total > MAX_TREE_BYTES or len(files) >= MAX_FILES:
             raise SchemaRejected("packaging input exceeds its total size limit")
@@ -86,7 +123,11 @@ def scan_credentials(files: list[dict[str, str]]) -> list[dict[str, Any]]:
         for number, line in enumerate(item["content"].splitlines(), start=1):
             for kind, pattern in CREDENTIAL_PATTERNS:
                 if pattern.search(line):
-                    findings.append({"kind": kind, "file": item["path"], "line": number})
+                    findings.append({
+                        "kind": kind,
+                        "file": item["path"],
+                        "line": number,
+                    })
     return findings
 
 
@@ -97,7 +138,12 @@ def scan_org_specific(files: list[dict[str, str]]) -> list[dict[str, Any]]:
             for kind, pattern in ORG_SPECIFIC_PATTERNS:
                 match = pattern.search(line)
                 if match:
-                    findings.append({"kind": kind, "file": item["path"], "line": number, "token": match.group(0)[:80]})
+                    findings.append({
+                        "kind": kind,
+                        "file": item["path"],
+                        "line": number,
+                        "token": match.group(0)[:80],
+                    })
     return findings
 
 
@@ -141,6 +187,8 @@ class ShareFlow:
     def __init__(self, flow_id: str | None = None, *, root: Path | None = None) -> None:
         self.root = root or _flows_dir()
         self.flow_id = flow_id or uuid.uuid4().hex
+        if not re.fullmatch(r"[a-f0-9]{32}", self.flow_id):
+            raise ValueError("invalid share flow identity")
         self.path = self.root / f"{self.flow_id}.json"
         self.state: dict[str, Any] = self._load()
 
@@ -152,15 +200,19 @@ class ShareFlow:
             return {}
 
     def _save(self) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.state["updated_at"] = datetime.now(timezone.utc).isoformat()
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.state, indent=2, sort_keys=True, default=str), encoding="utf-8")
-        os.replace(tmp, self.path)
+        fd, temporary = tempfile.mkstemp(
+            prefix=f"{self.flow_id}-", suffix=".pending", dir=self.root
+        )
         try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            pass
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(self.state, stream, indent=2, sort_keys=True, default=str)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
 
     @property
     def status(self) -> str:
@@ -181,7 +233,12 @@ class ShareFlow:
         self._save()
         return self.summary()
 
-    def package(self, *, model_call: ModelCall | None = None, organization: dict[str, Any] | None = None) -> dict[str, Any]:
+    def package(
+        self,
+        *,
+        model_call: ModelCall | None = None,
+        organization: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if self.status not in {"prepass", "changes_requested"}:
             raise RuntimeError(f"cannot package from state {self.status}")
         skill_path = Path(self.state["skill_path"])
@@ -194,22 +251,38 @@ class ShareFlow:
             "skill_name": pre["skill_name"],
             "source_content_hash": pre["source_content_hash"],
             "files": pre["files"],
-            "prepass": {k: v for k, v in pre.items() if k not in {"files", "existing_security_scan"}},
+            "prepass": {
+                k: v
+                for k, v in pre.items()
+                if k not in {"files", "existing_security_scan"}
+            },
             "organization": organization or {},
             "requested_changes": self.state.get("requested_changes"),
         }
         try:
             package = package_for_share(payload, model_call=model_call)
+            package = normalize_generated_package(package)
         except SchemaRejected as exc:
             self.state["last_error"] = str(exc)
             self._save()
             raise
-        if package.source_content_hash != pre["source_content_hash"]:
-            raise SchemaRejected("package does not reference the current source content hash")
-        leaked = scan_credentials([{"path": f.path, "content": f.content} for f in package.files])
+        if (
+            package.source_content_hash != pre["source_content_hash"]
+            or package.skill_name != pre["skill_name"]
+        ):
+            raise SchemaRejected(
+                "package does not reference the current source content hash"
+            )
+        leaked = scan_credentials([
+            {"path": f.path, "content": f.content} for f in package.files
+        ])
         if leaked:
-            raise SchemaRejected("package still contains credential-shaped strings", errors=leaked)
+            raise SchemaRejected(
+                "package still contains credential-shaped strings", errors=leaked
+            )
         self.state["package"] = package.model_dump(mode="json")
+        self.state["package_hash"] = package_hash(package)
+        self.state.pop("approved_package_hash", None)
         self.state["status"] = "awaiting_approval"
         self.state.pop("last_error", None)
         self._save()
@@ -228,11 +301,23 @@ class ShareFlow:
         self._save()
         return self.summary()
 
-    def approve(self, *, submit: Callable[[SharePackage, dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
+    def approve(
+        self, *, submit: Callable[[SharePackage, dict[str, Any]], dict[str, Any]]
+    ) -> dict[str, Any]:
         """Explicit approval; only now is the existing publish path invoked."""
-        if self.status != "awaiting_approval":
+        if self.status == "submitted":
+            return self.summary()
+        if self.status not in {"awaiting_approval", "approved"}:
             raise RuntimeError("approval requires a packaged flow awaiting approval")
         package = SharePackage.model_validate(self.state["package"])
+        if self.state.get("package_hash") != package_hash(package):
+            raise SchemaRejected("package changed; regenerate and review it again")
+        if (
+            self.status == "approved"
+            and self.state.get("approved_package_hash") != self.state["package_hash"]
+        ):
+            raise SchemaRejected("approval does not match this package")
+        self.state["approved_package_hash"] = self.state["package_hash"]
         self.state["status"] = "approved"
         self._save()
         result = submit(package, dict(self.state))
@@ -247,14 +332,20 @@ class ShareFlow:
         package = self.state.get("package") or {}
         problems: list[str] = []
         for finding in pre.get("credential_findings") or []:
-            problems.append(f"Credential-shaped {finding['kind']} in {finding['file']}:{finding['line']}")
+            problems.append(
+                f"Credential-shaped {finding['kind']} in {finding['file']}:{finding['line']}"
+            )
         for finding in pre.get("org_specific_findings") or []:
-            problems.append(f"Organization-specific {finding['kind']} in {finding['file']}:{finding['line']}")
+            problems.append(
+                f"Organization-specific {finding['kind']} in {finding['file']}:{finding['line']}"
+            )
         return {
             "flow_id": self.flow_id,
             "skill_name": self.state.get("skill_name"),
             "status": self.status,
             "source_content_hash": self.state.get("source_content_hash"),
+            "package_hash": self.state.get("package_hash"),
+            "prepared_review": (self.state.get("submission") or {}).get("prepared"),
             "portability_problems": problems,
             "package_summary": {
                 "editorial_name": package.get("editorial_name"),
@@ -271,37 +362,145 @@ class ShareFlow:
             if package
             else None,
             "next_actions": (
-                ["approve", "request_changes", "cancel"] if self.status == "awaiting_approval" else []
+                ["approve", "request_changes", "cancel"]
+                if self.status == "awaiting_approval"
+                else []
             ),
             "published": bool(self.state.get("published")),
         }
 
 
-def write_package_to_staging(package: SharePackage, staging_root: Path) -> Path:
-    """Materialize a package into a staging directory for the existing publish path."""
-    target = staging_root / package.skill_name
-    target.mkdir(parents=True, exist_ok=True)
+def normalize_generated_package(package: SharePackage) -> SharePackage:
+    """Materialize the generated metadata as part of the reviewable package."""
+    import yaml
+
+    files = []
+    setup_path = "refs/wisdom-setup.md"
+    setup = (
+        "# Setup and portability\n\nInstalling files does not authorize executing these instructions.\n\n```json\n"
+        + canonical_json_bytes({
+            "schema_version": 1,
+            "execution_requires_user_approval": True,
+            **{
+                key: value
+                for key, value in package.model_dump(mode="json").items()
+                if key
+                in {
+                    "requirements",
+                    "setup_instructions",
+                    "credential_handoff",
+                    "compatibility_limits",
+                    "verification_step",
+                    "removed_or_generalized",
+                    "related_skills",
+                }
+            },
+        }).decode("utf-8")
+        + "\n```\n"
+    )
     for item in package.files:
-        destination = target / item.path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(item.content, encoding="utf-8")
+        if item.path == setup_path:
+            if item.content != setup:
+                raise SchemaRejected(
+                    "refs/wisdom-setup.md is reserved for the reviewed setup metadata"
+                )
+            continue
+        if item.path == "SKILL.md" and not item.content.startswith("---"):
+            header = yaml.safe_dump(
+                {"name": package.skill_name, "description": package.plain_description},
+                sort_keys=False,
+                allow_unicode=True,
+            )
+            item = item.model_copy(
+                update={"content": "---\n" + header + "---\n" + item.content}
+            )
+        files.append(item)
+    files.append(PackagedFile(path=setup_path, content=setup))
+    return package.model_copy(update={"files": files})
+
+
+def package_hash(package: SharePackage) -> str:
+    package = normalize_generated_package(package)
+    return sha256_address(canonical_json_bytes(package.model_dump(mode="json")))
+
+
+def verify_staged_package(package: SharePackage, target: Path) -> None:
+    package = normalize_generated_package(package)
+    if target.is_symlink() or not target.is_dir():
+        raise SchemaRejected("staged package must be a regular directory")
+    expected = {item.path: item.content.encode("utf-8") for item in package.files}
+    found = {}
+    for path in target.rglob("*"):
+        if path.is_symlink():
+            raise SchemaRejected("staged package contains a symlink")
+        if path.is_dir():
+            continue
+        if not path.is_file() or path.stat().st_nlink != 1:
+            raise SchemaRejected("staged package contains an unsafe file")
+        relative = path.relative_to(target).as_posix()
+        if relative not in expected or path.stat().st_size != len(expected[relative]):
+            raise SchemaRejected("staged package contains changed or unexpected files")
+        found[relative] = path.read_bytes()
+    if found != expected:
+        raise SchemaRejected("staged package changed; review the exact bytes again")
+
+
+def write_package_to_staging(package: SharePackage, staging_root: Path) -> Path:
+    """Create a content-addressed snapshot without modifying any prior review."""
+    from ..package import verify_content_files
+
+    package = normalize_generated_package(
+        SharePackage.model_validate(package.model_dump(mode="json"))
+    )
+    verify_content_files(
+        [(item.path, "file", item.content.encode("utf-8")) for item in package.files],
+        require_manifest=False,
+    )
+    if scan_credentials([
+        {"path": item.path, "content": item.content} for item in package.files
+    ]):
+        raise SchemaRejected("staged package contains credential-shaped strings")
+    staging_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if staging_root.is_symlink():
+        raise SchemaRejected("staging root cannot be a symlink")
+    namespace = staging_root / package_hash(package).removeprefix("sha256:")
+    target = namespace / package.skill_name
+    if namespace.is_symlink():
+        raise SchemaRejected("staging namespace cannot be a symlink")
+    if namespace.exists():
+        verify_staged_package(package, target)
+        return target
+    with tempfile.TemporaryDirectory(prefix="package-", dir=staging_root) as temporary:
+        staged_namespace = Path(temporary) / "snapshot"
+        staged = staged_namespace / package.skill_name
+        staged.mkdir(parents=True, mode=0o700)
+        for item in package.files:
+            destination = staged / item.path
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            destination.write_bytes(item.content.encode("utf-8"))
+            destination.chmod(0o600)
+        try:
+            os.rename(staged_namespace, namespace)
+        except OSError:
+            if not namespace.exists():
+                raise
+        if namespace.is_symlink():
+            raise SchemaRejected("staging namespace cannot be a symlink")
+        verify_staged_package(package, target)
     return target
 
 
-def submit_via_service(service: Any, staging_root: Path) -> Callable[[SharePackage, dict[str, Any]], dict[str, Any]]:
-    """Adapter: hand the approved package to ``WisdomService.suggest``.
-
-    The result is an owner-private draft; publication still requires the
-    hash-bound owner review and approve step already enforced by the service.
-    The staged package path is returned alongside the draft so the caller can
-    surface the exact bytes that were submitted. ``WisdomService.suggest``
-    currently reads the local skill source; feeding it the staged package
-    directly is tracked as a follow-up in the service layer.
-    """
+def submit_via_service(
+    service: Any, staging_root: Path
+) -> Callable[[SharePackage, dict[str, Any]], dict[str, Any]]:
+    """Prepare approved generated bytes locally; never upload or publish here."""
 
     def _submit(package: SharePackage, _state: dict[str, Any]) -> dict[str, Any]:
-        staged = write_package_to_staging(package, staging_root)
-        draft = service.suggest(package.skill_name, description=package.plain_description)
-        return {"draft": draft, "staged_package": str(staged), "published": False}
+        if _state.get("approved_package_hash") != package_hash(package):
+            raise SchemaRejected("package has not been approved for local preparation")
+        prepared = service.prepare_share_package(
+            package, source_path=Path(_state["skill_path"]), staging_root=staging_root
+        )
+        return {"prepared": prepared, "published": False, "network_submission": False}
 
     return _submit

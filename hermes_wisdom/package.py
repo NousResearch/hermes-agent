@@ -529,6 +529,8 @@ def prepare_package(
 
 def verify_content_files(
     files: list[tuple[str, str, bytes]],
+    *,
+    require_manifest: bool = True,
 ) -> tuple[list[ContentFile], str]:
     """Validate downloaded paths/modes/blobs and derive the content hash."""
     if len(files) > MAX_FILES:
@@ -558,7 +560,9 @@ def verify_content_files(
             ContentFile(path=raw_path, mode="file", hash=sha256_address(body))
         )
     required = {record.path for record in records}
-    if "SKILL.md" not in required or "skill.manifest.json" not in required:
+    if "SKILL.md" not in required or (
+        require_manifest and "skill.manifest.json" not in required
+    ):
         raise PackagePolicyError("download is not a complete Wisdom package")
     skill_body = next(body for path, _, body in files if path == "SKILL.md")
     if FORBIDDEN_REFERENCE_RE.search(skill_body.decode("utf-8")):

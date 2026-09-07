@@ -1287,9 +1287,11 @@ class WisdomStore:
                 (organization_id, normalized or None, int(bool(normalized)), utc_now()),
             )
 
-    def record_draft(self, values: dict[str, str]) -> None:
+    def record_draft(
+        self, values: dict[str, str], *, _db: sqlite3.Connection | None = None
+    ) -> None:
         now = utc_now()
-        with self.transaction() as db:
+        with self.transaction() if _db is None else nullcontext(_db) as db:
             db.execute(
                 """INSERT INTO local_draft(
                    id,skill_id,source_hash,overlay_path,draft_commit,server_revision,state,

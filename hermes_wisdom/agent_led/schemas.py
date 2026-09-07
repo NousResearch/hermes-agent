@@ -221,6 +221,7 @@ class PackagingRequirement(_Strict):
 
 
 class PackagedFile(_Strict):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
     path: str = Field(min_length=1, max_length=255)
     content: str
     generalized_from_original: bool = False

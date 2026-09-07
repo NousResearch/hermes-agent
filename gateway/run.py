@@ -702,7 +702,9 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
         return ""
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    from agent.streaming_redact import sanitize_terminal_secret_text
+
+    redacted = _redact_gateway_user_facing_secrets(sanitize_terminal_secret_text(str(text)))
     for candidate, wrapped_success_content in _gateway_provider_error_candidates(redacted):
         if _looks_like_gateway_provider_error(candidate, wrapped_success_content=wrapped_success_content):
             return _gateway_provider_error_reply(candidate)
@@ -719,7 +721,9 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     if _gateway_surface_passes_raw_text(platform):
         return text
 
-    text = _redact_gateway_user_facing_secrets(text)
+    from agent.streaming_redact import sanitize_terminal_secret_text
+
+    text = _redact_gateway_user_facing_secrets(sanitize_terminal_secret_text(text))
     # Opt-in `compression.progress_notices` lets ROUTINE (template-derived) progress through; other noise stays.
     if _TELEGRAM_NOISY_STATUS_RE.search(text) and not (
         _gateway_compression_progress_notices_enabled() and _COMPRESSION_PROGRESS_STATUS_RE.search(text)

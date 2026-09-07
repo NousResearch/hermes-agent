@@ -387,3 +387,26 @@ def test_provider_classification_survives_only_owned_wrappers(wrapper, answer, c
     near_heading = wrapper.splitlines()[0] + " describes a presentation example."
     ordinary = f"{near_heading}\n\n{error}"
     assert _sanitize_gateway_final_response(Platform.TELEGRAM, ordinary) == ordinary
+
+
+@pytest.mark.parametrize("platform", [Platform.TELEGRAM, Platform.MATRIX, "plugin_chat", "api_server"])
+@pytest.mark.parametrize(
+    ("message", "private"),
+    [
+        ('Data: {"token": "opaqueTerminalCredential123', "opaqueTerminalCredential123"),
+        ('Data: {"api_key": "opaque\\u0054erminalCredential123', "opaque\\u0054erminalCredential123"),
+        ("OPENAI_API_KEY=opaqueTerminalCredential123", "opaqueTerminalCredential123"),
+        ("postgres://user:opaqueTerminalCredential123", "opaqueTerminalCredential123"),
+        ("Key:\n-----BEGIN PRIVATE KEY-----\nSYNTHETICINERTPRIVATEKEYBODY123", "SYNTHETICINERTPRIVATEKEYBODY123"),
+    ],
+)
+def test_terminal_secret_boundary_preserves_raw_surfaces(monkeypatch, platform, message, private):
+    """Chat final/status egress masks unfinished secrets even when optional redaction is off."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    final = _sanitize_gateway_final_response(platform, message)
+    status = _prepare_gateway_status_message(platform, "lifecycle", message)
+    if platform == "api_server":
+        assert final == status == message
+    else:
+        assert private not in final
+        assert status is not None and private not in status

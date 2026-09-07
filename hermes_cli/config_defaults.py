@@ -1595,6 +1595,17 @@ DEFAULT_CONFIG = {
         "tirith_path": "tirith",
         "tirith_timeout": 5,
         "tirith_fail_open": True,
+        # Optional second-opinion scanner for quarantined skills and, when opted in,
+        # plugin/MCP source trees. Native Hermes guards remain the primary enforcement.
+        # "report" never blocks; "block_high" blocks unsuppressed SkillSpector
+        # high/critical findings. Incomplete scans fail open unless explicitly changed.
+        "external_scanner": {
+            "mode": "report",
+            "fail_on_incomplete": False,
+            "scan_plugins": False,
+            "scan_mcp": False,
+            "baseline": "",
+        },
         "website_blocklist": {"enabled": False, "domains": [], "shared_files": []},
         # IDs of supply-chain advisories the user has read and acted on; acked ones stop the startup
         # banner. Add via `hermes doctor --ack <id>`; remove by editing the list. Catalog:

@@ -467,6 +467,37 @@ class TestInstall:
         # The rejected entry must not have been persisted.
         assert "evil" not in (load_config().get("mcp_servers") or {})
 
+    def test_external_high_finding_blocks_before_config_write(
+        self, catalog_dir, monkeypatch
+    ):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        from hermes_cli import mcp_catalog as mc
+        from hermes_cli.config import load_config
+        from tools.skillevaluator_scan import Tier1Finding, Tier1Report
+
+        report = Tier1Report(
+            available=True,
+            passed=False,
+            scanner="skillspector",
+            findings=[Tier1Finding(
+                check="SC-009", validator="mcp_tool_poisoning", severity="critical",
+                message="Tool description contains hidden instructions", scanner="skillspector",
+            )],
+        )
+        monkeypatch.setattr(
+            "tools.skillevaluator_scan.external_surface_enabled",
+            lambda surface: surface == "mcp",
+        )
+        monkeypatch.setattr("tools.skillevaluator_scan.run_tier1_scan", lambda path: report)
+        monkeypatch.setattr(
+            "tools.skillevaluator_scan.should_allow_tier1",
+            lambda result: (False, "critical external finding"),
+        )
+
+        with pytest.raises(mc.CatalogError, match="External security scan"):
+            mc.install_entry(_entry("demo"), enable=True)
+        assert "demo" not in (load_config().get("mcp_servers") or {})
+
 
     def test_install_with_api_key_prompts_and_saves(self, catalog_dir, monkeypatch):
         body = _basic_manifest(

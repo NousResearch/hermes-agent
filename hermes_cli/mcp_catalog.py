@@ -360,6 +360,21 @@ def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
             raise CatalogError(f"bootstrap step failed (exit {rc}): {cmd}")
 
 
+def _scan_mcp_tree(path: Path, label: str) -> None:
+    """Run the optional external static scanner and enforce its configured policy."""
+    from tools.skillevaluator_scan import (external_surface_enabled, format_tier1_report,
+                                           run_tier1_scan, should_allow_tier1)
+    if not external_surface_enabled("mcp"):
+        return
+    report = run_tier1_scan(path)
+    if report.available:
+        for line in format_tier1_report(report).splitlines():
+            _say(f"  {line}", Colors.DIM)
+    allowed, reason = should_allow_tier1(report)
+    if not allowed:
+        raise CatalogError(f"External security scan blocked MCP '{label}': {reason}")
+
+
 def _do_git_install(entry: CatalogEntry) -> Path:
     """Clone the entry's repo into ``~/.hermes/mcp-installs/<name>`` and run bootstrap. Returns the dir."""
     assert entry.install is not None and entry.install.type == "git"
@@ -395,6 +410,8 @@ def _do_git_install(entry: CatalogEntry) -> Path:
         if _git("-C", str(dest), "checkout", install.ref) != 0:
             raise CatalogError(f"git checkout {install.ref} failed")
 
+    # Scan untrusted source before any bootstrap command can execute it.
+    _scan_mcp_tree(dest, f"{entry.name} source")
     if install.bootstrap:
         _run_bootstrap(dest, install.bootstrap)
     return dest
@@ -619,6 +636,9 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
         _say(f"  Source: {entry.source}", Colors.DIM)
     print()
 
+    # Scan the declarative manifest before prompting for credentials, cloning,
+    # running bootstrap commands, or writing config.
+    _scan_mcp_tree(entry.manifest_path.parent, f"{entry.name} manifest")
     install_dir = _do_git_install(entry) if entry.install is not None else None
 
     if entry.auth.type == "api_key":

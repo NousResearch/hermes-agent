@@ -701,7 +701,15 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         return
     # Advisory second opinion — warn-and-continue by design (PII-class findings are
     # informational); the install confirmation below is where the user decides.
-    _print_tier1_advisory(q_path, c)
+    tier1_report = _print_tier1_advisory(q_path, c)
+    if tier1_report is not None:
+        from tools.skillevaluator_scan import should_allow_tier1
+        tier1_allowed, tier1_reason = should_allow_tier1(tier1_report)
+        if not tier1_allowed:
+            _install_blocked(c, bundle, tier1_reason, "external_high",
+                             f"{len(tier1_report.findings)}_external_findings")
+            c.print(f"[yellow]Quarantine preserved for review:[/] {q_path}\n")
+            return
     metadata_lines = _format_extra_metadata_lines(extra_metadata)
     if metadata_lines:
         c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
@@ -723,28 +731,30 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     _finish_change(c, invalidate_cache, "Skill will be available", "activate")
 
 
-def _print_tier1_advisory(skill_dir, console) -> None:
+def _print_tier1_advisory(skill_dir, console):
     """Advisory SkillEvaluator Tier 1 report. Never raises/blocks: scanner missing, disabled via
     ``skills.tier1_advisory: false``, or erroring all degrade to silence. Secrets render red."""
     try:
         from tools.skillevaluator_scan import (format_tier1_report, run_tier1_scan,
                                                tier1_advisory_enabled)
         if not tier1_advisory_enabled():
-            return
+            return None
         report = run_tier1_scan(Path(skill_dir))
         if not report.available:
-            return
+            return report
         text = format_tier1_report(report)
         if not report.findings:
             console.print(f"[dim]{text}[/]")
-            return
+            return report
         console.print(Panel(text, title="SkillEvaluator Tier 1 (advisory)",
                             border_style="red" if report.secrets_findings else "yellow"))
         if report.secrets_findings:
             console.print("[bold red]Possible credentials detected above.[/] "
                           "Review the flagged lines before using this skill.\n")
+        return report
     except Exception as exc:  # advisory only — never break an install
         logging.getLogger(__name__).debug("Tier 1 advisory scan skipped: %s", exc)
+        return None
 
 
 # --- list / check / update / audit ---

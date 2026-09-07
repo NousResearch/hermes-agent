@@ -2251,6 +2251,12 @@ _SECURITY_COMMENT = """
 #   tirith_path: "tirith"
 #   tirith_timeout: 5
 #   tirith_fail_open: true
+#   external_scanner:
+#     mode: report  # or block_high
+#     fail_on_incomplete: false
+#     scan_plugins: false
+#     scan_mcp: false
+#     baseline: ""  # operator-controlled SkillSpector baseline
 """
 
 _FALLBACK_COMMENT = """

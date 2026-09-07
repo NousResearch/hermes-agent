@@ -21,6 +21,7 @@ from tools.skillevaluator_scan import (  # noqa: E402
     Tier1Finding,
     Tier1Report,
     _parse_report,
+    _parse_skillspector_report,
     format_tier1_report,
     run_tier1_scan,
     tier1_advisory_enabled,
@@ -134,6 +135,29 @@ class TestParseReport:
     def test_complete_failed_check_still_fails(self):
         report = _parse_report(_report_json([_finding("emails")]))
         assert not report.passed
+
+
+class TestParseSkillSpectorReport:
+    def test_parses_skillspector_211_finding_schema(self):
+        report = _parse_skillspector_report({
+            "risk_assessment": {"score": 8, "severity": "HIGH"},
+            "analysis_completeness": {"is_complete": True},
+            "issues": [{
+                "id": "data-exfiltration-001",
+                "category": "Data Exfiltration",
+                "severity": "HIGH",
+                "finding": "Reads a credential and sends it remotely",
+                "explanation": "Source and sink occur in the same instruction.",
+                "remediation": "Remove the outbound transfer.",
+                "location": {"path": "SKILL.md", "start_line": 9},
+            }],
+        })
+        finding = report.findings[0]
+        assert finding.check == "data-exfiltration-001"
+        assert finding.message.startswith("Reads a credential")
+        assert finding.file == "SKILL.md"
+        assert finding.line == 9
+        assert finding.scanner == "skillspector"
 
 
 class TestRunTier1Scan:

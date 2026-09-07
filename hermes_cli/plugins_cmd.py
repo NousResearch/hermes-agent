@@ -132,29 +132,44 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     ``scan_decision_cb(result)``); dangerous → always blocked (:class:`PluginScanBlocked`).
     Returns the ScanResult, or None when scanning is disabled.
     """
-    if not _scan_on_install_enabled():
-        return None
-    from tools.plugin_guard import format_scan_report, scan_plugin, should_allow_plugin_install
-    result = scan_plugin(plugin_dir, source=identifier)
-    allowed, reason = should_allow_plugin_install(result, force=force)
+    result = None
+    if _scan_on_install_enabled():
+        from tools.plugin_guard import format_scan_report, scan_plugin, should_allow_plugin_install
+        result = scan_plugin(plugin_dir, source=identifier)
+        allowed, reason = should_allow_plugin_install(result, force=force)
 
-    if allowed is None and scan_decision_cb is not None:
-        try:
-            if scan_decision_cb(result):
-                allowed = True
-                reason = "Caution verdict accepted by user"
-        except Exception:
-            logger.exception("plugin scan decision callback failed")
+        if allowed is None and scan_decision_cb is not None:
+            try:
+                if scan_decision_cb(result):
+                    allowed = True
+                    reason = "Caution verdict accepted by user"
+            except Exception:
+                logger.exception("plugin scan decision callback failed")
 
-    if allowed is not True:
-        raise PluginScanBlocked(
-            f"Security scan blocked plugin install: {reason}\n\n"
-            f"{format_scan_report(result)}\n"
-            "Review the findings above. Install only plugins from sources "
-            "you trust. (Scanning can be configured via "
-            "plugins.scan_on_install in config.yaml.)",
-            scan_result=result)
-    logger.info("plugin scan passed for %s: %s", plugin_dir.name, reason)
+        if allowed is not True:
+            raise PluginScanBlocked(
+                f"Security scan blocked plugin install: {reason}\n\n"
+                f"{format_scan_report(result)}\n"
+                "Review the findings above. Install only plugins from sources "
+                "you trust. (Scanning can be configured via "
+                "plugins.scan_on_install in config.yaml.)",
+                scan_result=result)
+        logger.info("plugin scan passed for %s: %s", plugin_dir.name, reason)
+
+    from tools.skillevaluator_scan import (external_surface_enabled, format_tier1_report,
+                                           run_tier1_scan, should_allow_tier1)
+    if external_surface_enabled("plugins"):
+        external = run_tier1_scan(plugin_dir)
+        if external.available:
+            logger.info("external plugin scan for %s:\n%s", plugin_dir.name,
+                        format_tier1_report(external))
+        external_allowed, external_reason = should_allow_tier1(external)
+        if not external_allowed:
+            raise PluginScanBlocked(
+                f"External security scan blocked plugin install: {external_reason}\n\n"
+                f"{format_tier1_report(external)}",
+                scan_result=external,
+            )
     return result
 
 

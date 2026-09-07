@@ -226,6 +226,38 @@ class TestInstallIntegration:
         # Nothing got installed.
         assert not (plugins_dir / "test-plugin").exists()
 
+    def test_external_high_finding_blocks_before_install(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+        from tools.skillevaluator_scan import Tier1Finding, Tier1Report
+
+        repo = tmp_path / "repo"
+        self._make_git_repo(repo, BASE_FILES)
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        monkeypatch.setattr(
+            "tools.skillevaluator_scan.external_surface_enabled",
+            lambda surface: surface == "plugins",
+        )
+        report = Tier1Report(
+            available=True,
+            passed=False,
+            scanner="skillspector",
+            findings=[Tier1Finding(
+                check="SC-001", validator="supply_chain", severity="high",
+                message="Unpinned dependency", scanner="skillspector",
+            )],
+        )
+        monkeypatch.setattr("tools.skillevaluator_scan.run_tier1_scan", lambda path: report)
+        monkeypatch.setattr(
+            "tools.skillevaluator_scan.should_allow_tier1",
+            lambda result: (False, "high external finding"),
+        )
+
+        with pytest.raises(pc.PluginScanBlocked, match="external"):
+            pc._install_plugin_core(f"file://{repo}", force=False)
+        assert not (plugins_dir / "test-plugin").exists()
+
     def test_caution_plugin_accepted_via_callback(self, tmp_path, monkeypatch):
         from hermes_cli import plugins_cmd as pc
 

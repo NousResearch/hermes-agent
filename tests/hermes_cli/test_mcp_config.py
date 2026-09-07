@@ -315,11 +315,11 @@ class TestMcpTest:
             },
         })
 
-        def mock_probe(name, config, **kw):
-            raise RuntimeError("request failed at /server-secret-value")
+        async def fail_connect(name, config):
+            raise RuntimeError(f"request failed at /{config['url'].rsplit('/', 1)[-1]}")
 
         monkeypatch.setattr(
-            "hermes_cli.mcp_config._probe_single_server", mock_probe
+            "tools.mcp_tool_discovery._connect_server", fail_connect
         )
         from hermes_cli.mcp_config import cmd_mcp_test
 

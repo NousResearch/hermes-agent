@@ -230,8 +230,6 @@ class TestProfileScopedMcp:
     def test_mcp_test_error_redacts_server_env_file_values(
         self, client, isolated_profiles, monkeypatch
     ):
-        import hermes_cli.mcp_config as mcp_config
-
         worker_home = isolated_profiles["worker_beta"]
         env_file = worker_home / "server.env"
         env_file.write_text(
@@ -248,13 +246,10 @@ class TestProfileScopedMcp:
             }),
             encoding="utf-8",
         )
-        monkeypatch.setattr(
-            mcp_config,
-            "_probe_single_server",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                RuntimeError("request failed at /server-secret-value")
-            ),
-        )
+        async def fail_connect(_name, config):
+            raise RuntimeError(f"request failed at /{config['url'].rsplit('/', 1)[-1]}")
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", fail_connect)
 
         response = client.post(
             "/api/mcp/servers/private/test", params={"profile": "worker_beta"}

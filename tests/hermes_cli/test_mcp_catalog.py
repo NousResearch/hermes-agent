@@ -606,12 +606,10 @@ class TestToolSelection:
             "env_file": str(env_file),
         }
         monkeypatch.setattr(mc, "installed_servers", lambda: {"private": server_cfg})
-        monkeypatch.setattr(
-            "hermes_cli.mcp_config._probe_single_server",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                RuntimeError("request failed at /server-secret-value")
-            ),
-        )
+        async def fail_connect(_name, config):
+            raise RuntimeError(f"request failed at /{config['url'].rsplit('/', 1)[-1]}")
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", fail_connect)
 
         assert _default_mock_probe("private") is None
         output = capsys.readouterr().out

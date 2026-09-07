@@ -325,11 +325,50 @@ def _load_mcp_server_env(config: dict) -> Dict[str, str]:
         return {}
 
 
+class _ResolvedMCPServerConfig(dict):
+    """Keep each resolving read's secrets out of mapping serializers and name-keyed state.
+
+    Configs can outlive a reload (lazy startup) or overlap another probe for the same
+    server/profile. Their immutable snapshots must therefore travel with the config,
+    not be replaced by a later read. Only the ordinary config fields are serialized.
+    """
+
+    __slots__ = ("_redaction_values",)
+
+    def __init__(self, config: dict, redaction_values: tuple[str, ...]):
+        super().__init__(config)
+        self._redaction_values = redaction_values
+
+    def copy(self):
+        return _ResolvedMCPServerConfig(self, self._redaction_values)
+
+
+def _mcp_redaction_values(config: dict) -> tuple[str, ...]:
+    """Use the resolving snapshot, never reopen a possibly rotated env file.
+
+    External callers passing plain, already-resolved dicts have no overlay history:
+    deliberately fall back to literal env/header values plus the sanitizer's regexes.
+    Preserve the resolver's returned config (or its copy()) for full overlay redaction.
+    """
+    if isinstance(config, _ResolvedMCPServerConfig):
+        return config._redaction_values
+    return tuple(
+        value for field in ("env", "headers")
+        if isinstance(config.get(field), dict)
+        for value in config[field].values()
+        if isinstance(value, str)
+    )
+
+
 def _resolve_mcp_server_config(config: dict) -> dict:
-    """Resolve one server config using its isolated env-file overlay."""
+    """Resolve once, retaining the exact overlay for the lifetime of this config."""
+    if isinstance(config, _ResolvedMCPServerConfig):
+        return config
     server_env = _load_mcp_server_env(config)
     resolved = _interpolate_env_vars(config, server_env)
-    return resolved if isinstance(resolved, dict) else config
+    return _ResolvedMCPServerConfig(
+        resolved, tuple(server_env.values()) + _mcp_redaction_values(resolved),
+    )
 
 
 def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:

@@ -149,8 +149,8 @@ class MCPServerRunMixin:
         must not start (bad remote URL / non-MCP endpoint: fail fast with ``_error`` set and
         ``_ready`` fired instead of burning the reconnect ladder inside the SDK's httpx layer)."""
         self._config = config
-        from tools.mcp_tool_config import _load_mcp_server_env
-        self._redaction_values = tuple(_load_mcp_server_env(config).values())
+        from tools.mcp_tool_config import _mcp_redaction_values
+        self._redaction_values = _mcp_redaction_values(config)
         self.tool_timeout = _resolve_tool_timeout(config)
         self._auth_type = (config.get("auth") or "").lower().strip()
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")

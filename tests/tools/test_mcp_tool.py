@@ -1289,14 +1289,14 @@ class TestToolsetInjection:
             "MCP_PRIVATE_TOKEN=server-secret-value\n", encoding="utf-8"
         )
         fake_config = {
-            "private": {
+            "private": _mcp_config._resolve_mcp_server_config({
                 "url": "https://example.invalid/${MCP_PRIVATE_TOKEN}",
                 "env_file": str(env_file),
-            },
+            }),
         }
 
         async def fail_discovery(name, config):
-            raise RuntimeError("401 Unauthorized at /server-secret-value")
+            raise RuntimeError(f"401 Unauthorized at /{config['url'].rsplit('/', 1)[-1]}")
 
         def run_on_loop(coro_or_factory, timeout=120):
             coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
@@ -1841,10 +1841,10 @@ class TestReconnection:
                 "asyncio.sleep",
                 new_callable=AsyncMock,
             ), caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
-                await server.run({
+                await server.run(_mcp_config._resolve_mcp_server_config({
                     "url": "https://example.invalid/mcp",
                     "env_file": str(env_file),
-                })
+                }))
 
         asyncio.run(_test())
         assert "server-secret-value" not in caplog.text

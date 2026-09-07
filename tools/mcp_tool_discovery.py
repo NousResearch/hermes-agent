@@ -63,7 +63,8 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
             try:
                 await server.shutdown()
             except Exception as shutdown_exc:  # noqa: BLE001 -- best-effort reap, don't mask the real error
-                logger.debug("MCP server '%s' shutdown during orphan-reap failed: %s", name, shutdown_exc)
+                logger.debug("MCP server '%s' shutdown during orphan-reap failed: %s", name,
+                             _sanitize_error(_exc_str(shutdown_exc), _config._mcp_redaction_values(config)))
         raise
     finally:
         if claim_token is not None:
@@ -157,7 +158,7 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
         _loop._run_on_mcp_loop(lambda: _discover_and_register_server(server_name, config),
                                timeout=float(connect_timeout) + 30.0)
     except BaseException as exc:
-        values = tuple(_config._load_mcp_server_env(config).values())
+        values = _config._mcp_redaction_values(config)
         logger.warning("Lazy MCP connect failed for '%s': %s", server_name,
                        _note_connect_failure(server_name, exc, values))
         return False
@@ -305,7 +306,7 @@ async def _discover_all(new_servers: Dict[str, dict]) -> None:
     for name, result in zip(new_servers, results):
         if isinstance(result, BaseException):
             command = new_servers.get(name, {}).get("command")
-            redaction_values = tuple(_config._load_mcp_server_env(new_servers.get(name, {})).values())
+            redaction_values = _config._mcp_redaction_values(new_servers[name])
             message = _note_connect_failure(name, result, redaction_values)
             if command:
                 command = _sanitize_error(str(command), redaction_values)
@@ -520,7 +521,8 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
         outcomes = await asyncio.gather(*coros, return_exceptions=True)
         for name, outcome in zip(enabled, outcomes):
             if isinstance(outcome, Exception):
-                logger.debug("Probe: failed to connect to '%s': %s", name, outcome)
+                logger.debug("Probe: failed to connect to '%s': %s", name,
+                             _sanitize_error(_exc_str(outcome), _config._mcp_redaction_values(enabled[name])))
                 continue
             probed_servers.append(outcome)
             result[name] = [(t.name, getattr(t, "description", "") or "") for t in outcome._tools]
@@ -529,7 +531,8 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     try:
         _loop._run_on_mcp_loop(_probe_all, timeout=120)
     except Exception as exc:
-        logger.debug("MCP probe failed: %s", exc)
+        values = tuple(value for cfg in enabled.values() for value in _config._mcp_redaction_values(cfg))
+        logger.debug("MCP probe failed: %s", _sanitize_error(_exc_str(exc), values))
     finally:
         _lifecycle._stop_mcp_loop_if_idle()
     return result

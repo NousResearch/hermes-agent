@@ -320,7 +320,8 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
         name, candidates, check_fn=_make_check_fn(name), scope=_core._mcp_registry_scope, lazy=True)
     if registered:
         with _core._lock:
-            _core._lazy_server_configs[name] = dict(config)
+            # Preserve the resolving snapshot until first use, even across env-file rotation.
+            _core._lazy_server_configs[name] = config.copy()
             _core._lazy_server_fingerprints[name] = config_fingerprint(config)
             _core._lazy_server_tool_names[name] = list(registered)
         logger.info("MCP server '%s' (lazy): registered %d tool(s) from schema cache", name, len(registered))

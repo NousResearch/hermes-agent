@@ -248,15 +248,18 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     return _resolve_config(config)
 
 
-def _sanitize_mcp_probe_error(exc: object, config: dict) -> str:
-    """Redact known patterns and exact per-server env-file values from errors."""
-    from tools.mcp_tool_config import _load_mcp_server_env
+def _sanitize_mcp_probe_error(exc: object, config: dict, *, message: Optional[str] = None) -> str:
+    """Keep the probe's snapshot even when its caller holds an unresolved config.
+
+    Humanized OAuth text must retain the original exception as the snapshot carrier.
+    """
+    from tools.mcp_tool_config import _mcp_redaction_values
     from tools.mcp_tool_common import _sanitize_error
 
-    return _sanitize_error(
-        str(exc),
-        _load_mcp_server_env(config).values(),
-    )
+    values = getattr(exc, "_mcp_redaction_values", None)
+    if values is None:
+        values = _mcp_redaction_values(config)
+    return _sanitize_error(str(exc) if message is None else message, values)
 
 
 def _probe_single_server(
@@ -276,7 +279,10 @@ def _probe_single_server(
     from tools.mcp_tool_lifecycle import _stop_mcp_loop_if_idle
     from tools.mcp_tool_common import _parse_boolish
 
+    from tools.mcp_tool_config import _mcp_redaction_values
+
     config = _resolve_mcp_server_config(config)
+    redaction_values = _mcp_redaction_values(config)
     resolved_issues = validate_mcp_server_entry(name, config)
     if resolved_issues:
         raise ValueError("; ".join(resolved_issues))
@@ -339,7 +345,11 @@ def _probe_single_server(
     try:
         _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
     except BaseException as exc:
-        raise _unwrap_exception_group(exc) from None
+        root = _unwrap_exception_group(exc)
+        # Callers still hold the unresolved dict; keep this attempt's tuple on the
+        # original exception so its type and structured OAuth/HTTP details survive.
+        root._mcp_redaction_values = redaction_values
+        raise root from None
     finally:
         _stop_mcp_loop_if_idle()
     return tools_found
@@ -706,7 +716,7 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
             humanized = None
         _error(
             "Authentication failed: "
-            f"{_sanitize_mcp_probe_error(humanized or exc, server_config)}"
+            f"{_sanitize_mcp_probe_error(exc, server_config, message=humanized or None)}"
         )
         return False
 

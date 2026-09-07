@@ -192,7 +192,9 @@ placeholders; explicit literal values already present in `env` or `headers`
 remain unchanged. If the file is missing or unreadable, Hermes logs a warning
 and falls back to the active profile secret scope or process environment. CLI
 and dashboard probe errors, catalog probes, and runtime discovery logs redact
-exact values loaded from the server file.
+exact values from the same file read that resolved the server configuration. This
+redaction snapshot stays with that connection attempt, even if the file is later
+rotated, deleted, or becomes unreadable; error handling does not reopen the file.
 
 Relative paths resolve from `TERMINAL_CWD` when it points to a valid directory,
 otherwise from the Hermes process working directory. Prefer an absolute path

@@ -164,9 +164,11 @@ def test_oauth_worker_error_redacts_server_env_file_values(tmp_path):
         "env_file": str(env_file),
     }
 
+    async def fail_connect(_name, config):
+        raise RuntimeError(f"request failed at /{config['url'].rsplit('/', 1)[-1]}")
+
     with patch(
-        "hermes_cli.mcp_config._probe_single_server",
-        side_effect=RuntimeError("request failed at /server-secret-value"),
+        "tools.mcp_tool_discovery._connect_server", side_effect=fail_connect,
     ), patch(
         "tools.mcp_oauth_manager.get_manager"
     ) as get_manager, patch(

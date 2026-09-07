@@ -251,6 +251,11 @@ def _build_child_agent(
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
+    # Stash the child's RESOLVED toolsets (post parent-intersection and
+    # blocked-tool stripping) so the result-entry builders can surface them
+    # off the child — every entry path reads the child, so a single stash here
+    # covers success, failure, timeout and fabricated entries alike (#63887).
+    child._delegate_child_toolsets = list(child_toolsets)
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent

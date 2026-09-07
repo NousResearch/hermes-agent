@@ -35,6 +35,10 @@ def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: f
     return {
         "task_index": idx, "status": status, "summary": None, "error": error, "api_calls": 0,
         "duration_seconds": duration, "_child_role": getattr(child, "_delegate_role", None),
+        # Resolved toolsets survive the synthetic paths too (interrupt / timeout
+        # / raise) — those are exactly the runs where a capability mismatch is
+        # most worth seeing (#63887); empty when the child never got that far.
+        "toolsets": sorted(getattr(child, "_delegate_child_toolsets", None) or []),
     }
 
 def _append_missed_steer(entry: Dict[str, Any], late_steer: Optional[str]) -> None:
@@ -507,6 +511,13 @@ def _build_result_entry(
         # the parent's session cost by the aggregator).
         "_child_role": getattr(child, "_delegate_role", None),
         "_child_cost_usd": float(_cost or 0.0) if isinstance(_cost, (int, float)) else 0.0,
+        # The child's RESOLVED toolsets (post parent-intersection and
+        # blocked-tool stripping) — not what the caller requested. Surfaced so
+        # the parent can catch a goal/capability mismatch (e.g. "write a file"
+        # dispatched to a child that never held the file toolset), which a
+        # budget-tier child may otherwise report as completed with a fabricated
+        # verification narrative (#63887).
+        "toolsets": sorted(getattr(child, "_delegate_child_toolsets", None) or []),
     }
     # Model-visible per-delegation spend (unlike _child_cost_usd above).
     entry["cost_usd"] = round(entry["_child_cost_usd"], 6)

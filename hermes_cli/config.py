@@ -2016,12 +2016,15 @@ TERMINAL_CONFIG_ENV_MAP = {
         for key in (
             "modal_mode", "degraded_mode", "cwd", "temp_dir", "timeout", "lifetime_seconds",
             "docker_image", "docker_forward_env", "modal_image",
-            "daytona_image", "vercel_runtime", "vercel_image", "ssh_host", "ssh_user", "ssh_port", "ssh_key",
+            "daytona_image", "vercel_runtime", "vercel_image", "kubernetes", "ssh_host", "ssh_user", "ssh_port", "ssh_key",
             "container_cpu", "container_memory", "container_disk", "container_persistent",
             "docker_volumes", "docker_env", "docker_mount_cwd_to_workspace", "docker_network",
             "docker_extra_args", "docker_shm_size", "docker_run_as_host_user", "docker_snap_compat",
             "docker_persist_across_processes", "docker_shared_container_key",
             "docker_orphan_reaper", "sandbox_dir", "persistent_shell")}}
+
+
+_TERMINAL_ENV_MIRROR_EXCLUDED = frozenset({"terminal.cwd", "terminal.kubernetes"})
 
 
 def _terminal_env_value(value: Any) -> str:
@@ -2079,7 +2082,7 @@ def apply_terminal_config_to_env(
     # in raw config.yaml may override existing env values (DEFAULT_CONFIG keys are backfill-only).
     explicit_keys = terminal_cfg.keys() if config is not None else raw_terminal_cfg.keys()
     backend_sources = (terminal_cfg.get("backend"), target.get("TERMINAL_ENV"))
-    if not (config is not None or "backend" in raw_terminal_cfg):
+    if not should_override or not (config is not None or "backend" in raw_terminal_cfg):
         backend_sources = backend_sources[::-1]  # env wins when the file did not set backend
     terminal_backend = str(backend_sources[0] or backend_sources[1] or "")
     # Whether docker_image is the user's choice (config.yaml key, or TERMINAL_DOCKER_IMAGE set before
@@ -2096,6 +2099,8 @@ def apply_terminal_config_to_env(
             continue
         value = terminal_cfg[cfg_key]
         if not _terminal_config_value_is_bridgeable(cfg_key, value):
+            continue
+        if cfg_key == "kubernetes" and terminal_backend.strip().lower() != "kubernetes":
             continue
         if cfg_key == "cwd":
             raw_cwd = str(value or "").strip()
@@ -3409,7 +3414,7 @@ def set_config_value(key: str, value: str, force: bool = False):
 
     # Keep .env in sync: terminal_tool reads TERMINAL_ENV etc. directly from env vars.
     env_var = terminal_config_env_var_for_key(key)
-    if env_var and key != "terminal.cwd":
+    if env_var and key not in _TERMINAL_ENV_MIRROR_EXCLUDED:
         save_env_value(env_var, _terminal_env_value(value))
 
     _touch_skin_file(key, value)
@@ -3533,7 +3538,7 @@ def unset_config_value(key: str):
 
     from hermes_cli.left_core_migration import LEFT_CORE_TERMINAL_KEYS
     env_var = terminal_config_env_var_for_key(key) or LEFT_CORE_TERMINAL_KEYS.get(key)
-    if env_var and key != "terminal.cwd":
+    if env_var and key not in _TERMINAL_ENV_MIRROR_EXCLUDED:
         removed = remove_env_value(env_var) or removed
 
     if not removed:

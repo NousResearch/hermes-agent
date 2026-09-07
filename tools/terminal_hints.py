@@ -45,6 +45,10 @@ def _missing_command_hint(missing: str) -> str:
 
 # Ordered by production frequency — first match wins.
 _OUTPUT_HINTS: list[Callable[[str, str], Optional[str]]] = [
+    _regex_hint(
+        r"cd: ([^:\n]+): No such file or directory",
+        "The working directory '{0}' no longer exists. Choose an existing workdir before retrying.",
+    ),
     # gh version drift; gh already prints the valid field list.
     _regex_hint(r'Unknown JSON field: "?(\w+)',
                 "The installed gh does not support the JSON field '{0}'. The valid field list is "

@@ -42,7 +42,7 @@ terminal:
             - name: workspace
               mountPath: /workspace
             - name: tmp
-              mountPath: /tmp
+              mountPath: /tmp # no-tmp: ok — required in-container Kubernetes mount
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -164,12 +164,14 @@ There is deliberately no key for the image, resources, service account, node sel
 | a command that keeps it running (`sleep infinity`) | the entrypoint exits and, under `restartPolicy: Never`, the pod reaches phase `Succeeded`; it never becomes Ready |
 | `workingDir` on that container | **this is the session's cwd** — Hermes reads it from here, which is why there is no separate mount-path key. Omitted, sessions start in `/workspace` no matter where you mounted anything |
 | a writable volume at that `workingDir` | `builtin cd -- <workingDir>` fails on every command |
+<!-- no-tmp: ok — documents the required in-container Kubernetes mount -->
 | a writable `/tmp` | `init_session()` cannot snapshot the environment, so cwd and env silently stop persisting between commands |
 | `shareProcessNamespace: true` | `sleep` as PID 1 never reaps, so a backgrounded command's wrapper zombifies and background completion is never detected |
 | `terminationGracePeriodSeconds: 1` | teardown waits the default 30s, on the interrupt path, because `sleep infinity` ignores SIGTERM |
 | `activeDeadlineSeconds` | nothing bounds a session pod whose agent died without an ownerReference |
 | `automountServiceAccountToken: false` | the ServiceAccount token is projected into the agent's shell |
 
+<!-- no-tmp: ok — documents the required in-container Kubernetes mount -->
 These are warnings, not errors, except the exec container (which cannot work at all) and a read-only root filesystem with no `/tmp` mount.
 
 :::caution `shareProcessNamespace` and sidecars

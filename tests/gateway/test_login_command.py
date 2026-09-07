@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import threading
 import time
 from types import SimpleNamespace
@@ -8,7 +9,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from gateway.session import AsyncSessionStore, SessionSource, SessionStore
 from hermes_cli import anon_auth
 from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
 
@@ -324,6 +325,93 @@ async def test_a_completion_evicts_welcome_and_clears_its_override(monkeypatch):
     runner._evict_cached_agent.assert_called_once_with("k1")
     assert "k1" not in runner._session_model_overrides
     runner.async_session_store.set_model_override.assert_awaited_once_with("k1", None)
+
+
+def _durable_sweep_runner(monkeypatch, tmp_path):
+    import hermes_state
+
+    def no_sqlite(**_kwargs):
+        raise RuntimeError("Exercise sessions.json persistence")
+
+    monkeypatch.setattr(hermes_state, "SessionDB", no_sqlite)
+    runner = _runner(monkeypatch)
+    store = SessionStore(sessions_dir=tmp_path, config=runner.config)
+    key = store.get_or_create_session(_source()).session_key
+    override = {"model": anon_auth.GUEST_MODEL}
+    store.set_model_override(key, override)
+    runner.session_store = store
+    runner._async_session_store = AsyncSessionStore(store)
+    runner._session_model_overrides[key] = dict(override)
+    runner._agent_cache[key] = (
+        SimpleNamespace(provider="nous", model=anon_auth.GUEST_MODEL), "signature")
+    return runner, store, key, override
+
+
+@pytest.mark.asyncio
+async def test_durable_clear_fails_once_then_succeeds_before_eviction(monkeypatch, tmp_path):
+    runner, store, key, override = _durable_sweep_runner(monkeypatch, tmp_path)
+    save = store._save_sessions_json
+    writes = []
+
+    def fail_once(data):
+        writes.append(data)
+        assert runner._session_model_overrides[key] == override
+        runner._evict_cached_agent.assert_not_called()
+        if len(writes) == 1:
+            raise OSError("disk temporarily unavailable")
+        save(data)
+
+    monkeypatch.setattr(store, "_save_sessions_json", fail_once)
+    attempt = SimpleNamespace(source=_source(), attempt_id="attempt")
+    state = anon_auth.Completed(model="model-1", model_changed=True)
+
+    await runner._render_login_state(attempt, state)
+
+    assert len(writes) == 2
+    assert key not in runner._session_model_overrides
+    runner._evict_cached_agent.assert_called_once_with(key)
+    reloaded = SessionStore(sessions_dir=tmp_path, config=runner.config)
+    assert reloaded.get_model_override(key) is None
+    runner._deliver_platform_notice.assert_awaited_once_with(attempt.source, state.copy)
+
+
+@pytest.mark.asyncio
+async def test_durable_clear_fails_twice_keeps_override_and_warns(monkeypatch, tmp_path, caplog):
+    runner, store, key, override = _durable_sweep_runner(monkeypatch, tmp_path)
+    # Multiple failed sessions still produce exactly one extra completion line.
+    second_key = store.get_or_create_session(_source(chat_id="chat-2")).session_key
+    store.set_model_override(second_key, override)
+    runner._session_model_overrides[second_key] = dict(override)
+    runner._agent_cache[second_key] = runner._agent_cache[key]
+    writes = []
+
+    def fail_always(data):
+        writes.append(data)
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(store, "_save_sessions_json", fail_always)
+    attempt = SimpleNamespace(source=_source(), attempt_id="attempt")
+    state = anon_auth.Completed(model="model-1", model_changed=True)
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        await runner._render_login_state(attempt, state)
+
+    assert len(writes) == 4
+    reloaded = SessionStore(sessions_dir=tmp_path, config=runner.config)
+    rebuilt = _runner(monkeypatch)
+    rebuilt.session_store = reloaded
+    for session_key in (key, second_key):
+        assert runner._session_model_overrides[session_key] == override
+        assert reloaded.get_model_override(session_key) == override
+        rebuilt._rehydrate_session_model_override(session_key)
+        assert rebuilt._session_model_overrides[session_key]["model"] == override["model"]
+        assert any(
+            record.levelno == logging.WARNING and session_key in record.getMessage()
+            and "failed to clear free-tier override" in record.getMessage()
+            for record in caplog.records)
+    runner._evict_cached_agent.assert_not_called()
+    runner._deliver_platform_notice.assert_awaited_once_with(
+        attempt.source,
+        state.copy + "\nSome chats are still on the free tier; use /model in those chats to switch.")
 
 
 @pytest.mark.asyncio

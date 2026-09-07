@@ -138,6 +138,11 @@ account over a free-tier identity (CLI `upgrade_guest`, the desktop poller): it 
 welcome route to the account's host and the tier's recommended default
 (`models.recommended_nous_default_model`, shared with `GET /api/model/recommended-default`).
 
+The shared flow, states, and copy live in `anon_sign_in.py`; CLI rendering lives in
+`anon_sign_in_cli.py`. `anon_auth.py` keeps identity, promotion polling, and settlement, and
+re-exports the existing sign-in API. The flow resolves identity and persistence collaborators
+through `anon_auth` at call time to preserve module-attribute monkeypatch seams.
+
 The sign-in itself is one composition: `anon_auth.run_sign_in()` yields `SignInState`s (`Code`,
 `Waiting`, `Completed`, `Declined`, `Superseded`, `TimedOut`, `Retired`, `Failed`,
 `AlreadySignedIn`, `Unavailable`). It reads the current state itself, holds one absolute deadline

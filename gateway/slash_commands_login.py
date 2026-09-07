@@ -164,14 +164,17 @@ class GatewayLoginCommandsMixin:
         if isinstance(state, anon_auth.Waiting):
             return
         if isinstance(state, anon_auth.Completed):
+            copy = state.copy
             if state.model_changed and state.model:
-                await self._sweep_sessions_off_welcome()
-            await self._push_login(attempt, state.copy)
+                failed = await self._sweep_sessions_off_welcome()
+                if failed:
+                    copy += "\nSome chats are still on the free tier; use /model in those chats to switch."
+            await self._push_login(attempt, copy)
             return
         await self._push_login(attempt, state.copy)
 
-    async def _sweep_sessions_off_welcome(self) -> None:
-        """Evict cached free-tier routes and clear overrides pinned to that route."""
+    async def _sweep_sessions_off_welcome(self) -> int:
+        """Clear durable overrides before eviction; return the number of failed clears."""
         lock = getattr(self, "_agent_cache_lock", None)
         cache = getattr(self, "_agent_cache", None) or {}
         with (lock or contextlib.nullcontext()):
@@ -182,16 +185,26 @@ class GatewayLoginCommandsMixin:
             and str(getattr(agent, "provider", "")) == "nous"
             and str(getattr(agent, "model", "")) == anon_auth.GUEST_MODEL
         ]
+        failed = 0
         for key in keys:
+            overrides = self._session_model_overrides
+            override = overrides.get(key) or {}
+            if str(override.get("model") or "") == anon_auth.GUEST_MODEL:
+                for attempt in range(2):
+                    try:
+                        await self.async_session_store.set_model_override(key, None)
+                        break
+                    except Exception:
+                        if attempt == 1:
+                            logger.warning(
+                                "/login: failed to clear free-tier override for %s", key, exc_info=True)
+                else:
+                    # Retain the live route while disk still pins it, including on a rebuild.
+                    failed += 1
+                    continue
+                overrides.pop(key, None)
             try:
                 self._evict_cached_agent(key)
             except Exception:
                 logger.warning("/login: failed to evict free-tier session %s", key, exc_info=True)
-            try:
-                overrides = self._session_model_overrides
-                override = overrides.get(key) or {}
-                if str(override.get("model") or "") == anon_auth.GUEST_MODEL:
-                    overrides.pop(key, None)
-                    await self.async_session_store.set_model_override(key, None)
-            except Exception:
-                logger.warning("/login: failed to clear free-tier override for %s", key, exc_info=True)
+        return failed

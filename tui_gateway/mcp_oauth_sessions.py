@@ -237,6 +237,19 @@ def poll_flow(session_id: str, server_name: str) -> Dict[str, Any]:
     return out
 
 
+def cancel_flow(session_id: str, server_name: str, hermes_home: str) -> Dict[str, Any]:
+    """Cancel only the owning profile's flow and release its callback waiter."""
+    rec, err = _lookup(session_id, server_name)
+    if rec is None:
+        return {"ok": False, "error_message": err}
+    if rec["hermes_home"] != hermes_home:
+        return {"ok": False, "error_message": "profile mismatch for session"}
+    flow = rec["flow"]
+    flow.mark_error("OAuth cancelled by user")
+    _shutdown_listener(rec)
+    return {"ok": True, "status": flow.snapshot()["status"]}
+
+
 def deliver_callback_flow(
     session_id: str, server_name: str, *, code: Optional[str], state: Optional[str],
     error: Optional[str] = None) -> Dict[str, Any]:

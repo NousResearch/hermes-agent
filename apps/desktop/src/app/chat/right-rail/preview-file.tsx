@@ -265,9 +265,9 @@ function dataUrlToBlob(dataUrl: string) {
   return new Blob([bytes], { type: 'application/pdf' })
 }
 
-async function readTextPreview(filePath: string) {
+async function readTextPreview(filePath: string, ownerRoute?: PreviewTarget['ownerRoute']) {
   try {
-    return await readDesktopFileText(filePath)
+    return ownerRoute ? await readDesktopFileText(filePath, ownerRoute) : await readDesktopFileText(filePath)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
 
@@ -735,7 +735,11 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         if (isImage || isPdf) {
           // Prefer bytes the caller already handed us (a pasted/dropped
           // screenshot) over re-reading a path that may be transient/unreadable.
-          const dataUrl = target.dataUrl || (await readDesktopFileDataUrl(filePath))
+          const dataUrl =
+            target.dataUrl ||
+            (target.ownerRoute
+              ? await readDesktopFileDataUrl(filePath, target.ownerRoute)
+              : await readDesktopFileDataUrl(filePath))
 
           if (active) {
             setState({ dataUrl, loading: false })
@@ -744,7 +748,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           return
         }
 
-        const result = await readTextPreview(filePath)
+        const result = await readTextPreview(filePath, target.ownerRoute)
 
         if (active) {
           const shouldBlock = !forcePreview && (result.binary || (result.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
@@ -763,8 +767,15 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           // Empty (clean file / not a repo / remote) just hides the option.
           if (!shouldBlock) {
             try {
-              const root = await desktopGitRoot(filePath)
-              const diff = root ? await desktopFileDiff(root, filePath) : ''
+              const root = target.ownerRoute
+                ? await desktopGitRoot(filePath, target.ownerRoute)
+                : await desktopGitRoot(filePath)
+
+              const diff = root
+                ? target.ownerRoute
+                  ? await desktopFileDiff(root, filePath, target.ownerRoute)
+                  : await desktopFileDiff(root, filePath)
+                : ''
 
               if (active && diff.trim()) {
                 setState(prev => (prev.text === result.text ? { ...prev, diff } : prev))
@@ -800,7 +811,8 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     reloadKey,
     selfReload,
     target.dataUrl,
-    target.language
+    target.language,
+    target.ownerRoute
   ])
 
   useEffect(() => {
@@ -933,7 +945,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       // choice. `force` is the user picking "overwrite" from that banner.
       if (!force) {
         try {
-          const current = await readTextPreview(filePath)
+          const current = await readTextPreview(filePath, target.ownerRoute)
 
           if (!current.binary && (current.text ?? '') !== baselineRef.current) {
             setConflict(true)
@@ -946,7 +958,12 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         }
       }
 
-      await writeDesktopFileText(filePath, draftRef.current)
+      if (target.ownerRoute) {
+        await writeDesktopFileText(filePath, draftRef.current, target.ownerRoute)
+      } else {
+        await writeDesktopFileText(filePath, draftRef.current)
+      }
+
       baselineRef.current = draftRef.current
       setDirty(false)
       setConflict(false)

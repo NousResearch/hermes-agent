@@ -81,10 +81,19 @@ import {
   recordSessionEventScope,
   resetTileRuntimeBindings
 } from '@/store/session-states'
-import { windowProfileOverride } from '@/store/windows'
+import { windowConnectionOverride, windowProfileOverride } from '@/store/windows'
 import type { RpcEvent } from '@/types/hermes'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
+
+function getWindowConnection(desktop: NonNullable<typeof window.hermesDesktop>) {
+  const connectionId = windowConnectionOverride()
+  const profile = windowProfileOverride()
+
+  return connectionId && desktop.getConnectionFor
+    ? desktop.getConnectionFor({ connectionId, profile, priority: 'foreground' })
+    : desktop.getConnection(profile)
+}
 
 // After the reconnect loop has been failing for this long, raise a NON-blocking
 // warning toast. Full-screen BootFailureOverlay used to lock the user out of
@@ -616,7 +625,7 @@ export function useGatewayBoot({
         // shared backend-boot budget rather than the reconnect budget because
         // ensureBackend may cold-spawn a pooled helper backend here.
         const conn = await withTimeout(
-          desktop.getConnection(windowProfileOverride() ?? undefined),
+          getWindowConnection(desktop),
           BACKEND_BOOT_WAIT_TIMEOUT_MS,
           'Timed out reconnecting to Hermes backend'
         )
@@ -1026,7 +1035,7 @@ export function useGatewayBoot({
         // rides out a full backend cold spawn, so it gets the shared 45s
         // backend-boot budget, not the 20s reconnect budget.
         const conn = await withTimeout(
-          desktop.getConnection(windowProfileOverride() ?? undefined),
+          getWindowConnection(desktop),
           BACKEND_BOOT_WAIT_TIMEOUT_MS,
           'Timed out connecting to Hermes backend'
         )

@@ -3,6 +3,7 @@ import { atom, computed } from 'nanostores'
 import { persistentAtom } from '@/lib/persisted'
 import { readKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
 import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
@@ -36,6 +37,8 @@ export interface PreviewTarget {
   large?: boolean
   language?: string
   mimeType?: string
+  /** Exact backend that owns this file. */
+  ownerRoute?: SessionOwnerRoute
   path?: string
   previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
   renderMode?: 'preview' | 'source'

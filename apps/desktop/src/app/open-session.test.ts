@@ -212,6 +212,14 @@ describe('openSession', () => {
     expect(openSessionTile).not.toHaveBeenCalled()
   })
 
+  it('passes an exact owner route to a standalone window', () => {
+    const ownerRoute = { connectionId: 'source-b', profile: 'desktop-alias', targetProfile: 'worker' }
+
+    openSession('s1', navigate, 'window', { ownerRoute, workspaceMode: 'sessions' })
+
+    expect(openSessionInNewWindow).toHaveBeenCalledWith('s1', { ownerRoute })
+  })
+
   it('window falls back to a tab when pop-out is unavailable', () => {
     canOpenSessionWindow.mockReturnValue(false)
     focusOpenSession.mockReturnValue(null)

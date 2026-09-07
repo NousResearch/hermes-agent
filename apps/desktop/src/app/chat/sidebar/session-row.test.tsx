@@ -3,6 +3,8 @@ import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { startSessionDrag } from '@/app/chat/session-drag'
+import { openSession } from '@/app/open-session'
 import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
@@ -52,6 +54,7 @@ vi.mock('@/i18n', () => ({
 
 vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => null }))
 vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
+vi.mock('@/app/open-session', () => ({ openSession: vi.fn() }))
 // PlatformAvatar is intentionally NOT mocked (do not reintroduce this — see
 // #67500, Gille's third pass): it's a forwardRef component that spreads its
 // props onto the rendered span, and mocking it with a stand-in that spreads
@@ -171,6 +174,35 @@ const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
       unread={false}
     />
   )
+
+it('stamps the exact connection owner into a sidebar drag', () => {
+  const session = makeSession({ connection_id: 'source-b', profile: 'worker', title: 'Remote row' })
+
+  renderRow(session)
+  fireEvent.pointerDown(screen.getByText('Remote row'), { button: 0 })
+
+  expect(startSessionDrag).toHaveBeenCalledWith(
+    {
+      id: 's1',
+      ownerRoute: { connectionId: 'source-b', profile: 'worker', targetProfile: 'worker' },
+      profile: 'worker',
+      title: 'Remote row'
+    },
+    expect.anything()
+  )
+})
+
+it('carries the exact owner into a modifier-click tab open', () => {
+  const session = makeSession({ connection_id: 'source-b', profile: 'worker', title: 'Remote row' })
+
+  renderRow(session)
+  fireEvent.click(screen.getByText('Remote row'), { metaKey: true })
+
+  expect(openSession).toHaveBeenCalledWith('s1', expect.any(Function), 'tab', {
+    ownerRoute: { connectionId: 'source-b', profile: 'worker', targetProfile: 'worker' },
+    workspaceMode: 'sessions'
+  })
+})
 
 // The row no longer takes its running state as a prop, so this drives the real
 // store the way the app does. $workingSessionIds is the actual computed here

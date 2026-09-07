@@ -6,6 +6,7 @@ import type {
   HermesSelectPathsOptions
 } from '@/global'
 import { $connection } from '@/store/session'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 
 export interface DesktopFsRemotePicker {
   selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
@@ -41,7 +42,15 @@ export function desktopFsCacheKey(connection: HermesConnection | null = $connect
   return connectionCacheKey(connection)
 }
 
-export function isDesktopFsRemoteMode() {
+export function isDesktopFsRemoteMode(owner?: SessionOwnerRoute) {
+  if (owner?.mode) {
+    return owner.mode === 'remote'
+  }
+
+  if (owner?.connectionId) {
+    return owner.connectionId !== 'local'
+  }
+
   return $connection.get()?.mode === 'remote'
 }
 
@@ -51,8 +60,10 @@ export function desktopFsProfile(): string | undefined {
   return $connection.get()?.profile || undefined
 }
 
-function fsPath(endpoint: string, filePath: string) {
-  return `/api/fs/${endpoint}?path=${encodeURIComponent(filePath)}`
+function fsPath(endpoint: string, filePath: string, owner?: SessionOwnerRoute) {
+  const profile = owner?.targetProfile ? `&profile=${encodeURIComponent(owner.targetProfile)}` : ''
+
+  return `/api/fs/${endpoint}?path=${encodeURIComponent(filePath)}${profile}`
 }
 
 function bridge() {
@@ -65,9 +76,23 @@ function bridge() {
   return desktop
 }
 
-function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
+function remoteFsApi<T>(path: string, body?: Record<string, unknown>, owner?: SessionOwnerRoute): Promise<T> {
+  if (!owner) {
+    return hermesApi<T>(
+      body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
+    )
+  }
+
   return hermesApi<T>(
-    body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
+    body
+      ? {
+          body,
+          connectionId: owner.connectionId,
+          method: 'POST',
+          path,
+          profile: owner.profile
+        }
+      : { connectionId: owner.connectionId, path, profile: owner.profile }
   )
 }
 
@@ -79,22 +104,26 @@ export async function readDesktopDir(path: string): Promise<HermesReadDirResult>
   return remoteFsApi<HermesReadDirResult>(fsPath('list', path))
 }
 
-export async function readDesktopFileText(path: string): Promise<HermesReadFileTextResult> {
-  if (!isDesktopFsRemoteMode()) {
+export async function readDesktopFileText(path: string, owner?: SessionOwnerRoute): Promise<HermesReadFileTextResult> {
+  if (!isDesktopFsRemoteMode(owner)) {
     return bridge().readFileText(path)
   }
 
-  return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path))
+  return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path, owner), undefined, owner)
 }
 
 // Save UTF-8 text back to a file. Local writes go through the hardened Electron
 // IPC; remote writes hit the dashboard's POST /api/fs/write-text (same path
 // hardening, parent-must-exist, size cap) so the editor behaves identically in
 // both modes. Stale-on-disk detection is the caller's job (re-read before save).
-export async function writeDesktopFileText(path: string, content: string): Promise<{ path: string }> {
+export async function writeDesktopFileText(
+  path: string,
+  content: string,
+  owner?: SessionOwnerRoute
+): Promise<{ path: string }> {
   const desktop = bridge()
 
-  if (!isDesktopFsRemoteMode()) {
+  if (!isDesktopFsRemoteMode(owner)) {
     if (!desktop.writeTextFile) {
       throw new Error('Saving is not available')
     }
@@ -102,17 +131,17 @@ export async function writeDesktopFileText(path: string, content: string): Promi
     return desktop.writeTextFile(path, content)
   }
 
-  const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/write-text', { content, path })
+  const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/write-text', { content, path }, owner)
 
   return { path: result.path || path }
 }
 
-export async function readDesktopFileDataUrl(path: string): Promise<string> {
-  if (!isDesktopFsRemoteMode()) {
+export async function readDesktopFileDataUrl(path: string, owner?: SessionOwnerRoute): Promise<string> {
+  if (!isDesktopFsRemoteMode(owner)) {
     return bridge().readFileDataUrl(path)
   }
 
-  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))
+  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path, owner), undefined, owner)
 
   return typeof result === 'string' ? result : result.dataUrl || ''
 }
@@ -140,14 +169,14 @@ export async function readDesktopFileDataUrlLocalFirst(path: string): Promise<st
   return readDesktopFileDataUrl(path)
 }
 
-export async function desktopGitRoot(path: string): Promise<string | null> {
+export async function desktopGitRoot(path: string, owner?: SessionOwnerRoute): Promise<string | null> {
   const desktop = bridge()
 
-  if (!isDesktopFsRemoteMode()) {
+  if (!isDesktopFsRemoteMode(owner)) {
     return desktop.gitRoot ? desktop.gitRoot(path) : null
   }
 
-  return (await remoteFsApi<{ root: string | null }>(fsPath('git-root', path))).root
+  return (await remoteFsApi<{ root: string | null }>(fsPath('git-root', path), undefined, owner)).root
 }
 
 export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string } | null> {
@@ -193,10 +222,16 @@ export async function copyTextToClipboard(text: string): Promise<void> {
 
 // Working-tree-vs-HEAD diff for one file. Empty when unchanged / not a repo.
 // Remote gateway → backend git (/api/git/file-diff); local → Electron git.
-export async function desktopFileDiff(repoRoot: string, filePath: string): Promise<string> {
-  if (isDesktopFsRemoteMode()) {
+export async function desktopFileDiff(
+  repoRoot: string,
+  filePath: string,
+  owner?: SessionOwnerRoute
+): Promise<string> {
+  if (isDesktopFsRemoteMode(owner)) {
     const result = await remoteFsApi<{ diff: string }>(
-      `/api/git/file-diff?path=${encodeURIComponent(repoRoot)}&file=${encodeURIComponent(filePath)}`
+      `/api/git/file-diff?path=${encodeURIComponent(repoRoot)}&file=${encodeURIComponent(filePath)}`,
+      undefined,
+      owner
     )
 
     return result.diff || ''

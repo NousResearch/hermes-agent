@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { readDesktopFileDataUrl } = vi.hoisted(() => ({ readDesktopFileDataUrl: vi.fn() }))
+const { isDesktopFsRemoteMode, readDesktopFileDataUrl } = vi.hoisted(() => ({
+  isDesktopFsRemoteMode: vi.fn(() => true),
+  readDesktopFileDataUrl: vi.fn()
+}))
 
 vi.mock('@/lib/desktop-fs', () => ({
-  isDesktopFsRemoteMode: () => true,
+  isDesktopFsRemoteMode,
   readDesktopFileDataUrl,
   readDesktopFileText: vi.fn()
 }))
@@ -28,6 +31,7 @@ const remoteTarget = {
 describe('remote HTML previews', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    isDesktopFsRemoteMode.mockReturnValue(true)
     window.hermesDesktop = {
       normalizePreviewTarget: vi.fn(async () => remoteTarget)
     } as never
@@ -131,6 +135,40 @@ describe('remote HTML previews', () => {
 
   it('preserves POSIX double-slash file paths', () => {
     expect(localPreviewTarget('//srv/share/report #1?.html')?.url).toBe('file:////srv/share/report%20%231%3F.html')
+  })
+
+  it('keeps local-owner previews persistable', () => {
+    isDesktopFsRemoteMode.mockReturnValue(false)
+
+    expect(
+      localPreviewTarget('/tmp/report.md', undefined, {
+        connectionId: 'local-device',
+        mode: 'local',
+        profile: 'default'
+      })
+    ).toMatchObject({
+      source: '/tmp/report.md',
+      transient: undefined
+    })
+  })
+
+  it('preserves a local owner after Electron normalization', async () => {
+    const ownerRoute = { connectionId: 'local-device', mode: 'local' as const, profile: 'default' }
+    isDesktopFsRemoteMode.mockReturnValue(false)
+    window.hermesDesktop = {
+      normalizePreviewTarget: vi.fn(async () => ({
+        ...remoteTarget,
+        path: '/tmp/report.md',
+        previewKind: 'text',
+        source: '/tmp/report.md',
+        url: 'file:///tmp/report.md'
+      }))
+    } as never
+
+    await expect(normalizeOrLocalPreviewTarget('/tmp/report.md', undefined, ownerRoute)).resolves.toMatchObject({
+      ownerRoute,
+      source: '/tmp/report.md'
+    })
   })
 
   it('opens ordinary targets without staging them', async () => {

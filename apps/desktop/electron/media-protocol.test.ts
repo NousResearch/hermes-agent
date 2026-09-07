@@ -53,7 +53,7 @@ describe('media protocol helpers', () => {
   it('preserves a configured gateway path prefix', () => {
     const endpoint = new URL(remoteMediaEndpoint('https://gateway.test/hermes/', '/tmp/a b.mp4'))
 
-    expect(endpoint.pathname).toBe('/hermes/api/files/stream')
+    expect(endpoint.pathname).toBe('/hermes/api/fs/stream')
     expect(endpoint.searchParams.get('path')).toBe('/tmp/a b.mp4')
   })
 })
@@ -105,7 +105,7 @@ describe('createMediaProtocolHandler', () => {
     })
 
     const response = await createMediaProtocolHandler(deps)(
-      request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?connectionId=work-ssh&profile=reviewer', {
+      request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?connectionId=work-ssh&profile=reviewer&sessionId=session-7', {
         Range: 'bytes=0-1023'
       })
     )
@@ -115,8 +115,9 @@ describe('createMediaProtocolHandler', () => {
     expect(deps.fetchRemote).toHaveBeenCalledOnce()
     const [rawUrl, headers] = vi.mocked(deps.fetchRemote).mock.calls[0]
     const url = new URL(rawUrl)
-    expect(url.pathname).toBe('/hermes/api/files/stream')
+    expect(url.pathname).toBe('/hermes/api/fs/stream')
     expect(url.searchParams.get('path')).toBe('/root/outputs/render.mp4')
+    expect(url.searchParams.get('session_id')).toBe('session-7')
     expect(url.searchParams.has('token')).toBe(false)
     expect(headers.get('x-hermes-session-token')).toBe('s e/cret')
     expect(headers.get('range')).toBe('bytes=0-1023')
@@ -134,7 +135,9 @@ describe('createMediaProtocolHandler', () => {
     })
 
     await createMediaProtocolHandler(deps)(
-      request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?connectionId=cloud&profile=research')
+      request(
+        'hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?connectionId=cloud&profile=desktop-alias&targetProfile=research'
+      )
     )
 
     const [rawUrl] = vi.mocked(deps.fetchRemote).mock.calls[0]
@@ -142,6 +145,99 @@ describe('createMediaProtocolHandler', () => {
 
     expect(url.searchParams.get('path')).toBe('/root/outputs/render.mp4')
     expect(url.searchParams.get('profile')).toBe('research')
+    expect(deps.resolveRemoteConnection).toHaveBeenCalledWith({
+      connectionId: 'cloud',
+      profile: 'desktop-alias'
+    })
+  })
+
+  it('falls back to the legacy managed stream only when the new route is missing', async () => {
+    const fetchRemote = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ detail: 'Not Found' }, { status: 404 }))
+      .mockResolvedValueOnce(new Response('legacy', { status: 206 }))
+
+    const deps = dependencies({ fetchRemote })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?connectionId=work-ssh')
+    )
+
+    expect(response.status).toBe(206)
+    expect(fetchRemote).toHaveBeenCalledTimes(2)
+    expect(new URL(fetchRemote.mock.calls[0][0]).pathname).toBe('/api/fs/stream')
+    expect(new URL(fetchRemote.mock.calls[1][0]).pathname).toBe('/api/files/stream')
+  })
+
+  it('uses the same OAuth cookie transport for the legacy 404 fallback', async () => {
+    const fetchRemoteWithCookies = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ detail: 'Not Found' }, { status: 404 }))
+      .mockResolvedValueOnce(new Response('legacy', { status: 206 }))
+
+    const deps = dependencies({
+      fetchRemoteWithCookies,
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode: 'oauth' as const,
+        baseUrl: 'https://gateway.test',
+        mode: 'remote' as const,
+        token: null
+      }))
+    })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4')
+    )
+
+    expect(response.status).toBe(206)
+    expect(fetchRemoteWithCookies).toHaveBeenCalledTimes(2)
+    expect(new URL(fetchRemoteWithCookies.mock.calls[1][0]).pathname).toBe('/api/files/stream')
+  })
+
+  it('safely probes a missing HEAD route before using the legacy endpoint', async () => {
+    const fetchRemote = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(Response.json({ detail: 'Not Found' }, { status: 404 }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+
+    const deps = dependencies({ fetchRemote })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4', {}, 'HEAD')
+    )
+
+    expect(response.status).toBe(200)
+    expect(fetchRemote).toHaveBeenCalledTimes(3)
+    expect(fetchRemote.mock.calls.map(call => call[2])).toEqual(['HEAD', 'GET', 'HEAD'])
+    expect((fetchRemote.mock.calls[1][1] as Headers).get('range')).toBe('bytes=0-0')
+    expect(new URL(fetchRemote.mock.calls[2][0]).pathname).toBe('/api/files/stream')
+  })
+
+  it('does not retry auth or server failures against the legacy endpoint', async () => {
+    for (const status of [401, 500]) {
+      const fetchRemote = vi.fn(async () => new Response('failed', { status }))
+      const deps = dependencies({ fetchRemote })
+
+      const response = await createMediaProtocolHandler(deps)(
+        request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4')
+      )
+
+      expect(response.status).toBe(status)
+      expect(fetchRemote).toHaveBeenCalledOnce()
+    }
+  })
+
+  it('does not turn a file or session 404 into an unscoped legacy request', async () => {
+    const fetchRemote = vi.fn(async () => Response.json({ detail: 'Session not found' }, { status: 404 }))
+    const deps = dependencies({ fetchRemote })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?sessionId=unknown')
+    )
+
+    expect(response.status).toBe(404)
+    expect(fetchRemote).toHaveBeenCalledOnce()
   })
 
   it('preserves explicit HEAD requests through the token-auth remote proxy', async () => {

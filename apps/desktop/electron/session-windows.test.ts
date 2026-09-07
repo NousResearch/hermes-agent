@@ -7,7 +7,8 @@ import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
-  instanceWindowBounds
+  instanceWindowBounds,
+  sessionWindowRegistryKey
 } from './session-windows'
 
 // A minimal fake BrowserWindow: tracks listeners + destroyed state and lets a
@@ -74,6 +75,20 @@ test('buildSessionWindowUrl carries the owning profile in the query before the h
   assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1&profile=work#/abc123')
 })
 
+test('buildSessionWindowUrl carries an exact connection route', () => {
+  const url = buildSessionWindowUrl('abc123', {
+    connectionId: 'remote box',
+    devServer: 'http://localhost:5173',
+    profile: 'desktop-alias',
+    targetProfile: 'backend-worker'
+  })
+
+  assert.equal(
+    url,
+    'http://localhost:5173/?win=secondary&connectionId=remote%20box&profile=desktop-alias&targetProfile=backend-worker#/abc123'
+  )
+})
+
 test('buildSessionWindowUrl encodes the session id in the hash route', () => {
   const url = buildSessionWindowUrl('a b/c', { devServer: 'http://localhost:5173' })
 
@@ -138,6 +153,25 @@ test('registry opens one window per session and focuses on re-open', () => {
   assert.equal(first, second)
   assert.equal(registry.size, 1)
   assert.equal(win.calls.focus, 1, 'second open focuses the existing window')
+})
+
+test('registry distinguishes the same session id on different owner routes', () => {
+  const registry = createSessionWindowRegistry()
+  const routeA = { connectionId: 'source-a', profile: 'default', targetProfile: 'default' }
+  const routeB = { connectionId: 'source-b', profile: 'default', targetProfile: 'default' }
+  const keyA = sessionWindowRegistryKey('shared-session', routeA)
+  const keyB = sessionWindowRegistryKey('shared-session', routeB)
+  const first = makeFakeWindow()
+  const second = makeFakeWindow()
+
+  registry.openOrFocus(keyA, () => first)
+  registry.openOrFocus(keyB, () => second)
+  registry.openOrFocus(keyA, () => makeFakeWindow())
+
+  assert.equal(registry.size, 2)
+  assert.equal(first.calls.focus, 1)
+  assert.equal(second.calls.focus, 0)
+  assert.equal(sessionWindowRegistryKey('legacy-session'), 'legacy-session')
 })
 
 test('registry restores + shows a minimized/hidden window on re-open', () => {

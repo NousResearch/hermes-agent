@@ -733,6 +733,26 @@ async def fs_download(
     )
 
 
+@router.get("/api/fs/stream")
+@router.head("/api/fs/stream")
+async def fs_stream(
+    path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
+):
+    """Stream session-scoped audio/video inline with HTTP Range support."""
+    target, _st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    if target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
+        raise HTTPException(status_code=415, detail="Unsupported media type")
+    return FileResponse(
+        path=str(target),
+        media_type=_fs_mime_type(target),
+        filename=target.name,
+        content_disposition_type="inline",
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
+
+
 @router.get("/api/fs/git-root")
 async def fs_git_root(path: str):
     target = _fs_path(path)

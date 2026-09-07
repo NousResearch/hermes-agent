@@ -1,8 +1,39 @@
 import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { capitalize } from '@/lib/text'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $connection } from '@/store/session'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
+
+export interface GatewayMediaOrigin {
+  connectionId?: string
+  mode?: 'local' | 'remote'
+  profile?: string
+  sessionId?: string
+  targetProfile?: string
+}
+
+export function gatewayMediaOriginIsRemote(origin?: GatewayMediaOrigin): boolean {
+  if (origin?.mode) {
+    return origin.mode === 'remote'
+  }
+
+  const connection = origin?.connectionId
+    ? $connectionsRegistry.get()?.connections.find(candidate => candidate.id === origin.connectionId)
+    : undefined
+
+  if (connection) {
+    return connection.kind !== 'local'
+  }
+
+  const foreground = $connection.get()
+
+  if (origin?.connectionId && origin.connectionId !== foreground?.connectionId) {
+    return true
+  }
+
+  return foreground?.mode === 'remote'
+}
 
 interface MediaInfo {
   kind: MediaKind
@@ -81,13 +112,13 @@ export function isFileMediaPath(path: string): boolean {
   return /^(?:file:|\/|~\/|[a-z]:[\\/]|\\\\)/i.test(path)
 }
 
-export async function resolveMediaDisplaySrc(path: string): Promise<string> {
+export async function resolveMediaDisplaySrc(path: string, origin?: GatewayMediaOrigin): Promise<string> {
   if (isInlineMediaSrc(path) || !isFileMediaPath(path)) {
     return path
   }
 
-  if (window.hermesDesktop && isRemoteGateway()) {
-    return gatewayMediaDataUrl(path)
+  if (window.hermesDesktop && gatewayMediaOriginIsRemote(origin)) {
+    return gatewayMediaDataUrl(path, origin)
   }
 
   if (!window.hermesDesktop?.readFileDataUrl) {
@@ -101,16 +132,18 @@ export async function resolveMediaDisplaySrc(path: string): Promise<string> {
 // remote URLs untouched and route filesystem paths through the Electron media
 // protocol. Its main-process handler reads local files directly or proxies a
 // remote gateway with the connection's bearer/cookie/token authentication.
-export async function resolveMediaPlaybackSrc(path: string): Promise<string> {
+export async function resolveMediaPlaybackSrc(path: string, origin?: GatewayMediaOrigin): Promise<string> {
   if (isInlineMediaSrc(path)) {
     return path
   }
 
   if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
-    return isRemoteGateway() ? mediaGatewayStreamUrl(path) : mediaStreamUrl(path)
+    const remote = gatewayMediaOriginIsRemote(origin)
+
+    return remote ? mediaGatewayStreamUrl(path, origin) : mediaStreamUrl(path)
   }
 
-  return resolveMediaDisplaySrc(path)
+  return resolveMediaDisplaySrc(path, origin)
 }
 
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
@@ -137,16 +170,20 @@ export function mediaExternalUrl(path: string): string {
 // Remote gateway audio/video is proxied by the Electron main process. OAuth
 // connections intentionally expose no static token to the renderer, so a bare
 // HTTPS source cannot authenticate reliably. The custom protocol keeps secrets
-// out of renderer URLs while forwarding Range requests to /api/files/stream.
-export function mediaGatewayStreamUrl(path: string): string {
+// out of renderer URLs while forwarding Range requests to /api/fs/stream.
+export function mediaGatewayStreamUrl(path: string, origin?: GatewayMediaOrigin): string {
   const conn = $connection.get()
 
-  if (isRemoteGateway()) {
+  if (gatewayMediaOriginIsRemote(origin)) {
     const file = encodeURIComponent(filePathFromMediaPath(path))
 
     const scope = [
-      conn?.connectionId ? `connectionId=${encodeURIComponent(conn.connectionId)}` : '',
-      conn?.profile ? `profile=${encodeURIComponent(conn.profile)}` : ''
+      origin?.connectionId || conn?.connectionId
+        ? `connectionId=${encodeURIComponent(origin?.connectionId || conn!.connectionId!)}`
+        : '',
+      origin?.profile || conn?.profile ? `profile=${encodeURIComponent(origin?.profile || conn!.profile!)}` : '',
+      origin?.targetProfile ? `targetProfile=${encodeURIComponent(origin.targetProfile)}` : '',
+      origin?.sessionId ? `sessionId=${encodeURIComponent(origin.sessionId)}` : ''
     ]
       .filter(Boolean)
       .join('&')
@@ -198,7 +235,28 @@ export function isRemoteGateway(): boolean {
 // bridge. Remote Desktop artifacts can live anywhere the gateway can read
 // (workspace, skills, ~/.hermes/cache, etc.); /api/media is intentionally
 // narrower and rejects non-images plus images outside its media roots.
-export async function gatewayMediaDataUrl(path: string): Promise<string> {
+export async function gatewayMediaDataUrl(path: string, origin?: GatewayMediaOrigin): Promise<string> {
+  if (origin && window.hermesDesktop?.api) {
+    const connection = $connection.get()
+    const params = new URLSearchParams({ path: filePathFromMediaPath(path) })
+
+    if (origin.targetProfile) {
+      params.set('profile', origin.targetProfile)
+    }
+
+    if (origin.sessionId) {
+      params.set('session_id', origin.sessionId)
+    }
+
+    const result = await window.hermesDesktop.api<string | { dataUrl?: string }>({
+      connectionId: origin.connectionId ?? connection?.connectionId,
+      path: `/api/fs/read-data-url?${params.toString()}`,
+      profile: origin.profile ?? connection?.profile
+    })
+
+    return typeof result === 'string' ? result : result.dataUrl || ''
+  }
+
   return readDesktopFileDataUrl(filePathFromMediaPath(path))
 }
 
@@ -209,7 +267,7 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
 // used by preview endpoints.
 export async function downloadGatewayMediaFile(
   path: string,
-  origin?: { sessionId: string; profile?: string }
+  origin?: GatewayMediaOrigin
 ): Promise<{ canceled?: boolean; path?: string; saved: boolean }> {
   // URI conversion belongs to the gateway OS, not the renderer's URL parser.
   const file = path
@@ -220,10 +278,11 @@ export async function downloadGatewayMediaFile(
   }
 
   return window.hermesDesktop.saveGatewayFile({
-    connectionId: conn?.connectionId,
+    connectionId: origin?.connectionId ?? conn?.connectionId,
     path: file,
     profile: origin?.profile ?? conn?.profile,
-    ...(origin ? { sessionId: origin.sessionId } : {}),
+    ...(origin?.targetProfile ? { targetProfile: origin.targetProfile } : {}),
+    ...(origin?.sessionId ? { sessionId: origin.sessionId } : {}),
     suggestedName: mediaName(file).replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
       try {
         return decodeURIComponent(encoded)

@@ -44,6 +44,7 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
@@ -98,6 +99,7 @@ export async function renameSessionPreferringRpc(
 interface SessionActions {
   sessionId: string
   title: string
+  ownerRoute?: SessionOwnerRoute
   pinned?: boolean
   /** Backend-derived read state — drives the Mark as unread/read label. */
   unread?: boolean
@@ -184,6 +186,7 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
 function useSessionActions({
   sessionId,
   title,
+  ownerRoute,
   pinned = false,
   unread = false,
   profile,
@@ -236,7 +239,7 @@ function useSessionActions({
               // Stack into the MAIN zone as a tab (center dock; the strip
               // sticky-shows on gain) — the door to the tab bar. Focuses first
               // if the session is already on screen.
-              openSession(sessionId, () => undefined, 'tab')
+              openSession(sessionId, () => undefined, 'tab', { ownerRoute, workspaceMode: 'sessions' })
             }
           })
         ]
@@ -249,7 +252,7 @@ function useSessionActions({
             label: r.newWindow,
             onSelect: () => {
               triggerHaptic('selection')
-              openSession(sessionId, () => undefined, 'window')
+              openSession(sessionId, () => undefined, 'window', { ownerRoute, workspaceMode: 'sessions' })
             }
           })
         ]

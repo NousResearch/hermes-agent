@@ -13,7 +13,8 @@ import {
   readDesktopFileDataUrlLocalFirst,
   readDesktopFileText,
   selectDesktopPaths,
-  setDesktopFsRemotePicker
+  setDesktopFsRemotePicker,
+  writeDesktopFileText
 } from './desktop-fs'
 
 const readDir = vi.fn(async () => ({ entries: [{ name: 'local', path: '/local', isDirectory: true }] }))
@@ -37,6 +38,10 @@ const api = vi.fn(async ({ path }: { path: string }) => {
 
   if (path.startsWith('/api/fs/git-root?')) {
     return { root: '/remote' }
+  }
+
+  if (path === '/api/fs/write-text') {
+    return { ok: true, path: '/srv/project/notes.md' }
   }
 
   if (path === '/api/fs/default-cwd') {
@@ -163,6 +168,41 @@ describe('desktop filesystem facade', () => {
       path: '/api/fs/read-data-url?path=%2Fsrv%2Fproject%2Fimage.png',
       profile: 'default'
     })
+  })
+
+  it('uses an explicit remote owner even while the foreground is local', async () => {
+    $connection.set({ connectionId: 'local', mode: 'local', profile: 'default' } as never)
+
+    const owner = {
+      connectionId: 'work-ssh',
+      mode: 'remote' as const,
+      profile: 'desktop-alias',
+      targetProfile: 'backend-profile'
+    }
+
+    await readDesktopFileText('/srv/project/notes.md', owner)
+    await readDesktopFileDataUrl('/srv/project/image.png', owner)
+    await writeDesktopFileText('/srv/project/notes.md', 'updated', owner)
+
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'work-ssh',
+      path: '/api/fs/read-text?path=%2Fsrv%2Fproject%2Fnotes.md&profile=backend-profile',
+      profile: 'desktop-alias'
+    })
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'work-ssh',
+      path: '/api/fs/read-data-url?path=%2Fsrv%2Fproject%2Fimage.png&profile=backend-profile',
+      profile: 'desktop-alias'
+    })
+    expect(api).toHaveBeenCalledWith({
+      body: { content: 'updated', path: '/srv/project/notes.md' },
+      connectionId: 'work-ssh',
+      method: 'POST',
+      path: '/api/fs/write-text',
+      profile: 'desktop-alias'
+    })
+    expect(readFileText).not.toHaveBeenCalled()
+    expect(readFileDataUrl).not.toHaveBeenCalled()
   })
 
   it('pins remote filesystem requests to the active registry connection', async () => {

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $connection } from '@/store/session'
 
 import {
@@ -104,6 +105,21 @@ describe('mediaGatewayStreamUrl', () => {
       'hermes-media://remote/%2Ftmp%2Fa.mp4?connectionId=studio-ssh&profile=voice%20reviewer'
     )
   })
+
+  it('keeps registry and backend profile names separate in stream URLs', () => {
+    $connection.set({ connectionId: 'local-device', mode: 'local', profile: 'default' } as never)
+
+    expect(
+      mediaGatewayStreamUrl('/tmp/a.mp4', {
+        connectionId: 'studio-ssh',
+        mode: 'remote',
+        profile: 'desktop-alias',
+        targetProfile: 'backend-profile'
+      })
+    ).toBe(
+      'hermes-media://remote/%2Ftmp%2Fa.mp4?connectionId=studio-ssh&profile=desktop-alias&targetProfile=backend-profile'
+    )
+  })
 })
 
 describe('resolveMediaDisplaySrc', () => {
@@ -121,6 +137,7 @@ describe('resolveMediaDisplaySrc', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    $connectionsRegistry.set(null)
     $connection.set(null)
   })
 
@@ -152,6 +169,20 @@ describe('resolveMediaDisplaySrc', () => {
     expect(api).toHaveBeenCalledWith({
       path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2Fproject%2Fa%20b.png',
       profile: 'remote-work'
+    })
+  })
+
+  it('keeps the active legacy remote profile when the view has no exact connection id', async () => {
+    vi.stubGlobal('window', { hermesDesktop: { api } })
+    $connection.set({ mode: 'remote', profile: 'voice' } as never)
+
+    await expect(
+      resolveMediaDisplaySrc('/srv/media/frame.png', { mode: 'remote', sessionId: 'stored-session' })
+    ).resolves.toBe('data:image/png;base64,ZHVtbXk=')
+    expect(api).toHaveBeenCalledWith({
+      connectionId: undefined,
+      path: '/api/fs/read-data-url?path=%2Fsrv%2Fmedia%2Fframe.png&session_id=stored-session',
+      profile: 'voice'
     })
   })
 
@@ -266,5 +297,55 @@ describe('downloadGatewayMediaFile', () => {
     await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow(
       'Desktop file download bridge'
     )
+  })
+})
+
+describe('remote media playback routing', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    $connectionsRegistry.set(null)
+    $connection.set(null)
+  })
+
+  it('keeps the transcript owner route when the foreground connection is local', async () => {
+    vi.stubGlobal('hermesDesktop', {})
+    $connection.set({ connectionId: 'local-device', mode: 'local', profile: 'default' } as never)
+    $connectionsRegistry.set({
+      connections: [{ id: 'remote-gateway', kind: 'ssh', label: 'Remote Gateway' }]
+    } as never)
+
+    await expect(
+      resolveMediaPlaybackSrc('/srv/media/movie.mp4', {
+        connectionId: 'remote-gateway',
+        profile: 'assistant'
+      })
+    ).resolves.toBe(
+      'hermes-media://remote/%2Fsrv%2Fmedia%2Fmovie.mp4?connectionId=remote-gateway&profile=assistant'
+    )
+  })
+
+  it('uses an explicit non-foreground owner while the registry is still hydrating', async () => {
+    vi.stubGlobal('hermesDesktop', {})
+    $connection.set({ connectionId: 'local', mode: 'local', profile: 'default' } as never)
+
+    await expect(
+      resolveMediaPlaybackSrc('/srv/media/movie.mp4', {
+        connectionId: 'remote-gateway',
+        profile: 'assistant'
+      })
+    ).resolves.toContain('hermes-media://remote/')
+  })
+
+  it('keeps an explicitly local transcript on the local stream while the foreground connection is remote', async () => {
+    vi.stubGlobal('hermesDesktop', {})
+    $connection.set({ connectionId: 'remote-gateway', mode: 'remote', profile: 'assistant' } as never)
+
+    await expect(
+      resolveMediaPlaybackSrc('/srv/media/movie.mp4', {
+        connectionId: 'local-device',
+        mode: 'local',
+        profile: 'default'
+      })
+    ).resolves.toBe('hermes-media://stream/%2Fsrv%2Fmedia%2Fmovie.mp4')
   })
 })

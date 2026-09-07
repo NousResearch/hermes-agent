@@ -324,11 +324,53 @@ def _systemctl(cmd: list, *, timeout: float):
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
 
 
-def _systemctl_reset_and_restart(manage_cmd: list, svc_name: str):
+# poll() takes signed 32-bit milliseconds; keep headroom for rounding in communicate().
+_SYSTEMCTL_RESTART_TIMEOUT_MAX = (2**31 - 1) // 1000 - 1
+
+
+def _systemd_restart_timeout(scope_cmd: list, svc_name: str, *, start_only: bool = False) -> float:
+    """Outwait the unit's stop + start budgets, not just the systemctl client.
+
+    A client timeout does not cancel the manager's queued restart. Unknown or
+    infinite limits use systemd's usual 90s per phase so automation stays bounded.
+    Custom ExecStop chains or EXTEND_TIMEOUT_USEC can still exceed this budget;
+    genuine timeouts must continue through the existing per-unit failure path.
+    """
+    from gateway.shutdown_forensics import parse_systemd_duration_to_us
+
+    budgets = {"TimeoutStartUSec": 90.0}
+    if not start_only:
+        budgets["TimeoutStopUSec"] = 90.0
+    try:
+        show = _systemctl(
+            scope_cmd + ["show", svc_name, "--property=TimeoutStopUSec,TimeoutStartUSec"],
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return sum(budgets.values()) + 15.0
+    if show.returncode == 0:
+        for line in (show.stdout or "").splitlines():
+            key, _, raw = line.partition("=")
+            if key in budgets:
+                # The shared parser returns None for infinity/unrecognized units.
+                try:
+                    raw = raw.strip()
+                    duration = int(raw) if raw.isascii() and raw.isdigit() else parse_systemd_duration_to_us(raw)
+                    if duration is not None and duration > 0:
+                        budgets[key] = duration / 1_000_000
+                except (ValueError, OverflowError):
+                    pass
+    return min(sum(budgets.values()) + 15.0, _SYSTEMCTL_RESTART_TIMEOUT_MAX)
+
+
+def _systemctl_reset_and_restart(manage_cmd: list, svc_name: str, *, scope_cmd: list | None = None):
     """``reset-failed`` then ``restart``: a unit parked in failed state by systemd's own
     auto-restart can wedge a plain ``restart`` against RestartSec backoff and stay dead."""
+    # Property reads need no manage-units privileges: narrow sudoers may permit
+    # restart/reset-failed but deny show. Keep the same user/system manager scope.
+    timeout = _systemd_restart_timeout(scope_cmd if scope_cmd is not None else manage_cmd, svc_name)
     _systemctl(manage_cmd + ["reset-failed", svc_name], timeout=10)
-    return _systemctl(manage_cmd + ["restart", svc_name], timeout=15)
+    return _systemctl(manage_cmd + ["restart", svc_name], timeout=timeout)
 
 
 def _is_hermes_gateway_unit(unit: str) -> bool:
@@ -735,7 +777,10 @@ def _restart_one_systemd_gateway_unit(
         # privileges; without them auto-restart still fires after RestartSec.
         if _manage_cmd is not None:
             _systemctl(_manage_cmd + ["reset-failed", svc_name], timeout=10)
-            _systemctl(_manage_cmd + ["start", svc_name], timeout=15)
+            _systemctl(
+                _manage_cmd + ["start", svc_name],
+                timeout=_systemd_restart_timeout(scope_cmd, svc_name, start_only=True),
+            )
             if _wait_for_service_active(scope_cmd, svc_name, timeout=10.0):
                 restarted_services.append(svc_name)
                 return
@@ -770,7 +815,7 @@ def _restart_one_systemd_gateway_unit(
 
     # Blunt restart — only when the graceful path failed (no SIGUSR1 wiring, drain over
     # budget, restart-policy mismatch). Mirrors `hermes gateway restart` (`systemd_restart()`).
-    restart = _systemctl_reset_and_restart(_manage_cmd, svc_name)
+    restart = _systemctl_reset_and_restart(_manage_cmd, svc_name, scope_cmd=scope_cmd)
     if restart.returncode != 0:
         failed_or_stale_units.append(svc_name)
         print(f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}")
@@ -782,7 +827,7 @@ def _restart_one_systemd_gateway_unit(
     # Retry once — transient startup failures (stale module cache,
     # import race) often clear; reset-failed so the retry isn't blocked.
     print(f"  ⚠ {svc_name} died after restart, retrying...")
-    _systemctl_reset_and_restart(_manage_cmd, svc_name)
+    _systemctl_reset_and_restart(_manage_cmd, svc_name, scope_cmd=scope_cmd)
     if _wait_for_service_active(scope_cmd, svc_name, timeout=10.0):
         restarted_services.append(svc_name)
         print(f"  ✓ {svc_name} recovered on retry")

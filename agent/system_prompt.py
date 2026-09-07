@@ -269,6 +269,19 @@ def _profile_name_for_home(home: Path) -> str:
         return "default"
 
 
+def resolve_kanban_worker_guidance(valid_tool_names) -> str:
+    """Board-tool access alone does not grant ownership of a dispatched task."""
+    from agent.delegation_context import is_dispatcher_owned_worker_context
+
+    return (
+        KANBAN_GUIDANCE
+        if "kanban_show" in valid_tool_names
+        and os.environ.get("HERMES_KANBAN_TASK")
+        and is_dispatcher_owned_worker_context()
+        else ""
+    )
+
+
 def _tool_guidance_block(agent: Any) -> Optional[str]:
     """Tool-aware behavioral guidance, injected only when the tools are loaded."""
     names = agent.valid_tool_names
@@ -282,10 +295,10 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
         elif getattr(agent, "_user_profile_enabled", True):
             memory_guidance = USER_PROFILE_GUIDANCE
     # Kanban lifecycle: resolved once at __init__ (_kanban_worker_guidance);
-    # the kanban_show fallback covers code paths that bypass agent_init.
+    # the fallback applies the same ownership rule when agent_init was bypassed.
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
-    if _kanban_guidance is None and "kanban_show" in names:
-        _kanban_guidance = KANBAN_GUIDANCE
+    if _kanban_guidance is None:
+        _kanban_guidance = resolve_kanban_worker_guidance(names)
     tool_guidance = [
         memory_guidance,
         SESSION_SEARCH_GUIDANCE if "session_search" in names else None,

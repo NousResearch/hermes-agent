@@ -1041,6 +1041,17 @@ class WeixinAdapter(BasePlatformAdapter):
                         errmsg = resp.get("errmsg") or resp.get("msg")
                         if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
                             raise RuntimeError(f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg or 'unknown error'}")
+                        # ret/errcode -2 is ambiguous: it is the genuine rate limit, but iLink also
+                        # returns it when the context_token has gone stale during a long inbound-idle
+                        # window (e.g. unattended overnight cron pushes). Retry once without the
+                        # token — the same degraded fallback used for -14 — before treating the
+                        # response as a genuine rate limit. A genuine rate limit is unaffected by
+                        # stripping the token, so this is safe either way.
+                        if not retried_without_token and context_token:
+                            retried_without_token, context_token = True, None
+                            self._token_store._cache.pop(self._token_store._key(self._account_id, chat_id), None)
+                            logger.warning("[%s] ret=-2 for %s (stale token suspected); retrying without context_token", self.name, _safe_id(chat_id))
+                            continue
                         # Keep a descriptive error for when the loop exhausts while still limited.
                         last_error = RuntimeError(f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg or 'rate limited'}")
                         if self._record_rate_limit_event():

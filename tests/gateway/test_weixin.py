@@ -316,11 +316,46 @@ class TestWeixinChunkDelivery:
         assert "cooldown" in (first.error or "")
         assert second.success is False
         assert "cooldown" in (second.error or "")
-        # The first rate-limit response is retried once. The second response
-        # crosses the sliding-window threshold, opens the breaker, and both the
-        # rest of the current chunk and follow-up sends fail fast.
-        assert send_message_mock.await_count == 2
+        # The first rate-limit response strips the (stale-suspect) context_token
+        # and retries tokenless (call 1 -> call 2). That tokenless response is a
+        # genuine rate limit, so it records the first event, backs off, and
+        # retries (call 3); the third response crosses the sliding-window
+        # threshold, opens the breaker, and follow-up sends fail fast.
+        assert send_message_mock.await_count == 3
         assert sleep_mock.await_count == 1
+        # The tokenless retry must have evicted the stale token.
+        retry_call = send_message_mock.await_args_list[1].kwargs
+        assert retry_call["context_token"] is None
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_rate_limit_with_stale_token_falls_back_to_tokenless_send(self, send_message_mock, sleep_mock):
+        """ret=-2 from a stale context_token (long inbound-idle window) must
+        degrade to a tokenless send instead of failing the push."""
+        adapter = self._connected_adapter()
+        adapter._send_chunk_retries = 3
+        adapter._send_chunk_retry_delay_seconds = 0
+
+        def _stale_then_ok(*args, **kwargs):
+            if kwargs.get("context_token"):
+                return {
+                    "ret": weixin.RATE_LIMIT_ERRCODE,
+                    "errcode": weixin.RATE_LIMIT_ERRCODE,
+                    "errmsg": "unknown error",
+                }
+            return {"ret": 0, "errcode": 0}
+
+        send_message_mock.side_effect = _stale_then_ok
+
+        result = asyncio.run(adapter.send("wxid_test123", "overnight digest"))
+
+        assert result.success is True
+        assert send_message_mock.await_count == 2
+        assert sleep_mock.await_count == 0
+        # Stale token evicted from the store's cache so later sends go tokenless.
+        assert adapter._token_store._cache.get(
+            adapter._token_store._key(adapter._account_id, "wxid_test123")
+        ) is None
 
 
 class TestWeixinOutboundMedia:

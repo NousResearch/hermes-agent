@@ -7954,7 +7954,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_id=str(query_chat_id or ""), thread_id=str(query_thread_id or ""),
                     )
                 view = await self._run_wisdom_profile_operation(resolve)
-                await self._edit_wisdom_command_view(query, view)
+                await self._edit_wisdom_command_view(query, view, full_details=True)
             except Exception:
                 await query.answer(text="This control is unavailable. Open /wisdom inbox to review current state.", show_alert=True)
             return
@@ -8477,7 +8477,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         bind_view_callbacks(view, context)
 
-    async def _edit_wisdom_command_view(self, query, view) -> None:
+    async def _edit_wisdom_command_view(self, query, view, *, full_details: bool = False) -> None:
         message = getattr(query, "message", None)
         raw_request = getattr(getattr(self, "_bot", None), "do_api_request", None)
         if message is not None and callable(raw_request):
@@ -8487,7 +8487,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     api_kwargs={
                         "chat_id": normalize_telegram_chat_id(message.chat_id),
                         "message_id": int(message.message_id),
-                        "rich_message": {"html": self._wisdom_command_html(view)},
+                        "rich_message": {"html": self._wisdom_command_html(view, full_details=full_details)},
                         "link_preview_options": {"is_disabled": True},
                     },
                 )

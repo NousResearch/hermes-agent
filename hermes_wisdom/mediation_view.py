@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from gateway.wisdom_command import WisdomAction, WisdomItem, WisdomView
 from .consent import ConsentActor, WisdomConsent
-from .review_presentation import full_review_text, professionalism_review_text
+from .review_presentation import (
+    full_review_text,
+    professionalism_review_text,
+    review_status_text,
+)
 
 
 def delivery_groups(items: list[dict]) -> list[list[dict]]:
@@ -23,7 +27,9 @@ def delivery_groups(items: list[dict]) -> list[list[dict]]:
     return recommended + [digest[i : i + 3] for i in range(0, len(digest), 3)]
 
 
-def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
+def advice_view(
+    items: list[dict], *, introduction: bool = False, checks_expanded: bool = False
+) -> WisdomView:
     qualification_only = bool(items) and all(
         item.get("assessment", {}).get("reference", {}).get("kind") == "candidate"
         for item in items
@@ -104,19 +110,43 @@ def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
                 )
             ):
                 check = facts.get(key) or {}
-                detail += f"\n{label}: {check.get('status') or 'unavailable'}"
+                detail += f"\n{label}: {review_status_text(check.get('status'))}"
+                if check.get("status") in {"advisory", "blocked"} and check.get(
+                    "summary"
+                ):
+                    detail += "\n" + str(check["summary"])[:512]
             if sharing:
-                detail += "\n\n" + professionalism_review_text(
-                    facts.get("professionalism_check")
+                check = facts.get("professionalism_check") or {}
+                detail += "\n\nProfessionalism (advisory): " + review_status_text(
+                    check.get("status")
                 )
+                if check.get("status") in {"advisory", "blocked"} and check.get(
+                    "summary"
+                ):
+                    detail += "\n" + str(check["summary"])[:512]
                 detail += "\nSecurity: the prepared package will be scanned before submission."
-            detail += (
-                "\nNothing changes until you review and confirm."
-                if unavailable or sharing
-                else "\nNothing is changed by this recommendation."
-            )
+            if checks_expanded:
+                detail += "\n\n" + (
+                    professionalism_review_text(facts.get("professionalism_check"))
+                    if sharing
+                    else full_review_text(
+                        facts.get("security_check"), facts.get("professionalism_check")
+                    )
+                )
+            if not sharing:
+                detail += (
+                    "\nNothing changes until you review and confirm."
+                    if unavailable
+                    else "\nNothing is changed by this recommendation."
+                )
             if interaction["operation"] == "share":
-                detail += "\nShare prepares a local handoff package. You will review it and approve separately before anything is uploaded or published."
+                detail += "\nYou can review the skill before publishing. Nothing is shared without your approval."
+            actions.append(
+                WisdomAction(
+                    label="Hide checks" if checks_expanded else "Show checks",
+                    callback_data=f"wi:agent:checks.{'hide' if checks_expanded else 'show'}:{interaction['id']}",
+                )
+            )
             labels = {
                 "defer": "Not Now",
                 "inspect": "Review first",
@@ -209,7 +239,7 @@ def interaction_view(result: dict) -> WisdomView:
         detail += "\nAdditional requirements require separate approval."
     detail += "\nNothing changes until you use the confirmation control."
     if result["operation"] == "share":
-        detail += "\nShare prepares a local handoff package only. Publishing requires a separate approval after review."
+        detail += "\nYou can review the skill before publishing. Nothing is shared without your approval."
     if (result.get("result") or {}).get("packaging_state") == "queued":
         detail += "\nPackaging is queued in this conversation. Nothing has been uploaded or published."
     if facts.get("file_names"):
@@ -281,6 +311,25 @@ def resolve_surface_action(
     if row is None:
         raise WisdomNotFound("Wisdom interaction not found")
     actor = ConsentActor(row[0], platform, actor_id, chat_id, thread_id, scope_id)
+    if action in {"checks.show", "checks.hide"}:
+        # Reuse read-only authorization, without preparing a package or applying consent.
+        result = WisdomConsent(service)._resolve(org, identity, actor, "inspect")
+        with service.store.transaction() as db:
+            assessment = db.execute(
+                "SELECT a.* FROM wisdom_assessment a JOIN wisdom_consent c ON c.assessment_id=a.id WHERE c.id=? AND a.organization_id=?",
+                (identity, org),
+            ).fetchone()
+        if assessment is None:
+            raise WisdomNotFound("Wisdom assessment not found")
+        from .mediation_store import _decode
+
+        job = _decode(assessment)
+        if not job.get("advice"):
+            return interaction_view(result)
+        return advice_view(
+            [{"assessment": job, "advice": job["advice"], "interaction": result}],
+            checks_expanded=action == "checks.show",
+        )
     return interaction_view(
         WisdomConsent(service).resolve(org, identity, actor, action)
     )

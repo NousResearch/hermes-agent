@@ -604,8 +604,7 @@ class WisdomMediation:
         )
         return {
             "title": editorial.get("editorial_name") or name,
-            "explanation": reason
-            + " Would you like to share it with your team? Review the professionalism check below before preparing a contribution.",
+            "explanation": reason + " Would you like to share it with your team?",
             "relevance": "recommend",
             "assessment_kind": "qualification",
         }

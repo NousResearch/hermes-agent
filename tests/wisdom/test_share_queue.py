@@ -287,7 +287,7 @@ def test_share_copy_and_controls_keep_publication_separate(sharing):
         "Review first",
         "Share",
     ]
-    assert "separate approval" in view.to_text()
+    assert "Nothing is shared without your approval" in view.to_text()
     view = advice_view([
         {
             "advice": {
@@ -298,7 +298,69 @@ def test_share_copy_and_controls_keep_publication_separate(sharing):
             "interaction": shown,
         }
     ])
-    assert "before anything is uploaded" in view.to_text()
+    assert "You can review the skill before publishing" in view.to_text()
+    assert "handoff package" not in view.to_text()
+
+
+def test_checks_toggle_is_read_only_and_preserves_consent(sharing):
+    from hermes_wisdom.mediation_view import resolve_surface_action
+    from hermes_wisdom.client import WisdomNotFound
+
+    service, mediation, actor, shown, model, _, _ = sharing
+    with service.store.transaction() as db:
+        row = db.execute(
+            "SELECT plan_json FROM wisdom_consent WHERE id=?", (shown["id"],)
+        ).fetchone()
+        plan = json.loads(row[0])
+        plan["professionalism_check"] = {
+            "status": "advisory",
+            "summary": "Check the wording.",
+            "checks": [
+                {
+                    "key": "profanity_or_abuse",
+                    "status": "pass",
+                    "finding_count": 0,
+                    "details": [],
+                }
+            ],
+        }
+        db.execute(
+            "UPDATE wisdom_consent SET plan_json=? WHERE id=?",
+            (json.dumps(plan), shown["id"]),
+        )
+
+    def toggle(action, user=actor.actor_id):
+        return resolve_surface_action(
+            service,
+            f"wi:agent:checks.{action}:{shown['id']}",
+            platform=actor.platform,
+            actor_id=user,
+            chat_id=actor.chat_id,
+            thread_id=actor.thread_id,
+        )
+
+    expanded = toggle("show")
+    assert "Profanity or abusive language" in expanded.to_text()
+    assert expanded.items[0].actions[0].label == "Hide checks"
+    collapsed = toggle("hide")
+    assert "Profanity or abusive language" not in collapsed.to_text()
+    assert (
+        "Advisory" in collapsed.to_text()
+        and "Check the wording." in collapsed.to_text()
+    )
+    assert [a.label for a in collapsed.items[0].actions] == [
+        "Show checks",
+        "Not Now",
+        "Review first",
+        "Share",
+    ]
+    with pytest.raises(WisdomNotFound):
+        toggle("show", "different-user")
+    model.assert_not_called()
+    assert (
+        mediation.consent.resolve("org", shown["id"], actor, "inspect")["state"]
+        == "pending"
+    )
 
 
 def test_private_review_pages_cover_exact_files_without_consuming_consent(sharing):

@@ -131,6 +131,7 @@ def test_qualified_candidate_uses_professionalism_not_installation_assessor(
     assert groups == [items]
     view = advice_view(groups[0])
     assert [a.label for a in view.items[0].actions] == [
+        "Show checks",
         "Not Now",
         "Review first",
         "Share",

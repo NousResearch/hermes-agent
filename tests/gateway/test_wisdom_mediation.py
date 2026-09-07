@@ -116,6 +116,17 @@ async def test_telegram_native_rich_controls_escape_publisher_text():
 
 
 @pytest.mark.asyncio
+async def test_expanded_checks_edit_keeps_full_checklist():
+    adapter = telegram_adapter()
+    current = view()
+    current.items[0].detail = "Review detail " * 60 + "Final professionalism row"
+    query = SimpleNamespace(message=SimpleNamespace(chat_id=42, message_id=19))
+    await adapter._edit_wisdom_command_view(query, current, full_details=True)
+    sent = adapter._bot.do_api_request.call_args.kwargs["api_kwargs"]
+    assert "Final professionalism row" in sent["rich_message"]["html"]
+
+
+@pytest.mark.asyncio
 async def test_telegram_ambiguous_send_never_falls_back_to_duplicate_message():
     adapter = telegram_adapter()
     adapter._bot.do_api_request.side_effect = TimeoutError

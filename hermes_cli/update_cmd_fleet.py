@@ -195,17 +195,31 @@ def _needs_sudo(scope: str) -> bool:
     )
 
 
-def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
-    """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit."""
+def _restart_systemd_gateway_units_best_effort(failed: list, found_units: list | None = None) -> None:
+    """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit.
+
+    ``found_units``, when given, collects every unit seen in the listing before the
+    restart is attempted, so callers can tell "nothing installed/loaded" from "units
+    exist" — a fleet parked in systemd's failed state has no PIDs (#104249).
+    """
     for scope, scope_cmd, result in _systemd_gateway_unit_listings():
         if result.returncode != 0:
             continue
 
         def process_unit(svc_name: str, _scope=scope, _cmd=scope_cmd) -> None:
+            if found_units is not None:
+                found_units.append(svc_name)
+            # reset-failed first: a unit parked in failed state by systemd's own
+            # auto-restart can wedge a plain restart against RestartSec backoff (#104249).
+            reset_cmd = list(_cmd) + ["--no-ask-password", "reset-failed", svc_name]
             restart_cmd = list(_cmd) + ["--no-ask-password", "restart", svc_name]
             if _needs_sudo(_scope):
+                reset_cmd = ["sudo", "-n"] + reset_cmd
                 restart_cmd = ["sudo", "-n"] + restart_cmd
-            _systemctl(restart_cmd, timeout=30)
+            _systemctl(reset_cmd, timeout=10)
+            result = _systemctl(restart_cmd, timeout=30)
+            if result.returncode != 0:
+                failed.append(svc_name)
 
         _for_each_systemd_gateway_unit(
             result.stdout,
@@ -245,6 +259,21 @@ def _run_pending_fleet_restart() -> bool:
         pids = None
 
     if pids == []:
+        # An empty fleet is not a satisfied restart obligation (#104249): units parked
+        # in systemd's failed state have no PIDs, so "nothing running" may still mean
+        # "units need starting", and clearing the marker here is self-erasing. Units
+        # that appear in the default list-units output are loaded (failed/activating);
+        # clean-stopped units — explicit user intent — do not show up and stay untouched.
+        if supports_systemd_services():
+            parked: list = []
+            failed: list = []
+            _restart_systemd_gateway_units_best_effort(failed, found_units=parked)
+            if parked or failed:
+                if failed:
+                    _warn_incomplete_gateway_fleet_restart(failed)
+                    return False
+                print("  ✓ Restarted parked gateway units — pending fleet restart completed.")
+                return True
         print("  ✓ No running gateways — nothing to restart.")
         return True
 

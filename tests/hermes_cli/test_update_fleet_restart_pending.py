@@ -348,6 +348,102 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
         "hermes_cli.gateway.find_gateway_pids", lambda **k: []
     )
     monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+    # Pin the non-systemd host so the parked-unit path (#104249) below owns the
+    # systemd behaviour; without this the test would depend on the runner's systemctl.
+    monkeypatch.setattr(
+        "hermes_cli.gateway.supports_systemd_services", lambda: False
+    )
+
+    assert update_cmd._run_pending_fleet_restart() is True
+    assert "nothing to restart" in capsys.readouterr().out
+
+
+def _parked_listing(*, returncode=0, stdout=""):
+    """One answering user scope for `_systemd_gateway_unit_listings`."""
+    return iter(
+        [("user", ["systemctl", "--user"], SimpleNamespace(returncode=returncode, stdout=stdout, stderr=""))]
+    )
+
+
+def test_run_pending_restart_starts_parked_failed_units(monkeypatch, capsys):
+    """#104249: units parked in systemd failed state have no PIDs, so an empty
+    fleet probe must not discharge the restart obligation as "nothing to do"."""
+    monkeypatch.setattr(
+        "hermes_cli.gateway.find_gateway_pids", lambda **k: []
+    )
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.gateway.supports_systemd_services", lambda: True
+    )
+    monkeypatch.setattr(
+        update_cmd_fleet,
+        "_systemd_gateway_unit_listings",
+        lambda **k: _parked_listing(
+            stdout="hermes-gateway.service loaded failed failed Hermes Agent Gateway\n"
+        ),
+    )
+    calls: list = []
+    monkeypatch.setattr(
+        update_cmd_fleet,
+        "_systemctl",
+        lambda cmd, *, timeout: calls.append((list(cmd), timeout))
+        or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    assert update_cmd._run_pending_fleet_restart() is True
+    out = capsys.readouterr().out
+    assert "Restarted parked gateway units" in out
+    assert "nothing to restart" not in out
+    # reset-failed precedes restart: a plain restart can wedge against RestartSec
+    # backoff on a failed unit.
+    assert calls[0] == (["systemctl", "--user", "--no-ask-password", "reset-failed", "hermes-gateway"], 10)
+    assert calls[1] == (["systemctl", "--user", "--no-ask-password", "restart", "hermes-gateway"], 30)
+
+
+def test_run_pending_restart_keeps_marker_when_parked_unit_wont_start(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hermes_cli.gateway.find_gateway_pids", lambda **k: []
+    )
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.gateway.supports_systemd_services", lambda: True
+    )
+    monkeypatch.setattr(
+        update_cmd_fleet,
+        "_systemd_gateway_unit_listings",
+        lambda **k: _parked_listing(
+            stdout="hermes-gateway.service loaded failed failed Hermes Agent Gateway\n"
+        ),
+    )
+    monkeypatch.setattr(
+        update_cmd_fleet,
+        "_systemctl",
+        lambda cmd, *, timeout: SimpleNamespace(
+            returncode=1 if "restart" in cmd else 0, stdout="", stderr="Unit is failed."
+        ),
+    )
+
+    assert update_cmd._run_pending_fleet_restart() is False
+    out = capsys.readouterr().out
+    assert "Update incomplete" in out
+    assert "hermes-gateway" in out
+
+
+def test_run_pending_restart_no_loaded_units_still_nothing_to_do(monkeypatch, capsys):
+    """No hermes unit in the listing (clean-stopped units don't appear in the
+    default list-units output): the old "nothing to restart" outcome holds."""
+    monkeypatch.setattr(
+        "hermes_cli.gateway.find_gateway_pids", lambda **k: []
+    )
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.gateway.supports_systemd_services", lambda: True
+    )
+    monkeypatch.setattr(
+        update_cmd_fleet,
+        "_systemd_gateway_unit_listings",
+        lambda **k: _parked_listing(stdout=""),
+    )
 
     assert update_cmd._run_pending_fleet_restart() is True
     assert "nothing to restart" in capsys.readouterr().out

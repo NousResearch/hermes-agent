@@ -118,7 +118,7 @@ def _kanban_handler(tool_name: str) -> Callable:
 def _reject_delegated_child_mutation(tool_name: str) -> None:
     """A delegate_task child shares the parent's process, so inherited HERMES_KANBAN_*
     env is not proof of ownership: it may report findings but must not mutate."""
-    if _is_delegated_child_context():
+    if _delegation_ctx("is_delegated_child_process_context", False):
         raise _Reject(
             f"{tool_name} refused: delegate_task child agents are not Kanban run owners. "
             "Return findings to the parent agent; the dispatcher worker or an explicitly "

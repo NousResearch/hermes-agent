@@ -227,3 +227,33 @@ def test_malformed_binding_never_mutates_the_queue(binding_env, change):
     with pytest.raises(ValueError):
         transport.load_binding(path)
     assert not Path(binding["queue_db"]).exists()
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_transport_prepares_native_dependency_before_sdk_import(tmp_path, monkeypatch, available):
+    from plugins.platforms.telegram import adapter
+
+    sdk = sys.modules["telegram"]
+    calls = []
+    monkeypatch.setitem(sys.modules, "telegram", None)
+
+    def prepare():
+        calls.append("platform.telegram")
+        if available:
+            monkeypatch.setitem(sys.modules, "telegram", sdk)
+        return available
+
+    monkeypatch.setattr(adapter, "check_telegram_requirements", prepare)
+    # Exercise only dependency initialization, without accounts or Telegram I/O.
+    item = transport.Transport(None, {"queue_db": str(tmp_path / "queue.db"),
+                                     "room_id": "room", "chat_id": -999, "bots": {}})
+    item.halt.set()
+    if available:
+        asyncio.run(item.run())
+        assert item.ready.is_set()
+    else:
+        with pytest.raises(RuntimeError, match="Telegram dependency unavailable"):
+            asyncio.run(item.run())
+        assert not item.ready.is_set()
+    assert calls == ["platform.telegram"]
+    assert not item.path.exists()

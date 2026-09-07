@@ -470,6 +470,11 @@ class Transport:
                 db.execute("UPDATE cursor SET seq=? WHERE singleton=1", (event["seq"],))
 
     async def run(self) -> None:
+        from plugins.platforms.telegram.adapter import check_telegram_requirements
+
+        # Native runtime repair can rebuild the base venv without optional extras.
+        if not check_telegram_requirements():
+            raise RuntimeError("Telegram dependency unavailable")
         from telegram import Bot
 
         bots: dict[str, Any] = {}

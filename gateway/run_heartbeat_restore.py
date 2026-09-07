@@ -27,7 +27,7 @@ async def restore_heartbeat_watches(runner) -> None:
         with _profile_runtime_scope(home):
             entries = store.list_sessions()
             for entry in entries:
-                if entry.origin is None or not entry.session_id:
+                if entry.origin is None or not entry.session_id or entry.suspended:
                     continue
                 try:
                     with runner._profile_scope_for_source(entry.origin):

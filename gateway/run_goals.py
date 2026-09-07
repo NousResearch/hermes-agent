@@ -153,6 +153,7 @@ class GatewayGoalsMixin:
         event = self._synthetic_prompt_event(source, prompt)
         event.metadata["gateway_session_key"] = quick_key
         event._heartbeat_execution_started = False
+        event._heartbeat_session_id = session_id
         # A pinned route skips topic recovery: no await between the idle
         # check and adapter claim. FIFO alone never wakes an idle session.
         try:

@@ -1131,13 +1131,6 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     # ~/.hermes/sessions/ — kept unconditionally for request_dump_*.json debug breadcrumbs.
     agent.logs_dir = get_hermes_home() / "sessions"
     agent.logs_dir.mkdir(parents=True, exist_ok=True)
-    # Per-session JSON snapshot is opt-in (sessions.write_json_snapshots); state.db is canonical.
-    agent._session_json_enabled = False
-    with suppress(Exception):
-        from hermes_cli.config import load_config_readonly as _load_sess_cfg
-        _sess_cfg = (_load_sess_cfg().get("sessions") or {})
-        agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
-
     _set_defaults(agent, _SESSION_STATE)
 
     # Filesystem checkpoint manager (transparent — not a tool)

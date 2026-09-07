@@ -419,7 +419,9 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `SMS_ALLOW_ALL_USERS` | Allow all SMS senders without an allowlist |
 | `SMS_HOME_CHANNEL` | Phone number for cron job / notification delivery |
 | `SMS_HOME_CHANNEL_NAME` | Display name for the SMS home channel |
-| `EMAIL_ADDRESS` | Email address for the Email gateway adapter |
+| `EMAIL_ADDRESS` | Email address for the Email gateway adapter (mailbox polled and logged in with) |
+| `EMAIL_FROM_ADDRESS` | Default visible sender for outgoing mail (defaults to `EMAIL_ADDRESS`) |
+| `EMAIL_FROM_ALIASES` | Comma-separated additional sender identities this account may send as |
 | `EMAIL_PASSWORD` | Password or app password for the email account |
 | `EMAIL_IMAP_HOST` | IMAP hostname for the email adapter |
 | `EMAIL_IMAP_PORT` | IMAP port |

@@ -805,6 +805,10 @@ class TestSendEmailStandalone(unittest.TestCase):
         "EMAIL_PASSWORD": "secret",
         "EMAIL_SMTP_HOST": "smtp.test.com",
         "EMAIL_SMTP_PORT": "587",
+        # Scrubbed, not merged: patch.dict does not clear, so an
+        # EMAIL_FROM_ADDRESS in the developer's own shell would otherwise
+        # decide the From: header this test asserts on.
+        "EMAIL_FROM_ADDRESS": "",
     })
     def test_send_email_tool_success(self):
         """_send_email should use verified STARTTLS when sending."""

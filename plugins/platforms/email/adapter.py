@@ -16,7 +16,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formatdate, getaddresses
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -246,6 +246,16 @@ def _extract_email_address(raw: str) -> str:
     return (match.group(1) if match else raw).strip().lower()
 
 
+def _parse_from_aliases(raw: Any, *defaults: str) -> Dict[str, str]:
+    """Lowercased alias -> configured spelling. Accepts a comma-separated string or a sequence
+    (config.yaml lists). ``defaults`` (the mailbox and the default sender) are always included,
+    so the pre-alias behaviour is a subset of the configured one. Entries without ``@`` are dropped."""
+    values = ([str(v) for v in raw] if isinstance(raw, (list, tuple, set))
+              else str(raw or "").split(","))
+    return {alias.lower(): alias
+            for alias in (v.strip() for v in [*values, *defaults]) if alias and "@" in alias}
+
+
 def _domain_of(address: str) -> str:
     """Lowercased domain part of an email address, or ''."""
     return address.rpartition("@")[2].strip().lower()
@@ -341,6 +351,18 @@ class EmailAdapter(BasePlatformAdapter):
         setting = lambda env, key: _get_secret(env, "") or extra.get(key, "")  # noqa: E731
         tls_verify = lambda env, key: _esecret_bool(env, is_truthy_value(extra.get(key), default=True))  # noqa: E731
         self._address = setting("EMAIL_ADDRESS", "address").strip()
+        # One physical mailbox can own several verified sender identities (Gmail "send mail as",
+        # Microsoft 365 shared mailboxes, catch-all domains). Keep the mailbox apart from the
+        # identities it may send as:
+        #   EMAIL_ADDRESS      — the mailbox this adapter watches (login, seen-UID key)
+        #   EMAIL_FROM_ADDRESS — the default visible sender
+        #   EMAIL_FROM_ALIASES — every other visible sender this account may legitimately use
+        # Both default to EMAIL_ADDRESS, so an unconfigured deployment behaves exactly as before.
+        self._from_address = (setting("EMAIL_FROM_ADDRESS", "from_address") or self._address).strip()
+        self._from_aliases = _parse_from_aliases(
+            setting("EMAIL_FROM_ALIASES", "from_aliases"), self._address, self._from_address)
+        # Self-detection must cover every identity we may send as, or the agent answers its own alias.
+        self._self_addresses = set(self._from_aliases)
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = setting("EMAIL_IMAP_HOST", "imap_host").strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
@@ -368,7 +390,8 @@ class EmailAdapter(BasePlatformAdapter):
         # Track the last IMAP fetch attempt so the poll loop can distinguish "checked, nothing new" from
         # "the check itself failed" (#80016).
         self._thread_context: Dict[str, Dict[str, str]] = {}
-        logger.info("[Email] Adapter initialized for %s", self._address)
+        logger.info("[Email] Adapter initialized for mailbox=%s from=%s aliases=%d",
+                    self._address, self._from_address, len(self._from_aliases))
 
     def _trim_seen_uids(self) -> None:
         """Keep only the highest half of UIDs once over the cap (UIDs are monotonic; UNSEEN prevents re-delivery)."""
@@ -485,7 +508,7 @@ class EmailAdapter(BasePlatformAdapter):
             return False
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
-        print(f"[Email] Connected as {self._address}")
+        print(f"[Email] Connected mailbox={self._address} from={self._from_address}")
         self._wire_plugin_handlers(None)  # plugin-registered native handlers
         return True
 
@@ -582,6 +605,7 @@ class EmailAdapter(BasePlatformAdapter):
         # Verify From: while the trusted Authentication-Results header is in scope; the verdict is consumed at dispatch (GHSA-rxqh-5572-8m77).
         sender_authenticated, auth_reason = _verify_sender_authentication(msg, sender_addr, authserv_id=self._authserv_id)
         return {"uid": uid, "sender_addr": sender_addr, "sender_name": sender_name, "subject": subject,
+                "reply_from": self._addressed_alias(msg),
                 "message_id": msg.get("Message-ID", ""), "in_reply_to": msg.get("In-Reply-To", ""),
                 "body": _extract_text_body(msg),
                 "attachments": _extract_attachments(msg, skip_attachments=self._skip_attachments),
@@ -599,7 +623,7 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _sender_accepted(self, sender_addr: str, msg_data: Dict[str, Any]) -> bool:
         """Pre-dispatch sender gate: self, automated, allowlist, From: authentication."""
-        if sender_addr == self._address.lower():
+        if sender_addr.lower() in self._self_addresses:
             return False
         if _is_automated_sender(sender_addr, {}):
             logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
@@ -635,7 +659,8 @@ class EmailAdapter(BasePlatformAdapter):
         # DOCUMENT wins over PHOTO for mixed attachments: run.py keys image handling off the per-path mime type regardless
         # of message_type, but document-context injection gates strictly on MessageType.DOCUMENT — so DOCUMENT surfaces both.
         kinds = {att["type"] for att in attachments}
-        self._thread_context[sender_addr] = {"subject": subject, "message_id": msg_data["message_id"]}
+        self._thread_context[sender_addr] = {"subject": subject, "message_id": msg_data["message_id"],
+                                             "reply_from": msg_data.get("reply_from", self._from_address)}
         name = msg_data["sender_name"] or sender_addr
         event = MessageEvent(
             text=text or "(empty email)", message_id=msg_data["message_id"],
@@ -655,15 +680,41 @@ class EmailAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send an email reply to the given address."""
-        return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
+        """Send an email reply to the given address (``metadata["from_address"]`` picks an alias)."""
+        return await self._run_send(self._send_email, (chat_id, content, reply_to, (metadata or {}).get("from_address")),
+                                    "[Email] Send failed to %s: %s", chat_id)
 
-    def _message_id_domain(self) -> str:
-        """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""
-        return (self._address.rsplit("@", 1)[-1] if "@" in self._address else "") or "localhost"
+    def _addressed_alias(self, msg) -> str:
+        """The configured identity this message was addressed to, else the default sender.
+
+        Aliases share one physical mailbox, so the recipient headers are the only record of which
+        identity the sender used. Delivered-To / X-Original-To survive alias rewriting that To: does not.
+        """
+        for header in ("Delivered-To", "X-Original-To", "To", "Cc"):
+            for _name, address in getaddresses(msg.get_all(header, []) or []):
+                if alias := self._from_aliases.get(address.strip().lower()):
+                    return alias
+        return self._from_address
+
+    def _resolve_from_address(self, to_addr: str, requested_from: Optional[str] = None) -> str:
+        """Visible sender for a reply: an explicitly requested alias, else the alias this thread
+        arrived on, else the default. Fail-closed — an unconfigured request is refused, never sent,
+        so a compromised prompt cannot make the account send as an arbitrary address."""
+        if requested_from:
+            if allowed := self._from_aliases.get(str(requested_from).strip().lower()):
+                return allowed
+            logger.warning("[Email] Ignoring unconfigured From alias request; using %s", self._from_address)
+        thread_from = self._thread_context.get(to_addr, {}).get("reply_from", "")
+        return self._from_aliases.get(thread_from.strip().lower(), self._from_address)
+
+    def _message_id_domain(self, from_address: Optional[str] = None) -> str:
+        """Domain for generated Message-IDs; ``localhost`` when the sender address lacks ``@``."""
+        address = from_address or self._from_address
+        return (address.rsplit("@", 1)[-1] if "@" in address else "") or "localhost"
 
     def _new_reply(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
-                   attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
+                   attach_empty_body: bool = False,
+                   requested_from: Optional[str] = None) -> Tuple[MIMEMultipart, str, str]:
         """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
         msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
@@ -671,8 +722,9 @@ class EmailAdapter(BasePlatformAdapter):
             subject = f"Re: {subject}"
         original_msg_id = reply_to_msg_id or ctx.get("message_id")
         threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
-        for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,
+        from_address = self._resolve_from_address(to_addr, requested_from)
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain(from_address)}>"
+        for key, value in (("From", from_address), ("To", to_addr), ("Subject", subject), *threading,
                            ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
             msg[key] = value
         if body or attach_empty_body:
@@ -691,9 +743,11 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
+    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None,
+                    requested_from: Optional[str] = None) -> str:
         """Send an email via SMTP. Runs in executor thread."""
-        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
+        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True,
+                                               requested_from=requested_from)
         self._smtp_send(msg)
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
@@ -765,6 +819,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     """Out-of-process Email delivery via SMTP (one-shot); standalone_sender_fn contract."""
     extra = getattr(pconfig, "extra", {}) or {}
     address, password = extra.get("address") or _get_secret("EMAIL_ADDRESS", ""), _get_secret("EMAIL_PASSWORD", "")
+    from_address = (extra.get("from_address") or _get_secret("EMAIL_FROM_ADDRESS", "") or address).strip()
     smtp_host, smtp_port = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", ""), _esecret_int("EMAIL_SMTP_PORT", 587)
     smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
     smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
@@ -772,7 +827,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
+        for key, value in (("From", from_address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)

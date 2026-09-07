@@ -802,6 +802,9 @@ _LATER_TASK_COLUMNS = (
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
+    ("dispatch_after", "dispatch_after INTEGER"),
+    ("dispatch_window", "dispatch_window TEXT"),
+    ("dispatch_gate_active", "dispatch_gate_active INTEGER NOT NULL DEFAULT 0"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

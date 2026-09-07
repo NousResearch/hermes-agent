@@ -1229,7 +1229,8 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL",
+        "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL "
+        "AND COALESCE(dispatch_gate_active, 0) = 0",
         (status,),
     ).fetchall()
     if not rows:
@@ -1713,6 +1714,7 @@ def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT id, assignee FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
+        "AND COALESCE(dispatch_gate_active, 0) = 0 "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
 

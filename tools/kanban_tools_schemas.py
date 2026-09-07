@@ -434,6 +434,15 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "'running', which preserves the usual dispatch path."
             ),
         },
+        "dispatch_after": _prop("string", (
+                "Optional timezone-aware ISO timestamp. The dispatcher will "
+                "not claim the task before this instant."
+        )),
+        "dispatch_window": _prop("string", (
+                "Optional daily dispatch window in "
+                "'HH:MM-HH:MM IANA/Timezone' form. Evaluated on each "
+                "dispatcher tick using that timezone's DST rules."
+        )),
         "skills": {
             "type": "array",
             "items": {"type": "string"},

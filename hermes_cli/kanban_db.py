@@ -27,6 +27,11 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
+from hermes_cli.kanban_time_gate import (
+    dispatch_gate_open,
+    normalize_dispatch_after,
+    normalize_dispatch_window,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -714,6 +719,9 @@ class Task:
     # VALID_BLOCK_KINDS or None (legacy); kept across unblock so a same-kind re-block reads as a loop.
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
+    dispatch_after: Optional[int] = None
+    dispatch_window: Optional[str] = None
+    dispatch_gate_active: bool = False
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -731,6 +739,7 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            dispatch_gate_active=bool(g("dispatch_gate_active")),
         )
 
 
@@ -743,7 +752,7 @@ _TASK_REQUIRED_COLUMNS = (
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id",
+    "current_step_key", "max_retries", "session_id", "dispatch_after", "dispatch_window",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -940,7 +949,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Optional scheduler-side time gates. ``dispatch_after`` is a UTC epoch
+    -- instant; ``dispatch_window`` is a validated daily IANA-timezone window.
+    -- The cached active bit records closed/open transitions so the dispatcher
+    -- resets retry counters exactly once when a gate opens.
+    dispatch_after       INTEGER,
+    dispatch_window      TEXT,
+    dispatch_gate_active INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1228,6 +1244,8 @@ def create_task(
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    dispatch_after: Optional[str | int | float] = None,
+    dispatch_window: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1242,6 +1260,8 @@ def create_task(
     """
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    dispatch_after = normalize_dispatch_after(dispatch_after)
+    dispatch_window = normalize_dispatch_window(dispatch_window)
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -1283,6 +1303,9 @@ def create_task(
             return row["id"]
 
     now = int(time.time())
+    dispatch_gate_active = not dispatch_gate_open(
+        dispatch_after, dispatch_window, now=now,
+    )
 
     # Only persistent kinds inherit the board ``default_workdir``: a scratch
     # task inheriting it would point cleanup at the user's source tree.
@@ -1316,8 +1339,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id,
+                        dispatch_after, dispatch_window, dispatch_gate_active
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1327,6 +1351,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id,
+                        dispatch_after, dispatch_window, int(dispatch_gate_active),
                     ),
                 )
                 for pid in parents:
@@ -1348,6 +1373,8 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "dispatch_after": dispatch_after,
+                        "dispatch_window": dispatch_window,
                     },
                 )
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
@@ -2011,6 +2038,92 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     return "ready"
 
 
+def _refresh_dispatch_gates_locked(
+    conn: sqlite3.Connection, *, now: Optional[int] = None, task_id: Optional[str] = None,
+) -> int:
+    """Refresh cached gate state while the caller holds a write transaction.
+
+    Opening is an automatic unblock: the task receives a fresh dispatcher
+    retry budget once per closed interval, including recurring windows.
+    """
+    query = (
+        "SELECT id, dispatch_after, dispatch_window, dispatch_gate_active "
+        "FROM tasks WHERE (dispatch_after IS NOT NULL OR dispatch_window IS NOT NULL) "
+        "AND status NOT IN ('done', 'archived')"
+    )
+    params: tuple[Any, ...] = ()
+    if task_id is not None:
+        query += " AND id = ?"
+        params = (task_id,)
+    current = int(time.time() if now is None else now)
+    opened = 0
+    for row in conn.execute(query, params).fetchall():
+        active = not dispatch_gate_open(
+            row["dispatch_after"], row["dispatch_window"], now=current,
+        )
+        previous = bool(row["dispatch_gate_active"])
+        if active == previous:
+            continue
+        if active:
+            conn.execute(
+                "UPDATE tasks SET dispatch_gate_active = 1 WHERE id = ?", (row["id"],),
+            )
+            event_kind = "dispatch_gate_closed"
+        else:
+            conn.execute(
+                "UPDATE tasks SET dispatch_gate_active = 0, consecutive_failures = 0, "
+                "last_failure_error = NULL WHERE id = ?", (row["id"],),
+            )
+            event_kind = "dispatch_gate_opened"
+            opened += 1
+        _append_event(conn, row["id"], event_kind)
+    return opened
+
+
+def refresh_dispatch_gates(conn: sqlite3.Connection, *, now: Optional[int] = None) -> int:
+    """Refresh every task's scheduler-side gate on the current tick."""
+    with write_txn(conn):
+        return _refresh_dispatch_gates_locked(conn, now=now)
+
+
+def set_task_dispatch_gate(
+    conn: sqlite3.Connection, task_id: str, *,
+    dispatch_after: Optional[str | int | float] = None,
+    dispatch_window: Optional[str] = None,
+    clear: bool = False,
+) -> bool:
+    """Replace or clear a task's dispatch gate."""
+    modes = int(dispatch_after is not None) + int(dispatch_window is not None) + int(clear)
+    if modes != 1:
+        raise ValueError("set exactly one of dispatch_after, dispatch_window, or clear")
+    after = None if clear else normalize_dispatch_after(dispatch_after)
+    window = None if clear else normalize_dispatch_window(dispatch_window)
+    active = not dispatch_gate_open(after, window)
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, dispatch_gate_active FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        if row["status"] == "archived":
+            raise RuntimeError(f"cannot set dispatch gate on archived task {task_id}")
+        reset = bool(row["dispatch_gate_active"]) and not active
+        conn.execute(
+            "UPDATE tasks SET dispatch_after = ?, dispatch_window = ?, dispatch_gate_active = ?, "
+            "consecutive_failures = CASE WHEN ? THEN 0 ELSE consecutive_failures END, "
+            "last_failure_error = CASE WHEN ? THEN NULL ELSE last_failure_error END WHERE id = ?",
+            (after, window, int(active), int(reset), int(reset), task_id),
+        )
+        _append_event(
+            conn, task_id, "dispatch_gate_cleared" if clear else "dispatch_gate_set",
+            None if clear else {"dispatch_after": after, "dispatch_window": window},
+        )
+    notify_task_updated(
+        conn, task_id, ("dispatch_after", "dispatch_window", "dispatch_gate_active"),
+    )
+    return True
+
+
 def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
@@ -2027,13 +2140,16 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
     with write_txn(conn):
+        _refresh_dispatch_gates_locked(conn)
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, dispatch_gate_active "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if row["dispatch_gate_active"]:
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue
@@ -2147,6 +2263,12 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        _refresh_dispatch_gates_locked(conn, task_id=task_id)
+        gate = conn.execute(
+            "SELECT dispatch_gate_active FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if gate is None or gate["dispatch_gate_active"]:
+            return None
         # Single enforcement point: never ready -> running with an undone
         # parent, whichever writer set 'ready'. Demote to 'todo';
         # recompute_ready re-promotes when the parents finish.
@@ -2180,6 +2302,12 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        _refresh_dispatch_gates_locked(conn, task_id=task_id)
+        gate = conn.execute(
+            "SELECT dispatch_gate_active FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if gate is None or gate["dispatch_gate_active"]:
+            return None
         if not _parents_satisfied(conn, task_id):
             demoted = conn.execute(
                 "UPDATE tasks SET status = 'todo' "

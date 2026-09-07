@@ -21,6 +21,7 @@ _TASK_DICT_FIELDS = (
     "created_by", "created_at", "started_at", "completed_at", "result",
     "skills", "max_retries", "model_override", "provider_override",
     "session_id", "workflow_template_id", "current_step_key",
+    "dispatch_after", "dispatch_window", "dispatch_gate_active",
 )
 _SHOW_RUN_FIELDS = (
     "id", "profile", "step_key", "status", "outcome", "summary", "error",

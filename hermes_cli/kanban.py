@@ -211,7 +211,7 @@ def _profile_author() -> str:
 
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
-    "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
+    "init", "create", "swarm", "assign", "gate", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
@@ -369,6 +369,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            dispatch_after=getattr(args, "dispatch_after", None),
+            dispatch_window=getattr(args, "dispatch_window", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -508,6 +510,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if task.model_override:
         _prov = f" (provider: {task.provider_override})" if task.provider_override else ""
         field("model", f"{task.model_override}{_prov}")
+    if task.dispatch_after is not None:
+        field("dispatch-after", _fmt_ts(task.dispatch_after))
+    if task.dispatch_window:
+        field("dispatch-window", task.dispatch_window)
     # Effective retry threshold (task > config > default) explains auto-blocks.
     if task.max_retries is not None:
         print(f"  max-retries: {task.max_retries} (task)")
@@ -587,6 +593,24 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
         print(f"Set model override on {args.task_id}: {label} (applies on next dispatch)")
     else:
         print(f"Cleared model override on {args.task_id} (worker uses its profile default)")
+    return 0
+
+
+def _cmd_gate(args: argparse.Namespace) -> int:
+    try:
+        with kbc.connect_closing() as conn:
+            ok = kb.set_task_dispatch_gate(
+                conn, args.task_id,
+                dispatch_after=getattr(args, "dispatch_after", None),
+                dispatch_window=getattr(args, "dispatch_window", None),
+                clear=bool(getattr(args, "clear", False)),
+            )
+    except (ValueError, RuntimeError) as exc:
+        return _err(f"kanban gate: {exc}", 2)
+    if not ok:
+        return _err(f"no such task: {args.task_id}")
+    action = "Cleared" if args.clear else "Set"
+    print(f"{action} dispatch gate on {args.task_id}")
     return 0
 
 
@@ -1219,7 +1243,7 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
 _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
-    "assign": _cmd_assign, "set-model": _cmd_set_model,
+    "assign": _cmd_assign, "set-model": _cmd_set_model, "gate": _cmd_gate,
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
@@ -1249,6 +1273,7 @@ Common subcommands:
   `show <id>`           Task details + comments + events
   `stats`               Per-status / per-assignee counts
   `create <title>…`     Create a task (auto-subscribes you to events)
+  `gate <id> …`         Set/clear a not-before or daily dispatch window
   `comment <id> <msg>`  Append a comment
   `attach <id> <path>`  Attach a local file; `attachments <id>` to list
   `complete <id>…`      Mark task(s) done

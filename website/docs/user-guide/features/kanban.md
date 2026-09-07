@@ -59,7 +59,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   (e.g. one per project, repo, or domain); see [Boards (multi-project)](#boards-multi-project)
   below. Single-project users stay on the `default` board and never see the
   word "board" outside this docs section.
-- **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | review | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation).
+- **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | review | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation), and optional dispatch time gate.
 - **Link** — `task_links` row recording a parent → child dependency. The dispatcher promotes `todo → ready` when all parents are `done`.
 - **Comment** — the inter-agent protocol. Agents and humans append comments; when a worker is (re-)spawned it reads the full comment thread as part of its context.
 - **Workspace** — the directory a worker operates in. Three kinds:
@@ -255,6 +255,28 @@ hermes kanban create "nightly ops review" \
     --idempotency-key "nightly-ops-$(date -u +%Y-%m-%d)" \
     --json
 ```
+
+### Dispatch time gates
+
+Use a one-shot `dispatch_after` instant or a recurring daily window to keep a
+card in `todo`/`ready` without spawning a worker. Gates are checked on each
+dispatcher tick; no release cron is needed. Timestamps must include an offset,
+and windows use an IANA timezone so daylight-saving transitions follow local
+wall time.
+
+```bash
+# Create a pre-gated card.
+hermes kanban create "overnight maintenance" --assignee ops \
+    --dispatch-window "23:00-05:30 America/Chicago"
+
+# Replace the gate with a one-shot instant, then clear it if plans change.
+hermes kanban gate t_abc --after "2026-09-08T02:00:00Z"
+hermes kanban gate t_abc --clear
+```
+
+When a closed gate opens, the dispatcher resets that task's consecutive
+failure count just like an explicit unblock. `kanban_create` accepts the same
+`dispatch_after` and `dispatch_window` fields for orchestrated tasks.
 
 ### Bulk CLI verbs
 
@@ -728,6 +750,8 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--priority N] [--triage] [--idempotency-key KEY]
                                 [--max-runtime 30m|2h|1d|<seconds>]
                                 [--max-retries N]
+                                [--dispatch-after <ISO8601>]
+                                [--dispatch-window "HH:MM-HH:MM IANA/Timezone"]
                                 [--goal] [--goal-max-turns N]
                                 [--skill <name>]...
                                 [--json]
@@ -741,7 +765,7 @@ hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to
 hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
         [--priority N]
 hermes kanban promote <id>...                          # move todo/blocked tasks to ready (recovery)
-hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's scheduled_at start time
+hermes kanban gate <id> (--after <ISO8601> | --window "HH:MM-HH:MM IANA/Timezone" | --clear)
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)
 hermes kanban link <parent_id> <child_id>
 hermes kanban unlink <parent_id> <child_id>
@@ -801,15 +825,6 @@ kanban:
   max_in_progress: 2
   auto_promote_children: false
   default_workdir: ~/work/active-project
-```
-
-### Scheduled task starts (`scheduled_at`)
-
-Set `scheduled_at` on a task to delay dispatch until a specific time. The dispatcher skips ready tasks whose `scheduled_at` is in the future and picks them up on the first tick after that timestamp.
-
-```bash
-hermes kanban create "nightly backup audit" \
-  --assignee ops --scheduled-at "2026-06-01T03:00:00Z"
 ```
 
 ### Respawn guard

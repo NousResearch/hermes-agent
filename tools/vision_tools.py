@@ -477,16 +477,17 @@ def _should_use_native_vision_fast_path() -> bool:
 
 
 def _build_native_vision_tool_result(
-    image_url: str, question: str, image_data_url: str, image_size_bytes: int,
+    image_url: str,
+    image_data_url: str,
+    image_size_bytes: int,
     scale_note: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Multimodal tool-result envelope. The text part is intentionally minimal (the model already
-    has the question); ``text_summary`` is the fallback for providers without multimodal tool results."""
+    """Multimodal tool-result envelope. The text part is intentionally minimal — the original
+    request is already in the conversation, so the pixels carry no restatement of it; ``text_summary``
+    is the fallback for providers without multimodal tool results."""
     text_part = (
         "Image loaded into your context — you can see it natively now. "
         "Use your built-in vision to answer the user.")
-    if isinstance(question, str) and question.strip():
-        text_part += f"\n\nQuestion: {question.strip()}"
     if scale_note:
         text_part += f"\n\nNote: {scale_note}"
     return {
@@ -579,10 +580,13 @@ async def _resize_prepared(prepared: _PreparedImage, scale_info: dict, **kwargs)
 
 
 async def _vision_analyze_native(
-    image_url: str, question: str, task_id: Optional[str] = None, region: Optional[list] = None,
+    image_url: str,
+    task_id: Optional[str] = None,
+    region: Optional[list] = None,
 ) -> Any:
     """Fast path for vision-capable main models: a ``_multimodal`` envelope dict on success,
-    or a JSON error string (the normal tool-result contract) on failure."""
+    or a JSON error string (the normal tool-result contract) on failure. The original request
+    stays in the conversation; this only loads pixels."""
     if not isinstance(image_url, str) or not image_url.strip():
         return tool_error("image_url is required", success=False)
     prepared: Optional[_PreparedImage] = None
@@ -612,9 +616,13 @@ async def _vision_analyze_native(
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 return tool_error(_too_large_message(image_data_url), success=False)
         return _build_native_vision_tool_result(
-            image_url=image_url, question=question, image_data_url=image_data_url,
+            image_url=image_url,
+            image_data_url=image_data_url,
             image_size_bytes=prepared.size_bytes,
-            scale_note=_build_scale_note(_scale_info or None, prepared.crop_offset or None))
+            scale_note=_build_scale_note(
+                _scale_info or None, prepared.crop_offset or None
+            ),
+        )
     except Exception as exc:
         logger.warning("Native vision fast path failed: %s", exc)
         return tool_error(f"Native vision failed: {exc}", success=False)
@@ -840,7 +848,10 @@ VISION_ANALYZE_SCHEMA = {
             },
             "question": {
                 "type": "string",
-                "description": "Your question or request about the image."
+                "description": (
+                    "Optional focus for the auxiliary-model route only; ignored when "
+                    "the image is loaded into your own context."
+                ),
             },
             "region": {
                 "type": "array",
@@ -853,11 +864,11 @@ VISION_ANALYZE_SCHEMA = {
                     "keeps full resolution. Load the full image first, then "
                     "re-call with a region to zoom into small text or fine "
                     "detail."
-                )
-            }
+                ),
+            },
         },
-        "required": ["image_url", "question"]
-    }
+        "required": ["image_url"],
+    },
 }
 
 
@@ -880,12 +891,16 @@ async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
     # encode/resize step, so multi-image fan-out keeps full request concurrency.
     if _should_use_native_vision_fast_path():
         logger.info("vision_analyze: native fast path")
-        return await _vision_analyze_native(image_url, question, task_id=task_id, region=region)
+        return await _vision_analyze_native(image_url, task_id=task_id, region=region)
 
-    # Legacy path: aux LLM describes the image and we return its text.
+    # Aux-model route: the optional question narrows an otherwise complete default prompt.
+    question = question.strip() if isinstance(question, str) else ""
     full_prompt = (
-        "Fully describe and explain everything about this image, then answer the "
-        f"following question:\n\n{question}")
+        "Fully describe and explain everything about this image."
+        if not question
+        else "Fully describe and explain everything about this image, then answer the "
+        f"following question:\n\n{question}"
+    )
     model = _configured_aux_model(("vision",), ("AUXILIARY_VISION_MODEL",))
     return await vision_analyze_tool(image_url, full_prompt, model, task_id=task_id, region=region)
 

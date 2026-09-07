@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_json_flag
@@ -142,4 +143,9 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         "show", aliases=["info"], help="Show details for a single plugin (including emits/listens)")
     plugins_show.add_argument("name", help="Plugin name or key to show")
 
+    for parser in (plugins_install, plugins_enable):
+        parser.add_argument(
+            "--setup-consent", type=json.loads, metavar="JSON",
+            help="Explicit consent object printed by a refused enable (key, hermes_home, revision). "
+                 "Only the exact reviewed setup may run; --enable alone never authorizes setup.")
     plugins_parser.set_defaults(func=cmd_plugins)

@@ -704,6 +704,7 @@ def cmd_install(
     force: bool = False,
     enable: Optional[bool] = None,
     ref: Optional[str] = None,
+    setup_consent=None,
 ) -> None:
     """Install a plugin from a Git URL, owner/repo shorthand, or index name.
 
@@ -751,7 +752,9 @@ def cmd_install(
     if enable is None:
         enable = _is_tty() and _ask_yes(f"  Enable '{installed_name}' now? [y/N]: ")
     if enable:
-        _set_plugin_enabled(installed_name, enable=True)
+        result = _enable_plugin_cli(installed_name, console, setup_consent=setup_consent)
+        if not result.get("ok"):
+            _fail(console, result["error"] + " Plugin files were installed; retry `hermes plugins enable`.")
         console.print(f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.")
     else:
         console.print(
@@ -984,7 +987,21 @@ def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
     save_config(config)
 
 
-def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
+def _enable_plugin_cli(key, console, setup_consent=None):
+    """CLI consent is separate from selecting enable; default is always No."""
+    result = dashboard_set_agent_plugin_enabled(key, enabled=True, setup_consent=setup_consent, _toggle_toolsets=False)
+    if result.get("status") == "consent_required":
+        console.print(result["setup"]["summary"], markup=False)
+        for detail in result["setup"]["details"]:
+            console.print(detail, markup=False)
+        console.print("Reviewed setup consent: " + json.dumps(result["consent"]), markup=False)
+        if _is_tty() and _ask_yes("  Run this plugin setup and enable? [y/N]: "):
+            result = dashboard_set_agent_plugin_enabled(
+                key, enabled=True, setup_consent=result["consent"], _toggle_toolsets=False)
+    return result
+
+
+def cmd_enable(name: str, allow_tool_override: Optional[bool] = None, *, setup_consent=None) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
     Non-bundled plugins are asked about the privileged ``allow_tool_override`` grant;
@@ -1006,21 +1023,13 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     key, source = resolved
     _refuse_legacy_relay(key)
 
-    enabled = _get_enabled_set()
-    disabled = _get_disabled_set()
-    if key in enabled and key not in disabled:
+    result = _enable_plugin_cli(key, console, setup_consent=setup_consent)
+    if not result.get("ok"):
+        _fail(console, result["error"])
+    if result.get("unchanged"):
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
     else:
-        enabled.add(key)
-        # The loader's disable check matches BOTH the canonical key (``web/firecrawl``) and the
-        # manifest name (``web-firecrawl``); a stale entry under either form would silently veto
-        # this enable ("explicit disable wins"), so drop the key, its bare leaf, and the name.
-        _discard_key_and_leaf(disabled, key)
-        manifest_name = next((e[0] for e in _discover_all_plugins() if e[5] == key), None)
-        if manifest_name is not None:
-            disabled.discard(manifest_name)
-        _save_plugin_sets(enabled, disabled)
-        console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
+        console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Restart the gateway to activate; existing sessions are unchanged.")
 
     # Built-in tool override is a privileged grant; bundled plugins are trusted.
     if source == "bundled":
@@ -1493,29 +1502,20 @@ def cmd_toggle() -> None:
 
 
 def _persist_plugin_selection(plugin_keys, chosen, disabled) -> tuple[bool, set]:
-    """Save the composite UI's checkbox state; returns ``(changed, new_enabled)``.
+    """Apply each reviewed checkbox via the same profile-locked gate as enable.
 
-    Unchecked plugins go to the disabled-list (so they stay off even if something auto-enables
-    them) under the canonical key ONLY, so the list can't drift from what ``cmd_enable`` clears.
-    Re-checking also drops any stale legacy bare-leaf disable.
+    A refused setup leaves that plugin (and unseen/concurrently edited plugins)
+    untouched; never write back the menu's stale whole-profile snapshot.
     """
-    # See #40190.
-    # Persist by canonical key only — never the bare manifest name — so the disabled-list stays aligned with
-    # cmd_enable / PluginManager (#40190).
-    new_enabled: set = set()
-    new_disabled: set = set(disabled)  # preserve existing disabled state for unseen plugins
+    changed = False
     for i, key in enumerate(plugin_keys):
-        if i in chosen:
-            new_enabled.add(key)
-            _discard_key_and_leaf(new_disabled, key)
+        result = (_enable_plugin_cli(key, _console()) if i in chosen else
+                  dashboard_set_agent_plugin_enabled(key, enabled=False, _toggle_toolsets=False))
+        if not result.get("ok"):
+            _console().print(result["error"], markup=False)
         else:
-            new_disabled.add(key)
-
-    changed = new_enabled != _get_enabled_set() or new_disabled != disabled
-    if changed:
-        _save_plugin_sets(new_enabled, new_disabled)
-    return changed, new_enabled
-
+            changed |= not result.get("unchanged", False)
+    return changed, _get_enabled_set()
 
 def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disabled, categories, console):
     """Custom curses screen with checkboxes + category action rows."""
@@ -1684,7 +1684,7 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disable
     print()
 
 
-def dashboard_install_plugin(identifier: str, *, force: bool, enable: bool) -> dict[str, Any]:
+def dashboard_install_plugin(identifier: str, *, force: bool, enable: bool, setup_consent=None) -> dict[str, Any]:
     """Non-interactive install for the web dashboard. Returns a JSON-serializable dict."""
     warnings: list[str] = []
     try:
@@ -1708,7 +1708,10 @@ def dashboard_install_plugin(identifier: str, *, force: bool, enable: bool) -> d
         return {"ok": False, "error": str(exc)}
 
     if enable:
-        _set_plugin_enabled(installed_name, enable=True)
+        result = dashboard_set_agent_plugin_enabled(
+            installed_name, enabled=True, setup_consent=setup_consent, _toggle_toolsets=False)
+        if not result.get("ok"):
+            return {**result, "installed": True, "plugin_name": installed_name}
     ap = target / "after-install.md"
     return {
         "ok": True, "plugin_name": installed_name, "warnings": warnings,
@@ -1729,8 +1732,9 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
         return next((e.toolset for t in tool_names if (e := registry.get_entry(t)) and e.toolset), None)
 
     def _from_loaded_plugin() -> Optional[str]:
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
-        discover_plugins()  # idempotent — ensures plugins are loaded
+        from hermes_cli.plugins import get_plugin_manager
+        # Saved configuration is not runtime activation. Only inspect the startup
+        # snapshot; management must never import a newly enabled plugin here.
         for _key, loaded in get_plugin_manager()._plugins.items():
             if loaded.manifest.name == name or _key == name:
                 return _first_toolset(loaded.tools_registered)
@@ -1775,18 +1779,34 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
         save_config(config)
 
 
-def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str, Any]:
-    """Enable or disable a plugin in ``config.yaml`` (runtime allow/deny lists)."""
-    if _resolve_plugin_key(name) is None:
-        return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
-    en = _get_enabled_set()
-    dis = _get_disabled_set()
-    if ((name in en and name not in dis) if enabled else (name not in en and name in dis)):
-        return {"ok": True, "name": name, "unchanged": True}
-    _set_plugin_enabled(name, enable=enabled)
-    _toggle_plugin_toolset(name, enable=enabled)
-    return {"ok": True, "name": name, "unchanged": False}
-
+def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool, setup_consent=None, _toggle_toolsets=True) -> dict[str, Any]:
+    """Save enablement only after consented setup verifies readiness, profile-scoped."""
+    from hermes_cli.active_sessions import _FileLock
+    from hermes_cli.plugins_setup import prepare_plugin_setup
+    with _FileLock(get_hermes_home() / ".plugin-enable.lock"):
+        key = _resolve_plugin_key(name)
+        if key is None:
+            return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
+        entry = _find_plugin_entry(key)
+        if enabled and entry:
+            refusal = prepare_plugin_setup(entry, setup_consent=setup_consent)
+            if refusal:
+                return refusal
+        en, dis = _get_enabled_set(), _get_disabled_set()
+        if ((key in en and key not in dis) if enabled else (key not in en and key in dis)):
+            return {"ok": True, "name": key, "unchanged": True}
+        if enabled:
+            en.add(key)
+            _discard_key_and_leaf(dis, key)
+            if entry:
+                dis.discard(entry[0])
+        else:
+            _discard_key_and_leaf(en, key)
+            dis.add(key)
+        _save_plugin_sets(en, dis)
+        if _toggle_toolsets:
+            _toggle_plugin_toolset(key, enable=enabled)
+        return {"ok": True, "name": key, "unchanged": False}
 
 def _user_installed_plugin_dir(name: str) -> Optional[Path]:
     """Resolved path under ``~/.hermes/plugins/<name>`` if it exists."""
@@ -2039,7 +2059,7 @@ _PLUGIN_ACTIONS = {
         args.identifier,
         force=getattr(args, "force", False),
         enable=_tri_state_flag(args, "enable", "no_enable"),
-        ref=getattr(args, "ref", None)),
+        ref=getattr(args, "ref", None), setup_consent=getattr(args, "setup_consent", None)),
     "search": lambda args: cmd_search(
         getattr(args, "term", "") or "",
         json_output=getattr(args, "json", False),
@@ -2051,7 +2071,8 @@ _PLUGIN_ACTIONS = {
     "uninstall": lambda args: cmd_remove(args.name),
     "enable": lambda args: cmd_enable(
         args.name,
-        allow_tool_override=_tri_state_flag(args, "allow_tool_override", "no_allow_tool_override")),
+        allow_tool_override=_tri_state_flag(args, "allow_tool_override", "no_allow_tool_override"),
+        setup_consent=getattr(args, "setup_consent", None)),
     "disable": lambda args: cmd_disable(args.name),
     "capabilities": lambda args: cmd_capabilities(getattr(args, "name", None)),
     "list": lambda args: cmd_list(args),

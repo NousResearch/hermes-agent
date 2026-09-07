@@ -512,7 +512,13 @@ class ChatCompletionsTransport(ProviderTransport):
         usage = Usage.from_openai(response.usage) if hasattr(response, "usage") and response.usage else None
 
         # Fields some SDKs park in pydantic ``model_extra`` rather than as attributes.
+        # Ollama's qwen3.x family parks chain-of-thought in ``thinking`` rather than
+        # ``reasoning_content``; treat it equivalently for persistence/replay (#104412, #66452).
         reasoning_content = _attr_or_model_extra(msg, "reasoning_content")
+        if reasoning_content is None:
+            reasoning_content = _attr_or_model_extra(msg, "reasoning")
+        if reasoning_content is None:
+            reasoning_content = _attr_or_model_extra(msg, "thinking")
         provider_data: dict[str, Any] = {}
         if reasoning_content is not None:
             provider_data["reasoning_content"] = reasoning_content
@@ -549,6 +555,13 @@ class ChatCompletionsTransport(ProviderTransport):
         else:
             name = alias_map.get(name, name)
         arguments = getattr(tc_function, "arguments", None)
+        if isinstance(arguments, dict):
+            try:
+                arguments = json.dumps(arguments, ensure_ascii=False)
+            except Exception:
+                arguments = str(arguments)
+        elif arguments is not None and not isinstance(arguments, str):
+            arguments = str(arguments)
         extra = _attr_or_model_extra(tc, "extra_content")
         return ToolCall(
             id=getattr(tc, "id", None), name=name, arguments="{}" if arguments is None else arguments,

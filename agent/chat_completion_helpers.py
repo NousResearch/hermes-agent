@@ -2759,8 +2759,19 @@ class _ToolCallAccumulator:
                 # Assignment, not +=: names arrive complete and some providers (MiniMax via
                 # NVIDIA NIM) resend the full name every chunk — += gives "read_fileread_file".
                 entry["function"]["name"] = tc_function.name
-            if getattr(tc_function, "arguments", None):
-                parts.append(tc_function.arguments)
+            _args = getattr(tc_function, "arguments", None)
+            if _args is not None and _args != "":
+                # Ollama / some OpenAI-compatible endpoints send arguments as a dict
+                # rather than a JSON string; normalize to a string for accumulation.
+                if isinstance(_args, dict):
+                    try:
+                        _args = json.dumps(_args, ensure_ascii=False)
+                    except Exception:
+                        _args = str(_args)
+                elif not isinstance(_args, str):
+                    _args = str(_args)
+                if _args:
+                    parts.append(_args)
         extra = getattr(tc_delta, "extra_content", None)
         if extra is None and hasattr(tc_delta, "model_extra"):
             extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
@@ -3078,7 +3089,7 @@ class _StreamingCall:
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
-            reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None) or getattr(delta, "thinking", None)
             if reasoning_text:
                 # Summary-part models omit the separator between markdown blocks; re-insert it.
                 reasoning_text = separate_glued_reasoning_blocks(

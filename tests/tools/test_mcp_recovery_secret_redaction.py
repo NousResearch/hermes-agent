@@ -8,6 +8,7 @@ from tools import mcp_tool as core
 from tools import mcp_tool_discovery as discovery
 from tools import mcp_tool_handlers as handlers
 from tools import mcp_tool_loop as loop
+from tools.mcp_tool_config import _resolve_mcp_server_config
 
 
 @pytest.mark.parametrize("recovery", ["retry", "oauth", "session", "stdio"])
@@ -55,7 +56,9 @@ def test_lazy_connect_failure_redacts_status_and_logs(tmp_path, monkeypatch, cap
     secret = "opaque-lazy-connect-value-7391"
     env_file = tmp_path / "server.env"
     env_file.write_text(f"PRIVATE_TOKEN={secret}\n", encoding="utf-8")
-    config = {"url": "https://example.invalid/mcp", "env_file": str(env_file)}
+    # Real resolution chain, as production registers lazy configs: the resolving read
+    # attaches the redaction snapshot that failure handling must consume.
+    config = _resolve_mcp_server_config({"url": "https://example.invalid/mcp", "env_file": str(env_file)})
     monkeypatch.setattr(core, "_servers", {})
     monkeypatch.setattr(core, "_lazy_server_configs", {"private": config})
     monkeypatch.setattr(core, "_server_connecting", set())

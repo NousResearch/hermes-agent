@@ -21,6 +21,8 @@ def test_search_regex_bypasses_path_normalization(monkeypatch):
 
     def execute(command, **kwargs):
         calls.append((command, kwargs))
+        if command.startswith("test -e "):
+            return {"output": "exists", "returncode": 0}
         if command.startswith("command -v rg"):
             return {"output": "yes", "returncode": 0}
         return {"output": "", "returncode": 0}
@@ -60,6 +62,8 @@ def test_search_glob_bypasses_path_normalization(monkeypatch):
 
     def execute(command, **kwargs):
         commands.append(command)
+        if command.startswith("test -e "):
+            return {"output": "exists", "returncode": 0}
         if command.startswith("command -v rg"):
             return {"output": "yes", "returncode": 0}
         return {"output": "", "returncode": 0}
@@ -181,3 +185,87 @@ def test_native_windows_rg_receives_regex_backslashes(tmp_path, content, pattern
     assert result.error is None
     assert result.total_count == 1
     assert result.matches[0].path.endswith("sample.cs")
+
+
+@pytest.mark.parametrize("transport", ["payload", "heredoc", "local"])
+@pytest.mark.parametrize(
+    ("pattern", "expected_count", "expected_error"),
+    [
+        ("(?x)alpha\n/beta", 1, False),
+        ("(?x)alpha # comment\n/beta", 1, False),
+        ("one\ntwo", 2, False),
+        ("(?x)absent\n/match", 0, False),
+        ("(?x)(alpha\n/beta", 0, True),
+        ("(?x)alpha\r/beta", 1, False),
+        ("(?x)alpha # comment\r\n/beta", 1, False),
+        ("one\ntwo\n", 2, False),
+        ("one\ntwo\n\n", 0, False),
+        ('(?x)x\\"y\n', 1, False),
+        (r"(?x)foo\\bar" + "\n", 1, False),
+        ("(?x)alpha # $(touch injected); `touch injected`; '\"\n/beta", 1, False),
+    ],
+    ids=["extended-mode", "extended-comment", "literal-newline", "no-match", "invalid-regex",
+         "carriage-return", "comment-crlf", "trailing-newline", "trailing-newlines-no-match",
+         "escaped-quote", "literal-backslash", "shell-metacharacters"],
+)
+def test_shell_multiline_pattern_preserves_regex_semantics(
+    tmp_path, transport, pattern, expected_count, expected_error,
+):
+    """Line breaks may be regex whitespace/comments, not only matchable characters."""
+    bash = shutil.which("bash")
+    if bash is None or shutil.which("rg") is None:
+        pytest.skip("bash and ripgrep are required")
+    source = tmp_path / "sample.txt"
+    source.write_text('alpha/beta\nx"y\nfoo\\bar\none\ntwo\n', encoding="utf-8", newline="\n")
+    env = MagicMock()
+    env.cwd = str(tmp_path)
+
+    def execute(command, **kwargs):
+        stdin_data = kwargs.get("stdin_data")
+        if transport == "heredoc" and stdin_data is not None:
+            command = BaseEnvironment._embed_stdin_heredoc(command, stdin_data)
+            stdin_data = None
+        completed = subprocess.run(
+            [bash, "-c", command], cwd=str(tmp_path), input=stdin_data,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=kwargs.get("timeout", 60),
+        )
+        return {"output": completed.stdout, "returncode": completed.returncode}
+
+    env.execute.side_effect = execute
+    if transport == "local":
+        env = LocalEnvironment(cwd=str(tmp_path))
+    result = ShellFileOperations(env).search(pattern, path=str(source))
+
+    assert bool(result.error) is expected_error
+    assert result.total_count == expected_count
+    assert not (tmp_path / "injected").exists()
+
+
+@pytest.mark.parametrize(
+    ("pattern", "content", "hint"),
+    [
+        ("(?x)ALPHA\n/BETA", "alpha/beta\n", "case-insensitive"),
+        ("lookup[key+1]\r", "lookup[key+1]\r\n", "literal match"),
+        ("lookup[key+1]\r", "lookup[key+1]\\r\n", None),
+        ("lookup[key+1]\nneedle", "lookup[key+1]\\nneedle\n", None),
+    ],
+    ids=["extended-mode", "fixed-carriage-return", "not-literal-backslash-r", "not-literal-backslash-n"],
+)
+def test_shell_zero_match_probes_preserve_control_characters(
+    tmp_path, monkeypatch, pattern, content, hint,
+):
+    """Probe patterns must retain the same meaning even when rg uses -F."""
+    if shutil.which("bash") is None or shutil.which("rg") is None:
+        pytest.skip("bash and ripgrep are required")
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+    (tmp_path / "sample.txt").write_bytes(content.encode("utf-8"))
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+
+    warning = ops._zero_match_probe(pattern, str(tmp_path), "*.txt")
+
+    if hint is None:
+        assert warning is None
+    else:
+        assert hint in warning
+        assert "sample.txt" in warning

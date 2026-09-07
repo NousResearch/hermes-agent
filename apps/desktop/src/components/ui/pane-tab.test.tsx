@@ -136,6 +136,7 @@ describe('PaneTab hover close button', () => {
         <PaneTabLabel>BROWSER</PaneTabLabel>
       </PaneTab>
     )
+
     const withClose = classesOf('BROWSER')
     closeable.unmount()
 
@@ -162,6 +163,7 @@ describe('PaneTab hover close button', () => {
         <PaneTabLabel>BROWSER</PaneTabLabel>
       </PaneTab>
     )
+
     const withClose = classesOf('BROWSER')
     railed.unmount()
 

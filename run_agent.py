@@ -398,6 +398,9 @@ class AIAgent(
         # Session boundary: the usage anchor describes the OLD transcript; fall back to full estimation.
         self._usage_anchor = None
         self._turn_base_usage_anchor = None
+        # The workspace snapshot is pinned per session (agent/system_prompt.py::_coding_parts); a
+        # /new, /resume or /branch on the same agent must re-snapshot at its own session start.
+        self._frozen_workspace_snapshot = None
 
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0

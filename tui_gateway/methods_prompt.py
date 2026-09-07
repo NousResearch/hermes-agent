@@ -614,19 +614,23 @@ def _(rid, params: dict) -> dict:
         return _err(
             rid, 4121,
             "hosted room and external submissions do not support isolated compute workers yet")
-    # Re-bind to the current transport: streaming must stay on the active websocket even
-    # if a disconnect/fallback moved the session to stdio.
-    request_transport = current_transport()
-    if preserve_session_transport:
-        delivery_transport = session.get("transport")
-        if not is_live_transport(delivery_transport):
-            return _err(
-                rid, 4093,
-                "session has no live client transport to receive an external submission")
-    else:
-        delivery_transport = request_transport or session.get("transport")
-        if request_transport is not None:
-            session["transport"] = request_transport
+    # Re-bind ordinary prompts to the current transport so streaming stays on the
+    # active websocket. External controllers must retain the live session owner.
+    with _session_resume_lock:
+        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
+            return refusal
+        request_transport = current_transport()
+        if preserve_session_transport:
+            delivery_transport = session.get("transport")
+            if not is_live_transport(delivery_transport):
+                return _err(
+                    rid, 4093,
+                    "session has no live client transport to receive an external submission")
+        else:
+            delivery_transport = request_transport or session.get("transport")
+            if request_transport is not None:
+                session["transport"] = request_transport
+                _cancel_ws_orphan_reap(sid)
     # Claim the turn against a possibly-running session (busy/queued reply, else fall
     # through once ``running`` is observed False).  The provider interrupt happens after
     # history_lock is released (a non-interruptible tool may hold it); if the old turn

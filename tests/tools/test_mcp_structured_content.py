@@ -165,7 +165,7 @@ class TestMetaPassthrough:
         assert data == {"result": "done"}
 
     def test_meta_with_structured_content(self, _patch_mcp_server):
-        """With usable text, structuredContent is suppressed but _meta rides."""
+        """Distinct text, structuredContent and allowed _meta all survive."""
         session = _patch_mcp_server
         session.call_tool = AsyncMock(
             return_value=_FakeCallToolResult(
@@ -178,6 +178,7 @@ class TestMetaPassthrough:
         data = json.loads(handler({}))
         assert data == {
             "result": "txt",
+            "structuredContent": {"ok": True},
             "_meta": {"com.example/k": "v"},
         }
 
@@ -220,11 +221,11 @@ class TestReservedMetaKeyPredicate:
 
 
 class TestContentStructuredArbitration:
-    """content and structuredContent are alternatives — never both.
+    """Only demonstrably identical content and structuredContent are alternatives.
 
-    Ported from MoonshotAI/kimi-code#3234: spec-following servers render
-    their data into content (verbatim dual-emit or a faithful human
-    reorganisation), so forwarding both sent the same information twice.
+    The MoonshotAI/kimi-code#3234 duplicate-context protection is preserved for
+    verbatim dual emission.  Lossy summaries are not proof of equality, so the
+    structured payload remains available to the model.
     """
 
     def test_dual_emit_suppresses_structured(self, _patch_mcp_server):
@@ -241,8 +242,8 @@ class TestContentStructuredArbitration:
         data = json.loads(handler({}))
         assert data == {"result": json.dumps(payload)}
 
-    def test_prose_summary_suppresses_structured(self, _patch_mcp_server):
-        """Lossy prose summaries also win — no heuristic is attempted."""
+    def test_prose_summary_preserves_structured(self, _patch_mcp_server):
+        """A lossy prose summary and structured data both reach the model."""
         session = _patch_mcp_server
         session.call_tool = AsyncMock(
             return_value=_FakeCallToolResult(
@@ -252,7 +253,45 @@ class TestContentStructuredArbitration:
         )
         handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
         data = json.loads(handler({}))
-        assert data == {"result": "3 item(s) found"}
+        assert data == {
+            "result": "3 item(s) found",
+            "structuredContent": {"items": [1, 2, 3]},
+        }
+
+    @pytest.mark.parametrize(
+        ("text", "structured"),
+        [
+            ("1", True),
+            ("0", False),
+            ('{"outer":{"value":1}}', {"outer": {"value": True}}),
+        ],
+    )
+    def test_bool_and_number_are_not_deduplicated(self, _patch_mcp_server, text, structured):
+        """Python's bool/int equality must never discard distinct JSON values."""
+        session = _patch_mcp_server
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock(text)],
+                structuredContent=structured,
+            )
+        )
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        assert json.loads(handler({})) == {
+            "result": text,
+            "structuredContent": structured,
+        }
+
+    def test_nested_identical_json_is_deduplicated(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        payload = {"items": [{"enabled": True, "count": 1}], "next": None}
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock(json.dumps(payload))],
+                structuredContent=payload,
+            )
+        )
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        assert json.loads(handler({})) == {"result": json.dumps(payload)}
 
     def test_whitespace_only_content_falls_back(self, _patch_mcp_server):
         """Whitespace-only text is not usable content — fallback fires."""
@@ -281,6 +320,32 @@ class TestContentStructuredArbitration:
         handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
         data = json.loads(handler({}))
         assert data["result"] == payload
+
+
+class TestStructuredErrors:
+    def test_is_error_preserves_structured_content_and_allowed_meta(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        payload = {"error": {"kind": "invalid_filter"}}
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("Readable validation failure")],
+                is_error=True,
+                structuredContent=payload,
+                meta={
+                    "com.example/error-code": "E_FILTER",
+                    "mcp.io/internal": "drop",
+                },
+            )
+        )
+        mcp_tool._server_error_counts["test-server"] = 2
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data == {
+            "error": "Readable validation failure",
+            "structuredContent": payload,
+            "_meta": {"com.example/error-code": "E_FILTER"},
+        }
+        assert mcp_tool._server_error_counts["test-server"] == 0
 
 
 class TestDroppedBlockNotice:

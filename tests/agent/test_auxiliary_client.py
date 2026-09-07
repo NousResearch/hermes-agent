@@ -1797,7 +1797,9 @@ class TestStaleFallbackCandidateSkip:
         assert result.choices[0].message.content == "openrouter-serves"
         assert mock_fb.call_count == 2
         assert mock_fb.call_args_list[1].kwargs.get("reason") == "stale fallback credential"
-        mock_mark.assert_called_once_with("anthropic")
+        mock_mark.assert_called_once_with(
+            "anthropic", base_url="https://api.anthropic.com",
+        )
         assert stale_fb.chat.completions.create.call_count == 1
         assert healthy_fb.chat.completions.create.call_count == 1
 
@@ -4138,6 +4140,19 @@ class TestAuxUnhealthyCache:
         or_try.assert_not_called()
         custom_try.assert_not_called()
 
+    def test_custom_health_url_identity_preserves_path_and_query_case(self):
+        from agent.auxiliary_client import _is_provider_unhealthy, _mark_provider_unhealthy
+
+        _mark_provider_unhealthy("custom", base_url="https://Example.test/API/v1/")
+
+        assert _is_provider_unhealthy("custom", "https://example.TEST/API/v1") is True
+        assert _is_provider_unhealthy("custom", "https://example.test/api/v1") is False
+
+        _mark_provider_unhealthy("custom", base_url="https://example.test/API/v1?token=AbC")
+        assert _is_provider_unhealthy(
+            "custom", "https://example.test/API/v1?token=abc",
+        ) is False
+
     def test_call_llm_marks_provider_unhealthy_on_402(self, monkeypatch):
         """A 402 from call_llm causes the provider to be marked unhealthy
         so the next call skips it instead of re-trying the same depleted
@@ -4176,6 +4191,182 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+    def test_custom_billing_failure_keeps_distinct_endpoint_eligible(self):
+        """A hosted custom endpoint's billing state must not quarantine a local custom endpoint."""
+        from agent.auxiliary_client import call_llm, _is_provider_unhealthy
+
+        hosted_url = "https://hosted.example/v1"
+        local_url = "http://127.0.0.1:8080/v1"
+        payment_error = Exception("Payment Required: weekly usage limit")
+        payment_error.status_code = 402
+
+        hosted_client = MagicMock(base_url=hosted_url)
+        hosted_client.chat.completions.create.side_effect = payment_error
+        local_client = MagicMock(base_url=local_url)
+        local_client.chat.completions.create.return_value = _DummyResponse("local-ok")
+        fallback_entry = {
+            "provider": "custom", "model": "local-model", "base_url": local_url,
+            "api_key": "local",
+        }
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("custom", "hosted-model", hosted_url, "hosted", None),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(hosted_client, "hosted-model"),
+        ), patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"fallback_chain": [fallback_entry]},
+        ), patch(
+            "agent.auxiliary_client._resolve_fallback_entry",
+            return_value=(local_client, "local-model"),
+        ):
+            response = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert response.choices[0].message.content == "local-ok"
+        assert _is_provider_unhealthy("custom", hosted_url) is True
+        assert _is_provider_unhealthy("custom", local_url) is False
+        assert hosted_client.chat.completions.create.call_count == 1
+        assert local_client.chat.completions.create.call_count == 1
+
+    def test_custom_fallback_auth_failure_quarantines_failed_endpoint(self):
+        """Terminal auth failure quarantines the fallback URL, not the active custom URL."""
+        from agent.auxiliary_client import (
+            _call_fallback_candidate_sync,
+            _is_provider_unhealthy,
+        )
+
+        hosted_url = "https://hosted.example/v1"
+        local_url = "http://127.0.0.1:8080/v1"
+        hosted_client = MagicMock(base_url=hosted_url)
+        hosted_client.chat.completions.create.side_effect = _AuxAuth401("expired hosted key")
+
+        with patch(
+            "agent.auxiliary_client._current_custom_base_url", return_value=local_url,
+        ), patch(
+            "agent.auxiliary_client._refresh_provider_credentials", return_value=False,
+        ):
+            result = _call_fallback_candidate_sync(
+                hosted_client,
+                "hosted-model",
+                "fallback_chain[0](custom)",
+                task="session_search",
+                messages=[{"role": "user", "content": "search"}],
+                temperature=None,
+                max_tokens=None,
+                tools=None,
+                effective_timeout=30.0,
+                effective_extra_body={},
+                reasoning_config=None,
+            )
+
+        assert result is None
+        assert _is_provider_unhealthy("custom", hosted_url) is True
+        assert _is_provider_unhealthy("custom", local_url) is False
+
+    def test_named_custom_main_route_honors_endpoint_quarantine(self):
+        """A named custom main route is skipped before its client is resolved."""
+        from agent.auxiliary_client import _mark_provider_unhealthy, _try_main_provider_route
+
+        hosted_url = "https://hosted.example/v1"
+        _mark_provider_unhealthy("custom:hosted", base_url=hosted_url)
+
+        with patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            return_value={"name": "hosted", "base_url": hosted_url},
+        ), patch("agent.auxiliary_client.resolve_provider_client") as resolver:
+            routed = _try_main_provider_route("custom:hosted", "hosted-model", "", "", "")
+
+        assert routed is None
+        resolver.assert_not_called()
+
+    def test_custom_aliases_share_endpoint_quarantine(self):
+        """Aliases for one custom URL stay quarantined while a distinct endpoint remains eligible."""
+        from agent.auxiliary_client import _mark_provider_unhealthy, _try_configured_fallback_chain
+
+        hosted_url = "https://hosted.example/v1"
+        local_url = "http://127.0.0.1:8080/v1"
+        hosted_entry = {"provider": "custom:mirror", "model": "hosted-model"}
+        local_entry = {"provider": "custom", "model": "local-model", "base_url": local_url}
+        local_client = MagicMock()
+        _mark_provider_unhealthy("custom:primary", base_url=hosted_url)
+
+        def named_provider(name):
+            if name == "custom:mirror":
+                return {"name": "mirror", "base_url": hosted_url}
+            return None
+
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"fallback_chain": [hosted_entry, local_entry]},
+        ), patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            side_effect=named_provider,
+        ), patch(
+            "agent.auxiliary_client._resolve_fallback_entry",
+            return_value=(local_client, "local-model"),
+        ) as resolver:
+            client, model, label = _try_configured_fallback_chain(
+                "compression", "openrouter", reason="payment error"
+            )
+
+        assert client is local_client
+        assert model == "local-model"
+        assert label == "fallback_chain[1](custom)"
+        resolver.assert_called_once_with(local_entry)
+
+    def test_bare_named_custom_aliases_share_endpoint_quarantine(self):
+        """Bare registry aliases cannot retry a quarantined custom endpoint."""
+        from agent.auxiliary_client import _mark_provider_unhealthy, _try_configured_fallback_chain
+
+        hosted_url = "https://hosted.example/v1"
+        local_url = "http://127.0.0.1:8080/v1"
+        hosted_entry = {"provider": "mirror", "model": "hosted-model"}
+        local_entry = {"provider": "custom", "model": "local-model", "base_url": local_url}
+        local_client = MagicMock()
+        _mark_provider_unhealthy("custom:primary", base_url=hosted_url)
+
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"fallback_chain": [hosted_entry, local_entry]},
+        ), patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            side_effect=lambda name: (
+                {"name": "mirror", "base_url": hosted_url} if name == "mirror" else None
+            ),
+        ), patch(
+            "agent.auxiliary_client._resolve_fallback_entry",
+            return_value=(local_client, "local-model"),
+        ) as resolver:
+            client, model, label = _try_configured_fallback_chain(
+                "compression", "openrouter", reason="payment error"
+            )
+
+        assert (client, model, label) == (
+            local_client, "local-model", "fallback_chain[1](custom)",
+        )
+        resolver.assert_called_once_with(local_entry)
+
+    def test_bare_named_custom_main_route_honors_endpoint_quarantine(self):
+        """A bare named custom main route is skipped before client resolution."""
+        from agent.auxiliary_client import _mark_provider_unhealthy, _try_main_provider_route
+
+        hosted_url = "https://hosted.example/v1"
+        _mark_provider_unhealthy("custom:primary", base_url=hosted_url)
+
+        with patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            return_value={"name": "hosted", "base_url": hosted_url},
+        ), patch("agent.auxiliary_client.resolve_provider_client") as resolver:
+            routed = _try_main_provider_route("hosted", "hosted-model", "", "", "")
+
+        assert routed is None
+        resolver.assert_not_called()
 
 
 # ── auxiliary_max_tokens_param ──────────────────────────────────────────────

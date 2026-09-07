@@ -335,8 +335,7 @@ class GatewayBusySessionMixin:
         )
         return (enriched_text or text).strip() if successful_transcripts else text
 
-    @staticmethod
-    def _steer_text_with_origin(text: str, event: MessageEvent) -> str:
+    def _steer_text_with_origin(self, text: str, event: MessageEvent) -> str:
         """Keep event origin in this injection, never in the cached system prompt."""
         if not text.strip():
             return text
@@ -356,7 +355,9 @@ class GatewayBusySessionMixin:
         from gateway.run import _load_gateway_config
         from gateway.session import _hash_chat_id, _hash_id, _hash_sender_id, _should_redact_pii
 
-        redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+        # Adapter busy callbacks can bypass the routed normal-message scope.
+        with self._profile_scope_for_source(source):
+            redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
         if _should_redact_pii(source.platform, redact_pii):
             # Only the model-facing copy changes; event/source remain valid routing state.
             hashers = {
@@ -525,13 +526,12 @@ class GatewayBusySessionMixin:
         logger.info("Demoting busy_input_mode 'interrupt' to 'queue' for session %s because %s", session_key, why)
         return "queue"
 
-    @staticmethod
     def _try_agent_verb(
-        running_agent, verb: str, text: str, session_key: str, *, event: Optional[MessageEvent] = None
+        self, running_agent, verb: str, text: str, session_key: str, *, event: Optional[MessageEvent] = None
     ) -> bool:
         """Call ``running_agent.<verb>(text)`` (steer/redirect); False + warning on failure."""
         try:
-            call_text = GatewayBusySessionMixin._steer_text_with_origin(text, event) if event else text
+            call_text = self._steer_text_with_origin(text, event) if event else text
             return bool(getattr(running_agent, verb)(call_text))
         except Exception as exc:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)

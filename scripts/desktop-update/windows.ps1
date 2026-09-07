@@ -91,10 +91,11 @@ param(
     [switch]$SelfTestLog,
     [switch]$SelfTestRelaunchCommand,
     [switch]$SelfTestRelaunchEnvironment,
+    [switch]$SelfTestArgvQuoting,
     [switch]$SelfTestDirectRelaunch
 )
 
-if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestLog -and -not $SelfTestRelaunchCommand -and -not $SelfTestRelaunchEnvironment -and -not $InstallRoot) {
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestLog -and -not $SelfTestRelaunchCommand -and -not $SelfTestRelaunchEnvironment -and -not $SelfTestArgvQuoting -and -not $InstallRoot) {
     # Mandatory in spirit; relaxed in the signature only so the self-test
     # switches can drive the UI / the pipe drain / the log without a checkout.
     throw "-InstallRoot is required"
@@ -919,7 +920,15 @@ function Start-DesktopRelaunch {
         try {
             $exeName = [System.IO.Path]::GetFileNameWithoutExtension($RelaunchExe)
             $before = @(Get-Process -Name $exeName -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
-            Start-Process -FilePath 'explorer.exe' -ArgumentList $relaunch.CommandLine | Out-Null
+            # Absolute path, never the bare name. This rung runs mid-update with
+            # the venv's Scripts directory -- user-writable and being rewritten
+            # right now -- prepended to PATH, so a bare 'explorer.exe' can
+            # resolve to something the shell would never have picked.
+            $explorerPath = Join-Path $env:SystemRoot 'explorer.exe'
+            if (-not (Test-Path -LiteralPath $explorerPath -PathType Leaf)) {
+                throw "explorer.exe not found at $explorerPath"
+            }
+            Start-Process -FilePath $explorerPath -ArgumentList $relaunch.CommandLine | Out-Null
             $explorerDeadline = (Get-Date).AddSeconds(15)
             while ((Get-Date) -lt $explorerDeadline) {
                 $fresh = @(Get-Process -Name $exeName -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
@@ -1346,6 +1355,21 @@ function Step-PipeDrain($Reader, [ref]$Task, $Buffer, $Sink, [ref]$Moved) {
     return $false
 }
 
+function ConvertTo-HermesProcessArguments([string[]]$HermesArgs) {
+    # CommandLineToArgvW quoting. Backslashes are literal EXCEPT immediately
+    # before a quote, where each pair collapses to one and a lone one escapes
+    # the quote. Escaping only the embedded quotes left `--branch feature\`
+    # rendering as "feature\", whose closing quote is eaten: the branch name
+    # swallowed the next argument. Double every backslash run that precedes a
+    # quote we emit, including the terminating one.
+    $arguments = ($HermesArgs | ForEach-Object {
+        $escaped = [string]$_ -replace '(\\*)"', '$1$1\"'
+        $escaped = $escaped -replace '(\\+)$', '$1$1'
+        '"{0}"' -f $escaped
+    }) -join ' '
+    return $arguments
+}
+
 function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     # Both pipes drain asynchronously (no deadlock however chatty the child)
     # while a small DoEvents loop keeps the marquee animating through long
@@ -1369,7 +1393,7 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     # unreliably $null under PS 5.1 even with the Handle-touch workaround.
     # CREATE_SUSPENDED closes the startup race: no updater instruction can run
     # before the process is assigned to its private job and resumed.
-    $arguments = ($HermesArgs | ForEach-Object { '"{0}"' -f ($_ -replace '"', '\"') }) -join ' '
+    $arguments = ConvertTo-HermesProcessArguments $HermesArgs
     # CreateProcess inherits this process's environment. Set Python's encoding
     # and buffering only for the atomic launch, then restore the hand-off host.
     $savedPythonIoEncoding = $env:PYTHONIOENCODING
@@ -1518,6 +1542,50 @@ function Set-InstallRootCurrentDirectory([string]$Root) {
 $finalCode = 1
 $finalMsg = "update did not complete"
 $script:TreeSafeToFinalize = $true
+
+if ($SelfTestArgvQuoting) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+namespace HermesArgvProbe {
+  public static class CommandLine {
+    [DllImport("shell32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CommandLineToArgvW(string commandLine, out int argc);
+    [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr pointer);
+    public static string[] Split(string commandLine) {
+      int argc;
+      IntPtr argv = CommandLineToArgvW(commandLine, out argc);
+      if (argv == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+      try {
+        string[] result = new string[argc];
+        for (int index = 0; index < argc; index++) {
+          result[index] = Marshal.PtrToStringUni(Marshal.ReadIntPtr(argv, index * IntPtr.Size));
+        }
+        return result;
+      } finally {
+        LocalFree(argv);
+      }
+    }
+  }
+}
+"@
+    $cases = @(
+        ,([string[]]@('-m', 'hermes_cli.main', 'update', '--yes', '--branch', 'feature\'))
+        ,([string[]]@('--branch', 'C:\path with space\'))
+        ,([string[]]@('--branch', 'a"b'))
+        ,([string[]]@('--branch', 'plain/branch'))
+    )
+    foreach ($case in $cases) {
+        $commandLine = '"C:\exe.exe" ' + (ConvertTo-HermesProcessArguments $case)
+        $parsed = [HermesArgvProbe.CommandLine]::Split($commandLine)
+        $roundTrip = @($parsed[1..($parsed.Length - 1)])
+        if (($roundTrip -join [char]1) -ne ($case -join [char]1)) {
+            throw "argv quoting mismatch: in=[$($case -join '|')] out=[$($roundTrip -join '|')]"
+        }
+    }
+    Write-Output "ARGV-QUOTING SELF-TEST: PASS"
+    exit 0
+}
 
 if ($SelfTestRelaunchCommand) {
     Get-DesktopRelaunchInvocation | ConvertTo-Json -Compress

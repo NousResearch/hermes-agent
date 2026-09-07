@@ -429,6 +429,7 @@ import {
   type UpdateMarkerClaim,
   writeUpdateMarker
 } from './update-marker'
+import { isValidUpdateBranchRef, updateBranchRefPattern } from './update-branch-ref'
 import { runWindowsUpdatePreflight, type UpdatePreflightOutcome } from './update-preflight'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
@@ -3201,9 +3202,20 @@ async function resolveHealedBranch(updateRoot, branch) {
     return branch || 'main'
   }
 
+  // A stored branch that predates validation (or a hand-edited config) can
+  // still start with `-`, which git reads as an option. Fail the heal probe
+  // rather than run it, and pass the fully qualified ref as the pattern.
+  if (!isValidUpdateBranchRef(branch)) {
+    rememberLog(`[updates] refusing to probe an invalid update branch: ${branch}`)
+
+    return branch
+  }
+
   const originUrl = await getOriginUrl(updateRoot)
   const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
-  const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
+  const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, updateBranchRefPattern(branch)], {
+    cwd: updateRoot
+  })
 
   if (probe.code !== 2) {
     return branch
@@ -17778,6 +17790,21 @@ ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig(
 
 ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
+
+  // The persisted branch reaches `git ls-remote` as a pattern and the Windows
+  // updater as an argv element. Reject anything that is not a git branch name
+  // here, at the boundary, instead of relying on every later quoting site.
+  if (!isValidUpdateBranchRef(branch)) {
+    const current = readDesktopUpdateConfig()
+
+    return {
+      ok: false,
+      error: 'invalid-branch',
+      message: `"${branch}" isn't a valid git branch name, so the update branch was left on ${current.branch}.`,
+      branch: current.branch
+    }
+  }
+
   writeDesktopUpdateConfig({ branch })
 
   return { branch }

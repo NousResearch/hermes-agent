@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 _HOSTED_ROOM_IDLE_FALLBACK_SECONDS = 5.0
 _HOSTED_ROOM_ACTIVE_POLL_SECONDS = 0.25
 _HOSTED_ROOM_TERMINAL_GRACE_SECONDS = 30.0
+_ORIGINAL_LOCAL_REJOIN_UNAVAILABLE = (
+    "Original-local Bot rejoin is unavailable: exact session binding and authority demotion are not supported yet.")
 
 _TERMINAL_STATUSES = ("deferred", "settled", "failed", "cancelled")
 _LIVE_STATUSES = ("queued", "running", "stopping")
@@ -162,12 +164,16 @@ class HostedRoomService:
             return self.local_profiles()
         return tuple(str(member.get("profile") or "") for member in room.get("members") or [])
 
-    def _recovered_member_target(self, room_id: str, member_id: str) -> tuple[str, str, str] | None:
+    def _recovered_member_target(self, room_id: str, member_id: str) -> tuple[str, str, str, str] | None:
+        """Return original (home, installation, profile, target kind) from one room view."""
         try:
             room = self._room(room_id)
         except hosted_rooms.RoomNotFoundError:
             return None  # Route setup may precede initial room creation.
         if not room.get("authority_history"):
+            claim = room.get("authority_claim", {}).get("payload", {})
+            if room["authority_epoch"] > 1 and claim.get("previous_gateway_id") != "legacy":
+                raise RuntimeError("Group Chat rejoin is unavailable: original Bot locations have no verified authority history.")
             return None
         checked = discussion.validate_room(room, local_profiles=self._discussion_profiles(room))
         home = checked.authority_history[0].gateway_id
@@ -176,7 +182,15 @@ class HostedRoomService:
             raise RuntimeError("Group Chat Bot is not in the recorded membership")
         target = member.target or {}
         installation = str(target["installation_id"]) if target.get("kind") == "peer" else home
-        return home, installation, member.profile
+        return home, installation, member.profile, str(target["kind"])
+
+    def _recovered_member_is_local(self, target: tuple[str, str, str, str]) -> bool:
+        home, installation, _, target_kind = target
+        if target_kind != "local":
+            return False
+        if not (installation == home == hosted_rooms.local_authority_gateway_id()):
+            raise RuntimeError(_ORIGINAL_LOCAL_REJOIN_UNAVAILABLE)
+        return True
 
     def _link_home_install_id(self, room_id: str) -> str:
         try:
@@ -246,8 +260,10 @@ class HostedRoomService:
         recovered_target = self._recovered_member_target(room_id, member_id)
         if recovered_target is not None and (
             route.home_install_id, route.target_install_id, route.target_profile
-        ) != recovered_target:
+        ) != recovered_target[:3]:
             raise ValueError("Group Chat route does not match the Bot's original host")
+        if recovered_target is not None and recovered_target[3] == "local":
+            raise RuntimeError(_ORIGINAL_LOCAL_REJOIN_UNAVAILABLE)
         bind_store = getattr(client, "bind_receipt_store", None)
         if callable(bind_store):
             bind_store(self.db_path)
@@ -414,10 +430,13 @@ class HostedRoomService:
         route = self.peer_routes.get(key)
         recovered_target = self._recovered_member_target(binding.room_id, member_id)
         if recovered_target is not None:
-            home, installation, profile = recovered_target
+            profile = recovered_target[2]
             if payload.get("target_profile") != profile:
                 raise RuntimeError("Group Chat task does not match its recorded Bot profile")
-            local = (installation == home == hosted_rooms.local_authority_gateway_id())
+            if self._recovered_member_is_local(recovered_target):
+                # A cached peer route cannot change the original local session namespace.
+                return self.rpc
+            local = False
         else:
             local = not self._member_is_peer(binding.room_id, member_id)
         if route is None and local:
@@ -428,7 +447,7 @@ class HostedRoomService:
             raise RuntimeError("peer room route is unavailable")
         if recovered_target is not None and (
             route.home_install_id, route.target_install_id, route.target_profile
-        ) != recovered_target:
+        ) != recovered_target[:3]:
             raise RuntimeError("Group Chat route does not match the Bot's original host")
         client = hydrated[1] if hydrated is not None else self.peer_clients.get(key)
         if client is None:
@@ -675,6 +694,9 @@ class HostedRoomService:
                 room, list(snapshot.events), local_profiles=self._discussion_profiles(room),
                 initial_watermarks=snapshot.watermarks)
             if decision.status == "task" and decision.task is not None:
+                recovered_target = self._recovered_member_target(binding.room_id, decision.task.member.member_id)
+                if recovered_target is not None:
+                    self._recovered_member_is_local(recovered_target)
                 driver.admit_task(
                     self.db_path, decision.task.identity, payload=decision.task.payload,
                     clock=time.time)

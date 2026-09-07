@@ -45,12 +45,90 @@ class _ExecApprovalDeclined(RuntimeError):
     """
 
 
+def _terminal_progress_value(value):
+    """Copy a complete native/status event before its preview builder truncates it."""
+    from agent.streaming_redact import sanitize_terminal_secret_text
+    if isinstance(value, str):
+        return sanitize_terminal_secret_text(value)
+    if isinstance(value, dict):
+        return {key: _terminal_progress_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_terminal_progress_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_terminal_progress_value(item) for item in value)
+    return value
+
+
 class TurnRunner:
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
     def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
+        from agent.streaming_redact import StreamingSecretSanitizer
+
         self._runner = runner
         self._ctx = ctx
+        self._progress_secret_state = StreamingSecretSanitizer(token_candidates_only=True)
+        self._progress_pending_renderer = None
+        self._progress_secret_lock = threading.Lock()
+        self._direct_interim_secret_state = StreamingSecretSanitizer(embedded_prefixes=False)
+        self._direct_interim_lock = threading.Lock()
+
+    def _sanitize_progress_event_fragment(self, value, renderer) -> list[str]:
+        """Sanitize across fragments without moving text to a later tool."""
+        from agent.streaming_redact import sanitize_terminal_secret_text
+
+        with self._progress_secret_lock:
+            raw = str(value or "")
+            previous_renderer = self._progress_pending_renderer
+            (
+                safe,
+                pending_before,
+                pending_before_length,
+                pending_after_length,
+            ) = self._progress_secret_state.feed_with_metadata(raw)
+            if pending_before is None:
+                self._progress_pending_renderer = previous_renderer or renderer
+                return []
+            combined = pending_before + raw
+            emitted_raw = combined[:len(combined) - pending_after_length]
+            current_emitted = emitted_raw[pending_before_length:]
+            current_safe = sanitize_terminal_secret_text(current_emitted)
+            preserves_event_boundary = (
+                safe == emitted_raw
+                or safe == pending_before + current_safe
+            )
+
+            messages = []
+            if (
+                pending_before
+                and previous_renderer is not None
+                and preserves_event_boundary
+            ):
+                previous_length = min(len(pending_before), len(emitted_raw))
+                if previous_length:
+                    messages.append(previous_renderer(safe[:previous_length]))
+                current_output = safe[previous_length:]
+                if current_safe != current_emitted:
+                    current_output = current_safe
+                if current_output:
+                    messages.append(renderer(current_output))
+            elif safe:
+                messages.append((previous_renderer or renderer)(safe))
+
+            self._progress_pending_renderer = (
+                renderer if pending_after_length else None
+            )
+            return messages
+
+
+    def flush_progress_secret(self) -> str:
+        """Terminally sanitize and render retained progress state."""
+        with self._progress_secret_lock:
+            pending = self._progress_secret_state.flush()
+            renderer = self._progress_pending_renderer
+            self._progress_pending_renderer = None
+        return renderer(pending) if pending and renderer is not None else pending
+
 
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
@@ -119,7 +197,8 @@ class TurnRunner:
         if event_type == "_thinking" or tool_name == "_thinking":
             thinking_text = (preview if tool_name == "_thinking" else tool_name) if ctx._thinking_enabled else None
             if thinking_text:
-                ctx.progress_queue.put(f"💬 {thinking_text}")
+                for msg in self._sanitize_progress_event_fragment(thinking_text, lambda safe: f"💬 {safe}"):
+                    ctx.progress_queue.put(msg)
             return
         # Native task cards consume the ID-bearing tool_start/tool_complete callbacks instead;
         # name-correlated text events would duplicate cards and mispair concurrent same-tool calls.
@@ -144,10 +223,12 @@ class TurnRunner:
         # "new" mode: only report when tool changes
         if ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]:
             return
-        ctx.last_tool[0] = tool_name
-        msg = self._progress_build_message(tool_name, preview, args)
-        if msg is not None:
-            self._progress_emit(msg)
+        for msg in self._progress_build_messages(tool_name, preview, args):
+            ctx.last_tool[0] = tool_name
+            if ctx.progress_mode == "verbose":
+                ctx.progress_queue.put(msg)
+            else:
+                self._progress_emit(msg)
 
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
@@ -174,7 +255,8 @@ class TurnRunner:
         try:
             if event_type == "tool.started" and tool_name and ctx._run_still_current():
                 from agent.display import build_status_phrase
-                adapter.set_status_text(ctx.source.chat_id, build_status_phrase(tool_name, args if ctx._live_status_mode == "full" else None))
+                display_args = _terminal_progress_value(args) if ctx._live_status_mode == "full" else None
+                adapter.set_status_text(ctx.source.chat_id, build_status_phrase(tool_name, display_args))
             elif event_type == "tool.completed":
                 # Between tools the model is genuinely "thinking" again — revert to the static default.
                 adapter.set_status_text(ctx.source.chat_id, None)
@@ -193,7 +275,7 @@ class TurnRunner:
                 gate_on = is_truthy_value(cfg_get(cfg, "display", "tool_progress_command"), default=False)
                 if gate_on and not is_seen(cfg, TOOL_PROGRESS_FLAG):
                     ctx.long_tool_hint_fired[0] = True
-                    ctx.progress_queue.put(tool_progress_hint_gateway())
+                    ctx.progress_queue.put(_terminal_progress_value(tool_progress_hint_gateway()))
                     mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
         except Exception as err:
             logger.debug("tool-progress onboarding hint failed: %s", err)
@@ -205,69 +287,71 @@ class TurnRunner:
         pl = get_tool_preview_max_len()
         return pl if pl > 0 else 40
 
-    def _progress_terminal_blocks(self, adapter, tool_name, args, emoji):
-        """(full, short) fenced blocks for a terminal command on markdown platforms, else (None, None).
-
-        No language tag: Slack mrkdwn renders it as a literal first code line. Verbose shows the FULL
-        command; "all"/"new" truncate to one line capped at ``tool_preview_length``. Consecutive
-        terminal calls drop the repeated header so back-to-back commands render as adjacent blocks.
-        """
-        if not (
-            getattr(adapter, "supports_code_blocks", False) and tool_name == "terminal" and isinstance(args, dict)
-            and isinstance(args.get("command"), str) and args["command"].strip()
-        ):
-            return None, None
-        cmd_full = args["command"].rstrip()
-        header = "" if self._ctx.last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
-        cap = self._preview_cap()
-        lines = cmd_full.splitlines()
-        cmd_short = lines[0] if lines else cmd_full
-        if len(cmd_short) > cap:
-            cmd_short = cmd_short[:cap - 3] + "..."
-        elif len(lines) > 1:
-            cmd_short += " ..."
-        return f"{header}```\n{cmd_full}\n```", f"{header}```\n{cmd_short}\n```"
-
-    def _progress_build_message(self, tool_name, preview, args) -> Optional[str]:
-        """Render the progress line. Verbose mode queues directly (no dedup) and returns None."""
+    def _progress_build_messages(self, tool_name, preview, args) -> list[str]:
+        """Sanitize raw event fragments before truncation and platform formatting."""
+        from agent.display import (
+            build_tool_preview, get_tool_emoji, get_tool_preview_max_len,
+            get_tool_verb, prepare_tool_preview, tool_verb_connector, verb_drops_preview,
+        )
         ctx = self._ctx
-        from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚙️")
         try:
             adapter = self._runner._adapter_for_source(ctx.source)
         except Exception:
             adapter = None
-        code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
+        terminal = (
+            getattr(adapter, "supports_code_blocks", False) and tool_name == "terminal"
+            and isinstance(args, dict) and isinstance(args.get("command"), str)
+            and bool(args["command"].strip())
+        )
         verbose = ctx.progress_mode == "verbose"
-        code = code_full if verbose else code_short
-        ctx.last_was_terminal_block[0] = code is not None
-        if verbose:
-            if code is None and args:
-                from agent.display import get_tool_preview_max_len
-                pl = get_tool_preview_max_len()
-                args_str = json.dumps(args, ensure_ascii=False, default=str)
-                # tool_preview_length 0 (default) = no truncation in verbose mode; the user asked
-                # for full detail and platform message-length limits handle the rest.
-                if pl > 0 and len(args_str) > pl:
-                    args_str = args_str[:pl - 3] + "..."
-                code = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
-            elif code is None:
-                code = f"{emoji} {tool_name}: \"{preview}\"" if preview else f"{emoji} {tool_name}..."
-            ctx.progress_queue.put(code)
-            return None
-        if code is not None:
-            return code
-        if not preview:
-            return f"{emoji} {tool_name}..."
-        from agent.display import get_tool_verb, prepare_tool_preview, tool_verb_connector, verb_drops_preview
-        prepared = prepare_tool_preview(tool_name, args, fallback=preview, max_len=self._preview_cap())
-        preview = adapter.format_tool_preview(prepared) if adapter is not None else prepared.text
-        # Friendly labels: human-phrased line for built-in tools ("🔍 Searching the web for ...")
-        # by prefixing the verb onto the computed preview, so the command/url/query is kept.
-        verb = get_tool_verb(tool_name)
-        if not verb:
-            return f"{emoji} {tool_name}: \"{preview}\""
-        return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{preview}"
+        if terminal:
+            header = "" if ctx.last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
+            cap = self._preview_cap()
+
+            def render(safe):
+                if not verbose:
+                    lines = safe.splitlines()
+                    safe = lines[0] if lines else safe
+                    if len(safe) > cap:
+                        safe = safe[:cap - 3] + "..."
+                    elif len(lines) > 1:
+                        safe += " ..."
+                return f"{header}```\n{safe}\n```"
+
+            raw = args["command"].rstrip()
+        elif verbose and args:
+            pl = get_tool_preview_max_len()
+
+            def render(safe):
+                if pl > 0 and len(safe) > pl:
+                    safe = safe[:pl - 3] + "..."
+                return f"{emoji} {tool_name}({list(args.keys())})\n{safe}"
+
+            raw = json.dumps(args, ensure_ascii=False, default=str)
+        elif preview:
+            if verbose:
+                def render(safe):
+                    return f'{emoji} {tool_name}: "{safe}"'
+                raw = preview
+            else:
+                cap = self._preview_cap()
+                raw = build_tool_preview(tool_name, args, max_len=0) or preview
+
+                def render(safe):
+                    prepared = prepare_tool_preview(tool_name, None, fallback=safe, max_len=cap)
+                    text = adapter.format_tool_preview(prepared) if adapter is not None else prepared.text
+                    verb = get_tool_verb(tool_name)
+                    if not verb:
+                        return f'{emoji} {tool_name}: "{text}"'
+                    return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{text}"
+        else:
+            ctx.last_was_terminal_block[0] = False
+            return [f"{emoji} {tool_name}..."]
+        messages = self._sanitize_progress_event_fragment(raw, render)
+        if messages:
+            ctx.last_was_terminal_block[0] = bool(terminal)
+        return messages
 
     def _progress_emit(self, msg: str) -> None:
         """Dedup consecutive identical lines (execute_code boilerplate), then route to the native
@@ -729,7 +813,7 @@ class TurnRunner:
         name = str(tool_name or "tool")
         self._ctx.progress_queue.put({
             "type": "tool.started", "tool_call_id": str(call_id or ""), "tool_name": name,
-            "preview": build_tool_preview(name, args or {}, max_len=64) or "",
+            "preview": build_tool_preview(name, _terminal_progress_value(args or {}), max_len=64) or "",
         })
 
     def native_tool_complete_callback(self, call_id, tool_name, args, result):
@@ -893,9 +977,48 @@ class TurnRunner:
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
-                self._send_status_text(text, ctx._status_thread_metadata, "interim_assistant_callback scheduling error")
+                self._send_direct_interim(str(text))
 
         return stream_consumer, stream_delta_cb, interim_assistant_cb, want_interim_messages
+
+    def _send_direct_interim(self, text: str, *, final: bool = False) -> None:
+        ctx = self._ctx
+        if self._stream_consumer() is not None or not self._status_live():
+            return
+        with self._direct_interim_lock:
+            visible = self._direct_interim_secret_state.feed(text, final=final)
+        if visible.strip():
+            self._send_status_text(visible, ctx._status_thread_metadata, "interim_assistant_callback scheduling error")
+
+    def _merge_direct_interim_into_final(self, result) -> None:
+        """Resolve retained direct commentary against the following display response."""
+        if self._stream_consumer() is not None or not isinstance(result, dict):
+            return
+        with self._direct_interim_lock:
+            if not self._direct_interim_secret_state.pending_length:
+                return
+            visible = self._direct_interim_secret_state.feed(str(result.get("final_response") or ""), final=True)
+        if result.get("response_previewed"):
+            self._send_direct_interim(visible, final=True)
+        else:
+            result["final_response"] = visible
+
+    async def flush_progress_secret_to_source(self) -> None:
+        """Complete the retained display fragment through the source-owned adapter."""
+        pending = self.flush_progress_secret()
+        ctx = self._ctx
+        if not pending or not ctx._run_still_current():
+            return
+        try:
+            adapter = self._runner._adapter_for_source(ctx.source)
+            if adapter is not None:
+                result = await adapter.send(
+                    chat_id=ctx.source.chat_id, content=pending,
+                    reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
+                )
+                self._track_progress_result(result)
+        except Exception as exc:
+            logger.debug("terminal progress-secret flush failed (%s)", type(exc).__name__)
 
     # ── agent resolution (cache reuse vs fresh build) ───────────────────────────────────────
 
@@ -1537,7 +1660,11 @@ class TurnRunner:
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
-            return agent.run_conversation(api_message, **kwargs)
+            try:
+                return agent.run_conversation(api_message, **kwargs)
+            except BaseException:
+                self._send_direct_interim("", final=True)
+                raise
         finally:
             unregister_gateway_notify(session_key)
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
@@ -1744,6 +1871,7 @@ class TurnRunner:
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)
         result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
+        self._merge_direct_interim_into_final(result)
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         # The streaming-TTS consumer's finish() runs on the outer loop thread after the executor
         # returns, so early run_sync returns are also finalised.

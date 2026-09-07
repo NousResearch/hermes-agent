@@ -89,8 +89,11 @@ post_install: |
   1. Credentials: run `npx huaweicloud-devkit@1.0.2 auth init` (KooCLI
      profile), or enable the excluded huaweicloud_auth_* tools via
      `hermes mcp configure huaweicloud-devkit`.
-  2. Companion skills (official catalog, snapshot of the pinned SHA):
-     hermes skills install official/huaweicloud/huaweicloud-core
+  2. Companion skills — one-shot bulk install of all 28 official catalog
+     skills (ECS, OBS, VPC, RDS, CCE, ModelArts, IAM, ...):
+       curl -fsSL https://raw.githubusercontent.com/huaweicloud/huaweicloud-devkit/main/integrations/hermes/skills-snapshot.json -o huaweicloud-skills.json && hermes skills snapshot import huaweicloud-skills.json
+     or install just the entry-point skill:
+       hermes skills install official/huaweicloud/huaweicloud-core
   3. Optional Bash guard for direct `hcloud` shell calls:
      https://github.com/huaweicloud/huaweicloud-devkit#safety-hook
   4. Start a new Hermes session to load tools, then verify with

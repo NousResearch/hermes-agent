@@ -24,6 +24,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
+import { installSharedRuntimeRoot } from './install-mutation-set'
+import { windowsPowerShellExecutable, windowsSystem32Executable } from './windows-powershell-path'
+import { psLiteral } from './windows-remote-lifecycle'
 import type { ForceReleaseHolder, ForceReleaseTerminateResult, WindowsUpdateForceReleaseDeps } from './windows-update-force-release'
 
 const execFileAsync = promisify(execFile)
@@ -114,12 +117,6 @@ export function terminateKillReserveMs(budgetMs: number): number {
     TERMINATE_KILL_CONFIRM_MS,
     Math.max(Math.min(TERMINATE_KILL_CONFIRM_MIN_MS, budget), Math.floor(budget * TERMINATE_KILL_CONFIRM_RATIO))
   )
-}
-
-function powershellExecutable(): string {
-  const windowsRoot = process.env.SystemRoot || 'C:\\Windows'
-
-  return path.join(windowsRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 }
 
 /**
@@ -826,7 +823,7 @@ async function readProcessCreatedAt(
 
   try {
     const { stdout } = await execFileAsync(
-      powershellExecutable(),
+      windowsPowerShellExecutable(),
       [
         '-NoLogo',
         '-NoProfile',
@@ -974,7 +971,7 @@ async function defaultLivenessProbeRunner(
 
   try {
     await execFileAsync(
-      powershellExecutable(),
+      windowsPowerShellExecutable(),
       [
         '-NoLogo',
         '-NoProfile',
@@ -1135,7 +1132,7 @@ export async function snapshotProcessTreeIdentities(
 
   try {
     const { stdout } = await execFileAsync(
-      powershellExecutable(),
+      windowsPowerShellExecutable(),
       [
         '-NoLogo',
         '-NoProfile',
@@ -1229,7 +1226,9 @@ async function runTaskkillWithinDeadline(
     }
 
     const child = execFile(
-      'taskkill',
+      // Absolute path. PATH is attacker-influenced, and during an update the
+      // venv's own Scripts directory is prepended to it and rewritten in flight.
+      windowsSystem32Executable('taskkill.exe'),
       ['/PID', String(pid), '/T', '/F'],
       {
         windowsHide: true,
@@ -1480,7 +1479,7 @@ async function terminateNamedTargetJobWithinDeadline(
 
   try {
     await execFileAsync(
-      powershellExecutable(),
+      windowsPowerShellExecutable(),
       [
         '-NoLogo',
         '-NoProfile',
@@ -1529,7 +1528,7 @@ function startTargetJobWatcher(
         env: {
           ...process.env,
           ELECTRON_RUN_AS_NODE: '1',
-          HERMES_TERMINATE_WATCHER_POWERSHELL: powershellExecutable(),
+          HERMES_TERMINATE_WATCHER_POWERSHELL: windowsPowerShellExecutable(),
           HERMES_TERMINATE_WATCHER_ENCODED_COMMAND: encodedWatcherCommand,
           HERMES_TERMINATE_OWNER_PID: String(ownerPid),
           HERMES_TERMINATE_OWNER_CREATED_AT: String(ownerCreatedAt),
@@ -2129,7 +2128,7 @@ async function defaultRunPowerShell(
     }
 
     childProcess = execFile(
-      powershellExecutable(),
+      windowsPowerShellExecutable(),
       [
         '-NoLogo',
         '-NoProfile',
@@ -2322,16 +2321,52 @@ export async function runPowerShellWithHardBoundary(
 }
 
 /**
+ * Access denied is Win32 error 5. Exception MESSAGES are localized: the
+ * English-only regex this replaced never fired on a German or Japanese
+ * Windows, so a protected holder we could not even open was reported
+ * ALREADY_GONE and the updater proceeded over a still-locked venv. Classify on
+ * the numeric code, walking the inner-exception chain (Get-Process wraps a
+ * Win32Exception).
+ *
+ * Exported because the generated script embeds it verbatim and the live suite
+ * runs it against synthetic exception objects under real PowerShell.
+ */
+export const TERMINATE_ACCESS_DENIED_CLASSIFIER = `
+function Test-AccessDeniedError($errorRecord) {
+  $exception = $errorRecord.Exception
+  $depth = 0
+  while ($null -ne $exception -and $depth -lt 8) {
+    if ($exception -is [System.ComponentModel.Win32Exception]) {
+      if ([int]$exception.NativeErrorCode -eq 5) { return $true }
+    }
+    if ($exception -is [System.UnauthorizedAccessException]) { return $true }
+    $hresult = 0
+    try { $hresult = [int]$exception.HResult } catch { $hresult = 0 }
+    # HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED) = 0x80070005.
+    if ($hresult -eq -2147024891) { return $true }
+    $exception = $exception.InnerException
+    $depth++
+  }
+  return $false
+}
+`.trim()
+
+/**
  * Build a self-contained PowerShell script that terminates one PID only when
  * its create-time ticks still match the expected generation.
  */
 export type ExactTerminateScriptOptions = {
   installRoot?: string
   resource?: string
-  forcePrimarySnapshotFailure?: boolean
-  pausePhase?: 'after-root-assignment' | 'after-root-suspension' | 'after-child-assignment' | 'after-child-suspension'
-  pausePid?: number
-  phaseMarkerPath?: string
+  /**
+   * Directory tree inside the install that this termination does NOT own.
+   * `.hermes-runtime` is excluded from the update's mutation set because
+   * foreign uv tool venvs borrow the managed interpreter as their base Python
+   * (install-mutation-set.ts). Running from it therefore proves nothing about
+   * blocking THIS update, so an image under this root is authorized only with
+   * a re-proved lock on a file the update will actually rewrite.
+   */
+  sharedRuntimeRoot?: string
 }
 
 export function buildExactTerminateScript(
@@ -2342,13 +2377,9 @@ export function buildExactTerminateScript(
 ): string {
   // createdAt from psutil is epoch seconds (float). Compare at second resolution.
   const expected = Number(createdAtUnixSeconds)
-  const psLiteral = (value: string) => `'${value.replace(/'/g, "''")}'`
-  const forcePrimarySnapshotFailure = options?.forcePrimarySnapshotFailure === true ? '$true' : '$false'
-  const pausePhase = psLiteral(options?.pausePhase ?? '')
-  const pausePid = Number.isInteger(options?.pausePid) ? Math.max(0, options?.pausePid as number) : 0
-  const phaseMarkerPath = psLiteral(options?.phaseMarkerPath ?? '')
   const installRootClaim = psLiteral(options?.installRoot ?? '')
   const resourceClaim = psLiteral(options?.resource ?? '')
+  const sharedRuntimeClaim = psLiteral(options?.sharedRuntimeRoot ?? '')
 
   return `
 $ErrorActionPreference = 'Stop'
@@ -2357,6 +2388,7 @@ $expectedUnix = [double]${expected}
 $waitMs = ${Math.max(0, Math.trunc(waitMs))}
 $installRootClaim = ${installRootClaim}
 $resourceClaim = ${resourceClaim}
+$sharedRuntimeClaim = ${sharedRuntimeClaim}
 Add-Type -TypeDefinition @"
 using System;
 using System.Text;
@@ -2615,12 +2647,13 @@ function Get-IdentityUnix([int]$targetPid) {
   return [DateTimeOffset]::new($p.StartTime.ToUniversalTime()).ToUnixTimeSeconds()
 }
 
+${TERMINATE_ACCESS_DENIED_CLASSIFIER}
+
 try {
   $actualUnix = Get-IdentityUnix $pidTarget
 } catch {
-  $msg = [string]$_.Exception.Message
-  if ($msg -match 'Access is denied|AccessDenied|denied') {
-    Write-Output ('ACCESS_DENIED ' + $msg)
+  if (Test-AccessDeniedError $_) {
+    Write-Output ('ACCESS_DENIED ' + [string]$_.Exception.Message)
     exit 5
   }
   Write-Output 'ALREADY_GONE'
@@ -2641,20 +2674,11 @@ $degraded = New-Object 'System.Collections.Generic.List[int]'
 $foreign = New-Object 'System.Collections.Generic.List[int]'
 $success = $false
 $exitCode = 1
-$fallbackSnapshotUsed = $false
 $treeRows = $null
-$forcePrimarySnapshotFailure = ${forcePrimarySnapshotFailure}
-$testPausePhase = ${pausePhase}
-$testPausePid = ${pausePid}
-$testPhaseMarker = ${phaseMarkerPath}
 
 function Get-TreeChildren([int]$parentPid) {
   if ($null -eq $script:treeRows) {
     try {
-      if ($forcePrimarySnapshotFailure -and -not $script:fallbackSnapshotUsed) {
-        $script:fallbackSnapshotUsed = $true
-        throw 'forced primary snapshot failure'
-      }
       # Capture one coherent process snapshot. Re-querying WMI for every
       # generation consumes the mutation deadline and widens PID-reuse races.
       $script:treeRows = @(Get-CimInstance Win32_Process -ErrorAction Stop)
@@ -2714,22 +2738,6 @@ function Assign-ContainedProcess([IntPtr]$processHandle, [int]$currentPid) {
   return $true
 }
 
-function Pause-BoundaryTest([string]$phase, [int]$currentPid) {
-  if ($testPausePhase -ne $phase) { return }
-  if ($testPausePid -gt 0 -and $testPausePid -ne $currentPid) { return }
-  $marker = $testPhaseMarker
-  if (-not [string]::IsNullOrWhiteSpace($marker)) {
-    $markerTemp = $marker + '.tmp'
-    [IO.File]::WriteAllText(
-      $markerTemp,
-      ($phase + ':' + $currentPid + [Environment]::NewLine),
-      [Text.UTF8Encoding]::new($false)
-    )
-    Move-Item -LiteralPath $markerTemp -Destination $marker -Force
-  }
-  Start-Sleep -Seconds 30
-}
-
 try {
   if ($externalTargetJob) {
     $targetJobOpenError = 0
@@ -2767,6 +2775,21 @@ try {
   if (-not [HermesForceReleaseNative]::IsSameOrUnderRoot($imageFinal, $installRootFinal)) {
     throw 'TERMINATION_EXECUTABLE_OUTSIDE_INSTALL_ROOT'
   }
+  # The managed runtime under the install root is SHARED. It is deliberately
+  # excluded from the update's mutation set because unrelated uv tool venvs
+  # (an MCP server another agent spawned) borrow the managed interpreter as
+  # their base Python and map its DLLs without touching our venv. Their image
+  # therefore lives under our install root while they block nothing we
+  # rewrite, and "image under install root" alone would authorize killing
+  # them. Under the shared runtime, authorization needs a re-proved lock on a
+  # file this update actually mutates.
+  $imageInSharedRuntime = $false
+  if (-not [string]::IsNullOrWhiteSpace($sharedRuntimeClaim)) {
+    $sharedRuntimeFinal = [HermesForceReleaseNative]::ReadFinalPath($sharedRuntimeClaim)
+    if (-not [string]::IsNullOrWhiteSpace($sharedRuntimeFinal)) {
+      $imageInSharedRuntime = [HermesForceReleaseNative]::IsSameOrUnderRoot($imageFinal, $sharedRuntimeFinal)
+    }
+  }
   # Only the Restart Manager ownership re-proof stays conditional: a
   # scanner-only holder names no file it holds.
   if (-not [string]::IsNullOrWhiteSpace($resourceClaim)) {
@@ -2777,17 +2800,22 @@ try {
     if (-not [HermesForceReleaseNative]::IsSameOrUnderRoot($resourceFinal, $installRootFinal)) {
       throw 'TERMINATION_RESOURCE_OUTSIDE_INSTALL_ROOT'
     }
+    if ($imageInSharedRuntime -and -not [string]::IsNullOrWhiteSpace($sharedRuntimeFinal) -and
+        [HermesForceReleaseNative]::IsSameOrUnderRoot($resourceFinal, $sharedRuntimeFinal)) {
+      # A lock on the shared runtime itself is not a lock on the mutation set.
+      throw 'TERMINATION_SHARED_RUNTIME_WITHOUT_MUTATION_PROOF'
+    }
     if (-not [HermesForceReleaseNative]::IsCurrentResourceOwner($resourceFinal, $pidTarget, $expectedUnix)) {
       throw 'TERMINATION_CURRENT_LOCK_OWNERSHIP_MISMATCH'
     }
+  } elseif ($imageInSharedRuntime) {
+    throw 'TERMINATION_SHARED_RUNTIME_WITHOUT_MUTATION_PROOF'
   }
   $handles[[string]$pidTarget] = $rootHandle
   if (Assign-ContainedProcess $rootHandle $pidTarget) { [void]$contained.Add($pidTarget) }
-  Pause-BoundaryTest 'after-root-assignment' $pidTarget
   $suspendRoot = [HermesForceReleaseNative]::SuspendProcess($rootHandle)
   Assert-NativeSuccess $suspendRoot 'TREE_SUSPEND_FAILED'
   [void]$suspended.Add($pidTarget)
-  Pause-BoundaryTest 'after-root-suspension' $pidTarget
   $rootRevalidated = 0.0
   Assert-NativeSuccess ([HermesForceReleaseNative]::ReadCreatedAt($rootHandle, [ref]$rootRevalidated)) 'TREE_REVALIDATE_FAILED'
   if ([math]::Abs($rootRevalidated - $expectedUnix) -gt 1.5) {
@@ -2834,11 +2862,9 @@ try {
       }
       $handles[[string]$childPid] = $childHandle
       if (Assign-ContainedProcess $childHandle $childPid) { [void]$contained.Add($childPid) }
-      Pause-BoundaryTest 'after-child-assignment' $childPid
       $childSuspend = [HermesForceReleaseNative]::SuspendProcess($childHandle)
       Assert-NativeSuccess $childSuspend 'TREE_SUSPEND_FAILED'
       [void]$suspended.Add($childPid)
-      Pause-BoundaryTest 'after-child-suspension' $childPid
       $childRevalidated = 0.0
       Assert-NativeSuccess ([HermesForceReleaseNative]::ReadCreatedAt($childHandle, [ref]$childRevalidated)) 'TREE_REVALIDATE_FAILED'
       if ([math]::Abs($childRevalidated - $childExpected) -gt 1.5) {
@@ -2962,6 +2988,7 @@ export async function terminateWindowsHolderExact(
     signal,
     deadlineAt,
     installRoot,
+    sharedRuntimeRoot,
     buildScript = buildExactTerminateScript
   }: {
     platform?: NodeJS.Platform
@@ -2975,6 +3002,8 @@ export async function terminateWindowsHolderExact(
     deadlineAt?: number
     /** Canonical update root for final resource-authorization validation. */
     installRoot?: string
+    /** Tree inside the install that the mutation set excludes; see ExactTerminateScriptOptions. */
+    sharedRuntimeRoot?: string
     /** Explicit test seam; production uses buildExactTerminateScript. */
     buildScript?: (
       pid: number,
@@ -3019,7 +3048,8 @@ export async function terminateWindowsHolderExact(
 
   const script = buildScript(target.pid, target.createdAt, effectiveWait, {
     installRoot,
-    resource: target.resource
+    resource: target.resource,
+    sharedRuntimeRoot: sharedRuntimeRoot ?? (installRoot ? installSharedRuntimeRoot(installRoot) : undefined)
   })
 
   const result = await run(script, budget, signal, deadlineAt)
@@ -3055,6 +3085,7 @@ export async function terminateWindowsHolderWithinDeadline(
     budgetMs,
     deadlineAt,
     installRoot,
+    sharedRuntimeRoot,
     signal
   }: {
     platform?: NodeJS.Platform
@@ -3062,6 +3093,7 @@ export async function terminateWindowsHolderWithinDeadline(
     budgetMs: number
     deadlineAt: number
     installRoot?: string
+    sharedRuntimeRoot?: string
     signal?: AbortSignal
   }
 ): Promise<ForceReleaseTerminateResult> {
@@ -3081,7 +3113,8 @@ export async function terminateWindowsHolderWithinDeadline(
     waitMs: Math.max(0, Math.min(1_500, budget - 250)),
     signal,
     deadlineAt: absoluteDeadline,
-    installRoot
+    installRoot,
+    ...(sharedRuntimeRoot ? { sharedRuntimeRoot } : {})
   })
 }
 

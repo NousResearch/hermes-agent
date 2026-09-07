@@ -164,7 +164,7 @@ it.each([false, true])('updates a recovered PR association on an already mounted
   renderRow(makeSession({ id: 'pr-row', title: 'PR row', git_repo_root: '/repo', git_branch: 'main' }), { card })
   expect(screen.queryByRole('button', { name: 'Open pull request #42' })).toBeNull()
   act(() => $prBranchBySession.set({ 'pr-row': key }))
-  expect(screen.getByRole('button', { name: 'Open pull request #42' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Open pull request #42' }).textContent).toBe('')
   act(() => $sidebarRowMeta.set([]))
   expect(screen.queryByRole('button', { name: 'Open pull request #42' })).toBeNull()
   $prBranchBySession.set({})

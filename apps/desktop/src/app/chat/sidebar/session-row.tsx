@@ -205,7 +205,7 @@ function SidebarSessionRowImpl({
   }
 
   if (pr) {
-    trailing.push({ key: 'pr', node: <PrTag pr={pr} /> })
+    trailing.push({ key: 'pr', node: <PrTag iconOnly pr={pr} /> })
   }
 
   const showAge = pinnedAge || card

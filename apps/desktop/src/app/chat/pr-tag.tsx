@@ -27,23 +27,28 @@ export function openPullRequest(pr: HermesBranchPullRequest): void {
  *  so the chip doesn't stack a second one beside it. */
 export function PrTag({
   className,
+  iconOnly = false,
   pr,
   showIcon = true
 }: {
   className?: string
+  /** Compact sidebar indicator; other surfaces retain their number label. */
+  iconOnly?: boolean
   pr: HermesBranchPullRequest
   showIcon?: boolean
 }) {
   const style = PR_STYLE[pullRequestBucket(pr)] ?? PR_STYLE.open
 
   return (
-    <Tip label={`#${pr.number} ${pr.title}`}>
+    <Tip align={iconOnly ? 'end' : undefined} label={`#${pr.number} ${pr.title}`} side="top">
       <button
         aria-label={`Open pull request #${pr.number}`}
         // A flex box doesn't pass text-decoration down to its items, so the
         // underline goes on the number itself rather than the chip.
         className={cn(
-          'group/pr flex shrink-0 items-center gap-0.5 text-[0.625rem] leading-none tabular-nums',
+          iconOnly
+            ? 'flex size-4 shrink-0 items-center justify-center rounded-[2.5px] hover:bg-(--chrome-action-hover) focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring'
+            : 'group/pr flex shrink-0 items-center gap-0.5 text-[0.625rem] leading-none tabular-nums',
           style.className,
           className
         )}
@@ -61,9 +66,11 @@ export function PrTag({
         onPointerDown={event => event.stopPropagation()}
         type="button"
       >
-        {showIcon && <Codicon name={style.icon} size="0.75rem" />}
+        {(showIcon || iconOnly) && <Codicon name={style.icon} size="0.75rem" />}
         {/* Without the glyph the number needs the `#` to still read as a PR. */}
-        <span className="underline-offset-1 group-hover/pr:underline">{showIcon ? pr.number : `#${pr.number}`}</span>
+        {!iconOnly && (
+          <span className="underline-offset-1 group-hover/pr:underline">{showIcon ? pr.number : `#${pr.number}`}</span>
+        )}
       </button>
     </Tip>
   )

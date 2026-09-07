@@ -2270,9 +2270,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
-        # Per-model context_length overrides live in custom_providers; without them the deferred
-        # resolution below falls back to the hardcoded family catalog (#83324).
-        self.custom_providers = list(custom_providers) if custom_providers else None
+        # Per-model context_length overrides live in custom_providers; without them deferred
+        # resolution falls back to the hardcoded family catalog (#83324).
+        self.custom_providers = custom_providers or None
         # Per-model overrides (longest substring match wins); floor applied on top.
         self.model_thresholds = model_thresholds or {}
         # Raw config value, before override/floor; fallback when switching to a model with no override.

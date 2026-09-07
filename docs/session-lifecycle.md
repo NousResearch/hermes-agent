@@ -88,7 +88,7 @@ behavior on the next access.
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `was_auto_reset` | `bool` | `False` | Set when explicit suspension causes a replacement session. Also retained for historical records. |
-| `auto_reset_reason` | `Optional[str]` | `None` | `"idle"` or `"daily"` — why the previous session was auto-reset. |
+| `auto_reset_reason` | `Optional[str]` | `None` | `"suspended"` for explicit suspension; older rows may retain historical reset reasons. |
 | `reset_had_activity` | `bool` | `False` | Whether the replaced session had prior activity. |
 | `is_fresh_reset` | `bool` | `False` | Set by explicit `/new` or `/reset`. Triggers topic/channel skill re-injection on first message. Distinguished from `was_auto_reset` to avoid misleading "session expired" notices. |
 | `expiry_finalized` | `bool` | `False` | Historical finalization fence retained for recovery; no timer writes it. |

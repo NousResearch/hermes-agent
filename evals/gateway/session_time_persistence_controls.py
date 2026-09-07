@@ -93,4 +93,13 @@ migrator.migrate_session_config({"session": {"reset": {"mode": "daily", "atHour"
 assert (target / "config.yaml").read_bytes() == before
 assert json.loads((migrator.archive_dir / "session-config.json").read_text(encoding="utf-8")) == {"identityLinks": {"test": "identity"}}
 results["migration_timers_ignored_advanced_archived"] = True
+from contextlib import redirect_stdout
+from io import StringIO
+from hermes_cli.cli_info_mixin import CLIInfoMixin
+status_output = StringIO()
+with redirect_stdout(status_output):
+    CLIInfoMixin._show_gateway_status(object.__new__(CLIInfoMixin))
+assert "Error loading gateway config" not in status_output.getvalue()
+assert "Conversations persist" in status_output.getvalue()
+results["gateway_status_without_policy"] = True
 print(json.dumps(results, indent=2), flush=True)

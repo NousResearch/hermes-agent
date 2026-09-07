@@ -2,6 +2,7 @@
 /venv/
 /venv.old/
 /venv.stale.runtime-*/
+/bin/
 /.hermes-runtime/
 /_pycache/
 *.pyc*
@@ -97,10 +98,20 @@ apps/desktop/src/**/*.d.ts
 !apps/desktop/src/plugins/*/plugin.js
 !apps/desktop/src/global.d.ts
 !apps/desktop/src/vite-env.d.ts
+
+# Build/debug artifacts that must never be committed
+/log.txt
+/sqlite_leak_fix.png
+/*.png.bak
+*.tar.gz
+*.tgz
 apps/shared/src/**/*.js
 apps/shared/src/**/*.js.map
 apps/shared/src/**/*.d.ts
 apps/desktop/release/
+# stage-and-swap Desktop rebuild output (#86443); removed after the swap, but
+# a killed build must not leave the checkout dirty
+apps/desktop/.staging-*/
 *.tsbuildinfo
 
 # Web UI assets — synced from @nous-research/ui at build time via
@@ -205,3 +216,7 @@ native/fts5_cjk/*.so
 # interrupted; consumed by launch-time recovery. Never commit it (was tracked
 # by accident via 3a69e34702, removed in the #72002 salvage).
 .lazy-refresh-incomplete
+.skills_prompt_snapshot.json
+
+# Disposable profile created by scripts/probe_active_session_exclusivity.py
+.probe-home/

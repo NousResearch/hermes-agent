@@ -47,6 +47,7 @@ def test_cron_manage_profile_reads_that_profiles_store(tmp_path, monkeypatch):
     )
 
     assert "result" in resp, resp
+    assert resp["result"]["scoped"] == "botA"
     names = [j.get("name") for j in resp["result"]["jobs"]]
     assert "botA-only-job" in names
 

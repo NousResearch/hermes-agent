@@ -22,7 +22,7 @@ from __future__ import annotations
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
@@ -37,6 +37,7 @@ def _telegram_descriptor() -> CapabilityDescriptor:
         label="Telegram",
         max_message_length=4096,
         supports_draft_streaming=True,  # Telegram DMs support sendMessageDraft
+        supported_ops=("send", "edit", "typing", "follow_up", "draft"),
         supports_edit=True,
         supports_threads=True,  # forum topics
         markdown_dialect="markdown_v2",

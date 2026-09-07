@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -238,7 +238,7 @@ async def test_admin_runs_quick_command_when_gating_enabled():
 # Running-agent fast-path gating — admin/user split must hold even when an
 # agent is already running. The fast-path block in _handle_message dispatches
 # /stop, /restart, /new, /steer, /model, /approve, /deny, /agents,
-# /background, /kanban, /goal, /yolo, /verbose, /footer, /help, /commands,
+# /bg, /btw, /kanban, /goal, /yolo, /verbose, /footer, /help, /commands,
 # /profile, /update directly without going through the cold dispatch site.
 # We must apply the gate there too — otherwise non-admins could bypass
 # gating just because an agent happens to be busy.

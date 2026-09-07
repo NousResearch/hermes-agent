@@ -16,6 +16,10 @@ export interface BackendOwnershipEntry extends BackendIdentity {
 export interface BackendOwnershipStore {
   read: () => string | null
   write: (contents: string) => void
+  /** Move an unreadable ownership file aside (e.g. rename to `.corrupt`) so
+   *  its contents survive for inspection instead of being rewritten away.
+   *  Optional: stores that can't quarantine simply skip the sweep. */
+  quarantine?: () => void
 }
 
 export interface BackendOwnershipDeps {
@@ -24,7 +28,21 @@ export interface BackendOwnershipDeps {
   matchesParent: (entry: BackendOwnershipEntry) => Promise<boolean | undefined>
   stop: (identity: BackendIdentity) => Promise<void> | void
   store: BackendOwnershipStore
+  /**
+   * Overall time budget for one reap sweep. The ownership file legitimately
+   * accumulates one record per profile per launch, and each record can cost
+   * up to two identity probes (parent + backend) plus a stop — on Windows
+   * those shell out to PowerShell, whose 5.1 cold starts are slow (#87169).
+   * Without a bound, a large roster could stall boot for minutes while the
+   * renderer's 45s backend-boot budget expires and the user stares at the
+   * connecting screen. When the budget is exhausted the sweep preserves the
+   * unprocessed records for the next launch and returns what it reaped.
+   */
+  reapDeadlineMs?: number
 }
+
+/** Default budget for one reap sweep (see `reapDeadlineMs`). */
+export const REAP_ORPHANS_DEADLINE_MS = 5_000
 
 export interface BackendClaim extends BackendIdentity {
   command?: string
@@ -62,12 +80,30 @@ function identitiesMatch(left: BackendIdentity, right: BackendIdentity): boolean
 }
 
 export function parseBackendOwnership(contents: unknown): BackendOwnershipEntry[] {
+  return parseBackendOwnershipDetailed(contents).entries
+}
+
+/** Parse result that distinguishes "empty/valid" from "unreadable". A corrupt
+ *  ownership file must NOT read as an empty roster: `reapOrphans` rewrites the
+ *  file with its survivors, so treating garbage as `[]` permanently erased the
+ *  records of still-running backends — the exact shape of the #89298 report
+ *  (ownership file gone, 28 leaked serve processes nothing will ever reap). */
+export function parseBackendOwnershipDetailed(contents: unknown): {
+  corrupt: boolean
+  entries: BackendOwnershipEntry[]
+} {
+  const text = String(contents ?? '')
+
+  if (!text.trim()) {
+    return { corrupt: false, entries: [] }
+  }
+
   let parsed: unknown
 
   try {
-    parsed = JSON.parse(String(contents ?? ''))
+    parsed = JSON.parse(text)
   } catch {
-    return []
+    return { corrupt: true, entries: [] }
   }
 
   const values = Array.isArray(parsed)
@@ -109,7 +145,7 @@ export function parseBackendOwnership(contents: unknown): BackendOwnershipEntry[
     }
   }
 
-  return entries
+  return { corrupt: false, entries }
 }
 
 export function serializeBackendOwnership(entries: BackendOwnershipEntry[]): string {
@@ -123,7 +159,8 @@ export function serializeBackendOwnership(entries: BackendOwnershipEntry[]): str
  * cleanup before reporting failure to the caller.
  */
 export function createBackendOwnership(deps: BackendOwnershipDeps) {
-  const read = () => parseBackendOwnership(deps.store.read())
+  const readDetailed = () => parseBackendOwnershipDetailed(deps.store.read())
+  const read = () => readDetailed().entries
   const write = (entries: BackendOwnershipEntry[]) => deps.store.write(serializeBackendOwnership(entries))
 
   return {
@@ -181,11 +218,39 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
     },
 
     async reapOrphans(): Promise<number[]> {
-      const entries = read()
+      const { corrupt, entries } = readDetailed()
+
+      // An unreadable ownership file yields zero parsed entries — rewriting
+      // survivors ([]) here would DESTROY the only record of any backends the
+      // corrupt file described, guaranteeing they leak forever (#89298).
+      // Preserve the evidence for inspection and skip the sweep.
+      if (corrupt) {
+        try {
+          deps.store.quarantine?.()
+        } catch {
+          // Quarantine is best-effort; the important part is not rewriting.
+        }
+
+        return []
+      }
+
       const survivors: BackendOwnershipEntry[] = []
       const reaped: number[] = []
+      const deadline = Date.now() + (deps.reapDeadlineMs ?? REAP_ORPHANS_DEADLINE_MS)
 
-      for (const entry of entries) {
+      for (let i = 0; i < entries.length; i += 1) {
+        // Budget exhausted: preserve the unprocessed records so a later launch
+        // can retry them. A slow identity probe must never stall boot — the
+        // renderer's backend-boot budget is 45s and the spawn itself needs
+        // most of it.
+        if (Date.now() >= deadline) {
+          survivors.push(...entries.slice(i))
+
+          break
+        }
+
+        const entry = entries[i]
+
         // A backend whose Electron parent is still running is NOT an orphan:
         // reaping it would kill a live instance's session. This is what stops
         // a second launch from SIGTERMing the running instance's backend even

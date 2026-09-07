@@ -2,7 +2,7 @@
 
 ``hermes_cli.main`` skips eager plugin discovery at argparse-setup time
 when the invocation is clearly targeting a known built-in subcommand.
-This saves 500-650ms on ``hermes --help``, ``hermes version``,
+This saves 500-650ms on ``hermes --help``, ``hermes --version``,
 ``hermes logs``, etc., by not importing ``google.cloud.pubsub_v1``,
 ``aiohttp``, ``grpc``, and friends.
 
@@ -28,6 +28,7 @@ from unittest.mock import patch
 
 import pytest
 
+from hermes_cli._parser import build_top_level_parser, top_level_value_flag_sets
 from hermes_cli.main import (
     _BUILTIN_SUBCOMMANDS,
     _first_positional_argv,
@@ -67,6 +68,27 @@ def _live_subcommand_names() -> set[str]:
 
 
 # ── _first_positional_argv ─────────────────────────────────────────────────
+
+
+def test_value_flag_sets_match_top_level_parser():
+    required, optional = top_level_value_flag_sets()
+
+    for action in build_top_level_parser()[0]._actions:
+        if not action.option_strings or action.nargs == 0:
+            continue
+        expected = optional if action.nargs == "?" else required
+        assert set(action.option_strings) <= expected
+
+
+def test_reasoning_value_is_not_misclassified_as_subcommand(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "--reasoning", "high", "chat", "hello"],
+    )
+
+    assert _first_positional_argv() == "chat"
+    assert _plugin_cli_discovery_needed() is False
 
 
 

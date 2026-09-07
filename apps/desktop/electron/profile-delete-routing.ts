@@ -9,17 +9,9 @@
 //
 // These helpers are pure so they can be unit-tested without Electron.
 
-/**
- * Parse a `hermes:api` request into the profile name a DELETE targets, or
- * null when the request is not a profile-delete at all (wrong method, wrong
- * path, empty/invalid name).
- */
-export function profileNameFromDeleteRequest(request) {
-  if (!request || String(request.method || 'GET').toUpperCase() !== 'DELETE') {
-    return null
-  }
-
-  const match = String(request.path || '').match(/^\/api\/profiles\/([^/?#]+)(?:[?#].*)?$/)
+/** Parse a profile name from an `/api/profiles/<name>` request path. */
+export function profileNameFromPath(path: unknown): string | null {
+  const match = String(path || '').match(/^\/api\/profiles\/([^/?#]+)(?:[?#].*)?$/)
 
   if (!match) {
     return null
@@ -46,6 +38,15 @@ export function profileNameFromDeleteRequest(request) {
   return name.toLowerCase()
 }
 
+/** Parse a `hermes:api` request into the profile name a DELETE targets. */
+export function profileNameFromDeleteRequest(request) {
+  if (!request || String(request.method || 'GET').toUpperCase() !== 'DELETE') {
+    return null
+  }
+
+  return profileNameFromPath(request.path)
+}
+
 export type ProfileDeleteAction = 'noop' | 'teardown-primary' | 'teardown-pool'
 
 export interface ProfileDeleteDecision {
@@ -57,6 +58,65 @@ export interface ProfileDeleteDecisionDeps {
   isDefaultProfile: (profile: string) => boolean
   isValidProfileName: (profile: string) => boolean
   primaryProfileKey: () => string
+}
+
+export interface ConnectionScopedProfileDeleteRequest {
+  connectionId?: unknown
+  method?: unknown
+  path?: unknown
+  profile?: unknown
+}
+
+export interface ConnectionScopedProfileDeleteDeps<T> {
+  acquire: (profile: string) => () => void
+  connectionKind: (connectionId: string) => string
+  dispatch: (routeProfile: null) => Promise<T>
+  isDefaultProfile: (profile: string) => boolean
+  isValidProfileName: (profile: string) => boolean
+  prepareLocal: (request: ConnectionScopedProfileDeleteRequest) => Promise<void>
+  teardownConnection: (connectionId: string, profile: string) => Promise<void>
+}
+
+/**
+ * Run an explicit registry profile DELETE under the same process-wide gate as
+ * legacy deletion. Teardown and dispatch are injected so the Electron caller
+ * can stop either local profile pools or one connection-qualified backend.
+ * Dispatch deliberately receives a null route profile: resolving the deleted
+ * profile again would recurse into the gate (and could recreate its home).
+ */
+export async function dispatchConnectionScopedProfileDelete<T>(
+  request: ConnectionScopedProfileDeleteRequest,
+  deps: ConnectionScopedProfileDeleteDeps<T>
+): Promise<T> {
+  const targetProfile = profileNameFromDeleteRequest(request)
+  const logicalProfile = String(request.profile ?? '').trim() || targetProfile || ''
+  const connectionId = String(request.connectionId ?? '').trim()
+
+  if (!targetProfile || !connectionId) {
+    throw new Error('Connection-scoped profile deletion requires a connection and profile.')
+  }
+
+  if (deps.isDefaultProfile(targetProfile)) {
+    throw new Error('The default profile cannot be deleted.')
+  }
+
+  if (!deps.isValidProfileName(targetProfile)) {
+    throw new Error(`Invalid profile name: ${targetProfile}`)
+  }
+
+  const release = deps.acquire(targetProfile)
+
+  try {
+    if (deps.connectionKind(connectionId) === 'local') {
+      await deps.prepareLocal(request)
+    } else {
+      await deps.teardownConnection(connectionId, logicalProfile)
+    }
+
+    return await deps.dispatch(null)
+  } finally {
+    release()
+  }
 }
 
 /**
@@ -180,7 +240,7 @@ export function decideProfileDeleteAction(
  */
 export function resolveRouteProfile(
   tornDownProfile: string | null,
-  profile: string | undefined
+  profile: string | null | undefined
 ): string | null | undefined {
   return tornDownProfile ? null : profile
 }

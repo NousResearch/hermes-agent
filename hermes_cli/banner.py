@@ -168,10 +168,13 @@ def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, t
     encoding. ``network=True`` (ls-remote/fetch) detaches stdin and disables git/GCM prompts so a
     passive update check can never hang on a ``Username for 'https://github.com':`` prompt.
     """
-    kwargs: dict = {}
+    from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
+
+    # The banner/update probes run from GUI-hosted backends too (desktop-spawned
+    # ``hermes serve``), where a bare git child flashes a console window.
+    kwargs: dict = {"creationflags": windows_hide_flags()}
     if network:
-        from hermes_cli._subprocess_compat import noninteractive_git_env
-        kwargs = {"stdin": subprocess.DEVNULL, "env": noninteractive_git_env()}
+        kwargs.update({"stdin": subprocess.DEVNULL, "env": noninteractive_git_env()})
     try:
         return subprocess.run(
             ["git", *args], capture_output=True, timeout=timeout, cwd=str(cwd) if cwd is not None else None,

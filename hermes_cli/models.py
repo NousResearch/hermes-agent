@@ -1536,14 +1536,8 @@ def cached_provider_model_ids(
     fp = _credential_fingerprint(normalized)
     entry = cache.get(normalized)
     now = time.time()
-    # Even a credential-matched fresh disk cache predates the current account's
-    # entitlement check. Revalidate gated entries before offering them again.
-    cached_models = entry.get("models") if isinstance(entry, dict) else None
-    gated_cache = isinstance(cached_models, list) and any(
-        _model_requires_account_discovery(normalized, model) for model in cached_models
-    )
 
-    if not force_refresh and not gated_cache and _cache_entry_valid(entry, fp, allow_empty=is_ollama):
+    if not force_refresh and _cache_entry_valid(entry, fp, allow_empty=is_ollama):
         age = now - entry["at"]
         if age < ttl_seconds:
             return list(entry["models"])
@@ -1570,7 +1564,9 @@ def cached_provider_model_ids(
         if same_creds and isinstance(entry.get("models"), list) and entry["models"]:
             return list(entry["models"])
         return []
-    # Live returned nothing: a stale same-fingerprint entry beats an empty result.
+    # Live returned nothing: a stale same-fingerprint entry beats an empty result — minus account-gated
+    # models, which only a successful discovery may advertise (the entry itself is untouched, so the
+    # next successful fetch restores them).
     if _cache_entry_valid(entry, fp):
         return [model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)]
     return []

@@ -46,12 +46,15 @@ def _result_paths():
 
 
 def save_completed_result(session) -> None:
-    from tools.process_registry import MAX_OUTPUT_CHARS, _redact_process_result
+    from agent.redact import redact_sensitive_text, redact_terminal_output
+    from tools.process_registry import MAX_OUTPUT_CHARS
 
     with session._lock:
         record = {key: getattr(session, key) for key in _RESULT_FIELDS}
         record["output"] = session.output_buffer[-MAX_OUTPUT_CHARS:]
-    _redact_process_result(record)
+    # Live-output opt-out must not persist raw credentials in durable receipts.
+    record["output"] = redact_terminal_output(record["output"], record["command"], force=True)
+    record["command"] = redact_sensitive_text(record["command"], code_file=True, force=True)
     directory = get_hermes_home() / "logs" / "process-results"
     try:
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)

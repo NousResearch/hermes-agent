@@ -1030,3 +1030,45 @@ def test_units_of_one_call_share_a_single_capacity_slot():
     assert (first["status"], second["status"], other["status"]) == ("dispatched", "dispatched", "rejected")
     assert ad.active_task_count() == 2
     gate.set()
+
+
+def test_child_finished_before_crash_is_recovered_with_its_result(tmp_path):
+    """Real-import E2E: a 2-task group unit whose owner dies mid-run replays the finished child's real result
+    and marks only the unfinished sibling unknown — a crash costs the stragglers, never the finished work."""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
+    producer = r'''
+import os, sys, time
+from unittest.mock import MagicMock
+import tools.delegate_tool as dt
+parent = MagicMock(); parent._delegate_depth = 0; parent.session_id = "sess"; parent._interrupt_requested = False
+parent._active_children = []; parent._active_children_lock = None
+def child(task_index, goal, child=None, parent_agent=None, **kw):
+    if task_index == 1:
+        time.sleep(600)
+    return {"task_index": task_index, "status": "completed", "summary": f"done: {goal}", "api_calls": 1,
+            "duration_seconds": 0.1, "model": "m", "exit_reason": "completed"}
+def build(**kw):
+    c = MagicMock(); c._delegate_role = "leaf"; c._subagent_id = f"s{kw['task_index']}"; return c
+creds = {"model": "m", "provider": None, "base_url": None, "api_key": None, "api_mode": None, "command": None, "args": None}
+dt._build_child_agent = build; dt._run_single_child = child; dt._resolve_delegation_credentials = lambda *a, **k: creds
+dt.delegate_task(tasks=[{"goal": "fast member of the group task", "group": "g"},
+                        {"goal": "slow member of the group task", "group": "g"}], background=True, parent_agent=parent)
+time.sleep(2.0)
+sys.stdout.flush(); os._exit(1)
+'''
+    subprocess.run([sys.executable, "-c", producer], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
+    consumer = r'''
+import json, queue
+from tools import async_delegation as ad
+q = queue.Queue(); ad.restore_undelivered_completions(q)
+print(json.dumps(q.get_nowait(), sort_keys=True))
+'''
+    second = subprocess.run([sys.executable, "-c", consumer], cwd=repo, env=env, text=True, capture_output=True,
+                            timeout=15, check=True)
+    evt = json.loads(second.stdout.strip().splitlines()[-1])
+    by_index = {r["task_index"]: r for r in evt["results"]}
+    assert by_index[0]["status"] == "completed" and by_index[0]["summary"] == "done: fast member of the group task"
+    assert by_index[1]["status"] == "unknown"
+    assert "1/2 child results were recorded" in evt["error"]
+    assert "done: fast member" in format_process_notification(evt)

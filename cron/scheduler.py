@@ -1739,6 +1739,7 @@ def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
 
 def _run_agent_with_watchdog(
     agent, prompt: str, job: dict, job_id: str, job_name: str, task_id: str, cancel_event,
+    worker_state: Optional[dict] = None,
 ) -> dict:
     """Run ``agent.run_conversation`` on a worker thread under the inactivity (not wall-clock)
     watchdog: default 600s, override HERMES_CRON_TIMEOUT, 0 = unlimited."""
@@ -1783,6 +1784,8 @@ def _run_agent_with_watchdog(
     _cron_context = contextvars.copy_context()
     _cron_future = _cron_pool.submit(
         _cron_context.run, agent.run_conversation, prompt, task_id=task_id)
+    if worker_state is not None:
+        worker_state["future"] = _cron_future
     _inactivity_timeout = False
     _watch_stop = threading.Event()
 
@@ -1979,6 +1982,14 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         logger.debug("Job '%s': session lifecycle classification failed: %s", job_id, e)
     try:
         _session_db.end_session(_final_cron_session_id, _end_reason)
+        # The scheduler owns cron-session finalization. AIAgent.close() also
+        # finalizes owned session rows by default; once the shared SessionDB is
+        # released below, that second end_session() would reopen the just-closed
+        # SQLite handle (#94736). The reason is durably booked, so disarm only the
+        # agent's redundant row-finalization; its resource teardown still runs in
+        # _teardown_cron_agent.
+        if agent is not None:
+            agent._end_session_on_close = False
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': failed to end session: %s", job_id, e)
     try:
@@ -2322,6 +2333,7 @@ def run_job(
     model = ""
     _session_db = None
     _audit: Optional[_FireAudit] = None
+    _worker_state: dict = {}
     scope = _CronRunScope(job, job_id, execution_id)
     try:
         scope.enter()
@@ -2345,7 +2357,8 @@ def run_job(
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(
-            agent, prompt, job, job_id, job_name, scope.task_id, cancel_event)
+            agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
+            worker_state=_worker_state)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
@@ -2367,8 +2380,11 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
+        from cron.scheduler_detached_worker import defer_teardown_to_running_worker
+        _worker_teardown_deferred = defer_teardown_to_running_worker(
+            _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id)
         scope.exit()
-        if _session_db:
+        if _session_db and not _worker_teardown_deferred:
             _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id)
         # Tear down the ephemeral agent or the gateway leaks fds per tick (EMFILE). With deferred
         # teardown, hand the live agent back: delivery needs a live async client.
@@ -2377,11 +2393,12 @@ def run_job(
         # per job until it hits EMFILE (#10200 / "too many open files"). When the caller opted to defer
         # teardown (passed a list), hand the live agent back instead of closing it here — delivery must run
         # against a live async client, and the caller tears down afterwards (#58720).
-        if defer_agent_teardown is not None:
-            if agent is not None:
-                defer_agent_teardown.append(agent)
-        else:
-            _teardown_cron_agent(agent, job_id)
+        if not _worker_teardown_deferred:
+            if defer_agent_teardown is not None:
+                if agent is not None:
+                    defer_agent_teardown.append(agent)
+            else:
+                _teardown_cron_agent(agent, job_id)
 
 
 def _teardown_cron_agent(

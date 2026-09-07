@@ -1637,14 +1637,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _open_and_cache_session_db(self, home) -> Optional[Any]:
         """Cached SessionDB for ``home`` (shared by both ``_ensure_session_db*``). Never writes
         ``self._session_db`` (explicit override only), so no profile pins later requests."""
-        from hermes_state import SessionDB
+        from hermes_state_registry import acquire
         key = str(home)
         with self._session_db_cache_lock:
             if self._session_db_cache_closed:
                 return None
             db = self._session_dbs.get(key)
             if db is None:
-                db = SessionDB(db_path=home / "state.db")
+                db = acquire(home / "state.db")
                 self._session_dbs[key] = db
             return db
 
@@ -1659,7 +1659,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if db is shared_db:
                 continue
             try:
-                db.close()
+                from hermes_state_registry import release_or_close
+                release_or_close(db)
             except Exception:
                 logger.debug("Failed to close API-server SessionDB", exc_info=True)
 

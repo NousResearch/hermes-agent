@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.skill_commands import extract_user_instruction_from_skill_message
+from tools.hook_output_spill import get_spill_config, spill_if_oversized
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -295,6 +296,7 @@ class MemoryManager:
     def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
+        self._external_prefetch_spill_config: Optional[Dict[str, Any]] = None
         self._has_external: bool = False
         timeout = external_prefetch_timeout
         timeout = _EXTERNAL_PREFETCH_TIMEOUT_S if timeout is None else float(timeout)
@@ -340,6 +342,7 @@ class MemoryManager:
                 )
                 return
             self._has_external = True
+            self._external_prefetch_spill_config = get_spill_config()
 
         self._providers.append(provider)
 
@@ -434,7 +437,15 @@ class MemoryManager:
                 self._external_prefetch_threads.pop(provider.name, None)
         if "error" in result_box:
             raise result_box["error"]
-        return result_box.get("value", "")
+        result = result_box.get("value", "")
+        if result and result.strip():
+            # Prefetch is stamped into the user turn's api_content and replayed every later turn;
+            # spill oversized results like plugin hook output so one provider can't inflate the prefix.
+            result = spill_if_oversized(
+                result, session_id=session_id, source=f"{provider.name} memory prefetch",
+                config=self._external_prefetch_spill_config,
+            )
+        return result
 
     def describe_recall(self) -> str:
         """Deterministic recall indicator line (e.g. ``"🧠 Provider — recalled 3 memories"``); ``""`` if none.

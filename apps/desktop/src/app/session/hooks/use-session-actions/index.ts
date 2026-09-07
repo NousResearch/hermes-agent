@@ -93,6 +93,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import { clearSessionControl } from '@/store/session-control'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
 import {
   beginSessionMutation,
@@ -2499,6 +2500,7 @@ export function useSessionActions({
 
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)
+          clearSessionControl(closingRuntimeId)
         }
 
         // A tiled copy of this session must not outlive it: collapse the pane

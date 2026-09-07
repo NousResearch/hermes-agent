@@ -38,6 +38,7 @@ def _make_task(name: str = "probe_srv") -> MCPServerTask:
     task = MCPServerTask.__new__(MCPServerTask)
     task.name = name
     task._http_rejection = {}  # sink the transport client's rejection-recorder hook writes into
+    task._redaction_values = ()
     return task
 
 

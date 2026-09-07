@@ -2712,7 +2712,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 summary["unchanged"] += 1
                 continue
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                await mutate(http.delete_global_command, app_id, current.id)
+                # Upsert alone recreates the command: Discord's create endpoint
+                # overwrites the existing same-name command ("Returns 201 if a
+                # command with the same name does not already exist, or a 200
+                # if it does"). Delete-first strands the command deleted when
+                # the small command-management bucket 429s the upsert mid-sync;
+                # upsert-first keeps the command available even then. The
+                # obsolete-path delete-first below is different: an upsert
+                # pushing the live total over 100 fails with 30032 (breaks ALL
+                # slash commands), so an app at the cap must shrink first.
                 await mutate(http.upsert_global_command, app_id, desired)
                 summary["recreated"] += 1
                 continue

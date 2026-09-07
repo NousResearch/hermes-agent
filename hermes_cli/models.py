@@ -839,6 +839,150 @@ def detect_static_provider_for_model(
     return None
 
 
+def _declared_config_model_ids(value: Any) -> set[str]:
+    """Return model ids explicitly declared by a provider config block."""
+    if isinstance(value, str):
+        return {value.strip()} if value.strip() else set()
+    if isinstance(value, dict):
+        return {str(item).strip() for item in value if str(item).strip()}
+    if not isinstance(value, (list, tuple)):
+        return set()
+
+    declared: set[str] = set()
+    for item in value:
+        if isinstance(item, dict):
+            candidate = item.get("id") or item.get("name") or item.get("model")
+        else:
+            candidate = item
+        candidate = str(candidate or "").strip()
+        if candidate:
+            declared.add(candidate)
+    return declared
+
+
+def _config_allows_model_provider_pair(
+    model: str,
+    provider: str,
+    user_providers: Optional[dict],
+    custom_providers: Optional[list],
+) -> bool:
+    requested_keys = _provider_keys(provider)
+    model_lower = model.lower()
+
+    configured = user_providers if isinstance(user_providers, dict) else {}
+    for slug, entry in configured.items():
+        if not isinstance(entry, dict) or not (_provider_keys(str(slug)) & requested_keys):
+            continue
+        declared = _declared_config_model_ids(entry.get("models"))
+        for key in ("model", "default"):
+            value = str(entry.get(key) or "").strip()
+            if value:
+                declared.add(value)
+        if model_lower in {item.lower() for item in declared}:
+            return True
+        # A configured endpoint is user-owned rather than a native catalog
+        # contract. It may legitimately expose any model id.
+        if str(entry.get("base_url") or "").strip():
+            return True
+
+    if not isinstance(custom_providers, list):
+        return False
+
+    from hermes_cli.providers import custom_provider_aliases
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        aliases = custom_provider_aliases(
+            str(entry.get("name") or ""),
+            str(entry.get("provider_key") or ""),
+        )
+        if not (aliases & requested_keys):
+            continue
+        declared = _declared_config_model_ids(entry.get("models"))
+        configured_model = str(entry.get("model") or "").strip()
+        if configured_model:
+            declared.add(configured_model)
+        if model_lower in {item.lower() for item in declared}:
+            return True
+        if str(entry.get("base_url") or "").strip():
+            return True
+
+    return False
+
+
+def _static_catalog_contains(provider: str, model: str) -> bool:
+    model_lower = model.lower()
+    candidates = {model_lower}
+    prefix, separator, suffix = model_lower.partition("/")
+    if separator and normalize_provider(prefix) in _provider_keys(provider):
+        candidates.add(suffix)
+    catalog = {item.lower() for item in _provider_catalog_names(provider)}
+    return bool(candidates & catalog)
+
+
+def find_model_provider_conflict(
+    model: str,
+    provider: str,
+    *,
+    user_providers: Optional[dict] = None,
+    custom_providers: Optional[list] = None,
+) -> Optional[str]:
+    """Return the native owner when a model/provider pair clearly conflicts.
+
+    The check is intentionally offline and fail-open. Aggregators, configured
+    endpoints, explicitly declared models, and unknown future model ids are
+    accepted; only a model claimed by another native provider is rejected.
+    """
+    model = str(model or "").strip()
+    provider = str(provider or "").strip()
+    if not model or not provider:
+        return None
+
+    normalized = normalize_provider(provider)
+    if (
+        normalized in _AGGREGATOR_PROVIDERS
+        or normalized == "moa"
+        or normalized == "custom"
+        or normalized.startswith("custom:")
+        or _config_allows_model_provider_pair(model, provider, user_providers, custom_providers)
+    ):
+        return None
+
+    requested_keys = _provider_keys(provider)
+    if any(_static_catalog_contains(key, model) for key in requested_keys):
+        return None
+
+    detected = detect_static_provider_for_model(model, normalized)
+    if detected is None:
+        return None
+    owner, _resolved_model = detected
+    return None if normalize_provider(owner) in requested_keys else normalize_provider(owner)
+
+
+def model_provider_compatibility_error(
+    model: str,
+    provider: str,
+    *,
+    user_providers: Optional[dict] = None,
+    custom_providers: Optional[list] = None,
+) -> Optional[str]:
+    """Return an actionable error for a clear native-provider mismatch."""
+    owner = find_model_provider_conflict(
+        model,
+        provider,
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+    )
+    if owner is None:
+        return None
+    return (
+        f"Model '{str(model).strip()}' belongs to provider '{owner}', "
+        f"but provider '{str(provider).strip()}' was requested. "
+        "Select the matching provider or choose a model offered by the requested provider."
+    )
+
+
 def _configured_provider_ids() -> set[str]:
     """Provider ids (incl. ``custom:*``) from the user's ``providers:`` config block; empty when config
     is unreadable (callers fall through to built-in catalogs)."""

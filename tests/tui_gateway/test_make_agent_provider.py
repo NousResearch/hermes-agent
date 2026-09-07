@@ -8,6 +8,8 @@ provider/base_url/api_key empty in AIAgent, causing HTTP 404.
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def test_make_agent_passes_resolved_provider():
     """_make_agent forwards provider/base_url/api_key/api_mode from
@@ -58,6 +60,25 @@ def test_make_agent_passes_resolved_provider():
         assert call_kwargs.kwargs["base_url"] == "https://api.anthropic.com"
         assert call_kwargs.kwargs["api_key"] == "sk-test-key"
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
+
+
+def test_make_agent_rejects_legacy_cross_provider_override_before_resolution():
+    with (
+        patch("tui_gateway.server._load_cfg", return_value={}),
+        patch("tui_gateway.server._parse_tui_skills_env", return_value=[]),
+        patch("tui_gateway.server._resolve_runtime_with_fallback") as resolve_runtime,
+        patch("run_agent.AIAgent"),
+    ):
+        from tui_gateway.server import _make_agent
+
+        with pytest.raises(ValueError, match="belongs to provider 'deepseek'"):
+            _make_agent(
+                "sid-corrupt",
+                "key-corrupt",
+                model_override={"model": "deepseek-v4-pro", "provider": "xiaomi"},
+            )
+
+    resolve_runtime.assert_not_called()
 
 
 def test_probe_config_health_flags_null_sections():

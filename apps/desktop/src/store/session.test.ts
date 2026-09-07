@@ -53,6 +53,7 @@ import {
   sessionMatchesStoredId,
   sessionOwnerRouteFromRow,
   sessionPinId,
+  setComposerSelection,
   setComposerSelectionOwner,
   setConnection,
   setCurrentCwd,
@@ -115,18 +116,40 @@ describe('composer model persistence scope', () => {
     expect($currentProvider.get()).toBe('xai-oauth')
   })
 
-  it('keeps inferred local-primary connections on the historical bare keys', () => {
+  it('keeps ordinary local profiles isolated', () => {
+    setConnection({ baseUrl: '', connectionId: 'local', mode: 'local', profile: 'default' } as never)
+    setComposerSelection({ model: 'mimo-v2.5-pro', provider: 'xiaomi', source: 'manual' })
+
+    setConnection({ baseUrl: '', connectionId: 'local', mode: 'local', profile: 'dev' } as never)
+    expect($currentModel.get()).toBe('')
+    expect($currentProvider.get()).toBe('')
+
+    setComposerSelection({ model: 'deepseek-v4-pro', provider: 'deepseek', source: 'manual' })
+    setConnection({ baseUrl: '', connectionId: 'local', mode: 'local', profile: 'default' } as never)
+
+    expect($currentModel.get()).toBe('mimo-v2.5-pro')
+    expect($currentProvider.get()).toBe('xiaomi')
+  })
+
+  it('does not adopt unowned bare legacy keys into a local profile', () => {
     setComposerSelectionOwner('remote', 'default')
     window.localStorage.setItem('hermes.desktop.composer.model', 'legacy-model')
     window.localStorage.setItem('hermes.desktop.composer.provider', 'legacy-provider')
+    window.localStorage.setItem('hermes.desktop.composer.model-source', 'manual')
 
     setConnection({ baseUrl: '', connectionId: 'local', mode: 'local', profile: 'default' } as never)
 
-    expect($currentModel.get()).toBe('legacy-model')
-    expect($currentProvider.get()).toBe('legacy-provider')
-    setCurrentModel('next-model')
-    expect(window.localStorage.getItem('hermes.desktop.composer.model')).toBe('next-model')
-    expect(window.localStorage.getItem('hermes.desktop.composer.model.registry.local.default')).toBeNull()
+    expect($currentModel.get()).toBe('')
+    expect($currentProvider.get()).toBe('')
+  })
+
+  it('persists model, provider, and source as one record', () => {
+    setConnection({ baseUrl: '', connectionId: 'local', mode: 'local', profile: 'dev' } as never)
+    setComposerSelection({ model: 'mimo-v2.5-pro', provider: 'xiaomi', source: 'manual' })
+
+    expect(window.localStorage.getItem('hermes.desktop.composer.selection.v1.profile.dev')).toBe(
+      JSON.stringify({ model: 'mimo-v2.5-pro', provider: 'xiaomi', source: 'manual' })
+    )
   })
 
   it('uses the live registry owner when the connection descriptor is stale', () => {

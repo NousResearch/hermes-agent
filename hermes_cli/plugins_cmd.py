@@ -961,18 +961,22 @@ def _resolve_plugin_key(name: str) -> Optional[str]:
 
 
 def _find_plugin_entry(name: str) -> Optional[tuple]:
-    """First discovered ``(name, version, description, source, dir_path, key)`` entry whose
-    manifest name or canonical key equals *name*."""
-    return next((entry for entry in _discover_all_plugins() if name in (entry[0], entry[5])), None)
+    """Resolve a canonical key before considering manifest-name aliases."""
+    entries = _discover_all_plugins()
+    return (next((entry for entry in entries if name == entry[5]), None)
+            or next((entry for entry in entries if name == entry[0]), None))
 
 
 def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
-    """Resolve *name* to ``(canonical_key, source)`` or ``None``. Exact key/manifest-name match
-    first; then a bare leaf match (``langfuse`` -> ``observability/langfuse``) only when unique,
+    """Resolve *name* to ``(canonical_key, source)`` or ``None``. Canonical keys precede
+    manifest-name aliases; then a bare leaf match (``langfuse`` -> ``observability/langfuse``) only when unique,
     so a same-named nested plugin is never picked silently."""
     entries = _discover_all_plugins()
     for entry in entries:
-        if name in (entry[0], entry[5]):
+        if name == entry[5]:
+            return (entry[5], entry[3])
+    for entry in entries:
+        if name == entry[0]:
             return (entry[5], entry[3])
     leaf_matches = [(entry[5], entry[3]) for entry in entries if name == entry[5].split("/")[-1]]
     return leaf_matches[0] if len(leaf_matches) == 1 else None
@@ -1787,8 +1791,10 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool, setup_consen
         key = _resolve_plugin_key(name)
         if key is None:
             return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
-        entry = _find_plugin_entry(key)
-        if enabled and entry:
+        entry = next((entry for entry in _discover_all_plugins() if entry[5] == key), None)
+        if entry is None:
+            return {"ok": False, "error": f"Plugin '{key}' is no longer installed or bundled."}
+        if enabled:
             refusal = prepare_plugin_setup(entry, setup_consent=setup_consent)
             if refusal:
                 return refusal

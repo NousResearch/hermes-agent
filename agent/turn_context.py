@@ -23,6 +23,7 @@ from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
+from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 
 logger = logging.getLogger(__name__)
@@ -418,6 +419,7 @@ def _bind_turn_identity(
     # Unique task_id when not provided isolates VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
+    agent._process_owner_task_ids = {*getattr(agent, "_process_owner_task_ids", ()), effective_task_id}
     turn_id = str(getattr(agent, "_relay_pending_turn_id", "") or "") or (
         f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
     )
@@ -440,6 +442,7 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     ("_last_content_with_tools", None), ("_last_content_tools_all_housekeeping", False),
     ("_mute_post_response", False), ("_unicode_sanitization_passes", 0),
     ("_tool_guardrail_halt_decision", None), ("_vision_supported", True),
+    ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0),
 )
@@ -834,6 +837,8 @@ def build_turn_context(
         persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
     )
     _hydrate_from_history(agent, conversation_history)
+    # Every estimator this turn prices images at the cost learned from this model's real usage.
+    bind_image_token_cost(agent)
     # Append the user message now that close persistence is safe.
     append_message(messages, user_msg)
     current_turn_user_idx = len(messages) - 1

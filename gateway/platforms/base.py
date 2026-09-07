@@ -3569,12 +3569,13 @@ class BasePlatformAdapter(ABC):
             return
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
-        # Topic recovery is Telegram-DM-only; skip the executor hop for group traffic.
-        if (getattr(self, "_topic_recovery_fn", None) is not None
+        expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
+        # Explicitly routed events already name their destination; recovering a
+        # different topic would redirect them and yield before the session claim.
+        if (not expected_session_key and getattr(self, "_topic_recovery_fn", None) is not None
                 and event.source.platform == Platform.TELEGRAM and event.source.chat_type == "dm"):
             await asyncio.to_thread(self._apply_topic_recovery, event)
         session_key = self._event_session_key(event)
-        expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
         if expected_session_key and session_key != expected_session_key:
             logger.warning("Dropping internally routed event: expected session=%s derived=%s",
                            expected_session_key, session_key)
@@ -3749,9 +3750,11 @@ class BasePlatformAdapter(ABC):
         delivery_adapter: "BasePlatformAdapter") -> None:
         """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
         replacement adapter live, trigger another redelivery sweep (the watcher's may have run
-        before this failure landed; atomic claiming keeps it idempotent)."""
+        before this failure landed; atomic claiming keeps it idempotent). On a flood-control refusal
+        arm the runner's timed redelivery, so the reply goes out once the penalty has passed instead
+        of waiting for the next restart."""
         try:
-            from gateway.delivery_ledger import mark_delivered, mark_failed
+            from gateway.delivery_ledger import is_flood_error, mark_delivered, mark_failed
             if getattr(result, "success", False):
                 await asyncio.to_thread(mark_delivered, obligation_id)
                 return
@@ -3764,6 +3767,11 @@ class BasePlatformAdapter(ABC):
                 if live is not delivery_adapter and callable(redeliver):
                     await redeliver(event.source.platform,
                                     profile=getattr(delivery_adapter, "_owner_profile", None))
+            elif is_flood_error(error):
+                schedule = getattr(self.gateway_runner, "_schedule_flood_redelivery", None)
+                if callable(schedule):
+                    schedule(event.source.platform,
+                             profile=getattr(delivery_adapter, "_owner_profile", None))
         except Exception:
             logger.debug("delivery ledger update failed", exc_info=True)
 

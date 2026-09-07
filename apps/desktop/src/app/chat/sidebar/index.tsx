@@ -94,7 +94,6 @@ import {
   ALL_PROJECTS,
   enterProject,
   exitProjectScope,
-  fetchProjectSessions,
   openProjectCreate,
   refreshProjects,
   refreshProjectTree,
@@ -128,7 +127,7 @@ import {
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
-import { $focusedStoredSessionId, $workingSessionIds } from '@/store/session-states'
+import { $focusedSessionIsTile, $focusedStoredSessionId, $workingSessionIds } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
@@ -176,10 +175,16 @@ import {
   useRepoWorktreeMap
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
-import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
+import {
+  SidebarBlankState,
+  SidebarLoadErrorState,
+  SidebarPinnedEmptyState,
+  SidebarSessionSkeletons
+} from './section-states'
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
+import { useEnteredProjectSessions } from './use-entered-project-sessions'
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
 // front, reveal more in larger steps on demand. Keeps a busy platform from
@@ -325,7 +330,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
 }
 
 export function ChatSidebar({
-  currentView,
+  currentView: routeView,
   onNavigate,
   onLoadMoreSessions,
   onLoadMoreMessaging,
@@ -395,6 +400,8 @@ export function ChatSidebar({
   // The sidebar highlight tracks the FOCUSED session — the interacted tile's
   // tab, else the main selection — so it stays 1:1 with whatever tab is active.
   const selectedSessionId = useStore($focusedStoredSessionId)
+  const focusedSessionIsTile = useStore($focusedSessionIsTile)
+  const currentView = focusedSessionIsTile ? 'chat' : routeView
   const sessions = useStore($sessions)
   const cronSessions = useStore($cronSessions)
   const cronJobs = useStore($cronJobs)
@@ -985,29 +992,12 @@ export function ChatSidebar({
 
   // Entering a project lazily hydrates its full lanes (repo -> lane -> sessions)
   // from the backend — same grouping/ids as the overview, just with rows.
-  const [enteredProjectTree, setEnteredProjectTree] = useState<SidebarProjectTree | null>(null)
-
-  useEffect(() => {
-    if (!enteredProjectId || !gatewayReady) {
-      setEnteredProjectTree(null)
-
-      return
-    }
-
-    let cancelled = false
-
-    void fetchProjectSessions(enteredProjectId).then(project => {
-      if (!cancelled) {
-        setEnteredProjectTree(project)
-      }
-    })
-
-    return () => {
-      cancelled = true
-    }
-    // `projectTree` in deps: re-hydrate after a tree refresh so the entered view
-    // stays current with new/ended sessions.
-  }, [enteredProjectId, gatewayReady, projectTree])
+  const {
+    project: enteredProjectTree,
+    failed: projectLoadFailed,
+    loading: projectLoading,
+    retry: retryProject
+  } = useEnteredProjectSessions(enteredProjectId, gatewayReady, projectTree, `${activeConnectionId}:${profileScope}`)
 
   // Prefer the hydrated tree; fall back to the overview node (empty lanes) while
   // the drill-in fetch is in flight, so the header/structure render immediately.
@@ -1518,7 +1508,7 @@ export function ChatSidebar({
                   (item.id === 'cron' && currentView === 'cron') ||
                   (item.id === 'session-import' && currentView === 'session-import') ||
                   // Contributed rows light up at their own route.
-                  (Boolean(item.route) && pathname === item.route)
+                  (currentView === 'extension' && Boolean(item.route) && pathname === item.route)
 
                 const isNewSession = item.id === 'new-session'
 
@@ -1708,6 +1698,7 @@ export function ChatSidebar({
               />
             )}
 
+            {!trimmedQuery && inProject && projectLoadFailed && <SidebarLoadErrorState onRetry={retryProject} />}
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeProjectId={activeProjectId}
@@ -1733,7 +1724,7 @@ export function ChatSidebar({
                 )}
                 dndSensors={dndSensors}
                 emptyState={
-                  showSessionSkeletons ? (
+                  inProject && projectLoadFailed ? null : showSessionSkeletons || (inProject && projectLoading) ? (
                     <SidebarSessionSkeletons />
                   ) : (
                     <div className="grid min-h-16 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">

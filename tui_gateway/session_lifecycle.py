@@ -310,12 +310,21 @@ def _attach_worker(sid: str, session: dict, worker) -> None:
     worker.close()
 
 
+# Wall-clock timestamps, like session last_active; retained after close/reap.
+_closed_session_activity: dict[str, float] = {}
+
+
 def _pop_session_by_id(sid: str) -> dict | None:
     """Atomically detach one live session from the registry — the ownership claim for teardown (a concurrent
     close/reaper no-ops). Separate from ``_teardown_session``: slow finalization must not run under the resume lock."""
     with _sessions_lock:
         session = _sessions.pop(sid, None)
         if session is not None:
+            from hermes_constants import get_hermes_home
+
+            home = str(Path(session.get("profile_home") or get_hermes_home()).resolve())
+            last_active = time.time() if session.get("running") else float(session.get("last_active") or 0)
+            _closed_session_activity[home] = max(_closed_session_activity.get(home, 0), last_active)
             session["_closing"] = True
             session["_sid"] = sid  # out of _sessions now, so teardown can't recover the live id by scanning
     return session

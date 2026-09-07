@@ -234,12 +234,17 @@ def _skill_maintenance_idle_for(started_at: float) -> Optional[float]:
     """Measure chat inactivity, not socket inactivity (Desktop stays connected)."""
     import tui_gateway.server as gateway
 
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home().resolve()
     with gateway._sessions_lock:
-        if any(session.get("running") for session in gateway._sessions.values()):
+        sessions = [session for session in gateway._sessions.values()
+                    if Path(session.get("profile_home") or home).resolve() == home]
+        if any(session.get("running") for session in sessions):
             return None
         last_active = max(
-            [started_at] + [float(session.get("last_active") or started_at)
-                            for session in gateway._sessions.values()])
+            [started_at, gateway._closed_session_activity.get(str(home), 0)]
+            + [float(session.get("last_active") or started_at) for session in sessions])
     return max(0.0, time.time() - last_active)
 
 

@@ -50,7 +50,8 @@ param(
     [switch]$NoMarkerCleanup,
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
-    [switch]$SelfTestMarker
+    [switch]$SelfTestMarker,
+    [switch]$SelfTestWorkingDirectory
 )
 
 if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
@@ -1178,9 +1179,34 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     return @{ Code = $code; Output = $all; TreeQuiesced = (-not $stalled -or $proc.HasExited); StartedAfterJobAssignment = $true }
 }
 
+function Set-InstallRootCurrentDirectory([string]$Root) {
+    $resolved = [System.IO.Path]::GetFullPath($Root)
+    [Environment]::CurrentDirectory = $resolved
+    return $resolved
+}
+
 $finalCode = 1
 $finalMsg = "update did not complete"
 $script:TreeSafeToFinalize = $true
+
+# -SelfTestWorkingDirectory: prove StartAssigned inherits InstallRoot --------
+if ($SelfTestWorkingDirectory) {
+    try {
+        $resolvedInstallRoot = Set-InstallRootCurrentDirectory $InstallRoot
+    } catch {
+        Write-Host "WORKING-DIRECTORY SELF-TEST: FAIL cannot enter the install root ($InstallRoot)"
+        exit 3
+    }
+    $probeExe = Join-Path $PSHOME "powershell.exe"
+    $probe = Invoke-HermesStep $probeExe @("-NoProfile", "-Command", "[Environment]::CurrentDirectory") "cwd"
+    $observed = $probe.Output.Trim()
+    if ($probe.Code -ne 0 -or -not [string]::Equals($observed, $resolvedInstallRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Host "WORKING-DIRECTORY SELF-TEST: FAIL expected=$resolvedInstallRoot observed=$observed code=$($probe.Code)"
+        exit 1
+    }
+    Write-Host "WORKING-DIRECTORY SELF-TEST: PASS $observed"
+    exit 0
+}
 
 # ── -SelfTestUi: drive the shim to both terminal states, no update ─────────
 # Manual QA for the Edge shell without a checkout or a real update. Exits
@@ -1442,6 +1468,20 @@ try {
         $finalCode = 0
         $finalMsg = "marker self-test complete"
         exit 0
+    }
+
+    # StartAssigned passes a null CreateProcess currentDirectory, so children
+    # inherit the hand-off process directory rather than PowerShell's $PWD.
+    # Desktop launches us from HERMES_HOME; pin the process directory to the
+    # checkout before any update child can resolve files against the wrong tree.
+    try {
+        $resolvedInstallRoot = Set-InstallRootCurrentDirectory $InstallRoot
+        Write-HandoffLog "process cwd set to install root: $resolvedInstallRoot"
+    } catch {
+        $finalCode = 3
+        $finalMsg = "Update aborted: cannot enter the install root ($InstallRoot). Nothing was changed."
+        Write-HandoffLog $finalMsg
+        exit $finalCode
     }
 
     # Check only the interpreter here: dependency recovery belongs to update.

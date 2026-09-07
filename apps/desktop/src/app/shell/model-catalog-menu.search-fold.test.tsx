@@ -61,12 +61,14 @@ function renderMenu() {
   )
 }
 
-
 it('matches and highlights separator-equivalent queries without revealing unrelated models', async () => {
   renderMenu()
   await screen.findByText(/Qwen3\.8 Flash/i)
 
-  for (const [query, marked] of [['qwen3.8-flash', 'Qwen3.8 Flash'], ['qwen3 8', 'Qwen3.8']]) {
+  for (const [query, marked] of [
+    ['qwen3.8-flash', 'Qwen3.8 Flash'],
+    ['qwen3 8', 'Qwen3.8']
+  ]) {
     fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: query } })
     await vi.waitFor(() => {
       expect(screen.getByText(marked, { selector: 'mark' })).not.toBeNull()

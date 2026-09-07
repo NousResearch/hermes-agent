@@ -8,6 +8,7 @@ import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
+  isAction,
   isActionMod,
   isMac,
   isMacActionFallback,
@@ -1831,6 +1832,13 @@ export const shouldPassThroughToGlobalHandler = (
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') ||
+  // The dashboard's clear/redraw byte arrives as plain Ctrl+L in every
+  // terminal, including macOS ones — so match the raw Ctrl bit directly
+  // (like the c/x/o neighbors above) rather than only isAction, whose
+  // modifier means Cmd on darwin. isAction still adds the Cmd+L shape
+  // there, mirroring the readline-style mac fallbacks.
+  (key.ctrl && input === 'l') ||
+  isAction(key, input, 'l') ||
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||

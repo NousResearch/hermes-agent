@@ -98,10 +98,30 @@ export interface VenvBlockerScanResult {
   pausableGateways: number
 }
 
+/**
+ * A probe failure the scanner itself classified.
+ *
+ * The scanner prints its fail-closed envelope on stdout and its diagnostic on
+ * stderr, then exits 1. `error` is the operator-facing diagnostic string built
+ * from the exit status and the (truncated) stderr; `code` and `repair` are the
+ * scanner's own `error.code` / `error.message` recovered from the envelope,
+ * which is not truncated and is the only place the full repair command
+ * survives.
+ */
+export interface ScanProbeFailure {
+  kind: 'probe-failure'
+  error: string
+  code?: string
+  repair?: string
+}
+
+/** The scanner could not import psutil from the venv it was told to scan. */
+export const SCANNER_DEPENDENCY_UNAVAILABLE = 'scanner_dependency_unavailable'
+
 export type ScanOutcome =
   | { kind: 'clear'; result: VenvBlockerScanResult }
   | { kind: 'blocked'; result: VenvBlockerScanResult }
-  | { kind: 'probe-failure'; error: string }
+  | ScanProbeFailure
 
 export function isExactActionableMcpBridge(bridge: McpBridgeProcess): boolean {
   return (
@@ -799,6 +819,38 @@ export function parseVenvBlockerScanOutput(raw: string, target: ScanTargetIdenti
 }
 
 /**
+ * Recover the scanner's own failure classification from its fail-closed
+ * envelope.
+ *
+ * A failing scan exits 1, so the envelope on stdout is never parsed by the
+ * success path — yet it is the only untruncated carrier of the scanner's
+ * `error.code` and `error.message`. The stderr copy of the same diagnostic is
+ * clipped to 200 characters, which is shorter than the psutil repair command
+ * plus the interpreter path it names. Shape-checked, never trusted: a failure
+ * envelope can only ever add a message, so a malformed one degrades to the
+ * anonymous probe failure this always was.
+ */
+function classifiedScannerFailure(stdout: unknown): { code?: string; repair?: string } {
+  if (typeof stdout !== 'string' && !Buffer.isBuffer(stdout)) {return {}}
+
+  try {
+    const parsed = JSON.parse(String(stdout))
+    const error = parsed?.error
+
+    if (!error || typeof error !== 'object' || typeof error.code !== 'string' || !error.code) {
+      return {}
+    }
+
+    return {
+      code: error.code,
+      ...(typeof error.message === 'string' && error.message ? { repair: error.message } : {})
+    }
+  } catch {
+    return {}
+  }
+}
+
+/**
  * Run the venv-blocker scan subprocess.  Async so the Electron main-process
  * event loop is never blocked by the psutil process scan (up to 60s on a
  * loaded Windows box).  Accepts optional overrides for testing (dependency
@@ -863,7 +915,7 @@ export async function scanVenvBlockers(
       diag.push(String(err.stderr).slice(0, 200))
     }
 
-    return { kind: 'probe-failure', error: diag.join('; ') }
+    return { kind: 'probe-failure', error: diag.join('; '), ...classifiedScannerFailure(err.stdout) }
   }
 
   return parseVenvBlockerScanOutput(stdout, {
@@ -1186,12 +1238,44 @@ export function formatBlockerMessage(result: VenvBlockerScanResult): string {
   return lines.join('\n')
 }
 
+const REPAIR_INSTRUCTION_MARKER = 'Repair it with: '
+
 /**
  * Build a probe-failure error message.
+ *
+ * A probe failure is normally anonymous — the scanner refused and the only
+ * honest advice is to close things and retry. One failure is not anonymous:
+ * the scanner runs under the target venv's interpreter and imports psutil from
+ * the very site-packages an update rewrites, so an interrupted update can
+ * leave psutil half-written and every later attempt then refuses identically,
+ * forever, because the thing that would repair psutil *is* the update. The
+ * scanner emits `scanner_dependency_unavailable` with the exact repair command
+ * for that trap; pass the observed failure in and the user is told how to get
+ * out of it instead of being told to retry something that cannot succeed.
  */
-export function formatProbeFailedMessage(): string {
+export function formatProbeFailedMessage(observed?: { code?: string; repair?: string }): string {
+  const opening = 'Update aborted: Desktop could not verify the Hermes installation is free.'
+
+  if (observed?.code === SCANNER_DEPENDENCY_UNAVAILABLE && observed.repair) {
+    const marker = observed.repair.indexOf(REPAIR_INSTRUCTION_MARKER)
+    const command =
+      marker >= 0 ? observed.repair.slice(marker + REPAIR_INSTRUCTION_MARKER.length).trim() : ''
+
+    return [
+      opening,
+      '',
+      "The update scanner could not load its own dependency from this",
+      "installation's Python environment, so it cannot prove the install is",
+      'free.  Retrying will fail the same way until it is repaired.',
+      '',
+      ...(command
+        ? ['Run this in a terminal, then retry the update:', '', `  ${command}`]
+        : [observed.repair])
+    ].join('\n')
+  }
+
   return (
-    'Update aborted: Desktop could not verify the Hermes installation is free.\n' +
+    `${opening}\n` +
     '\n' +
     'Close other Hermes windows and terminals, then retry.  If the problem\n' +
     'persists, run `hermes update` in a terminal for detailed diagnostics.'

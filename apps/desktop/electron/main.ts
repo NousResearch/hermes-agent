@@ -4196,7 +4196,9 @@ async function runWindowsHandoffPreflight(
   const observed = await scanVenvBlockers(updateRoot)
 
   if (observed.kind === 'probe-failure') {
-    return { kind: 'probe-failure', error: observed.error, message: formatProbeFailedMessage() }
+    // Pass the observed failure through: a scanner that could not load its own
+    // dependency names the exact repair, and "retry" is useless advice for it.
+    return { kind: 'probe-failure', error: observed.error, message: formatProbeFailedMessage(observed) }
   }
 
   return runWindowsUpdatePreflight({

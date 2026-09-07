@@ -2261,3 +2261,106 @@ describe('scanner resource claims', () => {
     }
   })
 })
+
+describe('classified probe failures', () => {
+  const requestedRoot = path.join(volumeRoot, 'requested', 'install')
+  const venvPython = path.join(requestedRoot, 'venv', 'Scripts', 'python.exe')
+  const resolveVenv = () => venvPython
+  const canonicalize = (value: string) => value
+
+  const repair =
+    'psutil is not available in the target venv: No module named \'psutil\'. ' +
+    `Repair it with: "${venvPython}" -m pip install --force-reinstall psutil`
+
+  const execFail = (stdout: unknown, stderr: string): any =>
+    (async () => {
+      const error: any = new Error()
+
+      error.status = 1
+      error.stdout = typeof stdout === 'string' ? stdout : JSON.stringify(stdout)
+      error.stderr = stderr
+      throw error
+    }) as any
+
+  // The scanner runs under the target venv's interpreter and imports psutil
+  // from the very site-packages an update rewrites. An interrupted update can
+  // leave psutil half-written, and every later attempt then refuses
+  // identically -- while the thing that would repair psutil is the update.
+  it('recovers the scanner code and repair command from the failure envelope', async () => {
+    const outcome = await scanVenvBlockers(
+      requestedRoot,
+      execFail(
+        {
+          schema_version: 2,
+          ok: false,
+          ready: false,
+          blocked: true,
+          reason: 'scanner_dependency_unavailable',
+          error: { code: 'scanner_dependency_unavailable', message: repair }
+        },
+        // stderr is truncated at 200 characters, which cuts the repair command
+        // in half; the envelope is the only untruncated copy.
+        repair
+      ),
+      resolveVenv,
+      canonicalize
+    )
+
+    assert.equal(outcome.kind, 'probe-failure')
+
+    if (outcome.kind !== 'probe-failure') {return}
+
+    assert.equal(outcome.code, 'scanner_dependency_unavailable')
+    assert.equal(outcome.repair, repair)
+    assert.match(outcome.error, /exit code 1/)
+  })
+
+  it('stays anonymous when the scanner emitted no classification', async () => {
+    for (const stdout of ['', 'not json', JSON.stringify({ error: null }), JSON.stringify({ error: { code: 42 } })]) {
+      const outcome = await scanVenvBlockers(
+        requestedRoot,
+        execFail(stdout, 'boom'),
+        resolveVenv,
+        canonicalize
+      )
+
+      assert.equal(outcome.kind, 'probe-failure')
+
+      if (outcome.kind !== 'probe-failure') {return}
+
+      assert.equal(outcome.code, undefined, `stdout=${stdout}`)
+      assert.equal(outcome.repair, undefined, `stdout=${stdout}`)
+    }
+  })
+
+  it('names the repair command in the user-facing message', () => {
+    const message = formatProbeFailedMessage({
+      code: 'scanner_dependency_unavailable',
+      repair
+    })
+
+    assert.match(message, /could not verify the Hermes installation is free/)
+    assert.ok(
+      message.includes(`"${venvPython}" -m pip install --force-reinstall psutil`),
+      'the exact repair command must survive into the dialog'
+    )
+    assert.ok(
+      !/Close other Hermes windows/.test(message),
+      'retry advice is wrong for a failure that repeats until psutil is repaired'
+    )
+  })
+
+  it('keeps the generic message for an unclassified failure', () => {
+    for (const observed of [
+      undefined,
+      {},
+      { code: 'probe_failed', repair },
+      { code: 'scanner_dependency_unavailable' }
+    ]) {
+      const message = formatProbeFailedMessage(observed)
+
+      assert.ok(message.includes('hermes update'), JSON.stringify(observed))
+      assert.ok(message.includes('retry'), JSON.stringify(observed))
+    }
+  })
+})

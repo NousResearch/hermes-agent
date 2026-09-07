@@ -171,6 +171,26 @@ class TestHermesTokenStorage:
         import asyncio
         assert asyncio.run(storage.get_tokens()) is None
 
+    def test_corrupt_tokens_warning_never_echoes_the_token_material(self, tmp_path, monkeypatch, caplog):
+        """A pydantic ValidationError's str() includes the raw input; the corrupt-store warning must
+        name the failing fields only (#102308)."""
+        import asyncio
+        import logging
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("bad-server")
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        secret = "sk-live-QQQQQQQQ"  # short enough that pydantic's input echo does not elide it
+        # access_token must be a str: a one-element list fails validation on THAT field, and pydantic's
+        # message echoes the failing field's input — i.e. the token.
+        (d / "bad-server.json").write_text(json.dumps({"access_token": [secret], "token_type": "Bearer"}))
+
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
+            assert asyncio.run(storage.get_tokens()) is None
+        assert any("Corrupt" in r.message for r in caplog.records)
+        assert secret not in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # build_oauth_auth

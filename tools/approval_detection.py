@@ -578,11 +578,30 @@ def _command_parser_limit_exceeded(command: str) -> bool:
     return sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS
 
 
+def _backtick_end_from(segment: str, i: int) -> int | None:
+    """Index of the backtick closing the one opened at ``i``, or None when none follows."""
+    j = segment.find("`", i + 1)
+    while j != -1 and segment[j - 1] == "\\":
+        j = segment.find("`", j + 1)
+    return None if j == -1 else j
+
+
 def _shell_tokens_with_spans(segment: str, start: int):
     """Return shell words as ``(value, start, end, quoted)`` or ``None`` on malformed quoting.
     Deliberately small lexer that never expands shell syntax; it exists to keep source spans (which
-    ``shlex`` does not expose) for deciding which quoted grep operand is data, not another command."""
+    ``shlex`` does not expose) for deciding which quoted grep operand is data, not another command.
+
+    Lexing stops at the end of the simple command that begins at *start*: an unquoted ``;``, ``|``,
+    ``&`` or newline, or the ``)`` / backtick that closes the substitution the command sits inside.
+    Without that, a grep nested as ``"$(grep … | cut …)"`` was lexed together with the enclosing
+    command's closing quote, read as unbalanced quoting, and reported as a hardline block (546
+    blocked turns in one run, every one a false positive; ``sed -n "$(grep -n X f | cut -d: -f1),+3p" f``
+    is the canonical shape)."""
     tokens, value, token_start, quote = [], [], None, None
+    depth = 0  # $(...) nesting opened AFTER start; a closer at depth 0 ends the enclosing substitution
+    # A backtick opened AFTER start is an operand substitution (``grep -e `cmd` f``); the matching
+    # closer belongs to it, not to an enclosing backtick the command might sit inside.
+    in_backtick = False
 
     def flush(end: int) -> None:
         raw = segment[token_start:end]
@@ -591,26 +610,47 @@ def _shell_tokens_with_spans(segment: str, start: int):
         inert = (raw.startswith("'") and raw.endswith("'")) or ("='" in raw and raw.endswith("'"))
         tokens.append(("".join(value), token_start, end, inert))
 
+    end_at = len(segment)
     for kind, i, _, _ in _scan_shell(segment, start):
-        if kind == "char" and not quote and segment[i].isspace():
-            if token_start is not None:
-                flush(i)
-                value, token_start = [], None
-            continue
+        ch = segment[i]
+        if kind == "char" and not quote:
+            if ch.isspace() and ch != "\n":
+                if token_start is not None:
+                    flush(i)
+                    value, token_start = [], None
+                continue
+            if segment.startswith("$(", i):
+                depth += 1
+            elif ch == "`":
+                if in_backtick:
+                    in_backtick = False
+                elif depth == 0 and _backtick_end_from(segment, i) is None:
+                    end_at = i  # unmatched: it closes the substitution this command sits inside
+                    break
+                else:
+                    in_backtick = True
+            elif ch == ")":
+                if depth == 0:
+                    end_at = i
+                    break
+                depth -= 1
+            elif ch in ";|&\n":
+                end_at = i
+                break
         if token_start is None:
             token_start = i
         if kind == "quote":
-            quote = None if quote else segment[i]
+            quote = None if quote else ch
         elif kind == "esc":
             value.append(segment[i + 1])
-        elif segment[i] == "\\" and not quote:
+        elif ch == "\\" and not quote:
             return None  # dangling backslash
         else:
-            value.append(segment[i])
+            value.append(ch)
     if quote:
         return None
     if token_start is not None:
-        flush(len(segment))
+        flush(end_at)
     return tokens
 
 
@@ -1021,10 +1061,29 @@ def _mask_quoted_newlines(command: str) -> str:
     exactly as the shell would, so masking them cannot hide a runnable command."""
     if "\n" not in command:
         return command
-    return "".join(
-        " " if quote and kind == "char" and command[i] == "\n" else command[i:j]
-        for kind, i, j, quote in _scan_shell(command)
-    )
+    return _mask_quoted_newlines_span(command, 0, len(command))
+
+
+def _mask_quoted_newlines_span(command: str, start: int, end: int) -> str:
+    """``_mask_quoted_newlines`` over ``command[start:end]``. A ``$(...)`` / backtick substitution
+    inside double quotes is EXECUTABLE, not data: its body is re-scanned with a fresh quote state so a
+    newline that separates commands inside it survives as a command boundary. Masking it as quoted
+    data turned ``"$(grep x f\nreboot)"`` into ``... f reboot)``, which no later stage can tell from an
+    operand; the pre-fix scanner only caught it by refusing the whole command as malformed."""
+    out: list[str] = []
+    for kind, i, j, quote in _scan_shell(command, start, end, subst="q"):
+        if kind == "subst":
+            # j is the index just past the closer; keep the opener and closer, recurse into the body.
+            body_start = i + (2 if command.startswith("$(", i) else 1)
+            body_end = j - 1
+            out.append(command[i:body_start])
+            out.append(_mask_quoted_newlines_span(command, body_start, body_end))
+            out.append(command[body_end:j])
+        elif quote and kind == "char" and command[i] == "\n":
+            out.append(" ")
+        else:
+            out.append(command[i:j])
+    return "".join(out)
 
 
 def _iter_shell_command_word_spans(command: str):

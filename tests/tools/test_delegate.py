@@ -423,7 +423,12 @@ class TestDelegateTask(unittest.TestCase):
 
     def test_nous_child_rederives_api_mode_from_model(self):
         """Portal is dual-wire — same provider + different model prefix must
-        not inherit the parent's Messages/chat_completions mode verbatim."""
+        not inherit the parent's Messages/chat_completions mode verbatim.
+        Native wire selected (opt-in since 2026-09-06, ``nous.anthropic_wire``)."""
+        with patch("hermes_cli.providers._nous_anthropic_wire", return_value="native"):
+            self._nous_child_rederives_api_mode_from_model()
+
+    def _nous_child_rederives_api_mode_from_model(self):
         parent = _make_mock_parent(depth=0)
         parent.base_url = "https://inference-api.nousresearch.com/v1"
         parent.api_key = "portal-jwt"

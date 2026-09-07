@@ -113,17 +113,38 @@ def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_go
     return lines
 
 
+def _format_task_failure_notice(evt: dict, deleg_id: str) -> str:
+    """One child of a still-running fan-out failed: say which, why, and that the batch goes on."""
+    (r,) = (evt.get("results") or [{}])[:1] or [{}]
+    goals, idx, n = evt.get("goals") or [], r.get("task_index", 0), evt.get("n_tasks") or len(evt.get("goals") or [])
+    goal = goals[idx] if idx < len(goals) else r.get("goal", "")
+    err = str(r.get("error") or "").strip().replace("\n", " ")[:400]
+    lines = [
+        f"[ASYNC DELEGATION TASK FAILED — {deleg_id}, task {idx + 1}/{n}]",
+        "One subagent in a background fan-out you dispatched has failed while its siblings are still running. "
+        "The batch's consolidated results will still arrive when the last sibling finishes; this is an early "
+        "warning so you can re-dispatch or investigate now instead of then.",
+        f"Task: {goal}" if goal else "",
+        f"Status: {r.get('status', '?')}   Duration: {r.get('duration_seconds', '?')}s" + (f"\nError: {err}" if err else ""),
+    ]
+    if r.get("live_transcript"):
+        lines.append(f"Live transcript: {r['live_transcript']}")
+    return "\n".join(line for line in lines if line)
+
+
 def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> str:
     """Consolidated block for a delegate_task fan-out that finished as one unit."""
     results, goals = evt.get("results") or [], evt.get("goals") or []
-    n = len(results) if results else len(goals)
+    # ``goals`` is the whole delegate_task call (task_index indexes it); ``results`` is this unit's subset.
+    n, n_unit = len(goals) or len(results), len(results) or len(goals)
+    group = evt.get("group")
+    unit = f"group '{group}' ({n_unit} subagent(s))" if group is not None else f"{n_unit} subagent(s)"
     lines = _preamble(
         evt,
         f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
-        f"A background fan-out of {n} subagent(s) you dispatched earlier "
-        "has finished. All ran in parallel and waited on each other; their "
-        "consolidated results are below. You may have moved on since "
-        "dispatching — act on these or re-dispatch if things have changed.",
+        f"A background fan-out unit you dispatched earlier — {unit} — has finished; its consolidated results are "
+        "below. Other units from the same delegate_task call (other groups / ungrouped tasks) report separately as "
+        "they finish. You may have moved on since dispatching — act on these or re-dispatch if things have changed.",
         completed_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
     if evt.get("error") and not results:
@@ -163,6 +184,8 @@ def _format_async_delegation(evt: dict) -> str:
     and result, so an agent deep in unrelated context can act on it or re-dispatch."""
     deleg_id = evt.get("delegation_id", "unknown")
     completed_at = evt.get("completed_at") or time.time()
+    if evt.get("task_failure_notice"):
+        return _format_task_failure_notice(evt, deleg_id)
     if evt.get("is_batch") or isinstance(evt.get("results"), list):
         return _format_batch_delegation(evt, deleg_id, completed_at)
     status, summary, error = evt.get("status") or "completed", evt.get("summary"), evt.get("error")

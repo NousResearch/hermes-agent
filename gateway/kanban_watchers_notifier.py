@@ -8,6 +8,7 @@ per-subscription delivery (``_KanbanNotification``) live here.
 from __future__ import annotations
 
 import re
+from functools import partial
 from pathlib import Path
 import weakref
 from typing import Any, Callable, Optional
@@ -372,12 +373,9 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
 class _KanbanNotification:
     """Deliver one subscription's claimed events, then settle the cursor.
 
-    Cursor advance ordering by adapter class:
-    * push + notify: the text send WAS the delivery → advance now; wake
-      injection stays best-effort.
-    * non-push or wake-only: the wake IS the delivery → it runs FIRST and the
-      cursor advances only after it succeeds; failure rewinds like a failed
-      send(). An unknown platform advances the cursor so it can't replay forever.
+    Both legs of notify+wake must succeed before settling. Sent pings have a
+    separate durable checkpoint so wake retries do not resend them. Admission
+    is at-least-once queueing, not an execution or final-response receipt.
     """
 
     def __init__(self, runner: Any, d: dict, *, platform_cls: Any, sub_fail_counts: dict) -> None:
@@ -569,8 +567,14 @@ class _KanbanNotification:
             if not self.send_passive:
                 # Wake-only: the wake path is the sole delivery and resolves the counter.
                 continue
+            if ev.id <= self.sub.get("last_ping_event_id", 0):
+                continue
             try:
                 await self._send_event(ev, msg)
+                await _to_thread_process_service(partial(
+                    self.runner._kanban_sub_op, self.board_slug, "record_notify_ping", self.sub,
+                    event_id=ev.id,
+                ))
                 self.clear_failures()
             except Exception as exc:
                 await self.delivery_failed(
@@ -602,13 +606,18 @@ class _KanbanNotification:
         # All text pings delivered (or skipped for non-push / wake-only).
         self.build_wake_text()
         wake_kinds, is_push = self.wake_kinds, self.is_push_adapter
+        from gateway.wake import WakeNotAccepted
 
-        # Non-push self-post, or wake-only push sub: the wake IS the delivery
-        # and must succeed BEFORE the cursor advances.
-        if wake_kinds and (not self.send_passive if is_push else bool(self.session_key)):
+        # A requested wake is required even when its passive ping already landed.
+        if wake_kinds:
             try:
                 await self.wake()
                 self.clear_failures()
+            except WakeNotAccepted:
+                # Startup / full queue is not a dead destination. Keep the durable
+                # subscription alive regardless of how long admission takes.
+                await self.rewind()
+                return
             except Exception as _wk_err:
                 await self._wake_failed(
                     "kanban notifier: wake-only delivery failed for %s (attempt %d/%d): %s" if is_push
@@ -621,14 +630,6 @@ class _KanbanNotification:
         await self.advance()
         if not is_push:
             self.clear_failures()
-        if is_push and self.send_passive and wake_kinds:
-            # notify+wake: text ping was the delivery and the cursor has
-            # advanced; the wake stays best-effort, but log at WARNING so a
-            # persistently failing wake is visible.
-            try:
-                await self.wake()
-            except Exception as _wk_err:
-                logger.warning("kanban notifier: wakeup injection failed for %s: %s", self.task_id, _wk_err, exc_info=True)
         # Unsubscribe only on archive; ``done`` is reversible.
         if self.task and self.task.status == "archived":
             await self.unsub()

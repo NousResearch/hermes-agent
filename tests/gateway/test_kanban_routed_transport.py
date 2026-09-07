@@ -21,6 +21,7 @@ class RecordingAdapter:
 
     async def handle_message(self, event):
         self.handled.append(event)
+        event._gateway_accepted = True
 
 
 def setup_runner(tmp_path, monkeypatch):

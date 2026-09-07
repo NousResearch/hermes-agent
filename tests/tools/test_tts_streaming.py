@@ -44,21 +44,32 @@ class TestSentenceChunker:
             "A paragraph without punctuation\n\n"
         ]
 
-    def test_default_min_len_buffers_short_cjk_openers(self):
-        # The documented default behavior the config knob tunes: a 6-char
-        # CJK opener is shorter than 20, so it rides with the second
-        # sentence instead of stalling as its own tiny clip (#96927).
+    def test_default_min_len_buffers_short_openers(self):
+        # The documented default behavior the config knob tunes: a short
+        # opener is shorter than 20, so it rides with the second sentence
+        # instead of stalling as its own tiny clip (#96927).
         c = ts.SentenceChunker()
-        assert c.feed("嗯，好的。") == []
-        assert c.feed("记得这件事。") == ["嗯，好的。记得这件事。"]
+        assert c.feed("Sure thing. ") == []
+        assert c.feed("Fine either way. ") == ["Sure thing. Fine either way. "]
 
-    def test_lowered_min_len_speaks_short_cjk_first_sentence_immediately(self):
+    def test_lowered_min_len_speaks_short_first_sentence_immediately(self):
         # tts.streaming.min_len lowered to 6: the same opener cuts at its own
         # boundary, so the first audio is not delayed by a full second
         # sentence (#96927).
         c = ts.SentenceChunker(min_len=6)
-        assert c.feed("嗯，好的。") == ["嗯，好的。"]
-        assert c.feed("记得这件事。") == ["记得这件事。"]
+        assert c.feed("Sure thing. ") == ["Sure thing. "]
+        assert c.feed("Fine either way. ") == ["Fine either way. "]
+
+    def test_cjk_openers_wait_for_78477_boundary_support(self):
+        # SENTENCE_BOUNDARY_RE only recognizes ASCII ".!?"+whitespace today,
+        # so CJK text yields no boundaries at all and no min_len value,
+        # however low, releases a short opener before flush. Splitting on
+        # full-width terminators is tracked in #78477; once it lands the two
+        # tests above also describe CJK openers such as "嗯，好的。".
+        c = ts.SentenceChunker(min_len=1)
+        assert c.feed("嗯，好的。") == []
+        assert c.feed("记得这件事。") == []
+        assert c.flush() == ["嗯，好的。记得这件事。"]
 
 
 # ── Interruption latch ───────────────────────────────────────────────────

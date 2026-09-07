@@ -28,7 +28,9 @@ _DONE = object()
 # text 20 characters is one-to-two full clauses, so short openers ("嗯，好的。")
 # always buffer and ride with the second sentence, delaying the first audible
 # audio by about one LLM sentence — the most latency-sensitive moment of a
-# voice interaction (#96927).
+# voice interaction (#96927). Note: pure-CJK replies only benefit from a lower
+# value once full-width terminators are split as boundaries (#78477, in
+# flight); today the chunker cuts on ASCII ".!?"+whitespace only.
 _DEFAULT_STREAMING_MIN_LEN = 20
 
 

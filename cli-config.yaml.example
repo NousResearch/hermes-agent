@@ -1577,6 +1577,7 @@ stt:
 #     # characters is one-to-two full clauses, so short openers always
 #     # buffer and the first audio is delayed by ~one LLM sentence —
 #     # lower it (e.g. 6) to speak short first sentences immediately.
+#     # (Pure-CJK replies also need full-width boundary splitting, #78477.)
 #     min_len: 20
 
 # "Hey Hermes" hands-free wake word (off by default; toggle with /wake).

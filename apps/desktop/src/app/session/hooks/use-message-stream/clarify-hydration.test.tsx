@@ -241,17 +241,23 @@ describe('clarify.request stream hydration', () => {
     expect(parts[0]).toMatchObject({ toolCallId: 'call-provider', result: { user_response: 'safe' } })
   })
 
-  it('ignores a late clarify.request after the turn was interrupted', () => {
+  it('parks a clarify.request that lands while the session is still flagged interrupted (#104764)', () => {
     mountStream()
     seedHydratedMessages([{ id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'stop this' }] }])
 
     const state = stream.states.get(SID)!
     state.interrupted = true
 
+    // The backend's cooperative cancel is asynchronous: the turn may still be
+    // parked inside the clarify tool waiting on `clarify.respond`, and the
+    // flag only clears on the user's next submit (an auto-continue replay
+    // never does). The one-shot request must park and re-arm a card —
+    // dropping it wedged the turn on an unanswerable spinner.
     clarifyRequest({ choices: ['a', 'b'], question: 'Pick', request_id: 'req-late' })
 
-    expect($clarifyRequests.get()[SID]).toBeUndefined()
-    expect(stream.state().messages).toHaveLength(1)
+    expect($clarifyRequests.get()[SID]?.requestId).toBe('req-late')
+    expect(clarifyParts()).toHaveLength(1)
+    expect(stream.state().needsInput).toBe(true)
   })
 
   it('expires only the matching clarify request and deactivates its card', () => {

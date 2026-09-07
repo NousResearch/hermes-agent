@@ -22,7 +22,7 @@ import type { GatewayEventContext } from './types'
  *  each of these must be parked per-session and surfaced. */
 export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, occurredAt } = ctx
-  const { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall } = deps
+  const { activeSessionIdRef, updateSessionState, upsertToolCall } = deps
 
   if (event.type === 'clarify.request') {
     // Surface the clarify tool's overlay. The Python side is blocked on
@@ -35,10 +35,16 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     // indefinitely and re-focusing it could never recover (the event is
     // gone). Parking it per-session lets the user answer once they switch
     // over; the inline ClarifyTool reads the active session's entry.
-    if (sessionId && sessionInterrupted(sessionId)) {
-      return true
-    }
-
+    //
+    // That includes a session still flagged interrupted (#104764): the
+    // backend's cooperative cancel is asynchronous, so the turn may still be
+    // parked inside the clarify tool waiting on `clarify.respond` while the
+    // flag only clears when the user's next submit starts a turn (an
+    // auto-continue replay never does). Dropping the one-shot request here
+    // wedged that turn on an unanswerable spinner. A request from a
+    // genuinely dead turn is harmless to park: `clarify.respond` is
+    // allow_expired, and the composer skips parked requests on the next
+    // message.
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
     const question = typeof payload?.question === 'string' ? payload.question : ''
     const rawChoices = payload?.choices

@@ -241,6 +241,15 @@ class PooledCredential:
         if isinstance(data.get("last_status_at"), str):
             data["last_status_at"] = _parse_absolute_timestamp(data["last_status_at"])
         data["extra"] = {k: payload[k] for k in _EXTRA_KEYS if payload.get(k) is not None}
+        if data.get("last_status") not in (STATUS_EXHAUSTED, STATUS_DEAD):
+            data["extra"].pop("failure_reason", None)
+        elif (
+            data.get("last_status") == STATUS_EXHAUSTED
+            and data.get("last_status_at") is None
+            and data.get("last_error_reset_at") is None
+        ):
+            data["last_status"] = None
+            data["extra"].pop("failure_reason", None)
         data.setdefault("id", uuid.uuid4().hex[:6])
         data.setdefault("label", payload.get("source", provider))
         data.setdefault("auth_type", AUTH_TYPE_API_KEY)
@@ -1048,6 +1057,15 @@ class CredentialPool:
 
     def _adopt(self, entry: PooledCredential, *, persist: bool = True, **updates: Any) -> PooledCredential:
         """``replace(entry, **updates)``, swap it into the pool, optionally persist."""
+        target_status = updates.get("last_status", entry.last_status)
+        if target_status not in (STATUS_EXHAUSTED, STATUS_DEAD):
+            if "extra" in updates:
+                if updates["extra"] and "failure_reason" in updates["extra"] and "failure_reason" not in updates:
+                    updates["extra"] = {k: v for k, v in updates["extra"].items() if k != "failure_reason"}
+            elif entry.extra and "failure_reason" in entry.extra:
+                updated_extra = dict(entry.extra)
+                updated_extra.pop("failure_reason", None)
+                updates["extra"] = updated_extra
         updated = replace(entry, **updates)
         self._replace_entry(entry, updated)
         if persist:
@@ -2286,9 +2304,13 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
     # A rotated token makes the old exhaustion/error state stale.
     if token_changed and existing.last_status is not None:
         field_updates.update(_CLEAR_STATUS)
+        if "failure_reason" not in extra_updates and existing.extra and "failure_reason" in existing.extra:
+            extra_updates["failure_reason"] = None
     if field_updates or extra_updates:
         if extra_updates:
-            field_updates["extra"] = {**existing.extra, **extra_updates}
+            clean_extra = {**existing.extra, **extra_updates}
+            clean_extra = {k: v for k, v in clean_extra.items() if v is not None}
+            field_updates["extra"] = clean_extra
         updated = replace(existing, **field_updates)
         entries[existing_idx] = updated
         # Runtime-only borrowed secret updates refresh the in-memory entry

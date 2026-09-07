@@ -2209,3 +2209,114 @@ def test_a_persist_without_declared_intent_still_cannot_erase_a_cooldown(
     entry = _disk_entry(tmp_path)
     assert entry["last_status"] == "exhausted"
     assert entry["last_error_code"] == 402
+
+
+def test_adopt_strips_failure_reason_on_status_clear():
+    """When _adopt clears status to OK or None, failure_reason in extra is dropped."""
+    from agent.credential_pool import CredentialPool, PooledCredential, _MARK_OK, STATUS_EXHAUSTED
+
+    entry = PooledCredential(
+        provider="anthropic",
+        id="anth-1",
+        label="hermes-sub",
+        auth_type="oauth",
+        priority=0,
+        source="manual:hermes_pkce",
+        access_token="sk-ant-oat-test",
+        last_status=STATUS_EXHAUSTED,
+        last_status_at=time.time(),
+        last_error_code=400,
+        extra={"failure_reason": "billing"},
+    )
+    pool = CredentialPool("anthropic", [entry])
+    updated = pool._adopt(entry, persist=False, **_MARK_OK)
+    assert updated.last_status == "ok"
+    assert updated.failure_reason is None
+    assert "failure_reason" not in updated.extra
+
+
+def test_from_dict_purges_orphaned_failure_reason_when_status_not_exhausted():
+    """Loading an entry with no active exhaustion drops any leftover failure_reason."""
+    from agent.credential_pool import PooledCredential
+
+    entry = PooledCredential.from_dict(
+        "anthropic",
+        {
+            "id": "0ebb2c",
+            "label": "hermes-sub",
+            "auth_type": "oauth",
+            "source": "manual:hermes_pkce",
+            "last_status": None,
+            "last_status_at": None,
+            "failure_reason": "billing",
+        },
+    )
+    assert entry.last_status is None
+    assert entry.failure_reason is None
+    assert "failure_reason" not in entry.extra
+
+
+def test_from_dict_clears_stale_exhaustion_without_timestamps():
+    """An exhausted status without timestamps cannot compute a TTL; treat as cleared on load."""
+    from agent.credential_pool import PooledCredential
+
+    entry = PooledCredential.from_dict(
+        "anthropic",
+        {
+            "id": "0ebb2c",
+            "label": "hermes-sub",
+            "auth_type": "oauth",
+            "source": "manual:hermes_pkce",
+            "last_status": "exhausted",
+            "last_status_at": None,
+            "last_error_reset_at": None,
+            "failure_reason": "billing",
+        },
+    )
+    assert entry.last_status is None
+    assert entry.failure_reason is None
+    assert "failure_reason" not in entry.extra
+
+
+def test_expired_subscription_exhaustion_clears_failure_reason_on_selection(tmp_path, monkeypatch):
+    """When an Anthropic subscription exhaustion cooldown expires, selection clears failure_reason on disk."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    now = time.time()
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "anth-sub",
+                        "label": "hermes-sub",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:hermes_pkce",
+                        "access_token": "sk-ant-oat-test",
+                        "last_status": "exhausted",
+                        "last_status_at": now - 3700,
+                        "last_error_code": 400,
+                        "failure_reason": "billing",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    selected = pool.select()
+    assert selected is not None
+    assert selected.id == "anth-sub"
+    assert selected.last_status == "ok"
+    assert selected.failure_reason is None
+    assert "failure_reason" not in selected.extra
+
+    auth_text = (tmp_path / "hermes" / "auth.json").read_text()
+    persisted = json.loads(auth_text)["credential_pool"]["anthropic"][0]
+    assert persisted["last_status"] == "ok"
+    assert persisted.get("failure_reason") is None
+

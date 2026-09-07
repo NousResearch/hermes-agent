@@ -46,4 +46,3 @@ class SummaryDispatchMixin:
             self._previous_summary = scan.previous_summary_before
             self._summary_has_user_turn = scan.has_user_turn_before
             raise
-

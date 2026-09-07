@@ -852,6 +852,8 @@ Hermes 中的每个模型槽位 —— 辅助任务、压缩、回退 —— 使
 `"main"` provider 选项表示"使用我的主 agent 使用的任何 provider" —— 它仅在 `auxiliary:`、`compression:` 和 `fallback_model:` 配置中有效。它**不是**顶级 `model.provider` 设置的有效值。如果您使用自定义 OpenAI 兼容端点，请在 `model:` 部分设置 `provider: custom`。所有主模型 provider 选项请参阅 [AI Providers](/integrations/providers)。
 :::
 
+**后台审查有所不同：** 与主会话使用同一模型的审查分支始终继承主会话的推理强度；`auxiliary.background_review.reasoning_effort` 在这条路径上不会生效，即使显式指定了主会话的 provider/model 也一样。推理设置、系统 prompt、完整会话快照和工具定义保持逐字节一致，以复用 prompt 缓存前缀。没有用于同模型审查的独立推理强度开关。详见[同模型审查的推理强度](/user-guide/features/memory#same-model-review-reasoning)。路由到其他模型时的独立问题见 [#94825](https://github.com/NousResearch/hermes-agent/issues/94825)。
+
 ### 完整辅助配置参考
 
 ```yaml

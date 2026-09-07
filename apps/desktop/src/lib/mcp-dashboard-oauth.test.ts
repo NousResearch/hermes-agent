@@ -74,6 +74,110 @@ afterEach(() => {
 })
 
 describe('Desktop MCP client callback lifecycle', () => {
+  it.each(['approved', 'cancel-start', 'cancel-poll', 'denial', 'poll', 'browser'])(
+    'preserves explicit local OAuth without a bridge through %s and foreground switches',
+    async outcome => {
+      const { rpc, api, bridge, openExternal } = harness()
+      window.hermesDesktop.mcpOauth = undefined
+      setApiRequestConnection('local')
+      setApiRequestProfile('origin-profile')
+      let cancelled = false
+      rpc.mockImplementation(async (_connection, _profile, method) => {
+        if (method.endsWith('.start')) {
+          setApiRequestConnection('other-gateway')
+          setApiRequestProfile('other-profile')
+          cancelled = outcome === 'cancel-start'
+
+          return started
+        }
+
+        if (method.endsWith('.poll')) {
+          cancelled = outcome === 'cancel-poll'
+
+          if (outcome === 'poll') {
+            throw new Error('poll failed')
+          }
+
+          return outcome === 'denial'
+            ? { ok: true, status: 'error', error_message: 'access_denied' }
+            : { ok: true, status: 'approved', tools }
+        }
+
+        return { ok: true }
+      })
+
+      if (outcome === 'browser') {
+        openExternal.mockRejectedValue(new Error('browser failed'))
+      }
+
+      const action = completeMcpDesktopOAuth({
+        serverName: 'reports',
+        cancelled: () => cancelled,
+        sleep: async () => {}
+      })
+
+      if (outcome === 'approved') {
+        await expect(action).resolves.toMatchObject({ status: 'approved', tools })
+      } else if (outcome.startsWith('cancel-')) {
+        await expect(action).rejects.toBeInstanceOf(McpOAuthCancelled)
+      } else {
+        await expect(action).rejects.toThrow(outcome === 'denial' ? 'access_denied' : `${outcome} failed`)
+      }
+
+      expect(rpc).toHaveBeenCalledWith(
+        'local',
+        'origin-profile',
+        'mcp.servers.oauth.start',
+        { name: 'reports' },
+        60_000
+      )
+      expect(rpc.mock.calls.every(call => call[0] === 'local' && call[1] === 'origin-profile')).toBe(true)
+      expect(rpc.mock.calls.filter(call => call[2].endsWith('.start'))).toHaveLength(1)
+      expect(rpc.mock.calls.filter(call => call[2].endsWith('.cancel'))).toHaveLength(outcome === 'approved' ? 0 : 1)
+      expect(rpc.mock.calls.filter(call => call[2].endsWith('.callback'))).toHaveLength(0)
+      expect(openExternal.mock.calls).toEqual(outcome === 'cancel-start' ? [] : [[authUrl]])
+      expect(bridge.listen).not.toHaveBeenCalled()
+      expect(bridge.wait).not.toHaveBeenCalled()
+      expect(bridge.cancel).not.toHaveBeenCalled()
+      expect(api).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each([
+    { connectionId: null, uri: redirectUri },
+    { connectionId: 'remote-gateway', uri: redirectUri },
+    { connectionId: 'local', uri: 'http://remote.example:49152/callback' },
+    { connectionId: 'local', uri: 'https://127.0.0.1:49152/callback' },
+    { connectionId: 'local', uri: 'http://127.0.0.1:49152/not-callback' },
+    { connectionId: 'local', uri: 'http://user@127.0.0.1:49152/callback' },
+    { connectionId: 'local', uri: 'http://127.0.0.1:49152/callback#fragment' },
+    { connectionId: 'local', uri: '' },
+    { connectionId: 'local', uri: redirectUri, listenerFailure: true }
+  ])('refuses unsafe compatibility paths: %j', async ({ connectionId, uri, listenerFailure }) => {
+    const { rpc, api, bridge, openExternal } = harness()
+    setApiRequestConnection(connectionId)
+
+    if (listenerFailure) {
+      bridge.listen.mockRejectedValue(new Error('listen failed'))
+    } else {
+      window.hermesDesktop.mcpOauth = undefined
+    }
+
+    rpc.mockResolvedValue({
+      ...started,
+      auth_url: `https://idp.example/authorize?state=expected&redirect_uri=${encodeURIComponent(uri)}`
+    })
+    await expect(completeMcpDesktopOAuth({ serverName: 'reports' })).rejects.toThrow()
+    expect(openExternal).not.toHaveBeenCalled()
+    expect(api).not.toHaveBeenCalled()
+
+    if (connectionId !== 'local' || listenerFailure) {
+      expect(rpc).not.toHaveBeenCalled()
+    } else {
+      expect(rpc.mock.calls.map(call => call[2])).toEqual(['mcp.servers.oauth.start', 'mcp.servers.oauth.cancel'])
+    }
+  })
+
   it('bounds pending polls even after the browser callback arrives', async () => {
     const { rpc, bridge } = harness()
     const base = rpc.getMockImplementation()!

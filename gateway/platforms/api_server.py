@@ -7,6 +7,7 @@ OpenAI-compatible frontend connects at http://localhost:8642/v1 with API_SERVER_
 """
 
 import asyncio
+import copy
 import concurrent.futures
 import errno
 import hashlib
@@ -14,7 +15,7 @@ import hmac
 import itertools
 import json
 from contextlib import contextmanager, nullcontext, suppress
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from functools import wraps
 import logging
 import os
@@ -139,6 +140,67 @@ from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 
 
 logger = logging.getLogger(__name__)
+
+
+def _maybe_post_turn_compress(agent: Any, result: Any, session_id: Optional[str]) -> None:
+    """Compact an over-threshold API transcript after its response has settled.
+
+    API-server agents are created for one request at a time, so their next
+    request otherwise discovers an oversized persisted transcript only during
+    turn-start preflight.  The normal finalizer has already flushed this turn
+    before this runs.  A daemon worker uses the same compressor gate and
+    durable compression lease as preflight. ``archive_and_compact`` preserves
+    rows written after its watermark while the summary runs.
+    """
+    if not isinstance(result, dict) or result.get("failed") or result.get("interrupted"):
+        return
+    if not session_id or not getattr(agent, "compression_enabled", False):
+        return
+    if not getattr(agent, "compression_in_place", True):
+        # A background rotation cannot update a REST client that is still
+        # holding the parent session id.
+        return
+    if getattr(agent, "api_mode", None) == "codex_app_server":
+        return
+    if getattr(agent, "_session_db", None) is None:
+        return
+    messages = result.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return
+    compressor = getattr(agent, "context_compressor", None)
+    should_compress = getattr(compressor, "should_compress", None)
+    compress = getattr(agent, "_compress_context", None)
+    if not callable(should_compress) or not callable(compress):
+        return
+    try:
+        from agent.model_metadata import estimate_request_tokens_rough
+        system_prompt = str(getattr(agent, "_cached_system_prompt", "") or "")
+        approx_tokens = estimate_request_tokens_rough(
+            messages, system_prompt=system_prompt, tools=getattr(agent, "tools", None) or None)
+        if not should_compress(approx_tokens):
+            return
+    except Exception:
+        logger.debug("Post-turn API compaction preflight failed for session %s", session_id, exc_info=True)
+        return
+
+    # Context variables carry the selected profile's Hermes home and secret scope
+    # into a worker thread; without this, named-profile compression resolves the
+    # root config and credentials instead.
+    messages_snapshot = copy.deepcopy(messages)
+    worker_context = copy_context()
+
+    def _worker() -> None:
+        try:
+            # The cached prompt is already fully built.  Passing it back into
+            # _compress_context would cause the prompt builder to nest it.
+            compress(messages_snapshot, None, approx_tokens=approx_tokens, task_id=session_id)
+        except Exception:
+            logger.warning("Post-turn API compaction failed for session %s", session_id, exc_info=True)
+
+    threading.Thread(
+        target=worker_context.run, args=(_worker,), daemon=True,
+        name=f"api-post-turn-compress-{session_id[:24]}",
+    ).start()
 
 
 def _browser_controller_ws_sender(ws, loop, *, wait_timeout: float = 10.0):
@@ -3610,6 +3672,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if isinstance(result, dict):
                 result["runtime"] = runtime
             usage["runtime"] = runtime
+        _maybe_post_turn_compress(agent, result, _eff_sid if isinstance(_eff_sid, str) else session_id)
         return result, usage
 
     async def _run_agent(

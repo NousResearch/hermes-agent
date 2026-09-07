@@ -138,10 +138,10 @@ class _NonStreamRequest:
                 return
             silence = self.call_start + elapsed - (
                 activity_ts if activity_ts is not None else self.call_start)
-            if activity_ts is not None and silence < 30.0:
+            if silence < 60.0:
                 self.agent._touch_activity(
                     "waiting for first stream event after reconnect"
-                    if retry_started_ts is not None else "receiving stream response")
+                    if retry_started_ts is not None else "waiting for provider response")
                 return
             status = "no response yet"
             if retry_started_ts is not None:

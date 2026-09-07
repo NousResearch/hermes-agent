@@ -1486,7 +1486,7 @@ class TurnRunner:
         # persistence result has been accepted.  This prevents preview frames from
         # escaping before the canonical transcript is durable.  Empty successful turns
         # also release the task; only failed turns remain fail-closed.
-        if ctx.stream_release_event is not None and not result.get("failed"):
+        if ctx.stream_release_event is not None and isinstance(result, dict) and not result.get("failed"):
             ctx.stream_release_event.set()
 
     def _restore_telegram_thread_id_after_split(self, agent_session_id) -> None:

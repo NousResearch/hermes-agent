@@ -276,7 +276,10 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
       // In flow in the dock column, directly above the composer. The dock is
       // bottom-anchored, so this grows upward over the thread without needing
       // to be positioned — and it shares the dock's left edge for free.
-      className="flex max-h-[40vh] min-h-0 flex-col overflow-y-auto"
+      // Visual layering fix for #104712: `relative z-1` keeps the stack above
+      // the composer surface (z-0 default) so its overflow-scrolling content
+      // stays visible when the todo list exceeds max-h-[40vh].
+      className="relative z-1 flex max-h-[40vh] min-h-0 flex-col overflow-y-auto"
       data-slot="composer-status-stack"
       onPointerDownCapture={() => blurComposerInput()}
     >

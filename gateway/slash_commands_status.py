@@ -118,6 +118,8 @@ def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
     """/context full view: auto-compression threshold/headroom, compression count + last savings,
     and cumulative throughput (labelled as throughput, NOT context size)."""
     lines: list[str] = []
+    from agent.context_breakdown import context_display_source
+    mark = "~" if context_display_source(ctx) != "provider_usage" else ""
     threshold = _n(ctx, "threshold_tokens")
     threshold_pct = f"{_n(ctx, 'threshold_percent') * 100:.0f}"
     if threshold > 0:
@@ -126,7 +128,7 @@ def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
                            threshold_pct=threshold_pct))
         else:
             lines.append(t("gateway.context.threshold", threshold=_fmt(threshold),
-                           threshold_pct=threshold_pct, to_go=_fmt(threshold - used)))
+                           threshold_pct=threshold_pct, to_go=mark + _fmt(threshold - used)))
     compressions = _n(ctx, "compression_count")
     lines.append(t("gateway.context.compressions", count=compressions))
     savings = getattr(ctx, "_last_compression_savings_pct", None) if compressions else None
@@ -501,7 +503,7 @@ class GatewayStatusCommandsMixin:
                 if label.endswith(f"breakdown_cat_{cat_id}"):  # missing key: t() echoes it back
                     label = str(cat.get("label") or cat_id)
                 pct = round(tokens / total * 100) if total else 0
-                out.append(t("gateway.usage.breakdown_line", label=label, count="~" + _fmt(tokens), pct=f"~{pct}"))
+                out.append(t("gateway.usage.breakdown_line", label=label, count=_fmt(tokens), pct=f"~{pct}"))
             return out if len(out) > 1 else []
         except Exception:
             return []

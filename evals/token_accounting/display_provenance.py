@@ -77,8 +77,10 @@ def child(out: Path) -> None:
             cli.conversation_history = result["messages"]
         else:
             cli.conversation_history.append({"role": "user", "content": "new unpriced question"})
+        agent._session_messages = cli.conversation_history
         print(f"\n=== {scenario}: CLI /context ===", flush=True)
         cli.process_command("/context")
+        print("CLI status bar:", cli._build_status_bar_text(width=120), flush=True)
         usage = _get_usage(agent)
         session = {"agent": agent, "history": cli.conversation_history, "history_lock": threading.RLock()}
         print("=== TUI/Desktop live /context ===", flush=True)
@@ -89,6 +91,8 @@ def child(out: Path) -> None:
         print(asyncio.run(runner._handle_status_command(MessageEvent(text="/status", source=source, message_id="fixture"))), flush=True)
         print("=== gateway /context ===", flush=True)
         print(asyncio.run(runner._handle_context_command(MessageEvent(text="/context", source=source, message_id="fixture"))), flush=True)
+        print("=== gateway /usage category block ===", flush=True)
+        print("\n".join(runner._context_breakdown_lines(agent, source)), flush=True)
         results[scenario] = {"breakdown": compute_session_context_breakdown(agent, cli.conversation_history), "usage": usage}
     (out / "payloads.json").write_text(json.dumps(results, indent=2))
     server.omit_usage = True

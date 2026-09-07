@@ -17,11 +17,9 @@ import { TextTab } from '@/components/ui/text-tab'
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import {
-  authMcpServer,
   getActionStatus,
   getLogs,
   getMcpCatalog,
-  getMcpOAuthFlow,
   getUsageAnalytics,
   type HermesGateway,
   installMcpCatalogEntry,
@@ -611,9 +609,8 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
     try {
       const flow = await completeMcpDesktopOAuth({
         serverName,
-        start: name => authMcpServer(name, profile ?? undefined),
-        status: flowId => getMcpOAuthFlow(flowId, profile ?? undefined),
-        openExternal: url => window.hermesDesktop.openExternal(url)
+        profile,
+        cancelled: () => profileEpoch.current !== epoch
       })
 
       const result: McpTestResult = { ok: true, tools: flow.tools ?? [] }

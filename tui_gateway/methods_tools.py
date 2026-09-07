@@ -698,17 +698,18 @@ def _cmd_goal(rid, params, session, name, arg):
 
 
 def _cmd_loop(rid, params, session, name, arg):
-    sid_key, loops, err = _session_key_or_err(rid, session, "hermes_cli.loops", "loops")
-    if err:
-        return err
-    result = loops.dispatch_loop_command(loops.LoopManager(session_id=sid_key), arg)
-    output = result.get("output") or ""
-    if result.get("created"):
-        with contextlib.suppress(Exception):
-            if loops.goal_blocks_loop_tick(sid_key):
-                output += ("\nNote: an active /goal is driving this session — loop "
-                           "wakeups defer until the goal finishes, pauses, or parks.")
-    return _exec_out(rid, output)
+    with _session_profile_runtime_scope(session or {}):
+        sid_key, loops, err = _session_key_or_err(rid, session, "hermes_cli.loops", "loops")
+        if err:
+            return err
+        result = loops.dispatch_loop_command(loops.LoopManager(session_id=sid_key), arg)
+        output = result.get("output") or ""
+        if result.get("created"):
+            with contextlib.suppress(Exception):
+                if loops.goal_blocks_loop_tick(sid_key):
+                    output += ("\nNote: an active /goal is driving this session — loop "
+                               "wakeups defer until the goal finishes, pauses, or parks.")
+        return _exec_out(rid, output)
 
 
 def _cmd_undo(rid, params, session, name, arg):

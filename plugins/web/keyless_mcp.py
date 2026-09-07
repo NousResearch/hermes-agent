@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional
@@ -46,10 +47,35 @@ def _is_rate_limitish(message: str) -> bool:
     return any(marker in (message or "").lower() for marker in _RATE_LIMIT_MARKERS)
 
 
+def _is_provider_failure(message: str) -> bool:
+    """Fail over on throttling or transport/service failure, never a policy refusal."""
+    text = str(message).lower()
+    if any(marker in text for marker in ("blocked by", "forbidden", "policy", "http 401", "http 403")):
+        return False
+    return (
+        _is_rate_limitish(text)
+        or bool(re.search(r"\bhttp (?:408|5\d\d)\b", text))
+        or "request failed:" in text
+    )
+
+
+def _transport_error(exc: Any) -> str:
+    """Normalize the requests/httpx transports used by the free providers."""
+    import httpx
+    import requests
+    if isinstance(exc, (httpx.HTTPStatusError, requests.exceptions.HTTPError)):
+        response = exc.response
+        if response is not None:
+            return f"HTTP {response.status_code}: {exc}"
+    if isinstance(exc, (httpx.RequestError, requests.exceptions.RequestException)):
+        return f"request failed: {exc}"
+    return str(exc)
+
+
 def _fail_msg(vendor: str, kind: str, exc: Any, *, other_backends: bool = True) -> str:
     label, env_key, site = _VENDOR_HINTS[vendor]
     alt = " or another web backend via `hermes tools`" if other_backends else ""
-    return f"Keyless {label} {kind} failed: {exc}. Set {env_key} ({site}){alt} for reliable service."
+    return f"Keyless {label} {kind} failed: {_transport_error(exc)}. Set {env_key} ({site}){alt} for reliable service."
 
 
 def _search(vendor: str, rows: Callable[[], List[Dict[str, Any]]], catch: Any = (), fmt: Optional[Callable[[Exception], str]] = None) -> Dict[str, Any]:
@@ -272,7 +298,7 @@ def _keenable_request(method: str, path: str, **kwargs: Any) -> Dict[str, Any]:
         headers["Content-Type"] = "application/json"
     response = getattr(requests, method)(f"{KEENABLE_API_URL}{path}", headers=headers, timeout=_TIMEOUT_SECONDS, **kwargs)
     if response.status_code >= 400:
-        raise KeylessMCPError((response.text or "").strip() or f"HTTP {response.status_code}")
+        raise KeylessMCPError(f"HTTP {response.status_code}: {(response.text or '').strip()}")
     return response.json()
 
 
@@ -284,7 +310,7 @@ def keenable_search_keyless(query: str, limit: int = 5) -> Dict[str, Any]:
             for i, r in enumerate(data.get("results") or [])
         ]
 
-    return _search("keenable", _rows, Exception, lambda exc: f"Keyless Keenable search failed: {exc}.")
+    return _search("keenable", _rows, Exception, lambda exc: f"Keyless Keenable search failed: {_transport_error(exc)}.")
 
 
 def keenable_extract_keyless(urls: List[str]) -> List[Dict[str, Any]]:
@@ -350,36 +376,58 @@ def _walk_ring(name: str, kind: str, call, throttled) -> tuple:
         if not throttled(result):
             return order, vendor, result, False
         if i + 1 < len(order):
-            logger.info("keyless %s %s throttled; failing over to %s", vendor, kind, order[i + 1])
+            logger.warning("keyless %s %s unavailable; failing over to %s", vendor, kind, order[i + 1])
     return order, vendor, result, True
 
 
 def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any]:
-    """Rate-limit-shaped errors advance to the next vendor, other errors stop the walk
-    (a malformed query fails everywhere). ``data.served_by`` is set when the serving
-    vendor differs from *name*."""
+    """Try each free provider once for service failures; preserve fallback evidence."""
+    failures = []
 
-    def _throttled(result: Dict[str, Any]) -> bool:
-        return not result.get("success") and _is_rate_limitish(result.get("error", ""))
+    def _call(vendor):
+        result = _KEYLESS_SEARCHERS[vendor](query, limit)
+        if not result.get("success"):
+            failures.append({"provider": vendor, "error": str(result.get("error", ""))})
+        return result
 
-    order, vendor, result, exhausted = _walk_ring(name, "search", lambda v: _KEYLESS_SEARCHERS[v](query, limit), _throttled)
+    def _retryable(result: Dict[str, Any]) -> bool:
+        return not result.get("success") and _is_provider_failure(result.get("error", ""))
+
+    order, vendor, result, exhausted = _walk_ring(name, "search", _call, _retryable)
     if not order:
         return search_fail(_ALL_PAID_MSG)
     if exhausted:
-        result["error"] = f"{result.get('error', '')} (all keyless vendors throttled: {', '.join(order)})"
+        result["error"] = f"{result.get('error', '')} (all keyless vendors unavailable: {', '.join(order)})"
     elif result.get("success") and vendor != name:
         result.setdefault("data", {})["served_by"] = vendor
+    if failures:
+        result.setdefault("data", {})["failover_errors"] = failures
     return result
 
 
 def extract_with_failover(name: str, urls: List[str]) -> List[Dict[str, Any]]:
-    """Fails over only when EVERY url in a batch is rate-limit-shaped (partial failures
-    are page problems, returned as-is)."""
+    """Fail over whole-batch service failures; preserve partial/page-policy results."""
+    failures = []
 
-    def _all_throttled(results: List[Dict[str, Any]]) -> bool:
-        return bool(results) and all(r.get("error", "") and _is_rate_limitish(r.get("error", "")) for r in results)
+    def _call(vendor):
+        results = _KEYLESS_EXTRACTORS[vendor](list(urls))
+        errors = [str(r["error"]) for r in results if r.get("error")]
+        if errors:
+            failures.append({"provider": vendor, "errors": errors})
+        return results
 
-    order, _vendor, results, _exhausted = _walk_ring(name, "extract", lambda v: _KEYLESS_EXTRACTORS[v](list(urls)), _all_throttled)
+    def _all_retryable(results: List[Dict[str, Any]]) -> bool:
+        return bool(results) and all(r.get("error") and _is_provider_failure(r["error"]) for r in results)
+
+    order, vendor, results, exhausted = _walk_ring(name, "extract", _call, _all_retryable)
     if not order:
         return [_page_error(u, _ALL_PAID_MSG) for u in urls]
+    if failures and (vendor != order[0] or exhausted):
+        for result in results:
+            meta = result.setdefault("metadata", {})
+            meta["failover_errors"] = failures
+            if vendor != name:
+                meta["served_by"] = vendor
+            if exhausted:
+                meta["all_providers_unavailable"] = True
     return results

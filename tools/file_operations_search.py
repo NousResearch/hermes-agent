@@ -394,7 +394,8 @@ class SearchMixin:
         if native_ok and self._native_read_enabled():
             return self._run_rg_native(words, fetch_limit, timeout, merge_stderr=merge_stderr)
         stderr = "" if merge_stderr else " 2>/dev/null"
-        return self._exec(f"{shell_prefix}{' '.join(words)}{stderr} | head -n {fetch_limit}", timeout=timeout)
+        return self._exec(
+            f"{shell_prefix}{' '.join(words)}{stderr} | command head -n {fetch_limit}", timeout=timeout)
 
     def _quote_executable(self, executable: str) -> str:
         """Quote an executable without leaking controller path semantics."""
@@ -693,9 +694,9 @@ class SearchMixin:
         base = (f"find {' '.join(q_roots)}{protected_prune}{hidden_prune} -type f "
                 f"! -name '.*' -name {self._escape_shell_arg(search_pattern)}")
         if order == "modified":
-            cmd = "set -o pipefail; " + base + f" -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -n {fetch_limit}"
+            cmd = "set -o pipefail; " + base + f" -printf '%T@ %p\\n' 2>/dev/null | sort -rn | command head -n {fetch_limit}"
         else:
-            cmd = "set -o pipefail; " + base + f" -print 2>/dev/null | head -n {fetch_limit}"
+            cmd = "set -o pipefail; " + base + f" -print 2>/dev/null | command head -n {fetch_limit}"
 
         keys = _filename_search_root_keys(self.env, roots, self.cwd)
         if not _acquire_filename_search_roots(keys):
@@ -835,7 +836,8 @@ class SearchMixin:
         files_only/count where lines are paths/counts."""
         fetch_limit = limit + offset + (200 if context > 0 else 0)
         if line_cap:  # grep/find pipelines: shell only, with the column cap
-            parts = cmd_parts + ["|", "head", "-n", str(fetch_limit)]
+            # Bypass aliases and functions restored in terminal snapshots.
+            parts = cmd_parts + ["|", "command", "head", "-n", str(fetch_limit)]
             if output_mode not in ("files_only", "count"):
                 parts += ["|", "cut", "-c1-2000"]
             result = self._exec("set -o pipefail; " + " ".join(parts), timeout=60)

@@ -3826,8 +3826,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Full option text in the body (mobile truncates button labels); buttons keep numeric labels.
                 text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
-                rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
-                rows.append([InlineKeyboardButton("✏️ Other (type answer)", callback_data=f"cl:{clarify_id}:other")])
+                if len(choices) <= 8:
+                    # 8 numeric buttons render on a single row on every client, so
+                    # short lists stop stretching the message vertically. The Bot API
+                    # documents no per-row cap, but rows measured beyond ~12 buttons
+                    # silently drop the extras, so stay conservative at 8.
+                    rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}") for idx in range(len(choices))],
+                            [InlineKeyboardButton("✏️ Other (type answer)", callback_data=f"cl:{clarify_id}:other")]]
+                else:
+                    rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
+                    rows.append([InlineKeyboardButton("✏️ Other (type answer)", callback_data=f"cl:{clarify_id}:other")])
                 keyboard = InlineKeyboardMarkup(rows)
             return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
         return await self._send_prompt(

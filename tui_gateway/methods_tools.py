@@ -980,6 +980,19 @@ def _(rid, params: dict) -> dict:
 
 @_rpc("tools.configure", 5035)
 def _(rid, params: dict) -> dict:
+    sid = params.get("session_id", "")
+    session = _sessions.get(sid)
+    # The client sends session_id, not profile; the live session is authoritative.
+    home = (session or {}).get("profile_home")
+    scopes = _bind_build_profile_scopes(home) if home else None
+    try:
+        return _configure_session_tools(rid, params, sid, session)
+    finally:
+        if scopes is not None:
+            _release_build_profile_scopes(scopes)
+
+
+def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
     action = str(params.get("action", "") or "").strip().lower()
     targets = [str(name).strip() for name in params.get("names", []) or [] if str(name).strip()]
     if action not in {"disable", "enable"}:
@@ -996,8 +1009,6 @@ def _(rid, params: dict) -> dict:
         tc._apply_toolset_change(cfg, "cli", toolset_targets, action)
     missing_servers = tc._apply_mcp_change(cfg, mcp_targets, action) if mcp_targets else set()
     hc.save_config(cfg)
-    sid = params.get("session_id", "")
-    session = _sessions.get(sid)
     info = _reset_session_agent(sid, session) if session else None
     enabled = sorted(tc._get_platform_tools(hc.load_config(), "cli", include_default_mcp_servers=False))
     changed = [

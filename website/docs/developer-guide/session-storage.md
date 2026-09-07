@@ -13,6 +13,10 @@ including when one `hermes serve` process serves several profiles. In-session
 agent rebuilds (Bot Chat capability refresh and `tools.configure`) must retain
 that session's database handle and bind its profile home during construction.
 Releasing the outgoing agent must not close the handle inherited by its replacement.
+`tools.configure` resolves configuration from the live session's `profile_home`,
+even when the client supplies only `session_id`. Rebuilds prepare model configuration
+before allocating a replacement, then install the agent and transfer ownership
+together; preparation failure leaves the existing agent responsible for teardown.
 
 In-place compaction archives old rows with `active=0` and inserts the retained
 context as `active=1` rows. A protected message can therefore legitimately appear

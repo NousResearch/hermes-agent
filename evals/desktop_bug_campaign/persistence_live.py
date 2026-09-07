@@ -20,7 +20,10 @@ def main():
     parser.add_argument('--port', type=int, default=18020)
     parser.add_argument('--compress', action='store_true')
     parser.add_argument('--reset', action='store_true')
+    parser.add_argument('--failure', action='store_true', help='inject one model-config preparation failure')
+    parser.add_argument('--observe', action='store_true', help='inspect ownership without injecting failure')
     args = parser.parse_args()
+    observe = args.observe or args.failure
     args.out.mkdir(parents=True, exist_ok=True)
     home = Path(tempfile.mkdtemp(prefix='persistence-live-'))
     profile = home / 'profiles' / 'worker'
@@ -66,6 +69,9 @@ def main():
     env.update(HERMES_HOME=str(home), HOME=str(home / 'os-home'), HERMES_DASHBOARD_SESSION_TOKEN='persistence-fixture-token', HERMES_IGNORE_RULES='1', PYTHONPATH=str(args.repo), OPENAI_API_KEY='local-fixture')
     log = (args.out / 'serve.log').open('w')
     cmd = [sys.executable, '-m', 'hermes_cli.main', 'serve', '--isolated', '--port', str(args.port)]
+    if observe:
+        cmd = [sys.executable, str(Path(__file__).with_name('rebuild_observer.py')),
+               'serve', '--isolated', '--port', str(args.port)]
     proc = subprocess.Popen(cmd, cwd=args.repo, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
     transcript = []
     result = {'home': str(home), 'command': cmd, 'sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=args.repo, text=True).strip()}
@@ -111,6 +117,11 @@ def main():
             result['created'] = created
             sid, key = created['session_id'], created['stored_session_id']
             turn(sid, 'PERSISTENCE_BEFORE')
+            launch_before = (home / 'config.yaml').read_bytes()
+            if observe:
+                result['ownership_before'] = rpc('probe.ownership', {'session_id': sid})
+            if args.failure:
+                (home / 'fail-rebuild').touch()
             if args.compress:
                 for i in range(12):
                     turn(sid, f'Historical note {i}: ' + ('The worker keeps the project history and decisions in its own profile. ' * 100))
@@ -119,15 +130,29 @@ def main():
                     result['generations'] = db.execute('SELECT role, content, GROUP_CONCAT(active), COUNT(*) FROM messages WHERE session_id=? GROUP BY role, content HAVING COUNT(*)>1', (key,)).fetchall()
                     result['duplicate_active_groups'] = db.execute('SELECT COUNT(*) FROM (SELECT role, content FROM messages WHERE session_id=? AND active=1 GROUP BY role, content HAVING COUNT(*)>1)', (key,)).fetchone()[0]
             if args.reset:
-                result['reset'] = rpc('tools.configure', {'session_id': sid, 'profile': 'worker', 'action': 'disable', 'names': ['terminal']})
+                try:
+                    result['reset'] = rpc('tools.configure', {'session_id': sid, 'action': 'enable', 'names': ['web']})
+                except RuntimeError as exc:
+                    if not args.failure or 'probe config read failure' not in str(exc):
+                        raise
+                    result['expected_failure'] = str(exc)
+                result['launch_config_unchanged'] = (home / 'config.yaml').read_bytes() == launch_before
+                result['worker_tools'] = yaml.safe_load((profile / 'config.yaml').read_text())['platform_toolsets']['cli']
             else:
                 (profile / 'SOUL.md').write_text('Capabilities changed for the worker.\n')
+            if observe and args.reset:
+                result['ownership_after_failure'] = rpc('probe.ownership', {'session_id': sid})
             turn(sid, 'PERSISTENCE_AFTER_REBUILD')
+            if observe and not args.reset:
+                result['ownership_after_failure'] = rpc('probe.ownership', {'session_id': sid})
             result['stores'] = {}
             for name, p in [('launch', home), ('worker', profile)]:
                 with sqlite3.connect(p / 'state.db') as db:
                     result['stores'][name] = db.execute('SELECT role, content, active FROM messages WHERE session_id=? ORDER BY id', (key,)).fetchall()
             result['wrong_profile_writes'] = any('PERSISTENCE_AFTER_REBUILD' in str(row) for row in result['stores']['launch'])
+            if observe:
+                rpc('session.close', {'session_id': sid})
+                result['ownership_after_close'] = rpc('probe.ownership', {'session_id': sid})
     finally:
         proc.terminate()
         try:
@@ -136,6 +161,7 @@ def main():
             proc.kill()
             proc.wait()
         model.shutdown()
+        model.server_close()
         log.close()
         (args.out / 'wire.json').write_text(json.dumps(transcript, indent=2))
         result['model_requests'] = requests
@@ -143,6 +169,14 @@ def main():
         print(json.dumps({k: result[k] for k in ('sha', 'home', 'wrong_profile_writes', 'duplicate_active_groups') if k in result}, indent=2))
     assert not result['wrong_profile_writes'], 'rebuild wrote the next turn to launch state.db'
     assert any('PERSISTENCE_AFTER_REBUILD' in str(row) for row in result['stores']['worker'])
+    if args.reset:
+        assert result['launch_config_unchanged'], 'tools.configure changed launch config'
+        assert 'web' in result['worker_tools'], 'tools.configure did not change worker config'
+    if observe:
+        before, after = result['ownership_before'], result['ownership_after_failure']
+        assert before['owns_db'] and after['owns_db'], 'rebuild lost reachable DB owner'
+        assert (before['agent'] == after['agent']) is args.failure, 'unexpected replacement outcome'
+        assert str(profile / 'state.db') not in result['ownership_after_close']['refs'], 'teardown leaked profile DB ref'
     if args.compress:
         assert result['compression']['status'] == 'compressed'
         assert result['generations'], 'compaction must retain archived generations'

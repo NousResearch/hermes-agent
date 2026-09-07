@@ -158,8 +158,9 @@ def _get_ollama_native_headers(base_url: Optional[str], *, api_key: Optional[str
     if not configured_matches and not explicit_key:
         return {}
     headers = _get_ollama_request_headers() if configured_matches else {}
-    if explicit_key:
+    if explicit_key or callable(api_key):
         _drop_authorization(headers)
+    if explicit_key:
         headers["Authorization"] = f"Bearer {explicit_key}"
     return headers
 

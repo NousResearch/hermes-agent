@@ -99,14 +99,13 @@ def _clean_str(raw: Any) -> str:
     return str(raw or "").strip()
 
 
-def _runtime_main(key: str) -> str:
-    """Stripped context-local main-runtime value, or "" when unavailable."""
+def _runtime_main(key: str) -> Any:
+    """Context-local credential source or stripped runtime text; "" when unavailable."""
     try:
         from agent.auxiliary_client import _runtime_main_value
 
-        from agent.command_token_source import materialize_probe_api_key
         value = _runtime_main_value(key)
-        return materialize_probe_api_key(value) if key == "api_key" else _clean_str(value)
+        return value if key == "api_key" else _clean_str(value)
     except Exception:
         return ""
 
@@ -178,6 +177,12 @@ def _resolve_inference_value(
     → ``custom_providers[].<key>``, ``<name>`` covering the provider and
     ``model.provider`` in both bare and ``custom:``-prefixed forms."""
     runtime = _runtime_main(key)
+    # A declared source owns authentication even when its mint fails.
+    if key == "api_key":
+        from agent.command_token_source import materialize_probe_api_key
+        if callable(runtime):
+            return materialize_probe_api_key(runtime)
+        runtime = materialize_probe_api_key(runtime)
     if runtime and runtime_ok(runtime):
         return runtime
     if not isinstance(cfg, dict):

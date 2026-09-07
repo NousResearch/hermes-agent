@@ -813,7 +813,8 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
         "enabled_toolsets": getattr(agent, "enabled_toolsets", None),
         "disabled_toolsets": getattr(agent, "disabled_toolsets", None), "skip_memory": True,
     }
-
+    if isinstance(rt.get("max_tokens"), int):
+        kwargs["max_tokens"] = rt["max_tokens"]
     if isinstance(rt.get("command"), str) and rt["command"]:
         kwargs.update(acp_command=rt["command"], acp_args=rt.get("args") or [])
     if not routed:

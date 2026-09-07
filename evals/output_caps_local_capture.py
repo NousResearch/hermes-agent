@@ -31,9 +31,15 @@ class Capture(BaseHTTPRequestHandler):
         else:
             reply = {"id": "fixture", "object": "chat.completion", "created": 0, "model": body["model"], "choices": [{"index": 0, "message": {"role": "assistant", "content": "LOCAL_CAPTURE_ONLY"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(reply).encode())
+        if body.get("stream"):
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            chunk = {"id": "fixture", "object": "chat.completion.chunk", "created": 0, "model": body["model"], "choices": [{"index": 0, "delta": {"content": "LOCAL_CAPTURE_ONLY"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+            self.wfile.write(("data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n").encode())
+        else:
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(reply).encode())
 
     def log_message(self, format, *args):
         pass
@@ -95,6 +101,9 @@ Anthropic(api_key="fixture", base_url=url, max_retries=0).messages.create(**kwar
 results["native-anthropic"] = captures[-1]
 results["bedrock-converse-built-not-sent"] = BedrockTransport().build_kwargs("amazon.nova-pro-v1:0", messages)
 results["moa-normalized"] = _normalize_preset({"max_tokens": 23, "reference_max_tokens": 29})
+if os.environ.get("FULL_OUTPUT_CAP_SURFACES"):
+    from output_caps_surfaces import exercise_surfaces
+    results.update(exercise_surfaces(agent, captures, url, home, config))
 print(json.dumps(results, indent=2, default=str))
 server.shutdown()
 server.server_close()

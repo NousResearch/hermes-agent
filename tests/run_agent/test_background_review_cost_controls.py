@@ -73,7 +73,7 @@ def test_routing_to_different_model_marks_routed_and_resolves_credentials():
     assert rt["api_key"] == "or-key"
     assert rt["credential_pool"] == "routed-pool"
     assert rt["request_overrides"] == {"extra_body": {"store": False}}
-    assert rt["max_tokens"] is None
+    assert rt.get("max_tokens") is None
 
 
 def test_unrouted_runtime_keeps_parent_pool_and_overrides():

@@ -13,10 +13,10 @@ import pytest
 
 
 class TestRunReferenceSlotMaxTokens:
-    """_run_reference should prefer slot-level max_tokens over preset-level."""
+    """Legacy slot settings cannot override internal advisor task budgets."""
 
-    def test_slot_max_tokens_overrides_preset_level(self):
-        """When slot has max_tokens, it overrides the preset-level cap."""
+    def test_legacy_slot_max_tokens_cannot_override_internal_budget(self):
+        """An explicit internal caller budget wins over a stale user setting."""
         from agent.moa_loop import _run_reference
 
         captured_kwargs: dict = {}

@@ -58,7 +58,7 @@ def test_direct_branch_forwards_request_overrides():
     assert creds["request_overrides"] == {
         "extra_body": {"provider": {"sort": "throughput"}},
     }
-    # Shape parity with the named-provider branch: max_output_tokens present.
+    # Dedicated user cap controls are not part of child credentials.
     assert "max_output_tokens" not in creds
 
 
@@ -93,7 +93,7 @@ def test_explicit_merges_over_runtime_on_provider_alongside_base_url(mock_resolv
     """Precedence on the provider-alongside-base_url path (#98237 interplay):
     explicit delegation.request_overrides merges OVER the named provider's
     runtime overrides — runtime extra_body keys survive unless redefined,
-    explicit top-level keys win, and max_output_tokens is preserved."""
+    explicit top-level keys win, and legacy max_output_tokens is ignored."""
     mock_resolve.return_value = {
         "provider": "custom",
         "base_url": "https://provider-default.example/v1",

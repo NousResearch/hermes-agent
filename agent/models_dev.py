@@ -765,7 +765,7 @@ def get_model_info(provider_id: str, model_id: str, *, allow_network: bool = Fal
     only for unknown ones. ``allow_network`` defaults to False — cost guard and inventory are hot paths.
 
     ``model_overrides`` entries use the SAME canonical schema as every other consumer (``context_window``,
-    ``max_output_tokens``, ``supports_*``, ``model_family``) — they are translated into the catalog shape at
+    ``supports_*``, ``model_family``) — they are translated into the catalog shape at
     this boundary, and sub-dicts (``limit``, ``modalities``) are merged rather than clobbered. See #84482,
     #8731.
     """

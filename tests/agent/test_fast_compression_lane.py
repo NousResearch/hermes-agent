@@ -19,7 +19,7 @@ def _resolve(config, *, provider="ollama", model="qwen3:8b", requested_model=Non
         )
 
 
-def test_explicit_non_reasoning_compression_route_is_certified_and_bounded():
+def test_explicit_non_reasoning_compression_route_is_certified():
     lane = _resolve(
         {
             "provider": "ollama",
@@ -155,7 +155,7 @@ def test_compression_latency_records_delayed_first_provider_chunk():
     assert timings["summary_generation_ms"] >= timings["time_to_first_progress_ms"]
 
 
-def test_certified_fast_lane_sends_the_configured_cap_to_its_provider():
+def test_certified_fast_lane_ignores_legacy_cap_and_preserves_reasoning():
     from agent.auxiliary_client import call_llm
 
     config = {
@@ -217,7 +217,7 @@ def test_uncertified_effective_primary_route_does_not_receive_fast_cap():
     assert "reasoning" not in request.get("extra_body", {})
 
 
-def test_boolean_cap_drift_stays_uncapped_and_preserves_existing_reasoning():
+def test_legacy_boolean_cap_does_not_bypass_route_certification():
     from agent.auxiliary_client import call_llm
 
     config = {
@@ -323,7 +323,7 @@ def test_summary_model_override_cap_uses_the_actual_primary_request():
     assert "max_tokens" not in request
 
 
-def test_fallback_cap_requires_independent_route_certification():
+def test_fallback_reasoning_requires_independent_route_certification():
     from agent.auxiliary_client import _call_fallback_candidate_sync
 
     response = object()

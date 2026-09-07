@@ -1879,6 +1879,16 @@ DEFAULT_CONFIG = {
         # secret values); values are read from the environment at export time.
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
+    "bots": {  # Bot Mode: the agent-to-agent teammate mesh.
+        # Install-wide kill switch for mesh VISIBILITY: true takes every agent out of the
+        # teammate roster at once — nobody is advertised to anybody and no agent can address
+        # another — regardless of each agent's own `private` flag. Read from the SHARED ROOT
+        # config only (a per-profile copy cannot outrank its own profile, which is the point).
+        # Agents keep running and stay fully reachable by the human; only agent-to-agent
+        # visibility is withheld. Per-agent opt-out lives in that profile's
+        # profile.yaml under `ui_meta.hermes-bots.private`.
+        "force_private": False,
+    },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         # Named-profile allowlist for multiplex mode. None = serve all; [] = default only.
         "multiplex_profile_allowlist": None,

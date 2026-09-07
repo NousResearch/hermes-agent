@@ -255,6 +255,26 @@ Clicking a Connections Bot does **not** hop your window onto that machine — st
 
 See [Connecting Desktop to Many Hermes Instances](./multi-connection-desktop.md) for the full multi-connection guide.
 
+## Keeping a Bot out of the mesh
+
+Every Bot is normally a teammate to every other Bot: it appears in their rosters with its title and description, and any of them can message it. Two switches take a Bot out of that mesh while it keeps running and stays fully reachable by you.
+
+- **Per Bot** — in that profile's `profile.yaml`, inside the metadata block the desktop already manages:
+
+  ```yaml
+  ui_meta:
+    hermes-bots:
+      private: true
+  ```
+
+  A private Bot is dropped from every other Bot's roster on this machine and stops resolving as a `message_agent` target — a teammate reaching for it gets the same answer as for a name that does not exist. Rows arriving over the Desktop relay flagged `private` are dropped the same way. The private Bot's own roster is unchanged: it still sees its teammates, and your chats with it work as before.
+
+- **Install-wide** — `bots.force_private: true` in the **root** `config.yaml` (not a profile's) takes every Bot out at once, whatever each one's own flag says. Use it on a machine whose Bots must never talk to each other.
+
+Both flags fail open: only `true`, `yes`, `on`, or `1` count, and anything else leaves the Bot public, so a typo never quietly removes a working teammate.
+
+This is different from **Hide Bot** in the [desktop](./desktop.md), which only tucks a row away in your own sidebar and changes nothing about what other Bots see.
+
 ## Turning it off
 
 Bot Mode is a bundled desktop plugin. Flip it off in **Settings → Plugins → Bots** — the roster, the Routines pane, and the composer middleware unregister live, no restart needed. Your profiles, sessions, and cron jobs are untouched either way; Bot Mode never owns your data, it only renders it.

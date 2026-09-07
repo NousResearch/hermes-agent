@@ -1215,6 +1215,18 @@ agent:
   #     style: "terse"
 
 # =============================================================================
+# Bot Mode
+# =============================================================================
+bots:
+  # Install-wide kill switch for the agent-to-agent teammate mesh. true takes EVERY agent out
+  # of the roster at once — nobody is advertised to anybody, no agent can address another —
+  # regardless of each agent's own `private` flag. Read from this ROOT config only; a copy in
+  # a profile's config.yaml has no effect (a per-profile key cannot outrank its own profile).
+  # Agents keep running and stay fully reachable by you; only agent-to-agent visibility goes.
+  # Per-agent opt-out: set `ui_meta.hermes-bots.private: true` in that profile's profile.yaml.
+  force_private: false
+
+# =============================================================================
 # Gateway Lifecycle
 # =============================================================================
 gateway:

@@ -179,8 +179,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     home = _agent_home(agent)
     try:
         from tools.bot_mode_probe import (
-            BOT_CHAT_TITLE, _handle, _hermes_root, _peers, _profile_name as _self_profile_name, _roster,
-            is_bot_mode_managed,
+            BOT_CHAT_TITLE, _handle, _hermes_root, _peers, _profile_name as _self_profile_name,
+            _visible_roster, is_bot_mode_managed,
         )
         from tools.bot_relay import BOT_CHAT_TURN_ARGS
 
@@ -194,7 +194,10 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _err(f"Bot Mode gate check failed: {exc}")
 
     root, me = _hermes_root(Path(home)), _self_profile_name(Path(home))
-    roster_homes = dict(_roster(root))
+    # Mesh members only: an agent that went private is neither listed nor resolvable as a
+    # target, so `message_agent` reports it the same way it reports a name that does not exist.
+    # Keeps main's name -> home mapping (the live-delivery path needs the target's profile dir).
+    roster_homes = dict(_visible_roster(root))
     roster = list(roster_homes)
     peers = _peers(root)
     teammates = [_handle(n) for n in roster if n != me]

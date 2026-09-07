@@ -99,6 +99,60 @@ def _bots_meta(data: dict | None) -> dict | None:
     return bots if isinstance(bots, dict) else None
 
 
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _boolish(value: object) -> bool:
+    """Permissive truth for a hand-edited YAML flag; anything unrecognised is False.
+
+    YAML hands back three shapes for what a human types as "on": ``true``/``yes`` become a
+    bool, ``1`` an int, and a quoted ``"true"`` a string. Accept all three, and fail OPEN on
+    anything else — a typo must never quietly remove an agent from the mesh.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUTHY
+    return value is True or value == 1
+
+
+def _force_private(root: Path) -> bool:
+    """``bots.force_private`` from the SHARED root config — the install-wide override.
+
+    Read from ``<root>/config.yaml`` rather than the active profile's, because a per-profile
+    key cannot outrank its own profile: the point of this switch is to take every agent out of
+    the mesh at once regardless of what each one asked for.
+    """
+    cfg = _read_yaml_dict(root / "config.yaml", "force_private") or {}
+    bots = cfg.get("bots")
+    return _boolish(bots.get("force_private")) if isinstance(bots, dict) else False
+
+
+def _is_private(profile_dir: Path) -> bool:
+    """True when this agent is OUT of the teammate mesh: not advertised to other agents and
+    not addressable by them.
+
+    Private is about agent-to-agent visibility only. The agent keeps running, keeps its own
+    tools, and stays fully reachable by the human on Discord/desktop — it simply stops being a
+    teammate other agents can see or message. The install-wide ``bots.force_private`` outranks
+    this per-agent choice; ``_visible_roster`` applies it once for the whole roster.
+    """
+    meta = _bots_meta(_read_yaml_dict(profile_dir / "profile.yaml", "hermes-bots")) or {}
+    return _boolish(meta.get("private"))
+
+
+def _visible_roster(root: Path) -> list[tuple[str, Path]]:
+    """``_roster`` minus agents that left the mesh.
+
+    Deliberately NOT folded into ``_roster``: that one also feeds ``_any_managed``, and
+    filtering there would make an all-private install look unmanaged and switch Bot Mode off
+    for everyone — including the human's own access.
+    """
+    # Install-wide kill switch: nobody is a teammate, so answer it once for the whole roster
+    # rather than re-reading the root config once per row.
+    if _force_private(root):
+        return []
+    return [(name, d) for name, d in _roster(root) if not _is_private(d)]
+
+
 def _is_bot_managed(profile_dir: Path) -> bool:
     return _bots_meta(_read_yaml_dict(profile_dir / "profile.yaml", "hermes-bots")) is not None
 
@@ -196,7 +250,8 @@ def _build_section(home: Path) -> str:
     if not _any_managed(root):
         return ""
 
-    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name != me]
+    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d))
+                    for name, d in _visible_roster(root) if name != me]
     roster_block = "\n".join(roster_lines) or "- (no teammates yet)"
 
     return (

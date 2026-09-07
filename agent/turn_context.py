@@ -1028,10 +1028,13 @@ def build_api_messages(
     Prompt-cache invariant: historical user/assistant rows replay their ``api_content``
     sidecar (the exact bytes sent live) so the prefix stays byte-stable; the current
     user turn reuses the prologue's stamp (or composes live when a caller bypassed the
-    prologue). Ephemeral context (prefetch, ``pre_llm_call`` hooks,
+    prologue). Durable API-only context (prefetch, ``pre_llm_call`` hooks,
     ``ephemeral_system_prompt``) is added at API time only — ``messages`` stays untouched
     beyond the sidecar stamp, and the system prompt is built ONCE per session and
-    replayed verbatim."""
+    replayed verbatim. Volatile ``ephemeral_user_context`` is the privacy-motivated
+    exception: it is never replayed historically, so the next request can reuse the
+    older stable prefix but must reprocess the immediately preceding location-bearing
+    turn."""
     from agent.agent_runtime_helpers import fill_empty_non_final_wire_payload
     from agent.conversation_loop import _clone_message_for_send
 

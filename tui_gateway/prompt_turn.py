@@ -400,7 +400,7 @@ def _run_post_turn_followups(
         _notif_handle_ready(
             sid, session, [event for event, _text in drained],
             session.setdefault("_notification_emitted", set()), process_registry,
-            format_process_notification, deferred)
+            format_process_notification, deferred, owned=True)
         for event in deferred:
             process_registry.completion_queue.put(event)
     except Exception as _drain_exc:

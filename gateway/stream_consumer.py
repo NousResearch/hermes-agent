@@ -50,6 +50,7 @@ _TOOL_PROGRESS = object()
 _FINAL_TEXT = object()
 _FLUSH = object()
 _APPROVAL_BOUNDARY = object()
+_RELEASE_CONTENT = object()
 _REOPEN_SEED = object()
 _FUTURE_TYPES = (asyncio.Future, concurrent.futures.Future)
 
@@ -84,6 +85,7 @@ class _Tick:
     got_flush: bool = False
     flush_event: Any = None
     got_reopen_seed: bool = False
+    got_release_content: bool = False
     approval_boundary: Optional[tuple] = None  # (future, cancelled_flag)
     commentary_text: Optional[str] = None
     # Set by _push_update for _finalize_turn / _end_segment.
@@ -531,8 +533,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._quarantine_content_delivery = True
 
     def release_content_delivery(self) -> None:
-        """Release quarantined content after the completed response is approved."""
-        self._quarantine_content_delivery = False
+        """Queue an ordered release after already-enqueued content is examined."""
+        self._queue.put(_RELEASE_CONTENT)
 
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
@@ -553,6 +555,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     continue
                 if tick.got_reopen_seed:
                     await self._eager_reopen_seed()
+                    continue
+                if tick.got_release_content:
+                    self._quarantine_content_delivery = False
                     continue
 
                 if tick.got_done:
@@ -651,6 +656,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 return tick
             if item is _REOPEN_SEED:
                 tick.got_reopen_seed = True
+                return tick
+            if item is _RELEASE_CONTENT:
+                tick.got_release_content = True
                 return tick
             kind = item[0] if isinstance(item, tuple) and item else None
             if kind is _FINAL_TEXT:

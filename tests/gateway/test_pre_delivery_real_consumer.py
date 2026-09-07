@@ -99,6 +99,27 @@ async def test_release_then_finish_delivers_only_approved_rewrite():
 
 
 @pytest.mark.asyncio
+async def test_release_is_ordered_after_queued_commentary():
+    adapter = _adapter()
+    consumer = GatewayStreamConsumer(
+        adapter, "chat-1", StreamConsumerConfig(transport="auto", chat_type="dm", cursor=""),
+    )
+    consumer.quarantine_content_delivery()
+    task = asyncio.create_task(consumer.run())
+    # Queue all events before the consumer gets a chance to drain.  The release
+    # must not flip a shared flag ahead of the earlier commentary event.
+    consumer.on_delta("unvalidated draft")
+    consumer.on_commentary("unvalidated commentary")
+    consumer.release_content_delivery()
+    consumer.finish("approved final")
+    await task
+
+    assert adapter.draft_calls == []
+    adapter.send.assert_awaited_once()
+    assert adapter.send.call_args.kwargs["content"] == "approved final"
+
+
+@pytest.mark.asyncio
 async def test_quarantine_holds_stream_is_message_transport():
     adapter = _adapter()
     adapter.draft_stream_is_message = True

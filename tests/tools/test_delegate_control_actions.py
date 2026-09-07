@@ -642,7 +642,7 @@ def test_spawn_local_stamps_owner_task_id_and_event_carries_it(monkeypatch):
     """spawn_local(owner_task_id=...) survives to the completion event, so a
     real subagent-spawned process (collapsed task_id) is suppressed on
     drain. Exercises the actual spawn -> _move_to_finished -> drain path."""
-    import time as _time
+    import sys
 
     import hermes_cli.config as _cfg
     from tools.process_registry import ProcessRegistry
@@ -650,38 +650,37 @@ def test_spawn_local_stamps_owner_task_id_and_event_carries_it(monkeypatch):
     monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
     reg = ProcessRegistry()
     session = reg.spawn_local(
-        command="echo owner-stamp-e2e",
+        command=f'"{sys.executable}" -c "input(); print(\'owner-stamp-e2e\')"',
         task_id="default",
         owner_task_id="sa-9-supp0006",
     )
     session.notify_on_complete = True
     assert session.owner_task_id == "sa-9-supp0006"
-    deadline = _time.time() + 15
-    while not session.exited and _time.time() < deadline:
-        _time.sleep(0.05)
-    assert session.exited, "test process should exit promptly"
-    _time.sleep(0.3)  # let the reader thread enqueue the completion event
+    # Do not let a fast child exit before notification admission is configured.
+    reg.write_stdin(session.id, "release\n")
+    event = reg.completion_queue.get(timeout=15)
+    reg.completion_queue.put(event)
     assert reg.drain_notifications() == []
 
 
 def test_spawn_local_without_owner_defaults_to_task_id(monkeypatch):
     """Backward compat: callers that don't pass owner_task_id behave exactly
     as before (owner falls back to task_id; parent-owned still delivers)."""
-    import time as _time
+    import sys
 
     import hermes_cli.config as _cfg
     from tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
     reg = ProcessRegistry()
-    session = reg.spawn_local(command="echo parent-e2e", task_id="default")
+    session = reg.spawn_local(
+        command=f'"{sys.executable}" -c "input(); print(\'parent-e2e\')"', task_id="default",
+    )
     session.notify_on_complete = True
     assert session.owner_task_id == "default"
-    deadline = _time.time() + 15
-    while not session.exited and _time.time() < deadline:
-        _time.sleep(0.05)
-    assert session.exited
-    _time.sleep(0.3)
+    reg.write_stdin(session.id, "release\n")
+    event = reg.completion_queue.get(timeout=15)
+    reg.completion_queue.put(event)
     results = reg.drain_notifications()
     assert len(results) == 1
     assert "completed normally" in results[0][1]

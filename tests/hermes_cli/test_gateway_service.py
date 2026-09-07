@@ -22,6 +22,64 @@ from gateway.restart import (
 )
 
 
+class TestGatewayServiceWrappers:
+    def test_user_systemd_unit_uses_executable_wrapper(self, tmp_path, monkeypatch):
+        wrapper = tmp_path / "preflight"
+        wrapper.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        monkeypatch.setattr(
+            gateway_cli, "read_raw_config", lambda: {"gateway": {"service_wrapper": str(wrapper)}}
+        )
+
+        unit = gateway_cli.generate_systemd_unit()
+
+        assert f"ExecStart={wrapper} " in unit
+        assert " -m hermes_cli.main gateway run" in unit
+        assert "--replace" not in unit
+
+    def test_systemd_remaps_wrapper_before_validation(self, tmp_path, monkeypatch):
+        current_home = tmp_path / "root"
+        target_home = tmp_path / "hermes"
+        local_wrapper = current_home / ".local/bin/preflight"
+        remapped_wrapper = target_home / ".local/bin/preflight"
+        remapped_wrapper.parent.mkdir(parents=True)
+        remapped_wrapper.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+        remapped_wrapper.chmod(0o755)
+        monkeypatch.setattr(Path, "home", lambda: current_home)
+        monkeypatch.setattr(
+            gateway_cli, "read_raw_config", lambda: {"gateway": {"service_wrapper": str(local_wrapper)}}
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity", lambda run_as_user=None: ("hermes", "hermes", str(target_home))
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True)
+
+        assert f"ExecStart={remapped_wrapper} " in unit
+        assert str(local_wrapper) not in unit
+
+    def test_launchd_uses_only_safe_executable_wrapper(self, tmp_path, monkeypatch):
+        wrapper = tmp_path / "preflight"
+        wrapper.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        monkeypatch.setattr(
+            gateway_cli, "read_raw_config", lambda: {"gateway": {"service_wrapper": str(wrapper)}}
+        )
+        assert f"<string>{wrapper}</string>" in gateway_cli.generate_launchd_plist()
+
+        wrapper.chmod(0o644)
+        assert str(wrapper) not in gateway_cli.generate_launchd_plist()
+
+    def test_relative_and_newline_wrapper_paths_are_ignored(self, monkeypatch):
+        for wrapper in ("scripts/preflight", "/opt/preflight\nBAD=1"):
+            monkeypatch.setattr(
+                gateway_cli, "read_raw_config", lambda wrapper=wrapper: {"gateway": {"service_wrapper": wrapper}}
+            )
+            plist = gateway_cli.generate_launchd_plist()
+            assert wrapper not in plist
+            assert "<string>hermes_cli.main</string>" in plist
+
+
 class TestUserSystemdPrivateSocketPreflight:
     def test_preflight_accepts_private_socket_without_dbus_bus(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "_ensure_user_systemd_env", lambda: None)

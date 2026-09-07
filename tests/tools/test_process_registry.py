@@ -2424,6 +2424,34 @@ class TestSystemdCgroupIsolation:
         assert "XDG_RUNTIME_DIR" not in os.environ
         assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
 
+    def test_probe_uses_portable_payload_not_hardcoded_bin_true(
+        self, registry, monkeypatch
+    ):
+        """The probe payload must not hardcode ``/bin/true``: NixOS has no FHS
+        ``/bin`` (only ``sh``), so an absolute ``/bin/true`` probe fails there for
+        a reason unrelated to scope availability and disables restart-safe cron
+        dispatch on every scheduled fire (#105365). The payload is
+        ``/bin/sh -c 'exit 0'``, which exists on every Linux."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0, raising=False)
+        probe_calls = []
+
+        def fake_run(*args, **kwargs):
+            probe_calls.append(args)
+            return subprocess.CompletedProcess(args=args[0], returncode=0)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is True
+        probe_argv = probe_calls[0][0]
+        sep_idx = probe_argv.index("--")
+        payload = probe_argv[sep_idx + 1 :]
+        assert "/bin/true" not in payload, probe_argv
+        assert payload[:3] == ["/bin/sh", "-c", "exit 0"], probe_argv
+
     def test_systemd_scope_first_probe_is_serialized(self, monkeypatch):
         """Concurrent first-use callers must wait for one definitive probe.
 

@@ -127,6 +127,41 @@ def _coerce_port(value: Any, *, default: int = _DEFAULT_PORT) -> int:
         return default
 
 
+def _extract_teams_quoted_reply(html_content: str) -> str:
+    """Pull the quoted author + text out of a Bot Framework quote-reply attachment.
+
+    Teams renders a quoted reply as roughly:
+        <blockquote itemscope itemtype="http://schema.skype.com/Reply">
+          <strong itemprop="mri" itemid="...">Author Name</strong>
+          <span itemprop="time" ...>...</span>
+          <p itemprop="preview">Original message text</p>
+        </blockquote>
+
+    Exact markup varies by client, so this is deliberately tolerant: pull the
+    blockquote block, strip remaining tags, and collapse whitespace. Returns
+    "" if nothing usable is found — callers should no-op rather than surface
+    a garbled string.
+    """
+    import re
+
+    match = re.search(
+        r"<blockquote[^>]*itemtype=\"[^\"]*schema\.skype\.com/Reply\"[^>]*>(.*?)</blockquote>",
+        html_content,
+        re.IGNORECASE | re.DOTALL,
+    )
+    block = match.group(1) if match else html_content
+    author_match = re.search(r"<strong[^>]*>(.*?)</strong>", block, re.IGNORECASE | re.DOTALL)
+    author = html.unescape(re.sub(r"<[^>]+>", "", author_match.group(1))).strip() if author_match else ""
+    # Drop the <strong> (author) and <span> (timestamp) tags, then strip the rest.
+    body = re.sub(r"<strong[^>]*>.*?</strong>", "", block, flags=re.IGNORECASE | re.DOTALL)
+    body = re.sub(r"<span[^>]*itemprop=\"time\"[^>]*>.*?</span>", "", body, flags=re.IGNORECASE | re.DOTALL)
+    body_text = html.unescape(re.sub(r"<[^>]+>", " ", body))
+    body_text = re.sub(r"\s+", " ", body_text).strip()
+    if not body_text:
+        return ""
+    return f"{author}: {body_text}" if author else body_text
+
+
 class _StaticAccessTokenProvider:
     """Minimal token-provider shim so outbound Graph delivery can reuse the shared client."""
 
@@ -857,6 +892,27 @@ class TeamsAdapter(BasePlatformAdapter):
         if "<at>" in text:
             import re
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+
+        # Quoted replies: when a user quote-replies to an earlier message,
+        # Bot Framework does NOT put the quoted content in activity.text —
+        # only the new reply text lands there. The quote itself is carried
+        # in a text/html attachment as a <blockquote itemtype="...Reply">
+        # block (author + original text). Without this, Rumi silently had
+        # no visibility into what was quoted — it only ever saw the new
+        # reply in isolation. Surface it as a prefix so downstream context
+        # (and the model) sees what was quoted.
+        quoted_html = None
+        for att in getattr(activity, "attachments", None) or []:
+            content_type = (getattr(att, "content_type", None) or "").lower()
+            if content_type == "text/html":
+                content = getattr(att, "content", None)
+                if isinstance(content, str) and "schema.skype.com/Reply" in content:
+                    quoted_html = content
+                    break
+        if quoted_html:
+            quoted_text = _extract_teams_quoted_reply(quoted_html)
+            if quoted_text:
+                text = f"[Replying to: \"{quoted_text}\"]\n{text}" if text else f"[Replying to: \"{quoted_text}\"]"
 
         # Determine chat type from conversation
         conv = activity.conversation

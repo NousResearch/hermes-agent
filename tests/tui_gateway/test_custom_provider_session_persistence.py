@@ -561,18 +561,73 @@ class TestRoomPlumbingRuntimeOverrides:
 
 # --- Regression: bot DM stuck on a stale provider pin (GH #89497 class) ------
 #
-# Bot-Mode canonical chats (the ONE forever DM per bot) and room plumbing
-# sessions are plugin-owned scratch conversations. They are created with the
-# explicit ``follow_profile_config`` contract so resume ALWAYS rebuilds from
-# the member profile's CURRENT config — restoring the stored model/provider
-# pin from an old row is what left bot DMs stuck on a stale provider (e.g.
-# "out of Nous credits" after the profile was switched to ollama-cloud) while
-# the same bot worked fine in rooms. Normal 1:1 user chats keep the
-# stored-runtime restore (opening an older chat must show the model it
-# actually used).
+# Room plumbing always follows the member profile. Canonical Bot Chats follow it
+# by default, but a composer pick remains chat-scoped until a later profile model
+# edit supersedes it. Normal 1:1 user chats always keep their stored runtime.
 
 
 class TestFollowProfileConfigRuntimeOverrides:
+    def test_composer_override_survives_while_profile_model_is_unchanged(self, monkeypatch):
+        """An explicit Bot Chat pick outranks the unchanged profile default."""
+        import tui_gateway.server as server
+
+        monkeypatch.setattr(server, "_config_model_target", lambda: ("profile/default", "nous"))
+        row = {
+            "title": "Bot Chat",
+            "model": "openai/gpt-5.6-luna-pro",
+            "model_config": json.dumps(
+                {
+                    "model": "openai/gpt-5.6-luna-pro",
+                    "provider": "nous",
+                    "reasoning_config": {"effort": "xhigh"},
+                    "follow_profile_config": True,
+                    "composer_override_profile": {"model": "profile/default", "provider": "nous"},
+                }
+            ),
+        }
+
+        overrides = server._stored_session_runtime_overrides(row)
+
+        assert overrides["model_override"]["model"] == "openai/gpt-5.6-luna-pro"
+        assert overrides["reasoning_config_override"] == {"effort": "xhigh"}
+
+    def test_profile_model_change_supersedes_composer_override_on_resume_and_live(self, monkeypatch):
+        """Changing the Bot profile invalidates both stored and live chat pins."""
+        import tui_gateway.server as server
+
+        monkeypatch.setattr(server, "_config_model_target", lambda: ("profile/new-default", "nous"))
+        row = {
+            "title": "Bot Chat",
+            "model": "openai/gpt-5.6-luna-pro",
+            "model_config": json.dumps(
+                {
+                    "model": "openai/gpt-5.6-luna-pro",
+                    "provider": "nous",
+                    "follow_profile_config": True,
+                    "composer_override_profile": {"model": "profile/old-default", "provider": "nous"},
+                }
+            ),
+        }
+        assert server._stored_session_runtime_overrides(row) == {}
+
+        session = {
+            "agent": types.SimpleNamespace(model="openai/gpt-5.6-luna-pro", provider="nous"),
+            "model_override": {"model": "openai/gpt-5.6-luna-pro", "provider": "nous"},
+            "composer_override_profile": {"model": "profile/old-default", "provider": "nous"},
+            "config_model_seen": ("profile/old-default", "nous"),
+        }
+        apply_switch = MagicMock()
+        monkeypatch.setattr(server, "_apply_model_switch", apply_switch)
+
+        server._sync_agent_model_with_config("sid", session)
+
+        assert "model_override" not in session
+        assert session["composer_override_profile"] is None
+        apply_switch.assert_called_once_with(
+            "sid", session, "profile/new-default --provider nous",
+            confirm_expensive_model=True, pin_session_override=False, persist_override=False,
+        )
+
     def test_marked_row_returns_no_overrides(self):
         """A row carrying the follow_profile_config marker never restores a
         stored provider pin — resume falls back to the profile's CURRENT

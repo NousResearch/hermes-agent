@@ -230,11 +230,13 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
     # Same ``_branched_from`` marker the TUI /branch uses (list_sessions_rich + sidebar nesting).
     if parent_session_id := session.get("parent_session_id"):
         model_config["_branched_from"] = parent_session_id
-    # Bot-Mode canonical chats / room plumbing are plugin-owned scratch conversations whose runtime must ALWAYS follow
-    # the member profile's CURRENT config, never the provider pinned at first write (see _stored_session_runtime_overrides).
+    # Room plumbing always follows the member profile. Canonical Bot Chats do too until the composer records an
+    # explicit chat-scoped pick plus the profile model it diverged from (see _stored_session_runtime_overrides).
     for flag in ("room_plumbing", "follow_profile_config"):
         if session.get(flag):
             model_config[flag] = True
+    if isinstance(composer_profile := session.get("composer_override_profile"), dict):
+        model_config["composer_override_profile"] = composer_profile
     return row_model, model_config
 
 

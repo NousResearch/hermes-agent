@@ -109,7 +109,10 @@ def test_apply_model_switch_does_not_leak_process_env():
         "HERMES_INFERENCE_PROVIDER",
     )
 
-    sess_b = {"agent": _FakeAgent(), "session_key": "k-B", "model_override": None}
+    sess_b = {
+        "agent": _FakeAgent(), "session_key": "k-B", "model_override": None,
+        "follow_profile_config": True,
+    }
     sess_a = {"agent": _FakeAgent(), "session_key": "k-A", "model_override": None}
 
     with (
@@ -122,6 +125,7 @@ def test_apply_model_switch_does_not_leak_process_env():
         patch("tui_gateway.server._restart_slash_worker"),
         patch("tui_gateway.server._session_info", return_value={}),
         patch("tui_gateway.server._persist_model_switch") as mock_persist,
+        patch("tui_gateway.server._config_model_target", return_value=("minimax/m3", "minimax")),
     ):
         before = {k: os.environ.get(k) for k in env_keys}
         result = server._apply_model_switch("sidB", sess_b, "glm-5.1")
@@ -135,6 +139,7 @@ def test_apply_model_switch_does_not_leak_process_env():
     # Target session recorded a per-session override.
     assert sess_b["model_override"]["model"] == "zai/glm-5.1"
     assert sess_b["model_override"]["provider"] == "zai"
+    assert sess_b["composer_override_profile"] == {"model": "minimax/m3", "provider": "minimax"}
     # The switched agent mutated in place.
     assert sess_b["agent"].model == "zai/glm-5.1"
     # Sibling session is completely untouched.

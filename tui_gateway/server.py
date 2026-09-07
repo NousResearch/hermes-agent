@@ -1460,15 +1460,21 @@ def _parse_model_config(raw, *, quiet: bool = False) -> dict:
 def _stored_session_runtime_overrides(row: dict | None) -> dict:
     """Runtime fields persisted with a stored session (model column, ``billing_provider``, JSON ``model_config``):
     resume restores the model/provider/reasoning THAT chat used, not the global pick. Plugin-owned Bot-Mode
-    sessions are exempt and rebuild from the member profile's CURRENT config (a stale provider pin left
-    room bots "out of Nous credits" after a profile switch); signals: ``room_plumbing`` /
-    ``follow_profile_config`` markers, the legacy hidden + "Group:" title, the title exactly "Bot Chat"."""
+    sessions normally rebuild from the member profile's CURRENT config (a stale provider pin left room bots
+    "out of Nous credits" after a profile switch). A canonical Bot Chat may instead restore an explicit
+    composer pick while the profile model it diverged from remains unchanged."""
     if not row:
         return {}
     model_config = _parse_model_config(row.get("model_config"), quiet=True)
     _row_title = str(row.get("title") or "").strip()
-    if (model_config.get("room_plumbing") or (row.get("hidden") and _row_title.startswith("Group:"))
-            or model_config.get("follow_profile_config") or _row_title == "Bot Chat"):
+    room_plumbing = model_config.get("room_plumbing") or (row.get("hidden") and _row_title.startswith("Group:"))
+    follows_profile = model_config.get("follow_profile_config") or _row_title == "Bot Chat"
+    composer_profile = model_config.get("composer_override_profile")
+    composer_profile_matches = isinstance(composer_profile, dict) and (
+        str(composer_profile.get("model") or "").strip(),
+        str(composer_profile.get("provider") or "").strip(),
+    ) == _config_model_target()
+    if room_plumbing or (follows_profile and not composer_profile_matches):
         return {}
     overrides: dict = {}
     field = lambda k: str(model_config.get(k) or "").strip()
@@ -1549,6 +1555,10 @@ def _persist_live_session_runtime(session: dict | None) -> None:
     try:
         row = db.get_session(session_key) or {}
         model_config = _runtime_model_config(agent, _parse_model_config(row.get("model_config")))
+        if isinstance(composer_profile := session.get("composer_override_profile"), dict):
+            model_config["composer_override_profile"] = composer_profile
+        elif "composer_override_profile" in session:
+            model_config.pop("composer_override_profile", None)
         if (tier_override := session.get("create_service_tier_override")) is not None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"

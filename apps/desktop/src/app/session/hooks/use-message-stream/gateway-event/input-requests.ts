@@ -35,9 +35,6 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     // indefinitely and re-focusing it could never recover (the event is
     // gone). Parking it per-session lets the user answer once they switch
     // over; the inline ClarifyTool reads the active session's entry.
-    if (sessionId && sessionInterrupted(sessionId)) {
-      return true
-    }
 
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
     const question = typeof payload?.question === 'string' ? payload.question : ''

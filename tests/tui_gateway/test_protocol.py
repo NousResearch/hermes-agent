@@ -1221,9 +1221,7 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
 
     with (
         patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_platform", None),
-        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1",

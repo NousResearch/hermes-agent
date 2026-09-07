@@ -14,11 +14,10 @@ from agent.skill_preprocessing import load_skills_config as _load_skills_config,
 
 logger = logging.getLogger(__name__)
 
-_skill_commands: Dict[str, Dict[str, Any]] = {}
-_skill_commands_platform: Optional[str] = None
-_skill_commands_home: Optional[str] = None
-# Guards the (map, platform-tag, home-tag) triple so publication and the
-# freshness lookup always see a consistent snapshot. Scanning stays outside.
+_skill_commands_by_key: Dict[tuple, Dict[str, Dict[str, Any]]] = {}
+# Multi-slot cache: maps (platform, home) to skill commands. Guards publication
+# and freshness lookup so each distinct identity (platform x profile) is scanned
+# once and memoized. Scanning stays outside the lock.
 _publish_lock = threading.Lock()
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
@@ -132,7 +131,8 @@ def _resolve_skill_commands_platform() -> Optional[str]:
         resolved_platform = os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM")
     except Exception:
         resolved_platform = os.getenv("HERMES_PLATFORM")
-    return resolved_platform or None
+    # Normalize empty-string to None so both spellings share one cache slot (#104849).
+    return resolved_platform if resolved_platform else None
 
 
 def _resolve_skill_commands_home() -> str:
@@ -365,9 +365,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Builds a local map and publishes once at the end: writing straight into the
     global exposed partial results to overlapping scans, which then logged
     bogus "already claimed" collisions against their own incumbents."""
-    global _skill_commands, _skill_commands_platform, _skill_commands_home
-    platform = _resolve_skill_commands_platform()
-    home = _resolve_skill_commands_home()
+    key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home())
     # Build into a local map and publish once, at the end. Writing straight into the global made a scan's
     # partial results visible to everything else in the process: a second, overlapping scan deduped against
     # its own (empty) ``seen_names`` but collided against the first scan's already- published slugs, logging
@@ -398,18 +396,11 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     continue
     except Exception:
         pass
-    # Publish map + tags as ONE step: a reader landing between bare assignments
-    # could accept the new map under a stale platform tag and serve another
-    # platform's disabled-skill view.
+    # Publish the scanned map atomically: a reader must see a consistent
+    # (key, map) pair. Only the publish/lookup pair is locked; the scan above
+    # (file I/O, deferred imports) stays outside it (#14536, #74574).
     with _publish_lock:
-        # Bare assignments are not atomic together: a reader landing between them sees the NEW map still
-        # carrying the OLD platform tag, and if that stale tag happens to match its own platform it accepts
-        # the map without rescanning — serving another platform's disabled-skill view, exactly the leak
-        # #14536 closed. Only the publish/lookup pair is locked; the scan above (file I/O, deferred imports)
-        # stays outside it.
-        _skill_commands = commands
-        _skill_commands_platform = platform
-        _skill_commands_home = home
+        _skill_commands_by_key[key] = commands
     return commands
 
 
@@ -419,16 +410,16 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     active profile's home (Desktop profile switch) changes, so each sees its
     own ``platform_disabled`` / ``external_dirs`` view.
 
-    See #14536, #88023.
+    See #14536, #88023, #104849.
     """
-    current_platform = _resolve_skill_commands_platform()
-    current_home = _resolve_skill_commands_home()
+    key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home())
     with _publish_lock:
-        commands = _skill_commands
-        is_fresh = bool(commands) and (_skill_commands_platform, _skill_commands_home) == (current_platform, current_home)
+        cached = _skill_commands_by_key.get(key)
+    if cached is not None:
+        return cached
     # Scan outside the lock — file I/O and deferred imports; concurrent scans
     # are safe since each builds its own map.
-    return commands if is_fresh else scan_skill_commands()
+    return scan_skill_commands()
 
 
 def diff_command_snapshots(before: Dict[str, str], after: Dict[str, str]) -> Dict[str, Any]:
@@ -452,7 +443,13 @@ def reload_skills() -> Dict[str, Any]:
     / ``removed`` / ``unchanged`` / ``total`` / ``commands``; descriptions are the
     full frontmatter field). Does NOT invalidate the skills system-prompt cache:
     skills are called by name, so ``/reload-skills`` costs no cache reset."""
-    before = command_snapshot(_skill_commands)
+    key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home())
+    with _publish_lock:
+        before_commands = _skill_commands_by_key.get(key, {})
+        # Clear the entire multi-slot cache: a skill edit could affect any
+        # platform/profile combination, so every cached identity must rescan.
+        _skill_commands_by_key.clear()
+    before = command_snapshot(before_commands)
     new_commands = scan_skill_commands()
     result = diff_command_snapshots(before, command_snapshot(new_commands))
     result["commands"] = len(new_commands)

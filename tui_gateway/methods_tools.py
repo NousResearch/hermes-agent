@@ -397,7 +397,7 @@ def _catalog_plugin_commands(cat: _Catalog) -> None:
 def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> None:
     """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them)."""
     usage, origin_of = _skill_usage_lookup()
-    for k, info in sorted(_tools_mod("agent.skill_commands").scan_skill_commands().items()):
+    for k, info in sorted(_tools_mod("agent.skill_commands").get_skill_commands().items()):
         cat.pairs.append([k, _clip(str(info.get("description", "Skill")))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
@@ -546,7 +546,7 @@ def _dispatch_bundle(rid, params, session, name, arg):
 def _dispatch_skill(rid, params, session, name, arg):
     with contextlib.suppress(Exception):
         sc = _tools_mod("agent.skill_commands")
-        cmds, key = sc.scan_skill_commands(), f"/{name}"
+        cmds, key = sc.get_skill_commands(), f"/{name}"
         if key in cmds:
             msg = sc.build_skill_invocation_message(key, arg, task_id=session.get("session_key", "") if session else "")
             if msg:  # UIs render `display`, never `message`.

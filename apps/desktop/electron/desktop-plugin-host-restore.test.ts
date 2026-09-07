@@ -11,6 +11,7 @@ import {
   recordStoppedDesktopPluginHost,
   relaunchDesktopPluginHost,
   restoreStoppedDesktopPluginHosts,
+  stopAndRecordPluginHost,
   STOPPED_PLUGIN_HOSTS_SCHEMA_VERSION,
   stoppedPluginHostsPath
 } from './desktop-plugin-host-restore'
@@ -224,5 +225,44 @@ describe('record + restore', () => {
     )
     assert.deepEqual(await restoreStoppedDesktopPluginHosts(HOME, { ...deps, isWindows: false }), { relaunched: [], skipped: [] })
     assert.equal(files.has(stoppedPluginHostsPath(HOME)), true, 'a non-Windows call leaves the ledger alone')
+  })
+})
+
+describe('stopAndRecordPluginHost', () => {
+  it('compensates a stopped plugin host when its recovery record cannot be persisted', async () => {
+    const host = { pid: 42 }
+    const compensated: unknown[] = []
+
+    assert.equal(
+      await stopAndRecordPluginHost({
+        terminate: async () => ({ terminated: true, host }),
+        record: () => false,
+        compensate: async value => {
+          compensated.push(value)
+
+          return true
+        }
+      }),
+      false
+    )
+    assert.deepEqual(compensated, [host])
+  })
+
+  it('reports when both the plugin-host recovery record and compensating restart fail', async () => {
+    const host = { pid: 42 }
+    const failures: unknown[] = []
+
+    assert.equal(
+      await stopAndRecordPluginHost({
+        terminate: async () => ({ terminated: true, host }),
+        record: () => false,
+        compensate: async () => false,
+        onRecoveryFailure: value => {
+          failures.push(value)
+        }
+      }),
+      false
+    )
+    assert.deepEqual(failures, [host])
   })
 })

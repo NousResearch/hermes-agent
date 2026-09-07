@@ -1,3 +1,17 @@
+/**
+ * windows-update-orchestration.ts
+ *
+ * One thing: the updater handoff as a transaction. Spawning a detached updater
+ * is a commit point — after it, this Desktop is no longer the owner of its own
+ * install — so the spawn, the liveness observation, the authentication, the
+ * commit and the compensating restore have to be sequenced in one place rather
+ * than re-derived by each caller.
+ *
+ * Deliberately free of Electron, filesystem and process imports: the callers
+ * (main.ts for bootstrap recovery, windows-update-apply.ts for the in-app
+ * update) supply every effect, so the ordering is provable on fakes.
+ */
+
 export interface UpdaterHandoffObservation {
   ok: boolean
   message?: string
@@ -65,31 +79,4 @@ export function requireUpdaterHandoff<T>(result: UpdaterHandoffResult<T>): T {
   }
 
   return result.value
-}
-
-export async function stopAndRecordPluginHost<THost>(deps: {
-  terminate: () => Promise<{ terminated: boolean; host?: THost | null }>
-  record: (host: THost) => boolean
-  compensate: (host: THost) => Promise<boolean>
-  onRecoveryFailure?: (host: THost) => void
-}): Promise<boolean> {
-  const outcome = await deps.terminate()
-
-  if (!outcome.terminated) {
-    return false
-  }
-
-  if (!outcome.host) {
-    return true
-  }
-
-  if (deps.record(outcome.host)) {
-    return true
-  }
-
-  if (!(await deps.compensate(outcome.host))) {
-    deps.onRecoveryFailure?.(outcome.host)
-  }
-
-  return false
 }

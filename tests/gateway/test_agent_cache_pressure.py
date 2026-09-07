@@ -97,6 +97,60 @@ class TestMemoryBudgetResolution:
 
         assert resolve_memory_high_mb("auto") is None
 
+    def test_auto_budget_fraction_scales_the_auto_budget(self, monkeypatch):
+        """Operator knob: agent.agent_cache.auto_budget_fraction targets a lower
+        share of the limit so proactive eviction triggers earlier (memory-poor
+        hosts where 0.65 leaves the shutdown flush no headroom)."""
+        import gateway.agent_cache_pressure as acp
+
+        limit_mb = 10 * 1024
+        monkeypatch.setattr(acp, "_cgroup_limit_bytes", lambda: limit_mb * 1024 * 1024)
+
+        default_budget = resolve_memory_high_mb("auto")
+        tighter = resolve_memory_high_mb("auto", 0.40)
+        looser = resolve_memory_high_mb("auto", 0.90)
+
+        assert default_budget is not None
+        assert tighter is not None and looser is not None
+        assert tighter == int(limit_mb * 1024 * 1024 * 0.40 / (1024 * 1024))
+        assert looser == int(limit_mb * 1024 * 1024 * 0.90 / (1024 * 1024))
+        assert tighter < default_budget < looser
+
+    def test_auto_budget_fraction_out_of_range_falls_back_to_default(self, monkeypatch):
+        """A bad operator value (0, negative, >=1, non-numeric) must not be
+        silently trusted — fall back to the historical default."""
+        import gateway.agent_cache_pressure as acp
+
+        limit_mb = 10 * 1024
+        monkeypatch.setattr(acp, "_cgroup_limit_bytes", lambda: limit_mb * 1024 * 1024)
+
+        default_budget = resolve_memory_high_mb("auto")
+        for bad in (0, -0.5, 1, 1.5, "0.4", True, None, [0.4]):
+            assert resolve_memory_high_mb("auto", bad) == default_budget, bad
+
+    def test_bounds_honor_auto_budget_fraction_config(self):
+        """agent.agent_cache.auto_budget_fraction flows through
+        resolve_agent_cache_bounds and is applied to the derived auto budget."""
+        import gateway.agent_cache_pressure as acp
+
+        bounds = resolve_agent_cache_bounds(
+            {"agent": {"agent_cache": {"memory_high_mb": "auto", "auto_budget_fraction": 0.40}}}
+        )
+        assert bounds.auto_budget_fraction == 0.40
+
+    def test_bounds_default_fraction_is_unchanged(self):
+        """Absent config keeps the historical 0.65 (no behavior change for
+        deployments that do not set the knob)."""
+        bounds = resolve_agent_cache_bounds({})
+        assert bounds.auto_budget_fraction == 0.65
+
+    def test_bounds_reject_bad_fraction_values(self):
+        bounds = resolve_agent_cache_bounds(
+            {"agent": {"agent_cache": {"auto_budget_fraction": 1.5}}}
+        )
+        # _positive() rejects >=1; falls back to the default.
+        assert bounds.auto_budget_fraction == 0.65
+
 
 class TestPersistenceGuard:
     """Soft eviction drops the transcript, so it may only run once the

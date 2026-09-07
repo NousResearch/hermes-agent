@@ -203,12 +203,20 @@ class SessionContextMixin:
             "message search", lambda: self.honcho.search(q, filters={"peer_perspective": peer_id}, limit=limit),
             _FAILED, logging.DEBUG, "Honcho message search failed (peer_perspective=%s): %s", peer_id,
         )
-        if messages is _FAILED:
-            # Older Honcho versions lack the perspective filter; fall back to peer-authored search.
+        if messages is _FAILED or not messages:
+            # Some API builds (e.g. self-hosted from source) silently return empty for the
+            # peer_perspective filter because the column is not filterable in their schema.
+            # Retry with the peer_id column filter before giving up.
             messages = self._guarded_authed(
-                "peer search", lambda: self._get_or_create_peer(peer_id).search(q, limit=limit),
-                None, logging.DEBUG, "Honcho peer search fallback also failed: %s",
+                "message search (peer_id)", lambda: self.honcho.search(q, filters={"peer_id": peer_id}, limit=limit),
+                _FAILED, logging.DEBUG, "Honcho message search failed (peer_id=%s): %s", peer_id,
             )
+            if messages is _FAILED:
+                # Older Honcho versions lack filters entirely; fall back to peer-authored search.
+                messages = self._guarded_authed(
+                    "peer search", lambda: self._get_or_create_peer(peer_id).search(q, limit=limit),
+                    None, logging.DEBUG, "Honcho peer search fallback also failed: %s",
+                )
         if not messages:
             return ""
         # Author labels distinguish user-stated facts from assistant-derived ones.

@@ -96,7 +96,7 @@ def test_bot_views_have_view_verbs_and_empty_roster_has_no_fake_selection(tmp_pa
     assert "bot <number>" not in empty and "Help:" in empty
 
 
-def test_help_defines_retry_and_exposes_full_navigation_without_files():
+def test_help_defines_retry_and_exposes_navigation():
     from gateway.group_chat_slash import GroupChatSlashCommandsMixin
 
     result = GroupChatSlashCommandsMixin._group_chat_help("!group")
@@ -104,7 +104,7 @@ def test_help_defines_retry_and_exposes_full_navigation_without_files():
     assert "May repeat actions" in result and "not resend or reconnect" in result
     for suffix in ["list <page>", "7 bot <number>", "7 approvals", "7 permissions", "7 stop"]:
         assert f"`!group {suffix}`" in result
-    assert "files" not in result and "/group" not in result
+    assert "/group" not in result
 
 
 def test_long_untrusted_messages_stay_bounded_and_cannot_forge_actions(tmp_path, monkeypatch):

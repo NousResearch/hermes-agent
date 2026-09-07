@@ -239,6 +239,12 @@ def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
     attribute-less engine fallback needs the two numeric gates, both of which must hold.
     """
     view = _device_pool_view()
+    return _unified_pool_from_view(view, smi_total, ram_total)
+
+
+def _unified_pool_from_view(
+        view: "tuple[int, bool | None] | None", smi_total: int, ram_total: int) -> int | None:
+    """Classify a captured allocator view without discarding a discrete-device verdict."""
     if view is None:
         return None
     pool, integrated = view
@@ -263,6 +269,17 @@ def _cpu_budget(base: int) -> HardwareBudget:
                           ram_available_bytes=usable, uma=False)
 
 
+def _discrete_budget(
+        total: int, free: int | None, ram_bytes: int, *, planning: bool) -> HardwareBudget:
+    """Budget a known discrete device; unknown live-free capacity fails conservatively closed."""
+    margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
+    base = total if planning else (free or 0)
+    return HardwareBudget(usable_vram_bytes=max(0, base - margin),
+                          total_device_bytes=total,
+                          ram_available_bytes=ram_bytes,
+                          uma=False)
+
+
 def probe_budget(*, planning: bool = False, platform_name: str | None = None) -> HardwareBudget:
     """Construct the budget per the source rules above.
 
@@ -274,13 +291,14 @@ def probe_budget(*, planning: bool = False, platform_name: str | None = None) ->
     platform_name = sys.platform if platform_name is None else platform_name
     ram_total, ram_avail = _ram_bytes()
     vram = _nvidia_vram()
+    pool_view = _device_pool_view()
 
     # Unified-memory NVIDIA: the CUDA allocator pool is the real capacity. Classification comes
     # from the driver API/engine and must not require nvidia-smi (stripped-PATH sessions lose smi
     # but nvcuda loads via the system loader). Crossing the carve-out costs nothing — it is an OS
     # accounting knob, not a GPU limit. Deliberately NOT clamped to OS RAM: carved-out memory is
     # invisible to GlobalMemoryStatusEx, so a RAM clamp would throw away exactly that capacity.
-    unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
+    unified = _unified_pool_from_view(pool_view, vram[0] if vram else 0, ram_total)
     if unified is not None:
         logger.info(
             "unified-memory NVIDIA device: allocator pool %.1f GiB "
@@ -298,6 +316,12 @@ def probe_budget(*, planning: bool = False, platform_name: str | None = None) ->
         return _uma_budget(base, unified)
 
     if vram is None:
+        if pool_view is not None and pool_view[1] is False:
+            # nvidia-smi can fail transiently even though the CUDA driver positively identifies a
+            # discrete device. Preserve that device and its measured capacity. The driver view has
+            # no free-memory fact, so live grants remain zero rather than risking overcommit.
+            return _discrete_budget(
+                pool_view[0], None, ram_total if planning else ram_avail, planning=planning)
         # Metal is unified memory. Everywhere else, no detected device means the CPU backend:
         # RAM is still usable, but calling it GPU memory makes both fit labels and speed pricing
         # wrong. Non-NVIDIA discrete devices remain conservative until a vendor probe lands.
@@ -307,8 +331,5 @@ def probe_budget(*, planning: bool = False, platform_name: str | None = None) ->
         return _cpu_budget(base)
 
     total, free = vram
-    margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
-    return HardwareBudget(usable_vram_bytes=max(0, (total if planning else free) - margin),
-                          total_device_bytes=total,
-                          ram_available_bytes=ram_total if planning else ram_avail,
-                          uma=False)
+    return _discrete_budget(
+        total, free, ram_total if planning else ram_avail, planning=planning)

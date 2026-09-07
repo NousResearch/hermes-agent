@@ -180,7 +180,7 @@ def test_cpu_only_host_budgets_ram_without_inventing_gpu_memory(monkeypatch):
     total = 32 * _GIB
     monkeypatch.setattr(hardware, "_ram_bytes", lambda: (total, 24 * _GIB))
     monkeypatch.setattr(hardware, "_nvidia_vram", lambda: None)
-    monkeypatch.setattr(hardware, "_unified_pool_bytes", lambda *_: None)
+    monkeypatch.setattr(hardware, "_device_pool_view", lambda: None)
 
     budget = hardware.probe_budget(planning=True, platform_name="win32")
 

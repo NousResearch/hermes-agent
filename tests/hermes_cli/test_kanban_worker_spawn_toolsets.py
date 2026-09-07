@@ -164,3 +164,34 @@ toolsets:
     assert "web" in resolved
     assert "kanban" in resolved  # recovered worker lifecycle surface
     assert resolved != ["kanban"]
+
+
+def test_resolve_worker_cli_toolsets_expands_all_without_unrestricted_sentinel(
+    monkeypatch, tmp_path
+):
+    """Headless workers must not turn a CLI ``all`` entry into every surface.
+
+    The one-shot parser treats ``all``/``*`` as an unrestricted sentinel.  If
+    the dispatcher forwards that sentinel after resolving the CLI platform,
+    desktop-only toolsets such as ``desktop_ui`` are reintroduced and their
+    tools are sent to providers from a headless Kanban worker.
+    """
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "elias"
+    profile.mkdir(parents=True)
+    profile.joinpath("config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - all\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+
+    resolved = kb._resolve_worker_cli_toolsets(str(profile))
+
+    assert resolved is not None
+    assert "all" not in resolved
+    assert "*" not in resolved
+    assert "terminal" in resolved
+    assert "kanban" in resolved
+    assert "desktop_ui" not in resolved
+    assert "project" not in resolved

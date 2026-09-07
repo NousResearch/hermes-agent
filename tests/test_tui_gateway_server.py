@@ -20,6 +20,13 @@ from tui_gateway import server
 from tui_gateway.transport import bind_transport, reset_transport
 
 
+def test_tui_gateway_server_has_no_unresolved_git_conflict_markers():
+    source = Path(server.__file__).read_text(encoding="utf-8")
+
+    markers = ("<<<<<<<", "=======", ">>>>>>>")
+    assert not any(line.lstrip().startswith(markers) for line in source.splitlines())
+
+
 def _dispatch_sync(req: dict, transport=None) -> dict | None:
     """Run one RPC to completion synchronously, regardless of pool routing.
 
@@ -4226,6 +4233,55 @@ def _patch_config_model(monkeypatch, model, provider=""):
     if provider:
         cfg_model["provider"] = provider
     monkeypatch.setattr(server, "_load_cfg", lambda: {"model": cfg_model})
+
+
+def test_turn_limit_sync_adopts_unlimited_config_for_existing_session(monkeypatch):
+    monkeypatch.delenv("HERMES_TUI_MAX_TURNS", raising=False)
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"agent": {"max_turns": "none"}},
+    )
+    agent = types.SimpleNamespace(max_iterations=32)
+    session = {"agent": agent}
+
+    server._sync_agent_turn_limit_with_config(session)
+
+    assert agent.max_iterations == sys.maxsize
+
+
+def test_turn_limit_sync_tightens_unlimited_session_when_config_becomes_finite(
+    monkeypatch,
+):
+    monkeypatch.delenv("HERMES_TUI_MAX_TURNS", raising=False)
+    cfg = {"agent": {"max_turns": "none"}}
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    agent = types.SimpleNamespace(max_iterations=32)
+    session = {"agent": agent}
+
+    server._sync_agent_turn_limit_with_config(session)
+    assert agent.max_iterations == sys.maxsize
+
+    cfg["agent"]["max_turns"] = 50
+    server._sync_agent_turn_limit_with_config(session)
+
+    assert agent.max_iterations == 50
+
+
+def test_turn_limit_sync_malformed_edit_falls_back_to_gateway_baseline(monkeypatch):
+    monkeypatch.delenv("HERMES_TUI_MAX_TURNS", raising=False)
+    cfg = {"agent": {"max_turns": "none"}}
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    agent = types.SimpleNamespace(max_iterations=32)
+    session = {"agent": agent}
+
+    server._sync_agent_turn_limit_with_config(session)
+    assert agent.max_iterations == sys.maxsize
+
+    cfg["agent"]["max_turns"] = "not-a-turn-limit"
+    server._sync_agent_turn_limit_with_config(session)
+
+    assert agent.max_iterations == 500
 
 
 def test_config_sync_switches_unpinned_session(monkeypatch):
@@ -16314,6 +16370,10 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
     monkeypatch.setattr(
         "hermes_cli.auth.is_provider_explicitly_configured",
         lambda _slug: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.inventory._anthropic_oauth_credentials_present",
+        lambda: False,
     )
     monkeypatch.setattr("hermes_cli.inventory._apply_pricing", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("hermes_cli.inventory._apply_capabilities", lambda *_args, **_kwargs: None)

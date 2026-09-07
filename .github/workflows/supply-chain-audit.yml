@@ -38,6 +38,10 @@ on:
         description: Whether pyproject.toml changed.
         type: boolean
         required: true
+      npm_lock:
+        description: Whether package-lock.json changed.
+        type: boolean
+        required: true
     outputs:
       review_status:
         description: JSON array of review status objects for the review comment assembler.
@@ -255,9 +259,79 @@ jobs:
           echo "::error::PyPI dependencies without upper bounds detected. Add <next_major ceiling per CONTRIBUTING.md policy."
           exit 1
 
+
+  npm-audit:
+    name: Check npm high-severity advisories
+    if: inputs.npm_lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      review_status: ${{ steps.emit-status.outputs.review_status }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Run npm high audit
+        id: audit
+        run: |
+          set +e
+          npm audit --audit-level=high --json > npm-audit.json
+          rc=$?
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Emit review_status
+        id: emit-status
+        if: always()
+        env:
+          AUDIT_EXIT_CODE: ${{ steps.audit.outputs.exit_code }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+
+          failed = os.environ.get("AUDIT_EXIT_CODE") not in ("0", "")
+          status = []
+          if failed:
+              with open("npm-audit.json", encoding="utf-8") as f:
+                  audit = json.load(f)
+              vulns = audit.get("metadata", {}).get("vulnerabilities", {})
+              high = vulns.get("high", 0)
+              critical = vulns.get("critical", 0)
+              names = sorted(audit.get("vulnerabilities", {}).keys())
+              status = [{
+                  "source": "supply chain",
+                  "results": [{
+                      "kind": "action_required",
+                      "title": "High-severity npm advisories",
+                      "summary": f"npm audit found {high} high and {critical} critical advisories.",
+                      "detail": "Affected packages: " + ", ".join(names[:25]),
+                      "how_to_fix": "Update the affected direct pins or root overrides, regenerate package-lock.json, and rerun npm audit --audit-level=high."
+                  }]
+              }]
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"review_status={json.dumps(status)}\n")
+          PYEOF
+
+      - name: Fail on high-severity npm advisories
+        if: steps.audit.outputs.exit_code != '0'
+        run: |
+          cat npm-audit.json
+          echo "::error::npm audit found high-severity advisories. Update pins/overrides and package-lock.json."
+          exit 1
+
   aggregate:
     name: Aggregate review statuses
-    needs: [scan, dep-bounds]
+    needs: [scan, dep-bounds, npm-audit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -270,13 +344,14 @@ jobs:
         env:
           SCAN_STATUS: ${{ needs.scan.outputs.review_status }}
           DEP_STATUS: ${{ needs.dep-bounds.outputs.review_status }}
+          NPM_STATUS: ${{ needs.npm-audit.outputs.review_status }}
           CRITICAL_FINDINGS: ${{ needs.scan.outputs.critical_findings }}
         run: |
           python3 - <<'PYEOF'
           import json, os
 
           merged = []
-          for key in ("SCAN_STATUS", "DEP_STATUS"):
+          for key in ("SCAN_STATUS", "DEP_STATUS", "NPM_STATUS"):
               raw = os.environ.get(key, "")
               if not raw:
                   continue

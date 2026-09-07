@@ -1,5 +1,8 @@
 """Tests for hermes_cli.copilot_auth — Copilot token validation and resolution."""
 
+from io import BytesIO
+from urllib.error import HTTPError
+
 import pytest
 from unittest.mock import patch
 
@@ -13,6 +16,40 @@ class TestTokenValidation:
         assert valid is False
         assert "Classic Personal Access Tokens" in msg
         assert "ghp_" in msg
+
+
+class TestDeviceCodeLogin:
+    """Device-code failures must not turn into repeated authorization polls."""
+
+    def test_rate_limited_poll_stops_and_reports_wait_time(self, monkeypatch, capsys):
+        """A GitHub rate-limit response ends the current flow without another poll."""
+        from hermes_cli import copilot_auth
+
+        response = type(
+            "Response",
+            (),
+            {
+                "read": lambda self: b'{"device_code":"device","user_code":"CODE","interval":1}',
+                "__enter__": lambda self: self,
+                "__exit__": lambda self, *_: None,
+            },
+        )()
+        rate_limited = HTTPError(
+            "https://github.com/login/oauth/access_token",
+            429,
+            "Too Many Requests",
+            {"Retry-After": "120"},
+            BytesIO(b'{"error":"slow_down"}'),
+        )
+        monotonic_values = iter((0.0, 0.0, 301.0))
+        monkeypatch.setattr(copilot_auth.time, "monotonic", lambda: next(monotonic_values))
+        monkeypatch.setattr(copilot_auth.time, "sleep", lambda _: None)
+
+        with patch("urllib.request.urlopen", side_effect=[response, rate_limited]) as urlopen:
+            assert copilot_auth.copilot_device_code_login() is None
+
+        assert urlopen.call_count == 2
+        assert "rate limited" in capsys.readouterr().out.lower()
 
 
 class TestResolveToken:
@@ -191,4 +228,3 @@ class TestEnvVarOrder:
         assert "COPILOT_GITHUB_TOKEN" in copilot.api_key_env_vars
         # COPILOT_GITHUB_TOKEN should be first
         assert copilot.api_key_env_vars[0] == "COPILOT_GITHUB_TOKEN"
-

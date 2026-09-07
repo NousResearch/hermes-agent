@@ -171,6 +171,51 @@ def test_run_conversation_flushes_assistant_tool_call_before_execution():
     assert result["final_response"] == "done"
 
 
+def test_kanban_worker_exits_after_durable_successful_completion(monkeypatch):
+    """A completed worker must not make another provider call and keep working."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_completed")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "715")
+    agent = _make_agent()
+    agent.valid_tool_names.add("kanban_complete")
+    tool_call = _mock_tool_call(name="kanban_complete", call_id="complete-1")
+    agent.client.chat.completions.create.return_value = _mock_response(
+        content="", finish_reason="tool_calls", tool_calls=[tool_call]
+    )
+
+    persisted_roles: list[list[str]] = []
+
+    def _record_flush(messages, conversation_history=None):
+        persisted_roles.append([message["role"] for message in messages])
+        return True
+
+    agent._flush_messages_to_session_db = MagicMock(side_effect=_record_flush)
+
+    def _fake_execute(assistant_message, messages, effective_task_id, api_call_count=0):
+        messages.append(
+            make_tool_result_message(
+                "kanban_complete",
+                '{"ok": true, "task_id": "t_completed", "run_id": 715}',
+                "complete-1",
+            )
+        )
+        # Match the real executor contract: the tool-result row is durable
+        # before control returns to the conversation loop.
+        agent._flush_messages_to_session_db(messages, [])
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+        patch.object(agent, "_execute_tool_calls", side_effect=_fake_execute),
+    ):
+        result = agent.run_conversation("finish the kanban task")
+
+    assert persisted_roles[-1][-1] == "tool"
+    assert agent.client.chat.completions.create.call_count == 1
+    assert result["completed"] is True
+    assert result["turn_exit_reason"] == "kanban_terminal_transition"
+
+
 def test_interim_assistant_is_durable_before_ui_projection_on_abnormal_exit(tmp_path):
     """A visible interim assistant row must survive an immediate process exit.
 

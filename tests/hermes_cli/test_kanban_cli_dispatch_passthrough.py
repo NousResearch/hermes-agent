@@ -23,10 +23,27 @@ def isolated_kanban_home(monkeypatch):
     test_home = tempfile.mkdtemp(prefix="kanban_cli_passthrough_")
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    yield test_home
+    def is_hermes_module(name):
+        return (
+            name.startswith("hermes_cli")
+            or name.startswith("hermes_state")
+            or name == "hermes_constants"
+        )
+
+    saved_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if is_hermes_module(name)
+    }
+    for name in saved_modules:
+        del sys.modules[name]
+    try:
+        yield test_home
+    finally:
+        for name in list(sys.modules):
+            if is_hermes_module(name):
+                del sys.modules[name]
+        sys.modules.update(saved_modules)
 
 
 def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, monkeypatch):
@@ -44,6 +61,9 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
             "max_spawn": 5,
             "default_assignee": "default",
             "max_in_progress_per_profile": 2,
+            "max_in_progress_by_profile": {"local-heavy": 1},
+            "max_in_progress_per_model": 1,
+            "priority_runtime_guard": {"enabled": False},
         }
     }
     monkeypatch.setattr(
@@ -70,6 +90,8 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
     )
     assert captured.get("default_assignee") == "default"
     assert captured.get("max_in_progress_per_profile") == 2
+    assert captured.get("max_in_progress_by_profile") == {"local-heavy": 1}
+    assert captured.get("max_in_progress_per_model") == 1
 
 
 def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypatch):
@@ -94,5 +116,3 @@ def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypat
     assert captured.get("max_spawn") == 2, (
         f"CLI --max=2 must override config kanban.max_spawn=10; got {captured.get('max_spawn')!r}"
     )
-
-

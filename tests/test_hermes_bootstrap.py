@@ -314,6 +314,31 @@ class TestHardenImportPath:
         # but only AFTER the Hermes root.
         assert result.index("/opt/hermes") < result.index("/home/user/tg-ws-proxy")
 
+    def test_import_applies_guard_before_foreign_utils_can_shadow(self, tmp_path):
+        foreign_repo = tmp_path / "foreign-repo"
+        foreign_repo.mkdir()
+        (foreign_repo / "utils.py").write_text(
+            "raise RuntimeError('foreign utils imported')\n"
+        )
+        repo_root = Path(__file__).resolve().parents[1]
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(repo_root)
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import hermes_bootstrap; import utils; print(utils.__file__)",
+            ],
+            cwd=foreign_repo,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert Path(result.stdout.strip()).resolve() == repo_root / "utils.py"
+
 
     def test_env_var_used_when_no_arg(self):
         hb = _fresh_import()
@@ -364,4 +389,3 @@ class TestSuppressPlatformVerConsole:
         finally:
             if original is not None:
                 platform._syscmd_ver = original
-

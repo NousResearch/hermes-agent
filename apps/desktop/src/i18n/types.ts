@@ -2121,6 +2121,25 @@ export interface Translations {
       openInNewTab: string
       openInSplit: string
       copyIdFailed: string
+      cleanupWorktree: string
+      cleanupTitle: string
+      cleanupBlockedTitle: string
+      cleanupAllowedDesc: (branch: string, path: string) => string
+      cleanupInspectFailed: string
+      cleanupRemoving: string
+      cleanupRemoved: string
+      cleanupRemove: string
+      cleanupReasons: {
+        active: string
+        dirty: string
+        'in-progress': string
+        'mismatched identity': string
+        'missing remote evidence': string
+        remove_failed: string
+        unintegrated: string
+        unknown: string
+        unpushed: string
+      }
       sessionActions: string
       sessionRunning: string
       needsInput: string

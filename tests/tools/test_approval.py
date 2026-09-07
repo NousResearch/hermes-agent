@@ -36,6 +36,89 @@ class TestApprovalModeParsing:
             assert _get_approval_mode() == "off"
 
 
+class TestKanbanGitHubActionsMutationGuard:
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "gh run rerun 123456",
+            "gh run cancel 123456",
+            "gh workflow run ci.yml --ref stable",
+            "gh api -X POST repos/acme/widgets/actions/runs/123456/rerun",
+            "curl -X POST https://api.github.com/repos/acme/widgets/actions/workflows/ci.yml/dispatches",
+            "bash -lc 'gh run rerun 123456'",
+        ),
+    )
+    def test_kanban_worker_cannot_mutate_github_actions(
+        self, monkeypatch: pytest.MonkeyPatch, command: str
+    ) -> None:
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_cost_guard")
+
+        for checker in (
+            approval_module.check_dangerous_command,
+            approval_module.check_all_command_guards,
+        ):
+            result = checker(command, "docker")
+            assert result["approved"] is False
+            assert result["kanban_policy"] == "github_actions_mutation"
+
+    def test_kanban_worker_can_inspect_github_actions_read_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_cost_guard")
+
+        for command in (
+            "gh run list --limit 20",
+            "gh run view 123456 --json status,conclusion",
+            "gh pr checks 17",
+        ):
+            result = approval_module.check_all_command_guards(command, "docker")
+            assert result["approved"] is True
+
+    def test_non_kanban_operator_keeps_normal_github_actions_authority(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        result = approval_module.check_all_command_guards(
+            "gh workflow run ci.yml --ref stable", "docker"
+        )
+
+        assert result["approved"] is True
+
+
+class TestKanbanPullRequestCreationGuard:
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "gh pr create --fill",
+            "gh api -X POST repos/acme/widgets/pulls -f head=codex/fix -f base=stable",
+            "curl -X POST https://api.github.com/repos/acme/widgets/pulls",
+            "bash -lc 'gh pr create --fill'",
+        ),
+    )
+    def test_kanban_worker_cannot_create_pull_request_without_governed_receipt(
+        self, monkeypatch: pytest.MonkeyPatch, command: str
+    ) -> None:
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_pr_receipt_guard")
+
+        for checker in (
+            approval_module.check_dangerous_command,
+            approval_module.check_all_command_guards,
+        ):
+            result = checker(command, "docker")
+            assert result["approved"] is False
+            assert result["kanban_policy"] == "pull_request_creation_requires_exact_head_ci_receipt"
+
+    def test_non_kanban_operator_keeps_pull_request_creation_authority(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        result = approval_module.check_all_command_guards("gh pr create --fill", "docker")
+
+        assert result["approved"] is True
+
+
 class TestSmartApproval:
     def test_smart_approval_uses_call_llm(self):
         response = SimpleNamespace(

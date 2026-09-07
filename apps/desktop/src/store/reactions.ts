@@ -2,6 +2,7 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { activeGateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $activeSessionId, $messages, setMessages } from '@/store/session'
+import { requestForOwnedSession } from '@/store/session-states'
 import type { MessageReaction } from '@/types/hermes'
 
 /** The six iOS Tapback defaults, in Apple's order. */
@@ -72,12 +73,17 @@ export async function toggleMessageReaction(
   writeReactions(message.id, applyReaction(snapshot, emoji, author))
 
   try {
-    const result = await gateway.request<MessageReactResponse>('message.react', {
-      session_id: sessionId,
-      ...(rowId === undefined ? { newest_role: message.role } : { row_id: rowId }),
-      emoji,
-      author
-    })
+    const result = await requestForOwnedSession<MessageReactResponse>(
+      sessionId,
+      gateway.request.bind(gateway) as typeof gateway.request,
+      'message.react',
+      {
+        session_id: sessionId,
+        ...(rowId === undefined ? { newest_role: message.role } : { row_id: rowId }),
+        emoji,
+        author
+      }
+    )
 
     // Learn the row id from the response so later toggles address it directly.
     writeReactions(message.id, result?.reactions ?? [], result?.row_id)

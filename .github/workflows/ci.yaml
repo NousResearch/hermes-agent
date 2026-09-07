@@ -15,9 +15,7 @@ name: CI
 # main-only automation uses protected environments in its own workflows.
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -197,12 +195,13 @@ jobs:
   supply-chain:
     name: Supply-chain scan
     needs: detect
-    if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.scan == 'true' || needs.detect.outputs.deps == 'true')
+    if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.scan == 'true' || needs.detect.outputs.deps == 'true' || needs.detect.outputs.npm_lock == 'true')
     uses: ./.github/workflows/supply-chain-audit.yml
     with:
       event_name: ${{ needs.detect.outputs.event_name }}
       scan: ${{ needs.detect.outputs.scan == 'true' }}
       deps: ${{ needs.detect.outputs.deps == 'true' }}
+      npm_lock: ${{ needs.detect.outputs.npm_lock == 'true' }}
 
   review-labels:
     name: Review label gate

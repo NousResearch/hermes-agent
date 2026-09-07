@@ -199,6 +199,7 @@ class TestCheckWebApiKey:
         assert web_tools.check_web_api_key() is True
 
     def test_no_credentials_fails(self, monkeypatch):
+        from hermes_cli import config as hermes_config
         from tools import web_tools
         from agent import web_search_registry
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
@@ -211,9 +212,14 @@ class TestCheckWebApiKey:
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
+        monkeypatch.setattr(hermes_config, "get_env_value", lambda _key: None)
         # Disable the keyless free tier — with it on, zero credentials still
         # resolves (Parallel/Exa anonymous MCP; see test_web_keyless_fallback.py).
         monkeypatch.setattr(web_search_registry, "_keyless_tier_enabled", lambda: False)
+        # This case owns the legacy credential ladder. Plugin-provider and
+        # keyless readiness are covered in test_web_keyless_fallback.py.
+        monkeypatch.setattr(web_search_registry, "get_active_search_provider", lambda: None)
+        monkeypatch.setattr(web_search_registry, "get_active_extract_provider", lambda: None)
         assert web_tools.check_web_api_key() is False
 
 

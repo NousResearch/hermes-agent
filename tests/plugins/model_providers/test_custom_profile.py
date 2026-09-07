@@ -7,7 +7,8 @@ nothing when reasoning was *enabled*, so a configured ``reasoning_effort``
 was silently dropped for every custom endpoint.
 
 These tests pin the wire-shape contract:
-    - disabled on Ollama  → extra_body.think = False + reasoning_effort=none
+    - disabled on thinking-capable Ollama → extra_body.think = False + reasoning_effort=none
+    - disabled on non-thinking Ollama → no reasoning fields
     - disabled elsewhere  → reasoning_effort=none, no think (strict APIs 422)
     - enabled + effort    → top-level reasoning_effort (native OpenAI-compat
                           format GLM/ARK expect), passed through verbatim
@@ -61,6 +62,7 @@ class TestCustomReasoningWireShape:
             reasoning_config={"enabled": False},
             model="qwen3",
             base_url="http://127.0.0.1:11434/v1",
+            supports_reasoning=True,
         )
         assert eb == {"think": False}
         assert tl == {"reasoning_effort": "none"}
@@ -71,6 +73,7 @@ class TestCustomReasoningWireShape:
             reasoning_config={"enabled": True, "effort": "none"},
             model="qwen3",
             base_url="http://localhost:11434/v1",
+            supports_reasoning=True,
         )
         assert eb == {"think": False}
         assert tl == {"reasoning_effort": "none"}
@@ -115,9 +118,20 @@ class TestCustomReasoningWireShape:
             reasoning_config={"enabled": False},
             model="qwen3",
             base_url="https://ollama.com/v1",
+            supports_reasoning=True,
         )
         assert eb == {"think": False}
         assert tl == {"reasoning_effort": "none"}
+
+    def test_non_thinking_ollama_omits_all_reasoning_fields(self, custom_profile):
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="devstral-small-2:24b",
+            base_url="http://127.0.0.1:11434/v1",
+            supports_reasoning=False,
+        )
+        assert eb == {}
+        assert tl == {}
 
     @pytest.mark.parametrize(
         "base_url",
@@ -179,4 +193,3 @@ class TestCustomReasoningWithNumCtx:
         )
         assert eb == {"options": {"num_ctx": 8192}}
         assert tl == {}
-

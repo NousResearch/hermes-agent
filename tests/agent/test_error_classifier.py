@@ -68,13 +68,57 @@ class TestFailoverReason:
             "reasoning_mandatory",
             "provider_policy_blocked",
             "content_policy_blocked",
-            "thinking_signature", "long_context_tier",
+            "egress_policy_blocked",
+            "thinking_signature", "unsupported_thinking", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
             "unknown",
         }
         actual = {r.value for r in FailoverReason}
         assert expected == actual
+
+    def test_egress_policy_denial_falls_back_without_retry(self):
+        from agent.llm_egress_firewall import (
+            DestinationClass,
+            EgressBlocked,
+            EgressDecision,
+        )
+
+        error = EgressBlocked(
+            EgressDecision(
+                allowed=False,
+                destination_class=DestinationClass.REMOTE,
+                provider="nous",
+                model="test-model",
+                payload_sha256="",
+                serialized_bytes=0,
+                estimated_tokens=0,
+                source_grant_count=0,
+                source_segment_count=0,
+                session_id="session",
+                turn_id="turn",
+                request_id="request",
+                policy_digest="policy",
+                reason_codes=("secret_detected",),
+            )
+        )
+
+        result = classify_api_error(error, provider="nous", model="test-model")
+
+        assert result.reason is FailoverReason.egress_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_unsupported_thinking_is_terminal_and_never_falls_back(self):
+        error = MockAPIError(
+            'model "devstral-small-2:24b" does not support thinking',
+            status_code=400,
+        )
+        result = classify_api_error(error, provider="ollama", model="devstral-small-2:24b")
+
+        assert result.reason is FailoverReason.unsupported_thinking
+        assert result.retryable is False
+        assert result.should_fallback is False
 
 
 # ── Test: ClassifiedError ──────────────────────────────────────────────
@@ -1636,5 +1680,3 @@ class TestServerInjectedParameterRejection:
         result = classify_api_error(e, provider="custom", model="m")
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
-
-

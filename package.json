@@ -23,7 +23,8 @@
     "audit:fix:web": "npm audit fix --workspace web",
     "audit:fix:tui": "npm audit fix --workspace ui-tui",
     "check": "npm run --ws check",
-    "fix": "npm run --ws fix"
+    "fix": "npm run --ws fix",
+    "audit:high": "npm audit --audit-level=high"
   },
   "repository": {
     "type": "git",
@@ -67,9 +68,9 @@
     "esbuild@0.28.1": true,
     "node-pty@1.1.0": true,
     "electron-winstaller@5.4.0": true,
-    "electron@40.10.2": true,
     "fsevents@2.3.2": true,
     "fsevents@2.3.3": true,
-    "get-windows@9.3.0": true
+    "get-windows@9.3.0": true,
+    "electron@41.10.3": true
   }
 }

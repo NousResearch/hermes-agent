@@ -580,6 +580,36 @@ class TestRootLevelProviderOverride:
         assert cfg["terminal"]["vercel_runtime"] == "python3.13"
         assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
 
+    def test_kanban_worker_workspace_survives_cli_config_load(
+        self, tmp_path, monkeypatch
+    ):
+        """A profile cwd must not redirect a dispatcher-owned worker."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        profile_cwd = tmp_path / "stable"
+        profile_cwd.mkdir()
+        workspace = tmp_path / "worktree"
+        workspace.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"terminal": {"backend": "local", "cwd": str(profile_cwd)}}
+            )
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_example")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        import cli
+
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["terminal"]["cwd"] == str(workspace)
+        assert os.environ["TERMINAL_CWD"] == str(workspace)
+
     def test_normalize_root_model_keys_moves_to_model(self):
         """_normalize_root_model_keys migrates root keys into model section."""
         from hermes_cli.config import _normalize_root_model_keys
@@ -711,6 +741,5 @@ class TestRootLevelProviderOverride:
         })
         assert result["model"]["default"] == "flat-default-model"
         assert result["model"]["provider"] == "auto"
-
 
 

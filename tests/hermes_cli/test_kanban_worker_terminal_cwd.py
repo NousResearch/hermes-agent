@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 
 def _make_task(kb, *, assignee: str = "w"):
     return kb.Task(
@@ -79,3 +81,71 @@ def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path):
     assert captured["env"]["HERMES_KANBAN_WORKSPACE"] == str(workspace)
 
 
+def test_worker_write_safe_root_is_exact_assigned_workspace(monkeypatch, tmp_path):
+    """A worker must not inherit a broader generic file-tool write scope."""
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "w").mkdir(parents=True)
+    (root / "profiles" / "w" / "config.yaml").write_text(
+        "toolsets:\n  - kanban\n", encoding="utf-8"
+    )
+    root.joinpath("config.yaml").write_text(
+        "toolsets:\n  - kanban\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(tmp_path))
+
+    from hermes_cli import kanban_db as kb
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    captured = _capture_spawn_env(kb, monkeypatch, str(workspace))
+
+    assert captured["env"]["HERMES_WRITE_SAFE_ROOT"] == str(workspace)
+
+
+def test_worker_spawn_rejects_malformed_profile_config(monkeypatch, tmp_path):
+    """A broken profile must fail once before a provider-less child is spawned."""
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "w"
+    profile.mkdir(parents=True)
+    profile.joinpath("config.yaml").write_text(
+        "model:\n  provider: openai-codex\nagent:\n  coding_instructions: bad: scalar\n",
+        encoding="utf-8",
+    )
+    root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+
+    def forbidden_popen(*args, **kwargs):
+        raise AssertionError("malformed profile reached subprocess spawn")
+
+    monkeypatch.setattr(subprocess, "Popen", forbidden_popen)
+
+    with pytest.raises(ValueError, match="invalid profile config"):
+        kb._default_spawn(_make_task(kb), str(workspace))
+
+def test_worker_path_prefers_workspace_venv_for_terminal_commands(monkeypatch, tmp_path):
+    """A worker's literal ``python`` commands use its project interpreter."""
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "w").mkdir(parents=True)
+    root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    from hermes_cli import kanban_db as kb
+
+    workspace = tmp_path / "ws"
+    (workspace / ".venv" / "bin").mkdir(parents=True)
+    captured = _capture_spawn_env(kb, monkeypatch, str(workspace))
+
+    assert captured["env"]["PATH"].split(":")[:3] == [
+        str(workspace / ".venv" / "bin"),
+        "/usr/bin",
+        "/bin",
+    ]

@@ -590,6 +590,51 @@ def test_run_codex_stream_strips_relay_added_retention_at_consumer_wire(
     )
 
 
+def test_run_codex_stream_keeps_provenance_sidecar_internal(monkeypatch, tmp_path):
+    agent = _build_agent(monkeypatch)
+    agent.session_id = "session-1"
+    agent._current_turn_id = "turn-1"
+    agent._current_api_request_id = "turn-1:api:2"
+    agent._llm_egress_policy_digest = "a" * 64
+    agent._llm_egress_state_dir = tmp_path / "egress"
+    captured = {}
+
+    def _fake_create(**kwargs):
+        captured.update(kwargs)
+        return _FakeCreateStream([
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            )
+        ])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+    request = {
+        **_codex_request_kwargs(),
+        "_hermes_source_provenance": [],
+    }
+
+    agent._run_codex_stream(request)
+
+    assert "_hermes_source_provenance" not in captured
+
+
+def test_codex_preflight_preserves_internal_provenance_sidecar():
+    from agent.transports.codex import ResponsesApiTransport
+
+    sidecar = [{"tool_call_id": "call_read_1", "content_sha256": "a" * 64}]
+    request = {
+        **_codex_request_kwargs(),
+        "_hermes_source_provenance": sidecar,
+    }
+
+    normalized = ResponsesApiTransport().preflight_kwargs(request)
+
+    assert normalized["_hermes_source_provenance"] is sidecar
+
+
 def test_run_codex_stream_strips_nested_request_override_retention(
     monkeypatch,
     caplog,

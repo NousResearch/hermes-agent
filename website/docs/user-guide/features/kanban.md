@@ -791,17 +791,38 @@ All commands are also available as a slash command in the interactive CLI and in
 
 | Config key | Default | What it does |
 |------------|---------|--------------|
-| `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
+| `kanban.max_in_progress` | unset (memory-derived) | Caps the number of simultaneously running tasks across all boards. When unset, Hermes derives a conservative cap from system memory where available. Invalid or below-1 values fall through to that derived default. |
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
+| `kanban.max_in_progress_by_profile` | `{}` | Positive caps keyed by exact profile name. A profile-specific value intersects with `max_in_progress_per_profile`; profiles not listed keep the normal cloud/performance concurrency. |
+| `kanban.max_in_progress_per_model` | unset (unlimited for remote providers) | Caps active tasks for each exact provider/model pair across boards. Recognized local providers (`ollama`, `ollama-launch`, `local`) default to one worker per exact model even when this global setting is unset or higher; remote providers retain the configured cap. Profile-default routes are accounted for too. |
+| `kanban.priority_runtime_guard` | disabled | Read-only, cross-platform process guard for a configured high-priority runtime. An exact project-root plus entrypoint match lowers the effective global cap on each tick; an unreadable scan fails safe to the protected cap. It never starts, stops, or signals a process. |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
 
 ```yaml
 kanban:
-  max_in_progress: 2
+  # Normal performance lane.
+  max_in_progress: 8
+  # Bound only profiles that use a host-heavy local model.
+  max_in_progress_by_profile:
+    local-builder: 1
+  # Reserve resources while an exact private runtime entrypoint is active.
+  priority_runtime_guard:
+    enabled: true
+    project_roots:
+      - ~/work/private-runtime
+    entrypoints:
+      - main.py
+    normal_max_in_progress: 8
+    max_in_progress: 2
   auto_promote_children: false
   default_workdir: ~/work/active-project
 ```
+
+The runtime match is path-exact: `python main.py` matches only when the
+process working directory is the configured root, and an absolute script path
+must resolve to the configured root plus entrypoint. An unrelated project with
+its own `main.py`, or text that merely mentions `main.py`, does not match.
 
 ### Scheduled task starts (`scheduled_at`)
 

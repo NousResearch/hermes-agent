@@ -639,6 +639,41 @@ class TestCLIFlagLogic:
         use_worktree = worktree or w or config_worktree
         assert not use_worktree
 
+    def test_top_level_worktree_setting_preserved_when_policy_disabled(self, monkeypatch):
+        import cli
+
+        monkeypatch.setenv("HERMES_SESSION_SOURCE", "cli")
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        config = {"worktree": True, "conversation_worktree": {"enabled": False}}
+
+        assert cli._should_use_legacy_worktree(
+            worktree=False,
+            shorthand=False,
+            config=config,
+        ) is True
+
+    def test_top_level_worktree_setting_does_not_double_create_managed_root(
+        self, monkeypatch
+    ):
+        import cli
+
+        monkeypatch.setenv("HERMES_SESSION_SOURCE", "cli")
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        config = {
+            "worktree": True,
+            "conversation_worktree": {
+                "enabled": True,
+                "source_worktree": "/repo/stable",
+                "worktree_root": "/repo/.worktrees",
+            },
+        }
+
+        assert cli._should_use_legacy_worktree(
+            worktree=False,
+            shorthand=False,
+            config=config,
+        ) is False
+
 
 class TestTerminalCWDIntegration:
     """Test that TERMINAL_CWD is correctly set to the worktree path."""
@@ -868,6 +903,80 @@ class TestWorktreeLockReaping:
         wt = self._mk(cli, git_repo, "hermes-nolock", pid=None)
         cli._prune_stale_worktrees(str(git_repo))
         assert not wt.exists(), "clean unlocked stale worktree should be reaped"
+
+    def test_aged_manager_owned_conversation_tree_survives(self, git_repo, tmp_path):
+        import cli
+        from agent.conversation_worktree import ConversationWorktreeManager
+        from agent.conversation_worktree_policy import ConversationWorktreePolicy
+        from hermes_state import SessionDB
+
+        stable_source = tmp_path / "managed-stable-source"
+        subprocess.run(
+            [
+                "git",
+                "worktree",
+                "add",
+                str(stable_source),
+                "-b",
+                "stable/managed-pruner-test",
+                "HEAD",
+            ],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+        )
+        db = SessionDB(tmp_path / "managed-state.db")
+        manager = ConversationWorktreeManager(
+            ConversationWorktreePolicy(
+                enabled=True,
+                source_worktree=stable_source,
+                worktree_root=git_repo / ".worktrees",
+                branch_prefix="hermes/session",
+                bootstrap=False,
+                bootstrap_command=(),
+                bootstrap_timeout=1.0,
+                create_timeout=3.0,
+                retain_until_explicit_cleanup=True,
+            ),
+            db,
+        )
+        binding = manager.bind_new_root_session(
+            "startup-pruner-owned-root", conversation_kind="interactive"
+        )
+        assert binding is not None
+        self._age(binding.path, 24 * 365)
+        try:
+            cli._prune_stale_worktrees(str(git_repo))
+            assert binding.path.exists(), (
+                "startup pruner must never remove a manager-owned conversation worktree"
+            )
+        finally:
+            db.close()
+
+    def test_manager_ownership_appearing_after_classification_blocks_mutation(
+        self, git_repo, monkeypatch
+    ):
+        import cli
+        from agent import conversation_worktree as worktrees
+
+        wt = self._mk(cli, git_repo, "hermes-owned-race", age_h=100)
+        inspections = 0
+
+        def ownership_appears(_path):
+            nonlocal inspections
+            inspections += 1
+            return inspections >= 2
+
+        monkeypatch.setattr(
+            worktrees, "conversation_worktree_is_manager_owned", ownership_appears
+        )
+
+        cli._prune_stale_worktrees(str(git_repo))
+
+        assert inspections >= 2
+        assert wt.exists(), (
+            "startup mutation must re-inspect under the conversation manager lock"
+        )
 
     def test_dirty_survives_over_72h(self, git_repo):
         import cli

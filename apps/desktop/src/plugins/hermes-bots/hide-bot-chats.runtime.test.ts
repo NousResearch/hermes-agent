@@ -55,7 +55,7 @@ afterEach(() => {
 })
 
 describe('Bot Mode hidden-session reconciliation lifecycle', () => {
-  it('uses persisted REST on load/reconnect and stops with plugin disposal', async () => {
+  it('keeps profile REST asleep across load and reconnects', async () => {
     vi.useFakeTimers()
     const disposers: Array<() => void> = []
 
@@ -70,33 +70,17 @@ describe('Bot Mode hidden-session reconciliation lifecycle', () => {
     gatewayState.set('open')
     await flushSweep()
 
-    expect(listPersistedSessions).toHaveBeenCalledTimes(6)
-    expect(listPersistedSessions.mock.calls.map(([, options]) => options.profile)).toEqual([
-      'alpha',
-      'beta',
-      'alpha',
-      'beta',
-      'alpha',
-      'beta'
-    ])
-    expect(setPersistedSessionHidden).toHaveBeenCalledTimes(6)
-    expect(setPersistedSessionHidden.mock.calls.map(([, options]) => options)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ hidden: true, profile: 'alpha', sessionId: 'alpha-bot' }),
-        expect.objectContaining({ hidden: true, profile: 'beta', sessionId: 'beta-bot' })
-      ])
-    )
+    expect(listPersistedSessions).not.toHaveBeenCalled()
+    expect(setPersistedSessionHidden).not.toHaveBeenCalled()
     expect(request.mock.calls.some(([method]) => method === 'session.list' || method === 'session.set_hidden')).toBe(
       false
     )
 
     disposers.forEach(dispose => dispose())
-    const readsAtDispose = listPersistedSessions.mock.calls.length
-
     gatewayState.set('closed')
     gatewayState.set('open')
     await flushSweep()
 
-    expect(listPersistedSessions).toHaveBeenCalledTimes(readsAtDispose)
+    expect(listPersistedSessions).not.toHaveBeenCalled()
   })
 })

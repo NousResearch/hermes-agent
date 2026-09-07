@@ -171,7 +171,7 @@ All limits are configurable via `config.yaml`:
 code_execution:
   mode: project      # project (default) | strict
   timeout: 300       # Max seconds per script (default: 300)
-  max_tool_calls: 50 # Max tool calls per execution (default: 50)
+  max_tool_calls: 50 # Max tool calls per execution (default: 50; 0 = unlimited)
 ```
 
 ## How Tool Calls Work Inside Scripts

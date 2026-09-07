@@ -346,6 +346,61 @@ class TestGeneratedSystemdUnits:
 
 
 class TestGatewayStopCleanup:
+    def test_gateway_start_clears_stale_desktop_drain_request(
+        self, tmp_path, monkeypatch
+    ):
+        """A desktop-close drain marker must not wedge the next gateway start."""
+        marker = tmp_path / ".drain_request.json"
+        marker.write_text('{"action":"drain"}', encoding="utf-8")
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli, "_dispatch_via_service_manager_if_s6", lambda action: False
+        )
+        monkeypatch.setattr(gateway_cli, "launchd_start", lambda: calls.append("start"))
+
+        gateway_cli.gateway_command(
+            SimpleNamespace(gateway_command="start", all=False, system=False)
+        )
+
+        assert not marker.exists()
+        assert calls == ["start"]
+
+    def test_stop_all_drain_waits_before_stopping_service(self, tmp_path, monkeypatch):
+        """Desktop drain must finish before a supervisor or gateway is stopped."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("unit\n", encoding="utf-8")
+        events = []
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "systemd_stop", lambda system=False: events.append("stop"))
+        monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda **kwargs: 0)
+        monkeypatch.setattr(gateway_cli, "_dispatch_all_via_service_manager_if_s6", lambda action: False)
+        monkeypatch.setattr(gateway_cli.atexit, "register", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            "hermes_cli.gateway_desktop_drain.desktop_profile_homes",
+            lambda: (tmp_path,),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway_desktop_drain.drain_all_desktop_work",
+            lambda: events.append("drain"),
+        )
+
+        gateway_cli.gateway_command(
+            SimpleNamespace(gateway_command="stop", all=True, system=False, drain=True)
+        )
+
+        assert events[:2] == ["drain", "stop"]
+
     @pytest.mark.linux_only
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
         """Without --all, stop uses systemd (if available) and does NOT call

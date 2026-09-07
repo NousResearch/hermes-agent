@@ -135,6 +135,21 @@ class TestAutoResetBlockReSyncsBinding:
             "oversized compressed transcript, re-triggering the loop (#35809)."
         )
 
+    def test_old_root_lease_is_reconciled_after_agent_eviction(self):
+        block = _find_compression_exhausted_reset_block()
+        calls = {
+            node.func.attr: node.lineno
+            for node in ast.walk(block)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr
+            in {"_evict_cached_agent", "reconcile_conversation_root_transition"}
+        }
+
+        assert "reconcile_conversation_root_transition" in calls
+        assert calls["reconcile_conversation_root_transition"] > calls[
+            "_evict_cached_agent"
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Behavioral contract: reset yields a clean next-turn transcript
@@ -198,4 +213,3 @@ class TestAutoResetLoadsCleanContext:
         )
         # The old transcript is still searchable, not destroyed.
         assert len(store.load_transcript(bloated_sid)) == 120
-

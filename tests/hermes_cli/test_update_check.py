@@ -14,6 +14,7 @@ import pytest
 
 def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     """When cache is fresh, check_for_updates should return cached value without calling git."""
+    import hermes_cli.banner as banner
     from hermes_cli.banner import check_for_updates
     from hermes_cli import __version__
 
@@ -24,16 +25,43 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
 
     cache_file = tmp_path / ".update_check"
     cache_file.write_text(
-        json.dumps({"ts": time.time(), "behind": 3, "ver": __version__}),
-        encoding="utf-8",
+        json.dumps(
+            {"ts": time.time(), "behind": 3, "rev": "test-head", "ver": __version__}
+        )
     )
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(banner, "_git_stdout", lambda *_args, **_kwargs: "test-head")
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
         result = check_for_updates()
 
     assert result == 3
     mock_run.assert_not_called()
+
+
+def test_check_for_updates_invalidates_cache_when_checkout_head_changes(
+    tmp_path, monkeypatch
+):
+    """A refreshed checkout must not reuse a same-version behind count."""
+    import hermes_cli.banner as banner
+    from hermes_cli import __version__
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(
+        json.dumps(
+            {"ts": time.time(), "behind": 40, "rev": "old-head", "ver": __version__}
+        )
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    monkeypatch.setattr(banner, "_git_stdout", lambda *_args, **_kwargs: "new-head")
+    monkeypatch.setattr(banner, "_check_via_local_git", lambda _repo_dir: 0)
+    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda _root: "git")
+
+    assert banner.check_for_updates() == 0
+    cached = json.loads(cache_file.read_text())
+    assert cached["rev"] == "new-head"
+    assert cached["behind"] == 0
 
 
 
@@ -269,7 +297,6 @@ def test_check_for_updates_does_not_cache_none(tmp_path, monkeypatch):
 
     # The cache file must NOT have been written with a None result
     assert not cache_file.exists(), "None result must not be cached"
-
 
 
 

@@ -44,11 +44,12 @@ from tools.terminal_tool_lifecycle import (
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
 )
 from tools.terminal_tool_config import (
-    _is_container_backend, _is_host_cwd, _is_unusable_container_cwd, _parse_env_var,
-    _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
+    _CONTAINER_BACKENDS, _is_container_backend, _is_host_cwd, _is_unusable_container_cwd,
+    _parse_env_var, _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
 )
 from tools.terminal_tool_backends import (
     _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
+    _create_environment,
 )
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 from tools.tool_backend_helpers import coerce_modal_mode, managed_nous_tools_enabled
@@ -772,8 +773,21 @@ def _resolve_command_cwd(
     Same guard class as the env-creation sanitizers (#50636, #54447); this is the per-command sibling site.
     """
     if workdir:
+        from agent.runtime_cwd import resolve_kanban_worker_cwd
+
+        worker_cwd = resolve_kanban_worker_cwd(workdir)
+        if worker_cwd is not None:
+            # A model commonly sends ``workdir="."``. Resolve relative worker
+            # paths while the worker process is anchored in its task workspace.
+            return os.path.abspath(os.path.expanduser(worker_cwd))
         return workdir
     recorded = get_session_cwd(session_key)
+    if env_type is None or not _is_container_backend(env_type):
+        from agent.runtime_cwd import resolve_kanban_worker_cwd
+
+        worker_cwd = resolve_kanban_worker_cwd(recorded)
+        if worker_cwd is not None:
+            return worker_cwd
     if recorded and _is_container_backend(env_type) and _is_unusable_container_cwd(recorded):
         logger.info(
             "Ignoring recorded session cwd %r for %s backend "
@@ -1307,6 +1321,29 @@ def _handle_terminal(args, **kw):
             "terminal received a 'code' parameter, but it requires a shell "
             "command in 'command'. Use execute_code(code=...) for Python; "
             "for shell, retry as terminal(command=...)."
+        )
+    if "command" not in args:
+        known_parameters = {
+            "background",
+            "timeout",
+            "workdir",
+            "pty",
+            "notify",
+            "notify_on_complete",
+            "watch_patterns",
+        }
+        unexpected = sorted(set(args) - known_parameters)
+        if unexpected:
+            parameter = unexpected[0]
+            return tool_error(
+                f"terminal received an unrecognized '{parameter}' parameter, "
+                "but it requires a shell command string in 'command'. Do not "
+                "pass a command category or token list; retry as "
+                'terminal(command="...").'
+            )
+        return tool_error(
+            "terminal requires a shell command string in 'command'. Retry as "
+            'terminal(command="...").'
         )
     # `notify` is the advertised interface (true → notify_on_complete,
     # [...] → watch_patterns); the legacy args stay accepted, explicit

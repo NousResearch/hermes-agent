@@ -11,9 +11,7 @@ name: Nix flake check
 # fast required jobs beside it. A separate run reruns and cancels on its own.
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read

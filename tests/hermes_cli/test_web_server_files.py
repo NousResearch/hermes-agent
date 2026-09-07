@@ -1,5 +1,6 @@
 """Tests for the dashboard-managed file browser API."""
 
+import base64
 from types import SimpleNamespace
 
 import pytest
@@ -143,6 +144,84 @@ def test_download_authenticates_via_query_token(forced_files_client):
     assert client.get(
         "/api/files/download", params={"path": str(file_path)}
     ).status_code == 401
+
+
+@pytest.mark.parametrize("route,method", [
+    ("/api/fs/download", "get"),
+    ("/api/fs/read-data-url", "get"),
+    ("/api/files/download", "get"),
+    ("/api/files/download", "head"),
+])
+def test_download_resolves_paths_in_the_originating_profile_session(
+    local_files_client, monkeypatch, route, method,
+):
+    from pathlib import Path
+    from hermes_state import SessionDB
+
+    client, home = local_files_client
+    monkeypatch.setattr(Path, "home", lambda: home)
+    hermes_home = home / "isolated-hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    session_cwd = home / "project"
+    session_cwd.mkdir()
+    gateway_cwd = home / "gateway"
+    gateway_cwd.mkdir()
+    monkeypatch.chdir(gateway_cwd)
+    artifact = session_cwd / "report.txt"
+    artifact.write_bytes(b"session artifact")
+    (gateway_cwd / artifact.name).write_bytes(b"wrong gateway artifact")
+    for profile, sid, cwd in [("default", "origin-session", str(session_cwd)),
+                              ("other", "other-session", str(gateway_cwd))]:
+        db_home = hermes_home if profile == "default" else hermes_home / "profiles" / profile
+        db_home.mkdir(parents=True, exist_ok=True)
+        (db_home / "config.yaml").write_text("{}", encoding="utf-8")
+        db = SessionDB(db_path=db_home / "state.db")
+        try:
+            db.create_session(sid, source="gui", cwd=cwd)
+        finally:
+            db.close()
+    request = getattr(client, method)
+    for path in ("./report.txt", "../project/report.txt", str(artifact), artifact.as_uri()):
+        response = request(route, params={
+            "path": path, "profile": "default", "session_id": "origin-session",
+        })
+        assert response.status_code == 200, response.text
+        if method == "head":
+            assert response.content == b""
+            assert response.headers["content-length"] == str(artifact.stat().st_size)
+        else:
+            data = (base64.b64decode(response.json()["dataUrl"].split(",", 1)[1])
+                    if route.endswith("read-data-url") else response.content)
+            assert data == artifact.read_bytes()
+    for profile, session_id in (("other", "origin-session"), ("missing", "origin-session"),
+                                ("default", "missing-session"), ("default", "")):
+        response = request(route, params={
+            "path": str(artifact), "profile": profile, "session_id": session_id,
+        })
+        assert response.status_code == 404, response.text
+
+
+@pytest.mark.parametrize("method", ["get", "head"])
+def test_managed_download_accepts_file_uris_without_bypassing_policy(
+    forced_files_client, monkeypatch, method,
+):
+    client, root = forced_files_client
+    artifact = _seed_file(client, root, name="out/a b.txt")
+    request = getattr(client, method)
+    response = request("/api/files/download", params={"path": artifact.as_uri()})
+    assert response.status_code == 200
+    assert response.headers["content-length"] == "5"
+    assert response.content == (b"hello" if method == "get" else b"")
+
+    outside = root.parent / "outside.txt"
+    outside.write_text("outside")
+    assert request("/api/files/download", params={"path": outside.as_uri()}).status_code == 403
+    sensitive = root / ".env"
+    sensitive.write_text("fixture-only")
+    assert request("/api/files/download", params={"path": sensitive.as_uri()}).status_code == 403
+
+    monkeypatch.setattr(web_server, "_MANAGED_FILE_MAX_BYTES", 1)
+    assert request("/api/files/download", params={"path": artifact.as_uri()}).status_code == 413
 
 
 def test_stream_authenticates_native_and_browser_players_and_supports_ranges(forced_files_client):

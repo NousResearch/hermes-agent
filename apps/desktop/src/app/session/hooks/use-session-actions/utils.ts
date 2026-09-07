@@ -150,6 +150,7 @@ const _chatMessageFieldsExhaustive: {
 } = {}
 
 const COMPARED_FIELDS = [
+  'asyncResult',
   'id',
   'role',
   // A newly hydrated classification must replace the cached prefix fallback.

@@ -24,6 +24,8 @@ export type ChatMessage = {
    * equality with another runtime identity, never with the renderer clock. */
   runtimeTurnStartedAt?: number
   parts: ChatMessagePart[]
+  /** Result body only; the system text remains the compact completion label. */
+  asyncResult?: string
   timestamp?: number
   completedAt?: number
   pending?: boolean

@@ -165,7 +165,7 @@ def _build_child_agent(
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
-    override_max_tokens: Optional[int] = None,
+
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -209,7 +209,7 @@ def _build_child_agent(
     rt = _resolve_child_runtime(
         parent_agent, delegation_cfg, parent_api_key, model=model, override_provider=override_provider,
         override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
-        override_max_tokens=override_max_tokens, override_acp_command=override_acp_command,
+        override_acp_command=override_acp_command,
         override_acp_args=override_acp_args,
     )
     if override_request_overrides is not None:
@@ -332,6 +332,7 @@ def _run_single_child(
         duration = run.elapsed()
         entry = _build_result_entry(child, result, task_index, duration, schema)
         run.append_sibling_write_reminder(entry)
+        run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)
         return run.attach_worktree(entry)
     except Exception as exc:
@@ -359,7 +360,7 @@ def _build_children(
         "override_provider": creds["provider"], "override_base_url": creds["base_url"],
         "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
         "override_request_overrides": creds.get("request_overrides"),
-        "override_max_tokens": creds.get("max_output_tokens"), "override_acp_command": creds.get("command"),
+        "override_acp_command": creds.get("command"),
         "override_acp_args": creds.get("args"),
     }
     children = []
@@ -507,10 +508,12 @@ _DESCRIPTION_HEAD = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
     "final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
     "(limit in the tasks description).\n\n"
-    "Runs in the background: dispatch returns immediately with live transcript paths, and each completed unit "
-    "re-enters the conversation on its own — an ungrouped task as soon as IT finishes, tasks sharing a `group` "
-    "together once all of them finish. Handle each result as it lands. Do NOT wait or poll; continue "
-    "other work. While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
+    "Runs in the background: dispatch returns immediately with live transcript paths, and the call's results re-enter "
+    "the conversation as a new message when its subagents finish (one message per call by default; with "
+    "delegation.independent_completions each ungrouped task / `group` returns on its own). Results are delivered only "
+    "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
+    "wait or poll on transcripts, artifact files, or CI for a child. "
+    "While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
     "child drifting.\n\n"
     "USE FOR: reasoning-heavy subtasks, work that would flood your context with intermediate data, or independent "
     "parallel workstreams.\n"
@@ -599,10 +602,10 @@ DELEGATE_TASK_SCHEMA = {
                         ),
                         "group": _p(
                             "string",
-                            "Optional completion group. Tasks sharing a group wait for each other and return as ONE "
-                            "message (use when you must compare or merge their results); a task without a group "
-                            "returns on its own the moment it finishes. Independent work (separate PR reviews, "
-                            "unrelated fixes) should stay ungrouped so nothing waits for the slowest sibling.",
+                            "Optional result-delivery bucket within this call (only when delegation.independent_completions "
+                            "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
+                            "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
+                            "order execution; if B needs A's output, dispatch B after A returns.",
                         ),
                     },
                     "required": ["goal"],

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.usage_anchor import set_usage_anchor
 
 logger = logging.getLogger(__name__)
 _codex_watchdog_state_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
@@ -81,9 +82,12 @@ def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable
         logger.debug(fail_msg, agent.session_id, *fail_extra, exc)
 
 
-def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
+def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]:
     """Translate Codex app-server token usage into Hermes accounting. Prompt bucket = uncached + cached
-    input (the protocol exposes no cache-write tokens); a turn with no usage still counts as one API call."""
+    input (the protocol exposes no cache-write tokens); a turn with no usage still counts as one API call.
+    ``messages`` (the transcript mirror) lets real usage anchor the next preflight: this runtime bypasses
+    the main loop's capture, and the mirror is never compacted natively, so without an anchor the rough
+    estimate grows monotonically and hermes-mode fires thread compaction on tiny threads (#100381)."""
     agent.session_api_calls += 1
     usage = getattr(turn, "token_usage_last", None)
     compressor = getattr(agent, "context_compressor", None)
@@ -94,6 +98,8 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
         if compressor is not None and getattr(compressor, "awaiting_real_usage_after_compression", False):
             # No usage cannot adjudicate the pending compaction; unlatch preflight deferral.
             compressor.update_from_response({})
+        if compressor is not None and callable(getattr(compressor, "note_usage_less_response", None)):
+            compressor.note_usage_less_response()
         _queue_token_counts(agent, "Codex app-server api-call persistence failed (session=%s): %s",
                             counts=lambda: billing(billing_mode="subscription_included"))
         return {}
@@ -117,6 +123,12 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 compressor.context_length = context_window
         except Exception:
             logger.debug("codex app-server usage update failed", exc_info=True)
+    if isinstance(messages, list):
+        from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
+
+        anchor = capture_usage_anchor(prompt_tokens, canonical_usage.output_tokens, messages)
+        if anchor is not None:
+            set_usage_anchor(agent, anchor)
     for key, value in usage_dict.items():
         setattr(agent, f"session_{key}", getattr(agent, f"session_{key}") + value)
     cost_result = estimate_usage_cost(
@@ -161,8 +173,7 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
             compressor.last_prompt_tokens, compressor.last_completion_tokens = -1, 0
             compressor.awaiting_real_usage_after_compression = True
     # Provider-side context was rewritten; the usage anchor's transcript snapshot no longer matches.
-    agent._usage_anchor = None
-    agent._turn_base_usage_anchor = None
+    set_usage_anchor(agent, None)
     agent._last_compaction_in_place = False
     _call_guarded(getattr(agent, "event_callback", None) or None, "event_callback error on codex session:compress",
                   args=("session:compress", {
@@ -408,7 +419,15 @@ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> 
     if not turn.projected_messages:
         return
     from agent.message_metadata import append_message
-    for projected_message in turn.projected_messages:
+    projected_messages = turn.projected_messages
+    # Turn-start persistence owns the accepted input. Codex's leading user item
+    # only echoes its coerced wire text; later/nonmatching events remain real.
+    submitted_user_text = getattr(turn, "submitted_user_text", None)
+    first = projected_messages[0]
+    if (submitted_user_text is not None and first.get("role") == "user"
+            and first.get("content") == submitted_user_text):
+        projected_messages = projected_messages[1:]
+    for projected_message in projected_messages:
         append_message(messages, projected_message)
     if getattr(agent, "_session_db", None) is None:
         return
@@ -429,7 +448,7 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
     # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
     agent._iters_since_skill = getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     _record_codex_app_server_compaction(agent, turn)
-    usage_result = _record_codex_app_server_usage(agent, turn)
+    usage_result = _record_codex_app_server_usage(agent, turn, messages=messages)
     # Skill nudge check AFTER iters were incremented (same as chat_completions).
     should_review_skills = (0 < agent._skill_nudge_interval <= agent._iters_since_skill
                             and "skill_manage" in agent.valid_tool_names)

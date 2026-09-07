@@ -669,44 +669,8 @@ def ensure_hermes_home():
     current_identity = _hermes_home_identity(home, include_ctime=named_profile)
     if current_identity is not None and _HERMES_HOME_ENSURED.get(key) == current_identity:
         return
-    # Named profiles must be created explicitly (e.g. ``hermes profile create``).
-    # If a stale process keeps running after the profile was renamed/deleted,
-    # silently mkdir-ing the old HERMES_HOME would resurrect an empty skeleton
-    # and make the deleted profile reappear in Desktop/profile lists.
-    if is_managed():
-        # Activation creates the dirs; verify, then seed SOUL.md. logs/curator may be unknown to
-        # the activation script (inside an already-secured logs/). umask(0o007) => SOUL.md is 0660.
-        old_umask = os.umask(0o007)
-        try:
-            if not home.is_dir():
-                raise RuntimeError(f"HERMES_HOME {home} does not exist.")
-            for subdir in ("cron", "sessions", "logs", "memories"):
-                if not (home / subdir).is_dir():
-                    raise RuntimeError(f"{home / subdir} does not exist.")
-            if named_profile and named_profile_home_is_unavailable(home):
-                raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
-            (home / "logs" / "curator").mkdir(parents=not named_profile, exist_ok=True)
-            _ensure_default_soul_md(home)
-        finally:
-            os.umask(old_umask)
-    else:
-        if named_profile:
-            if not home.is_dir():
-                raise FileNotFoundError(f"Named profile home disappeared during initialization: {home}")
-        else:
-            home.mkdir(parents=True, exist_ok=True)
-        _secure_dir(home)
-        for subdir in _HERMES_HOME_SUBDIRS:
-            if named_profile and named_profile_home_is_unavailable(home):
-                raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
-            d = home / subdir
-            d.mkdir(parents=not named_profile, exist_ok=True)
-            _secure_dir(d)
-        _ensure_default_soul_md(home)
-
-    ensured_identity = _hermes_home_identity(home, include_ctime=named_profile)
-    if ensured_identity is not None:
-        _HERMES_HOME_ENSURED[key] = ensured_identity
+    from hermes_cli.config_home import initialize_home
+    initialize_home(home, _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
 
 
 # ---- Config loading/saving ----
@@ -1110,7 +1074,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "known_builtin_toolsets",  # ditto — builtin toolsets a platform's checklist has offered
     "tool_gateway_declined_tools",  # per-tool Tool Gateway offer declines
     # Top-level forms read/bridged by gateway/config.py:
-    "session_reset", "group_sessions_per_user", "thread_sessions_per_user",
+    "group_sessions_per_user", "thread_sessions_per_user",
     "stt_echo_transcripts", "reset_triggers", "always_log_local", "filter_silence_narration",
     "multiplex_profiles", "profile_routes", "platforms", "require_mention",
     "unauthorized_dm_behavior", "signal",
@@ -1248,8 +1212,9 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
     if config is None:
         try:
             config = load_config()
-        except Exception:
-            return [ConfigIssue("error", "Could not load config.yaml", "Run 'hermes setup' to create a valid config")]
+        except Exception as exc:
+            from hermes_cli.config_home import config_load_issue
+            return [config_load_issue(exc)]
 
     issues: List[ConfigIssue] = []
     _validate_voice(config, issues)

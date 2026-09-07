@@ -142,15 +142,59 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     )
 
 
-def _pending_fleet_restart_needed() -> bool:
-    """True when a prior pull still owes the fleet a restart.
+def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
+    """Require current successors for every recorded runtime, not just any live row.
 
-    See #95294.
+    A PID changes on restart; the stable identity is (runtime kind, profile).
+    The gateway matrix cannot vouch for serve/dashboard or unidentified runtimes.
+    Keep the historical receipt intact: a manual restart is not a successful update.
     """
+    if not expected_sha:
+        return False
+    from hermes_cli.update_receipt import collect_fleet_versions, read_latest_receipt
+
+    try:
+        receipt = read_latest_receipt() or {}
+        plan = receipt.get("plan") or {}
+        runtimes = plan.get("runtimes") or []
+        recorded_fleet = receipt.get("fleet") or []
+        owed = set()
+        entries: list[tuple[object, str | None]] = [(entry, None) for entry in runtimes]
+        entries.extend((entry, "gateway") for entry in recorded_fleet)
+        for entry, default_kind in entries:
+            if not isinstance(entry, dict):
+                return False
+            kind = entry.get("kind", default_kind)
+            profile = entry.get("profile")
+            if kind != "gateway" or not profile or profile == "unknown":
+                return False
+            owed.add((kind, profile))
+        if not owed:
+            return False
+        fleet = collect_fleet_versions()
+        if not fleet or any(
+            row.get("state") != "current" or row.get("code_sha") != expected_sha
+            for row in fleet
+        ):
+            return False
+        return owed <= {("gateway", row.get("profile")) for row in fleet}
+    except Exception as exc:
+        logger.debug("Could not reconcile pending fleet identities: %s", exc)
+        return False
+
+
+def _pending_fleet_restart_needed() -> bool:
+    """Reconcile old restart obligations against current, identity-matched gateways."""
+    from hermes_cli.update_cmd import _current_checkout_sha
+
+    # The marker has no runtime inventory and may belong to a newer, killed update
+    # than latest.json. An older receipt cannot discharge that unknown obligation.
     with suppress(OSError):
         if _fleet_restart_pending_marker_path().is_file():
             return True
-    return _receipt_reports_stale_runtime()
+    if not _receipt_reports_stale_runtime():
+        return False
+    return not _live_fleet_covers_receipt(_current_checkout_sha())
 
 
 def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
@@ -195,29 +239,36 @@ def _needs_sudo(scope: str) -> bool:
     )
 
 
-def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
+def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
     """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit."""
-    for scope, scope_cmd, result in _systemd_gateway_unit_listings():
+    answered = set()
+    for scope, scope_cmd, result in listings:
+        answered.add(scope)
         if result.returncode != 0:
+            failed.append(f"systemd-{scope} (listing failed)")
             continue
 
         def process_unit(svc_name: str, _scope=scope, _cmd=scope_cmd) -> None:
-            restart_cmd = list(_cmd) + ["--no-ask-password", "restart", svc_name]
+            manage_cmd = list(_cmd) + ["--no-ask-password"]
             if _needs_sudo(_scope):
-                restart_cmd = ["sudo", "-n"] + restart_cmd
-            _systemctl(restart_cmd, timeout=30)
+                manage_cmd = ["sudo", "-n"] + manage_cmd
+            result = _systemctl_reset_and_restart(manage_cmd, svc_name, scope_cmd=_cmd)
+            if result.returncode != 0 or not _wait_for_service_active(_cmd, svc_name):
+                failed.append(svc_name)
 
         _for_each_systemd_gateway_unit(
             result.stdout,
             process_unit=process_unit,
             on_unit_timeout=lambda svc_name, exc: failed.append(svc_name),
         )
+    # A timeout or missing executable is not an empty scope.
+    failed.extend(f"systemd-{scope} (listing unavailable)" for scope, _ in _SYSTEMD_SCOPES if scope not in answered)
 
 
 def _run_pending_fleet_restart() -> bool:
     """Catch-up restart for gateways left on pre-update code. Never raises.
 
-    True when the restart completed or nothing was running; False if incomplete.
+    True when all discovered targets recovered (or none exist); False if incomplete.
 
     See #95294.
     """
@@ -244,22 +295,30 @@ def _run_pending_fleet_restart() -> bool:
         logger.debug("Pending fleet restart: gateway probe failed: %s", exc)
         pids = None
 
-    if pids == []:
-        print("  ✓ No running gateways — nothing to restart.")
-        return True
-
     failed: list = []
     try:
+        # Snapshot before stopping: Restart=no units can disappear from list-units on a clean exit.
+        systemd_listings = list(_systemd_gateway_unit_listings()) if supports_systemd_services() else None
+        # Stop old processes before supervisor recovery, never its freshly verified workers.
+        if pids != []:
+            try:
+                leftover = list(find_gateway_pids(all_profiles=True))
+            except Exception:
+                leftover = list(pids or [])
+            if leftover:
+                with _best_effort('Pending fleet restart: PID stop failed: %s'):
+                    kill_gateway_processes(all_profiles=True)
+                    _wait_for_gateway_exit(timeout=5.0, force_after=None)
         # --- Systemd services (Linux) --- Discover all hermes-gateway* units (default + profiles) plus
         # hermes-serve* units (the Desktop app's backend, #83438).
-        if supports_systemd_services():
-            _restart_systemd_gateway_units_best_effort(failed)
+        if systemd_listings is not None:
+            _restart_systemd_gateway_units_best_effort(failed, systemd_listings)
         # --- Launchd services (macOS) --- Restart EVERY ai.hermes.gateway* LaunchAgent, not only the
         # invoking profile's — parity with the systemd branch above (#41403). Per-label TimeoutExpired
         # isolation happens inside.
         if is_macos():
             try:
-                _restart_macos_launchd_gateways([], failed, 45.0)
+                _restart_macos_launchd_gateways([], failed, 45.0, require_supervision=True)
             except Exception as exc:
                 logger.debug("Pending fleet restart: launchd failed: %s", exc)
                 failed.append("launchd")
@@ -271,14 +330,6 @@ def _run_pending_fleet_restart() -> bool:
             except Exception as exc:
                 logger.debug("Pending fleet restart: Windows failed: %s", exc)
                 failed.append("windows-gateway")
-        try:
-            leftover = list(find_gateway_pids(all_profiles=True))
-        except Exception:
-            leftover = list(pids or [])
-        if leftover:
-            with _best_effort('Pending fleet restart: PID stop failed: %s'):
-                kill_gateway_processes(all_profiles=True)
-                _wait_for_gateway_exit(timeout=5.0, force_after=None)
         if failed:
             _warn_incomplete_gateway_fleet_restart(failed)
             return False
@@ -317,11 +368,53 @@ def _systemctl(cmd: list, *, timeout: float):
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
 
 
-def _systemctl_reset_and_restart(manage_cmd: list, svc_name: str):
+# poll() takes signed 32-bit milliseconds; keep headroom for rounding in communicate().
+_SYSTEMCTL_RESTART_TIMEOUT_MAX = (2**31 - 1) // 1000 - 1
+
+
+def _systemd_restart_timeout(scope_cmd: list, svc_name: str, *, start_only: bool = False) -> float:
+    """Outwait the unit's stop + start budgets, not just the systemctl client.
+
+    A client timeout does not cancel the manager's queued restart. Unknown or
+    infinite limits use systemd's usual 90s per phase so automation stays bounded.
+    Custom ExecStop chains or EXTEND_TIMEOUT_USEC can still exceed this budget;
+    genuine timeouts must continue through the existing per-unit failure path.
+    """
+    from gateway.shutdown_forensics import parse_systemd_duration_to_us
+
+    budgets = {"TimeoutStartUSec": 90.0}
+    if not start_only:
+        budgets["TimeoutStopUSec"] = 90.0
+    try:
+        show = _systemctl(
+            scope_cmd + ["show", svc_name, "--property=TimeoutStopUSec,TimeoutStartUSec"],
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return sum(budgets.values()) + 15.0
+    if show.returncode == 0:
+        for line in (show.stdout or "").splitlines():
+            key, _, raw = line.partition("=")
+            if key in budgets:
+                # The shared parser returns None for infinity/unrecognized units.
+                try:
+                    raw = raw.strip()
+                    duration = int(raw) if raw.isascii() and raw.isdigit() else parse_systemd_duration_to_us(raw)
+                    if duration is not None and duration > 0:
+                        budgets[key] = duration / 1_000_000
+                except (ValueError, OverflowError):
+                    pass
+    return min(sum(budgets.values()) + 15.0, _SYSTEMCTL_RESTART_TIMEOUT_MAX)
+
+
+def _systemctl_reset_and_restart(manage_cmd: list, svc_name: str, *, scope_cmd: list | None = None):
     """``reset-failed`` then ``restart``: a unit parked in failed state by systemd's own
     auto-restart can wedge a plain ``restart`` against RestartSec backoff and stay dead."""
+    # Property reads need no manage-units privileges: narrow sudoers may permit
+    # restart/reset-failed but deny show. Keep the same user/system manager scope.
+    timeout = _systemd_restart_timeout(scope_cmd if scope_cmd is not None else manage_cmd, svc_name)
     _systemctl(manage_cmd + ["reset-failed", svc_name], timeout=10)
-    return _systemctl(manage_cmd + ["restart", svc_name], timeout=15)
+    return _systemctl(manage_cmd + ["restart", svc_name], timeout=timeout)
 
 
 def _is_hermes_gateway_unit(unit: str) -> bool:
@@ -465,7 +558,9 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
     return [], [current_label]
 
 
-def _restart_macos_launchd_gateways(restarted_services: list, failed_or_stale_units: list, drain_budget: float) -> None:
+def _restart_macos_launchd_gateways(
+    restarted_services: list, failed_or_stale_units: list, drain_budget: float, *, require_supervision: bool = False,
+) -> None:
     """Restart every launchd-managed gateway after an update (macOS).
 
     The pull is shared across profiles, so every ``ai.hermes.gateway*`` LaunchAgent
@@ -480,9 +575,14 @@ def _restart_macos_launchd_gateways(restarted_services: list, failed_or_stale_un
     cannot leave the rest of the fleet on old code (#68523).
     """
     from hermes_cli.gateway import (
-        get_launchd_label, launchd_gateway_labels_for_install, _graceful_restart_via_sigusr1, _launchd_kickstart,
+        get_launchd_label, get_launchd_plist_path, launchd_gateway_labels_for_install, _graceful_restart_via_sigusr1, _launchd_kickstart,
         _locate_launchd_gateway_service, _wait_for_launchd_service_pid,
     )
+    if require_supervision:
+        listing = subprocess.run(["launchctl", "list"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+        if listing.returncode != 0:
+            failed_or_stale_units.append("launchd (listing failed)")
+            return
     _restarted, _failed = _restart_launchd_gateway_after_update(supervision_verify=True)
     restarted_services.extend(_restarted)
     failed_or_stale_units.extend(_failed)
@@ -496,7 +596,9 @@ def _restart_macos_launchd_gateways(restarted_services: list, failed_or_stale_un
             # reuse that domain so a sibling is never probed in one and restarted in another.
             domain, old_pid = _locate_launchd_gateway_service(label)
             if domain is None:
-                continue  # installed but not bootstrapped — nothing running old code here
+                if require_supervision and get_launchd_plist_path().with_name(f"{label}.plist").exists():
+                    failed_or_stale_units.append(label)
+                continue  # A profile without an installed job has no restart target.
             graceful_ok = False
             if old_pid is not None and old_pid > 0:
                 print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
@@ -727,7 +829,10 @@ def _restart_one_systemd_gateway_unit(
         # privileges; without them auto-restart still fires after RestartSec.
         if _manage_cmd is not None:
             _systemctl(_manage_cmd + ["reset-failed", svc_name], timeout=10)
-            _systemctl(_manage_cmd + ["start", svc_name], timeout=15)
+            _systemctl(
+                _manage_cmd + ["start", svc_name],
+                timeout=_systemd_restart_timeout(scope_cmd, svc_name, start_only=True),
+            )
             if _wait_for_service_active(scope_cmd, svc_name, timeout=10.0):
                 restarted_services.append(svc_name)
                 return
@@ -762,7 +867,7 @@ def _restart_one_systemd_gateway_unit(
 
     # Blunt restart — only when the graceful path failed (no SIGUSR1 wiring, drain over
     # budget, restart-policy mismatch). Mirrors `hermes gateway restart` (`systemd_restart()`).
-    restart = _systemctl_reset_and_restart(_manage_cmd, svc_name)
+    restart = _systemctl_reset_and_restart(_manage_cmd, svc_name, scope_cmd=scope_cmd)
     if restart.returncode != 0:
         failed_or_stale_units.append(svc_name)
         print(f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}")
@@ -774,7 +879,7 @@ def _restart_one_systemd_gateway_unit(
     # Retry once — transient startup failures (stale module cache,
     # import race) often clear; reset-failed so the retry isn't blocked.
     print(f"  ⚠ {svc_name} died after restart, retrying...")
-    _systemctl_reset_and_restart(_manage_cmd, svc_name)
+    _systemctl_reset_and_restart(_manage_cmd, svc_name, scope_cmd=scope_cmd)
     if _wait_for_service_active(scope_cmd, svc_name, timeout=10.0):
         restarted_services.append(svc_name)
         print(f"  ✓ {svc_name} recovered on retry")

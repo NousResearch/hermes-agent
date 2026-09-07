@@ -145,6 +145,13 @@ If you'd rather not track per-provider plan semantics at all, [Nous Portal](#nou
 
 Use Claude models directly through the Anthropic API — no OpenRouter proxy needed. Supports three auth methods:
 
+When no explicit environment credential is selected, Hermes-owned OAuth grants
+in the credential pool take precedence over a borrowed Claude Code login. The
+borrowed login remains the fallback when no owned OAuth grant is available.
+Auxiliary authentication recovery refreshes the credential used by the failed
+request, not an unrelated ambient login; rotating a borrowed login can otherwise
+invalidate its owner's refresh token.
+
 :::caution Requires Claude Max "extra usage" credits
 When you authenticate via `hermes model` → Anthropic OAuth (or via `hermes auth add anthropic --type oauth`), Hermes routes as Claude Code against your Anthropic account. **It only works if you're on a Claude Max plan and have purchased extra usage credits.** The base Max plan allowance (the usage included in Claude Code by default) is not consumed by Hermes — only the extra/overage credits you've added on top are. Claude Pro subscribers cannot use this path.
 
@@ -862,7 +869,7 @@ hermes model
 **Tool calling:** Use `--tool-call-parser` with the appropriate parser for your model family: `qwen` (Qwen 2.5), `llama3`, `llama4`, `deepseekv3`, `mistral`, `glm`. Without this flag, tool calls come back as plain text.
 
 :::caution SGLang defaults to 128 max output tokens
-If responses seem truncated, add `max_tokens` to your requests or set `--default-max-tokens` on the server. SGLang's default is only 128 tokens per response if not specified in the request.
+If responses seem truncated, check the server's generation default and configure it on the server (for example SGLang's `--default-max-tokens`). Hermes does not expose an output-token cap setting.
 :::
 
 ---
@@ -1131,7 +1138,7 @@ model:
 #### Responses get cut off mid-sentence
 
 **Possible causes:**
-1. **Low output cap (`max_tokens`) on the server** — SGLang defaults to 128 tokens per response. Set `--default-max-tokens` on the server or configure Hermes with `model.max_tokens` in config.yaml. Note: `max_tokens` controls response length only — it is unrelated to how long your conversation history can be (that is `context_length`).
+1. **Low output limit on the server** — configure the server's generation default (for example SGLang's `--default-max-tokens`). Hermes does not expose an output-token cap setting. Response length is distinct from the conversation's context window (`context_length`).
 2. **Context exhaustion** — The model filled its context window. Increase `model.context_length` or enable [context compression](/user-guide/configuration#context-compression) in Hermes.
 
 ---
@@ -1227,13 +1234,24 @@ model:
 
 ### Context Length Detection
 
-:::note Two settings, easy to confuse
+:::note Context windows and output limits are different
 **`context_length`** is the **total context window** — the combined budget for input *and* output tokens (e.g. 200,000 for Claude Opus 4.6). Hermes uses this to decide when to compress history and to validate API requests.
 
-**`model.max_tokens`** is the **output cap** — the maximum number of tokens the model may generate in a *single response*. It has nothing to do with how long your conversation history can be. The industry-standard name `max_tokens` is a common source of confusion; Anthropic's native API has since renamed it `max_output_tokens` for clarity.
+Output limits govern a single generated response, not the conversation history.
+Hermes no longer reads `model.max_tokens`, `HERMES_MAX_TOKENS`, provider output-cap
+settings, or `model_overrides.*.*.max_output_tokens`. Remove these legacy settings.
+Custom OpenAI-compatible endpoints receive no automatic catalog-sized output cap.
+Their server defaults apply; these can be lower than the model maximum.
+
+Native Anthropic Messages (including the native Anthropic Bedrock path) requires
+`max_tokens`, so Hermes supplies an internal value. Bedrock Converse is a separate
+protocol: its optional `inferenceConfig.maxTokens` is omitted by default, which
+[AWS documents as the model maximum](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InferenceConfiguration.html).
+Internal bounded tasks and provider-specific protocol requirements remain implementation
+details. Omission does not universally select a model's maximum output.
 
 Set `context_length` when auto-detection gets the window size wrong.
-Set `model.max_tokens` only when you need to limit how long individual responses can be.
+
 :::
 
 Hermes uses a multi-source resolution chain to detect the correct context window for your model and provider:
@@ -1304,6 +1322,15 @@ providers:
 Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key` or `key_cmd` (see below), `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `ssl_ca_cert` / `ssl_verify`, and `enabled: false` to hide an entry without deleting it.
 
 #### Command-minted credentials (`key_cmd`)
+
+Vision, thinking, and native local-model capability probes materialize the same
+callable credential used by chat before building authentication headers. They
+reuse the command token cache without replacing the chat client's callable.
+If a command cannot mint a string token, these best-effort probes send no bearer
+rather than an object representation or a lower-priority configured credential.
+Native local-model probes remove inherited Authorization on a failed explicit
+callable while retaining unrelated configured headers. Chat retains its normal
+error handling.
 
 Enterprise gateways often issue short-lived bearer tokens (SSO/OIDC brokers, cloud IAM, internal auth proxies) rather than static API keys, so a token copied into `.env` goes stale mid-session and requests start returning 401. `key_cmd` names a command that *prints* a token; Hermes runs it and caches the result until shortly before expiry, so long sessions keep working with no restart:
 

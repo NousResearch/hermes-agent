@@ -22,10 +22,12 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough
+    MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
+    strip_opaque_replay_items,
 )
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
@@ -953,10 +955,6 @@ def _collect_protected_skill_names(messages: List[Dict[str, Any]], prune_boundar
 
 
 _CHARS_PER_TOKEN = 4
-# Flat per-image token estimate (realistic ceiling; matches Claude Code's constant).
-_IMAGE_TOKEN_ESTIMATE = 1600
-# Same figure in char-budget currency.
-_IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
 # Fallback handoff preserves continuity anchors only, not a transcript copy.
@@ -1071,14 +1069,18 @@ def _bullets(items: list[str], limit: int = 8) -> str:
 
 
 def _content_length_for_budget(raw_content: Any) -> int:
-    """Effective char-length of message content for budgeting: text by length plus ``_IMAGE_CHAR_EQUIVALENT`` per image."""
+    """Effective char-length of message content for budgeting: text by length plus the learned
+    per-image price (``agent.image_token_cost``, same figure the trigger estimator uses) per image."""
     if isinstance(raw_content, str):
         return len(raw_content)
     if not isinstance(raw_content, list):
         return len(str(raw_content or ""))
+    from agent.image_token_cost import current_image_token_cost
+
+    image_chars = current_image_token_cost() * _CHARS_PER_TOKEN
     # Any text-bearing part counts its text; image_url payload size is irrelevant.
     return sum(
-        (_IMAGE_CHAR_EQUIVALENT if _is_image_part(p) else len(p.get("text", "") or "")) if isinstance(p, dict) else len(str(p))
+        (image_chars if _is_image_part(p) else len(p.get("text", "") or "")) if isinstance(p, dict) else len(str(p))
         for p in raw_content
     )
 
@@ -1127,12 +1129,15 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
     and always-replayed provider fields. Always-replayed fields are charged because the preflight estimator sees
     the full shape; a mismatched size class protects blob-heavy rows as "small" and compaction re-fires.
     ``charge_stale_thinking=False`` skips newest-turn-only thinking keys. Accounting only; never mutates."""
-    content = msg.get("content") or ""
+    # Charge the wire substitute, not both it and the clean display content.
+    sidecar = msg.get("api_content")
+    content = sidecar if isinstance(sidecar, str) and sidecar and msg.get("role") in ("user", "assistant") else msg.get("content") or ""
     text_tokens = estimate_tokens_rough(content) if isinstance(content, str) else _content_length_for_budget(content) // _CHARS_PER_TOKEN
     tokens = text_tokens + 10  # +10 for role/key overhead
     tokens += sum(estimate_tokens_rough(str(tc)) for tc in msg.get("tool_calls") or [] if isinstance(tc, dict))
     for key in _ALWAYS_REPLAYED_BUDGET_KEYS:
-        tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
+        # Opaque ciphertext is priced only by real usage (same rule as the preflight estimator).
+        tokens += _serialized_length_for_budget(strip_opaque_replay_items(msg.get(key))) // _CHARS_PER_TOKEN
     if not charge_stale_thinking:
         return tokens
     # Wire ships at most ONE generic thinking key (reasoning_content wins);
@@ -1633,7 +1638,7 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 }
 
 
-class ContextCompressor(MicroCompactionMixin, ContextEngine):
+class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngine):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
 
@@ -1818,10 +1823,9 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         self._reset_session_compaction_state()
 
     def _reset_real_usage_pairing(self) -> None:
-        """Forget the real-vs-rough token pairing used by should_defer_preflight_to_real_usage()."""
+        """Forget the real-usage state read by real_usage_pending()."""
         self.last_real_prompt_tokens = self.last_compression_rough_tokens = 0
-        self.last_rough_tokens_when_real_prompt_fit = self._pending_request_rough_tokens = 0
-        self.awaiting_real_usage_after_compression = False
+        self.awaiting_real_usage_after_compression = self._provider_omits_usage = False
 
     def _reset_session_compaction_state(self) -> None:
         """Shared per-session reset for /new, /reset and session end."""
@@ -2355,19 +2359,10 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         """Pair the real prompt count with its rough estimate and judge the armed compaction verdict."""
         if self.last_prompt_tokens > 0:
             self.last_real_prompt_tokens = self.last_prompt_tokens
+            self._provider_omits_usage = False
             if self.last_prompt_tokens < self.threshold_tokens:
-                if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
-                    self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
-                elif self._pending_request_rough_tokens > 0:
-                    # Pair the real prompt count with the same request's rough estimate so the defer baseline syncs on
-                    # EVERY fitting response, not only after compaction; otherwise a never-compressed session has no
-                    # baseline and preflight fires on the raw rough estimate (overcounts CJK / replay blobs severalfold).
-                    self.last_rough_tokens_when_real_prompt_fit = self._pending_request_rough_tokens
                 # Any real reading below the trigger proves the prompt fits: clear the latch. The fallback streak survives.
                 self._record_ineffective_compression_verdict(0)
-            else:
-                self.last_rough_tokens_when_real_prompt_fit = 0
-            self._pending_request_rough_tokens = 0
             # Anti-thrash verdict lives HERE: effectiveness is "prompt under threshold" per the provider's real count,
             # not "messages shrank"; should_compress() runs twice per turn with mixed measures and would reset it.
             # Anti-thrashing verdict, judged HERE because this is the only place that sees the provider's
@@ -2409,12 +2404,10 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             return
         self.last_prompt_tokens = snapshot
 
-    def note_request_rough_estimate(self, rough_tokens: int) -> None:
-        """Record the rough estimate of the request about to be sent, for pairing with real usage."""
-        try:
-            self._pending_request_rough_tokens = max(0, int(rough_tokens))
-        except (TypeError, ValueError):
-            self._pending_request_rough_tokens = 0
+    def note_usage_less_response(self) -> None:
+        """A completed response carried no usage: until a real reading arrives, this provider cannot
+        adjudicate context pressure, so rough estimates decide instead of waiting forever (#2153)."""
+        self._provider_omits_usage = True
 
     def note_native_compaction_checkpoint(self) -> None:
         """Wait for real usage before trusting a newly checkpointed request.
@@ -2431,26 +2424,23 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         self.last_compression_rough_tokens = 0
 
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
-        """Return True when a high rough preflight estimate is known-noisy.
-        Projects real usage as ``last_real + (rough_now - rough_at_last_real)`` and fires only when the
-        projection, not the raw estimate, crosses the threshold. Not a strict upper bound for
-        chars/4-underestimated scripts (Cyrillic, Thai, Arabic); bounded by two backstops: a real
-        reading at/over threshold clears the baseline, and the overflow handler compacts reactively.
-        Callers with a smaller (raw-messages) basis can only over-defer; the pre-API pressure check
-        re-runs with the aligned basis."""
+        """True when a whole-context ROUGH estimate over threshold must wait ONE request for the
+        provider's real usage. Callers skip this for usage-anchored figures (real prompt count +
+        delta of what was appended since), which never defer. A rough figure defers right after a
+        local or native compaction (the last real reading is stale — the latch) and on any
+        transcript the anchor does not cover (first request, rewind/edit-resend, reloaded history):
+        the next response re-anchors it. It never defers once the provider has proven it omits
+        usage, or the estimate would be the only signal and compression could never fire (#2153);
+        the overflow handler compacts reactively in every case."""
         if rough_tokens < self.threshold_tokens:
             return False
-        # After local or native compaction, last_real_prompt_tokens is STALE
-        # (above threshold); defer one turn until real usage arrives.
         if self.awaiting_real_usage_after_compression:
             return True
-        if self.last_real_prompt_tokens <= 0 or self.last_real_prompt_tokens >= self.threshold_tokens:
+        # A real reading already at/over threshold needs no second opinion, and a rough figure past
+        # the whole window describes a request certain to fail — sending it only buys an overflow error.
+        if self.last_real_prompt_tokens >= self.threshold_tokens or rough_tokens >= self.context_length:
             return False
-        baseline = self.last_rough_tokens_when_real_prompt_fit or self.last_compression_rough_tokens
-        if baseline <= 0:
-            return False
-        # No baseline ratchet here: advancing rough without a matching real reading would defer on stale data.
-        return self.last_real_prompt_tokens + max(0, rough_tokens - baseline) < self.threshold_tokens
+        return not self._provider_omits_usage
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """True when compression should run now (anti-thrash included; see :meth:`should_compress_info` for the reason)."""
@@ -4679,23 +4669,6 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
         return self._finalize_compressed(compressed, messages, n_messages)
-
-    def _summarize_window(
-        self, messages: List[Dict[str, Any]], turns_to_summarize: List[Dict[str, Any]], scan: "_HandoffScan",
-        focus_topic: Optional[str], memory_context: str, bypass_cooldown: bool,
-    ) -> Optional[str]:
-        """Run the summary LLM; a cancellation rolls back the handoff scan's self-heal mutation first."""
-        # Focus-topic derivation scans user turns; only pay when a summary is generated.
-        try:
-            return self._generate_summary(
-                turns_to_summarize, focus_topic=focus_topic or self._derive_auto_focus_topic(messages),
-                memory_context=memory_context, bypass_cooldown=bypass_cooldown,
-            )
-        except AuxiliaryExplicitCancellation:
-            # Cancellation is a true no-op: restore the scan's mutation before the exception escapes.
-            self._previous_summary = scan.previous_summary_before
-            self._summary_has_user_turn = scan.has_user_turn_before
-            raise
 
     def _assemble_compressed(
         self, messages: List[Dict[str, Any]], compress_start: int, compress_end: int, scan: "_HandoffScan", summary: str,

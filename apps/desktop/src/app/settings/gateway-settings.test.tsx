@@ -1,6 +1,9 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Collect the component graph before the behavioral test deadline starts.
+import { GatewaySettings } from './gateway-settings'
+
 const getConnectionConfig = vi.fn()
 const saveConnectionConfig = vi.fn()
 
@@ -40,8 +43,6 @@ describe('GatewaySettings', () => {
   // transforms can exceed the global 15s ceiling under that contention even
   // though the assertions complete in under two seconds in isolation.
   it('loads the machine-level connection config (no profile scoping)', async () => {
-    const { GatewaySettings } = await import('./gateway-settings')
-
     render(<GatewaySettings />)
     expect(await screen.findByText('Local gateway')).toBeTruthy()
     expect(

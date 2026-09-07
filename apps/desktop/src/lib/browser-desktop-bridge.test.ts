@@ -452,14 +452,17 @@ describe('browser-hosted Desktop bridge', () => {
 
     expect(installBrowserDesktopBridge()).toBe(true)
     $connection.set(await win.hermesDesktop!.getConnectionFor!({ connectionId: 'local', profile: 'research' }))
-    const pending = downloadGatewayMediaFile('file:///srv/reports/a%20b.pdf')
+    const pending = downloadGatewayMediaFile('file:///srv/reports/a%20b.pdf', {
+      sessionId: 'origin-session', profile: 'research'
+    })
     $connection.set({ mode: 'remote', profile: 'switched-profile' } as never)
     await expect(pending).resolves.toMatchObject({ saved: true })
 
     const [requestUrl, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
     expect(requestUrl.pathname).toBe('/hermes/api/files/download')
-    expect(requestUrl.searchParams.get('path')).toBe('/srv/reports/a b.pdf')
+    expect(requestUrl.searchParams.get('path')).toBe('file:///srv/reports/a%20b.pdf')
     expect(requestUrl.searchParams.get('profile')).toBe('research')
+    expect(requestUrl.searchParams.get('session_id')).toBe('origin-session')
     expect(init.method).toBe('HEAD')
     expect(init.credentials).toBe('same-origin')
     expect(new Headers(init.headers).get('X-Hermes-Session-Token')).toBe(token || null)
@@ -469,6 +472,7 @@ describe('browser-hosted Desktop bridge', () => {
     expect(url.pathname).toBe(requestUrl.pathname)
     expect(url.searchParams.get('path')).toBe(requestUrl.searchParams.get('path'))
     expect(url.searchParams.get('profile')).toBe('research')
+    expect(url.searchParams.get('session_id')).toBe('origin-session')
     expect(url.searchParams.get('token')).toBe(token || null)
     expect(downloads[0].download).toBe('a b.pdf')
     expect(downloads[0].isConnected).toBe(false)

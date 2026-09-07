@@ -552,6 +552,7 @@ def test_desktop_agent_rebuild_preserves_workspace_provenance(
     monkeypatch.setattr(server, "_emit", lambda *_args: None)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
 
+    monkeypatch.setitem(server._sessions, "live-session", session)
     server._reset_session_agent("live-session", session)
 
     assert captured["context_cwd_is_launch_artifact"] is launch_artifact
@@ -858,7 +859,7 @@ def test_record_repos_writes_to_the_requested_profiles_projects_db(monkeypatch, 
 
 
 def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_path):
-    """Omitted/blank stays on launch; an explicit unknown profile fails closed."""
+    """Only omitted/blank profiles use launch data; unknown targets fail closed."""
     launch_home = _profile_dir(tmp_path, "launch")
     coder_home = _profile_dir(tmp_path, "coder")
     repo = tmp_path / "repos" / "launch-only"
@@ -873,8 +874,11 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
 
         omitted = _call("projects.list")
         blank = _call("projects.list", {"profile": ""})
-        with pytest.raises(FileNotFoundError, match="missing or being deleted"):
+        with pytest.raises(FileNotFoundError, match="not-a-profile"):
             _call("projects.list", {"profile": "not-a-profile"})
+        with pytest.raises(FileNotFoundError, match="not-a-profile"):
+            _call("projects.create", {"profile": "not-a-profile", "name": "Wrong target"})
+        assert _call("projects.list") == omitted
 
     assert [p["name"] for p in omitted["projects"]] == ["Launch only"]
     assert blank == omitted

@@ -1110,7 +1110,7 @@ export function installBrowserDesktopBridge(): boolean {
     saveImageBuffer: saveBuffer,
     saveGatewayFile: async payload => {
       requireBrowserConnection(payload.connectionId)
-      const path = queryPath('/api/files/download', { path: payload.path })
+      const path = queryPath('/api/files/download', { path: payload.path, session_id: payload.sessionId })
       const profile = payload.profile ?? browserProfile()
 
       // Validate before handing the transfer to the browser so missing or

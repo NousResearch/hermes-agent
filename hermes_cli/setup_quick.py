@@ -194,7 +194,6 @@ def _blank_slate_minimize_config(config: dict):
     mem["user_profile_enabled"] = False
     config.setdefault("checkpoints", {})["enabled"] = False
     config.setdefault("smart_model_routing", {})["enabled"] = False
-    config.setdefault("session_reset", {})["mode"] = "none"
     config.setdefault("display", {})["tool_progress"] = "all"
 
 

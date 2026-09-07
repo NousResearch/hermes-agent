@@ -1,6 +1,7 @@
 import { MessagePrimitive, useAuiState } from '@assistant-ui/react'
 import { type FC } from 'react'
 
+import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { messageContentText } from '@/components/assistant-ui/thread/content'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { SCAFFOLD_LABEL_CLASS } from '@/components/chat/scaffold-row'
@@ -15,9 +16,25 @@ const REVIEW_NOTE_RE = /^review:(?<label>[^:\n]+):?\s*(?<detail>[\s\S]*)$/
 
 export const SystemMessage: FC = () => {
   const text = useAuiState(s => messageContentText(s.message.content))
+  const asyncResult = useAuiState(s => s.message.metadata.custom?.asyncResult)
 
   if (!text) {
     return null
+  }
+
+  if (typeof asyncResult === 'string' && asyncResult) {
+    return (
+      <MessagePrimitive.Root
+        className="flex w-full min-w-0 flex-col gap-2 self-start py-1"
+        data-role="system"
+        data-slot="aui_system-message-root"
+      >
+        <div className="text-[0.6875rem] leading-5 text-muted-foreground/55">
+          {text} <MessageTimelineTimestamp />
+        </div>
+        <MarkdownTextContent isRunning={false} text={asyncResult} />
+      </MessagePrimitive.Root>
+    )
   }
 
   // The self-improvement review saved something to memory/skills — the same

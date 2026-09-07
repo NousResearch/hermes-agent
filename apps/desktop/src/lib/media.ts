@@ -73,6 +73,10 @@ export function isInlineMediaSrc(path: string): boolean {
   return /^(?:https?|data):/i.test(path)
 }
 
+export function isArtifactFilePath(path: string): boolean {
+  return /^(?:file:|\/|[~.][\\/]|\.\.[\\/]|[a-z]:[\\/]|\\\\)/i.test(path)
+}
+
 export function isFileMediaPath(path: string): boolean {
   return /^(?:file:|\/|~\/|[a-z]:[\\/]|\\\\)/i.test(path)
 }
@@ -212,9 +216,11 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
 // save dialog, while the Webapp uses the browser's download manager. Neither
 // path loads the file through the capped data-URL preview endpoint.
 export async function downloadGatewayMediaFile(
-  path: string
+  path: string,
+  origin?: { sessionId: string; profile?: string }
 ): Promise<{ canceled?: boolean; path?: string; saved: boolean }> {
-  const file = filePathFromMediaPath(path)
+  // URI conversion belongs to the gateway OS, not the renderer's URL parser.
+  const file = path
   const conn = $connection.get()
 
   if (!window.hermesDesktop?.saveGatewayFile) {
@@ -224,8 +230,15 @@ export async function downloadGatewayMediaFile(
   return window.hermesDesktop.saveGatewayFile({
     connectionId: conn?.connectionId,
     path: file,
-    profile: conn?.profile,
-    suggestedName: mediaName(file)
+    profile: origin?.profile ?? conn?.profile,
+    ...(origin ? { sessionId: origin.sessionId } : {}),
+    suggestedName: mediaName(file).replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
+      try {
+        return decodeURIComponent(encoded)
+      } catch {
+        return encoded
+      }
+    })
   })
 }
 

@@ -569,6 +569,47 @@ class WisdomMediation:
                 "Wisdom receipt recovery deferred (%s)", type(exc).__name__
             )
 
+    def qualification_advice(self, org: str, job: dict[str, Any]) -> dict[str, Any]:
+        """Review a local contribution, never its usefulness as an installation."""
+        reference = job["reference"]
+        event, skill_id, content_hash, name = self.service._candidate_event_context(
+            reference["event_id"]
+        )
+        if (
+            event.get("organization_id") != org
+            or content_hash != reference["content_hash"]
+        ):
+            raise ValueError("candidate changed")
+        self.service.finish_candidate_professionalism_review(
+            skill_id=skill_id, content_hash=content_hash
+        )
+        # The background review may yield while the owner edits the source.
+        current, _, current_hash, _ = self.service._candidate_event_context(
+            reference["event_id"]
+        )
+        if current.get("organization_id") != org or current_hash != content_hash:
+            raise ValueError("candidate changed during review")
+        editorial = (
+            self.service.store.candidate_editorial_metadata(
+                skill_id, content_hash=content_hash
+            )
+            or {}
+        )
+        reason = {
+            "high_usage": "Hermes detected repeated use of this local skill.",
+            "refinement": "Hermes detected repeated refinement of this local skill.",
+        }.get(
+            event.get("qualification"),
+            "Hermes identified this local skill as a sharing candidate.",
+        )
+        return {
+            "title": editorial.get("editorial_name") or name,
+            "explanation": reason
+            + " Would you like to share it with your team? Review the professionalism check below before preparing a contribution.",
+            "relevance": "recommend",
+            "assessment_kind": "qualification",
+        }
+
     def prepare(
         self, org: str, actor: ConsentActor, *, runtime, history, assessor=assess
     ) -> list[dict[str, Any]]:
@@ -604,7 +645,20 @@ class WisdomMediation:
             ],
         )
         jobs = self._current_feed_jobs(org, jobs)
-        pending = [job for job in jobs if job["state"] == "assessing"]
+        for job in jobs:
+            if job["state"] != "assessing" or job["reference"]["kind"] != "candidate":
+                continue
+            try:
+                advice = self.qualification_advice(org, job)
+                if self.queue.save_advice(org, job["id"], job["lease_token"], advice):
+                    job["advice"], job["state"] = advice, "ready"
+            except Exception as exc:
+                self.queue.fail(org, job["id"], job["lease_token"], type(exc).__name__)
+        pending = [
+            job
+            for job in jobs
+            if job["state"] == "assessing" and job["reference"]["kind"] != "candidate"
+        ]
         if pending:
             try:
                 results = assessor(
@@ -639,7 +693,11 @@ class WisdomMediation:
                 ),
                 "relevance": "recommend",
                 "assessment_status": "unavailable",
-                "explanation": "Hermes could not assess this skill's relevance to your setup. You can still review its details manually. Nothing has been changed.",
+                "explanation": (
+                    "Hermes could not finish the sharing review for this local skill. You can review it manually. Nothing has been shared."
+                    if reference["kind"] == "candidate"
+                    else "Hermes could not assess this skill's relevance to your setup. You can still review its details manually. Nothing has been changed."
+                ),
             }
             interaction = None
             if job["reference"]["kind"] != "notice" and (

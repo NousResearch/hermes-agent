@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from gateway.wisdom_command import WisdomAction, WisdomItem, WisdomView
 from .consent import ConsentActor, WisdomConsent
-from .review_presentation import full_review_text
+from .review_presentation import full_review_text, professionalism_review_text
 
 
 def delivery_groups(items: list[dict]) -> list[list[dict]]:
@@ -24,6 +24,10 @@ def delivery_groups(items: list[dict]) -> list[list[dict]]:
 
 
 def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
+    qualification_only = bool(items) and all(
+        item.get("assessment", {}).get("reference", {}).get("kind") == "candidate"
+        for item in items
+    )
     has_recommendation = any(
         item["advice"]["relevance"] == "recommend"
         and item["advice"].get("assessment_status") != "unavailable"
@@ -40,6 +44,8 @@ def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
             "new installations require your approval."
         )
         if introduction
+        else "Your skill is ready to review for sharing"
+        if qualification_only
         else "Hermes recommendations for your setup"
         if has_recommendation
         else "Assessment unavailable"
@@ -65,6 +71,8 @@ def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
             if unavailable
             else "Hermes assessment: "
             if advice["relevance"] == "digest"
+            else ""
+            if advice.get("assessment_kind") == "qualification"
             else "Hermes recommendation: "
         ) + advice["explanation"]
         actions = []
@@ -86,15 +94,25 @@ def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
                 detail += (
                     "\nAdditional permissions or requirements need separate approval."
                 )
+            sharing = interaction["operation"] == "share"
             for key, label in (
-                ("security_check", "Security"),
-                ("professionalism_check", "Professionalism (advisory)"),
+                ()
+                if sharing
+                else (
+                    ("security_check", "Security"),
+                    ("professionalism_check", "Professionalism (advisory)"),
+                )
             ):
                 check = facts.get(key) or {}
                 detail += f"\n{label}: {check.get('status') or 'unavailable'}"
+            if sharing:
+                detail += "\n\n" + professionalism_review_text(
+                    facts.get("professionalism_check")
+                )
+                detail += "\nSecurity: the prepared package will be scanned before submission."
             detail += (
                 "\nNothing changes until you review and confirm."
-                if unavailable
+                if unavailable or sharing
                 else "\nNothing is changed by this recommendation."
             )
             if interaction["operation"] == "share":

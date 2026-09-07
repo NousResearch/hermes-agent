@@ -60,6 +60,12 @@ def full_review_text(
     return "\n\n".join(sections)
 
 
+def professionalism_review_text(check: dict[str, Any] | None) -> str:
+    return _checklist_text(
+        "Professionalism check (agent-assessed, advisory)", check, labels=CHECK_LABELS
+    )
+
+
 def _checklist_text(
     title: str,
     check: dict[str, Any] | None,

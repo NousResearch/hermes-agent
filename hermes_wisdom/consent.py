@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .client import WisdomConflict, WisdomNotFound
+from .contract import author_description_hash
 from .mediation_store import MediationStore, _decode
 from .preferences import WisdomPreferences
 
@@ -109,6 +110,11 @@ class WisdomConsent:
                 or {}
             )
             if existing is None:
+                review = self.service.store.professionalism_review(
+                    skill_id=skill_id,
+                    content_hash=source_hash,
+                    author_description_hash=author_description_hash(""),
+                )
                 return "share", {
                     "skill_id": skill_id,
                     "slug": name,
@@ -116,6 +122,11 @@ class WisdomConsent:
                     "source_hash": source_hash,
                     "allowed": True,
                     "sharing_stage": "prepare",
+                    "professionalism_check": (
+                        review.get("result") or {"status": review["state"]}
+                    )
+                    if review
+                    else None,
                     **editorial,
                 }
             if (

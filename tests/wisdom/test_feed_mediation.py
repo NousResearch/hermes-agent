@@ -76,9 +76,9 @@ def event(category="new_skill", version=2):
     }
 
 
-@pytest.mark.parametrize("relevance", ["recommend", "digest"])
-def test_qualified_candidate_keeps_sharing_controls_with_advisory_assessment(
-    mediation, monkeypatch, relevance
+@pytest.mark.parametrize("review_status", ["pass", "advisory", "unavailable"])
+def test_qualified_candidate_uses_professionalism_not_installation_assessor(
+    mediation, monkeypatch, review_status
 ):
     from hermes_wisdom.mediation_view import advice_view, delivery_groups
 
@@ -94,31 +94,38 @@ def test_qualified_candidate_keeps_sharing_controls_with_advisory_assessment(
         }
     ]
     instance.ingest()
-    identity = instance.queue.assessments("org")[0]["id"]
-    monkeypatch.setattr(
-        instance, "inspect", lambda org, job: {"assessment_id": job["id"]}
+    instance.service._candidate_event_context.return_value = (
+        instance.service.local_candidate_events.return_value[0],
+        "local",
+        "hash",
+        "My skill",
     )
+    instance.service.finish_candidate_professionalism_review.return_value = {
+        "status": review_status
+    }
     present = Mock(
         return_value={
             "id": "consent",
             "operation": "share",
-            "facts": {"slug": "local", "source_hash": "hash"},
+            "facts": {
+                "slug": "local",
+                "source_hash": "hash",
+                "professionalism_check": {"status": review_status},
+            },
             "actions": ["defer", "inspect", "confirm"],
         }
     )
     monkeypatch.setattr(instance.consent, "present", present)
     assessor = Mock(
-        return_value={
-            identity: {
-                "title": "Qualified local skill",
-                "explanation": "Limited team relevance.",
-                "relevance": relevance,
-            }
-        }
+        side_effect=AssertionError("Publishing must not use the installation assessor")
     )
     items = instance.prepare("org", actor, runtime={}, history=[], assessor=assessor)
     assert len(items) == 1
-    assert items[0]["advice"]["relevance"] == relevance
+    assert items[0]["advice"]["assessment_kind"] == "qualification"
+    assessor.assert_not_called()
+    instance.service.finish_candidate_professionalism_review.assert_called_once_with(
+        skill_id="local", content_hash="hash"
+    )
     present.assert_called_once()
     groups = delivery_groups(items)
     assert groups == [items]
@@ -129,11 +136,38 @@ def test_qualified_candidate_keeps_sharing_controls_with_advisory_assessment(
         "Share",
     ]
     assert view.items[0].actions[-1].primary
-    assert "Limited team relevance." in view.to_text()
-    if relevance == "digest":
-        assert "Hermes assessment:" in view.to_text()
-        assert "Hermes recommendation:" not in view.to_text()
+    assert "repeated use" in view.to_text()
+    assert review_status.capitalize() in view.to_text()
+    assert "Hermes recommendation:" not in view.to_text()
+    assert "prepared package will be scanned" in view.to_text()
     instance.service.approve_candidate.assert_not_called()
+
+
+def test_source_changed_during_professionalism_review_never_reaches_consent(
+    mediation, monkeypatch
+):
+    instance, actor, _, _ = mediation
+    candidate = {
+        "id": "qualified",
+        "organization_id": "org",
+        "session_id": "session",
+        "skill_id": "local",
+        "content_hash": "hash",
+    }
+    instance.service.local_candidate_events.return_value = [candidate]
+    instance.service._candidate_event_context.side_effect = [
+        (candidate, "local", "hash", "My skill"),
+        (candidate, "local", "changed", "My skill"),
+    ]
+    instance.ingest()
+    present = Mock()
+    monkeypatch.setattr(instance.consent, "present", present)
+    assessor = Mock()
+    assert (
+        instance.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+    )
+    present.assert_not_called()
+    assessor.assert_not_called()
 
 
 def enqueue(instance, category="new_skill"):

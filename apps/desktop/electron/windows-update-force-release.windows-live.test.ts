@@ -1760,7 +1760,15 @@ Start-Sleep -Seconds 30
             rootPid,
             phaseMarker
           ),
-          8_000,
+          // The arm ends by ABORTING while the boundary is parked at the
+          // checkpoint, so this budget must outlast everything before the
+          // abort -- PowerShell start-up, the Add-Type compile, one process
+          // snapshot and a CIM create-time query -- while staying under the
+          // injected pause so the abort, not the deadline, is what ends the
+          // run. At 8 s a loaded host killed the child before it published the
+          // checkpoint marker and the arm failed with 'root never entered the
+          // target job'.
+          25_000,
           controller.signal
         )
         assert.equal(await waitForFile(phaseMarker), true, 'root never entered the target job')

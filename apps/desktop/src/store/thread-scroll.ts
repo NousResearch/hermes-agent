@@ -153,7 +153,7 @@ export function threadScrollTargetTop(
 // so two profiles can never read or evict each other's reading positions.
 const SCROLL_POS_KEY_BASE = 'hermes.desktop.threadScroll.v1'
 
-export function threadScrollStorageKey(profile: string): string {
+export function threadScrollStorageKey(profile = $activeProfile.get()): string {
   return `${SCROLL_POS_KEY_BASE}.profile.${encodeURIComponent(normalizeProfileKey(profile))}${activeConnectionScopeSuffix()}`
 }
 
@@ -181,8 +181,8 @@ function isValidState(value: unknown): value is ThreadScrollState {
   )
 }
 
-function loadPositions(profile: string): Record<string, ThreadScrollState> {
-  const raw = readKey(threadScrollStorageKey(profile))
+function loadPositions(storageKey: string): Record<string, ThreadScrollState> {
+  const raw = readKey(storageKey)
 
   if (!raw) {
     return {}
@@ -205,7 +205,7 @@ function loadPositions(profile: string): Record<string, ThreadScrollState> {
   }
 }
 
-function persistPositions(profile: string, positions: Record<string, ThreadScrollState>) {
+function persistPositions(storageKey: string, positions: Record<string, ThreadScrollState>) {
   const keys = Object.keys(positions)
 
   while (keys.length > THREAD_SCROLL_MEMORY_LIMIT) {
@@ -213,33 +213,31 @@ function persistPositions(profile: string, positions: Record<string, ThreadScrol
     keys.shift()
   }
 
-  writeKey(threadScrollStorageKey(profile), keys.length === 0 ? null : JSON.stringify(positions))
+  writeKey(storageKey, keys.length === 0 ? null : JSON.stringify(positions))
 }
 
-export function getThreadScrollPosition(sessionKey: string): ThreadScrollState | undefined {
-  return loadPositions($activeProfile.get())[sessionKey]
+export function getThreadScrollPosition(sessionKey: string, storageKey = threadScrollStorageKey()): ThreadScrollState | undefined {
+  return loadPositions(storageKey)[sessionKey]
 }
 
-export function saveThreadScrollPosition(sessionKey: string, state: ThreadScrollState) {
-  const profile = $activeProfile.get()
-  const positions = loadPositions(profile)
+export function saveThreadScrollPosition(sessionKey: string, state: ThreadScrollState, storageKey = threadScrollStorageKey()) {
+  const positions = loadPositions(storageKey)
 
   // Delete then re-add to track recency (insertion order = LRU anchor).
   delete positions[sessionKey]
   positions[sessionKey] = state
-  persistPositions(profile, positions)
+  persistPositions(storageKey, positions)
 }
 
-export function clearThreadScrollPosition(sessionKey: string) {
-  const profile = $activeProfile.get()
-  const positions = loadPositions(profile)
+export function clearThreadScrollPosition(sessionKey: string, storageKey = threadScrollStorageKey()) {
+  const positions = loadPositions(storageKey)
 
   if (positions[sessionKey] === undefined) {
     return
   }
 
   delete positions[sessionKey]
-  persistPositions(profile, positions)
+  persistPositions(storageKey, positions)
 }
 
 /**

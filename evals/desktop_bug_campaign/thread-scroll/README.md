@@ -34,4 +34,18 @@ The optional `?twins` fixture mounts two independent production Threads with
 different runtime IDs; it is useful for diagnosis but the automated probe above
 expects one viewport. It does not substitute for a tiled pane-shell reproduction.
 
+`ownership-probe.mjs` extends the same fixture (`?ownership`) with real
+Thread remounts after changing the production profile and connection-scope
+stores, a real document reload, and a partial transcript whose remaining
+history is released with `startTransition`. The namespace controls use 12
+messages to exclude virtualization estimation from that ownership assertion;
+the hydration release expands to the original 200-message history. No DOM
+geometry is overridden. Wheel input comes from Playwright's native input path.
+
+The probe deliberately retains a strict document-reload assertion: current
+receipts show a 17px reload drift, so an overall nonzero exit is NOT a failure
+of the separately recorded profile/gateway/remount and hydration controls.
+Do not relax that assertion to call the whole issue solved. The earlier
+200-message full remount also drifted by one estimated turn (323px).
+
 Remove the two temporary Desktop entry files after stopping the server.

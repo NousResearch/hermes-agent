@@ -2,6 +2,7 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { act, render } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { rescopeConnectionScopedStores } from '@/lib/connection-scoped'
 import { setActiveProfile } from '@/store/profile'
 import { saveThreadScrollPosition } from '@/store/thread-scroll'
 
@@ -33,6 +34,7 @@ beforeEach(() => {
   scrollHeightValue = SCROLL_H
   window.localStorage.clear()
   setActiveProfile('default')
+  rescopeConnectionScopedStores(null)
 })
 
 const VIEWPORT_SLOT = 'aui_thread-viewport'
@@ -118,6 +120,15 @@ describe('list session-scroll restore', () => {
     await settleScroll()
 
     expect(vpA.scrollTop).toBe(SCROLL_H - 800 - CLIENT_H)
+
+    // Globals switch before React commits the outgoing cleanup.
+    for (const remote of [null, 'https://other.invalid']) {
+      setActiveProfile('other')
+      rescopeConnectionScopedStores(remote ? { mode: 'remote', baseUrl: remote, profile: 'other' } : null)
+      rerender(<ScrollHarness key={remote ?? 'profile'} messages={sessionMessages('a')} sessionKey="a" />)
+      await settleScroll()
+      expect(viewportEl(container).scrollTop).toBe(SCROLL_H - CLIENT_H)
+    }
   })
 
   it('keeps a clamped cold offset parked until the transcript is tall enough', async () => {
@@ -145,6 +156,18 @@ describe('list session-scroll restore', () => {
     await settleScroll()
 
     expect(vp.scrollTop).toBe(2000 - CLIENT_H - 800)
+
+    saveThreadScrollPosition('c', { fromBottom: 800, kind: 'offset' })
+    scrollHeightValue = 1000
+    rerender(<ScrollHarness messages={sessionMessages('c')} sessionKey="c" />)
+    await settleScroll(20)
+    act(() => vp.dispatchEvent(new WheelEvent('wheel', { deltaY: -200, bubbles: true })))
+    scrollHeightValue = 2000
+    rerender(<ScrollHarness messages={sessionMessages('c', 3)} sessionKey="c" />)
+    await settleScroll()
+    // jsdom has no native scroll anchoring; the browser probe checks the
+    // resulting reader position. Here the abandoned target must not return.
+    expect(vp.scrollTop).not.toBe(2000 - CLIENT_H - 800)
   })
 
 })

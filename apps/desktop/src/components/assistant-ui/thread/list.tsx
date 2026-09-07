@@ -33,6 +33,7 @@ import {
   THREAD_SCROLL_BOTTOM,
   type ThreadScrollState,
   threadScrollStateFromMetrics,
+  threadScrollStorageKey,
   threadScrollTargetTop
 } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
@@ -705,9 +706,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // settled gate — a close mid-settle must not persist transient clamped
   // metrics.
   useEffect(() => {
+    const storageKey = threadScrollStorageKey()
+
     const flush = () => {
       if (sessionKey && loadSettledRef.current && restoredContentKeyRef.current === sessionKey) {
-        saveThreadScrollPosition(sessionKey, liveScrollStateRef.current)
+        saveThreadScrollPosition(sessionKey, liveScrollStateRef.current, storageKey)
       }
     }
 
@@ -746,6 +749,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
+    // Cleanup belongs to the subscription owner, not the newly active globals.
+    const storageKey = threadScrollStorageKey()
     const sessionSwitched = settleKeyRef.current !== sessionKey
 
     const plan = planThreadScrollRestore(restoredContentKeyRef.current, sessionKey, hasGroups, loadSettledRef.current)
@@ -763,7 +768,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // the session's real reading position.
     const record = () => {
       if (sessionKey && loadSettledRef.current && restoredContentKeyRef.current === sessionKey) {
-        saveThreadScrollPosition(sessionKey, liveScrollStateRef.current)
+        saveThreadScrollPosition(sessionKey, liveScrollStateRef.current, storageKey)
       }
     }
 
@@ -790,7 +795,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return record
     }
 
-    const remembered = sessionKey ? getThreadScrollPosition(sessionKey) : undefined
+    const remembered = sessionKey ? getThreadScrollPosition(sessionKey, storageKey) : undefined
     const target = remembered ?? THREAD_SCROLL_BOTTOM
 
     // The previous session's parting state must not leak into this one: from
@@ -861,7 +866,23 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     let rafId = requestAnimationFrame(settle)
 
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY >= 0 || loadSettledRef.current) {
+        return
+      }
+
+      // User intent wins even at a clamped top, where no scroll event fires.
+      cancelAnimationFrame(rafId)
+      stopScroll()
+      loadSettledRef.current = true
+      liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+      restoreFromBottomRef.current = el.scrollHeight - el.scrollTop
+    }
+
+    el.addEventListener('wheel', onWheel, { passive: true })
+
     return () => {
+      el.removeEventListener('wheel', onWheel)
       cancelAnimationFrame(rafId)
       record()
     }

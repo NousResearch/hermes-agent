@@ -70,6 +70,7 @@ def test_all_profiles_register():
     for required in (
         "openrouter", "anthropic", "custom", "bedrock", "openai-codex",
         "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan", "fireworks",
+        "nebius-token-factory",
     ):
         assert required in names, f"Missing profile: {required}"
 

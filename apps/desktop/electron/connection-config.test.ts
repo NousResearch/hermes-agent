@@ -334,10 +334,10 @@ const ROUTES = [
     expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
   },
   {
-    name: 'a renamed primary profile still owns the window backend',
+    name: 'a renamed primary profile on a global remote is still scoped on the wire',
     profile: ' coder ',
     opts: { primaryProfile: 'coder', globalRemote: true },
-    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
   },
   {
     name: 'an unset profile resolves to the primary',
@@ -504,6 +504,14 @@ test('pathForRegistryBackendRequest uses the resolved registry backend scope', (
     }),
     '/api/fs/download?path=%2Fsrv%2Freport.pdf'
   )
+  assert.equal(
+    pathForRegistryBackendRequest(
+      '/api/profiles/sessions/sidebar?recents_profile=research&recents_exclude=cron%2Cdesktop',
+      'research',
+      { remoteProfile: 'remote-research' }
+    ),
+    '/api/profiles/sessions/sidebar?recents_profile=remote-research&recents_exclude=cron%2Cdesktop'
+  )
 })
 
 // --- pathWithGlobalRemoteProfile ---
@@ -518,14 +526,14 @@ test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => 
   )
 })
 
-test('pathWithGlobalRemoteProfile skips the primary profile, which the remote already serves', () => {
+test('pathWithGlobalRemoteProfile scopes the primary label because the dashboard launch home may differ', () => {
   assert.equal(
     pathWithGlobalRemoteProfile('/api/model/info', 'coder', {
       globalRemote: true,
       primaryProfile: 'coder',
       profileRemoteOverride: false
     }),
-    '/api/model/info'
+    '/api/model/info?profile=coder'
   )
 })
 
@@ -604,8 +612,23 @@ test('translateSelfProfileQuery rewrites the self-profile filter into the backen
   )
 })
 
+test('translateSelfProfileQuery rewrites sidebar recents_profile aliases for managed SSH', () => {
+  assert.equal(
+    translateSelfProfileQuery(
+      '/api/profiles/sessions/sidebar?recents_profile=research&recents_limit=20&cron_limit=50&messaging_limit=100',
+      'research',
+      'remote-research'
+    ),
+    '/api/profiles/sessions/sidebar?recents_profile=remote-research&recents_limit=20&cron_limit=50&messaging_limit=100'
+  )
+})
+
 test('translateSelfProfileQuery leaves cross-profile and unfiltered paths untouched', () => {
   assert.equal(translateSelfProfileQuery('/api/cron/jobs?profile=all', 'mara', 'default'), '/api/cron/jobs?profile=all')
+  assert.equal(
+    translateSelfProfileQuery('/api/profiles/sessions/sidebar?recents_profile=all', 'mara', 'default'),
+    '/api/profiles/sessions/sidebar?recents_profile=all'
+  )
   assert.equal(
     translateSelfProfileQuery('/api/cron/jobs?profile=worker', 'mara', 'default'),
     '/api/cron/jobs?profile=worker'

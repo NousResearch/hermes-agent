@@ -148,7 +148,8 @@ hermes gateway status --system         # 仅 Linux：显式检查系统服务
 | `/reasoning [level\|show\|hide]` | 更改推理强度或切换推理显示 |
 | `/voice [on\|off\|tts\|join\|leave\|status]` | 控制消息语音回复和 Discord 语音频道行为 |
 | `/rollback [number]` | 列出或恢复文件系统检查点 |
-| `/background <prompt>` | 在独立后台会话中运行 prompt（提示词） |
+| `/bg <prompt>` | 在独立后台会话中运行 prompt（提示词） |
+| `/btw <question>` | 在不打断当前对话的情况下，就当前对话提出顺带问题 |
 | `/reload-mcp` | 从配置重新加载 MCP 服务器 |
 | `/update` | 将 Hermes Agent 更新至最新版本 |
 | `/help` | 显示可用命令 |
@@ -160,34 +161,13 @@ hermes gateway status --system         # 仅 Linux：显式检查系统服务
 
 会话在消息之间持续保留，直到重置。Agent 会记住你的对话上下文。
 
-### 重置策略
+### 会话连续性
 
-**默认情况下会话永不自动重置** —— 上下文会一直保留，直到你手动 `/reset` 或触发上下文压缩。如果你希望会话自动重置，可在 `~/.hermes/config.yaml` 的 `session_reset` 部分选择启用：
+Gateway 不会因空闲时间或每日时间边界而重置对话。需要新对话时使用 `/new`
+或 `/reset`；上下文压缩仍会自动运行。旧的 `session_reset` 配置、重置策略覆盖和
+重置计时环境变量均被忽略。缓存中的 agent 可以释放资源，但不会替换持久化对话。
+重启恢复的新鲜度限制仅约束自动继续执行，不会清除用户发送消息时加载的历史。
 
-```yaml
-session_reset:
-  mode: idle        # "idle"、"daily"、"both" 或 "none"（默认）
-  idle_minutes: 1440  # idle/both 模式：空闲多少分钟后重置
-  at_hour: 4          # daily/both 模式：每天的重置时间（0-23，本地时间）
-```
-
-| 模式 | 说明 |
-|------|-------------|
-| `none` | 永不自动重置（默认） |
-| `daily` | 每天在指定时间重置 |
-| `idle` | 空闲 N 分钟后重置 |
-| `both` | 以先触发者为准 |
-
-在 `~/.hermes/gateway.json` 中配置各平台的覆盖设置：
-
-```json
-{
-  "reset_by_platform": {
-    "telegram": { "mode": "idle", "idle_minutes": 240 },
-    "discord": { "mode": "idle", "idle_minutes": 60 }
-  }
-}
-```
 
 ## 安全
 
@@ -317,7 +297,7 @@ display:
 在独立的后台会话中运行 prompt，让 agent 独立处理，同时保持主聊天响应：
 
 ```
-/background Check all servers in the cluster and report any that are down
+/bg Check all servers in the cluster and report any that are down
 ```
 
 Hermes 立即确认：
@@ -329,7 +309,7 @@ Hermes 立即确认：
 
 ### 工作原理
 
-每个 `/background` prompt 会生成一个**独立的 agent 实例**异步运行：
+每个 `/bg` prompt 会生成一个**独立的 agent 实例**异步运行：
 
 - **隔离会话** — 后台 agent 拥有自己的会话和对话历史。它不了解你当前的聊天上下文，只接收你提供的 prompt。
 - **相同配置** — 继承当前网关配置中的模型、提供商、工具集、推理设置和提供商路由。
@@ -361,10 +341,10 @@ HERMES_BACKGROUND_NOTIFICATIONS=result
 
 ### 使用场景
 
-- **服务器监控** — "/background Check the health of all services and alert me if anything is down"
-- **长时间构建** — "/background Build and deploy the staging environment"，同时继续聊天
-- **研究任务** — "/background Research competitor pricing and summarize in a table"
-- **文件操作** — "/background Organize the photos in ~/Downloads by date into folders"
+- **服务器监控** — "/bg Check the health of all services and alert me if anything is down"
+- **长时间构建** — "/bg Build and deploy the staging environment"，同时继续聊天
+- **研究任务** — "/bg Research competitor pricing and summarize in a table"
+- **文件操作** — "/bg Organize the photos in ~/Downloads by date into folders"
 
 :::tip
 消息平台上的后台任务是即发即忘的——你无需等待或主动查询。任务完成后，结果会自动出现在同一聊天中。

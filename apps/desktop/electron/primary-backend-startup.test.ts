@@ -48,6 +48,31 @@ test('primary remote descriptor preserves a resolved registry connection id', ()
   assert.equal(connection.isFullscreen, false)
 })
 
+test('primary remote descriptor preserves the effective SSH dialing identity', () => {
+  const ssh = {
+    effectiveConfigFingerprint: 'effective-config',
+    host: 'build-host',
+    remoteHermesPath: '/srv/hermes',
+    remoteProfile: 'default',
+    user: 'alice'
+  }
+
+  const connection = createPrimaryRemoteConnection(
+    {
+      baseUrl: 'http://127.0.0.1:49152',
+      remoteKind: 'ssh',
+      ssh,
+      token: 'secret',
+      wsUrl: 'ws://127.0.0.1:49152/api/ws'
+    },
+    [],
+    {}
+  )
+
+  assert.equal(connection.ssh, ssh)
+  assert.equal(connection.ssh?.effectiveConfigFingerprint, 'effective-config')
+})
+
 test('primary remote descriptor keeps legacy unregistered routes unqualified', () => {
   const connection = createPrimaryRemoteConnection(
     {

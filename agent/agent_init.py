@@ -9,6 +9,7 @@ Symbols that tests patch on ``run_agent.*`` (``OpenAI``, ``get_tool_definitions`
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import re
@@ -2280,7 +2281,12 @@ def init_agent(
     # reasoning_content echo opt-in; switch_model / fallback / restore keep it in sync.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     agent.request_overrides = dict(request_overrides or {})
-    agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
+    # Recovery sanitizes prefill entries in place, so each agent must own its nested state.
+    agent.prefill_messages = (
+        copy.deepcopy(prefill_messages)
+        if isinstance(prefill_messages, list)
+        else prefill_messages or []
+    )
     agent._force_ascii_payload = False
 
     _init_prompt_cache_config(agent)

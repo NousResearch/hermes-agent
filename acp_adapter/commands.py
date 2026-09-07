@@ -43,6 +43,7 @@ class SlashCommandsMixin:
     # name -> (help text, advertised description, input hint)
     _COMMANDS: dict[str, tuple[str, str, str | None]] = {
         "help": ("Show available commands", "List available commands", None),
+        "fast": ("Show or change fast mode for this session", "Show or change fast mode for this session", "normal|fast|status"),
         "model": (
             "Show or change current model",
             "Show current model and provider, or switch models",
@@ -68,10 +69,30 @@ class SlashCommandsMixin:
 
     @classmethod
     def _available_commands(cls) -> list[AvailableCommand]:
-        return [
+        commands = [
             AvailableCommand(name=name, description=desc, input=UnstructuredCommandInput(hint=hint) if hint else None)
             for name, (_help, desc, hint) in cls._COMMANDS.items()
         ]
+        seen = set(cls._COMMANDS)
+        try:
+            from agent.skill_commands import get_skill_commands
+
+            for command_key, skill_info in sorted(get_skill_commands().items()):
+                name = command_key.lstrip("/")
+                if not name or name in seen:
+                    continue
+                description = str(skill_info.get("description") or "").strip()
+                commands.append(
+                    AvailableCommand(
+                        name=name,
+                        description=description or f"Invoke the {name} skill",
+                        input=UnstructuredCommandInput(hint="instructions for the skill"),
+                    )
+                )
+                seen.add(name)
+        except Exception:
+            logger.warning("Failed to discover ACP skill slash commands", exc_info=True)
+        return commands
 
     async def _send_available_commands_update(self, session_id: str) -> None:
         """Advertise supported slash commands to the connected ACP client."""
@@ -113,11 +134,58 @@ class SlashCommandsMixin:
             logger.error("Slash command /%s error: %s", cmd, e, exc_info=True)
             return f"Error executing /{cmd}: {e}"
 
+    def _build_skill_invocation(self, text: str, state: SessionState) -> str | None:
+        """Expand an installed skill slash command into the normal agent prompt."""
+        parts = text.split(maxsplit=1)
+        command = parts[0].lstrip("/").lower()
+        instruction = parts[1].strip() if len(parts) > 1 else ""
+        if command in self._COMMANDS:
+            return None
+        try:
+            from agent.runtime_cwd import set_session_cwd
+            from agent.skill_commands import build_skill_invocation_message, resolve_skill_command_key
+
+            def _build() -> str | None:
+                set_session_cwd(state.cwd)
+                command_key = resolve_skill_command_key(command)
+                if command_key is None:
+                    return None
+                return build_skill_invocation_message(command_key, instruction, task_id=state.session_id)
+
+            return contextvars.copy_context().run(_build)
+        except Exception:
+            logger.error("Skill slash command /%s failed", command, exc_info=True)
+            return None
+
     def _cmd_help(self, args: str, state: SessionState) -> str:
         lines = ["Available commands:", ""]
-        lines.extend(f"  /{cmd:10s}  {desc}" for cmd, (desc, _adv, _hint) in self._COMMANDS.items())
+        lines.extend(f"  /{command.name:10s}  {command.description}" for command in self._available_commands())
         lines.extend(["", "Unrecognized /commands are sent to the model as normal messages."])
         return "\n".join(lines)
+
+    def _cmd_fast(self, args: str, state: SessionState) -> str:
+        from acp_adapter.session import apply_fast_mode_to_agent
+        tokens = args.strip().lower().split()
+        if "--global" in tokens:
+            return "ACP /fast is session-scoped; change global defaults through Hermes config."
+        arg = " ".join(token for token in tokens if token != "--session")
+        if not arg or arg == "status":
+            status = "fast" if state.fast_mode else "normal"
+            return f"Fast mode: {status}\nUsage: /fast [normal|fast|status]"
+        if arg in {"fast", "on"}:
+            from hermes_cli.models import resolve_fast_mode_overrides
+            model = state.model or getattr(state.agent, "model", None)
+            if resolve_fast_mode_overrides(model) is None:
+                return "Fast mode is not available for the current model."
+            enabled = True
+        elif arg in {"normal", "off"}:
+            enabled = False
+        else:
+            return f"Unknown fast mode: {arg}\nUsage: /fast [normal|fast|status]"
+        state.fast_mode = enabled
+        apply_fast_mode_to_agent(state.agent, state.model, enabled)
+        self.session_manager.save_session(state.session_id)
+        return f"Fast mode: {'fast' if enabled else 'normal'} (this session)"
 
     def _cmd_model(self, args: str, state: SessionState) -> str:
         if not args:
@@ -213,7 +281,10 @@ class SlashCommandsMixin:
         return "\n".join(lines)
 
     def _cmd_reset(self, args: str, state: SessionState) -> str:
+        from acp_adapter.session import apply_fast_mode_to_agent, configured_fast_mode
         state.history.clear()
+        state.fast_mode = configured_fast_mode()
+        apply_fast_mode_to_agent(state.agent, state.model, state.fast_mode)
         try:
             reset_session_state = getattr(state.agent, "reset_session_state", None)
             if callable(reset_session_state):

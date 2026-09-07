@@ -122,35 +122,52 @@ class OwnershipStore:
             db.execute("UPDATE owners SET mode=? WHERE id=?", (mode, owner))
 
 
-def requirements_available(*, driver_executable=None):
+class SetupError(ValueError):
+    """Missing prerequisites, safe to expose with administrative recovery steps."""
+
+
+def setup_status(*, driver_executable=None):
     import shutil
     import sys
 
     from .config import driver_path
+    from .install_driver import execution_verified
 
     driver = driver_executable if driver_executable is not None else driver_path()
-    return (
-        sys.platform == "linux"
-        and os.access(driver, os.X_OK)
-        and all(
-            shutil.which(name)
-            for name in (
+    missing = []
+    if sys.platform != "linux":
+        missing.append("Linux")
+    if not execution_verified(driver):
+        missing.append("pinned Cua driver (run hermes realms install-driver in this profile)")
+    missing.extend(
+        name for name in (
                 "labwc",
                 "Xwayland",
                 "wayvnc",
                 "dbus-daemon",
                 "systemd-run",
+                "systemd-inhibit",
                 "grim",
                 "wlr-randr",
                 "gdbus",
                 "bwrap",
-            )
-        )
-        and all(
-            os.access(path, os.X_OK)
-            for path in ("/usr/lib/at-spi-bus-launcher", "/usr/lib/at-spi2-registryd")
-        )
+        ) if not shutil.which(name)
     )
+    missing.extend(
+        path for path in ("/usr/lib/at-spi-bus-launcher", "/usr/lib/at-spi2-registryd")
+        if not os.access(path, os.X_OK)
+    )
+    return {
+        "ready": not missing,
+        "message": ("Realms setup required: " + "; ".join(missing)
+                    + ". Install missing system packages with your distribution's package manager; "
+                    "then run hermes realms doctor in this profile; host fallback is disabled.")
+        if missing else "Realms dependencies are available.",
+    }
+
+
+def requirements_available(*, driver_executable=None):
+    return setup_status(driver_executable=driver_executable)["ready"]
 
 
 # Profile-keyed infrastructure only; current/focused identity never lives here.
@@ -265,6 +282,7 @@ class RealmIntegration:
         return {
             "mode": self.owners.mode(owner, self.manager.config.default_mode),
             "realms": rows,
+            "setup": setup_status(driver_executable=self.driver_executable),
         }
 
     def watch(self, owner, realm_id):
@@ -284,6 +302,10 @@ class RealmIntegration:
         parts = raw.split()
         action = parts[0] if parts else "status"
         if action in ("on", "off"):
+            if action == "on":
+                setup = setup_status(driver_executable=self.driver_executable)
+                if not setup["ready"]:
+                    raise SetupError(setup["message"])
             if action == "off":
                 self.stop(owner)
             self.owners.set_mode(owner, {"on": "realm", "off": "host"}[action])
@@ -379,12 +401,9 @@ class RealmIntegration:
         import sys
 
         with self._lock:
-            if not requirements_available():
-                raise RuntimeError("Realm Linux dependencies unavailable")
-            if not os.access(self.driver_executable, os.X_OK):
-                raise RuntimeError(
-                    "Install the pinned realm driver with python -m realms.install_driver"
-                )
+            setup = setup_status(driver_executable=self.driver_executable)
+            if not setup["ready"]:
+                raise SetupError(setup["message"])
             record = self.manager.start(owner)
             aliases = self.owners.aliases(owner)
             current = self._attachments.get(owner)
@@ -477,6 +496,8 @@ class RealmIntegration:
                 }
             self.ready(owner)
             return None
+        except SetupError as exc:
+            return {"action": "block", "message": str(exc)}
         except Exception:
             # Upstream hook exceptions fail open; return a concrete veto instead.
             import logging

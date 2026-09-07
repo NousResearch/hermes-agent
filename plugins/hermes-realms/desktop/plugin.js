@@ -104,6 +104,12 @@ export default {
         jsx(Button, { size: 'micro', variant: 'ghost', disabled: result.isFetching, onClick: () => void result.refetch(), children: 'Retry' })
       ] });
       const mode = result.data?.mode;
+      if (mode === 'realm' && result.data?.setup?.ready === false) return jsx('div', {
+        role: 'alert', style: { fontSize: 12 }, children: jsxs('details', { children: [
+          jsx('summary', { children: 'Realms setup required' }),
+          jsx('div', { children: result.data.setup.message })
+        ] })
+      });
       if (!realms.length) return modeLabel(mode) ? jsx('div', { style: { color: 'var(--ui-text-secondary)', fontSize: 12 }, children: modeLabel(mode) }) : null;
       return jsxs('div', { 'data-realms-status': '', style: { display: 'flex', flexDirection: 'column', gap: 4 }, children: [
         mode !== 'realm' && modeLabel(mode) ? jsx('span', { children: modeLabel(mode) }) : null,

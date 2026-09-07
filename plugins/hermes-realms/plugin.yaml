@@ -2,6 +2,8 @@ name: hermes-realms
 version: 0.1.0
 kind: standalone
 description: Profile-scoped private Linux desktops for Hermes conversations
+setup:
+  entrypoint: setup.py
 provides_tools:
   - realm
 provides_hooks:

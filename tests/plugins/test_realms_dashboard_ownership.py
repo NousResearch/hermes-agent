@@ -57,13 +57,17 @@ def test_historical_listing_is_empty_without_registering_ownership(dashboard):
     ):
         response = client.get("/api/plugins/hermes-realms/realms", params=identity)
         assert response.status_code == 200, response.text
-        assert response.json() == {"mode": service.manager.config.default_mode, "realms": []}
+        result = response.json()
+        assert result["mode"] == service.manager.config.default_mode
+        assert result["realms"] == []
+        assert result["setup"]["ready"] is False
         assert ownership_rows(service) == before
     response = client.get(
         "/api/plugins/hermes-realms/realms", params={"runtime_session_id": "current-runtime"}
     )
     assert response.status_code == 200, response.text
-    assert response.json() == {"mode": "host", "realms": []}
+    assert response.json()["mode"] == "host"
+    assert response.json()["realms"] == []
     assert ownership_rows(service) == before
 
 

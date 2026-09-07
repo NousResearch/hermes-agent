@@ -56,6 +56,33 @@ it('keeps unassociated session badges absent throughout failed polling and retri
   expect(statuses).toEqual(new Set(['pending', 'error']))
 })
 
+it('shows setup failure instead of waiting for apps when realm execution is blocked', () => {
+  const renders = new Map<string, ComponentType<SessionContributionProps>>()
+  const ctx = {
+    rest: vi.fn(),
+    register: ({ area, data }: { area: string; data: SessionContribution }) => renders.set(area, data.render)
+  }
+
+  realmsPlugin.register(ctx)
+  const client = new QueryClient()
+  clients.push(client)
+  client.setQueryData(realmQueryOptions(ctx, session).queryKey, {
+    mode: 'realm',
+    realms: [],
+    setup: { ready: false, message: 'Run hermes realms install-driver in this profile.' }
+  })
+  const StatusRow = renders.get(SESSION_AREAS.statusStack)!
+
+  const view = render(
+    <QueryClientProvider client={client}>
+      <StatusRow session={session} />
+    </QueryClientProvider>
+  )
+
+  expect(view.getByRole('alert').textContent).toContain('hermes realms install-driver')
+  expect(view.container.textContent).not.toContain('waiting for apps')
+})
+
 it('preserves a known realm badge through refetch errors, then reconciles authoritative removal', async () => {
   const rest = vi.fn().mockRejectedValue(new Error('Temporary transport failure'))
   const renders = new Map<string, ComponentType<SessionContributionProps>>()

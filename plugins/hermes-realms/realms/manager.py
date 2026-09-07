@@ -333,6 +333,8 @@ class Manager:
 
     def doctor(self, realm_id=None):
         from .lifecycle import host_control_env
+        from .config import driver_path
+        from .install_driver import execution_verified
 
         tools = {
             name: shutil.which(name)
@@ -346,6 +348,7 @@ class Manager:
                 "Xwayland",
                 "systemd-run",
                 "systemd-inhibit",
+                "bwrap",
             )
         }
         for path in ("/usr/lib/at-spi-bus-launcher", "/usr/lib/at-spi2-registryd"):
@@ -355,7 +358,9 @@ class Manager:
         except (RealmError, OSError, subprocess.SubprocessError):
             user_manager = False
         report = {
-            "ok": sys.platform == "linux" and all(tools.values()) and user_manager,
+            "ok": sys.platform == "linux" and all(tools.values()) and user_manager
+            and execution_verified(driver_path(self.home)),
+            "driver_ready": execution_verified(driver_path(self.home)),
             "platform": sys.platform,
             "tools": tools,
             "systemd_user": user_manager,

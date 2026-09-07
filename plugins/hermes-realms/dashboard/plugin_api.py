@@ -38,7 +38,8 @@ def list_realms(
 ):
     service = get_integration()
     if runtime_session_id is None and stored_session_id is None:
-        return {"mode": service.manager.config.default_mode, "realms": []}
+        return {"mode": service.manager.config.default_mode, "realms": [],
+                "setup": _integration.setup_status(driver_executable=service.driver_executable)}
     identity = dict(
         runtime_session_id=runtime_session_id, stored_session_id=stored_session_id
     )
@@ -46,7 +47,8 @@ def list_realms(
     if owner is None:
         # Historical sessions may predate trusted ownership registration.
         # A read must neither bind aliases nor inspect another owner's realms.
-        return {"mode": service.manager.config.default_mode, "realms": []}
+        return {"mode": service.manager.config.default_mode, "realms": [],
+                "setup": _integration.setup_status(driver_executable=service.driver_executable)}
     result = service.status(owner)
     for row in result["realms"]:
         row.update(identity)

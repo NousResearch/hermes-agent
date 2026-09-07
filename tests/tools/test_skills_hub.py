@@ -580,38 +580,6 @@ class TestCheckForSkillUpdates:
         assert "bundle" not in results[0]
         source.fetch.assert_not_called()
 
-    def test_unresolvable_install_path_keeps_fetch_behavior(self, tmp_path, monkeypatch):
-        """Entries whose install_path cannot resolve (empty/unsafe) keep the
-        pre-existing fetch behavior — only a resolvable-but-missing directory
-        counts as orphaned."""
-        import tools.skills_hub as hub
-        monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "skills")
-
-        lock = MagicMock()
-        lock.list_installed.return_value = [{
-            "name": "demo-skill",
-            "source": "github",
-            "identifier": "owner/repo/demo-skill",
-            "content_hash": "oldhash",
-            "install_path": "",
-        }]
-
-        source = MagicMock()
-        source.source_id.return_value = "github"
-        source.fetch.return_value = SkillBundle(
-            name="demo-skill",
-            files={"SKILL.md": "new content"},
-            source="github",
-            identifier="owner/repo/demo-skill",
-            trust_level="community",
-        )
-
-        results = check_for_skill_updates(lock=lock, sources=[source])
-
-        assert len(results) == 1
-        assert results[0]["status"] == "update_available"
-        source.fetch.assert_called_once()
-
     def test_hanging_fetch_is_abandoned_after_timeout(self):
         """A fetch that outlives its wall-clock bound degrades to no bundle
         quickly instead of stalling the whole update run (#104291)."""

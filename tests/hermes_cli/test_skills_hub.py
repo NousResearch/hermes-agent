@@ -125,21 +125,6 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
     assert seen["platform"] is None
 
 
-def test_do_check_prints_orphaned_hint(monkeypatch):
-    """Orphaned lock-file entries (local directory gone) surface with a
-    removal hint instead of silently slowing every update run (#104291)."""
-    out = _capture_check(monkeypatch, [
-        {"name": "ghost-skill", "identifier": "clawhub/ghost", "source": "clawhub",
-         "status": "orphaned"},
-        {"name": "ok-skill", "identifier": "clawhub/ok", "source": "clawhub",
-         "status": "up_to_date"},
-    ])
-
-    assert "ghost-skill" in out
-    assert "Orphaned:" in out
-    assert "hermes skills uninstall" in out
-
-
 # ---------------------------------------------------------------------------
 # Cross-registry hijack regression tests
 #

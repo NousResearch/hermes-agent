@@ -12,6 +12,8 @@ import logging
 import hashlib
 import shutil
 import threading
+import time
+from contextvars import copy_context
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
@@ -256,18 +258,21 @@ def _fetch_bundle_bounded(
     every installed skill pays that cost on each update run (#104291). The
     helper thread is a daemon so an abandoned fetch cannot block CLI exit.
     """
-    box: Dict[str, SkillBundle] = {}
+    deadline = time.monotonic() + timeout
+    box: Dict[str, Tuple[float, Optional[SkillBundle]]] = {}
 
     def _run() -> None:
         try:
-            box["bundle"] = src.fetch(identifier)
+            bundle = src.fetch(identifier)
+            box["result"] = (time.monotonic(), bundle)
         except Exception:
-            pass  # callers already treat a failed fetch as "unavailable"
+            logger.debug("Skill update fetch failed for %s", identifier, exc_info=True)
 
-    worker = threading.Thread(target=_run, daemon=True)
+    worker = threading.Thread(target=copy_context().run, args=(_run,), daemon=True)
     worker.start()
-    worker.join(timeout)
-    return box.get("bundle")
+    worker.join(max(0.0, deadline - time.monotonic()))
+    finished, bundle = box.get("result", (float("inf"), None))
+    return bundle if finished <= deadline else None
 
 
 def _source_matches(source: SkillSource, source_name: str) -> bool:

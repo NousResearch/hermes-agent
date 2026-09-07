@@ -66,6 +66,25 @@ def _build_agent_with_db(db: SessionDB, session_id: str, **compressor_kwargs):
     return agent
 
 
+def _timeout_after_worker_started(monkeypatch, started):
+    """Inject the host timeout only after the isolation state actually exists.
+
+    The real pool, worker, fence cancellation and lease cleanup still execute.
+    Deadline arithmetic has separate coverage in test_compress_context_progress_timeout;
+    these tests must not cancel an unscheduled worker before their own barrier.
+    """
+    from agent import conversation_compression as cc
+
+    monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda cfg=None: (60, 120))
+
+    def await_started(future, fence, **kwargs):
+        assert started.wait(timeout=30), "compression worker never entered the tested state"
+        assert not future.done()
+        return False, None
+
+    monkeypatch.setattr(cc, "_await_worker_within_budget", await_started)
+
+
 def test_f3_mutating_engine_cannot_touch_live_transcript_after_timeout(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -80,21 +99,16 @@ def test_f3_mutating_engine_cannot_touch_live_transcript_after_timeout(
     agent = _build_agent_with_db(db, session_id)
     agent._cached_system_prompt = "sys"
 
-    # Fast host timeout for the owned wrapper.
-    monkeypatch.setattr(
-        "agent.conversation_compression.resolve_context_compression_timeouts",
-        lambda cfg=None: (0.6, 1.2),
-    )
-
     engine_started = threading.Event()
     release_engine = threading.Event()
+    _timeout_after_worker_started(monkeypatch, engine_started)
     mutated_lists = []
 
     def _mutating_engine(msgs, **_kwargs):
         # Legacy/plugin-engine contract: mutate the input list IN PLACE.
-        engine_started.set()
         msgs[:] = [{"role": "assistant", "content": "ENGINE GARBAGE"}]
         mutated_lists.append(msgs)
+        engine_started.set()  # Publish only after the mutation witness exists.
         assert release_engine.wait(timeout=30)
         return msgs
 
@@ -157,13 +171,9 @@ def test_host_timeout_releases_pool_slot_while_protected_provider_is_still_block
     db.create_session(session_id, source="cli")
     agent = _build_agent_with_db(db, session_id)
     agent._cached_system_prompt = "sys"
-    monkeypatch.setattr(
-        "agent.conversation_compression.resolve_context_compression_timeouts",
-        lambda cfg=None: (0.05, 0.1),
-    )
-
     provider_started = threading.Event()
     release_provider = threading.Event()
+    _timeout_after_worker_started(monkeypatch, provider_started)
 
     def _blocked_provider(_kwargs):
         provider_started.set()
@@ -206,7 +216,7 @@ def test_host_timeout_releases_pool_slot_while_protected_provider_is_still_block
             time.sleep(0.02)
 
 
-def test_f4_five_step_stale_holder_regression(tmp_path: Path) -> None:
+def test_f4_five_step_stale_holder_regression(tmp_path: Path, monkeypatch) -> None:
     """Reviewer's exact 5-step durable-lease regression (#76354 F4).
 
     1. Block the original summary indefinitely.
@@ -233,6 +243,7 @@ def test_f4_five_step_stale_holder_regression(tmp_path: Path) -> None:
 
     summary_started = threading.Event()
     release_summary = threading.Event()
+    _timeout_after_worker_started(monkeypatch, summary_started)
 
     def _blocked_summary(*_args, **_kwargs):
         summary_started.set()
@@ -256,64 +267,67 @@ def test_f4_five_step_stale_holder_regression(tmp_path: Path) -> None:
             messages, "sys", approx_tokens=120_000, commit_fence=fence
         )
 
-    # Step 2: host-owned progress wait times out while summary is blocked.
-    result_msgs, _prompt = run_compress_context_with_progress_timeout(
-        worker=_worker,
-        messages=messages,
-        system_prompt_fallback="fallback",
-        idle_timeout_seconds=0.6,
-        total_ceiling_seconds=1.2,
-    )
-    assert summary_started.wait(timeout=5)
-    assert not release_summary.is_set()  # old worker STILL blocked
-    assert result_msgs is messages
+    try:
+        # Step 2: host-owned progress wait times out while summary is blocked.
+        result_msgs, _prompt = run_compress_context_with_progress_timeout(
+            worker=_worker,
+            messages=messages,
+            system_prompt_fallback="fallback",
+            idle_timeout_seconds=60,
+            total_ceiling_seconds=120,
+        )
+        assert summary_started.wait(timeout=5)
+        assert not release_summary.is_set()  # old worker STILL blocked
+        assert result_msgs is messages
 
-    # Step 3: a NEW compressor acquires the durable lock while the old
-    # summary remains blocked. The host's holder-qualified release freed
-    # the old lease (refresher stopped + row deleted, holder-scoped).
-    new_holder = "pid:new:contender"
-    deadline = time.time() + 5
-    acquired = False
-    while time.time() < deadline:
-        if db.try_acquire_compression_lock(session_id, new_holder, ttl_seconds=60):
-            acquired = True
-            break
-        time.sleep(0.02)
-    assert acquired, (
-        "a new compressor must be able to acquire the durable lock while "
-        "the timed-out worker is still blocked in its summary"
-    )
-    assert not release_summary.is_set()  # provably still step-3 state
-    assert db.get_compression_lock_holder(session_id) == new_holder
+        # Step 3: a NEW compressor acquires the durable lock while the old
+        # summary remains blocked. The host's holder-qualified release freed
+        # the old lease (refresher stopped + row deleted, holder-scoped).
+        new_holder = "pid:new:contender"
+        deadline = time.time() + 5
+        acquired = False
+        while time.time() < deadline:
+            if db.try_acquire_compression_lock(session_id, new_holder, ttl_seconds=60):
+                acquired = True
+                break
+            time.sleep(0.02)
+        assert acquired, (
+            "a new compressor must be able to acquire the durable lock while "
+            "the timed-out worker is still blocked in its summary"
+        )
+        assert not release_summary.is_set()  # provably still step-3 state
+        assert db.get_compression_lock_holder(session_id) == new_holder
 
-    pre_release_rows = db.get_messages_as_conversation(session_id)
+        pre_release_rows = db.get_messages_as_conversation(session_id)
 
-    # Step 4: release the old worker.
-    release_summary.set()
-    # Wait for the late worker to fully unwind (it must NOT touch the lock).
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        if db.get_compression_lock_holder(session_id) != new_holder:
-            break  # would be a failure — checked below
-        if cooldown_cleared:
-            break
-        time.sleep(0.02)
-    time.sleep(0.3)  # settle: give the stale worker every chance to misbehave
+        # Step 4: release the old worker.
+        release_summary.set()
+        # Wait for the late worker to fully unwind (it must NOT touch the lock).
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if db.get_compression_lock_holder(session_id) != new_holder:
+                break  # would be a failure — checked below
+            if cooldown_cleared:
+                break
+            time.sleep(0.02)
+        time.sleep(0.3)  # settle: give the stale worker every chance to misbehave
 
-    # Step 5a: it cannot clear the cooldown.
-    assert not cooldown_cleared, (
-        "late cancelled worker cleared the compression failure cooldown"
-    )
-    # Step 5b: it cannot release the NEW holder's lease (holder-qualified).
-    assert db.get_compression_lock_holder(session_id) == new_holder, (
-        "late worker released the replacement holder's durable lease (ABA)"
-    )
-    # Step 5c: it cannot publish stale state — transcript unchanged, no
-    # in-place compaction landed, session id did not rotate.
-    post_release_rows = db.get_messages_as_conversation(session_id)
-    assert post_release_rows == pre_release_rows
-    assert agent.session_id == session_id
-    db.release_compression_lock(session_id, new_holder)
+        # Step 5a: it cannot clear the cooldown.
+        assert not cooldown_cleared, (
+            "late cancelled worker cleared the compression failure cooldown"
+        )
+        # Step 5b: it cannot release the NEW holder's lease (holder-qualified).
+        assert db.get_compression_lock_holder(session_id) == new_holder, (
+            "late worker released the replacement holder's durable lease (ABA)"
+        )
+        # Step 5c: it cannot publish stale state — transcript unchanged, no
+        # in-place compaction landed, session id did not rotate.
+        post_release_rows = db.get_messages_as_conversation(session_id)
+        assert post_release_rows == pre_release_rows
+        assert agent.session_id == session_id
+        db.release_compression_lock(session_id, new_holder)
+    finally:
+        release_summary.set()
 
 
 def test_f5_session_contextvar_rebound_after_rotation(

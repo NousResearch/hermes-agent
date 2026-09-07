@@ -31,7 +31,6 @@ afterEach(() => {
 })
 
 async function renderField(value: unknown, onChange = vi.fn()) {
-  const { FallbackModelsField } = await import('./fallback-models-field')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   render(
@@ -44,7 +43,6 @@ async function renderField(value: unknown, onChange = vi.fn()) {
 }
 
 async function renderFieldWithRerender(value: unknown, onChange = vi.fn()) {
-  const { FallbackModelsField } = await import('./fallback-models-field')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   const view = render(
@@ -65,6 +63,10 @@ const CHAIN = [
   { provider: 'copilot', model: 'gpt-5-mini' },
   { provider: 'openai-codex', model: 'gpt-5.4-mini' }
 ]
+
+// Load stable modules during collection, after mock fixtures are initialized.
+// Cold transforms must not consume a behavioral test or hook deadline.
+const { FallbackModelsField } = await import('./fallback-models-field')
 
 describe('FallbackModelsField', () => {
   it('renders each {provider, model} entry as its own row (never "[object Object]")', async () => {

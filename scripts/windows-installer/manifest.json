@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "entry": "install.ps1",
+  "files": [
+    "install.ps1",
+    "browser-ensure.ps1",
+    "runtime-policy.ps1",
+    "host-prerequisites.ps1",
+    "repository.ps1",
+    "python-environment.ps1",
+    "installation-registration.ps1",
+    "tool-dependencies.ps1",
+    "desktop.ps1",
+    "post-install.ps1"
+  ],
+  "kill_track": {}
+}

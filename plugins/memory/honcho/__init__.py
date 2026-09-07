@@ -111,6 +111,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         self._memwrite_thread: Optional[threading.Thread] = None
         self._recall_mode = "hybrid"  # "context", "tools", or "hybrid"
         self._recall_sync = False
+        self._recall_generation = object()
         self._recall_sync_thread: Optional[threading.Thread] = None
         self._recall_sync_lock = threading.Lock()
         # Base context cache — refreshed on context_cadence, not frozen.
@@ -185,6 +186,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Configure recall settings and start (or defer) Honcho session creation."""
+        self._recall_generation = object()
         try:
             agent_context, platform = kwargs.get("agent_context", ""), kwargs.get("platform", "cli")
             if agent_context in {"cron", "flush"} or platform == "cron":
@@ -550,7 +552,12 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Track turn count for cadence and injection_frequency logic."""
+        self._recall_generation = object()
         self._turn_count = turn_number
+
+    def on_session_switch(self, new_session_id: str, **kwargs) -> None:
+        """Discard in-flight recall even when the configured backend session is pinned."""
+        self._recall_generation = object()
 
     # ----- Writes -----
 
@@ -799,6 +806,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             return tool_error(f"Honcho {tool_name} failed: {e}")
 
     def shutdown(self) -> None:
+        self._recall_generation = object()
         for t in (self._prefetch_thread, self._sync_thread, self._memwrite_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)

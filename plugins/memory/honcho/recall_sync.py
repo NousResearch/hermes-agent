@@ -27,6 +27,7 @@ def prefetch_sync(provider, query: str) -> str:
         worker = provider._recall_sync_thread
         if worker is not None and worker.is_alive():
             return ""
+        generation = provider._recall_generation = object()
         session, turn = provider._session_key, provider._turn_count
         if not provider._session_ready():
             provider._start_session_init_background(blocking=False)
@@ -35,7 +36,8 @@ def prefetch_sync(provider, query: str) -> str:
             if not provider._session_ready():
                 return provider._pop_auth_notice()
         manager = provider._manager
-        if session != provider._session_key or turn != provider._turn_count or time.monotonic() >= deadline:
+        if (generation is not provider._recall_generation or session != provider._session_key
+                or turn != provider._turn_count or time.monotonic() >= deadline):
             return ""
 
         context_due = (
@@ -52,13 +54,16 @@ def prefetch_sync(provider, query: str) -> str:
         holder = {}
 
         def expired() -> bool:
-            return cancelled.is_set() or time.monotonic() >= deadline
+            return (cancelled.is_set() or generation is not provider._recall_generation
+                    or time.monotonic() >= deadline)
 
         def retrieve() -> None:
             try:
                 if expired():
                     return
-                base = provider._format_first_turn_context(manager.get_prefetch_context(session, query) or {}) if context_due else ""
+                base = provider._format_first_turn_context(manager.get_prefetch_context(
+                    session, query, current_query_only=True,
+                ) or {}) if context_due else ""
                 if expired():
                     return
                 dialectic = ""
@@ -92,6 +97,7 @@ def prefetch_sync(provider, query: str) -> str:
         worker.start()
         worker.join(timeout=max(0.0, deadline - time.monotonic()))
         if (worker.is_alive() or time.monotonic() >= deadline or "result" not in holder
+                or generation is not provider._recall_generation
                 or provider._manager is not manager or provider._session_key != session
                 or provider._turn_count != turn):
             return ""
@@ -99,8 +105,8 @@ def prefetch_sync(provider, query: str) -> str:
         if context_due:
             provider._last_context_turn = turn
         if dialectic_due:
+            provider._last_dialectic_turn = turn
             if dialectic:
-                provider._last_dialectic_turn = turn
                 provider._dialectic_empty_streak = 0
             else:
                 provider._dialectic_empty_streak += 1

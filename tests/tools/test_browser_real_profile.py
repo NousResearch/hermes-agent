@@ -241,6 +241,7 @@ class TestRealProfileCdpLaunch:
              patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
              patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt_real_profile, "_cdp_http_ready", return_value=True), \
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
@@ -292,6 +293,7 @@ class TestRealProfileCdpLaunch:
              patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
              patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt_real_profile, "_cdp_http_ready", return_value=True), \
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
@@ -311,6 +313,44 @@ class TestRealProfileCdpLaunch:
         assert socket_dir == str(tmp_path / f"agent-browser-{bt._REAL_PROFILE_SESSION}")
         assert (tmp_path / f"agent-browser-{bt._REAL_PROFILE_SESSION}" / f"{bt._REAL_PROFILE_SESSION}.owner_pid").read_text() == str(os.getpid())
         assert "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in captured["env"]
+        self._reset()
+
+    def test_silent_cdp_endpoint_fails_fast(self, tmp_path):
+        """#105064: on Chrome >=136 the DevToolsActivePort file can exist while CDP is withheld
+        behind a remote-debugging consent the headless copy can never receive — the port listens
+        but /json/version never answers. Launch must fail fast with an actionable error (never
+        let the harness hang to the full tool timeout), and the Chrome it spawned must be
+        reaped rather than left holding the copy dir."""
+        import tools.browser_tool as bt
+        self._reset()
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt_real_profile, "_agent_browser_get_cdp", return_value=None), \
+             patch.object(bt_real_profile, "_cdp_http_ready", return_value=False), \
+             patch.object(bt_real_profile, "_CDP_SILENT_GRACE_S", 0.2), \
+             patch("tools.browser_lightpanda._terminate") as terminate, \
+             patch.object(bt_real_profile, "_attach_agent_browser_to_real_profile") as attach:
+            cdp, err = bt_real_profile._real_profile_cdp()
+        assert cdp is None
+        assert "DevTools endpoint is not answering" in err
+        assert "browser.headed" in err
+        attach.assert_not_called()
+        assert terminate.call_count >= 1
+        # every tracked Chrome — the silent one included — was reaped, not leaked
+        assert len(bt._real_profile_chrome_procs) == 0
         self._reset()
 
     def test_reuses_only_session_on_our_copy_dir(self, tmp_path):

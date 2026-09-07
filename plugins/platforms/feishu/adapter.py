@@ -178,8 +178,9 @@ async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> byt
 
 
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
-# Feishu rejects msg_type='image'/'file'/'audio' with receive_id_type='thread_id' (99992402).
-# Non-text media must be re-sent via the reply API anchored to a message in the thread.
+# Feishu rejects receive_id_type='thread_id' for ALL msg_types (99992402).
+# Non-text and text alike must be re-sent via the reply API anchored to a
+# message in the thread.
 _FEISHU_THREAD_ROUTE_INVALID_CODE = 99992402
 
 # Feishu reactions render as prominent badges, unlike Discord/Telegram's
@@ -1670,10 +1671,21 @@ class FeishuAdapter(BasePlatformAdapter):
                 "⚠️ Command Approval Required", "orange",
                 self._format_exec_approval(command, description, smart_denied), actions=actions,
             )
-            return await self._send_interactive_card(
+            result = await self._send_interactive_card(
                 chat_id, card, metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=session_key,
             )
+            if result.success:
+                # Remember the thread context so follow-up notices (e.g. the
+                # expired-approval hint) land back inside the topic instead of
+                # the main chat area.
+                _thread_meta = {
+                    k: v for k, v in (metadata or {}).items()
+                    if k in ("thread_id", "reply_to_message_id")
+                }
+                if _thread_meta:
+                    self._approval_state[approval_id]["thread_metadata"] = _thread_meta
+            return result
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
             return SendResult(success=False, error=str(exc))
@@ -2246,6 +2258,7 @@ class FeishuAdapter(BasePlatformAdapter):
                             _chat,
                             "⌛ That approval had already expired — the command "
                             "was not run (it timed out or was resolved elsewhere).",
+                            metadata=state.get("thread_metadata"),
                         )
                     except Exception:
                         logger.debug("[Feishu] expired-approval notice failed", exc_info=True)
@@ -3614,14 +3627,14 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             request = self._build_create_message_request("thread_id", body)
             response = await self._run_blocking(self._client.im.v1.message.create, request)
-            # Feishu rejects non-text media (image/file/audio) sent with
-            # receive_id_type='thread_id' (code 99992402). Re-send via the
-            # reply API anchored to a message in the thread so the media
-            # still lands inside the topic.
+            # Feishu's create API rejects receive_id_type='thread_id' with
+            # 99992402 for ALL message types — 'thread_id' is not one of the
+            # documented receive_id_type enum values. Re-send via the reply
+            # API anchored to a message in the thread so the message still
+            # lands inside the topic.
             if (
                 not self._response_succeeded(response)
                 and getattr(response, "code", None) == _FEISHU_THREAD_ROUTE_INVALID_CODE
-                and msg_type != "text"
             ):
                 logger.info(
                     "[Feishu] %s send via thread_id rejected (99992402); retrying via reply API in thread",

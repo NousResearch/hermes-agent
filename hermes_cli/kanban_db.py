@@ -3730,13 +3730,16 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     attachments, prior attempts, done-parent handoffs, the assignee's recent
     work, comments. Lists are tail-capped and fields char-capped
     (``_CTX_MAX_*``) so the prompt stays bounded on pathological boards."""
+    from hermes_cli.kanban_runtime_budget import format_runtime_budget, runtime_budget_snapshot
+
     task = get_task(conn, task_id)
     if not task:
         raise ValueError(f"unknown task {task_id}")
     # One clock reading so every relative age in this rendering agrees.
     now = int(time.time())
     lines: list[str] = []
-    _ctx_header(lines, task)
+    budget = runtime_budget_snapshot(conn, task_id, observed_at=now)
+    _ctx_header(lines, task, budget_line=format_runtime_budget(budget))
     _ctx_attachments(lines, list_attachments(conn, task_id))
     _ctx_prior_attempts(lines, conn, task_id, now)
     _ctx_parent_results(lines, conn, task_id, now)
@@ -3782,7 +3785,7 @@ def _ctx_tail(items: list, cap: int, noun: str) -> tuple[list, Optional[str]]:
     )
 
 
-def _ctx_header(lines: list[str], task: Task) -> None:
+def _ctx_header(lines: list[str], task: Task, *, budget_line: str = "") -> None:
     lines.append(f"# Kanban task {task.id}: {task.title}")
     lines.append("")
     lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
@@ -3800,6 +3803,8 @@ def _ctx_header(lines: list[str], task: Task) -> None:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
+    if budget_line:
+        lines.append(budget_line)
     lines.append("")
     if task.body and task.body.strip():
         lines.append("## Body")

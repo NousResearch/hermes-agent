@@ -276,6 +276,7 @@ async def _handle_room_control_mutate(
                         "id": f"peer:{member_id}",
                         "display_name": display_name,
                     },
+                    expected_authority=(str(room["authority_gateway_id"]), int(room["authority_epoch"])),
                 )
                 result = {"action": "send", "event": event}
             elif action == "stop":

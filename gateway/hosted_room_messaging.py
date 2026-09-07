@@ -748,8 +748,11 @@ def remote_mutate(
     command_id: str,
     text: str = "",
     actor_display_name: str = "Messaging",
+    expected_authority: tuple[str, int] | None = None,
 ) -> dict[str, Any]:
     link = _remote_control_link(service, room)
+    if expected_authority is not None and (link.authority_gateway_id, link.authority_epoch) != expected_authority:
+        raise hosted_rooms.AuthorityConflictError("stale hosted room authority")
     try:
         return RoomControlHTTPClient(link).mutate(
             action=action,
@@ -867,7 +870,9 @@ class MessagingRoomBackend:
         event_id: str,
         payload: Any,
         actor: Mapping[str, Any],
+        expected_authority: tuple[str, int] | None = None,
     ) -> dict[str, Any]:
+        fence = {} if expected_authority is None else {"expected_authority": expected_authority}
         if self.service is not None:
             send_server_owned = getattr(self.service, "send_server_owned", None)
             if callable(send_server_owned):
@@ -876,12 +881,14 @@ class MessagingRoomBackend:
                     event_id=event_id,
                     payload=payload,
                     actor=actor,
+                    **fence,
                 )
             return self.service.send(
                 room_id=room_id,
                 event_id=event_id,
                 payload=payload,
                 actor=actor,
+                **fence,
             )
         room = hosted_rooms.room_state(self.db_path, room_id=room_id)
         local_gateway_id = hosted_rooms.local_authority_gateway_id()
@@ -890,6 +897,9 @@ class MessagingRoomBackend:
                 "This Group Chat moved to another connected device. Open it there and try again."
             )
         normalized = discussion.validate_user_payload(payload)
+        authority = expected_authority
+        if authority is None:
+            authority = (str(room["authority_gateway_id"]), int(room["authority_epoch"]))
         return hosted_rooms.append_event(
             self.db_path,
             room_id=room_id,
@@ -897,8 +907,8 @@ class MessagingRoomBackend:
             kind="message.user",
             actor=dict(actor),
             payload=normalized,
-            authority_gateway_id=str(room["authority_gateway_id"]),
-            authority_epoch=int(room["authority_epoch"]),
+            authority_gateway_id=authority[0],
+            authority_epoch=authority[1],
         )
 
     def stop_room(self, room_id: str, *, cancel_id: str) -> int:
@@ -1678,7 +1688,10 @@ def _desktop_authority_hash(room: Mapping[str, Any]) -> str:
     return authority_hash
 
 
-def send_to_room(service: Any, room: Mapping[str, Any], event: Any, text: str) -> str:
+def send_to_room(
+    service: Any, room: Mapping[str, Any], event: Any, text: str, *,
+    expected_authority: tuple[str, int] | None = None,
+) -> str:
     """Append or hand off one idempotent room turn."""
 
     ensure_text_only(event)
@@ -1718,6 +1731,7 @@ def send_to_room(service: Any, room: Mapping[str, Any], event: Any, text: str) -
             command_id=event_id,
             text=text,
             actor_display_name=actor.get("display_name") or "Messaging",
+            expected_authority=expected_authority,
         )
         return f"Queued in {name}."
     service.send(
@@ -1728,6 +1742,7 @@ def send_to_room(service: Any, room: Mapping[str, Any], event: Any, text: str) -
             event,
             gateway_id=str(room["authority_gateway_id"]),
         ),
+        **({} if expected_authority is None else {"expected_authority": expected_authority}),
     )
     return f"Queued in {name}."
 

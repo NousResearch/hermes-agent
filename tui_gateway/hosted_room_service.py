@@ -1133,11 +1133,17 @@ class HostedRoomService:
         event_id: str,
         payload: Any,
         actor: Mapping[str, Any],
+        expected_authority: tuple[str, int] | None = None,
     ) -> dict[str, Any]:
         """Append a user event whose actor was derived by trusted gateway code."""
 
         normalized = discussion.validate_user_payload(payload)
         room = self._owned_room(room_id)
+        # Preserve the caller's fence through the append transaction, even if this
+        # service observes a newer authority term while preparing the Send.
+        authority = expected_authority
+        if authority is None:
+            authority = (str(room["authority_gateway_id"]), int(room["authority_epoch"]))
         event = hosted_rooms.append_event(
             self.db_path,
             room_id=room_id,
@@ -1145,8 +1151,8 @@ class HostedRoomService:
             kind="message.user",
             actor=dict(actor),
             payload=normalized,
-            authority_gateway_id=str(room["authority_gateway_id"]),
-            authority_epoch=int(room["authority_epoch"]),
+            authority_gateway_id=authority[0],
+            authority_epoch=authority[1],
         )
         binding = next(
             (

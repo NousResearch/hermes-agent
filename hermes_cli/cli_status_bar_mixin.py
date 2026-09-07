@@ -279,7 +279,7 @@ class CLIStatusBarMixin:
             # Anchor on the turn's FIRST response plus a delta estimate of appended messages.
             # The compression trigger keeps using real last-request usage.
             try:
-                from agent.model_metadata import anchored_context_tokens
+                from agent.usage_anchor import anchored_context_tokens
 
                 _msgs = getattr(agent, "_session_messages", None)
                 _anchored = anchored_context_tokens(

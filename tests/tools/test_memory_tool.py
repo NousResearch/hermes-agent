@@ -704,3 +704,54 @@ class TestBomToleranceInMemoryFiles:
         raw, read_ok = MemoryStore._read_raw_checked(path)
         assert read_ok is False
         assert raw == ""
+
+
+# =========================================================================
+# Batch must not silently empty a non-empty store (#103419)
+#
+# A background consolidation batch that removes the last remaining entry
+# commits an empty USER.md/MEMORY.md as a normal successful write — silent
+# profile data loss. The batch path must refuse to reduce a previously
+# non-empty target to zero entries (all-or-nothing: nothing is written).
+# Single remove-last stays allowed (explicit delete, pinned elsewhere).
+# =========================================================================
+
+
+class TestBatchRefusesToEmptyNonEmptyStore:
+    @pytest.mark.parametrize(
+        ("target", "seed"),
+        [("user", "Name: Alice"), ("memory", "fact A")],
+    )
+    def test_batch_removing_last_entry_is_refused_and_preserves_disk(
+        self, store, target, seed
+    ):
+        assert store.add(target, seed)["success"] is True
+        path = store._path_for(target)
+        before = path.read_text(encoding="utf-8")
+
+        result = store.apply_batch(target, [{"action": "remove", "old_text": seed}])
+
+        assert result["success"] is False
+        assert "current_entries" in result  # actionable, counts toward degrade budget
+        assert "remove" in result["error"]  # points at the deliberate-wipe path
+        assert path.read_text(encoding="utf-8") == before  # nothing written
+
+    @pytest.mark.parametrize(
+        ("target", "seed"),
+        [("user", "Name: Alice"), ("memory", "fact A")],
+    )
+    def test_batch_ending_nonempty_still_succeeds(self, store, target, seed):
+        assert store.add(target, seed)["success"] is True
+        assert store.add(target, "second entry here")["success"] is True
+
+        result = store.apply_batch(
+            target,
+            [
+                {"action": "remove", "old_text": seed},
+                {"action": "add", "content": "replacement entry here"},
+            ],
+        )
+
+        assert result["success"] is True
+        assert seed not in store._entries_for(target)
+        assert "replacement entry here" in store._entries_for(target)

@@ -83,6 +83,7 @@ import {
 import {
   clearGroupComposerDraft,
   closeGroupChatMainTab,
+  consumeGroupComposerDraft,
   dropGroupMainTab,
   groupChatMainTabs,
   groupComposerDraftKey,
@@ -96,7 +97,7 @@ import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify } from './group-turns'
 import { $hostedRooms, sendHostedInput } from './hosted-room-client'
-import { HostedRoomStatus } from './hosted-room-controls'
+import { HostedRoomAttachment, HostedRoomStatus } from './hosted-room-controls'
 import { hostedMembers, hostedTranscript, isHostedRoomKey } from './hosted-room-protocol'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify, stripPreviewMarkdown } from './labels'
@@ -482,6 +483,7 @@ export function GroupChatWorkspace({ group, members: legacyMembers, onBack, visi
     : rooms[group] || { log: [], watermarks: {}, running: false }
 
   const hostedDisabled = isHosted && (!hosted?.room || hosted.busy || Boolean(hosted.pending) || Boolean(hosted.error) || !hosted.capabilities?.driver)
+  const attachmentsEnabled = !isHosted || Boolean(hosted?.capabilities?.attachments)
   const composerKey = isHosted ? group : groupComposerDraftKey(group, room)
   const composerKeyRef = useRef(composerKey)
   const [composerDraft, setComposerDraft] = useState(() => groupComposerDraftSnapshot(composerKey))
@@ -599,7 +601,7 @@ export function GroupChatWorkspace({ group, members: legacyMembers, onBack, visi
   const imagesFor = (thread: null | string) => pendingImages[thread ?? 'main'] || []
 
   const addImages = (thread: null | string, picked: Attachment[]) => {
-    if (isHosted || !picked.length) {
+    if (!attachmentsEnabled || !picked.length) {
       return
     }
 
@@ -619,6 +621,19 @@ export function GroupChatWorkspace({ group, members: legacyMembers, onBack, visi
   }
 
   // Ctrl/⌘-V a screenshot (or any file) into any composer in this room.
+  const collectAttachments = async (thread: null | string, pick: () => Promise<Attachment[]>) => {
+    if (!attachmentsEnabled) {return}
+    const key = composerKeyRef.current
+
+    try {
+      const picked = await pick()
+
+      if (composerKeyRef.current === key) {addImages(thread, picked)}
+    } catch (error) {
+      host.notify({ kind: 'error', message: String(error) })
+    }
+  }
+
   const pasteImages = (thread: null | string, event: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = [...(event.clipboardData?.files || [])]
 
@@ -628,7 +643,7 @@ export function GroupChatWorkspace({ group, members: legacyMembers, onBack, visi
 
     event.preventDefault()
 
-    if (!isHosted) {void filesToGroupAttachments(files).then(picked => addImages(thread, picked))}
+    void collectAttachments(thread, () => filesToGroupAttachments(files))
   }
 
   // Drag & drop anywhere on the room drops into the ACTIVE composer — the
@@ -646,7 +661,7 @@ export function GroupChatWorkspace({ group, members: legacyMembers, onBack, visi
 
     event.preventDefault()
 
-    if (!isHosted) {void filesToGroupAttachments(files).then(picked => addImages(replyThread, picked))}
+    void collectAttachments(replyThread, () => filesToGroupAttachments(files))
   }
 
   // Collapsible Activity view: collapsed by default — opening it is always an
@@ -817,22 +832,15 @@ export function GroupChatWorkspace({ group, members: legacyMembers, onBack, visi
     if (hostedDisabled) {return}
     const key = composerKeyRef.current
     const before = groupComposerDraftSnapshot(key)
-    const text = (thread ? before.replies[thread] : before.main)?.trim()
+    const text = (thread ? before.replies[thread] : before.main)?.trim() || ''
+    const images = before.pendingAttachments?.[thread ?? 'main'] || []
 
-    if (!text) {return}
-    const sent = await sendHostedInput(group, text, thread)
-
-    // Once durably queued, the pending-input panel owns retry. Do not leave
-    // the same text in the composer as a second, accidentally fresh send.
-    if ((sent || $hostedRooms.get()[group]?.pending?.text === text) && groupComposerDraftSnapshot(key).revision === before.revision) {
-      const next = updateGroupComposerDraft(key, current => ({
-        ...current,
-        main: thread ? current.main : '',
-        replies: thread ? { ...current.replies, [thread]: '' } : current.replies
-      }))
+    if (!text && !images.length) {return}
+    await sendHostedInput(group, text, thread, images, () => {
+      const next = consumeGroupComposerDraft(key, before, thread)
 
       if (composerKeyRef.current === key) {setComposerDraft(next)}
-    }
+    })
   }
 
   const submit = () => {
@@ -931,7 +939,7 @@ export function GroupChatWorkspace({ group, members: legacyMembers, onBack, visi
   const attachmentRow = (thread: null | string) => {
     const images = imagesFor(thread)
 
-    if (isHosted || !images.length) {
+    if (!images.length) {
       return null
     }
 
@@ -967,10 +975,12 @@ export function GroupChatWorkspace({ group, members: legacyMembers, onBack, visi
     )
   }
 
-  const attachButton = (thread: null | string) => isHosted ? null : (
+  const attachButton = (thread: null | string) => !attachmentsEnabled ? null : (
     <Button
+      aria-label={b.group.attachHint}
       className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
-      onClick={() => void pickGroupAttachments().then(picked => addImages(thread, picked))}
+      disabled={hostedDisabled}
+      onClick={() => void collectAttachments(thread, pickGroupAttachments)}
       size="sm"
       title={b.group.attachHint}
       type="button"
@@ -1080,7 +1090,9 @@ export function GroupChatWorkspace({ group, members: legacyMembers, onBack, visi
           {Array.isArray(entry.images) && entry.images.length ? (
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
               {entry.images.map((img, imgIndex) =>
-                img.kind === 'pdf' || img.kind === 'file' ? (
+                isHosted && img.attachmentId ? (
+                  <HostedRoomAttachment attachment={img} eventId={entry.id || ''} key={`${group}:${entryKey}:${img.attachmentId}`} roomKey={group} />
+                ) : img.kind === 'pdf' || img.kind === 'file' ? (
                   <div
                     className="flex items-center gap-1 rounded-md border border-(--ui-stroke-secondary) px-1.5 py-1 text-[0.65rem] text-(--ui-text-tertiary)"
                     key={`${entryKey}:img:${imgIndex}`}
@@ -1263,7 +1275,7 @@ export function GroupChatWorkspace({ group, members: legacyMembers, onBack, visi
         }
       }}
       onDragOver={event => {
-        if (!isHosted && [...(event.dataTransfer?.types || [])].includes('Files')) {
+        if (attachmentsEnabled && [...(event.dataTransfer?.types || [])].includes('Files')) {
           event.preventDefault()
           setDragOver(true)
         }

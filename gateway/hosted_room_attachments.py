@@ -10,6 +10,7 @@ room's frozen recipient roster.
 from __future__ import annotations
 
 from gateway.hosted_rooms import EventAttachmentConflictError
+from gateway.hosted_rooms_common import compact_json
 
 import base64
 import binascii
@@ -399,6 +400,22 @@ class HostedRoomAttachmentStore:
             """CREATE INDEX IF NOT EXISTS idx_hosted_room_attachments_event
                ON hosted_room_attachments(room_id, event_id)"""
         )
+        # One durable outcome per produced-media message: the display text the room will publish,
+        # the ordered manifest it was committed with, and the files that could not be attached.
+        # A publication that fails to append its event aborts the COMMITMENT, not this decision,
+        # so the retry republishes exactly what was promoted instead of re-reading sources that
+        # may since have changed. Lives beside the bytes it describes, in this same store.
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS hosted_room_attachment_promotions (
+                room_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                display_text TEXT NOT NULL,
+                manifest_json TEXT NOT NULL,
+                unavailable_json TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                PRIMARY KEY (room_id, event_id)
+            )"""
+        )
 
     def _connect(self) -> sqlite3.Connection:
         from hermes_state_wal import apply_wal_with_fallback
@@ -688,8 +705,14 @@ class HostedRoomAttachmentStore:
         viewer_access: bool = False,
         retention_seconds: float | None = None,
         hold_until_event: bool = False,
+        promotion: Mapping[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
-        """Commit a manifest and report only rows transitioned by this call."""
+        """Commit a manifest and report only rows transitioned by this call.
+
+        ``promotion`` durably records what a produced-media message will publish -- its display
+        text and the files that could not be attached -- in the SAME transaction as the
+        commitment, so the decision and the bytes it describes can never disagree.
+        """
 
         room_id = _identifier(room_id, label="room_id")
         event_id = _identifier(event_id, label="event_id")
@@ -771,7 +794,70 @@ class HostedRoomAttachmentStore:
                     raise AttachmentConflictError(
                         "attachment changed during message commitment"
                     )
+            if promotion is not None:
+                self._write_promotion(
+                    conn, room_id=room_id, event_id=event_id, manifest=normalized,
+                    promotion=promotion, now=now)
         return normalized, tuple(transitioned)
+
+    @staticmethod
+    def _write_promotion(
+        conn: sqlite3.Connection, *, room_id: str, event_id: str,
+        manifest: Sequence[Mapping[str, Any]], promotion: Mapping[str, Any], now: float) -> None:
+        """Record one produced-media outcome, immutably.
+
+        A second promotion of the same message must describe exactly what the first one did:
+        anything else means the retry is about to publish different content under an identity
+        that is already durable, so it conflicts and rolls this commitment back with it.
+        """
+        display_text = promotion.get("display_text")
+        if not isinstance(display_text, str):
+            raise AttachmentError("promotion requires its display text")
+        if len(display_text.encode("utf-8")) > MAX_ATTACHMENT_LIST_RESPONSE_BYTES:
+            raise AttachmentError("promotion display text is too large")
+        unavailable = [_name(entry) for entry in (promotion.get("unavailable") or ())]
+        if len(unavailable) > MAX_ATTACHMENTS_PER_MESSAGE:
+            raise AttachmentError(
+                f"promotion must name at most {MAX_ATTACHMENTS_PER_MESSAGE} unavailable files")
+        values = (
+            display_text, compact_json([dict(entry) for entry in manifest]),
+            compact_json(unavailable))
+        existing = conn.execute(
+            """SELECT display_text, manifest_json, unavailable_json
+                 FROM hosted_room_attachment_promotions WHERE room_id=? AND event_id=?""",
+            (room_id, event_id)).fetchone()
+        if existing is not None:
+            if (str(existing["display_text"]), str(existing["manifest_json"]),
+                    str(existing["unavailable_json"])) != values:
+                raise AttachmentConflictError(
+                    "message already has a different produced-media outcome")
+            return
+        conn.execute(
+            """INSERT INTO hosted_room_attachment_promotions(
+                   room_id, event_id, display_text, manifest_json, unavailable_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (room_id, event_id, *values, now))
+
+    def find_promotion(self, *, room_id: Any, event_id: Any) -> dict[str, Any] | None:
+        """The durable produced-media outcome for one message, or ``None``.
+
+        Read BEFORE any path resolution on a republication: it is what makes the retry publish
+        the same text and the same files rather than whatever the filesystem now holds.
+        """
+        room_id = _identifier(room_id, label="room_id")
+        event_id = _identifier(event_id, label="event_id")
+        with self._transaction() as conn:
+            row = conn.execute(
+                """SELECT display_text, manifest_json, unavailable_json
+                     FROM hosted_room_attachment_promotions WHERE room_id=? AND event_id=?""",
+                (room_id, event_id)).fetchone()
+        if row is None:
+            return None
+        return {
+            "display_text": str(row["display_text"]),
+            "manifest": validate_manifest(json.loads(str(row["manifest_json"]))),
+            "unavailable": tuple(json.loads(str(row["unavailable_json"]))),
+        }
 
     def abort_message_commit(
         self,
@@ -915,6 +1001,11 @@ class HostedRoomAttachmentStore:
                 ).rowcount
         return int(changed)
 
+    def _drop_promotions(self, conn: sqlite3.Connection, room_id: str) -> None:
+        """Produced-media outcomes live exactly as long as the room they belong to."""
+        conn.execute(
+            "DELETE FROM hosted_room_attachment_promotions WHERE room_id=?", (room_id,))
+
     def mark_room_disbanded(self, room_id: Any) -> int:
         room_id = _identifier(room_id, label="room_id")
         now = float(self.clock())
@@ -925,6 +1016,7 @@ class HostedRoomAttachmentStore:
                     WHERE room_id=? AND state!='disbanded'""",
                 (now, now + DISBANDED_GRACE_SECONDS, room_id),
             )
+            self._drop_promotions(conn, room_id)
             return int(changed.rowcount)
 
     def prune(self, *, now: float | None = None) -> int:

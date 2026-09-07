@@ -128,6 +128,30 @@ def test_stop_holds_every_member_and_a_fresh_unaddressed_thread_dispatches_nothi
     assert service.status(ROOM_ID)["working"] is False
 
 
+def test_a_frozen_friendly_name_holds_and_releases_through_a_cold_checkpoint(service):
+    """The durable control path must accept the tag the composer inserts for a renamed member.
+
+    `impl` carries the frozen display name `Impl Bot`, so its autocomplete tag is `@impl-bot`.
+    The projection rebuilds its roster from the room's own stored members, and a build that
+    dropped `display_name` there resolved that tag in the planner while the checkpoint -- the
+    thing that actually holds and releases -- could not see it at all. A cold service proves the
+    hold came from the durable log, not from live state in the process that took it.
+    """
+    _send(service, "user-1", "@impl-bot stop")
+
+    assert _held_handles(service) == ["impl"]
+
+    cold = HostedRoomService(ModuleType("test_server"), db_path=service.db_path)
+    cold.rpc = cold.runtime.rpc = _SessionlessRPC()
+
+    assert [hold["handle"] for hold in cold.status(ROOM_ID)["holds"]] == ["impl"]
+
+    _send(cold, "user-2", "@impl-bot resume")
+
+    assert cold.status(ROOM_ID)["holds"] == []
+    assert service.status(ROOM_ID)["holds"] == []
+
+
 def test_a_direct_mention_releases_only_the_addressed_member(service):
     _send(service, "user-1", "@all stop")
     assert sorted(_held_handles(service)) == ["impl", "research"]

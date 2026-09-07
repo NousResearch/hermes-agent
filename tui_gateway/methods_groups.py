@@ -27,6 +27,7 @@ _service_lock = threading.Lock()
 _run_store_lock = threading.Lock()
 _bound_server = None
 _service = None
+_transport = None
 
 _WORKER_UNAVAILABLE = "Group Chat worker is unavailable. Restart the Hermes gateway and try again."
 _DRIVER_UNAVAILABLE = "hosted room driver is unavailable"
@@ -39,21 +40,71 @@ def bind_server(server) -> None:
     server._profile_execution_policy = _profile_execution_policy
 
 
+def _stop_room_transport(*, timeout: float = 5.0) -> bool:
+    """Stop the transport companion, keeping its handle unless it actually ceased.
+
+    A companion that did not stop is still able to publish, so forgetting it here would leave an
+    unowned worker behind exactly where the service contract refuses to.
+    """
+    global _transport
+    transport = _transport
+    if transport is None:
+        return True
+    stopped = bool(transport.stop(timeout=timeout))
+    if stopped and _transport is transport:
+        _transport = None
+    return stopped
+
+
 def start_hosted_room_service():
-    """Start one process-owned hosted room service idempotently."""
-    global _service
+    """Start one process-owned hosted room service, and its optional transport, idempotently."""
+    global _service, _transport
     if _bound_server is None:
         return None
     from gateway.hosted_rooms import default_db_path
+    from hermes_constants import get_default_hermes_root
     from tui_gateway.hosted_room_service import HostedRoomService
     db_path = default_db_path()
+    # Validated before anything is started: a broken binding must not take down a room that is
+    # already serving, nor start a worker this gateway cannot describe.
+    from plugins.platforms.telegram.hosted_room_transport import (
+        Transport, hosted_room_binding_path, load_binding)
+    # Transport ownership belongs to canonical room storage, not a member's ingress
+    # config. Named gateways share the root DB but can ingest for a separate serve.
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    config_scope = set_hermes_home_override(db_path.parent)
+    try:
+        path = hosted_room_binding_path()
+        binding = load_binding(path) if path is not None else None
+    finally:
+        reset_hermes_home_override(config_scope)
     with _service_lock:
         if _service is not None and _service.db_path != db_path:
-            _service.stop(timeout=1.0)
+            # Neither handle may be dropped before its worker actually ceased: a service that is
+            # still running would otherwise be replaced while it still owns accepted turns.
+            if not _stop_room_transport(timeout=1.0):
+                raise RuntimeError("hosted room transport did not stop; its service was kept")
+            if not _service.stop(timeout=1.0):
+                raise RuntimeError("hosted room service did not stop; it was not replaced")
             _service = None
-        if _service is None:
-            _service = HostedRoomService(_bound_server, db_path=db_path)
+        created = _service is None
+        if created:
+            # Roster discovery and the native turn locks resolve member profiles from this root;
+            # without it they would look beside the room's own storage.
+            _service = HostedRoomService(
+                _bound_server, db_path=db_path, profiles_root=get_default_hermes_root())
         _service.start()
+        if _transport is not None and _transport.config != binding:
+            if not _stop_room_transport(timeout=5.0):
+                raise RuntimeError("previous Telegram transport did not stop; binding was not replaced")
+        if _transport is None and binding is not None:
+            _transport = Transport(_service, binding)
+            try:
+                _transport.start()
+            except BaseException:
+                if _stop_room_transport(timeout=5.0) and created and _service.stop(timeout=1.0):
+                    _service = None
+                raise
         return _service
 
 
@@ -61,6 +112,9 @@ def stop_hosted_room_service(*, timeout: float = 5.0) -> bool:
     """Stop the process-owned worker without interrupting accepted turns."""
     global _service
     with _service_lock:
+        # Before the service reference can be dropped: the companion publishes through it.
+        if not _stop_room_transport(timeout=timeout):
+            return False
         service = _service
         if service is None:
             return True
@@ -411,7 +465,7 @@ def _(rid, params: dict, service) -> dict:
 def _(rid, params: dict, service) -> dict:
     """Permanently tombstone a hosted room id."""
     from gateway.hosted_rooms import (
-        AuthorityConflictError, RoomHistoryExpiredError, disband_room, local_authority_gateway_id,
+        AuthorityConflictError, RoomHistoryExpiredError, begin_room_disband, disband_room, local_authority_gateway_id,
         room_state)
     room_id = str(params.get("room_id") or "")
 
@@ -433,6 +487,9 @@ def _(rid, params: dict, service) -> dict:
         return disband_with_state()
     if existing.get("disbanded_at") is not None:
         return disband_with_state(existing)
+    begin_room_disband(
+        service.db_path, room_id=room_id, expected_gateway_id=local_authority_gateway_id(),
+        expected_epoch=int(existing["authority_epoch"]))
     service.stop_room(
         room_id, cancel_id=str(params.get("cancel_id") or "room-disbanded"),
         require_acknowledged=True)

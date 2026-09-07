@@ -43,6 +43,44 @@ beforeEach(() => {
 })
 
 describe('group composer drafts', () => {
+  it.each([null, 'thread-a'])('retires only the submitted composer %s after unrelated reply edits', async thread => {
+    const drafts = await loadDrafts()
+    const key = 'id:held-composer'
+    const file: Attachment = { kind: 'file', name: 'note.txt', data: 'data:text/plain;base64,dGVzdA==' }
+    const selected = thread ?? 'main'
+
+    const before = drafts.updateGroupComposerDraft(key, state => ({
+      ...state, main: 'main draft', replies: { 'thread-a': 'reply draft' },
+      pendingAttachments: { [selected]: [file] }
+    }))
+
+    drafts.updateGroupComposerDraft(key, state => ({
+      ...state, activeReplyThread: 'other-thread', replies: { ...state.replies, 'other-thread': 'keep this' }
+    }))
+    const next = drafts.consumeGroupComposerDraft(key, before, thread)
+    expect(thread ? next.replies[thread] : next.main).toBe('')
+    expect(next.pendingAttachments[selected]).toEqual([])
+    expect(next.activeReplyThread).toBe('other-thread')
+    expect(next.replies['other-thread']).toBe('keep this')
+    expect(thread ? next.main : next.replies['thread-a']).toBe(thread ? 'main draft' : 'reply draft')
+  })
+  it('preserves newly typed text and new files while retiring the submitted attachments', async () => {
+    const drafts = await loadDrafts()
+    const key = 'id:edited-composer'
+    const oldFile: Attachment = { kind: 'file', name: 'old.txt', data: 'data:text/plain;base64,dGVzdA==' }
+    const newFile: Attachment = { ...oldFile, name: 'new.txt' }
+
+    const before = drafts.updateGroupComposerDraft(key, state => ({
+      ...state, main: 'submitted', pendingAttachments: { main: [oldFile] }
+    }))
+
+    drafts.updateGroupComposerDraft(key, state => ({
+      ...state, main: 'new text', pendingAttachments: { main: [oldFile, newFile] }
+    }))
+    const next = drafts.consumeGroupComposerDraft(key, before, null)
+    expect(next.main).toBe('new text')
+    expect(next.pendingAttachments.main).toEqual([newFile])
+  })
   it('workspace retirement and re-registration restore the exact room draft', async () => {
     const drafts = await loadDrafts()
     const key = drafts.groupComposerDraftKey('Launch room', room({ roomId: 'room-1' }))

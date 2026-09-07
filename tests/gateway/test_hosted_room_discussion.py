@@ -368,6 +368,188 @@ def test_mentions_select_handles_or_everyone(
     assert _next_task(room, db).member.profile == expected_profile
 
 
+def _member(profile: str, handle: str, display_name: str) -> dict:
+    return {
+        "member_id": f"member-{handle}",
+        "profile": profile,
+        "handle": handle,
+        "display_name": display_name,
+    }
+
+
+# One member whose friendly name is not its handle. The hosted composer inserts the friendly
+# slug for exactly this roster shape (`botMentionTag`), so the frozen-roster resolver has to
+# accept the tag its own autocomplete produces.
+ALIAS_MEMBERS = [
+    _member("docs", "docs", "Research Buddy"),
+    _member("ops", "ops", "Ops"),
+    _member("qa", "qa", "José QA"),
+]
+
+
+@pytest.fixture
+def alias_room_db(tmp_path: Path) -> tuple[Path, dict]:
+    db = tmp_path / "state.db"
+    room = hosted_rooms.create_room(
+        db,
+        room_id=ROOM_ID,
+        name="Release",
+        members=ALIAS_MEMBERS,
+        authority_gateway_id=GATEWAY_ID,
+        now=1,
+    )
+    return db, room
+
+
+def _roster(*members: dict) -> tuple[discussion.DiscussionMember, ...]:
+    return tuple(
+        discussion.DiscussionMember(
+            member_id=member["member_id"],
+            profile=member["profile"],
+            handle=member["handle"],
+            display_name=member["display_name"],
+        )
+        for member in members
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_handles"),
+    [
+        ("@docs please inspect this", ("docs",)),
+        # The exact tag the hosted autocomplete inserts for "Research Buddy".
+        ("@research-buddy please inspect this", ("docs",)),
+        ("@researchbuddy please inspect this", ("docs",)),
+        # Terminal punctuation after a canonical handle.
+        ("@docs: please inspect this", ("docs",)),
+        ("@docs. please inspect this", ("docs",)),
+        ("@ops. and @research-buddy, both please", ("docs", "ops")),
+        # Accented friendly labels reduce the same way the native resolver reduces them.
+        ("@jos-qa look at this", ("qa",)),
+        ("@josqa look at this", ("qa",)),
+        # Reserved words never resolve to a member, so the room answers as a whole.
+        ("@user please inspect this", ("docs", "ops", "qa")),
+        ("@unknown please inspect this", ("docs", "ops", "qa")),
+        ("@all please inspect this", ("docs", "ops", "qa")),
+    ],
+)
+def test_friendly_aliases_and_punctuation_resolve_against_the_frozen_roster(
+    text: str,
+    expected_handles: tuple[str, ...],
+):
+    resolved = discussion.resolve_mentions((text,), _roster(*ALIAS_MEMBERS))
+
+    assert tuple(member.handle for member in resolved) == expected_handles
+
+
+def test_canonical_handles_win_and_ambiguous_aliases_resolve_to_nobody():
+    """A handle is the unambiguous name; a friendly form shared by two members names neither."""
+    crossed = _roster(_member("docs", "docs", "Ops"), _member("ops", "ops", "Docs"))
+
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@ops go",), crossed)) == ("ops",)
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@docs go",), crossed)) == ("docs",)
+
+    shared = _roster(_member("docs", "docs", "Ops Helper"), _member("ops", "ops", "Ops Helper"))
+
+    assert discussion.resolve_mentions(("@ops-helper go",), shared, default_all=False) == ()
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@ops go",), shared)) == ("ops",)
+
+
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+def test_an_exact_handle_is_never_shadowed_by_a_normalized_form(order: tuple[int, int]):
+    """`foo-bar` collapses to `foobar`, which is another member's real name. Roster order
+    cannot decide who `@foobar` reaches."""
+    members = (_member("docs", "foo-bar", "One"), _member("ops", "foobar", "Two"))
+    roster = _roster(*(members[index] for index in order))
+
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@foobar go",), roster)) == ("foobar",)
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@foo-bar go",), roster)) == ("foo-bar",)
+    assert discussion.resolve_hold_directive("@foobar stop", roster).hold == ("member-foobar",)
+
+
+def test_friendly_labels_fold_like_the_native_composer_not_python_casefold():
+    """`casefold()` would reduce "Straße" to `strasse` — a tag the Desktop autocomplete never
+    inserts and its resolver never accepts. Both engines must accept the same forms."""
+    roster = _roster(_member("docs", "docs", "Straße Team"), _member("ops", "ops", "Ops"))
+
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@stra-e-team go",), roster)) == ("docs",)
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@straeteam go",), roster)) == ("docs",)
+    assert discussion.resolve_mentions(("@strasse-team go",), roster, default_all=False) == ()
+
+
+def test_a_normalized_form_two_handles_share_addresses_nobody():
+    roster = _roster(_member("docs", "foo-bar", "One"), _member("ops", "foo.bar", "Two"))
+
+    assert discussion.resolve_mentions(("@foobar go",), roster, default_all=False) == ()
+    assert discussion.resolve_hold_directive("@foobar stop", roster).hold == ()
+    # Each exact handle still addresses its own member.
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@foo.bar go",), roster)) == ("foo.bar",)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["@research-buddy stop", "@researchbuddy stop", "@docs: stop", "@docs. stop"],
+)
+def test_friendly_stop_holds_its_target(text: str):
+    directive = discussion.resolve_hold_directive(text, _roster(*ALIAS_MEMBERS))
+
+    assert directive.hold == ("member-docs",)
+    assert directive.release == ()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_release"),
+    [
+        ("@research-buddy resume", ("member-docs",)),
+        ("@researchbuddy resume", ("member-docs",)),
+        ("@jos-qa resume", ("member-qa",)),
+        ("@docs. resume", ("member-docs",)),
+        # A direct mention with no verb still releases exactly its target, and only it.
+        ("@research-buddy any update?", ("member-docs",)),
+        ("@all resume", ("member-docs", "member-ops", "member-qa")),
+    ],
+)
+def test_friendly_release_addresses_exactly_its_member(
+    text: str, expected_release: tuple[str, ...]
+):
+    directive = discussion.resolve_hold_directive(text, _roster(*ALIAS_MEMBERS))
+
+    assert directive.hold == ()
+    assert directive.release == expected_release
+
+
+def test_a_composer_friendly_mention_selects_only_that_member(
+    alias_room_db: tuple[Path, dict],
+):
+    """The text a hosted autocomplete tag produces, planned from the committed room log.
+
+    This appends the user event directly: the composer insertion and the `groups.send` round
+    trip are the Desktop comparator's own coverage, not this module's.
+    """
+    db, room = alias_room_db
+    # Deliberately the LAST member's friendly tag: an unresolved alias falls back to the whole
+    # room, whose first speaker is `docs`, so a first-member fixture could not tell them apart.
+    _append_user(db, event_id="user-1", text="@jos-qa please inspect this")
+
+    assert _settle_next(room, db, text="On it.").member.profile == "qa"
+    assert discussion.plan_next_task(
+        room, _events(db), local_profiles=LOCAL_PROFILES).status == "settled"
+
+
+def test_a_member_reply_using_a_friendly_alias_pulls_that_peer_into_the_next_round(
+    alias_room_db: tuple[Path, dict],
+):
+    db, room = alias_room_db
+    _append_user(db, event_id="user-1", text="@ops lead this")
+
+    first = _settle_next(room, db, text="@research-buddy can you confirm the wording?")
+    second = _next_task(room, db)
+
+    assert first.member.profile == "ops"
+    assert second.member.profile == "docs"
+    assert second.round_index == 1
+
+
 def test_member_mention_joins_the_next_round_not_the_current_round(
     room_db: tuple[Path, dict],
 ):
@@ -672,8 +854,13 @@ def test_three_round_bound(room_db: tuple[Path, dict]):
     room["members"] = MEMBERS[:2]
     _append_user(db, event_id="user-1", text="Discuss.")
 
-    for index in range(6):
+    # Four turns, not six: a round only dispatches a member with NEW delta, so after both have
+    # answered once each later round has exactly one member to hear from. The bound is still what
+    # ends the discussion.
+    spoken: list[str] = []
+    for index in range(4):
         task = _next_task(room, db)
+        spoken.append(task.member.profile)
         peer = "build" if task.member.profile == "research" else "research"
         publication = discussion.plan_publication(
             room,
@@ -684,6 +871,8 @@ def test_three_round_bound(room_db: tuple[Path, dict]):
             local_profiles=LOCAL_PROFILES,
         )
         _append_publication(db, publication)
+
+    assert spoken == ["research", "build", "research", "build"]
 
     decision = discussion.plan_next_task(
         room,

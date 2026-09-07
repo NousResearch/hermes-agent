@@ -16,6 +16,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
 
+from gateway.hosted_room_route_schema import require_room_work_open
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, clock as _now, compact_json, connect, fenced_update as _fenced_update,
     identifier, open_sqlite, table_columns, table_exists, transaction, utf8_len)
@@ -920,6 +921,25 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
         return {**_room_from_row(updated), "event": _event_from_row(_load_event(conn, room_id, event_id))}
 
 
+def begin_room_disband(
+    db_path: DbPath, *, room_id: Any, expected_gateway_id: str, expected_epoch: int,
+) -> None:
+    """Close local admission before slow Stop/revocation, even if cleanup fails."""
+    room_id = _room_id(room_id)
+    with _transaction(db_path, immediate=True) as conn:
+        room = _room_row(conn,
+            "SELECT authority_gateway_id, authority_epoch FROM hosted_rooms "
+            "WHERE room_id=? AND disbanded_at IS NULL", (room_id,), room_id)
+        _require_authority(room, expected_gateway_id, expected_epoch, "stale hosted room authority")
+        conn.execute("""CREATE TABLE IF NOT EXISTS hosted_room_disband_fences (
+            room_id TEXT PRIMARY KEY, authority_gateway_id TEXT NOT NULL,
+            authority_epoch INTEGER NOT NULL CHECK (authority_epoch >= 1),
+            started_at REAL NOT NULL, revocation_complete_at REAL)""")
+        conn.execute("""INSERT OR IGNORE INTO hosted_room_disband_fences
+            (room_id, authority_gateway_id, authority_epoch, started_at) VALUES (?, ?, ?, ?)""",
+            (room_id, expected_gateway_id, expected_epoch, _now(None)))
+
+
 def append_event(
     db_path: DbPath, *, room_id: Any, event_id: Any, kind: Any, actor: Any, payload: Any,
     authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None,
@@ -951,6 +971,8 @@ def append_event(
             conn, """SELECT next_seq, event_bytes, authority_gateway_id, authority_epoch
                 FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL""", (room_id,), room_id)
         _require_authority(room, authority_gateway_id, authority_epoch, "stale hosted room authority")
+        if kind == "message.user":
+            require_room_work_open(conn, room_id, error=HostedRoomError)
         seq = int(room["next_seq"])
         if expected_latest_seq is not None and seq - 1 != expected_latest_seq:
             raise EventCursorConflictError("room changed before event publication")

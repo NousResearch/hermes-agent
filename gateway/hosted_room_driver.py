@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Literal, Mapping, get_args
 
+from gateway.hosted_room_route_schema import require_room_work_open
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, compact_json, connect, fenced_update, identifier, table_columns, text,
     transaction)
@@ -532,7 +533,7 @@ def _transition(
     db_path: DbPath, identity: TaskIdentity, *, sql: str, set_params: tuple[Any, ...], fence_params: tuple[Any, ...],
     stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True,
     replay: Callable[[sqlite3.Row], dict[str, Any] | None] | None = None,
-    guard: Callable[[sqlite3.Row], None] | None = None) -> dict[str, Any]:
+    guard: Callable[[sqlite3.Row], None] | None = None, new_work: bool = False) -> dict[str, Any]:
     """Run one fenced task transition: load -> idempotent replay -> lease/fence guard -> UPDATE.
 
     ``sql`` binds ``(*set_params, room_id, task_id, *fence_params)`` and must hit exactly one row or ``stale``
@@ -546,6 +547,8 @@ def _transition(
         row = _load_task(conn, identity)
         if replay is not None and (replayed := replay(row)) is not None:
             return replayed
+        if new_work:
+            require_room_work_open(conn, identity.room_id, error=RoomUnavailableError)
         if lease is not None and not lease_first:
             _require_active_lease(conn, lease, now=now)
         if guard is not None:
@@ -616,7 +619,8 @@ def _generation_transition(
             death_guard(row)
     return _transition(
         db_path, identity, lease=lease, now=now, replay=replay, guard=guard, sql=_generation_update(set_clause, status),
-        set_params=set_params, fence_params=(execution_generation, cancel_generation), stale=stale)
+        set_params=set_params, fence_params=(execution_generation, cancel_generation), stale=stale,
+        new_work=name.startswith("requeue"))
 
 
 def _run_fence_transition(
@@ -725,6 +729,7 @@ def admit_task(db_path: DbPath, identity: TaskIdentity, *, payload: Any, clock: 
             if existing["payload_digest"] != payload_digest or existing["payload_json"] != payload_json:
                 raise TaskConflictError("task_id is already bound to a different payload")
             return _task_from_row(existing, idempotent=True)
+        require_room_work_open(conn, identity.room_id, error=RoomUnavailableError)
         if conn.execute(
             "SELECT * FROM hosted_room_driver_tasks WHERE room_id=? AND thread_id=? AND turn_id=?",
             (identity.room_id, identity.thread_id, identity.turn_id)).fetchone() is not None:
@@ -749,6 +754,7 @@ def start_task(
     with _transaction(db_path) as conn:
         _require_active_lease(conn, lease, now=now)
         row = _load_task(conn, identity)
+        require_room_work_open(conn, identity.room_id, error=RoomUnavailableError)
         _require_cancel_generation(row, expected_cancel_generation)
         if row["status"] != "queued":
             raise InvalidTaskTransitionError(f"cannot start task in state '{row['status']}'")
@@ -827,7 +833,7 @@ def fence_task_admission(
             "admitted_at=?, owner_descriptor=?, updated_at=?",
             f"status='running' AND {_GENERATION_FENCE} AND {_RUN_FENCE}"),
         set_params=(now, _owner_descriptor_json(attempt, owner_descriptor), now),
-        stale="task changed during admission")
+        stale="task changed during admission", new_work=True)
 
 
 # --- owner-death recovery ----------------------------------------------------
@@ -1214,7 +1220,7 @@ def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: C
     return _run_fence_transition(
         db_path, attempt, guard_stale="not-admitted task attempt lost its fence",
         lease_generation=lambda value: int(value or 0), now=now, replay=replay, sql=_REQUEUE_RUNNING_SQL,
-        set_params=(now,), stale="not-admitted task changed during requeue")
+        set_params=(now,), stale="not-admitted task changed during requeue", new_work=True)
 
 
 def cancel_task(

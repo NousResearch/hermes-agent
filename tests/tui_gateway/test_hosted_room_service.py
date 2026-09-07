@@ -705,6 +705,124 @@ def test_thread_transcript_prunes_committed_message_and_settlement_together(
     )
 
 
+def _room_with_one_settled_reply(db: Path) -> HostedRoomService:
+    """A room whose thread carries one committed member reply and its settlement."""
+    service = HostedRoomService(_server(), db_path=db)
+    service.rpc = _FakeRPC()
+    service.runtime.rpc = service.rpc
+    service.local_profiles = lambda: ("default", "ops")
+    service.create_room(
+        room_id="room-1",
+        name="Bounded room",
+        members=[
+            {"member_id": "default", "profile": "default", "handle": "hermes"},
+            {"member_id": "ops", "profile": "ops", "handle": "ops"},
+        ],
+    )
+    service.start()
+    service.send(
+        room_id="room-1",
+        event_id="user-first",
+        payload={"text": "@ops old", "thread_id": "thread-1"},
+    )
+    _wait_for(
+        lambda: any(
+            event["kind"] == "room.activity" for event in service._events("room-1")
+        )
+    )
+    assert service.stop(timeout=1.0)
+    return service
+
+
+def test_a_retained_reply_survives_its_own_source_ageing_out_of_the_window(tmp_path: Path):
+    """The bounded window can still hold a committed reply and its settlement after the user
+    message they answer has aged out of it. That reply is accepted room content: it must keep
+    reaching a member's input, and planning must still validate the set it is in."""
+    db = tmp_path / "state.db"
+    service = _room_with_one_settled_reply(db)
+    # One short of the window, so the oldest entry (the source) is pushed out while the reply
+    # and its settlement are still retained.
+    for index in range(23):
+        _append_room_event(
+            db,
+            room_id="room-1",
+            event_id=f"user-tail-{index}",
+            kind="message.user",
+            actor={"kind": "user", "id": "desktop"},
+            payload={"text": f"tail {index}", "thread_id": "thread-1"},
+        )
+
+    room = hosted_rooms.room_state(db, room_id="room-1")
+    snapshot = service._policy_snapshot(room)
+
+    assert any(event["kind"] == "message.member" for event in snapshot.events)
+    decision = discussion.plan_next_task(
+        room,
+        snapshot.events,
+        local_profiles=service.local_profiles(),
+        initial_watermarks=snapshot.watermarks,
+    )
+    assert decision.status == "task" and decision.task is not None
+    # The retained reply is still delivered, not dropped to make the set validate.
+    assert "reply from ops" in decision.task.payload["prompt"]
+
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        source = conn.execute(
+            "SELECT seq FROM hosted_room_events WHERE room_id=? AND event_id=?",
+            ("room-1", "user-first"),
+        ).fetchone()
+        source_in_window = conn.execute(
+            "SELECT 1 FROM hosted_room_policy_transcript WHERE room_id=? AND seq=?",
+            ("room-1", int(source["seq"])),
+        ).fetchone()
+        retained = conn.execute(
+            """SELECT seq, settled_seq FROM hosted_room_policy_transcript
+               WHERE room_id=? AND thread_id=? AND settled_seq IS NOT NULL""",
+            ("room-1", "thread-1"),
+        ).fetchall()
+
+    # The exact relationship this covers: the source is gone from the bounded window while still
+    # in the canonical log, and the reply it answers is retained WITH its settlement and comes
+    # back attached to that same source.
+    assert source is not None and source_in_window is None
+    assert [int(row["settled_seq"]) for row in retained] and all(
+        int(row["settled_seq"]) > int(row["seq"]) for row in retained)
+    member_events = [event for event in snapshot.events if event["kind"] == "message.member"]
+    assert [int(event["seq"]) for event in member_events] == [int(row["seq"]) for row in retained]
+    assert {
+        str((event.get("payload") or {}).get("discussion_event_id")) for event in member_events
+    } == {"user-first"}
+    assert any(
+        int(event["seq"]) == int(source["seq"]) and event["event_id"] == "user-first"
+        for event in snapshot.events)
+
+
+def test_a_retained_reply_whose_source_left_the_log_fails_closed(tmp_path: Path):
+    """Ageing out of the bounded window is recoverable; a source that is gone from the canonical
+    log is corruption, and must not be papered over by discarding the reply."""
+    db = tmp_path / "state.db"
+    service = _room_with_one_settled_reply(db)
+    for index in range(23):
+        _append_room_event(
+            db,
+            room_id="room-1",
+            event_id=f"user-tail-{index}",
+            kind="message.user",
+            actor={"kind": "user", "id": "desktop"},
+            payload={"text": f"tail {index}", "thread_id": "thread-1"},
+        )
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "DELETE FROM hosted_room_events WHERE room_id=? AND event_id=?",
+            ("room-1", "user-first"),
+        )
+
+    room = hosted_rooms.room_state(db, room_id="room-1")
+    with pytest.raises(RuntimeError, match="discussion source"):
+        service._policy_snapshot(room)
+
+
 def test_service_uses_low_idle_poll_with_immediate_wakeup(tmp_path: Path):
     service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
 

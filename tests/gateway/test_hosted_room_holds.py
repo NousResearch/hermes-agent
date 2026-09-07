@@ -19,7 +19,8 @@ GATEWAY_ID = "gateway-holds"
 VECTORS = json.loads(
     (Path(__file__).resolve().parents[1] / "fixtures" / "hosted_room_hold_directives.json").read_text())
 MEMBERS = [
-    {"member_id": member["member_id"], "profile": member["handle"], "handle": member["handle"]}
+    {"member_id": member["member_id"], "profile": member["handle"], "handle": member["handle"],
+     "display_name": member["display_name"]}
     for member in VECTORS["members"]]
 LOCAL_PROFILES = tuple(member["profile"] for member in MEMBERS)
 ROSTER = discussion.validate_roster(MEMBERS, local_profiles=LOCAL_PROFILES)
@@ -175,11 +176,15 @@ def test_held_skip_consumes_only_its_own_thread_and_keeps_other_context(room_db)
     # Thread A carries context this member has never read.
     _user(db, event_id="user-a1", text="@impl here is the failing trace", thread_id="thread-a")
     _user(db, event_id="user-a2", text="@impl and the second half of it", thread_id="thread-a")
+    # Fence thread A before the pause: its discussion is no longer executable, so no slot of
+    # impl's ever comes up there and its transcript stays unread rather than consumed.
+    _stop(db, cancel_id="stop-thread-a")
     # The pause, and the delta it consumes, happen entirely in thread B.
     _user(db, event_id="user-b1", text="@impl stop", thread_id="thread-b")
     _user(db, event_id="user-b2", text="@impl pause on this one too", thread_id="thread-b")
     _activity(db, event_id="activity-b", discussion_event_id="user-b2", thread_id="thread-b")
-    assert _held(db, room) == {"member-impl"}
+    # A room Stop holds the whole roster; the direct mention below releases only impl.
+    assert _held(db, room) == {member.member_id for member in ROSTER}
 
     release = _user(db, event_id="user-a3", text="@impl what do you make of it?", thread_id="thread-a")
     snapshot = _snapshot(db, room)
@@ -198,17 +203,31 @@ def test_held_skip_consumes_only_its_own_thread_and_keeps_other_context(room_db)
     assert decision.task.seen_through_seq == int(release["seq"])
 
 
-def test_hold_skip_consumes_its_thread_delta_exactly_once(room_db):
+def test_hold_skip_consumes_only_the_slot_it_was_actually_asked_to_take(room_db):
+    """A pause costs a member the turn it was asked to take, not a question asked of a peer.
+
+    ``@research keep going`` selects research alone, so impl's slot never comes up for it: the
+    old projection charged every held member on every threaded event and silently discarded that
+    line before impl could ever read it.
+    """
     db, room = room_db
-    _user(db, event_id="user-1", text="@impl stop")
+    held = _user(db, event_id="user-1", text="@impl stop")
     _user(db, event_id="user-2", text="@research keep going")
-    settled = _user(db, event_id="user-3", text="@impl resume")
+    _user(db, event_id="user-3", text="@impl resume")
 
     first = _snapshot(db, room)
     second = _snapshot(db, room)  # a second poll must not move anything
 
     assert first.watermarks == second.watermarks
-    assert first.watermarks[("thread-1", "member-impl")] == int(settled["seq"]) - 1
+    assert first.watermarks[("thread-1", "member-impl")] == int(held["seq"])
+
+    decision = discussion.plan_next_task(
+        room, list(first.events), local_profiles=LOCAL_PROFILES,
+        initial_watermarks=first.watermarks, held_member_ids=first.held_member_ids)
+
+    assert decision.status == "task" and decision.task is not None
+    assert decision.task.member.member_id == "member-impl"
+    assert "keep going" in decision.task.payload["prompt"]
 
 
 def test_holds_survive_a_reconstructed_checkpoint_on_the_same_database(room_db):

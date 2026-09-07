@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_rooms
@@ -26,7 +26,10 @@ MAX_THREAD_TRANSCRIPT_EVENTS = 24
 # checkpoint written by an older build gains the new projection without losing its history.
 # Version 3 is the combined upgrade: local (holds) and upstream (transcript) both shipped a
 # version 2 for DIFFERENT projections, so a store at 2 must still be replayed for the other one.
-_PROJECTION_SCHEMA_VERSION = 3
+# 4: watermarks are rebuilt because the previous projection advanced every held member on every
+# threaded event, discarding input addressed to a peer. Holds, threads, transcript and citation
+# state rebuild with them from the canonical log, which is unchanged.
+_PROJECTION_SCHEMA_VERSION = 4
 MAX_TRANSCRIPT_POLICY_EVENTS = MAX_THREAD_TRANSCRIPT_EVENTS * (MAX_ACTIVE_POLICY_EVENTS + 2)
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 
@@ -66,6 +69,23 @@ _SCHEMA_DDL = (
     """CREATE TABLE IF NOT EXISTS hosted_room_policy_holds (
         room_id TEXT NOT NULL, member_id TEXT NOT NULL, held_at_seq INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(room_id, member_id))""",
+    # Unresolved peer citations, per thread and member: where a member was last named BY NAME by
+    # a peer, and where it last posted. Silent-round recovery needs both after the bounded
+    # transcript has trimmed the messages carrying them, and one row per member per thread keeps
+    # that memory bounded rather than rescanning history.
+    """CREATE TABLE IF NOT EXISTS hosted_room_policy_citations (
+        room_id TEXT NOT NULL, thread_id TEXT NOT NULL, member_id TEXT NOT NULL,
+        cited_at_seq INTEGER NOT NULL DEFAULT 0, last_post_seq INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(room_id, thread_id, member_id))""",
+    # The citation state as it stood when one discussion STARTED. Its phases are frozen, so they
+    # must not read the live aggregate above: a later reply can resolve an old citation and make a
+    # new one, and neither may retroactively change an earlier phase's responder set, member index
+    # or task identity. Captured once per discussion and dropped with its thread.
+    """CREATE TABLE IF NOT EXISTS hosted_room_policy_citation_baseline (
+        room_id TEXT NOT NULL, thread_id TEXT NOT NULL, discussion_event_id TEXT NOT NULL,
+        member_id TEXT NOT NULL, cited_at_seq INTEGER NOT NULL DEFAULT 0,
+        last_post_seq INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(room_id, thread_id, member_id))""",
     """CREATE INDEX IF NOT EXISTS idx_hosted_room_user_thread
        ON hosted_room_events(room_id, json_extract(payload_json, '$.thread_id'), seq)
        WHERE kind='message.user'""",
@@ -103,6 +123,10 @@ class PolicySnapshot:
     events: tuple[dict[str, Any], ...]
     watermarks: Mapping[tuple[str, str], int]
     holds: tuple[MemberHold, ...] = ()
+    #: ``member_id -> (cited_at_seq, last_post_seq)`` as of this discussion's START, so a handoff
+    #: older than the bounded transcript is still owed a turn without any phase reading state its
+    #: own replies produced.
+    citations: Mapping[str, tuple[int, int]] = field(default_factory=dict)
 
     @property
     def held_member_ids(self) -> tuple[str, ...]:
@@ -139,7 +163,12 @@ def _canonical_event(
 
 
 def _room_members(conn: sqlite3.Connection, room_id: str) -> tuple[discussion.DiscussionMember, ...]:
-    """Return the durable roster as policy members (ids and handles only).
+    """Return the durable roster as policy members: ids, handles and frozen friendly labels.
+
+    ``display_name`` comes from the room's own frozen ``members_json``, never from live profile
+    metadata. Dropping it here silently narrowed the durable control path: the resolver would
+    accept ``@research-buddy`` in the planner while this projection -- the one that actually
+    holds and releases members -- could not see the alias at all.
 
     Holds are keyed by durable member id, so a malformed row without one is skipped rather than
     failing the whole projection; full roster validation stays with the planner.
@@ -151,7 +180,7 @@ def _room_members(conn: sqlite3.Connection, room_id: str) -> tuple[discussion.Di
     return tuple(
         discussion.DiscussionMember(
             member_id=str(member["member_id"]), profile=_text(member, "profile"),
-            handle=_text(member, "handle"))
+            handle=_text(member, "handle"), display_name=_text(member, "display_name"))
         for member in (members if isinstance(members, list) else [])
         if isinstance(member, Mapping) and member.get("member_id"))
 
@@ -264,8 +293,6 @@ class HostedRoomPolicyCheckpoint:
                 self._apply_holds(
                     conn, room_id,
                     directive=discussion.HoldDirective(hold=tuple(m.member_id for m in members)), seq=seq)
-            self._consume_held_delta(
-                conn, room_id=room_id, thread_id=_text(payload, "thread_id"), seq=seq)
 
     def _discussion_events(
         self, conn: sqlite3.Connection, *, room_id: str, thread_id: str, discussion_event_id: str, bound_error: str
@@ -283,6 +310,30 @@ class HostedRoomPolicyCheckpoint:
         events_by_seq = {
             int(event["seq"]): event
             for event in (*map(_event_from_room_row, rows), *(json.loads(row["event_json"]) for row in active_rows))}
+        # A retained message and its settlement stay in the bounded transcript after the user
+        # message they answer has aged out of the window. Those replies are accepted context a
+        # resumed member still needs, so the missing SOURCE is reattached by a bounded canonical
+        # point read on this same connection rather than dropping the pair to satisfy validation.
+        # A source that is absent, or that belongs to another room, thread or kind, or that does
+        # not precede what references it, stays an error.
+        referenced: dict[str, int] = {}
+        for seq, event in events_by_seq.items():
+            source_id = str((event.get("payload") or {}).get("discussion_event_id") or "")
+            if source_id:
+                referenced[source_id] = min(referenced.get(source_id, seq), seq)
+        for source_id in {
+            str(event.get("event_id") or "") for event in events_by_seq.values()
+            if str(event.get("kind") or "") == "message.user"
+        }:
+            referenced.pop(source_id, None)
+        for source_id, first_seq in sorted(referenced.items()):
+            source = _canonical_event(conn, room_id, event_id=source_id)
+            if (source is None or str(source.get("kind") or "") != "message.user"
+                    or str(source.get("room_id") or "") != room_id
+                    or str((source.get("payload") or {}).get("thread_id") or "") != thread_id
+                    or int(source["seq"]) >= first_seq):
+                raise RuntimeError("retained thread transcript references an unusable discussion source")
+            events_by_seq.setdefault(int(source["seq"]), source)
         return [events_by_seq[seq] for seq in sorted(events_by_seq)]
 
     # -- per-kind projection handlers (dispatched by _apply_event) -----------
@@ -300,6 +351,17 @@ class HostedRoomPolicyCheckpoint:
                    discussion_event_id=excluded.discussion_event_id,
                    latest_user_seq=excluded.latest_user_seq, completed=0""",
             (room_id, thread_id, event_id, int(event["seq"])))
+        # Freeze the citation state this discussion starts from, before any of its own replies
+        # move the live aggregate. Everything newer reaches its phases through the committed
+        # events they already carry.
+        conn.execute(
+            "DELETE FROM hosted_room_policy_citation_baseline WHERE room_id=? AND thread_id=?",
+            (room_id, thread_id))
+        conn.execute("""INSERT INTO hosted_room_policy_citation_baseline(
+                   room_id, thread_id, discussion_event_id, member_id, cited_at_seq, last_post_seq)
+               SELECT room_id, thread_id, ?, member_id, cited_at_seq, last_post_seq
+                   FROM hosted_room_policy_citations WHERE room_id=? AND thread_id=?""",
+            (event_id, room_id, thread_id))
         self._store_active_event(conn, event=event, thread_id=thread_id, discussion_event_id=event_id)
         self._store_transcript_event(conn, event=event, thread_id=thread_id)
         # User text is the only input that changes manual holds (see resolve_hold_directive).
@@ -352,6 +414,7 @@ class HostedRoomPolicyCheckpoint:
                 if source_seq is not None and seen_through_seq >= source_seq:
                     seen_through_seq = max(seen_through_seq, int(committed["seq"]))
                 self._store_transcript_event(conn, event=committed, thread_id=thread_id, settled_seq=seq)
+                self._record_citations(conn, room_id=room_id, thread_id=thread_id, message=committed)
         else:
             # Non-visible receipts still supply historical reconstruction watermarks.
             self._store_transcript_event(conn, event=event, thread_id=thread_id)
@@ -368,6 +431,9 @@ class HostedRoomPolicyCheckpoint:
         room_id, thread_id = str(event["room_id"]), _text(payload, "thread_id")
         conn.execute(_DELETE_ACTIVE_EVENTS_SQL, (room_id, _text(payload, "discussion_event_id")))
         conn.execute("DELETE FROM hosted_room_policy_threads WHERE room_id=? AND thread_id=?", (room_id, thread_id))
+        conn.execute(
+            "DELETE FROM hosted_room_policy_citation_baseline WHERE room_id=? AND thread_id=?",
+            (room_id, thread_id))
 
     def _apply_stop_requested(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
@@ -400,26 +466,137 @@ class HostedRoomPolicyCheckpoint:
                 "UPDATE hosted_room_policy_holds SET held_at_seq=0 WHERE room_id=? AND member_id=?",
                 (room_id, member_id))
 
-    @staticmethod
-    def _consume_held_delta(
-        conn: sqlite3.Connection, *, room_id: str, thread_id: str, seq: int) -> None:
-        """Consume one thread event for every member still held after that event was applied.
+    def _record_citations(
+        self, conn: sqlite3.Connection, *, room_id: str, thread_id: str, message: Mapping[str, Any]) -> None:
+        """Remember who one committed member message named, and that its author has now posted.
 
-        The durable equivalent of the native held skip (``group-rounds.ts``): the member's
-        watermark for THIS thread advances past the entry it may not answer, so the skip cannot
-        re-trigger and no session or model work is dispatched. Thread-scoped like every other
-        watermark: a pause taken in one thread never consumes another thread's unread delta.
+        Only committed content reaches here (the settlement boundary above), and only explicit
+        citations count: ``@all`` addresses the room, so it owes nobody a turn. Bounded to one row
+        per member per thread, which is what lets silent-round recovery outlive the trimmed
+        transcript without rescanning the log.
         """
-        if not thread_id:
+        payload = message.get("payload") if isinstance(message.get("payload"), Mapping) else {}
+        speaker_id, seq = _text(payload, "member_id"), int(message["seq"])
+        if not thread_id or not speaker_id:
             return
-        conn.execute("""INSERT INTO hosted_room_policy_watermarks(
-                   room_id, thread_id, member_id, seen_through_seq)
-               SELECT room_id, ?, member_id, ? FROM hosted_room_policy_holds
-                   WHERE room_id=? AND held_at_seq>0
+        conn.execute("""INSERT INTO hosted_room_policy_citations(
+                   room_id, thread_id, member_id, cited_at_seq, last_post_seq)
+               VALUES (?, ?, ?, 0, ?)
                ON CONFLICT(room_id, thread_id, member_id) DO UPDATE SET
-                   seen_through_seq=MAX(hosted_room_policy_watermarks.seen_through_seq,
-                                        excluded.seen_through_seq)""",
-            (thread_id, seq, room_id))
+                   last_post_seq=MAX(hosted_room_policy_citations.last_post_seq, excluded.last_post_seq)""",
+            (room_id, thread_id, speaker_id, seq))
+        for member in discussion.explicit_mentions(payload.get("text"), _room_members(conn, room_id)):
+            if member.member_id == speaker_id:
+                continue
+            conn.execute("""INSERT INTO hosted_room_policy_citations(
+                       room_id, thread_id, member_id, cited_at_seq, last_post_seq)
+                   VALUES (?, ?, ?, ?, 0)
+                   ON CONFLICT(room_id, thread_id, member_id) DO UPDATE SET
+                       cited_at_seq=MAX(hosted_room_policy_citations.cited_at_seq, excluded.cited_at_seq)""",
+                (room_id, thread_id, member.member_id, seq))
+
+    @staticmethod
+    def _canonical_room(conn: sqlite3.Connection, room_id: str) -> dict[str, Any] | None:
+        """Point-read the room's own frozen identity and roster on this connection."""
+        row = conn.execute(
+            """SELECT room_id, name, members_json, authority_gateway_id, authority_epoch, disbanded_at
+               FROM hosted_rooms WHERE room_id=?""", (room_id,)).fetchone()
+        if row is None or row["disbanded_at"] is not None:
+            return None
+        members = json.loads(row["members_json"])
+        return {
+            "room_id": str(row["room_id"]), "name": str(row["name"]),
+            "members": members if isinstance(members, list) else [],
+            "authority_gateway_id": str(row["authority_gateway_id"]),
+            "authority_epoch": int(row["authority_epoch"])}
+
+    def _record_walk_consumptions(self, conn: sqlite3.Connection, room_id: str) -> None:
+        """Charge the held skips the policy walk actually reaches at this point in the log.
+
+        The same walk, on the same connection, in the same chronology as every other projection
+        effect: the planner runs on the bounded snapshot this projection currently holds --
+        committed content only, stop fence and FIFO thread order included -- and only what that
+        walk reports for itself is written. Nothing is inferred from terminal counts or invented
+        rounds, and a validation failure fails this transaction rather than certifying a partial
+        migration.
+        """
+        room = self._canonical_room(conn, room_id)
+        if room is None:
+            return
+        snapshot = self._snapshot_on(conn, room_id)
+        if not snapshot.events:
+            return
+        # Canonical storage accepts any roster up to its own maximum, including an empty one, so
+        # a room below the Discussion minimum is a supported storage state that can never carry a
+        # discussion: there is no walk to run. ONLY that cardinality is skipped -- a duplicate
+        # handle, a reserved one, a bad target or a malformed event still fails this transaction.
+        if len(room["members"]) < discussion.MIN_DISCUSSION_MEMBERS:
+            return
+        profiles = tuple({
+            str(member.get("profile") or "") for member in room["members"]
+            if isinstance(member, Mapping)} - {""})
+        decision = discussion.plan_next_task(
+            room, list(snapshot.events), local_profiles=profiles,
+            initial_watermarks=snapshot.watermarks, held_member_ids=snapshot.held_member_ids,
+            initial_citations=snapshot.citations)
+        if decision.thread_id and decision.held_consumptions:
+            self._record_held_consumptions(
+                conn, room_id=room_id, thread_id=decision.thread_id,
+                consumptions=decision.held_consumptions)
+
+    @staticmethod
+    def _record_held_consumptions(
+        conn: sqlite3.Connection, *, room_id: str, thread_id: str,
+        consumptions: Sequence[tuple[str, int]]) -> None:
+        """Connection-level recorder, shared by the live drive and the chronological rebuild so
+        neither opens a writer inside the other's transaction."""
+        for member_id, seen_through_seq in consumptions:
+            if not str(member_id) or int(seen_through_seq) <= 0:
+                continue
+            conn.execute("""INSERT INTO hosted_room_policy_watermarks(
+                       room_id, thread_id, member_id, seen_through_seq)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(room_id, thread_id, member_id) DO UPDATE SET
+                       seen_through_seq=MAX(hosted_room_policy_watermarks.seen_through_seq,
+                                            excluded.seen_through_seq)""",
+                (room_id, thread_id, str(member_id), int(seen_through_seq)))
+
+    def apply_held_consumptions(
+        self, *, room_id: str, thread_id: str, consumptions: Sequence[tuple[str, int]],
+        expected_through_seq: int) -> bool:
+        """Persist the held skips one policy walk actually reached.
+
+        The durable half of the native held skip (``group-rounds.ts``): a paused member's
+        watermark for THIS thread advances past the entries it was silent for, so releasing it
+        does not replay a conversation it can no longer answer usefully. Which skips those are is
+        decided by the planner's own slot walk (``DiscussionDecision.held_consumptions``) and only
+        recorded here, so the projection can never drift into consuming input addressed to a peer
+        at a slot the round never reached. Thread-scoped like every other watermark, and
+        monotonic, so re-applying the same walk is a no-op.
+
+        Fenced on the exact cursor the walk read. Consuming a member's context cannot be undone by
+        the caller's later cancellation check, so a release or a newer message that committed
+        between the snapshot and this write must void the decision instead: ``False`` means
+        nothing was written and the room has to be planned again.
+        """
+        if not thread_id or not consumptions:
+            return True
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                "SELECT through_seq FROM hosted_room_policy_cursors WHERE room_id=?", (room_id,)).fetchone()
+            room = conn.execute("SELECT next_seq FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
+            if cursor is None or room is None:
+                return False
+            # Both halves: the projection must still be at the cursor the walk read, and the
+            # canonical log must carry nothing newer than that cursor.
+            if int(cursor["through_seq"]) != int(expected_through_seq):
+                return False
+            if int(room["next_seq"]) != int(expected_through_seq) + 1:
+                return False
+            self._record_held_consumptions(
+                conn, room_id=room_id, thread_id=thread_id, consumptions=consumptions)
+        return True
 
     _APPLY_BY_KIND: dict[str, Callable[..., None]] = {
         "message.user": _apply_user_message, "message.member": _apply_discussion_event,
@@ -429,14 +606,23 @@ class HostedRoomPolicyCheckpoint:
     def _apply_event(self, conn: sqlite3.Connection, event: Mapping[str, Any]) -> None:
         payload = event.get("payload")
         payload = payload if isinstance(payload, Mapping) else {}
-        handler = self._APPLY_BY_KIND.get(_text(event, "kind"))
+        kind, room_id = _text(event, "kind"), str(event["room_id"])
+        # A completing discussion's own walk must run while its projection still exists: the
+        # activity handler deletes the active rows this snapshot is built from.
+        if kind == "room.activity":
+            self._record_walk_consumptions(conn, room_id)
+        handler = self._APPLY_BY_KIND.get(kind)
         if handler is not None:
             handler(self, conn, event, payload)
-        # After the handler, so the message that holds a member also consumes itself for that
-        # member, while the message that releases one stays in its delta.
-        self._consume_held_delta(
-            conn, room_id=str(event["room_id"]), thread_id=_text(payload, "thread_id"),
-            seq=int(event["seq"]))
+        # Again after the handler: completing one discussion exposes the next oldest pending
+        # thread, whose own walk may already owe a held skip. The stop fence and FIFO order come
+        # from the snapshot itself, so a stopped room still exposes no work here.
+        self._record_walk_consumptions(conn, room_id)
+        # No unconditional consumption here. Advancing every held member on every event carrying
+        # a thread id discarded input addressed to somebody else: a member paused while its peer
+        # was asked a question came back having never seen that question. A held member consumes
+        # its delta only at the ordinary slot the round walk actually reached (see
+        # `_record_walk_consumptions`), which is the native contract.
 
     def _ensure_cursor_and_projections(self, conn: sqlite3.Connection, room_id: str) -> int:
         """Create the room cursor if absent, migrate derived projections by bounded replay."""
@@ -456,7 +642,8 @@ class HostedRoomPolicyCheckpoint:
             # every other projection, so a hold recorded now is never applied to older history.
             for table in ("hosted_room_policy_events", "hosted_room_policy_threads",
                           "hosted_room_policy_watermarks", "hosted_room_policy_transcript",
-                          "hosted_room_policy_holds"):
+                          "hosted_room_policy_holds", "hosted_room_policy_citations",
+                          "hosted_room_policy_citation_baseline"):
                 conn.execute(f"DELETE FROM {table} WHERE room_id=?", (room_id,))
             conn.execute("UPDATE hosted_room_policy_cursors SET through_seq=0, stopped_through_seq=0 WHERE room_id=?",
                          (room_id,))
@@ -524,35 +711,53 @@ class HostedRoomPolicyCheckpoint:
 
     def snapshot(self, *, room_id: str, latest_seq: int) -> PolicySnapshot:
         """Return only the oldest active discussion, its watermark set and manual holds."""
-        through_seq = self.sync(room_id=room_id, latest_seq=latest_seq)
+        self.sync(room_id=room_id, latest_seq=latest_seq)
         with self._connect() as conn:
             conn.execute("BEGIN")
-            cursor = conn.execute(
-                "SELECT through_seq, stopped_through_seq FROM hosted_room_policy_cursors WHERE room_id=?", (room_id,)).fetchone()
-            if cursor is None:
-                raise hosted_rooms.RoomNotFoundError("hosted room checkpoint not found")
-            through_seq = int(cursor["through_seq"])
-            stopped_through_seq = int(cursor["stopped_through_seq"])
-            holds = self._holds(conn, room_id)
-            thread = conn.execute("""SELECT thread_id, discussion_event_id FROM hosted_room_policy_threads
-                   WHERE room_id=? AND completed=0 AND latest_user_seq>?
-                   ORDER BY latest_user_seq, thread_id LIMIT 1""", (room_id, stopped_through_seq)).fetchone()
-            if thread is None:
-                return PolicySnapshot(
-                    through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=(), watermarks={},
-                    holds=holds)
-            thread_id = str(thread["thread_id"])
-            events = self._discussion_events(
-                conn, room_id=room_id, thread_id=thread_id, discussion_event_id=str(thread["discussion_event_id"]),
-                bound_error="active room policy projection exceeded its bound")
-            watermark_rows = conn.execute("""SELECT member_id, seen_through_seq FROM hosted_room_policy_watermarks
-                   WHERE room_id=? AND thread_id=?""", (room_id, thread_id)).fetchall()
+            return self._snapshot_on(conn, room_id)
+
+    def _snapshot_on(self, conn: sqlite3.Connection, room_id: str) -> PolicySnapshot:
+        """The bounded policy snapshot on an OPEN connection.
+
+        Factored so the projection can hand the planner exactly the input a live drive gets --
+        oldest active thread, its committed events, watermarks and holds -- without opening a
+        second connection inside the replay transaction.
+        """
+        cursor = conn.execute(
+            "SELECT through_seq, stopped_through_seq FROM hosted_room_policy_cursors WHERE room_id=?", (room_id,)).fetchone()
+        if cursor is None:
+            raise hosted_rooms.RoomNotFoundError("hosted room checkpoint not found")
+        through_seq = int(cursor["through_seq"])
+        stopped_through_seq = int(cursor["stopped_through_seq"])
+        holds = self._holds(conn, room_id)
+        thread = conn.execute("""SELECT thread_id, discussion_event_id FROM hosted_room_policy_threads
+               WHERE room_id=? AND completed=0 AND latest_user_seq>?
+               ORDER BY latest_user_seq, thread_id LIMIT 1""", (room_id, stopped_through_seq)).fetchone()
+        if thread is None:
+            return PolicySnapshot(
+                through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=(), watermarks={},
+                holds=holds)
+        thread_id = str(thread["thread_id"])
+        events = self._discussion_events(
+            conn, room_id=room_id, thread_id=thread_id, discussion_event_id=str(thread["discussion_event_id"]),
+            bound_error="active room policy projection exceeded its bound")
+        watermark_rows = conn.execute("""SELECT member_id, seen_through_seq FROM hosted_room_policy_watermarks
+               WHERE room_id=? AND thread_id=?""", (room_id, thread_id)).fetchall()
+        # Matched on the discussion id as well as the thread: a baseline left by a previous
+        # discussion of this thread is never read by a newer one.
+        citation_rows = conn.execute("""SELECT member_id, cited_at_seq, last_post_seq
+               FROM hosted_room_policy_citation_baseline
+               WHERE room_id=? AND thread_id=? AND discussion_event_id=?""",
+            (room_id, thread_id, str(thread["discussion_event_id"]))).fetchall()
         return PolicySnapshot(
             through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=tuple(events),
             watermarks={
                 (thread_id, str(row["member_id"])): int(row["seen_through_seq"])
                 for row in watermark_rows},
-            holds=holds)
+            holds=holds,
+            citations={
+                str(row["member_id"]): (int(row["cited_at_seq"]), int(row["last_post_seq"]))
+                for row in citation_rows})
 
     def publication_exists(self, *, room_id: str, task_id: str, status: str, execution_generation: int) -> bool:
         """Return whether one exact driver outcome is already in the room log."""

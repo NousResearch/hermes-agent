@@ -1,4 +1,4 @@
-import type { GroupChat, GroupMember, GroupMessage } from './types'
+import type { Attachment, AttachmentKind, GroupChat, GroupMember, GroupMessage } from './types'
 
 /** Never use a display name (or a bare room id) to route hosted work. */
 export interface HostedRoomIdentity {
@@ -40,6 +40,8 @@ export interface HostedCapabilities {
   driver: boolean
   persistentProcess: boolean
   persistentHolds: boolean
+  /** Whether this gateway both mints attachment ids and serves the byte RPCs. */
+  attachments: boolean
 }
 
 /** One member the user has paused, as the owning gateway reports it. */
@@ -102,8 +104,41 @@ export function parseHostedCapabilities(raw: unknown): HostedCapabilities {
     persistentProcess: value.persistent_process === true,
     // Optional on purpose: a gateway without durable holds still serves this room, it just
     // cannot promise a pause survives. Requiring the feature would push it into a fallback.
-    persistentHolds: features.includes('persistent_member_holds')
+    persistentHolds: features.includes('persistent_member_holds'),
+    // Both halves are required: an older gateway may mint ids without serving the byte RPCs,
+    // and a composer that offers files it cannot stage is worse than one that says it cannot.
+    attachments: features.includes('attachment_ids') &&
+      ['groups.attachment.put', 'groups.attachment.read'].every(m => methods.includes(m))
   }
+}
+
+const ATTACHMENT_ID = /^att_[0-9a-f]{32}$/
+const ATTACHMENT_KINDS = new Set<AttachmentKind>(['file', 'image', 'pdf'])
+
+/** The canonical attachment manifest one room message carries, as metadata only: the bytes
+ * are fetched later through `groups.attachment.read`, so `data` stays empty here.
+ *
+ * Every committed field is validated, never coerced — `text` rejects a missing or empty
+ * name/mime and `integer` rejects a missing, boolean, string or fractional size — because this
+ * metadata is exactly what a later fetch is verified against. */
+export function hostedAttachments(payload: Record<string, unknown>): Attachment[] {
+  const raw = payload.attachments
+
+  if (raw === undefined) {return []}
+
+  if (!Array.isArray(raw)) {throw new Error('Invalid hosted room attachment manifest')}
+
+  return raw.map(entry => {
+    const value = hostedRecord(entry)
+    const attachmentId = text(value.attachment_id)
+    const kind = text(value.kind) as AttachmentKind
+
+    if (!ATTACHMENT_ID.test(attachmentId) || !ATTACHMENT_KINDS.has(kind)) {
+      throw new Error('Invalid hosted room attachment manifest')
+    }
+
+    return { attachmentId, data: '', kind, mime: text(value.mime), name: text(value.name), size: integer(value.size) }
+  })
 }
 
 /** Members the backend reports as held. The hold itself is backend-owned state: this only
@@ -123,6 +158,57 @@ export function hostedHolds(driverStatus: unknown): HostedHold[] {
     const displayName = typeof hold.display_name === 'string' ? hold.display_name.trim() : ''
 
     return [{ memberId, handle, label: displayName || handle }]
+  })
+}
+
+/** One action the owning gateway reports as waiting for the user. */
+export interface HostedPendingAction {
+  kind: 'approval' | 'retry'
+  taskId: string
+  memberId?: string
+  executionGeneration?: number
+  requestId?: string
+  choices?: Array<'deny' | 'once'>
+  command?: string
+  reason?: string
+}
+
+/** Pending actions as the gateway reports them. A malformed or unknown row is dropped rather
+ * than rendered: a control must carry the exact task, generation and approval it acts on, and
+ * the backend's own bookkeeping (session ids) is never surfaced here. */
+export function hostedPendingActions(driverStatus: unknown): HostedPendingAction[] {
+  const status = driverStatus && typeof driverStatus === 'object' ? driverStatus as Record<string, unknown> : {}
+
+  if (!Array.isArray(status.pending_actions)) {return []}
+
+  return status.pending_actions.flatMap<HostedPendingAction>(raw => {
+    if (!raw || typeof raw !== 'object') {return []}
+    const row = raw as Record<string, unknown>
+    const taskId = typeof row.task_id === 'string' ? row.task_id : ''
+
+    if (!taskId) {return []}
+
+    if (row.kind === 'retry') {return [{ kind: 'retry' as const, taskId }]}
+
+    if (row.kind !== 'approval') {return []}
+    const memberId = typeof row.member_id === 'string' ? row.member_id : ''
+    const requestId = typeof row.request_id === 'string' ? row.request_id : ''
+    const generation = row.execution_generation
+    const approval = row.approval && typeof row.approval === 'object' ? row.approval as Record<string, unknown> : {}
+    const command = typeof approval.command === 'string' ? approval.command : ''
+    const reason = typeof approval.reason === 'string' ? approval.reason : ''
+
+    const choices = (Array.isArray(approval.choices) ? approval.choices : [])
+      .filter((choice): choice is 'deny' | 'once' => choice === 'once' || choice === 'deny')
+      .filter(choice => choice === 'deny' || Boolean(command.trim()))
+
+    // Generations start at 1; a zero or negative one cannot name a live attempt to approve.
+    if (!memberId || !requestId || typeof generation !== 'number' || !Number.isSafeInteger(generation) ||
+        generation < 1 || !choices.length) {
+      return []
+    }
+
+    return [{ kind: 'approval', taskId, memberId, requestId, executionGeneration: generation, choices, command, reason }]
   })
 }
 
@@ -183,10 +269,16 @@ export function applyHostedPage(previous: HostedReplay, raw: unknown, room: Host
     const kind = text(event.kind)
 
     if (kind === 'message.user' || kind === 'message.member') {
-      text(payload.text)
       text(payload.thread_id)
 
-      if (kind === 'message.member') {text(payload.member_id)}
+      if (kind === 'message.member') {
+        text(payload.text)
+        text(payload.member_id)
+      } else if (typeof payload.text !== 'string' || (!payload.text && !hostedAttachments(payload).length)) {
+        // An attachment-only user message is valid and carries the empty string, exactly as
+        // the gateway's own payload validation accepts it.
+        throw new Error('Invalid hosted room message payload')
+      }
     }
 
     if (typeof event.created_at !== 'number' || !Number.isFinite(event.created_at)) {throw new Error('Invalid hosted room timestamp')}
@@ -216,14 +308,76 @@ export function hostedMembers(room: HostedRoomSummary): GroupMember[] {
   return room.members.map(member => ({ name: member.member_id, handle: member.handle, display_name: member.display_name || member.profile }))
 }
 
+/** Imported records are a read-only archive, not native turns or planner input.
+ * Keep source order and isolate thread/entry identities across independent histories. */
+function legacyHistoryTranscript(event: HostedEvent): GroupMessage[] {
+  if (event.kind !== 'room.created' || !('legacy_history' in event.payload)) {return []}
+  const history = hostedRecord(event.payload.legacy_history)
+
+  if (history.version !== 1 || !Array.isArray(history.sources)) {throw new Error('Invalid legacy history')}
+  const surfaces = new Set<string>()
+  const result: GroupMessage[] = []
+
+  for (const rawSource of history.sources) {
+    const source = hostedRecord(rawSource)
+    const surface = text(source.surface)
+
+    if (!['desktop', 'telegram'].includes(surface) || surfaces.has(surface)) {throw new Error('Invalid legacy history source')}
+    surfaces.add(surface)
+    text(source.room_name)
+    const sessions = hostedRecord(source.sessions)
+
+    if (!Array.isArray(source.records)) {throw new Error('Invalid legacy history records')}
+    const ids = new Set<string>()
+
+    for (const rawRecord of source.records) {
+      const record = hostedRecord(rawRecord)
+      const author = hostedRecord(record.from)
+      const id = text(record.id)
+      const name = text(author.name)
+
+      if (ids.has(id) || !['user', 'member'].includes(String(author.kind)) || typeof record.text !== 'string' ||
+          typeof record.at !== 'number' || !Number.isFinite(record.at) || ('images' in record && (!Array.isArray(record.images) || record.images.length))) {
+        throw new Error('Invalid legacy history record')
+      }
+
+      ids.add(id)
+
+      if (author.kind === 'member') {
+        const session = hostedRecord(sessions[name])
+        text(session.id)
+        text(session.title)
+      }
+
+      const provenance = surface === 'desktop' ? 'Desktop' : 'Telegram'
+
+      result.push({
+        id: JSON.stringify([event.event_id, surface, id]), at: record.at,
+        from: { kind: author.kind as 'user' | 'member', name, source: `Imported ${provenance}` },
+        text: `[Imported ${provenance} history, not a native turn]\n\n${record.text}`,
+        thread: JSON.stringify(['legacy-history', surface, record.thread ?? 'legacy'])
+      })
+    }
+  }
+
+  if (surfaces.size !== 2) {throw new Error('Both legacy history sources are required')}
+
+  return result
+}
+
 export function hostedTranscript(replay: HostedReplay): GroupChat {
   const log: GroupMessage[] = replay.events.flatMap(event => {
+    if (event.kind === 'room.created') {return legacyHistoryTranscript(event)}
+
     if (event.kind !== 'message.user' && event.kind !== 'message.member') {return []}
+
+    const images = hostedAttachments(event.payload)
 
     return [{
       id: event.event_id, at: event.created_at * 1000,
       from: { kind: event.kind === 'message.user' ? 'user' as const : 'member' as const, name: event.kind === 'message.user' ? event.actor.id : String(event.payload.member_id) },
-      text: String(event.payload.text), thread: String(event.payload.thread_id)
+      text: String(event.payload.text), thread: String(event.payload.thread_id),
+      ...(images.length ? { images } : {})
     }]
   })
 

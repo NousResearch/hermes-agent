@@ -14,6 +14,7 @@ import pytest
 from gateway import hosted_room_driver as state
 from gateway import hosted_rooms
 from tui_gateway.hosted_room_driver import (
+    MAX_STAGED_MEDIA_TEXT_BYTES,
     MAX_TERMINAL_TEXT_BYTES,
     ROOM_SESSION_SOURCE,
     HostedRoomBinding,
@@ -56,12 +57,15 @@ class FakeSessionRPC:
         fail_stage: bool = False,
         fail_stage_at: int | None = None,
         fail_submit_not_admitted: bool = False,
+        derived_text: dict[str, str] | None = None,
     ) -> None:
         self.auto_complete = auto_complete
         self.required_lock = required_lock
         self.fail_stage = fail_stage
         self.fail_stage_at = fail_stage_at
         self.fail_submit_not_admitted = fail_submit_not_admitted
+        # What the real adapter returns for a staged voice clip, keyed by attachment name.
+        self.derived_text = dict(derived_text or {})
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.sessions: dict[tuple[str, str], dict[str, Any]] = {}
         self.states: dict[str, dict[str, Any]] = {}
@@ -234,7 +238,10 @@ class FakeSessionRPC:
         return {
             "attached": True,
             **(
-                {"ref_text": f"@file:attachments/{attachment['name']}"}
+                {
+                    "ref_text": f"@file:attachments/{attachment['name']}",
+                    "derived_text": self.derived_text.get(str(attachment.get("name") or ""), ""),
+                }
                 if attachment.get("kind") == "file"
                 else {}
             ),
@@ -581,6 +588,108 @@ def test_attachment_task_uses_the_selected_member_transport(db: Path):
 
     assert any(method == "stage_attachment" for method, _params in peer.calls)
     assert any(method == "submit" for method, _params in peer.calls)
+
+
+def _voice(index: int = 1, *, name: str = "voice.ogg", mime: str = "audio/ogg") -> dict[str, Any]:
+    return {
+        "attachment_id": f"att_{index:032x}",
+        "kind": "file",
+        "name": name,
+        "size": 4,
+        "mime": mime,
+    }
+
+
+def test_staged_voice_transcript_reaches_the_turn_but_never_the_durable_task(db: Path):
+    """The words the member hears come from staging, so a replay of the log stays canonical."""
+    identity = _identity()
+    manifest = _voice()
+    _admit(db, identity, attachments=[manifest], prompt="Answer the voice message.")
+    rpc = FakeSessionRPC(derived_text={"voice.ogg": '"ship it on friday"'})
+    runtime = _runtime(
+        db, rpc, attachment_loader=lambda _binding, _task: ((manifest, b"ogg."),))
+
+    runtime.start()
+    _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
+    assert runtime.stop(timeout=1.0)
+
+    submit = next(params for method, params in rpc.calls if method == "submit")
+    prompt = submit["prompt"]
+    assert '"ship it on friday"' in prompt
+    # The opaque ref stays, and the transcript follows it: the file is still there to open.
+    assert prompt.index("@file:attachments/voice.ogg") < prompt.index("ship it on friday")
+    assert "Answer the voice message." in prompt
+    durable = state.get_task(db, identity)["payload"]["prompt"]
+    assert "ship it on friday" not in durable
+
+
+def test_video_attachment_carries_no_transcript_and_keeps_its_staged_ref(db: Path):
+    """Video is not transcribed: the adapter returns no derived text and the ref must survive."""
+    identity = _identity()
+    manifest = _voice(2, name="clip.mp4", mime="video/mp4")
+    _admit(db, identity, attachments=[manifest])
+    rpc = FakeSessionRPC()
+    runtime = _runtime(
+        db, rpc, attachment_loader=lambda _binding, _task: ((manifest, b"mp4."),))
+
+    runtime.start()
+    _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
+    assert runtime.stop(timeout=1.0)
+
+    submit = next(params for method, params in rpc.calls if method == "submit")
+    assert "@file:attachments/clip.mp4" in submit["prompt"]
+    assert "Transcribed from the attached audio" not in submit["prompt"]
+
+
+def test_several_multibyte_transcripts_stay_inside_the_prompt_budget(db: Path):
+    identity = _identity()
+    manifests = [_voice(index, name=f"voice-{index}.ogg") for index in range(1, 4)]
+    _admit(db, identity, attachments=manifests, prompt="Résumé the three clips.")
+    # Each clip alone exceeds the per-clip cap, and together they exceed it three times over.
+    rpc = FakeSessionRPC(
+        derived_text={
+            manifest["name"]: '"' + "é" * MAX_STAGED_MEDIA_TEXT_BYTES + '"'
+            for manifest in manifests
+        })
+    runtime = _runtime(
+        db, rpc,
+        attachment_loader=lambda _binding, _task: tuple(
+            (manifest, b"ogg.") for manifest in manifests))
+
+    runtime.start()
+    _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
+    assert runtime.stop(timeout=1.0)
+
+    submit = next(params for method, params in rpc.calls if method == "submit")
+    assert len(submit["prompt"].encode("utf-8")) <= state.MAX_PROMPT_BYTES
+    # Truncated on a character boundary, not mid-sequence, and marked as truncated.
+    assert "…[transcript truncated]" in submit["prompt"]
+    assert "é" in submit["prompt"]
+
+
+def test_a_prompt_with_no_room_for_the_transcript_fails_before_admission(db: Path):
+    """Never silently drop what the user said, and never submit an oversized turn.
+
+    The task keeps its canonical attachments, so an explicit Retry can run it again.
+    """
+    identity = _identity()
+    manifest = _voice()
+    _admit(
+        db, identity, attachments=[manifest],
+        prompt="p" * (state.MAX_PROMPT_BYTES - 64))
+    rpc = FakeSessionRPC(derived_text={"voice.ogg": '"ship it on friday"'})
+    runtime = _runtime(
+        db, rpc, attachment_loader=lambda _binding, _task: ((manifest, b"ogg."),))
+
+    runtime.start()
+    _wait_for(lambda: state.get_task(db, identity)["status"] == "failed")
+    assert runtime.stop(timeout=1.0)
+
+    assert not any(method == "submit" for method, _params in rpc.calls)
+    assert any(method == "rollback_attachment_staging" for method, _ in rpc.calls)
+    session_id = next(iter(rpc.states))
+    assert rpc._pending_attachments[session_id] == []
+    assert state.get_task(db, identity)["payload"]["attachments"] == [manifest]
 
 
 def test_task_can_stage_a_bounded_aggregate_from_multiple_messages(db: Path):

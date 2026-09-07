@@ -25,13 +25,17 @@ function repoFile(relative: string): string {
 const vectors = JSON.parse(
   readFileSync(repoFile('tests/fixtures/hosted_room_hold_directives.json'), 'utf8')
 ) as {
-  members: Array<{ member_id: string; handle: string }>
+  members: Array<{ member_id: string; display_name: string; handle: string }>
   cases: Array<{ name: string; text: string; hold: string[]; release: string[] }>
 }
 
-// Member keys are names here, so both mention resolvers address the same members; native's extra
-// mention forms (titles, renamed friendly names) are outside this shared contract.
-const members: GroupMember[] = vectors.members.map(member => ({ name: member.handle, title: '' }))
+// Member keys are names here, so both mention resolvers address the same members. The renamed
+// friendly name rides as display_name — the same field the hosted roster carries and the same one
+// botMentionTag builds its inserted tag from. Titles stay outside this shared contract.
+const members: GroupMember[] = vectors.members.map(member => ({
+  name: member.handle, title: '', display_name: member.display_name
+}))
+
 const keys = members.map(member => member.name)
 const idFor = new Map(vectors.members.map(member => [member.handle, member.member_id]))
 const stamp: GroupHoldStamp = { at: 1, byMessageId: null, thread: 'mock-thread' }

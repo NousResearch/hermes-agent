@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  applyHostedPage, hostedHolds, hostedMembers, hostedRoomKey, hostedTranscript,
+  applyHostedPage, hostedHolds, hostedMembers, hostedPendingActions, hostedRoomKey, hostedTranscript,
   isHostedRoomKey, parseHostedCapabilities, parseHostedRoom
 } from './hosted-room-protocol'
 import type { HostedEvent, HostedReplay, HostedRoomSummary } from './hosted-room-protocol'
@@ -54,7 +54,7 @@ describe('capability negotiation', () => {
   it('accepts v2, caps pages, and treats worker/lifetime flags as strict booleans', () => {
     expect(parseHostedCapabilities(capabilities)).toEqual({
       authorityGatewayId: identity.authorityGatewayId, logLimit: 100, driver: true, persistentProcess: true,
-      persistentHolds: false
+      persistentHolds: false, attachments: false
     })
     expect(parseHostedCapabilities({ ...capabilities, max_log_limit: 7, driver: 'true', persistent_process: 1 }))
       .toMatchObject({ logLimit: 7, driver: false, persistentProcess: false })
@@ -75,6 +75,33 @@ describe('capability negotiation', () => {
     expect(parseHostedCapabilities(holding).persistentHolds).toBe(true)
     // A gateway without the feature still negotiates: it just cannot promise a pause sticks.
     expect(parseHostedCapabilities(capabilities).persistentHolds).toBe(false)
+  })
+})
+
+describe('backend-owned pending actions', () => {
+  const approval = {
+    kind: 'approval', task_id: 'task-a', member_id: 'member-a', execution_generation: 1, request_id: 'request-a',
+    approval: { command: 'printf "<review me>"', reason: 'Shell command', choices: ['once', 'deny'] }
+  }
+
+  it('preserves the native command and reason so approval is informed', () => {
+    expect(hostedPendingActions({ pending_actions: [approval] })).toEqual([{
+      kind: 'approval', taskId: 'task-a', memberId: 'member-a', executionGeneration: 1,
+      requestId: 'request-a', command: 'printf "<review me>"', reason: 'Shell command', choices: ['once', 'deny']
+    }])
+  })
+
+  it.each([undefined, '', 42])('allows only denial when the command cannot be inspected (%s)', command => {
+    expect(hostedPendingActions({ pending_actions: [{ ...approval, approval: { ...approval.approval, command } }] }))
+      .toMatchObject([{ choices: ['deny'], command: '' }])
+  })
+
+  it('retains retry identity but ignores approval without an exact request and generation', () => {
+    expect(hostedPendingActions({ pending_actions: [
+      { kind: 'retry', task_id: 'task-b' },
+      { ...approval, request_id: undefined },
+      { ...approval, execution_generation: true }
+    ] })).toEqual([{ kind: 'retry', taskId: 'task-b' }])
   })
 })
 

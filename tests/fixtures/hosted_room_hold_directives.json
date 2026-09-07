@@ -4,14 +4,15 @@
     "(apps/desktop/src/plugins/hermes-bots/group-rounds.ts) and the hosted-room policy",
     "(gateway/hosted_room_discussion.py) are both run against these exact cases, so the two",
     "frontends cannot drift on what a user message does to a hold. Handles equal member names so",
-    "both mention resolvers address the same members; native's extra mention forms (titles,",
-    "renamed friendly names) are outside this contract.",
+    "both mention resolvers address the same members. Renamed friendly names are IN this",
+    "contract: the composer inserts their slugged/collapsed tag, so both resolvers must accept",
+    "it. Member titles remain outside it.",
     "'hold'/'release' are the member ids each text holds and releases."
   ],
   "members": [
-    {"member_id": "member-impl", "handle": "impl"},
-    {"member_id": "member-research", "handle": "research"},
-    {"member_id": "member-review", "handle": "review"}
+    {"member_id": "member-impl", "handle": "impl", "display_name": "Research Buddy"},
+    {"member_id": "member-research", "handle": "research", "display_name": ""},
+    {"member_id": "member-review", "handle": "review", "display_name": "José Review"}
   ],
   "cases": [
     {"name": "direct stop holds the addressed member", "text": "stop @impl", "hold": ["member-impl"], "release": []},
@@ -42,6 +43,15 @@
     {"name": "unknown handles address nobody", "text": "@nobody resume", "hold": [], "release": []},
     {"name": "@all plus a direct mention releases everyone on resume", "text": "@all @impl resume", "hold": [], "release": ["member-impl", "member-research", "member-review"]},
     {"name": "going is not a release word", "text": "@impl going once", "hold": [], "release": ["member-impl"]},
-    {"name": "empty text changes nothing", "text": "", "hold": [], "release": []}
+    {"name": "empty text changes nothing", "text": "", "hold": [], "release": []},
+    {"name": "friendly slug stop holds only its member", "text": "@research-buddy stop", "hold": ["member-impl"], "release": []},
+    {"name": "friendly collapsed form stop holds only its member", "text": "@researchbuddy stop", "hold": ["member-impl"], "release": []},
+    {"name": "friendly slug resume releases only its member", "text": "@research-buddy resume", "hold": [], "release": ["member-impl"]},
+    {"name": "friendly mention without a verb releases only its member", "text": "@research-buddy any update?", "hold": [], "release": ["member-impl"]},
+    {"name": "accented friendly label reduces to its ascii slug", "text": "@jos-review stop", "hold": ["member-review"], "release": []},
+    {"name": "accented friendly label reduces to its collapsed form", "text": "@josreview resume", "hold": [], "release": ["member-review"]},
+    {"name": "trailing colon after a handle still addresses it", "text": "@impl: stop", "hold": ["member-impl"], "release": []},
+    {"name": "trailing period after a handle still addresses it", "text": "@impl. resume", "hold": [], "release": ["member-impl"]},
+    {"name": "reserved @user never addresses a member", "text": "@user stop", "hold": [], "release": []}
   ]
 }

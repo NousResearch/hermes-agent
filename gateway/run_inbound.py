@@ -1905,35 +1905,17 @@ class GatewayInboundMixin:
     def _untranscribed_audio_note(path: str) -> str:
         """One minimal neutral marker for every STT failure. Never mention "no STT provider" or setup
         steps — persisted in history they make the model keep volunteering STT-setup advice."""
-        from tools.credential_files import to_agent_visible_cache_path
-        agent_path = to_agent_visible_cache_path(os.path.abspath(path))
-        return f"[voice message could not be transcribed automatically; the audio is available at: {agent_path}]"
+        from gateway.media_text import untranscribed_audio_note
+        return untranscribed_audio_note(path)
 
     async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> Tuple[Optional[str], str]:
-        """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
-        result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
-        if not result.get("success"):
-            fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
-            if fallback.get("success"):
-                logger.info("Configured STT failed for %s; recovered with local STT", path)
-                result = fallback
-        if not result["success"]:
-            logger.info("Voice transcription failed for %s: %s", path, result.get("error", "unknown error"))
-            return None, self._untranscribed_audio_note(path)
-        transcript = result["transcript"]
-        # STT may return success=True with an empty/whitespace transcript (silence, cut-off);
-        # empty quotes make the agent reply to nothing and can loop, so emit a sentinel note.
-        # See #41603.
-        if not (transcript or "").strip():
-            return None, (
-                "[The user sent a voice message but it came through "
-                "empty or inaudible — speech-to-text returned no "
-                "words. Do not guess at the content; ask the user "
-                "to resend or type it out.]"
-            )
-        # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
-        # and made the LLM comment on voice mode instead.
-        return transcript, f'"{transcript}"'
+        """``(transcript_or_None, note)`` for one clip via configured STT with local fallback.
+
+        The clip rules (local fallback, empty-transcript sentinel, failure marker) live in
+        ``gateway.media_text`` so the hosted room transcribes voice exactly the way 1:1 does."""
+        from gateway.media_text import transcribe_clip
+        return await asyncio.to_thread(
+            transcribe_clip, path, transcribe_audio, transcribe_audio_local_fallback)
 
     async def _enrich_message_with_transcription(
         self, user_text: str, audio_paths: List[str]

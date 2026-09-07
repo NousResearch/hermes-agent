@@ -10,6 +10,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Iterator, Mapping
+from functools import partial
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
@@ -26,6 +27,7 @@ from gateway.hosted_room_peer import (
     attachment_manifest_digest)
 from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime, MemberTransportUnavailable
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
+from tui_gateway.hosted_room_history_context import load_history_context
 from tui_gateway.hosted_room_peer_http import (
     PeerRunsHTTPClient, PeerRunsHTTPError, digest_reauthorization_error)
 from tui_gateway.hosted_room_peer_transport import (
@@ -108,6 +110,7 @@ class HostedRoomService:
             prepare_room=self.prepare_room, publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action,
             attachment_loader=self._load_task_attachments,
+            history_context_loader=partial(load_history_context, self),
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
             turn_timeout_seconds=_hosted_room_turn_timeout_seconds())
@@ -409,6 +412,104 @@ class HostedRoomService:
         return self.policy_checkpoint.snapshot(
             room_id=str(room["room_id"]), latest_seq=int(room["latest_seq"]))
 
+    def _promote_produced_media(
+        self, room: Mapping[str, Any], task: Mapping[str, Any], message_event_id: str, result: Any
+    ) -> tuple[Any, tuple[str, ...]]:
+        """Commit the files a member's reply produced into the room's canonical Files store.
+
+        The native terminal result carries them the way every Hermes surface receives them:
+        explicit ``MEDIA:`` tags, read here through the platform adapter's own ``extract_media``,
+        so code-block, quoted and stored-JSON examples stay non-deliverable and the cleaned text
+        comes from that same parser rather than a second one. Each path is then accepted only by
+        ``validate_media_delivery_path`` under the member's own session, and the bytes become an
+        ordinary room attachment: same store, same ids, same commit-and-retain contract as an
+        inbound file.
+
+        Only a LOCAL member's reply may name a path on this host; a peer's result never causes a
+        backend-local read. The outcome -- display text, ordered manifest, and anything that could
+        not be attached -- is durable in the Files store the moment it is decided, so a
+        publication that fails to append its event republishes exactly that, never a re-reading of
+        sources that may have changed. What could not be attached is named in the reply instead of
+        being passed off as delivered.
+        """
+        import mimetypes
+
+        from gateway.hosted_room_attachments import MAX_ATTACHMENT_BYTES
+        from tui_gateway.hosted_room_driver import ROOM_SESSION_SOURCE, room_session_title
+
+        fields = ("attachment_id", "kind", "name", "size", "mime")
+        text = result.get("text") if isinstance(result, Mapping) else None
+        if not isinstance(text, str) or "MEDIA:" not in text:
+            return result, ()
+        room_id = str(room["room_id"])
+        target_id = str(task.get("payload", {}).get("target_member_id") or "")
+        profile = str(task.get("payload", {}).get("target_profile") or "")
+        member = next(
+            (candidate for candidate in room["members"]
+             if str(candidate.get("member_id") or "") == target_id
+             or (not target_id and str(candidate.get("profile") or "") == profile)), None)
+        if member is None or str((member.get("target") or {}).get("kind") or "local") != "local":
+            return result, ()
+        member_ids = tuple(
+            str(candidate.get("member_id") or candidate.get("profile") or "")
+            for candidate in room["members"])
+        commit = partial(
+            self.attachments.commit_message_with_receipt, room_id=room_id,
+            event_id=message_event_id, recipient_member_ids=member_ids, viewer_access=True,
+            hold_until_event=True)
+        # BEFORE resolving a session or touching a path: a decided promotion is what this message
+        # publishes, whatever the filesystem now says.
+        promoted = self.attachments.find_promotion(room_id=room_id, event_id=message_event_id)
+        if promoted is not None:
+            cleaned = str(promoted["display_text"])
+            manifest = list(promoted["manifest"])
+            if not manifest:
+                return {**dict(result), "text": cleaned}, ()
+            committed, transitioned = commit(
+                manifest=manifest,
+                promotion={"display_text": cleaned, "unavailable": promoted["unavailable"]})
+            return {**dict(result), "text": cleaned, "attachments": committed}, transitioned
+        resolved = self.rpc.resolve_exact(
+            profile=profile, title=room_session_title(room_id), source=ROOM_SESSION_SOURCE)
+        if resolved is None:
+            return result, ()
+        # Parsed and path-checked inside the member's own profile scope. `refused` names files the
+        # guard would not open: their tags are already gone from the cleaned text, so dropping
+        # them here would publish a reply that quietly lost an attachment.
+        paths, refused, cleaned = self.rpc.deliverable_media(
+            profile=profile, session_id=str(resolved.get("session_id") or ""), text=text)
+        if not paths and not refused:
+            return result, ()
+        manifest: list[dict[str, Any]] = []
+        unavailable: list[str] = list(refused)
+        for index, safe_path in enumerate(paths):
+            source = Path(safe_path)
+            try:
+                with source.open("rb") as handle:
+                    data = handle.read(MAX_ATTACHMENT_BYTES + 1)
+            except OSError:
+                # Bounded and named: a file that vanished or cannot be read must neither block
+                # this room's preparation forever nor be reported as delivered.
+                unavailable.append(source.name)
+                continue
+            if not 0 < len(data) <= MAX_ATTACHMENT_BYTES:
+                unavailable.append(source.name)
+                continue
+            mime = (mimetypes.guess_type(source.name)[0] or "application/octet-stream").lower()
+            uploaded = self.put_attachment(
+                room_id=room_id, upload_id=f"{message_event_id}:{index}",
+                kind="image" if mime.startswith("image/") else (
+                    "pdf" if mime == "application/pdf" else "file"),
+                name=source.name, mime=mime, data=data)
+            manifest.append({key: uploaded[key] for key in fields})
+        if unavailable:
+            cleaned = f"{cleaned}\n\n[Attachment unavailable: {', '.join(unavailable)}]".strip()
+        committed, transitioned = commit(
+            manifest=manifest, promotion={"display_text": cleaned, "unavailable": unavailable})
+        if not committed:
+            return {**dict(result), "text": cleaned}, transitioned
+        return {**dict(result), "text": cleaned, "attachments": committed}, transitioned
+
     def _publish_terminal_tasks(self, room: Mapping[str, Any]) -> bool:
         changed, room_id, local_profiles = False, str(room["room_id"]), self.local_profiles()
         for task in self._list_tasks(room_id, _TERMINAL_STATUSES):
@@ -428,8 +529,11 @@ class HostedRoomService:
                 # Finish an already visible immutable reply even if a later request arrived.
                 task_events = [event for event in task_events if event["kind"] != "message.user"
                                or int(event["seq"]) <= int(task["payload"]["source_event_seq"])]
+            result, transitioned = (
+                self._promote_produced_media(room, task, message_id, task.get("result"))
+                if status == "settled" else (task.get("result"), ()))
             publication = discussion.plan_publication(
-                room, task_events, plan, status=status, result=task.get("result"),
+                room, task_events, plan, status=status, result=result,
                 execution_generation=execution_generation if status == "deferred" else None,
                 local_profiles=local_profiles)
             try:
@@ -438,8 +542,15 @@ class HostedRoomService:
                                                          expected_latest_seq=publication_cursor)
                     publication_cursor = max(publication_cursor, int(appended["seq"]))
             except hosted_rooms.EventCursorConflictError:
-                # Retry publication on an ordinary prepare poll, never rerun the model.
+                # Retry publication on an ordinary prepare poll, never rerun the model. The
+                # promoted bytes go back to staging with their decision intact, exactly as an
+                # unsent user attachment does.
+                if transitioned:
+                    self.attachments.abort_message_commit(
+                        room_id=room_id, event_id=message_id, attachment_ids=transitioned)
                 continue
+            if isinstance(result, Mapping) and result.get("attachments"):
+                self.attachments.retain_event(room_id=room_id, event_id=message_id)
             changed = True
         return changed
 
@@ -486,6 +597,11 @@ class HostedRoomService:
                 requested = True
         return requested
 
+    def _require_work_open(self, room_id: str) -> None:
+        from gateway.hosted_room_route_schema import require_room_work_open
+        with hosted_rooms._transaction(self.db_path, immediate=True) as conn:
+            require_room_work_open(conn, room_id, error=driver.RoomUnavailableError)
+
     def prepare_room(self, binding: HostedRoomBinding) -> None:
         with self._policy_lock:
             room = self._room(binding.room_id)
@@ -504,10 +620,27 @@ class HostedRoomService:
                 snapshot = self._policy_snapshot(room)
             if next(iter(self._list_tasks(binding.room_id, _LIVE_STATUSES)), None) is not None:
                 return
+            try:
+                self._require_work_open(binding.room_id)
+            except driver.RoomUnavailableError:
+                return  # Terminal publication and Stop above remain available while closing.
             decision = discussion.plan_next_task(
                 room, list(snapshot.events), local_profiles=self.local_profiles(),
                 initial_watermarks=snapshot.watermarks,
-                held_member_ids=snapshot.held_member_ids, freeze_input_context=True)
+                held_member_ids=snapshot.held_member_ids, initial_citations=snapshot.citations,
+                freeze_input_context=True)
+            # Persist the held skips this walk reached before acting on its decision: the pause
+            # already cost that context whether or not the planned turn is admitted. The write is
+            # fenced on the cursor the walk read, because it cannot be undone by the cancellation
+            # check below -- if a release or a newer message landed first, this decision is stale
+            # and the room is planned again on the next ordinary drive.
+            if decision.thread_id and decision.held_consumptions:
+                if not self.policy_checkpoint.apply_held_consumptions(
+                        room_id=binding.room_id, thread_id=decision.thread_id,
+                        consumptions=decision.held_consumptions,
+                        expected_through_seq=snapshot.through_seq):
+                    self.runtime.wakeup()
+                    return
             if decision.status == "task" and decision.task is not None:
                 existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
                 legacy_payload = dict(decision.task.payload)
@@ -668,6 +801,7 @@ class HostedRoomService:
 
     def retry_room_task(self, room_id: str, *, task_id: str) -> dict[str, Any]:
         """Retry one uncertain or deferred task only after explicit user action."""
+        self._require_work_open(room_id)
         candidates = self._list_tasks(room_id, _RETRYABLE_STATUSES)
         task = next((c for c in candidates if c["identity"].task_id == task_id), None)
         if task is None:
@@ -699,6 +833,8 @@ class HostedRoomService:
             raise RuntimeError("room approval is no longer pending")
         if choice not in {"once", "deny"}:
             raise RuntimeError("room approval choice must be once or deny")
+        if choice == "once":
+            self._require_work_open(room_id)
         approve = _hook(client, "approve_receipt")
         if route is not None and approve is not None:
             result = approve(

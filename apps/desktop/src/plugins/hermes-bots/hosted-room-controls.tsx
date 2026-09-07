@@ -1,11 +1,12 @@
 import { atom, Button, Codicon, ErrorState, GlyphSpinner, host, RowButton, useValue } from '@hermes/plugin-sdk'
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import {
-  $hostedDirectories, $hostedRooms, discoverHostedRooms, invalidateHostedRoom,
-  refreshHostedRoom, sendHostedInput, stopHostedRoom
+  $hostedDirectories, $hostedRooms, approveHostedTask, discoverHostedRooms, fetchHostedAttachment, invalidateHostedRoom,
+  refreshHostedRoom, retryHostedTask, sendHostedInput, stopHostedRoom
 } from './hosted-room-client'
-import { hostedHolds } from './hosted-room-protocol'
+import { hostedHolds, hostedPendingActions } from './hosted-room-protocol'
+import type { Attachment } from './types'
 
 const unknownConnection = atom('')
 
@@ -54,6 +55,54 @@ interface HostedRoomStatusProps {
   visible: boolean
 }
 
+/** Fetch on an explicit gesture, never during transcript replay. Only media is
+ * rendered inline; documents and active content are offered as downloads. */
+export function HostedRoomAttachment({ attachment, eventId, roomKey }: {
+  attachment: Attachment
+  eventId: string
+  roomKey: string
+}) {
+  const [loaded, setLoaded] = useState<Attachment | null>(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const loading = useRef(false)
+  const name = attachment.name || 'attachment'
+
+  const load = async () => {
+    if (loading.current) {return}
+    loading.current = true
+    setBusy(true)
+    setError('')
+
+    try {
+      setLoaded(await fetchHostedAttachment(roomKey, eventId, attachment))
+    } catch (failure) {
+      setError(String(failure))
+    } finally {
+      loading.current = false
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="grid gap-1 rounded-md border border-(--ui-stroke-secondary) p-1.5 text-xs">
+      {loaded ? (
+        <>
+          {loaded.kind === 'image' ? <img alt={name} className="max-h-40 max-w-60 object-contain" src={loaded.data} /> : null}
+          {loaded.mime?.startsWith('audio/') ? <audio aria-label={name} controls src={loaded.data} /> : null}
+          {loaded.mime?.startsWith('video/') ? <video aria-label={name} className="max-h-60 max-w-full" controls src={loaded.data} /> : null}
+          <a className="text-(--ui-accent) underline" download={name} href={loaded.data}>Download {name}</a>
+        </>
+      ) : (
+        <Button disabled={busy} onClick={() => void load()} size="xs" variant="ghost">
+          {busy ? 'Loading' : 'Open attachment'}: {name}
+        </Button>
+      )}
+      {error ? <p role="alert">{error}</p> : null}
+    </div>
+  )
+}
+
 /** Polling only observes the server. Parking/closing this view never stops or
  * resubmits work, and a transport failure waits for explicit recovery. */
 export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
@@ -83,14 +132,16 @@ export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
 
   const driver = cache?.driverStatus
   const status = !driver?.running ? 'Worker unavailable' : driver.blocked ? 'Blocked' : driver.working ? 'Working' : 'Idle'
-  const pendingActions = Array.isArray(driver?.pending_actions) ? driver.pending_actions : []
+  const actions = hostedPendingActions(driver)
+  const reported = Array.isArray(driver?.pending_actions) ? driver.pending_actions.length : 0
+  const unsupported = Math.max(0, reported - actions.length)
   // Held members come from the gateway that owns the room; this view never mints or clears a
   // hold, and the release gesture is the ordinary room message the backend already understands.
   const holds = hostedHolds(driver)
 
   return (
     <div className="grid gap-1 border-b border-(--ui-stroke-tertiary) px-2.5 pb-2 text-xs text-(--ui-text-secondary)">
-      <p>Gateway-hosted · Text only · Backend Discussion policy: manual holds match Desktop, round policy does not.</p>
+      <p>Gateway-hosted · {cache?.capabilities?.attachments ? 'Attachments enabled' : 'Text only'} · Backend Discussion policy: manual holds match Desktop, round policy does not.</p>
       <p>{cache?.capabilities?.persistentProcess ? 'Gateway reports an independently hosted process.' : 'Gateway does not advertise persistence. Work only survives Desktop exit on an independently run gateway.'}</p>
       <div className="flex items-center gap-2" role="status">
         {cache?.loading ? <GlyphSpinner spinner="breathe" /> : null}
@@ -107,12 +158,36 @@ export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
       {cache?.capabilities && !cache.capabilities.persistentHolds ? (
         <p>This gateway does not report durable pauses. Stop cancels current work here, but a paused bot may run again on the next message.</p>
       ) : null}
-      {pendingActions.length ? <p role="status">Backend needs attention ({pendingActions.length} pending actions). Approval and task retry controls are not included in this text-only slice; use the gateway.</p> : null}
+      {actions.map(action => (
+        <div className="grid gap-1 rounded-md border border-(--ui-stroke-secondary) p-2" key={`${action.kind}:${action.taskId}:${action.requestId || ''}:${action.executionGeneration || ''}`}>
+          {action.kind === 'retry' ? (
+            <>
+              <p>Task {action.taskId} has an uncertain outcome. Retry asks the gateway to reconcile it before executing again.</p>
+              <Button disabled={cache?.busy} onClick={() => void retryHostedTask(roomKey, action.taskId)} size="xs" variant="secondary">Retry task</Button>
+            </>
+          ) : (
+            <>
+              <p>{cache?.room?.members.find(member => member.member_id === action.memberId)?.display_name || action.memberId} is waiting for approval.</p>
+              {action.reason ? <p>{action.reason}</p> : null}
+              {action.command?.trim() ? <pre className="max-h-40 overflow-auto whitespace-pre-wrap" data-selectable-text="true">{action.command}</pre> : <p>Command preview unavailable. Only denial is safe here.</p>}
+              <div className="flex gap-2">
+                {(action.choices || []).map(choice => (
+                  <Button disabled={cache?.busy} key={choice} onClick={() => void approveHostedTask(roomKey, action, choice)} size="xs" variant={choice === 'once' ? 'secondary' : 'ghost'}>
+                    {choice === 'once' ? 'Allow once' : 'Deny'}
+                  </Button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      ))}
+      {unsupported ? <p role="status">{unsupported} pending actions cannot be safely identified by this Desktop. Resolve them on the gateway.</p> : null}
       {!cache ? <p role="alert">Hosted room identity is unavailable. Reopen it from the owning gateway.</p> : null}
       {cache?.error ? <div role="alert"><ErrorState description={cache.error} title="Hosted room unavailable" /></div> : null}
       {cache?.pending ? (
         <div className="grid gap-1">
           <p>Pending input, acceptance may be uncertain: {cache.pending.text}</p>
+          {cache.pending.attachments?.length ? <p>Saved attachments: {cache.pending.attachments.map(attachment => attachment.name || 'attachment').join(', ')}</p> : null}
           <Button disabled={cache.busy} onClick={() => void sendHostedInput(roomKey)} size="xs" variant="secondary">Retry saved input</Button>
         </div>
       ) : null}

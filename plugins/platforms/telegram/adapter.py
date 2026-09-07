@@ -2849,6 +2849,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     with contextlib.suppress(Exception):
                         await _shutdown_abandoned_app(old_app)
 
+    def _wire_plugin_handlers(self, native=None) -> None:
+        from .hosted_room_ingress import wire
+        wire(native, self)
+        super()._wire_plugin_handlers(native)
+
     async def _start_webhook_mode(self, webhook_url: str, *, is_reconnect: bool) -> None:
         """Start PTB's webhook server (Telegram pushes updates; lets cloud platforms auto-wake suspended
         machines). SECURITY: TELEGRAM_WEBHOOK_SECRET is REQUIRED — without it the endpoint accepts forged

@@ -135,6 +135,24 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+describe('attachment preflight before durable admission', () => {
+  const file = { kind: 'file' as const, name: 'mock.txt', data: 'data:text/plain;base64,dGVzdA==' }
+
+  it.each([
+    ['too many files', Array.from({ length: 9 }, () => ({ ...file }))],
+    ['missing bytes', [{ ...file, data: '' }]],
+    ['invalid base64 padding', [{ ...file, data: 'data:text/plain;base64,QQ=Q' }]],
+    ['invalid MIME type', [{ ...file, data: 'data:not a mime;base64,dGVzdA==' }]]
+  ] as const)('rejects %s without permanently locking the room with an unsendable pending input', async (_name, files) => {
+    expect(await client.sendHostedInput(key, '', null, [...files])).toBe(false)
+    expect(disk.get(pendingKey)).toBeUndefined()
+    expect(cache().pending).toBeUndefined()
+    expect(rpc).not.toHaveBeenCalled()
+    expect(cache().error).toBeTruthy()
+    expect(await client.sendHostedInput(key, 'A corrected message')).toBe(true)
+  })
+})
+
 describe('ownership and capabilities', () => {
   it('discovers and persists scoped native identities on the owning default route only', async () => {
     await client.discoverHostedRooms(identity.connectionId)
@@ -205,6 +223,45 @@ describe('ownership and capabilities', () => {
 })
 
 describe('durable send and acknowledgements', () => {
+  it('hands off the composer while admission is held, before delayed post-send refresh', async () => {
+    const refreshing = deferred<void>()
+    const release = deferred<void>()
+    let negotiations = 0
+    let draft = 'Mock input'
+    rpc.mockImplementation(async (...args) => {
+      if (args[1] === 'groups.capabilities' && ++negotiations === 2) {
+        refreshing.resolve()
+        await release.promise
+      }
+
+      return respond(...args)
+    })
+
+    const onQueued = vi.fn(() => {
+      expect(cache().busy).toBe(true)
+      expect(disk.get(pendingKey)).toMatchObject({ text: 'Mock input' })
+      expect(rpc).not.toHaveBeenCalled()
+      draft = ''
+    })
+
+    const sending = client.sendHostedInput(key, draft, null, [], onQueued)
+    await refreshing.promise
+
+    try {
+      expect(onQueued).toHaveBeenCalledOnce()
+      expect(draft).toBe('')
+      expect(sentCalls()).toHaveLength(1)
+    } finally {
+      release.resolve()
+      await sending
+    }
+  })
+  it('does not retire the composer when durable storage fails', async () => {
+    vi.spyOn(ctx.storage, 'set').mockRejectedValue(new Error('mock disk full'))
+    const onQueued = vi.fn()
+    expect(await client.sendHostedInput(key, 'Mock input', null, [], onQueued)).toBe(false)
+    expect(onQueued).not.toHaveBeenCalled()
+  })
   it('waits for the pending ID and payload to become durable before any RPC', async () => {
     const entered = deferred<void>()
     const durable = deferred<void>()
@@ -222,6 +279,30 @@ describe('durable send and acknowledgements', () => {
     expect(sentCalls()[0][2]).toMatchObject({ payload: { text: 'Mock input', thread_id: 'mock-thread' } })
     expect(cache().cursor).toBe(1)
     expect(disk.get(pendingKey)).toBeNull()
+  })
+  it('fails closed when the real plugin storage silently swallows a quota error', async () => {
+    const { createPluginContext } = await import('../../contrib/plugin')
+
+    const nativeContext = createPluginContext('hosted-room-quota-proof')
+
+    ;(await import('./shared')).setPluginCtx(nativeContext)
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('Quota exceeded', 'QuotaExceededError')
+    })
+    expect(await client.sendHostedInput(key, 'Mock input', null, [
+      { kind: 'file', name: 'mock.txt', data: 'data:text/plain;base64,dGVzdA==' }
+    ])).toBe(false)
+    expect(rpc).not.toHaveBeenCalled()
+    expect(cache().pending).toBeUndefined()
+    expect(cache().error).toMatch(/save|persist|storage/i)
+  })
+  it('does not send a payload when read-back differs from the saved input', async () => {
+    vi.spyOn(ctx.storage, 'set').mockImplementation(async (storageKey, value) => {
+      disk.set(storageKey, { ...value as Record<string, unknown>, text: 'Unexpected persisted text' })
+    })
+    expect(await client.sendHostedInput(key, 'Mock input')).toBe(false)
+    expect(rpc).not.toHaveBeenCalled()
+    expect(cache().error).toMatch(/save|persist|storage/i)
   })
   it('does not send when persistence fails', async () => {
     vi.spyOn(ctx.storage, 'set').mockRejectedValue(new Error('mock disk full'))

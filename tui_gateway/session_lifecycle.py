@@ -688,6 +688,20 @@ def _cancel_ws_orphan_reap(sid: str) -> None:
             timer.cancel()
 
 
+def _reattach_ws_session(rid, sid: str, session: dict, transport) -> dict | None:
+    """All native rebinds compete with the orphan owner under the same lock."""
+    with _session_resume_lock, _sessions_lock:
+        if _sessions.get(sid) is not session:
+            return _err(rid, 4007, "session no longer live; retry resume")
+        if session.get("_client_gone_interrupt_requested"):
+            return _err(rid, 4009, "session disconnect interrupt settling")
+        if transport is not None:
+            session["transport"] = transport
+            session.setdefault("viewers", {})[transport] = time.time()
+            _cancel_ws_orphan_reap(sid)
+    return None
+
+
 def _ws_orphan_turn_activity_is_fresh(session: dict) -> bool:
     """Whether a detached RUNNING turn's activity clock (``_touch_activity``) is still fresh — the reaper must NOT
     interrupt healthy detached work (closed laptop). Conservative: disabled threshold, missing/opaque agent, unreadable
@@ -708,7 +722,9 @@ def _ws_orphan_turn_activity_is_fresh(session: dict) -> bool:
         return False
 
 
-def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
+def _schedule_ws_orphan_reap(
+    sid: str, *, delay_s: float | None = None, expected_timer=None,
+) -> None:
     """After a grace window, reap session ``sid`` iff it's still orphaned. Called from the WS-disconnect path; a
     reconnect or ``session.resume`` cancels the reap by re-binding a live transport. Disabled when grace is 0."""
     if _WS_ORPHAN_REAP_GRACE_S <= 0:
@@ -717,14 +733,17 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
     def _reap() -> None:
         # Serialize the re-check against session.resume (rebinds under _session_resume_lock). Claim teardown by popping
         # under both locks, then release the resume lock before slow finalization. Order: resume_lock -> sessions_lock.
-        reschedule_delay = interrupt_session = session = None
-        with _session_resume_lock:
-            # Drop this Timer's registration so a concurrent _cancel_ws_orphan_reap can't cancel a dead Timer while a
-            # rescheduled one (registered below) is the owner.
-            with _sessions_lock:
-                _pending_ws_reaps.pop(sid, None)
+        reschedule_delay = interrupt_session = interrupt_attempt = session = None
+        with _session_resume_lock, _sessions_lock:
+            # A cancelled callback may already be dispatched. It owns nothing once replaced.
+            if _pending_ws_reaps.get(sid) is not timer:
+                return
             current = _sessions.get(sid)
             if current is None or not _ws_session_is_detached(current):
+                _pending_ws_reaps.pop(sid, None)
+                if current is not None:
+                    current.pop("_client_gone_interrupt_requested", None)
+                    current.pop("_client_gone_interrupt_polls", None)
                 return
             if _session_has_active_delegations(sid, current):
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
@@ -750,26 +769,33 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
                     if not current.get("_client_gone_interrupt_requested"):
                         current["_client_gone_interrupt_requested"] = True
                         interrupt_session = current
+                        interrupt_attempt = _current_turn_attempt(current)
                     reschedule_delay = _WS_ORPHAN_INTERRUPT_REAP_POLL_S
+            if session is not None:
+                _pending_ws_reaps.pop(sid, None)
         if interrupt_session is not None:
             try:
-                isolated = _interrupt_session_turn(sid, interrupt_session, request_id=f"client-gone-{sid}")
+                isolated = _interrupt_session_turn(
+                    sid, interrupt_session, request_id=f"client-gone-{sid}", attempt=interrupt_attempt)
                 logger.info("client_gone sid=%s action=interrupt turn_isolation=%s", sid, isolated)
             except Exception:
                 logger.exception("client_gone interrupt failed sid=%s", sid)
                 with _sessions_lock:
-                    if _sessions.get(sid) is interrupt_session:
+                    if (_pending_ws_reaps.get(sid) is timer
+                            and _sessions.get(sid) is interrupt_session):
                         interrupt_session.pop("_client_gone_interrupt_requested", None)
         if reschedule_delay is not None:
-            _schedule_ws_orphan_reap(sid, delay_s=reschedule_delay)
+            _schedule_ws_orphan_reap(sid, delay_s=reschedule_delay, expected_timer=timer)
             return
         if session is not None and session.get("_client_gone_interrupt_requested"):
             logger.info("client_gone sid=%s action=reap", sid)
         _teardown_popped_session(session, end_reason="ws_orphan_reap")
 
-    timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S if delay_s is None else max(0.0, delay_s), _reap)
-    timer.daemon = True
     with _sessions_lock:
+        if expected_timer is not None and _pending_ws_reaps.get(sid) is not expected_timer:
+            return
+        timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S if delay_s is None else max(0.0, delay_s), _reap)
+        timer.daemon = True
         prior = _pending_ws_reaps.pop(sid, None)
         _pending_ws_reaps[sid] = timer
     if prior is not None:
@@ -813,13 +839,15 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
                 else:
                     current["transport"] = _detached_ws_transport
                     current.pop("_client_gone_interrupt_requested", None)
+                    current.pop("_client_gone_interrupt_polls", None)
                     should_schedule_reap = True
+                    # Registration belongs to this detachment, before any rebind can win.
+                    with contextlib.suppress(Exception):
+                        _schedule_ws_orphan_reap(sid)
         if claimed_for_teardown is not None:
             reaped += _teardown_popped_session(claimed_for_teardown, end_reason=end_reason)
         elif should_schedule_reap:
             detached += 1
-            with contextlib.suppress(Exception):
-                _schedule_ws_orphan_reap(sid)
     return reaped, detached
 
 

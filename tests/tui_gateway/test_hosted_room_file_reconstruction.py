@@ -120,6 +120,87 @@ def _reconstruct(service, task):
     )
 
 
+_V4_TABLES = ("hosted_room_policy_citations", "hosted_room_policy_citation_baseline")
+
+
+def _tables(db) -> set[str]:
+    with sqlite3.connect(db) as conn:
+        return {
+            str(row[0]) for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+
+
+def test_projection_upgrade_rebuilds_policy_state_without_touching_a_live_file_task(tmp_path):
+    """A store written before this projection version must upgrade around live work.
+
+    The canonical log, the admitted task's whole durable row -- identity, frozen input, fences --
+    and its attachment bytes belong to other tables and come through untouched. The derived
+    policy state is rebuilt from the room's own log, and the previous version's inflated held
+    watermark is CORRECTED rather than carried forward.
+
+    Not covered here: the as-of citation baseline (this room has no peer citation), and the
+    runtime member-session mapping, which the driver owns per turn rather than in these tables --
+    `target_profile` is the task's target, not proof of a session.
+    """
+    service = _new(tmp_path)
+    # A real hold, taken through the canonical control path, so the rebuild has history to
+    # restore instead of an empty projection.
+    service.send(
+        room_id="files", event_id="hold",
+        payload={"text": "@planner stop", "thread_id": "work"})
+    attachment = _file(service, "input")
+    _send(service, "initial", [attachment])
+    task = _queued(service)
+    started = _start(service, task)  # a real execution generation and lease fence
+    before_row = driver.get_task(service.db_path, task["identity"])
+    before_plan = _reconstruct(service, task)
+    before_bytes = service.read_attachment(
+        room_id="files", attachment_id=attachment["attachment_id"],
+        recipient_member_id="builder").data
+    latest = int(hosted_rooms.room_state(service.db_path, room_id="files")["latest_seq"])
+    before_snapshot = service.policy_checkpoint.snapshot(room_id="files", latest_seq=latest)
+    before_events = hosted_rooms.read_events(
+        service.db_path, room_id="files", since_seq=0, limit=hosted_rooms.MAX_LOG_LIMIT)["events"]
+    held_watermark = before_snapshot.watermarks[("work", "planner")]
+
+    # Exactly a pre-upgrade store: the derived tables this version introduced do not exist, the
+    # projection is stamped with the previous version, and the held member carries the watermark
+    # that version inflated by charging it for every threaded event. Nothing canonical is touched.
+    with sqlite3.connect(tmp_path / "state.db") as conn:
+        for table in _V4_TABLES:
+            conn.execute(f"DROP TABLE {table}")
+        conn.execute("UPDATE hosted_room_policy_transcript_state SET schema_version=3")
+        conn.execute(
+            """UPDATE hosted_room_policy_watermarks SET seen_through_seq=?
+               WHERE room_id=? AND thread_id=? AND member_id=?""",
+            (latest, "files", "work", "planner"))
+    assert not _tables(tmp_path / "state.db") & set(_V4_TABLES)
+    assert held_watermark < latest, "the fixture must differ from the inflated old value"
+
+    cold = _service(tmp_path / "state.db")
+    after_snapshot = cold.policy_checkpoint.snapshot(room_id="files", latest_seq=latest)
+
+    assert set(_V4_TABLES) <= _tables(tmp_path / "state.db")
+    assert after_snapshot.held_member_ids == before_snapshot.held_member_ids == ("planner",)
+    # The inflated value is discarded and the correct one recomputed from the log itself.
+    assert after_snapshot.watermarks == before_snapshot.watermarks
+    assert after_snapshot.watermarks[("work", "planner")] == held_watermark < latest
+    assert after_snapshot.events == before_snapshot.events
+    # The canonical log is untouched, record for record.
+    assert hosted_rooms.read_events(
+        cold.db_path, room_id="files", since_seq=0,
+        limit=hosted_rooms.MAX_LOG_LIMIT)["events"] == before_events
+    # The live task is untouched: its whole durable row, not a chosen few fences.
+    after_row = driver.get_task(cold.db_path, task["identity"])
+    assert after_row == before_row
+    assert after_row["identity"] == task["identity"]
+    assert after_row["execution_generation"] == started.execution_generation
+    assert _reconstruct(cold, after_row) == before_plan
+    assert cold.read_attachment(
+        room_id="files", attachment_id=attachment["attachment_id"],
+        recipient_member_id="builder").data == before_bytes
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 @pytest.mark.parametrize("outcome", ["cancelled", "pass", "failed", "deferred"])
 def test_nonvisible_file_turn_preserves_later_text_admission(

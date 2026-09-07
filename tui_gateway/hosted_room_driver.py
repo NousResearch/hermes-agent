@@ -26,6 +26,10 @@ _STOP_ACK_STATUSES = {"cancelled", "interrupted"}
 
 ROOM_SESSION_SOURCE = "bot_room"
 MAX_TERMINAL_TEXT_BYTES = 64 * 1024
+# Per staged clip; the assembled turn is then held to the planner's own prompt budget below.
+MAX_STAGED_MEDIA_TEXT_BYTES = 8 * 1024
+_STAGED_MEDIA_HEADER = "\n\nTranscribed from the attached audio:\n"
+_STAGED_MEDIA_TRUNCATED = "…[transcript truncated]"
 _TERMINAL_TRUNCATION_NOTICE = (
     "\n\n[Reply truncated. Ask the Bot to share the full result as a file.]")
 _STOP_PENDING = "stop retry remains pending: {exc}"
@@ -104,6 +108,31 @@ class InternalSessionRPC(Protocol):
 MemberTransportResolver = Callable[["HostedRoomBinding", Mapping[str, Any]], InternalSessionRPC]
 
 
+def _with_staged_media_text(prompt: str, notes: Sequence[str]) -> str:
+    """Append staged-clip transcripts, bounded per clip and by the assembled prompt budget.
+
+    Per-clip truncation cannot hold the total: one turn can carry several voice messages, so the
+    whole tail is measured against the planner's own ``MAX_PROMPT_BYTES``.  When the mandatory
+    prompt and its opaque ``@file:`` refs leave no room for any derived content this raises
+    before admission — the canonical attachment bytes stay on the event, so an explicit Retry
+    still works — rather than silently dropping what the user said or submitting an oversized turn.
+    """
+
+    from gateway.hosted_room_discussion import _truncate_utf8_text
+
+    if not notes:
+        return prompt
+    body = "\n".join(
+        _truncate_utf8_text(note, max_bytes=MAX_STAGED_MEDIA_TEXT_BYTES, suffix=_STAGED_MEDIA_TRUNCATED)
+        for note in notes)
+    available = state.MAX_PROMPT_BYTES - len((prompt + _STAGED_MEDIA_HEADER).encode("utf-8"))
+    if available <= len(_STAGED_MEDIA_TRUNCATED.encode("utf-8")):
+        raise RuntimeError(
+            "staged voice transcripts do not fit this turn's prompt budget")
+    return prompt + _STAGED_MEDIA_HEADER + _truncate_utf8_text(
+        body, max_bytes=available, suffix=_STAGED_MEDIA_TRUNCATED)
+
+
 @dataclass(frozen=True)
 class HostedRoomBinding:
     """Current server-issued authority coordinate for one hosted room."""
@@ -129,6 +158,8 @@ class _RecoveryInspection:
 
 _NO_INSPECTION = _RecoveryInspection(terminal=None, active=False, status=None)
 AttachmentLoader = Callable[["HostedRoomBinding", Mapping[str, Any]], Iterable[tuple[Mapping[str, Any], bytes]]]
+HistoryContextLoader = Callable[
+    ["HostedRoomBinding", Mapping[str, Any]], tuple[str, Mapping[str, Any], bytes] | None]
 
 
 def _session_kw(profile: str, session_id: str) -> dict[str, str]:
@@ -152,6 +183,7 @@ class HostedRoomRuntime:
         publish_terminal: Callable[[HostedRoomBinding, Mapping[str, Any]], None] | None = None,
         pending_action: Callable[[str, str, Mapping[str, Any] | None], None] | None = None,
         attachment_loader: AttachmentLoader | None = None,
+        history_context_loader: HistoryContextLoader | None = None,
         clock: Callable[[], float] = time.time,
         lease_ttl_seconds: float = 30.0, poll_interval_seconds: float = 5.0,
         active_poll_interval_seconds: float = 0.25, turn_timeout_seconds: float = 1830.0,
@@ -178,6 +210,7 @@ class HostedRoomRuntime:
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
         self.pending_action, self.clock = pending_action, clock
         self.attachment_loader = attachment_loader
+        self.history_context_loader = history_context_loader
         for name, value in positive.items():
             setattr(self, name, float(value))
         self.max_concurrent_rooms = max_concurrent_rooms
@@ -764,33 +797,59 @@ class HostedRoomRuntime:
                 session_id = _session_id(session)
                 prompt = str(task["payload"]["prompt"])
                 manifests = task["payload"].get("attachments") or []
-                if manifests:
-                    if self.attachment_loader is None:
+                history = self.history_context_loader(binding, task) if self.history_context_loader else None
+                if manifests or history:
+                    if manifests and self.attachment_loader is None:
                         raise RuntimeError("hosted attachments are unavailable for this member transport")
                     transport.begin_attachment_staging(
                         **_session_kw(profile, session_id), execution_generation=attempt.execution_generation)
                     attachment_staging_active = True
                     attachment_session_id = session_id
                     expected_ids = [str(attachment.get("attachment_id") or "") for attachment in manifests]
+                    from itertools import chain
+                    loaded = (self.attachment_loader(binding, task)
+                              if manifests and self.attachment_loader is not None else ())
+                    if history:
+                        from gateway.hosted_room_attachments import validate_task_manifest
+                        validate_task_manifest([*manifests, dict(history[1])])
+                        expected_ids.append(history[1]["attachment_id"])
+                        loaded = chain(loaded, [(history[1], history[2])])
                     file_refs = []
+                    history_ref = ""
+                    media_notes = []
                     loaded_count = 0
-                    for loaded_count, (attachment, data) in enumerate(self.attachment_loader(binding, task), start=1):
+                    for loaded_count, (attachment, data) in enumerate(loaded, start=1):
                         if (loaded_count > len(expected_ids)
                                 or str(attachment.get("attachment_id") or "") != expected_ids[loaded_count - 1]):
                             raise RuntimeError("hosted attachment ownership did not match the task manifest")
                         staged = transport.stage_attachment(
                             **_session_kw(profile, session_id), attachment=attachment, data=data,
                             execution_generation=attempt.execution_generation)
+                        if history and attachment["attachment_id"] == history[1]["attachment_id"]:
+                            from tui_gateway.hosted_room_history_context import history_file_reference
+                            history_ref = history_file_reference(staged)
+                            continue  # Do not inline history through native @file preprocessing.
                         if attachment.get("kind") == "file":
                             ref = str(staged.get("ref_text") or "").strip()
                             if not ref and transport is self.rpc:
                                 raise RuntimeError("hosted file attachment returned no staged reference")
                             if ref:
                                 file_refs.append(f"{attachment['name']}: {ref}")
+                            derived = str(staged.get("derived_text") or "").strip()
+                            if derived:
+                                media_notes.append(f"{attachment['name']}: {derived}")
                     if loaded_count != len(expected_ids):
                         raise RuntimeError("hosted attachment ownership did not match the task manifest")
                     if file_refs:
                         prompt = f"{prompt}\n\nAttached files staged in your session workspace:\n" + "\n".join(file_refs)
+                    prompt = _with_staged_media_text(prompt, media_notes)
+                    if history:
+                        from tui_gateway.hosted_room_history_context import MAX_HISTORY_INDEX_BYTES
+                        if len(history[0].encode("utf-8")) > MAX_HISTORY_INDEX_BYTES:
+                            raise RuntimeError("legacy history index exceeds its byte limit")
+                        prompt = f"{prompt}\n\n{history[0]}\n{history_ref}"
+                        if len(prompt.encode("utf-8")) > state.MAX_PROMPT_BYTES:
+                            raise RuntimeError("legacy history references exceed the remaining prompt budget")
                 # Captured before the fence and written BY it: the descriptor and `admitted_at`
                 # land in the same CAS, so a rejected admission stores neither and submits
                 # nothing. An invalid target raises here, still before any dispatch.

@@ -1,16 +1,24 @@
 import { atom, host } from '@hermes/plugin-sdk'
 
+import { prepareHostedMessageAttachments, readHostedMessageAttachment, stageHostedMessageAttachments } from './hosted-room-attachments-client'
 import {
   applyHostedPage, hostedRecord, hostedRoomKey, parseHostedCapabilities, parseHostedRoom
 } from './hosted-room-protocol'
-import type { HostedCapabilities, HostedReplay, HostedRoomIdentity, HostedRoomSummary } from './hosted-room-protocol'
+import type {
+  HostedCapabilities, HostedPendingAction, HostedReplay, HostedRoomIdentity, HostedRoomSummary
+} from './hosted-room-protocol'
 import { getPluginCtx } from './shared'
-import type { ProfileRoute } from './types'
+import type { Attachment, ProfileRoute } from './types'
 
 interface PendingInput {
   eventId: string
   text: string
   threadId: string
+  /** Frozen with their upload ids and their bytes before the first network call, so a retry
+   * after an uncertain send re-stages the same uploads instead of minting a second message. */
+  attachments?: Attachment[]
+  /** The canonical receipt those uploads produced, once the host has minted it. */
+  manifest?: Array<Record<string, unknown>>
 }
 
 export interface HostedRoomCache extends HostedReplay {
@@ -66,6 +74,18 @@ function storage() {
 
 const pendingKey = (key: string) => `hosted-input:${key}`
 const directoryKey = (connectionId: string) => `hosted-rooms:${connectionId}`
+
+async function persistPendingInput(key: string, pending: PendingInput): Promise<void> {
+  const store = storage()
+  await store.set(pendingKey(key), pending)
+  // Native plugin storage is best-effort and swallows localStorage quota errors.
+  // Only an exact read-back establishes that retry identities AND bytes survived.
+  const saved = await store.get<PendingInput | null>(pendingKey(key), null)
+
+  if (JSON.stringify(saved) !== JSON.stringify(pending)) {
+    throw new Error('Desktop could not verify the saved input. Check available storage and retry.')
+  }
+}
 
 async function routeFor(connectionId: string): Promise<ProfileRoute> {
   if (typeof host.profileRoutes !== 'function' || typeof host.requestProfile !== 'function') {
@@ -233,9 +253,34 @@ export function invalidateHostedRoom(key: string): void {
   bump(key)
 }
 
+const request = <T,>(route: ProfileRoute, method: string, params?: Record<string, unknown>): Promise<T> =>
+  host.requestProfile(route, method, params) as Promise<T>
+
+/** The five committed manifest fields, in the order the host returns them, as one comparable
+ * value: an acknowledgement or a replayed event must carry the WHOLE manifest that was staged. */
+function manifestKey(entries: unknown): string {
+  if (entries === undefined) {return '[]'}
+
+  if (!Array.isArray(entries)) {return 'invalid'}
+
+  return JSON.stringify(entries.map(raw => {
+    const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {}
+
+    return [value.attachment_id, value.kind, value.mime, value.name, value.size]
+  }))
+}
+
+/** Whether a fresh composer submission is the same input as the one already saved. */
+function sameAttachments(saved: Attachment[], picked: Attachment[]): boolean {
+  return saved.length === picked.length && saved.every((entry, index) =>
+    entry.name === picked[index].name && entry.kind === picked[index].kind && entry.data === picked[index].data)
+}
+
 /** One unresolved input per room. An uncertain acceptance is NOT a new input;
- * retry its exact persisted id and payload, even after a renderer restart. */
-export async function sendHostedInput(key: string, text?: string, threadId?: string | null): Promise<boolean> {
+ * retry its exact persisted id, bytes and payload, even after a renderer restart. */
+export async function sendHostedInput(
+  key: string, text?: string, threadId?: string | null, attachments?: Attachment[], onQueued?: () => void
+): Promise<boolean> {
   const cache = $hostedRooms.get()[key]
 
   if (!cache || operations.has(key)) {return false}
@@ -247,28 +292,70 @@ export async function sendHostedInput(key: string, text?: string, threadId?: str
   try {
     let pending = await storage().get<PendingInput | null>(pendingKey(key), null)
 
-    if (pending && text !== undefined && (pending.text !== text.trim() || (threadId && pending.threadId !== threadId))) {
+    if (pending && text !== undefined && (pending.text !== text.trim() || (threadId && pending.threadId !== threadId) ||
+        (attachments !== undefined && !sameAttachments(pending.attachments || [], attachments)))) {
       throw new Error('Resolve the pending input before sending another message')
     }
 
     if (!pending) {
-      if (!text?.trim()) {throw new Error('Enter a text message')}
-      pending = { eventId: crypto.randomUUID(), text: text.trim(), threadId: threadId || crypto.randomUUID() }
+      const picked = attachments || []
+
+      if (!text?.trim() && !picked.length) {throw new Error('Enter a message or attach a file')}
+      prepareHostedMessageAttachments(picked)
+      // Ids and bytes are frozen HERE, before the first network call: a retry re-stages the
+      // same uploads (idempotent on the host) rather than minting a second set.
+      pending = {
+        eventId: crypto.randomUUID(), text: text?.trim() || '', threadId: threadId || crypto.randomUUID(),
+        ...(picked.length ? {
+          attachments: picked.map(entry => ({ ...entry, uploadId: entry.uploadId || crypto.randomUUID() }))
+        } : {})
+      }
       // Failure to persist is fatal: never risk minting a second id on reload.
-      await storage().set(pendingKey(key), pending)
+      await persistPendingInput(key, pending)
     }
 
     patchRoom(key, { pending })
+    // Retire the originating composer only after verified persistence, while admission
+    // is still held. A delayed post-send refresh must not re-enable its old draft.
+    onQueued?.()
     const route = await routeFor(cache.identity.connectionId)
     const capabilities = await negotiate(route, cache.identity)
 
     if (!capabilities.driver) {throw new Error('The hosted room worker is unavailable; your input is saved for retry')}
+    const staged = pending.attachments || []
+
+    if (staged.length && !capabilities.attachments) {
+      throw new Error('This gateway cannot receive Group Chat files; your input is saved for retry')
+    }
+
     const state = hostedRecord(await host.requestProfile(route, 'groups.state', { room_id: cache.identity.roomId }))
     const room = parseHostedRoom(state.room, cache.identity)
 
+    // Staging mutates nothing canonical: the room commits these bytes only when `groups.send`
+    // names them, and an unsent upload expires on the host.
+    const manifest = staged.length
+      ? await stageHostedMessageAttachments(request, route, cache.identity.roomId, staged)
+      : []
+
+    if (staged.length) {
+      // A retry re-stages the SAME upload ids, so the host must mint the same manifest. A
+      // different receipt means these are no longer the bytes that were saved: stop visibly
+      // rather than silently replacing the message the user is retrying.
+      if (pending.manifest && manifestKey(pending.manifest) !== manifestKey(manifest)) {
+        throw new Error('The saved attachments no longer match the host receipt; resolve this before sending')
+      }
+
+      pending = { ...pending, attachments: staged, manifest }
+      await persistPendingInput(key, pending)
+      patchRoom(key, { pending })
+    }
+
     const result = hostedRecord(await host.requestProfile(route, 'groups.send', {
       room_id: cache.identity.roomId, event_id: pending.eventId,
-      payload: { text: pending.text, thread_id: pending.threadId }
+      payload: {
+        text: pending.text, thread_id: pending.threadId,
+        ...(manifest.length ? { attachments: manifest } : {})
+      }
     }))
 
     const event = hostedRecord(result.event)
@@ -276,6 +363,7 @@ export async function sendHostedInput(key: string, text?: string, threadId?: str
 
     if (result.accepted !== true || result.client_event_id !== pending.eventId || event.room_id !== cache.identity.roomId ||
         event.kind !== 'message.user' || payload.text !== pending.text || payload.thread_id !== pending.threadId ||
+        manifestKey(payload.attachments) !== manifestKey(manifest) ||
         typeof event.event_id !== 'string' || typeof event.seq !== 'number' || !Number.isSafeInteger(event.seq) || event.seq < 1) {
       throw new Error('Invalid hosted input acknowledgement; retry the saved input')
     }
@@ -285,6 +373,7 @@ export async function sendHostedInput(key: string, text?: string, threadId?: str
     const page = await host.requestProfile(route, 'groups.log', {
       room_id: cache.identity.roomId, since_seq: event.seq - 1, limit: 1
     })
+
     // Reuse replay validation for authority, sequence and high-water marks.
     // This targeted proof never advances the transcript's replay cursor.
     const proof = applyHostedPage({ cursor: event.seq - 1, events: [] }, page, room)
@@ -293,6 +382,7 @@ export async function sendHostedInput(key: string, text?: string, threadId?: str
 
     if (proof.events.length !== 1 || committed.event_id !== event.event_id || committed.kind !== 'message.user' ||
         committed.payload.text !== pending.text || committed.payload.thread_id !== pending.threadId ||
+        manifestKey(committed.payload.attachments) !== manifestKey(manifest) ||
         committed.actor.kind !== 'user' || committed.actor.id !== actor.id ||
         committed.created_at !== event.created_at || committed.authority_epoch !== event.authority_epoch) {
       throw new Error('Hosted input acknowledgement was not found in the committed log')
@@ -313,22 +403,38 @@ export async function sendHostedInput(key: string, text?: string, threadId?: str
   return sent
 }
 
-export async function stopHostedRoom(key: string): Promise<void> {
+/** Fetch one committed attachment's bytes on explicit request. Replay stays metadata-only, so
+ * opening a file is the user's gesture and never a background download of a whole transcript. */
+export async function fetchHostedAttachment(key: string, eventId: string, attachment: Attachment): Promise<Attachment> {
+  const cache = $hostedRooms.get()[key]
+
+  if (!cache) {throw new Error('Hosted room identity is unavailable. Reopen it from the owning gateway.')}
+  const route = await routeFor(cache.identity.connectionId)
+  const capabilities = await negotiate(route, cache.identity)
+
+  if (!capabilities.attachments) {throw new Error('This gateway does not serve Group Chat files.')}
+
+  return readHostedMessageAttachment(request, route, cache.identity.roomId, eventId, attachment)
+}
+
+/** One exclusive room command: same authority re-check before it runs, the same visible
+ * failure, and an authoritative read-back after it succeeded. */
+async function roomAction(key: string, run: (route: ProfileRoute, roomId: string) => Promise<void>): Promise<void> {
   const cache = $hostedRooms.get()[key]
 
   if (!cache || operations.has(key)) {return}
   operations.add(key)
   bump(key)
   patchRoom(key, { busy: true, error: undefined })
-  let stopped = false
+  let acted = false
 
   try {
     const route = await routeFor(cache.identity.connectionId)
     await negotiate(route, cache.identity)
     const state = hostedRecord(await host.requestProfile(route, 'groups.state', { room_id: cache.identity.roomId }))
     parseHostedRoom(state.room, cache.identity)
-    await host.requestProfile(route, 'groups.stop', { room_id: cache.identity.roomId, cancel_id: crypto.randomUUID() })
-    stopped = true
+    await run(route, cache.identity.roomId)
+    acted = true
   } catch (error) {
     patchRoom(key, { error: message(error) })
   } finally {
@@ -336,5 +442,42 @@ export async function stopHostedRoom(key: string): Promise<void> {
     patchRoom(key, { busy: false })
   }
 
-  if (stopped) {await refreshHostedRoom(key)}
+  if (acted) {await refreshHostedRoom(key)}
+}
+
+export async function stopHostedRoom(key: string): Promise<void> {
+  await roomAction(key, async (route, roomId) => {
+    await host.requestProfile(route, 'groups.stop', { room_id: roomId, cancel_id: crypto.randomUUID() })
+  })
+}
+
+/** Retry exactly one indeterminate task the gateway reported, and read the receipt back. */
+export async function retryHostedTask(key: string, taskId: string): Promise<void> {
+  await roomAction(key, async (route, roomId) => {
+    const result = hostedRecord(await host.requestProfile(route, 'groups.retry', { room_id: roomId, task_id: taskId }))
+    const task = hostedRecord(result.task)
+
+    if (result.retried !== true || task.room_id !== roomId || task.task_id !== taskId) {
+      throw new Error('The gateway did not confirm this task retry')
+    }
+  })
+}
+
+/** Answer exactly one pending approval: its own task, generation and request id travel with
+ * the call, so a stale control cannot resolve a newer attempt's question. */
+export async function approveHostedTask(
+  key: string, action: HostedPendingAction, choice: 'deny' | 'once'
+): Promise<void> {
+  await roomAction(key, async (route, roomId) => {
+    if (action.kind !== 'approval' || !action.memberId || !action.requestId || !action.executionGeneration) {
+      throw new Error('This approval is no longer identified; refresh the room')
+    }
+
+    const result = hostedRecord(await host.requestProfile(route, 'groups.approve', {
+      room_id: roomId, member_id: action.memberId, task_id: action.taskId,
+      execution_generation: action.executionGeneration, choice, request_id: action.requestId
+    }))
+
+    if (result.approved !== true) {throw new Error('The gateway did not confirm this approval')}
+  })
 }

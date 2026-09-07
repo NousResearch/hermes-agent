@@ -101,6 +101,50 @@ Groups are standalone rows in the same activity-ordered roster as Bot DMs. A Bot
 - **Not every Bot replies to every message.** Speaking is each member's own choice — a Bot replies only when it has something new to add and passes otherwise, and @-mentioning specific members scopes the round to them. Expect the members you addressed (or whoever has something to say) to speak, and the rest to stay quiet.
 - **Rooms can span machines.** The New Group Chat picker seats Bots from any registered connection; each member's turns run on its own machine, in its own `Group: <name>` session there. Cross-machine members carry a device badge (`dixie · Mac Mini`) in the room and in other members' transcripts, and the disambiguated `@name-device` handle works in room mentions — so same-named agents on two machines never blur together.
 
+### Gateway-owned rooms and Telegram
+
+A gateway-owned room has one canonical transcript, one coordinator and persistent native member sessions. Desktop is a client of that room, not the process keeping the discussion alive. Closing Desktop does not stop the backend. This differs from the legacy Desktop-orchestrated groups described above; two independently created legacy rooms are not automatically the same conversation.
+
+The built-in Telegram transport binds **one local-member room to one private group**. It uses each member profile's own bot identity for attributed output and the existing Telegram adapters for input. It does not create another poller, copy credentials or forward bot messages back into the coordinator. Public bot mentions resolve to the canonical member handles; replies retain their canonical threads. Files use native media capture and the room's Files storage, including documents, audio/video and files produced by members.
+
+After creating the canonical room, configure its backend and each participating Telegram profile to read the same private binding file:
+
+```yaml
+gateway:
+  hosted_rooms:
+    telegram:
+      binding_file: /absolute/path/to/room-telegram.json
+```
+
+Relative binding paths resolve against the native Hermes installation home, not the current directory. An independent room's `HERMES_HOME` must remain beneath that native home when it uses the installation's existing profiles. Its `state.db` owns the room; profile discovery and member turn locks still use the native profiles root.
+
+Example binding, with illustrative IDs and paths that must be replaced:
+
+```json
+{
+  "enabled": true,
+  "room_id": "planning-room",
+  "queue_db": "/absolute/path/to/room-telegram.sqlite3",
+  "chat_id": -1001234567890,
+  "owner_id": 123456789,
+  "control_profile": "planner",
+  "bots": {
+    "planner": {"id": 111111111, "username": "my_planner_bot"},
+    "writer": {"id": 222222222, "username": "my_writer_bot"}
+  }
+}
+```
+
+The roster must match the canonical room exactly, every member must be local, and bot IDs/usernames must be unique. Startup resolves tokens from the owning profiles and verifies each identity with Telegram before reporting transport readiness. Keep tokens in the existing profile secret surfaces, never in this document. Protect the binding and SQLite queue as private operator files. The configured owner is the only admitted human sender; other senders, edits, disabled inputs and invalid media cannot fall through into independent agent conversations.
+
+Install the declared `messaging` extra into the same Python environment that runs the backend and gateways. A Desktop-only installation does not automatically install optional messaging dependencies.
+
+Run the backend with the normal `hermes serve --isolated` command and keep the existing named-profile gateways running. There is no external ingress plugin to install. Restart those gateways after configuring or changing the binding. Setting `enabled` to `false` immediately rejects new room input; restart the backend too to stop its output worker. Keep the complete disabled document so gateways continue reserving the group. Routing changes require a restart rather than silently moving an active conversation.
+
+The transport holds a machine-local OS lock before recovering its queue. A second backend for the same room/group cannot take ownership. Accepted input IDs, reply mappings and per-part delivery receipts survive restart. A send with an unknown outcome is **not automatically repeated**: reconcile it against Telegram before authorizing a retry. Stop cancels current room work; persistent member holds are a separate room policy.
+
+Back up the canonical database and Files, the transport queue/binding, and the owning profile sessions together before migration or update. Do not combine old Desktop and Telegram histories by pretending their messages were newly executed turns. Preserve provenance and post-cutover records during rollback. An unmerged feature branch must remain pinned until its changes are available upstream; updating to a branch without the feature is not a compatible upgrade.
+
 ## Bot-to-bot messaging
 
 Bots message each other with attribution, and you can hand work off from any chat:

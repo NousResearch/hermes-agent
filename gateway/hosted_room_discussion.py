@@ -27,6 +27,9 @@ MAX_DISCUSSION_MEMBERS = 6
 MIN_DISCUSSION_MEMBERS = 2
 MAX_DISCUSSION_ROUNDS = 3
 MAX_DISCUSSION_MESSAGES = 10
+# Silent-round recovery, bounded independently of the message cap so a mention chain cannot
+# spend the room's whole budget on handoffs (native ``GROUP_CHAT_MAX_CONTINUATIONS``).
+MAX_DISCUSSION_CONTINUATIONS = 2
 MAX_DISCUSSION_DELTA_LINES = 24
 MAX_USER_TEXT_BYTES = 64 * 1024
 MAX_MEMBER_TEXT_BYTES = 64 * 1024
@@ -48,6 +51,11 @@ DecisionStatus = Literal["idle", "task", "settled", "bounded"]
 TerminalKind = Literal["settled", "failed", "cancelled", "deferred"]
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._:-]*)", re.IGNORECASE)
+_MENTION_SEPARATORS_RE = re.compile(r"[._:-]+")
+_MENTION_FORM_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+# Room-wide and reserved words the native resolver never derives from a member's friendly
+# label. A profile or handle that literally IS one of them still resolves, as it does natively.
+_RESERVED_MENTION_FORMS = frozenset({"all", "everyone", "user", "default", "hermes"})
 # ASCII word boundaries and case-insensitivity mirror the native JavaScript regexes exactly, so
 # the same user text holds and releases the same members from either frontend.
 _HOLD_RE = re.compile(r"\b(stop|halt|pause)\b", re.IGNORECASE | re.ASCII)
@@ -55,7 +63,10 @@ _RELEASE_RE = re.compile(r"\b(resume|continue|go|proceed)\b", re.IGNORECASE | re
 _TURN_ID_RE = re.compile(
     r"^d(?P<source>[1-9][0-9]*)\.r(?P<round>[0-2])\."
     r"p(?P<position>[0-5])\.s(?P<seen>[1-9][0-9]*)\."
-    r"m(?P<member>[0-9a-f]{24})$")
+    r"m(?P<member>[0-9a-f]{24})"
+    # Optional on purpose: an ordinary turn's coordinate stays byte-identical to the one this
+    # room has always minted, so stored tasks, seeds and reconstruction remain valid.
+    r"(?:\.c(?P<continuation>[1-2]))?$")
 
 _TARGET_FIELDS = {
     "local": frozenset({"kind", "profile"}),
@@ -132,6 +143,10 @@ class DiscussionDecision:
     source_event_seq: int | None = None
     thread_id: str | None = None
     task: DiscussionTaskPlan | None = None
+    #: ``(member_id, seen_through_seq)`` for the held members whose ordinary slot this walk
+    #: actually reached. Emitted by the walk itself rather than re-derived elsewhere, so the
+    #: durable projection and the planner can never disagree about when a pause costs context.
+    held_consumptions: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -314,22 +329,89 @@ def is_pass_text(value: Any) -> bool:
     return not text or re.fullmatch(r"\(?\s*pass\s*\)?\.?", text, re.IGNORECASE) is not None
 
 
+def _friendly_mention_forms(value: str) -> tuple[str, ...]:
+    """Slug and collapsed forms of one friendly label, as the native composer derives them.
+
+    Mirrors ``mentionNameForms`` in the Desktop roster module, including its refusal to derive
+    a room-wide or reserved word from a member's label. ``lower`` rather than ``casefold``
+    deliberately: JavaScript's ``toLowerCase`` leaves ``ß`` alone, so "Straße" reduces to
+    ``stra-e``/``strae`` on both sides instead of one engine inventing ``strasse``.
+    """
+    name = str(value or "").strip().lower()
+    if not name:
+        return ()
+    slug = re.sub(r"^-+|-+$", "", re.sub(r"[^a-z0-9_-]+", "-", name))
+    collapsed = re.sub(r"[^a-z0-9_-]+", "", name)
+    return tuple(
+        form for form in dict.fromkeys((slug, collapsed))
+        if _MENTION_FORM_RE.fullmatch(form) and form not in _RESERVED_MENTION_FORMS)
+
+
+def _mention_index(
+    members: Sequence[DiscussionMember]) -> tuple[dict[str, str], dict[str, str | None]]:
+    """``(canonical, alias)`` mention forms mapped to the frozen handle they address.
+
+    Canonical is every EXACT handle and nothing else, filled first: a member's own unique name
+    can never be shadowed by a form derived from another member, whatever the roster order.
+    Everything derived -- a handle without its separators, the profile, and the friendly label
+    in the slugged and collapsed shapes the native autocomplete inserts -- is an alias, and an
+    alias two members derive addresses neither (``None``) rather than the first one seen.
+    Only frozen roster fields are read; no live profile metadata enters a replaying room.
+    """
+    canonical = {member.handle.lower(): member.handle.casefold() for member in members}
+    alias: dict[str, str | None] = {}
+    for member in members:
+        handle = member.handle.casefold()
+        profile = member.profile.lower()
+        forms = (
+            _MENTION_SEPARATORS_RE.sub("", member.handle.lower()),
+            profile,
+            _MENTION_SEPARATORS_RE.sub("", profile),
+            *_friendly_mention_forms(member.display_name))
+        for form in dict.fromkeys(forms):
+            if form and form not in canonical:
+                alias[form] = handle if alias.get(form, handle) == handle else None
+    return canonical, alias
+
+
+def _resolve_mention_token(
+    token: str, canonical: Mapping[str, str], alias: Mapping[str, str | None]) -> str | None:
+    """The frozen handle one ``@token`` addresses, or ``None``.
+
+    The separator-free form is tried second, exactly as the native resolver does: that is what
+    lets ``@writer.`` and ``@writer:`` reach ``writer`` without a second parser.
+    """
+    for form in dict.fromkeys((token, _MENTION_SEPARATORS_RE.sub("", token))):
+        if form in canonical:
+            return canonical[form]
+        if alias.get(form) is not None:
+            return alias[form]
+    return None
+
+
 def _mentioned_handles(
     texts: Iterable[str], members: Sequence[DiscussionMember]) -> tuple[set[str], bool]:
     """Return (casefolded roster handles addressed, ``@all``/``@everyone`` seen).
 
     The two are separate on purpose: ``@all hello`` addresses the room without addressing any
     member, which is exactly the distinction manual holds turn on.
+
+    One resolver serves scheduling, holds and member handoffs, so the tag the composer inserts
+    for a renamed member addresses the same member from every surface. ``@user`` is reserved
+    for the person in the room and never resolves to a Bot, as in ``parseGroupChatMentions``.
     """
-    by_handle = {member.handle.casefold(): member for member in members}
+    canonical, alias = _mention_index(members)
     mentioned: set[str] = set()
     everyone = False
     for text in texts:
         for match in _MENTION_RE.finditer(str(text or "")):
-            handle = match.group(1).casefold()
-            if handle in {"all", "everyone"}:
+            token = match.group(1).lower()
+            if token in {"all", "everyone"}:
                 everyone = True
-            elif handle in by_handle:
+                continue
+            if token == "user":
+                continue
+            if (handle := _resolve_mention_token(token, canonical, alias)) is not None:
                 mentioned.add(handle)
     return mentioned, everyone
 
@@ -376,22 +458,159 @@ def resolve_hold_directive(text: Any, members: Sequence[DiscussionMember]) -> Ho
     return HoldDirective(release=addressed)
 
 
+def explicit_mentions(
+    text: Any, members: Sequence[DiscussionMember]) -> tuple[DiscussionMember, ...]:
+    """Members this text names outright.
+
+    ``@all`` addresses the room, not any one peer: the native handoff detector reads only its
+    parsed mention set, so expanding the roster here would make every broadcast reply look like
+    an unresolved citation of every member. Public because the durable projection remembers the
+    same citations after the bounded transcript has trimmed the message that made them.
+    """
+    handles, _everyone = _mentioned_handles((str(text or ""),), members)
+    return tuple(member for member in members if member.handle.casefold() in handles)
+
+
 def _unaddressed_member_mentions(
-    messages: Sequence[_ValidatedEvent], room: DiscussionRoom) -> tuple[DiscussionMember, ...]:
-    """Return peers explicitly cited by a Bot and not heard from afterward."""
+    messages: Sequence[_ValidatedEvent], room: DiscussionRoom, *,
+    initial: Mapping[str, tuple[int, int]] | None = None) -> tuple[DiscussionMember, ...]:
+    """Return peers explicitly cited by a Bot and not heard from afterward.
+
+    ``initial`` carries ``member_id -> (cited_at_seq, last_post_seq)`` from the durable citation
+    projection, so a handoff older than the bounded transcript window is still owed its turn.
+    """
     cited_at: dict[str, int] = {}
     last_post_at: dict[str, int] = {}
+    for member_id, (cited, posted) in (initial or {}).items():
+        cited_at[str(member_id)] = int(cited)
+        last_post_at[str(member_id)] = int(posted)
     for event in messages:
         if event.kind != "message.member":
             continue
         speaker_id = str(event.payload["member_id"])
-        last_post_at[speaker_id] = event.seq
-        for member in resolve_mentions((str(event.payload["text"]),), room.members, default_all=False):
+        last_post_at[speaker_id] = max(last_post_at.get(speaker_id, 0), event.seq)
+        for member in explicit_mentions(event.payload["text"], room.members):
             if member.member_id != speaker_id:
-                cited_at[member.member_id] = event.seq
+                cited_at[member.member_id] = max(cited_at.get(member.member_id, 0), event.seq)
     return tuple(
         member for member in room.members
-        if member.member_id in cited_at and last_post_at.get(member.member_id, 0) <= cited_at[member.member_id])
+        if cited_at.get(member.member_id, 0) > 0
+        and last_post_at.get(member.member_id, 0) <= cited_at[member.member_id])
+
+
+def _round_frontier(
+    discussion_event: _ValidatedEvent, thread_messages: Sequence[_ValidatedEvent], round_index: int
+) -> tuple[_ValidatedEvent, ...]:
+    """The committed messages one ordinary round is planned from.
+
+    Frozen at the round's own frontier -- this discussion's user message plus every message an
+    EARLIER round committed -- so a reply landing while the round is still being walked cannot
+    change who that round selected. Native freezes the same list once per round.
+    """
+    return tuple(
+        event for event in thread_messages
+        if event.seq >= discussion_event.seq and (
+            event.kind == "message.user" or int(event.payload.get("round_index") or 0) < round_index))
+
+
+@dataclass(frozen=True)
+class _RoundWalk:
+    """One ordinary round's frozen slots, and what a held slot in it has already missed."""
+    rotated: tuple[DiscussionMember, ...]
+    frontier_seq: int
+    spoken_at: Mapping[int, int]
+
+    def consumption_at(self, member_index: int) -> int:
+        """What the room had committed by the time this slot came up."""
+        return max([self.frontier_seq, *(seq for slot, seq in self.spoken_at.items() if slot < member_index)])
+
+
+def _round_walk(
+    members: Sequence[DiscussionMember], thread_messages: Sequence[_ValidatedEvent],
+    member_messages: Sequence[_ValidatedEvent], *, discussion_event: _ValidatedEvent, round_index: int
+) -> _RoundWalk:
+    """The one round walk both the planner and the durable rebuild run.
+
+    Cumulative selection frozen at the round's own committed frontier, rotated as a whole so a
+    pause cannot reorder the others, plus where each earlier slot of the round committed its reply.
+    """
+    frontier = _round_frontier(discussion_event, thread_messages, round_index)
+    return _RoundWalk(
+        rotated=_rotate(_round_responders(members, frontier), round_index),
+        frontier_seq=max((event.seq for event in frontier), default=0),
+        spoken_at={
+            _position_of(event.payload.get("turn_id")): event.seq for event in member_messages
+            if int(event.payload.get("round_index") or 0) == round_index
+            and _continuation_of(event.payload.get("turn_id")) is None
+            and _position_of(event.payload.get("turn_id")) is not None})
+
+
+def _position_of(turn_id: Any) -> int | None:
+    """The slot one turn coordinate occupied in its phase."""
+    match = _TURN_ID_RE.fullmatch(str(turn_id or ""))
+    return None if match is None else int(match.group("position"))
+
+
+def _continuation_of(turn_id: Any) -> int | None:
+    """The continuation attempt a turn coordinate belongs to; ``None`` for an ordinary turn."""
+    match = _TURN_ID_RE.fullmatch(str(turn_id or ""))
+    attempt = match.group("continuation") if match is not None else None
+    return int(attempt) if attempt else None
+
+
+def _phase_progress(
+    validated: Sequence[_ValidatedEvent], discussion_event: _ValidatedEvent
+) -> tuple[dict[tuple[int, int], int], tuple[int, int]]:
+    """``(furthest slot walked per phase, the furthest phase itself)`` for one discussion.
+
+    A phase is ``(round, 0)`` for an ordinary walk and ``(round, attempt)`` for its recovery, so
+    the natural ordering is the order the loop runs them in. Read ONLY from committed terminal
+    events: a member message whose terminal has not landed is the publication gap, and replaying
+    it must not advance the walk.
+    """
+    cursors: dict[tuple[int, int], int] = {}
+    furthest = (-1, 0)
+    for event in validated:
+        if event.kind not in _TERMINAL_EVENT_KINDS:
+            continue
+        if event.payload.get("discussion_event_id") != discussion_event.event_id:
+            continue
+        turn = _TURN_ID_RE.fullmatch(str(event.payload.get("turn_id") or ""))
+        if turn is None:
+            continue
+        attempt = turn.group("continuation")
+        phase = (int(turn.group("round")), int(attempt) if attempt else 0)
+        cursors[phase] = max(cursors.get(phase, -1), int(turn.group("position")))
+        furthest = max(furthest, phase)
+    return cursors, furthest
+
+
+def _citation_frontier(
+    thread_messages: Sequence[_ValidatedEvent], discussion_event: _ValidatedEvent, round_index: int
+) -> tuple[_ValidatedEvent, ...]:
+    """The whole thread as one silent round saw it when its recovery began.
+
+    Native scans the entire thread for unresolved citations, but takes the list ONCE: a peer that
+    a continuation reply cites for the first time belongs to the next ordinary round, not to the
+    attempt already walking.
+    """
+    return tuple(
+        event for event in thread_messages
+        if not (event.kind == "message.member"
+                and event.payload.get("discussion_event_id") == discussion_event.event_id
+                and int(event.payload.get("round_index") or 0) >= round_index))
+
+
+def _round_responders(
+    members: Sequence[DiscussionMember], frontier: Sequence[_ValidatedEvent]) -> tuple[DiscussionMember, ...]:
+    """Everyone the frozen frontier addresses, defaulting to the whole roster.
+
+    Native ``resolveGroupResponders``: cumulative mentions from the latest user message and every
+    member message after it. A member carrying new peer context can answer again without being
+    called by name, and a round that names nobody belongs to the whole room.
+    """
+    return resolve_mentions(
+        tuple(str(event.payload.get("text") or "") for event in frontier), members)
 
 
 def _require_gateway_actor(actor: Mapping[str, Any], room: DiscussionRoom, message: str) -> None:
@@ -424,8 +643,16 @@ def _validate_user_event(kind: str, payload: Payload, actor: Payload, room: Disc
 
 
 def _validate_member_message(kind: str, payload: Payload, actor: Payload, room: DiscussionRoom) -> Payload:
-    _exact_fields(payload, label="message.member payload", required=_MEMBER_MESSAGE_FIELDS)
+    _exact_fields(
+        payload, label="message.member payload", required=_MEMBER_MESSAGE_FIELDS,
+        optional={"attachments"})
     _validate_turn_coordinates(payload, room)
+    if "attachments" in payload:
+        # A file a member produced is the SAME canonical manifest a user message carries: one
+        # attachment contract, one store, one set of ids. The bytes are committed to this event
+        # before it is appended, exactly as an inbound attachment is.
+        _validate_attachments(
+            payload["attachments"], member_ids=tuple(member.member_id for member in room.members))
     if not isinstance(text := payload.get("text"), str) or not text.strip() or is_pass_text(text):
         raise DiscussionValidationError("message.member text must be a non-pass string")
     member = _member_by_id(room, payload.get("member_id"))
@@ -640,8 +867,14 @@ def _make_task_plan(
     prompt: str,
     attachments: Sequence[Mapping[str, Any]] = (),
     input_context: Mapping[str, Any] | None = None,
+    continuation: int | None = None,
 ) -> DiscussionTaskPlan:
-    turn_id = f"d{discussion_event.seq}.r{round_index}.p{member_index}.s{seen_through_seq}.m{_member_digest(member)}"
+    # An ordinary turn's coordinate and seed are byte-identical to the ones this room has always
+    # minted: the continuation phase appears only when there is one, so every stored task id,
+    # payload and reconstruction from before this policy stays valid.
+    turn_id = (
+        f"d{discussion_event.seq}.r{round_index}.p{member_index}.s{seen_through_seq}"
+        f".m{_member_digest(member)}{f'.c{continuation}' if continuation is not None else ''}")
     seed = compact_json(
         {
             "discussion_event_id": discussion_event.event_id,
@@ -653,6 +886,7 @@ def _make_task_plan(
             "seen_through_seq": seen_through_seq,
             "source_event_seq": discussion_event.seq,
             "thread_id": discussion_event.payload["thread_id"],
+            **({"continuation": continuation} if continuation is not None else {}),
             **({"input_context": input_context} if input_context is not None else {}),
         }
     )
@@ -733,6 +967,7 @@ def plan_next_task(
     room_value: Any, events: Sequence[Mapping[str, Any]], *, local_profiles: Iterable[str],
     initial_watermarks: Mapping[tuple[str, str], int] | None = None,
     held_member_ids: Iterable[str] | None = None,
+    initial_citations: Mapping[str, tuple[int, int]] | None = None,
     freeze_input_context: bool = False) -> DiscussionDecision:
     """Replay the complete room log and return at most one next member task.
 
@@ -756,45 +991,117 @@ def plan_next_task(
     if len(member_messages) >= MAX_DISCUSSION_MESSAGES:
         return decide("bounded", "max_messages")
     terminals = {
-        (int(event.payload["round_index"]), str(event.payload["member_id"])) for event in validated
+        (int(event.payload["round_index"]), str(event.payload["member_id"]),
+         _continuation_of(event.payload.get("turn_id")))
+        for event in validated
         if event.kind in _TERMINAL_EVENT_KINDS and event.payload.get("discussion_event_id") == discussion.event_id}
+    # How far this discussion has already walked. A slot is visited ONCE and a phase the room has
+    # moved past is sealed: without this, a reply committed by a continuation or a later round
+    # would re-open an earlier empty-delta or held skip and dispatch a member into a round its
+    # own coordinates say is finished. Only the furthest phase stays replayable, so the last
+    # slot's unfinished attachment batch can still take its remaining turn.
+    cursors, furthest_phase = _phase_progress(validated, discussion)
+
+    def sealed(round_index: int, continuation: int | None = None) -> bool:
+        return (round_index, continuation or 0) < furthest_phase
     watermarks = _effective_watermarks(validated, initial_watermarks)
     maximum_seen_seq = max(event.seq for event in thread_messages)
+    # Rounds that committed an ORDINARY visible message. A continuation's own reply is excluded,
+    # so a silent round stays the round whose recovery attempt it belongs to.
+    ordinary_rounds = {
+        int(event.payload["round_index"]) for event in member_messages
+        if _continuation_of(event.payload.get("turn_id")) is None}
+    # Filled by the walk below and read at every exit, so each decision carries exactly the held
+    # skips this walk reached -- including a round nobody could take and a trailing skip before
+    # the room settled.
+    consumptions: dict[str, int] = {}
+
+    def dispatch(
+        member: DiscussionMember, *, member_index: int, round_index: int, reason: str,
+        continuation: int | None = None) -> DiscussionDecision | None:
+        """This slot's task, or ``None`` when the slot has nothing to say."""
+        watermark = watermarks.get((thread_id, member.member_id), 0)
+        pending_attachments = any(
+            event.kind == "message.user" and watermark < event.seq <= maximum_seen_seq
+            and event.payload.get("attachments") for event in thread_messages)
+        if (round_index, member.member_id, continuation) in terminals and not pending_attachments:
+            return None
+        seen_through_seq, delta, attachments = _bounded_task_delta(
+            thread_messages, watermark=watermark, maximum_seq=maximum_seen_seq)
+        if not delta:
+            return None
+        prompt = _build_prompt(
+            room=room, member=member, messages=thread_messages, watermark=watermark,
+            seen_through_seq=seen_through_seq)
+        return decide("task", reason, held_consumptions=tuple(sorted(consumptions.items())), task=_make_task_plan(
+            room=room, discussion_event=discussion, member=member, member_index=member_index,
+            round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt,
+            attachments=attachments, continuation=continuation,
+            input_context=(validate_task_input({"watermark": watermark, "event_seqs": [event.seq for event in delta]})
+                           if freeze_input_context else None)))
+
     for round_index in range(MAX_DISCUSSION_ROUNDS):
-        # The user's message selects the first round, with no mention meaning
-        # everyone. Later rounds are opt-in: only a peer explicitly cited by a
-        # Bot and not heard from afterward gets another turn. Every member's
-        # watermark remains intact, so a peer cited later still receives the
-        # complete bounded transcript delta without consuming turns meanwhile.
-        selected = (
-            resolve_mentions((str(discussion.payload["text"]),), room.members) if round_index == 0
-            else _unaddressed_member_mentions(discussion_messages, room))
-        responders = tuple(member for member in selected if member.member_id not in held)
-        for member_index, member in enumerate(_rotate(responders, round_index)):
-            watermark = watermarks.get((thread_id, member.member_id), 0)
-            pending_attachments = any(
-                event.kind == "message.user" and watermark < event.seq <= maximum_seen_seq
-                and event.payload.get("attachments") for event in thread_messages)
-            if (round_index, member.member_id) in terminals and not pending_attachments:
+        # Cumulative selection, frozen at this round's own committed frontier: this discussion's
+        # user message plus every earlier round's replies, with no mention meaning everyone. A
+        # member carrying new peer context answers again without being called by name.
+        walk = _round_walk(
+            room.members, thread_messages, member_messages,
+            discussion_event=discussion, round_index=round_index)
+        rotated = walk.rotated
+        walked = cursors.get((round_index, 0), -1)
+        # Every slot's held effect is replayed, including a sealed phase's trailing skips, so a
+        # rebuilt projection derives exactly what the live walk did. Only dispatch is restricted:
+        # resume ON the last dispatched slot -- it may still owe this turn its remaining
+        # attachment batch -- and never re-open a slot an earlier call already walked.
+        for member_index, member in enumerate(rotated):
+            if member.member_id in held:
+                consumed = walk.consumption_at(member_index)
+                if consumed > watermarks.get((thread_id, member.member_id), 0):
+                    watermarks[(thread_id, member.member_id)] = consumed
+                    consumptions[member.member_id] = consumed
                 continue
-            seen_through_seq, delta, attachments = _bounded_task_delta(
-                thread_messages, watermark=watermark, maximum_seq=maximum_seen_seq)
-            if not delta:
+            if sealed(round_index) or member_index < max(walked, 0):
                 continue
-            prompt = _build_prompt(
-                room=room, member=member, messages=thread_messages, watermark=watermark,
-                seen_through_seq=seen_through_seq)
-            return decide("task", "member_turn", task=_make_task_plan(
-                room=room, discussion_event=discussion, member=member, member_index=member_index,
-                round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt, attachments=attachments,
-                input_context=(validate_task_input({"watermark": watermark, "event_seqs": [event.seq for event in delta]})
-                               if freeze_input_context else None)))
+            if (planned := dispatch(member, member_index=member_index, round_index=round_index,
+                                    reason="member_turn")) is not None:
+                return planned
+        pending_citations: tuple[DiscussionMember, ...] = ()
+        if round_index not in ordinary_rounds:
+            # Silent-round recovery: a peer cited BY NAME and never heard from still owes this
+            # thread a turn. `@all` addresses the room, not a peer, so it cites nobody. The list
+            # is frozen at the silent round's frontier -- a peer first cited by a continuation
+            # reply waits for the next ordinary round -- and walked in roster order without
+            # rotation. A held member is skipped here WITHOUT consuming its delta.
+            attempt = 1 + sum(1 for earlier in range(round_index) if earlier not in ordinary_rounds)
+            pending_citations = _unaddressed_member_mentions(
+                _citation_frontier(thread_messages, discussion, round_index), room,
+                initial=initial_citations)
+            if pending_citations:
+                if attempt > MAX_DISCUSSION_CONTINUATIONS:
+                    # Citations are still owed and only the continuation budget stopped the room
+                    # from driving them: a bounded exit, not consensus. Keyed on the exhausted
+                    # attempt alone -- a phase that a later one sealed simply walks nothing.
+                    return decide("bounded", "max_continuations",
+                                  held_consumptions=tuple(sorted(consumptions.items())))
+                if not sealed(round_index, attempt):
+                    cursor = max(cursors.get((round_index, attempt), 0), 0)
+                    for position in range(cursor, len(pending_citations)):
+                        member = pending_citations[position]
+                        if member.member_id in held:
+                            continue
+                        if (planned := dispatch(
+                                member, member_index=position, round_index=round_index,
+                                reason="continuation_turn", continuation=attempt)) is not None:
+                            return planned
         if not any(int(event.payload["round_index"]) == round_index for event in member_messages):
             # A round that only went quiet because every responder is held is reported as such:
             # the room settles (no spin, no dispatch) and the reason names the manual pause.
-            return decide("settled", "members_held" if selected and not responders else "silent_round")
+            held_only = bool(rotated) and all(member.member_id in held for member in rotated)
+            return decide("settled", "members_held" if held_only else "silent_round",
+                          held_consumptions=tuple(sorted(consumptions.items())))
         if round_index == MAX_DISCUSSION_ROUNDS - 1:
-            return decide("bounded", "max_rounds")
+            return decide("bounded", "max_rounds",
+                          held_consumptions=tuple(sorted(consumptions.items())))
     raise AssertionError("bounded Discussion loop exhausted unexpectedly")
 
 
@@ -860,7 +1167,8 @@ def reconstruct_task_plan(
     reconstructed = _make_task_plan(
         room=room, discussion_event=discussion, member=member, member_index=int(match.group("position")),
         round_index=int(match.group("round")), seen_through_seq=seen_through_seq, prompt=prompt,
-        attachments=attachments, input_context=input_context)
+        attachments=attachments, input_context=input_context,
+        continuation=int(match.group("continuation")) if match.group("continuation") else None)
     if reconstructed.identity != identity or dict(reconstructed.payload) != dict(payload):
         raise DiscussionReconstructionError("driver task failed deterministic reconstruction")
     return reconstructed
@@ -890,12 +1198,22 @@ def _settled_effects(
     text = _truncate_utf8_text(
         _terminal_text(result, field="text", fallback=""), max_bytes=MAX_MEMBER_TEXT_BYTES,
         suffix=_TRUNCATED_REPLY_NOTICE)
-    if is_pass_text(text):
+    # Files the member produced, already committed to this exact message id by the caller.
+    attachments = [dict(entry) for entry in (
+        result.get("attachments") or [] if isinstance(result, Mapping) else [])]
+    if attachments and (not text.strip() or is_pass_text(text)):
+        # A reply that was only a MEDIA: tag has no words left once the tag is removed, and a
+        # blank member message is not publishable. Name what actually arrived instead.
+        text = _truncate_utf8_text(
+            ", ".join(str(entry.get("name") or "attachment") for entry in attachments),
+            max_bytes=MAX_MEMBER_TEXT_BYTES, suffix=_TRUNCATED_REPLY_NOTICE)
+    if is_pass_text(text) and not attachments:
         return {"message_event_id": None, "passed": True}, []
     return {"message_event_id": message_event_id, "passed": False}, [EventPlan(
         event_id=message_event_id, kind="message.member", actor=_member_actor(task.member),
-        payload={**_turn_coordinates(task), "text": text}, authority_gateway_id=room.gateway_id,
-        authority_epoch=room.authority_epoch)]
+        payload={**_turn_coordinates(task), "text": text,
+                 **({"attachments": attachments} if attachments else {})},
+        authority_gateway_id=room.gateway_id, authority_epoch=room.authority_epoch)]
 
 
 def _failed_effects(result: Any, **_: Any) -> Effects:

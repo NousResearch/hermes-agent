@@ -379,6 +379,82 @@ class HostedRoomServerRPC:
             raise HostedRoomSessionError(
                 f"{kind}.attach", 5028, "attachment staging was not acknowledged"
             )
+        if kind == "file":
+            result = {
+                **result,
+                "derived_text": self._staged_media_text(session_id, attachment, result),
+            }
         with self._attachment_lock:
             self._staged_attachments[key] = dict(result)
         return result
+
+
+    def deliverable_media(
+        self, *, profile: str, session_id: str, text: str
+    ) -> tuple[tuple[str, ...], tuple[str, ...], str]:
+        """``(paths this member may deliver, names it may not, cleaned text)`` for one reply.
+
+        A tag the guard refuses is still a file the member said it produced, and the parser has
+        already taken its tag out of the visible text: reporting only the accepted paths would
+        publish a reply that silently lost an attachment. The refused entry is named by its
+        basename, taken from the text the member itself wrote -- that path is never opened.
+
+        Parsed and validated in the MEMBER's own profile scope: the native extractor consults the
+        filesystem for extension-less tags and the delivery guard resolves cache roots, operator
+        allowances and container translation from the session's HERMES_HOME, so running it in
+        this process's default scope would judge another profile's paths. The extractor is the
+        platform adapter's own, so code, quoted and stored-JSON examples stay non-deliverable.
+        """
+
+        from gateway.platforms.base import BasePlatformAdapter, validate_media_delivery_path
+
+        import os
+
+        record = self._session_record(session_id)
+        if record is None or "MEDIA:" not in str(text or ""):
+            return (), (), str(text or "")
+        # The scope must be the profile whose turn this was, not whatever record the id resolves
+        # to: this refuses a session that does not belong to that member.
+        self._validated_profile_home(profile, record)
+        paths: list[str] = []
+        refused: list[str] = []
+        with self.server._session_profile_runtime_scope(record):
+            media, cleaned = BasePlatformAdapter.extract_media(str(text))
+            for path, _voice in media:
+                safe = validate_media_delivery_path(path, session_id)
+                if safe:
+                    paths.append(safe)
+                else:
+                    refused.append(os.path.basename(path.rstrip("/\\")) or path)
+        return tuple(paths), tuple(refused), cleaned
+
+    def _staged_media_text(
+        self, session_id: str, attachment: Mapping[str, Any], staged: Mapping[str, Any]
+    ) -> str:
+        """Words for a staged voice message, so the turn carries content and not a filename.
+
+        Transcription resolves the STT switch, provider and credentials of the *member's*
+        profile: ``file.attach`` is a plain handler call whose scope does not outlive the
+        return, so the canonical session record is rebound here exactly as native session
+        work does, never through this process's default profile.  It runs on bytes already
+        written into the session workspace and before the admission fence, so a Stop that
+        wins the fence releases this staging like every other staged attachment, and the
+        note is cached with the staged result: one attempt transcribes once.  Video is
+        deliberately not transcribed; its bytes stay staged for the media tools, as on the
+        1:1 path.
+        """
+
+        from gateway import media_text
+
+        if not media_text.is_audio_mime(attachment.get("mime")):
+            return ""
+        path = str(staged.get("path") or "")
+        ref_path = str(staged.get("ref_path") or "").strip()
+        record = self._session_record(session_id)
+        if not path or not ref_path or record is None:
+            return ""
+        # The installed, server-bound scope: ``model_switch`` bodies are rebound onto server.py
+        # globals by ``bind_module``, so the raw module function has no HERMES_HOME/secret names.
+        with self.server._session_profile_runtime_scope(record):
+            return media_text.transcribe_media_file(
+                path, mime=attachment.get("mime"), agent_path=ref_path)

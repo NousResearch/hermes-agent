@@ -659,15 +659,34 @@ class SessionMessagesMixin:
         return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
 
     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
-        """Tool results containing ``/pull/``: a deliberately loose scan, oldest-first so the caller takes the last."""
-        ids = [s for s in session_ids if s]
-        chunks = (ids[start : start + 900] for start in range(0, len(ids), 900))  # SQLite's bound-variable ceiling.
-        return [{"session_id": row[0], "content": row[1]} for chunk in chunks for row in self._read_all(
-                f"""SELECT session_id, content FROM messages
-                    WHERE session_id IN ({_placeholders(chunk)})
-                      AND role = 'tool' AND content LIKE '%/pull/%'
-                    ORDER BY id ASC""",
-                chunk)]
+        """Candidate results with their preceding, same-session call; oldest first.
+
+        Keep archived history: compression/rewind does not undo an external PR creation.
+        The loose prefilter also admits JSON slash escapes; the route validates provenance.
+        """
+        ids = list(dict.fromkeys(s for s in session_ids if s))
+        found = []
+        for start in range(0, len(ids), 900):  # SQLite's bound-variable ceiling.
+            chunk = ids[start : start + 900]
+            calls = {}
+            for row in self._read_all(
+                f"""SELECT session_id, role, content, tool_call_id, tool_calls, tool_name
+                    FROM messages WHERE session_id IN ({_placeholders(chunk)})
+                      AND ((role = 'assistant' AND tool_calls IS NOT NULL)
+                        OR (role = 'tool' AND tool_name IN ('terminal', 'execute_code')
+                            AND content LIKE '%pull%'))
+                    ORDER BY id ASC""", chunk):
+                if row["role"] == "assistant":
+                    parsed = _parse_tool_calls(row["tool_calls"])
+                    for call in parsed if isinstance(parsed, list) else []:
+                        if isinstance(call, dict) and isinstance(call.get("id"), str):
+                            calls[(row["session_id"], call["id"])] = call.get("function")
+                else:
+                    call = calls.get((row["session_id"], row["tool_call_id"]))
+                    if isinstance(call, dict) and call.get("name") == row["tool_name"]:
+                        found.append({"session_id": row["session_id"], "content": row["content"],
+                                      "tool_call": call})
+        return found
 
     def get_messages_around(self, session_id: str, around_message_id: int, window: int = 5) -> Dict[str, Any]:
         """Up to *window* messages either side of an anchor id (ascending). ``messages_before``/``_after`` count

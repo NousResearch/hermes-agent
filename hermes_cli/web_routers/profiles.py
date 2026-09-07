@@ -9,6 +9,7 @@ Shared helpers are reached via the late-binding seam in :mod:`hermes_cli.web_dep
 so a test's ``monkeypatch.setattr(<owning module>, "_helper", ...)`` keeps working.
 """
 
+import ast
 import contextlib
 import copy
 import functools
@@ -16,6 +17,7 @@ import inspect
 import json
 import logging
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -169,16 +171,20 @@ def _best_effort(log_msg: str, *args, fn, default=None):
         return default
 
 
-def _profile_targets(log_label: str, *, lightweight: bool) -> List[Tuple[str, Path]]:
+def _profile_targets(log_label: str, *, lightweight: bool,
+                     errors: Optional[List[Dict[str, str]]] = None) -> List[Tuple[str, Path]]:
     """(name, home) for every profile, falling back to ``default`` alone. ``lightweight``
     uses ``profiles_to_serve`` (name/path only) instead of ``list_profiles``, which parses
-    config/meta and probes gateways/skills per profile — too heavy per sidebar refresh."""
+    config/meta and probes gateways/skills per profile — too heavy per sidebar refresh.
+    PR recovery collects inventory errors so incomplete scans remain retryable."""
     from hermes_cli import profiles as profiles_mod
     try:
         targets = (list(profiles_mod.profiles_to_serve(multiplex=True)) if lightweight
                    else [(info.name, info.path) for info in profiles_mod.list_profiles()])
     except Exception:
         _log.exception("%s: list_profiles failed", log_label)
+        if errors is not None:
+            errors.append({"error": "profile-inventory-unavailable"})
         targets = []
     if not targets:
         targets.append(("default", profiles_mod.get_profile_dir("default")))
@@ -588,21 +594,143 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
             "errors": errors}
 
 
-# `gh pr create` prints the PR url and nothing else, so a tool result whose whole output IS a
-# PR url means this session opened that PR; a url inside prose is a session TALKING about one.
-_PR_URL_RE = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+/pull/(\d+)/?$")
+_PR_URL_RE = re.compile(
+    r"https://github\.com/[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/"
+    r"(?!\.{1,2}/)[A-Za-z0-9_.-]+/pull/([1-9][0-9]*)/?")
 
 
-def _pr_url_from_tool_output(content: str) -> Optional[Tuple[int, str]]:
-    """The (number, url) a tool result announces, or None."""
+def _ends_with_pr_create(command: Any) -> bool:
+    """Recognize a creation command, optionally piped to a display-only tail.
+
+    The badge associates a PR returned by a creation attempt; it does not certify
+    that GitHub created it during this call (gh may return an existing PR).
+    Quoted heredoc bodies are data, never shell-command provenance.
+    """
+    from tools.terminal_tool_sudo import _scan_shell
+
+    if not isinstance(command, str) or len(command) > 100_000:
+        return False
+    command = command.rstrip(" \t\r\n;")
+    words, preceding = [], ""
+    last_words, last_preceding = [], ""
     try:
-        output = (json.loads(content) or {}).get("output")
-    except (json.JSONDecodeError, TypeError, AttributeError):
+        for kind, start, end, at_start in _scan_shell(command):
+            text = command[start:end]
+            if kind == "op" or (kind == "ws" and text == "\n"):
+                if text == "&" and command[:start].rstrip().endswith((">", "<")):
+                    continue  # Descriptor duplication (2>&1), not background work.
+                if text in {"(", ")", ";;"}:
+                    return False
+                # A trailing semicolon/newline does not change the exit status.
+                if text == "\n" and not words:
+                    continue  # Newlines/comments after an operator do not replace it.
+                if words:
+                    last_words, last_preceding = words, preceding
+                words, preceding = [], text
+            elif kind == "word":
+                heredoc = re.fullmatch(r"<<(['\"])([A-Za-z_][A-Za-z_0-9]*)\1", text)
+                if heredoc:
+                    rest = command[end:]
+                    header, newline, body = rest.partition("\n")
+                    lines = body.splitlines()
+                    # Only a single quoted, final body: no expansion, extra
+                    # redirections, or commands after its closing delimiter.
+                    if (header.strip() or not newline or not lines
+                            or lines[-1] != heredoc[2] or heredoc[2] in lines[:-1]):
+                        return False
+                    return _ends_with_pr_create(command[:start])
+                if any(s in text for s in ("<<", "$(", "`")):
+                    return False
+                tokens = shlex.split(text)
+                if at_start and tokens and tokens[0] in {
+                    "if", "then", "else", "elif", "fi", "while", "until", "for", "case",
+                    "do", "done", "esac", "function", "{", "}", "!", "exit", "return", "exec",
+                }:
+                    return False
+                words.extend(tokens)
+        if not words:
+            if preceding not in {";", "\n"}:
+                return False
+            words, preceding = last_words, last_preceding
+    except ValueError:
+        return False
+    allowed = {"", ";", "\n", "&&"}
+    if words[:3] == ["gh", "pr", "create"] and preceding in allowed:
+        return True
+    return (preceding == "|" and last_preceding in allowed
+            and last_words[:3] == ["gh", "pr", "create"]
+            and re.fullmatch(r"tail (?:-[0-9]+|-n [0-9]+)", " ".join(words)) is not None)
+
+
+def _printed_terminal_call(code: Any) -> Optional[dict]:
+    """Recognize only ``from hermes_tools import terminal; print(terminal(...))``.
+
+    AST literals, never execution: arbitrary code, variables, loops and additional
+    calls cannot reliably associate printed results with one particular command.
+    """
+    if not isinstance(code, str) or len(code) > 100_000:
         return None
-    if not isinstance(output, str):
+    try:
+        tree = ast.parse(code)
+        if len(tree.body) != 2:
+            return None
+        imported, printed = tree.body
+        if not (isinstance(imported, ast.ImportFrom) and imported.module == "hermes_tools"
+                and imported.level == 0 and len(imported.names) == 1
+                and imported.names[0].name == "terminal" and imported.names[0].asname is None
+                and isinstance(printed, ast.Expr)):
+            return None
+        call = printed.value
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                and call.func.id == "print" and len(call.args) == 1 and not call.keywords):
+            return None
+        terminal = call.args[0]
+        if not (isinstance(terminal, ast.Call) and isinstance(terminal.func, ast.Name)
+                and terminal.func.id == "terminal" and not terminal.args
+                and all(kw.arg is not None for kw in terminal.keywords)):
+            return None
+        return {kw.arg: ast.literal_eval(kw.value) for kw in terminal.keywords}
+    except (SyntaxError, ValueError, TypeError, RecursionError):
         return None
-    match = _PR_URL_RE.match(output.strip())
-    return (int(match.group(1)), match.group(0)) if match else None
+
+
+def _pr_url_from_tool_output(content: str, tool_call: dict) -> Optional[Tuple[int, str]]:
+    """One unambiguous URL line from a successful, associated creation command."""
+    try:
+        result = json.loads(content)
+        args = tool_call.get("arguments")
+        args = json.loads(args) if isinstance(args, str) else args
+        if not isinstance(result, dict) or not isinstance(args, dict):
+            return None
+        if tool_call.get("name") == "execute_code":
+            args = _printed_terminal_call(args.get("code"))
+            if (args is None or result.get("status") != "success"
+                    or result.get("exit_code") != 0 or result.get("tool_calls_made") != 1
+                    or result.get("stdout_truncated") or result.get("error")):
+                return None
+            # print(dict) produces Python literals, not JSON. Parse the entire
+            # stdout as one record; do not search prose for embedded dictionaries.
+            output = result.get("output")
+            if not isinstance(output, str) or len(output) > 100_000:
+                return None
+            result = ast.literal_eval(output.strip())
+        elif tool_call.get("name") != "terminal":
+            return None
+        if (not isinstance(result, dict) or type(result.get("exit_code")) is not int
+                or result["exit_code"] != 0 or result.get("error")
+                or args.get("background") or not _ends_with_pr_create(args.get("command"))):
+            return None
+        output = result.get("output")
+        if not isinstance(output, str):
+            return None
+        urls = {match.group(0).rstrip("/"): int(match.group(1))
+                for line in output.splitlines() if (match := _PR_URL_RE.fullmatch(line.strip()))}
+        if len(urls) == 1:
+            url, number = next(iter(urls.items()))
+            return number, url
+    except (json.JSONDecodeError, SyntaxError, ValueError, TypeError, RecursionError):
+        return None
+    return None
 
 
 @sessions_router.post("/api/profiles/sessions/pull-requests")
@@ -619,16 +747,23 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
 
     def _read(db):
         for pr in db.find_pr_url_messages(wanted):
-            parsed = _pr_url_from_tool_output(pr["content"])
+            parsed = _pr_url_from_tool_output(pr["content"], pr["tool_call"])
             if parsed:
                 # Oldest-first, so a later `gh pr create` (the replacement PR) wins.
                 found[pr["session_id"]] = {"number": parsed[0], "url": parsed[1]}
+        return True
 
-    for name, home in _profile_targets("POST /api/profiles/sessions/pull-requests", lightweight=False):
-        _read_profile_db(name, home, None, _read)
+    errors: List[Dict[str, str]] = []
+    complete = True
+    for name, home in _profile_targets(
+            "POST /api/profiles/sessions/pull-requests", lightweight=False, errors=errors):
+        if _read_profile_db(name, home, errors, _read) is None:
+            complete = False
 
-    # ``scanned``: every id looked at, so the caller can remember "nothing there".
-    return {"pull_requests": found, "scanned": wanted}
+    # Raw IDs carry no owning profile. An unread target might contain any miss,
+    # so only acknowledge negative coverage when the entire fanout completed.
+    return {"pull_requests": found, "scanned": wanted if complete and not errors else [],
+            "errors": errors}
 
 
 @router.get("/api/profiles")

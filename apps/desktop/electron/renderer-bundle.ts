@@ -117,6 +117,7 @@ export function missingRendererAssets(indexPath: string, deps: RendererBundleDep
 
     if (!existsSync(file)) {
       missing.push(ref)
+
       continue
     }
 

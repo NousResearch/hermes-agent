@@ -23,6 +23,8 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import main as cli_main
+from hermes_cli import update_cmd
+from hermes_cli import main_install_repair
 
 SHIM_NAMES = ["hermes.exe", "hermes-agent.exe", "hermes-acp.exe", "hermes-gateway.exe"]
 
@@ -33,8 +35,11 @@ def venv(tmp_path, monkeypatch):
     scripts = tmp_path / "venv" / "Scripts"
     scripts.mkdir(parents=True)
     (scripts / "python.exe").write_bytes(b"")
-    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
-    monkeypatch.setattr(cli_main, "_venv_scripts_dir", lambda: scripts)
+    # update_cmd reads these off hermes_cli.main (frozen ``_m()`` surface); the
+    # install-repair helpers read their own module globals — patch both.
+    for target in (cli_main, main_install_repair):
+        monkeypatch.setattr(target, "_is_windows", lambda: True)
+        monkeypatch.setattr(target, "_venv_scripts_dir", lambda: scripts)
     monkeypatch.setattr(sys, "argv", ["hermes", "update"])
     monkeypatch.delenv(cli_main._UPDATE_REEXEC_ENV, raising=False)
     _fake_psutil(monkeypatch, [])
@@ -80,13 +85,13 @@ def _capture_popen(monkeypatch, raises: Exception | None = None):
 @pytest.mark.parametrize("shim_name", SHIM_NAMES)
 def test_detects_shim_as_argv0(venv, monkeypatch, shim_name):
     monkeypatch.setattr(sys, "argv", [str(venv / shim_name), "update"])
-    assert cli_main._windows_shim_in_process_chain() == venv / shim_name
+    assert main_install_repair._windows_shim_in_process_chain() == venv / shim_name
 
 
 def test_detects_shim_from_zipapp_main_py(venv, monkeypatch):
     """runpy/zipapp launches put ``<shim>\\__main__.py`` in argv[0]."""
     monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe" / "__main__.py")])
-    assert cli_main._windows_shim_in_process_chain() == venv / "hermes.exe"
+    assert main_install_repair._windows_shim_in_process_chain() == venv / "hermes.exe"
 
 
 def test_detects_shim_from_main_module_spec_origin(venv, monkeypatch):
@@ -95,13 +100,13 @@ def test_detects_shim_from_main_module_spec_origin(venv, monkeypatch):
         __spec__=types.SimpleNamespace(origin=str(venv / "hermes.exe")),
     )
     monkeypatch.setitem(sys.modules, "__main__", fake_main)
-    assert cli_main._windows_shim_in_process_chain() == venv / "hermes.exe"
+    assert main_install_repair._windows_shim_in_process_chain() == venv / "hermes.exe"
 
 
 def test_detects_shim_in_ancestor_chain(venv, monkeypatch):
     """The launcher is usually a separate parent process, not argv[0]."""
     _fake_psutil(monkeypatch, [str(venv / "hermes.exe")])
-    assert cli_main._windows_shim_in_process_chain() == venv / "hermes.exe"
+    assert main_install_repair._windows_shim_in_process_chain() == venv / "hermes.exe"
 
 
 def test_ignores_hermes_exe_outside_the_project_venv(venv, monkeypatch, tmp_path):
@@ -110,19 +115,19 @@ def test_ignores_hermes_exe_outside_the_project_venv(venv, monkeypatch, tmp_path
     other.mkdir(parents=True)
     monkeypatch.setattr(sys, "argv", [str(other / "hermes.exe"), "update"])
     _fake_psutil(monkeypatch, [str(other / "hermes.exe")])
-    assert cli_main._windows_shim_in_process_chain() is None
+    assert main_install_repair._windows_shim_in_process_chain() is None
 
 
 def test_no_shim_off_windows(venv, monkeypatch):
-    monkeypatch.setattr(cli_main, "_is_windows", lambda: False)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
     monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
-    assert cli_main._windows_shim_in_process_chain() is None
+    assert main_install_repair._windows_shim_in_process_chain() is None
 
 
 def test_no_shim_without_a_venv(venv, monkeypatch):
-    monkeypatch.setattr(cli_main, "_venv_scripts_dir", lambda: None)
+    monkeypatch.setattr(main_install_repair, "_venv_scripts_dir", lambda: None)
     monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
-    assert cli_main._windows_shim_in_process_chain() is None
+    assert main_install_repair._windows_shim_in_process_chain() is None
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +205,7 @@ def test_up_to_date_run_never_hands_off(venv, monkeypatch, capsys):
     """
     monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update", "--check"])
     calls = _capture_popen(monkeypatch)
-    monkeypatch.setattr(cli_main, "_cmd_update_check", lambda **kwargs: None)
+    monkeypatch.setattr(update_cmd, "_cmd_update_check", lambda **kwargs: None)
 
     cli_main.cmd_update(types.SimpleNamespace(check=True, branch=None))
 
@@ -268,7 +273,7 @@ def test_pending_rename_filter_drops_only_our_shim_pairs():
         r"\??\C:\hermes\venv\Scripts\hermes.exe",
         r"!\??\C:\hermes\venv\Scripts\hermes.exe.old.1755624735000",
     ]
-    kept, removed = cli_main._filter_pending_shim_renames(entries, shims)
+    kept, removed = main_install_repair._filter_pending_shim_renames(entries, shims)
     assert removed == 1
     assert kept == entries[:2]
 
@@ -278,7 +283,7 @@ def test_pending_rename_filter_keeps_a_shim_pair_with_a_foreign_target():
     entries = [
         r"\??\C:\hermes\venv\Scripts\hermes.exe", r"!\??\C:\somewhere\else.exe",
     ]
-    kept, removed = cli_main._filter_pending_shim_renames(entries, shims)
+    kept, removed = main_install_repair._filter_pending_shim_renames(entries, shims)
     assert removed == 0
     assert kept == entries
 
@@ -286,7 +291,7 @@ def test_pending_rename_filter_keeps_a_shim_pair_with_a_foreign_target():
 def test_pending_rename_filter_preserves_a_trailing_delete_entry():
     """A bare source with an empty target is a scheduled delete, not a pair."""
     entries = [r"\??\C:\other\thing.dll", "", r"\??\C:\other\orphan.dll"]
-    kept, removed = cli_main._filter_pending_shim_renames(entries, [])
+    kept, removed = main_install_repair._filter_pending_shim_renames(entries, [])
     assert removed == 0
     assert kept == entries
 
@@ -302,5 +307,5 @@ def test_venv_scripts_dir_finds_both_layouts(tmp_path, monkeypatch, venv_name):
     scripts = tmp_path / venv_name / "Scripts"
     scripts.mkdir(parents=True)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
-    assert cli_main._venv_scripts_dir() == scripts
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
+    assert main_install_repair._venv_scripts_dir() == scripts

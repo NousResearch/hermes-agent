@@ -270,7 +270,14 @@ export class GatewayClient extends EventEmitter {
       this.heartbeatSentAt = now
 
       try {
-        ws.send(JSON.stringify({ id, jsonrpc: '2.0', method: 'gateway.ping', params: { last_activity_ms: this.lastActivityAt } }))
+        ws.send(
+          JSON.stringify({
+            id,
+            jsonrpc: '2.0',
+            method: 'gateway.ping',
+            params: { last_activity_ms: this.lastActivityAt }
+          })
+        )
       } catch {
         this.lifecycle('[lifecycle] websocket heartbeat send failed; forcing reconnect')
         this.stopHeartbeat()

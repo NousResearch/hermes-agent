@@ -1089,7 +1089,9 @@ def test_units_beyond_slot_count_still_start_and_are_not_stalled_while_queued(mo
 def test_grouped_closeout_units_share_work_identity_and_consume_reopen_claim_once(monkeypatch):
     """A closeout turn may dispatch several independent ``group`` units for one work group."""
     import tools.async_delegation as ad
+    import tools.delegate_tool as dt
 
+    monkeypatch.setattr(dt, "_load_config", lambda: {"independent_completions": True})
     calls = []
 
     def dispatch(**kwargs):

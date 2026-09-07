@@ -343,6 +343,15 @@ class AIAgent(
                 display_name=getattr(self, "_chat_name", None) or getattr(self, "_user_name", None),
                 origin_json=_gateway_origin_json(self), parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source), profile_name=profile_for_session,
+                # Tool-surface snapshot link: the snapshot was stored during agent
+                # build, BEFORE this row existed (row creation is deferred to the
+                # first turn), so store_agent_tools' UPDATE hit 0 rows and the link
+                # was silently lost. The link must travel with row creation (mirrors
+                # system_prompt_hash) — otherwise sessions.tools_hash stays NULL and
+                # a cold resume rebuilds tools[] from the live registry, breaking
+                # the prompt-cache prefix.
+                tools_hash=getattr(self, "_tool_surface_hash", None),
+                tools_fingerprint=getattr(self, "_tool_surface_fingerprint", None),
             )
             self._session_db_created = True
         except Exception as e:

@@ -2301,6 +2301,55 @@ def init_agent(
     _enforce_minimum_context(agent)
     _warn_nonagentic_hermes_model(agent)
     _inject_context_engine_tools(agent)
+
+    # ── Cold-resume tool-surface snapshot (#103579 族) ──
+    # agent.tools is the API request's top-level tools[], sitting between system
+    # prompt and messages in the cache prefix: any byte drift breaks the prefix
+    # right after the system prompt (observed hit residue == system-prompt
+    # tokens). Cold resume reassembles tools from the live registry (plugin
+    # registration order / check_fn pass-through / MCP connection state), so the
+    # bytes can differ from the previous process. Snapshot the final surface on
+    # first build (agent_tools table, content-addressed like system_prompts);
+    # reuse it unconditionally when the config fingerprint (model + toolsets)
+    # matches; rebuild + update on config change / no snapshot. Subagents keep
+    # their own build (no durable session, no cross-process prefix reuse).
+    if (
+        session_db is not None
+        and getattr(agent, "session_id", None)
+        and getattr(agent, "_delegate_depth", 0) == 0
+    ):
+        try:
+            from agent.tool_surface_snapshot import (
+                _tools_hash,
+                resolve_tool_surface,
+                tool_surface_fingerprint,
+            )
+
+            agent.tools = resolve_tool_surface(
+                session_db,
+                agent.session_id,
+                agent.model,
+                enabled_toolsets,
+                disabled_toolsets,
+                agent.tools,
+            )
+            agent.valid_tool_names = {
+                t.get("function", {}).get("name")
+                for t in agent.tools
+                if isinstance(t, dict) and t.get("function")
+            }
+            # Stash the built snapshot's hash/fingerprint on the agent: the
+            # sessions row may not exist yet (row creation is deferred to the
+            # first turn), so store_agent_tools' UPDATE hits 0 rows and the link
+            # is lost unless row creation (_ensure_db_session) carries it —
+            # mirroring how system_prompt travels with create_session.
+            agent._tool_surface_hash = _tools_hash(agent.tools)
+            agent._tool_surface_fingerprint = tool_surface_fingerprint(
+                agent.model, enabled_toolsets, disabled_toolsets
+            )
+        except Exception as exc:  # pragma: no cover — snapshot is a best-effort optimization
+            _ra().logger.warning("Tool-surface snapshot apply failed: %s", exc)
+
     _init_usage_state(agent)
     _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length)
     _emit_compression_summary(agent, cs)

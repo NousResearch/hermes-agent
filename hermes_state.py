@@ -391,6 +391,68 @@ class SessionDB(
             "SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash)"
         )
 
+    # ── Agent tool-surface snapshot (#103579 族) ──
+    # Content-addressed storage mirrored on system_prompts: agent_tools(hash, tools)
+    # + sessions.tools_hash reference + sessions.tools_fingerprint (config-only
+    # fingerprint). On cold resume a matching fingerprint lets the agent reuse the
+    # exact tools[] bytes built when the session was created, so the prompt-cache
+    # prefix (system prompt → tools[] → messages) survives across restarts —
+    # plugin registration order / check_fn pass-through must not change the bytes.
+
+    def load_agent_tools(self, tools_hash: str) -> Optional[List[Dict[str, Any]]]:
+        """Return the tool-surface snapshot bytes by content hash (exact, no re-sort)."""
+        if not tools_hash:
+            return None
+        try:
+            with self._read_ctx() as conn:
+                row = conn.execute(
+                    "SELECT tools FROM agent_tools WHERE hash = ?",
+                    (tools_hash,),
+                ).fetchone()
+        except sqlite3.DatabaseError:
+            return None
+        if row is None or not row[0]:
+            return None
+        try:
+            parsed = json.loads(row[0])
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(parsed, list):
+            return None
+        return parsed
+
+    def store_agent_tools(
+        self,
+        session_id: str,
+        fingerprint: str,
+        tools: List[Dict[str, Any]],
+    ) -> str:
+        """Write a tool-surface snapshot (content-addressed) and link the session row.
+
+        Returns the content hash; snapshot failures only degrade to no-store, never
+        block agent building, so this method never raises.
+        """
+        from agent.tool_surface_snapshot import _tools_hash
+
+        tools_json = json.dumps(tools, sort_keys=True, separators=(",", ":"))
+        tools_hash = _tools_hash(tools)
+
+        def _do(conn) -> None:
+            conn.execute(
+                "INSERT OR IGNORE INTO agent_tools (hash, tools) VALUES (?, ?)",
+                (tools_hash, tools_json),
+            )
+            conn.execute(
+                "UPDATE sessions SET tools_hash = ?, tools_fingerprint = ? WHERE id = ?",
+                (tools_hash, fingerprint, session_id),
+            )
+
+        try:
+            self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        except Exception:  # pragma: no cover — snapshot is a best-effort optimization
+            logger.warning("agent_tools snapshot store failed for %s", session_id, exc_info=True)
+        return tools_hash
+
     @staticmethod
     def _session_row_dict(row: sqlite3.Row) -> Dict[str, Any]:
         data = dict(row)

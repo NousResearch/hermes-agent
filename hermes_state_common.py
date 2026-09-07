@@ -276,6 +276,11 @@ CREATE TABLE IF NOT EXISTS system_prompts (
     prompt TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS agent_tools (
+    hash TEXT PRIMARY KEY,
+    tools TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
@@ -291,6 +296,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     model_config TEXT,
     system_prompt TEXT,
     system_prompt_hash TEXT,
+    tools_hash TEXT,
+    tools_fingerprint TEXT,
     parent_session_id TEXT,
     started_at REAL NOT NULL,
     ended_at REAL,

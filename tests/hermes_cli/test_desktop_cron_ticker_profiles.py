@@ -70,19 +70,31 @@ def test_multi_profile_homes_passed_to_builtin(monkeypatch, _providers, tmp_path
     assert builtin.start_kwargs["profile_homes"] == homes
 
 
-def test_single_profile_keeps_legacy_path(monkeypatch, _providers, tmp_path):
-    _sp, builtin = _providers
+@pytest.mark.parametrize("gateway_running", [True, False])
+def test_single_profile_ticks_only_without_gateway(monkeypatch, tmp_path, gateway_running):
+    """Exercise Desktop startup through the real built-in scheduler loop."""
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
     import hermes_cli.profiles as profiles_mod
 
+    home = tmp_path / "root"
+    home.mkdir()
+    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda **_kw: [("default", home)])
+    monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda _home: gateway_running)
     monkeypatch.setattr(
-        profiles_mod,
-        "profiles_to_serve",
-        lambda **_kw: [("default", tmp_path / "root")],
+        "cron.scheduler_provider.resolve_cron_scheduler", InProcessCronScheduler
     )
+    ticked = []
+    monkeypatch.setattr(
+        "cron.scheduler.tick", lambda **_kw: ticked.append(get_hermes_home())
+    )
+    stop = threading.Event()
+    # One real scheduler cycle, with no wall-clock wait or job dispatch.
+    monkeypatch.setattr(stop, "wait", lambda _timeout: stop.set())
 
-    ws._start_desktop_cron_ticker(threading.Event(), interval=9)
+    ws._start_desktop_cron_ticker(stop, interval=0)
 
-    assert builtin.start_kwargs == {"interval": 9}
+    assert ticked == ([] if gateway_running else [home])
 
 
 def test_enumeration_failure_fails_open(monkeypatch, _providers):

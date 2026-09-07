@@ -59,6 +59,43 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 
 ## Resolved
 
+### ERR-2026-09-07-003 — HIGH — `bootstrap-north-forge.ps1` `-Force` can delete the checkout
+
+- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
+- **Run:** RUN-2026-09-07-005 (opened + resolved same run)
+- **Source:** Codex audit finding **F-04** (data-loss).
+- **Confidence:** Confirmed Fact — reproduced this session: a fake checkout
+  (`pyproject.toml` + a canary file) passed as **both** `-RepoRoot` and
+  `-VenvDir` with `-Force`. Before the fix the guard let it through; the script
+  would then reach `Remove-Item -LiteralPath $VenvDir -Recurse -Force`. After the
+  fix the run exits non-zero at the guard with a "Refusing to bootstrap" error
+  and the checkout is untouched. Covered by
+  `tests/test_bootstrap_north_forge_path_safety.py` (11 cases; the
+  script-execution ones are Windows-only, ran green here).
+- **What:** the path-safety guard rejected a venv/data path **strictly inside**
+  the repo root — `"$full".TrimEnd('\').ToLower().StartsWith($RepoRoot.TrimEnd('\').ToLower() + '\')`
+  — but a path **equal** to the repo root does not start with `repoRoot + '\'`,
+  so `-VenvDir <repo root>` passed the check. On `-Force`,
+  `Remove-Item -LiteralPath $VenvDir -Recurse -Force` then recursively deletes the
+  working tree. `repo-root-inside-venv` (e.g. `-VenvDir <parent of checkout>`)
+  was also unguarded. The equality gap applied to `-DataDir` too.
+- **Exploitability:** the default path is **safe** — `north-forge.cmd` calls
+  `bootstrap-north-forge.ps1` with **no** `-VenvDir` / `-DataDir`, so it always
+  uses the computed `<parent>\<leaf>-venv` / `-data` siblings, which the guard
+  (old and new) accepts. The bug bites only a caller that explicitly passes a
+  venv/data path equal to (or containing, or contained by) the checkout. No such
+  caller exists in-repo. Marked HIGH (unrecoverable local data loss if hit;
+  recoverable from `origin/main` since the tree is pushed) — the audit framed it
+  "critical".
+- **Resolved:** 2026-09-07 (`RUN-2026-09-07-005`, `CHG-2026-09-07-015`,
+  `NF-v0.5.1`). New helpers `Get-CanonicalDir` (`[IO.Path]::GetFullPath` + trim
+  `\` `/` + keep a bare drive root) and `Test-PathOverlap` (ordinal-ignore-case
+  `[string]::Equals`, then a `StartsWith(other + '\')` both directions). The
+  guard now rejects venv/data **equal to**, **inside**, or **containing** the
+  checkout, for both dirs. Genuine siblings (`<leaf>-venv`, `<leaf>-data`) are
+  still accepted — verified by `test_accepts_genuine_siblings`.
+- **Status:** RESOLVED.
+
 ### ERR-2026-09-07-002 — LOW — Upstream test suite fails collection on Windows
 
 - **Opened:** 2026-09-07 · **Base:** hermes@a7198a8855 (0 behind upstream/main)
@@ -232,3 +269,4 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 | ERR-2026-09-06-005 | 2026-09-06 | LOW | Repo hygiene | pytest/mock artifacts (`MagicMock/`, `C:Users…`, `logs.zip`) in working tree | RESOLVED | CHG-2026-09-06-011 / -012 |
 | ERR-2026-09-07-001 | 2026-09-07 | LOW | Bootstrap tooling | `bootstrap-north-forge.ps1` let uv cache sit on `C:` while venv built on the checkout drive → cross-volume full-copy, ~6.5 min first run | RESOLVED | CHG-2026-09-07-008 |
 | ERR-2026-09-07-002 | 2026-09-07 | LOW | Upstream test compat | Upstream test files call `os.geteuid()` in an eager `skipif` decorator arg → `pytest tests/` aborts at collection on Windows. Pre-existing upstream, pulled in by the `CHG-2026-09-07-010` sync; NF touches none of the files; targeted runs green | ACCEPTED-RISK | CHG-2026-09-07-014 (owner: accept as-is, no shim; rely on Linux CI + targeted runs; revisit if upstream fixes or a full local Windows run is needed) |
+| ERR-2026-09-07-003 | 2026-09-07 | HIGH | Bootstrap tooling | Codex F-04 (data-loss): `bootstrap-north-forge.ps1` path guard rejected venv/data *inside* the repo but not *equal to* it → `-VenvDir <repo>` + `-Force` runs `Remove-Item -Recurse` on the checkout. Default `north-forge.cmd` path unaffected (no `-VenvDir` passed). Canonicalize + reject equal/inside/contains for venv AND data | RESOLVED | CHG-2026-09-07-015 (+ `tests/test_bootstrap_north_forge_path_safety.py`) |

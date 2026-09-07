@@ -8,6 +8,50 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.5.1] — 2026-09-07 — hermes@233757037d (6 behind upstream/main)
+
+`RUN-2026-09-07-005`. Committed on `8e4ea037c7` (`origin/main` tip after
+`NF-v0.5.0`). **PATCH** — one critical bug fix to fork tooling, landed on its own
+commit per owner instruction ("needs to land before anything else touches this
+script"). Other queued items (README polish, splash-art deferral, audit
+back-logging) are deliberately **not** in this commit.
+
+### Fixed
+
+- **CHG-2026-09-07-015** — `scripts/bootstrap-north-forge.ps1` — **data-loss
+  fix** (Codex audit **F-04**, `ERR-2026-09-07-003`). The path-safety guard
+  rejected a venv/data path *strictly inside* the checkout
+  (`"$full".StartsWith($RepoRoot + '\')`) but **not one equal to it** — a path
+  equal to `$RepoRoot` does not start with `$RepoRoot + '\'`. So
+  `bootstrap-north-forge.ps1 -RepoRoot <X> -VenvDir <X> -Force` passed the guard,
+  and the later `Remove-Item -LiteralPath $VenvDir -Recurse -Force` would delete
+  the checkout. `repo-root-inside-venv` was also unguarded; the gap applied to
+  `-DataDir` as well.
+  - Fix: two helpers — `Get-CanonicalDir` (`[IO.Path]::GetFullPath`, trim
+    trailing `\` `/`, keep a bare `D:\`) and `Test-PathOverlap` (ordinal
+    case-insensitive `[string]::Equals`, then `StartsWith(other + '\')` in **both**
+    directions). The guard now refuses venv/data **equal to**, **inside**, or
+    **containing** the checkout, for `-VenvDir` and `-DataDir` both. The genuine
+    default sibling layout (`<leaf>-venv` / `<leaf>-data`) is still accepted.
+  - Scope: the default launcher path is **not affected** — `north-forge.cmd`
+    passes no `-VenvDir`/`-DataDir`, so the computed siblings are always used and
+    always passed the guard. The bug required an explicit dangerous argument;
+    no in-repo caller does that. Logged HIGH (audit called it critical).
+  - Verified explicitly: constructed the exact F-04 input (fake checkout with a
+    canary file, passed as both `-RepoRoot` and `-VenvDir`, `-Force`) → the run
+    now exits non-zero at the guard with "Refusing to bootstrap: … is the
+    checkout itself, is inside it, or contains it …" and the tree is untouched.
+    Also checked the case/trailing-separator/`\.\`-normalized variants and the
+    `repo-inside-venv` and `-DataDir`-equals-repo cases.
+  - Test: new `tests/test_bootstrap_north_forge_path_safety.py` — 2 portable
+    source-level checks + 9 Windows-only script-execution checks (11 total,
+    green here). `test_reject_venv_equal_to_repo_root` is the regression that
+    matters: it runs the real script on the dangerous input and asserts both a
+    non-zero exit and that the canary/`pyproject.toml` survive.
+  - Paths: `scripts/bootstrap-north-forge.ps1`,
+    `tests/test_bootstrap_north_forge_path_safety.py` (new). Ref:
+    `ERR-2026-09-07-003`. Run: RUN-2026-09-07-005.
+
 ## [NF-v0.5.0] — 2026-09-07 — hermes@233757037d (6 behind upstream/main)
 
 `RUN-2026-09-07-004`. Committed on `c4e88d2ab6` (the `origin/main` tip — the

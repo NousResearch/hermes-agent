@@ -32,6 +32,38 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# --- path-safety helpers (Codex audit F-04) --------------------------------
+# A -Force rebuild runs `Remove-Item -Recurse -Force` on $VenvDir. If $VenvDir is
+# the checkout itself - or contains it, or sits inside it - that recursively
+# deletes the repository. Canonicalize both paths and reject all three
+# directions, for BOTH the venv and the data dir. The earlier guard only caught
+# "strictly inside" (a StartsWith with a trailing separator), so passing the
+# repo's own path as -VenvDir slipped through and -Force ate the checkout.
+function Get-CanonicalDir {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $trimmed = $full.TrimEnd([char]'\', [char]'/')
+    if ($trimmed -match '^[A-Za-z]:$') { $trimmed += '\' }   # keep a bare drive root ("D:\")
+    return $trimmed
+}
+
+function Test-PathOverlap {
+    param(
+        [Parameter(Mandatory = $true)][string]$A,
+        [Parameter(Mandatory = $true)][string]$B
+    )
+    # True when A and B resolve to the same directory, or either is nested in the other.
+    $ca  = Get-CanonicalDir $A
+    $cb  = Get-CanonicalDir $B
+    $ord = [System.StringComparison]::OrdinalIgnoreCase
+    if ([string]::Equals($ca, $cb, $ord)) { return $true }          # equal
+    $caSep = $ca.TrimEnd([char]'\') + '\'
+    $cbSep = $cb.TrimEnd([char]'\') + '\'
+    if ($ca.StartsWith($cbSep, $ord)) { return $true }              # A inside B
+    if ($cb.StartsWith($caSep, $ord)) { return $true }              # B inside A
+    return $false
+}
+
 if (-not $RepoRoot) { $RepoRoot = Split-Path -Parent $PSScriptRoot }
 $RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 $parent   = Split-Path -Parent $RepoRoot
@@ -43,10 +75,16 @@ if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'pyproject.toml'))) {
     Write-Error "No pyproject.toml at '$RepoRoot' - is -RepoRoot correct?"
     exit 1
 }
-foreach ($d in @($VenvDir, $DataDir)) {
-    $full = [System.IO.Path]::GetFullPath($d)
-    if ($full.TrimEnd('\').ToLower().StartsWith($RepoRoot.TrimEnd('\').ToLower() + '\')) {
-        Write-Error "'$full' is inside the checkout. venv and data MUST be siblings of it. Pick another -VenvDir/-DataDir."
+foreach ($pair in @(
+        [pscustomobject]@{ Name = 'venv (-VenvDir)'; Path = $VenvDir },
+        [pscustomobject]@{ Name = 'data (-DataDir)'; Path = $DataDir })) {
+    if (Test-PathOverlap $pair.Path $RepoRoot) {
+        Write-Error ("Refusing to bootstrap: the $($pair.Name) path " +
+            "'$(Get-CanonicalDir $pair.Path)' is the checkout itself, is inside it, or " +
+            "contains it. The venv and data dirs MUST live OUTSIDE the checkout - a " +
+            "-Force rebuild runs 'Remove-Item -Recurse -Force' on the venv dir, so this " +
+            "would delete the repository. Pass a different -VenvDir / -DataDir (or run " +
+            "from a checkout that has a real parent directory).")
         exit 1
     }
 }

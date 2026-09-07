@@ -252,26 +252,6 @@ _JSONRPC_METHOD_NOT_FOUND = -32601
 _MCP_LIST_MAX_PAGES = 50
 
 
-def _list_method_accepts_params(list_method) -> bool:
-    """True when *list_method* accepts the mcp 2.0 ``params=`` keyword.
-
-    Probing the signature instead of catching TypeError around the call keeps
-    a TypeError raised INSIDE the list call — e.g. a server response decode
-    failure — propagating, rather than being replaced by a misleading
-    legacy-cursor retry error (#104150).
-    """
-    import inspect
-
-    try:
-        sig = inspect.signature(list_method)
-    except (TypeError, ValueError):
-        return True  # can't introspect — assume the modern convention
-    return any(
-        param.name == "params" or param.kind == inspect.Parameter.VAR_KEYWORD
-        for param in sig.parameters.values()
-    )
-
-
 async def _paginate_full_list(list_method, items_attr: str, server_name: str,
                               cache_meta_out: Optional[dict] = None):
     """Drain a paginated ``list_*`` call by following ``nextCursor``; ``cache_meta_out`` gets the
@@ -283,10 +263,20 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str,
             result = await list_method()
         else:
             # mcp 2.0 takes params=PaginatedRequestParams, 1.x takes cursor=.
-            # Signature-probed (see _list_method_accepts_params) instead of
-            # try/except TypeError: a TypeError from inside the list call
-            # must propagate, not trigger the legacy fallback (#104150).
-            if _list_method_accepts_params(list_method):
+            # Inspect before awaiting: an internal TypeError is not a signature mismatch.
+            import inspect
+
+            try:
+                signature = inspect.signature(list_method)
+            except (TypeError, ValueError):
+                accepts_params = True  # Opaque callables use the current SDK convention.
+            else:
+                accepts_params = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    or (p.name == "params" and p.kind != inspect.Parameter.POSITIONAL_ONLY)
+                    for p in signature.parameters.values()
+                )
+            if accepts_params:
                 import mcp.types as _types  # late: keeps the SDK import lazy
                 _params_cls = getattr(_types, "PaginatedRequestParams", None)
                 if _params_cls is not None:

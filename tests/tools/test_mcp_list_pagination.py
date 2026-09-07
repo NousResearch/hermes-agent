@@ -81,7 +81,7 @@ class TestTypeErrorPropagation:
     def test_type_error_from_modern_list_call_propagates(self):
         calls = {"n": 0}
 
-        async def broken_list(**kwargs):
+        async def broken_list(*, params=None):
             calls["n"] += 1
             if calls["n"] == 1:
                 return SimpleNamespace(tools=[_tool("first")], nextCursor="page-2")

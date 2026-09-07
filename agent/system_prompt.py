@@ -601,12 +601,52 @@ def _join_tier(parts: List[Optional[str]]) -> str:
     return "\n\n".join(p.strip() for p in parts if p and p.strip())
 
 
+def _use_local_compact_prompt(agent: Any) -> bool:
+    """Return whether the narrowly scoped local qwen3.5 prompt applies.
+
+    This deliberately accepts only literal loopback hostnames.  DNS names,
+    RFC1918/LAN addresses, wildcard binds, and malformed/unknown endpoints
+    fail closed to the normal Hermes prompt.
+    """
+    hostname = str(getattr(agent, "_base_url_hostname", "") or "").lower().rstrip(".")
+    return (
+        getattr(agent, "_local_compact_prompt", False) is True
+        and "qwen3.5" in str(getattr(agent, "model", "") or "").lower()
+        and hostname in {"localhost", "127.0.0.1", "::1"}
+        and bool(getattr(agent, "valid_tool_names", None))
+    )
+
+
+def _compact_prompt_parts(agent: Any, system_message: Optional[str]) -> Dict[str, str]:
+    """Build the compact qwen3.5 prompt while preserving caller instructions.
+
+    ``agent.ephemeral_system_prompt`` remains an API-time suffix owned by the
+    normal request path; ``system_message`` is retained here for callers that
+    supply session-local instructions during prompt construction.
+    """
+    from agent.prompt_builder import execution_guidance_text
+
+    stable = _join_tier([
+        "You are Hermes Agent, built by Nous Research. Complete the user's actual task using the available tools.",
+        TASK_COMPLETION_GUIDANCE,
+        TOOL_USE_ENFORCEMENT_GUIDANCE,
+        execution_guidance_text(agent.valid_tool_names),
+    ])
+    return {"stable": stable, "context": _join_tier([system_message]), "volatile": ""}
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers: ``stable`` (through
     the coding operating brief when a workspace snapshot follows), ``context``
     (snapshot, remaining session-stable guidance, caller ``system_message``,
     context files) and ``volatile`` (skills index, memory, user profile, external
     memory block, timestamp line).  Never re-rendered mid-session."""
+    # The compact path is explicit, model-specific, loopback-only, and only
+    # meaningful when tools are loaded.  Checking before the full build also
+    # avoids scanning context, skills, memory, and plugins that will not be sent.
+    if _use_local_compact_prompt(agent):
+        return _compact_prompt_parts(agent, system_message)
+
     # Model context window scales the context-file caps; stable per conversation.
     _cc_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None

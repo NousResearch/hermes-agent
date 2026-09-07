@@ -27,8 +27,8 @@ import type {
   SessionCloseResponse,
   TerminalResizeResponse
 } from '../gatewayTypes.js'
-import { useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
+import { useWorkspaceHud } from '../hooks/useWorkspaceHud.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
@@ -1241,14 +1241,14 @@ export function useMainApp(gw: GatewayClient) {
   const appProgress = useMemo(() => ({ showProgressArea }), [showProgressArea])
 
   const cwd = ui.info?.cwd || process.env.HERMES_CWD || process.cwd()
-  const gitBranch = useGitBranch(cwd)
+  const workspace = useWorkspaceHud(gw, cwd, ui.info?.project?.name, ui.info?.branch)
 
   const appStatus = useMemo(
     () => ({
       // Cap the status-bar cwd/branch label tighter than the shared default so
       // it doesn't dominate the bar; the status rule reserves the left-side
       // essentials and truncates this further on narrow terminals.
-      cwdLabel: fmtProjectCwdBranch(cwd, gitBranch, ui.info?.project?.name, 28),
+      cwdLabel: fmtProjectCwdBranch(cwd, workspace.branch, ui.info?.project?.name, 28),
       goodVibesTick,
       lastTurnEndedAt: ui.sid ? lastTurnEndedAt : null,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
@@ -1263,12 +1263,13 @@ export function useMainApp(gw: GatewayClient) {
         ? '● REC'
         : voiceProcessing
           ? '◉ STT'
-          : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
+          : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`,
+      workspace
     }),
     [
       cwd,
-      gitBranch,
       goodVibesTick,
+      workspace,
       lastTurnEndedAt,
       sessionStartedAt,
       stickyPrompt,

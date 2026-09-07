@@ -82,6 +82,8 @@ export interface ConfigDisplayConfig {
   bell_on_prompt?: boolean
   busy_input_mode?: string
   details_mode?: string
+  /** Show the read-only developer context rail when the terminal is wide enough. */
+  dev_context?: boolean
   /** Focus view (/focus) — display-only reduced-output mode. */
   focus_view?: boolean
   inline_diffs?: boolean

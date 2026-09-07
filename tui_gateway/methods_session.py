@@ -416,6 +416,24 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"session_id": None})
 
 
+@method("workspace.info")
+def _(rid, params: dict) -> dict:
+    """Return best-effort Git/GitHub facts for the requested gateway cwd.
+
+    This endpoint is display-only. It intentionally returns normalized metadata
+    rather than the configured remote URL, and probe failures are represented by
+    an empty payload so older or restricted environments keep the TUI usable.
+    """
+    cwd = str(params.get("cwd") or "").strip() or _completion_cwd(params)
+    try:
+        from tui_gateway import workspace_probe
+
+        return _ok(rid, workspace_probe.resolve(cwd))
+    except Exception:
+        logger.debug("workspace.info failed", exc_info=True)
+        return _ok(rid, workspace_probe.empty_workspace())
+
+
 @method("project.facts")
 def _(rid, params: dict) -> dict:
     """The system prompt's coding-context detection for a cwd (UIs don't re-sniff); null = not code."""

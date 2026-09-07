@@ -374,6 +374,9 @@ def _toggle_setters() -> dict:
         "battery": (_word, "display.battery",
                     {"on": True, "true": True, "yes": True, "off": False, "false": False, "no": False},
                     lambda: not bool(_display_cfg().get("battery", False)), on_off),
+        "dev_context": (_word, "display.dev_context",
+                        {"on": True, "true": True, "yes": True, "off": False, "false": False, "no": False},
+                        lambda: _display_cfg().get("dev_context", True) is False, on_off),
         "statusbar": (_word, "display.tui_statusbar", {"on": "top", **{m: m for m in _STATUSBAR_MODES}},
                       lambda: "top" if _coerce_statusbar(_display_cfg().get("tui_statusbar", "top")) == "off" else "off",
                       lambda v: v),
@@ -449,7 +452,7 @@ _CONFIG_SETTERS = {
     "model": _set_model, "fast": _set_fast, "busy": _set_busy, "verbose": _set_verbose, "focus": _set_focus,
     "approval_mode": _set_approval_mode, "approvals.mode": _set_word, "yolo": _set_yolo,
     "reasoning": _set_reasoning, "details_mode": _set_word, "thinking_mode": _set_word,
-    "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,
+    "density": _set_toggle, "battery": _set_toggle, "dev_context": _set_toggle, "theme": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}

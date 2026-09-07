@@ -25,6 +25,7 @@ describe('applyDisplay', () => {
         config: {
           display: {
             bell_on_complete: true,
+            dev_context: false,
             details_mode: 'expanded',
             inline_diffs: false,
             show_reasoning: true,
@@ -40,6 +41,7 @@ describe('applyDisplay', () => {
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledWith(true)
     expect(s.compact).toBe(true)
+    expect(s.devContext).toBe(false)
     expect(s.detailsMode).toBe('expanded')
     expect(s.inlineDiffs).toBe(false)
     expect(s.showReasoning).toBe(true)
@@ -93,6 +95,19 @@ describe('applyDisplay', () => {
     applyDisplay(null, setBell)
 
     expect($uiState.get().destructiveSlashConfirm).toBe(false)
+  })
+
+  it('hydrates the developer context rail and preserves it across config RPC failure', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { dev_context: false } } }, setBell)
+    expect($uiState.get().devContext).toBe(false)
+
+    applyDisplay(null, setBell)
+    expect($uiState.get().devContext).toBe(false)
+
+    applyDisplay({ config: { display: { dev_context: true } } }, setBell)
+    expect($uiState.get().devContext).toBe(true)
   })
 
   it('coerces legacy true + "on" alias to top', () => {

@@ -83,6 +83,36 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('toggles the read-only developer context rail locally', () => {
+    const ctx = buildCtx()
+
+    expect(getUiState().devContext).toBe(true)
+    expect(createSlashHandler(ctx)('/dev-context off')).toBe(true)
+    expect(getUiState().devContext).toBe(false)
+    expect(ctx.gateway.rpc).toHaveBeenNthCalledWith(1, 'config.set', { key: 'dev_context', value: 'off' })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('developer context: off')
+
+    expect(createSlashHandler(ctx)('/context on')).toBe(true)
+    expect(getUiState().devContext).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenNthCalledWith(2, 'config.set', { key: 'dev_context', value: 'on' })
+    expect(ctx.transcript.sys).toHaveBeenLastCalledWith('developer context: on')
+  })
+
+  it('reports developer context state and rejects unknown modes locally', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/dev-context status')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(
+      'developer context: on (read-only; hidden automatically on cramped terminals)'
+    )
+
+    expect(createSlashHandler(ctx)('/dev-context maybe')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenLastCalledWith('usage: /dev-context [on|off|toggle|status]')
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
   it('opens the grid-test streams demo via /grid-test streams', () => {
     const ctx = buildCtx()
 

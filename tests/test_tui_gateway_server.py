@@ -1763,6 +1763,46 @@ def test_config_set_battery_explicit_off(monkeypatch):
     assert writes == {"display.battery": False}
 
 
+def test_config_set_dev_context_toggles_and_persists(monkeypatch):
+    cfg = {"display": {"dev_context": True}}
+    writes = []
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+
+    set_off = server.dispatch(
+        {
+            "id": "c3",
+            "method": "config.set",
+            "params": {"key": "dev_context", "value": "off"},
+        }
+    )
+    assert set_off["result"] == {"key": "dev_context", "value": "off"}
+    assert writes == [("display.dev_context", False)]
+
+    cfg["display"]["dev_context"] = False
+    set_toggle = server.dispatch(
+        {
+            "id": "c4",
+            "method": "config.set",
+            "params": {"key": "dev_context", "value": "toggle"},
+        }
+    )
+    assert set_toggle["result"] == {"key": "dev_context", "value": "on"}
+    assert writes[-1] == ("display.dev_context", True)
+
+    bad = server.dispatch(
+        {
+            "id": "c5",
+            "method": "config.set",
+            "params": {"key": "dev_context", "value": "maybe"},
+        }
+    )
+    assert bad["error"]["code"] == 4002
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,

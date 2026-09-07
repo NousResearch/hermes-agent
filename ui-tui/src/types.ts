@@ -188,6 +188,7 @@ export interface ProjectInfo {
 }
 
 export interface SessionInfo {
+  branch?: null | string
   cwd?: string
   fast?: boolean
   install_warning?: string
@@ -196,6 +197,7 @@ export interface SessionInfo {
   model: string
   profile_name?: string
   project?: null | ProjectInfo
+  provider?: string
   reasoning_effort?: string
   release_date?: string
   service_tier?: string

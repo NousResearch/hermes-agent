@@ -111,6 +111,7 @@ export const coreCommands: SlashCommand[] = [
               '/details <section> [hidden|collapsed|expanded|reset]',
               'override one section (thinking/tools/subagents/activity)'
             ],
+            ['/dev-context [on|off|toggle|status]', 'show the read-only developer context rail'],
             ['/fortune [random|daily]', 'show a random or daily local fortune'],
             ['/grid-test [cols]x[rows]', 'open the interactive widget-grid demo'],
             ['/dialog-test [zone]', 'open a sample dialog overlay with a faked backdrop']
@@ -121,6 +122,35 @@ export const coreCommands: SlashCommand[] = [
       )
 
       ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, sections)
+    }
+  },
+
+  {
+    aliases: ['context'],
+    help: 'toggle the read-only developer context rail',
+    name: 'dev-context',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+
+      if (mode === 'status') {
+        ctx.transcript.sys(
+          `developer context: ${ctx.ui.devContext ? 'on' : 'off'} (read-only; hidden automatically on cramped terminals)`
+        )
+
+        return
+      }
+
+      const next = flagFromArg(mode, ctx.ui.devContext)
+
+      if (next === null) {
+        ctx.transcript.sys('usage: /dev-context [on|off|toggle|status]')
+
+        return
+      }
+
+      patchUiState({ devContext: next })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'dev_context', value: next ? 'on' : 'off' }).catch(() => {})
+      ctx.transcript.sys(`developer context: ${next ? 'on' : 'off'}`)
     }
   },
 

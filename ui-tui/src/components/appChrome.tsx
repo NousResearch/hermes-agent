@@ -12,6 +12,7 @@ import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
+import { fitWorkspaceHudParts, workspaceHudParts, type WorkspaceHudSnapshot } from '../domain/workspaceHud.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
@@ -19,6 +20,7 @@ import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
 
 import { scrollbarColors } from './overlayPrimitives.js'
+import { WorkspaceHud } from './workspaceHud.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -386,10 +388,11 @@ function SpawnHud({ t }: { t: Theme }) {
   const atCap = depthRatio >= 1 || concRatio >= 1
 
   return (
-    <Text color={color}>
-      {atCap ? ' │ ⚠ ' : ' │ '}
-      {pieces.join(' ')}
-    </Text>
+    <Box flexDirection="row" flexShrink={0}>
+      {footerSeparator(t)}
+      {atCap ? <Text color={t.color.error}>⚠ </Text> : null}
+      <Text color={color}>{pieces.join(' ')}</Text>
+    </Box>
   )
 }
 
@@ -455,8 +458,79 @@ const shortModelLabel = (model: string) =>
     .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
     .trim()
 
-const modelLabel = (model: string, effort?: string, fast?: boolean) =>
-  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+const compactRuntimeLabel = (value: string, max: number) => {
+  const cleaned = [...value]
+    .map(char => {
+      const code = char.codePointAt(0) ?? 0
+
+      return code <= 0x1f || code === 0x7f ? ' ' : char
+    })
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return cleaned.length > max ? `${cleaned.slice(0, Math.max(1, max - 1))}…` : cleaned
+}
+
+const serviceTierLabel = (tier?: string) => {
+  const value = String(tier ?? '')
+    .trim()
+    .toLowerCase()
+
+  return value && value !== 'normal' && value !== 'default' && value !== 'priority'
+    ? compactRuntimeLabel(value, 14)
+    : ''
+}
+
+const FOOTER_SEPARATOR = ' · '
+
+interface ModelLabelParts {
+  effort: string
+  identity: string
+  speed: string
+  tier: string
+}
+
+const modelLabelParts = (
+  model: string,
+  effort?: string,
+  fast?: boolean,
+  provider?: string,
+  serviceTier?: string
+): ModelLabelParts => {
+  const modelPart = compactRuntimeLabel(shortModelLabel(model), 32)
+  const providerPart = compactRuntimeLabel(provider ?? '', 16)
+  const identity = [providerPart, modelPart].filter(Boolean).join('/')
+  const tier = serviceTierLabel(serviceTier)
+
+  const speed =
+    fast ||
+    String(serviceTier ?? '')
+      .trim()
+      .toLowerCase() === 'priority'
+      ? 'fast'
+      : ''
+
+  return { effort: effortLabel(effort), identity, speed, tier }
+}
+
+const formatModelLabel = (parts: ModelLabelParts) =>
+  [parts.identity, parts.effort, parts.tier, parts.speed].filter(Boolean).join(' ')
+
+function runtimeLabel(parts: ModelLabelParts, t: Theme): ReactNode {
+  return (
+    <Text wrap="truncate-end">
+      {parts.identity ? <Text color={t.color.label}>{parts.identity}</Text> : null}
+      {parts.effort ? <Text color={t.color.accent}>{` ${parts.effort}`}</Text> : null}
+      {parts.tier ? <Text color={t.color.muted}>{` ${parts.tier}`}</Text> : null}
+      {parts.speed ? <Text color={t.color.statusGood}>{` ${parts.speed}`}</Text> : null}
+    </Text>
+  )
+}
+
+function footerSeparator(t: Theme): ReactNode {
+  return <Text color={t.color.border}>{FOOTER_SEPARATOR}</Text>
+}
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
@@ -495,7 +569,9 @@ export function StatusRule({
   statusColor,
   model,
   modelFast,
+  modelProvider,
   modelReasoningEffort,
+  modelServiceTier,
   indicatorStyle = 'kaomoji',
   notice,
   usage,
@@ -507,7 +583,8 @@ export function StatusRule({
   turnStartedAt,
   voiceLabel,
   onSessionCountClick,
-  t
+  t,
+  workspace
 }: StatusRuleProps) {
   const pct = usage.context_percent
   const contextMark = usage.context_estimated ? '~' : ''
@@ -518,8 +595,8 @@ export function StatusRule({
   // classic CLI bar). null = user hasn't customized → everything shows.
   const ok = (name: string) => statusBarFields === null || statusBarFields.has(name)
 
-  // On narrow terminals the context read-out collapses to a bare token count
-  // (`12k tok`) and the visual fill bar is dropped entirely.
+  // On narrow terminals the context read-out collapses to a compact token
+  // count (`ctx 12k tok`) and the visual fill bar is dropped entirely.
   const ctxLabel =
     ok('context_detail') || ok('context_pct')
       ? usage.context_max
@@ -532,13 +609,17 @@ export function StatusRule({
       : ''
 
   const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
-  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const modelParts = modelLabelParts(model, modelReasoningEffort, modelFast, modelProvider, modelServiceTier)
+  const modelText = formatModelLabel(modelParts)
+  const contextText = ctxLabel ? `${segs.compactCtx ? 'ctx ' : ''}${ctxLabel}` : ''
+  const workspaceParts = workspace ? fitWorkspaceHudParts(workspaceHudParts(workspace, statusBarFields), cols) : []
+  const showWorkspace = workspaceParts.length > 0
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
   const showBattery = !!battery && battery.available && battery.percent != null && ok('battery')
   const batteryText = showBattery ? batteryLabel(battery!) : ''
   const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
-  const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
+  const batteryWidth = showBattery ? stringWidth(`${batteryText}${FOOTER_SEPARATOR}`) : 0
 
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
@@ -547,7 +628,7 @@ export function StatusRule({
   // The notice slot is shrinkable (flexShrink={1}, truncate-end), so reserve
   // only a small bounded width for it in the essentials budget — enough that
   // a short notice never gets crushed, but a long one ellipsizes instead of
-  // shoving `model │ ctx` off-screen (R3-M7). Cap at the notice's own width
+  // shoving `model · ctx` off-screen (R3-M7). Cap at the notice's own width
   // so short notices reserve exactly what they need.
   const NOTICE_RESERVE_MAX = 24
   const noticeReserve = showNotice ? Math.min(stringWidth(notice!.text), NOTICE_RESERVE_MAX) : 0
@@ -567,9 +648,9 @@ export function StatusRule({
     stringWidth('─ ') +
     batteryWidth +
     slotWidth +
-    stringWidth(' │ ') +
+    stringWidth(FOOTER_SEPARATOR) +
     stringWidth(modelText) +
-    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
+    (contextText ? stringWidth(FOOTER_SEPARATOR) + stringWidth(contextText) : 0)
 
   const rightLabel = sessionTitle && ok('title') ? ` ${sessionTitle} ` : cwdLabel
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, rightLabel, essentialWidth)
@@ -579,7 +660,7 @@ export function StatusRule({
   // descending priority order — bar, duration, compressions, voice, session
   // count, bg, cost. Lower-priority segments drop first and nothing truncates
   // mid-segment, so status/model/context are never crushed.
-  const SEP = stringWidth(' │ ')
+  const SEP = stringWidth(FOOTER_SEPARATOR)
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
 
   const fits = (w: number) => {
@@ -660,179 +741,185 @@ export function StatusRule({
 
   const sessionCountNode = onSessionCountClick ? (
     <Box flexShrink={0} onClick={handleSessionCountClick}>
-      <Text color={t.color.accent}> │ {sessionCountText}</Text>
+      {footerSeparator(t)}
+      <Text color={t.color.accent}>{sessionCountText}</Text>
     </Box>
   ) : (
-    <Text color={t.color.muted}> │ {sessionCountText}</Text>
+    <Box flexDirection="row" flexShrink={0}>
+      {footerSeparator(t)}
+      <Text color={t.color.muted}>{sessionCountText}</Text>
+    </Box>
   )
 
   return (
-    <Box height={1}>
-      <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
-        {/* Leading pinned chrome: border + busy face / idle status. When a
+    <Box flexDirection="column" flexShrink={0} height={showWorkspace ? 2 : 1}>
+      <Box height={1}>
+        <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
+          {/* Leading pinned chrome: border + busy face / idle status. When a
             notice occupies the slot the status text is dropped — the notice
             renders as a separate shrinkable box below so a long notice
-            ellipsizes instead of crushing model │ ctx (R3-M7). */}
-        <Box flexDirection="row" flexShrink={0}>
-          <Text color={t.color.border}>{'─ '}</Text>
-          {showBattery ? (
-            <Text color={batteryColorVal}>
-              {batteryText}
-              <Text color={t.color.muted}>{' │ '}</Text>
-            </Text>
-          ) : null}
-          {busy ? (
-            <FaceTicker
-              color={statusColor}
-              startedAt={turnStartedAt}
-              style={indicatorStyle}
-              verbOverride={compacting ? 'compacting' : undefined}
-            />
-          ) : showNotice ? null : (
-            <Text color={statusColor} wrap="truncate-end">
-              {status}
-            </Text>
-          )}
-        </Box>
-        {/* Notice slot — the only shrinkable left element (R3-M7). Sits in a
-            flexShrink={1} box with truncate-end so it yields/ellipsizes
-            before the pinned model │ ctx box ever clips. */}
-        {showNotice ? (
-          <Box flexDirection="row" flexShrink={1} overflow="hidden">
-            <Text color={noticeColor(notice!.level, t)} wrap="truncate-end">
-              {notice!.text}
-            </Text>
-          </Box>
-        ) : null}
-        {/* Pinned essentials — model + context never shrink, always visible. */}
-        <Box flexDirection="row" flexShrink={0}>
-          {DEV_CREDITS_MODE ? (
-            <Text color={t.color.warn} wrap="truncate-end">
-              {' (dev credits)'}
-            </Text>
-          ) : null}
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            {modelText}
-          </Text>
-          {ctxLabel ? (
-            <Text color={t.color.muted} wrap="truncate-end">
-              {' │ '}
-              {ctxLabel}
-            </Text>
-          ) : null}
-        </Box>
-        {showFocus ? (
+            ellipsizes instead of crushing model · ctx (R3-M7). */}
           <Box flexDirection="row" flexShrink={0}>
-            <Text color={t.color.muted}>{' │ '}</Text>
-            <Text color={t.color.warn}>◉ focus</Text>
+            <Text color={t.color.border}>{'─ '}</Text>
+            {showBattery ? (
+              <Text color={batteryColorVal}>
+                {batteryText}
+                {footerSeparator(t)}
+              </Text>
+            ) : null}
+            {busy ? (
+              <FaceTicker
+                color={statusColor}
+                startedAt={turnStartedAt}
+                style={indicatorStyle}
+                verbOverride={compacting ? 'compacting' : undefined}
+              />
+            ) : showNotice ? null : (
+              <Text color={statusColor} wrap="truncate-end">
+                {status}
+              </Text>
+            )}
           </Box>
-        ) : null}
-        {showBar ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${contextMark}${pct}%` : ''}</Text>
-          </Text>
-        ) : null}
-        {showDuration ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <SessionDuration startedAt={sessionStartedAt!} />
-          </Text>
-        ) : null}
-        {showIdle ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <IdleSince endedAt={lastTurnEndedAt!} />
-          </Text>
-        ) : null}
-        {showCompressions ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
-              cmp {compressions}
+          {/* Notice slot — the only shrinkable left element (R3-M7). Sits in a
+            flexShrink={1} box with truncate-end so it yields/ellipsizes
+            before the pinned model · ctx box ever clips. */}
+          {showNotice ? (
+            <Box flexDirection="row" flexShrink={1} overflow="hidden">
+              <Text color={noticeColor(notice!.level, t)} wrap="truncate-end">
+                {notice!.text}
+              </Text>
+            </Box>
+          ) : null}
+          {/* Pinned essentials — model + context never shrink, always visible. */}
+          <Box flexDirection="row" flexShrink={0}>
+            {DEV_CREDITS_MODE ? (
+              <Text color={t.color.warn} wrap="truncate-end">
+                {' (dev credits)'}
+              </Text>
+            ) : null}
+            {footerSeparator(t)}
+            {runtimeLabel(modelParts, t)}
+            {contextText ? (
+              <>
+                {footerSeparator(t)}
+                {segs.compactCtx ? <Text color={t.color.muted}>ctx </Text> : null}
+                <Text color={t.color.label}>{ctxLabel}</Text>
+              </>
+            ) : null}
+          </Box>
+          {showBar ? (
+            <Text wrap="truncate-end">
+              {footerSeparator(t)}
+              <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${contextMark}${pct}%` : ''}</Text>
             </Text>
-          </Text>
-        ) : null}
-        {showCacheHit ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+          ) : null}
+          {showFocus ? (
+            <Box flexDirection="row" flexShrink={0}>
+              {footerSeparator(t)}
+              <Text color={t.color.warn}>◉ focus</Text>
+            </Box>
+          ) : null}
+          {showDuration ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {footerSeparator(t)}
+              <SessionDuration startedAt={sessionStartedAt!} />
+            </Text>
+          ) : null}
+          {showIdle ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {footerSeparator(t)}
+              <IdleSince endedAt={lastTurnEndedAt!} />
+            </Text>
+          ) : null}
+          {showCompressions ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {footerSeparator(t)}
+              <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
+                cmp {compressions}
+              </Text>
+            </Text>
+          ) : null}
+          {showCacheHit ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {footerSeparator(t)}
+              <Text
+                color={
+                  usage.cache_hit_pct! >= 70
+                    ? t.color.statusGood
+                    : usage.cache_hit_pct! >= 40
+                      ? t.color.statusWarn
+                      : t.color.muted
+                }
+              >
+                {cacheHitText}
+              </Text>
+            </Text>
+          ) : null}
+          {showLatency ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {footerSeparator(t)}
+              {latencyText}
+            </Text>
+          ) : null}
+          {showTps ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {footerSeparator(t)}
+              {tpsText}
+            </Text>
+          ) : null}
+          {showVoice ? (
             <Text
               color={
-                usage.cache_hit_pct! >= 70
-                  ? t.color.statusGood
-                  : usage.cache_hit_pct! >= 40
-                    ? t.color.statusWarn
-                    : t.color.muted
+                voiceLabel!.startsWith('●') ? t.color.error : voiceLabel!.startsWith('◉') ? t.color.warn : t.color.muted
               }
+              wrap="truncate-end"
             >
-              {cacheHitText}
+              {footerSeparator(t)}
+              {voiceLabel}
             </Text>
-          </Text>
-        ) : null}
-        {showLatency ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            {latencyText}
-          </Text>
-        ) : null}
-        {showTps ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            {tpsText}
-          </Text>
-        ) : null}
-        {showVoice ? (
-          <Text
-            color={
-              voiceLabel!.startsWith('●') ? t.color.error : voiceLabel!.startsWith('◉') ? t.color.warn : t.color.muted
-            }
-            wrap="truncate-end"
-          >
-            {' │ '}
-            {voiceLabel}
-          </Text>
-        ) : null}
-        {showSessionCount ? sessionCountNode : null}
-        {showBg ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            {bgCount} bg
-          </Text>
-        ) : null}
-        {showSubagents ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}⛓ {subagentCount}
-          </Text>
-        ) : null}
-        {showResumeHint ? (
-          <Text color={t.color.muted} dim wrap="truncate-end">
-            {' │ '}
-            {resumeHintText}
-          </Text>
-        ) : null}
-        {showDevCredits ? (
-          <Text color={t.color.accent} wrap="truncate-end">
-            {' │ '}
-            {devCreditsText}
-          </Text>
-        ) : null}
-        {/* SpawnHud isn't part of the tail budget (its width is dynamic), so it
+          ) : null}
+          {showSessionCount ? sessionCountNode : null}
+          {showBg ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {footerSeparator(t)}
+              {bgCount} bg
+            </Text>
+          ) : null}
+          {showSubagents ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {footerSeparator(t)}⛓ {subagentCount}
+            </Text>
+          ) : null}
+          {showResumeHint ? (
+            <Text color={t.color.muted} dim wrap="truncate-end">
+              {footerSeparator(t)}
+              {resumeHintText}
+            </Text>
+          ) : null}
+          {showDevCredits ? (
+            <Text color={t.color.accent} wrap="truncate-end">
+              {footerSeparator(t)}
+              {devCreditsText}
+            </Text>
+          ) : null}
+          {/* SpawnHud isn't part of the tail budget (its width is dynamic), so it
             renders last — any overflow truncates the HUD itself rather than the
             budgeted segments before it. It self-hides when no delegation runs. */}
-        <SpawnHud t={t} />
-      </Box>
+          <SpawnHud t={t} />
+        </Box>
 
-      {rightWidth > 0 ? (
-        <>
-          <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
-          <Box flexShrink={0} width={rightWidth}>
-            <Text bold={!!sessionTitle} color={sessionTitle ? t.color.accent : t.color.label} wrap="truncate-end">
-              {rightLabel}
-            </Text>
-          </Box>
-        </>
-      ) : null}
+        {rightWidth > 0 ? (
+          <>
+            <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
+            <Box flexShrink={0} width={rightWidth}>
+              <Text bold={!!sessionTitle} color={sessionTitle ? t.color.accent : t.color.label} wrap="truncate-end">
+                {rightLabel}
+              </Text>
+            </Box>
+          </>
+        ) : null}
+      </Box>
+      {showWorkspace ? <WorkspaceHud cols={cols} parts={workspaceParts} t={t} /> : null}
     </Box>
   )
 }
@@ -945,7 +1032,9 @@ interface StatusRuleProps {
   cwdLabel: string
   model: string
   modelFast?: boolean
+  modelProvider?: string
   modelReasoningEffort?: string
+  modelServiceTier?: string
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number
@@ -960,6 +1049,7 @@ interface StatusRuleProps {
   usage: Usage
   voiceLabel?: string
   onSessionCountClick?: () => void
+  workspace?: WorkspaceHudSnapshot
 }
 
 interface StickyPromptTrackerProps {

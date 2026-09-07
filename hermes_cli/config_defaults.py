@@ -777,6 +777,9 @@ DEFAULT_CONFIG = {
         "resume_last_session": True,
         # One-time TUI hint ("subagents working · /agents to watch live") on first delegation.
         "tui_agents_nudge": True,
+        # Show the read-only developer context rail in the Ink TUI when the
+        # terminal is wide enough. The rail hides itself on narrow terminals.
+        "dev_context": True,
         "bell_on_complete": False,
         "bell_on_prompt": False,   # bell when a blocking prompt opens (clarify/approval/sudo)
         # Stream reasoning live before the response; otherwise thinking models show only a spinner

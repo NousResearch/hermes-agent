@@ -2,6 +2,7 @@ import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
+import type { WorkspaceHudSnapshot } from '../domain/workspaceHud.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type {
   BillingCardInfo,
@@ -322,6 +323,9 @@ export interface UiState {
   busy: boolean
   busyInputMode: BusyInputMode
   compact: boolean
+  // Built-in read-only developer context rail. The rail participates in
+  // layout and hides itself when the transcript would become cramped.
+  devContext: boolean
   // Context compaction in progress (idle/preflight/auto). Distinct from
   // `compact`, which is the /compact layout-density flag.
   compacting: boolean
@@ -608,6 +612,7 @@ export interface AppLayoutStatusProps {
   stickyPrompt: string
   turnStartedAt: null | number
   voiceLabel: string
+  workspace: WorkspaceHudSnapshot
 }
 
 export interface AppLayoutTranscriptProps {

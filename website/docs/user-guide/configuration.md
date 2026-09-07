@@ -1961,6 +1961,7 @@ display:
   tool_progress: all      # off | new | all | verbose
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
   focus_view: false       # CLI focus view (/focus) — reduced output, display-only
+  dev_context: true       # TUI read-only developer context rail; hides on narrow terminals
   platforms: {}           # Per-platform display overrides (see below)
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
   show_commentary: true   # Codex models: deliver commentary-channel progress narration as visible mid-turn updates

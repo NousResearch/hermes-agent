@@ -292,6 +292,7 @@ export const applyDisplay = (
     battery: !!d.battery,
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
+    ...(cfg ? { devContext: d.dev_context !== false } : {}),
     // Fail safe: only YAML boolean false disables the prompt. A transient
     // config RPC failure (cfg=null) preserves the last known policy instead
     // of silently changing approval behavior until the next successful poll.

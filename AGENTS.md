@@ -28,6 +28,15 @@ Two invariants shape almost every design decision and are the lens for reviewing
   every API call, so the bar for a new *core* tool is high. New capability should arrive as a
   CLI command + skill, a service-gated tool, or a plugin — not as core surface.
 
+## Context rail inputs
+
+- product: Hermes Agent
+- flow: none
+- checks: cd ui-tui && npm run typecheck && npm test
+- evidence: ui-tui/src/__tests__/devContextRail.test.tsx
+- decisions:
+  - 2026-09-06: keep the rail single-project and honest about missing Flow data
+
 ## Contribution Rubric — What We Want / What We Don't
 
 The project's intent layer. It serves humans aiming a contribution AND the automated triage

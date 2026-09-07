@@ -3096,6 +3096,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
     @staticmethod
     def _append_current_assignment_summary(summary: str, assignment_summary: str) -> str:
         """Carry a bounded current-task projection in the deterministic handoff."""
+        assignment_summary = _redact_compaction_text(assignment_summary)
         if assignment_summary in summary:
             return summary
         return f"{summary.rstrip()}\n\n[CURRENT KANBAN ASSIGNMENT]\n{assignment_summary}"

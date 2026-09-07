@@ -238,3 +238,46 @@ def test_assignment_summary_defaults_null_or_empty_task_id_to_worker_task(monkey
     ContextCompressor._demote_tool_result_at(messages, 0, calls, 0)
 
     assert json.loads(messages[0]["content"])["task"]["id"] == task_id
+
+
+def test_current_assignment_summary_redacts_before_handoff(monkeypatch):
+    task_id = "t_12345678"
+    secret = "sk-proj-" + ("a" * 40)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    assignment = json.dumps({
+        "task": {
+            "id": task_id,
+            "title": "Current card",
+            "body": f"Finish repair with credential {secret}",
+        },
+    })
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old request"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "show",
+                "function": {
+                    "name": "kanban_show",
+                    "arguments": json.dumps({"task_id": task_id}),
+                },
+            }],
+        },
+        {"role": "tool", "tool_call_id": "show", "content": assignment},
+        {"role": "user", "content": "middle request"},
+        {"role": "assistant", "content": "middle response"},
+        {"role": "user", "content": "later request"},
+        {"role": "assistant", "content": "later response"},
+        {"role": "user", "content": "latest request"},
+    ]
+    compressor = ContextCompressor("test-model", quiet_mode=True)
+    monkeypatch.setattr(compressor, "_compress_window", lambda _messages: (1, 4))
+    monkeypatch.setattr(compressor, "_generate_summary", lambda _messages, **_kwargs: "summary")
+
+    result = compressor.compress(messages, current_tokens=999_999, force=True)
+
+    serialized = json.dumps(result)
+    assert secret not in serialized
+    assert "sk-proj-" not in serialized

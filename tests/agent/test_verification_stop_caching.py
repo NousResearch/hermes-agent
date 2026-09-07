@@ -19,6 +19,31 @@ from unittest.mock import MagicMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _restore_sys_modules():
+    """``_fresh_run_agent`` wipes the agent stack out of ``sys.modules``. Put the original
+    module objects back afterwards: sibling test files hold module-level references into
+    ``hermes_cli.*`` / ``tools.*`` and their monkeypatches would otherwise land on modules
+    the app no longer imports."""
+    saved = dict(sys.modules)
+    yield
+    _restore_modules(saved)
+
+
+def _restore_modules(saved):
+    sys.modules.clear()
+    sys.modules.update(saved)
+    # Re-imports rebound ``pkg.<child>`` attributes to the fresh module objects; point them
+    # back so ``from pkg import child`` and ``sys.modules["pkg.child"]`` agree again.
+    for name, mod in saved.items():
+        parent, _, child = name.rpartition(".")
+        if parent and parent in saved:
+            try:
+                setattr(saved[parent], child, mod)
+            except Exception:
+                pass
+
+
 def _fresh_run_agent(hermes_home):
     for mod in list(sys.modules):
         if mod == "run_agent" or mod.startswith("agent.") or mod.startswith("tools.") or mod.startswith("hermes_"):
@@ -29,21 +54,22 @@ def _fresh_run_agent(hermes_home):
 
 def test_verification_flags_registered_as_ephemeral(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    ra = _fresh_run_agent(tmp_path)
+    _fresh_run_agent(tmp_path)
+    from agent.session_persistence import _EPHEMERAL_SCAFFOLDING_FLAGS, _is_ephemeral_scaffolding
 
-    assert "_verification_stop_synthetic" in ra._EPHEMERAL_SCAFFOLDING_FLAGS
-    assert "_pre_verify_synthetic" in ra._EPHEMERAL_SCAFFOLDING_FLAGS
+    assert "_verification_stop_synthetic" in _EPHEMERAL_SCAFFOLDING_FLAGS
+    assert "_pre_verify_synthetic" in _EPHEMERAL_SCAFFOLDING_FLAGS
 
     # The nudge messages ARE scaffolding (they carry the synthetic flag).
-    assert ra._is_ephemeral_scaffolding(
+    assert _is_ephemeral_scaffolding(
         {"role": "user", "content": "[System: run tests]", "_pre_verify_synthetic": True}
     )
-    assert ra._is_ephemeral_scaffolding(
+    assert _is_ephemeral_scaffolding(
         {"role": "user", "content": "[System: run tests]", "_verification_stop_synthetic": True}
     )
     # Real messages (including the assistant candidate) are not.
-    assert not ra._is_ephemeral_scaffolding({"role": "user", "content": "hi"})
-    assert not ra._is_ephemeral_scaffolding({"role": "assistant", "content": "premature done"})
+    assert not _is_ephemeral_scaffolding({"role": "user", "content": "hi"})
+    assert not _is_ephemeral_scaffolding({"role": "assistant", "content": "premature done"})
 
 
 def _make_agent(ra, session_id, tmp_path):

@@ -229,3 +229,60 @@ async def test_download_sends_a_user_agent_on_every_request():
     # The re-host request must still carry its bearer (no regression).
     rehost_headers = seen[1]
     assert (rehost_headers.get("Authorization") or "").startswith("Bearer ")
+
+
+def test_is_relay_media_url_distinguishes_rehost_from_public():
+    """Public compat helper: connector re-host refs need our bearer; ordinary
+    public URLs (CDN pass-throughs) do not. None/empty never raise."""
+    c = RelayMediaClient("https://conn.example", "gw1", "sec")
+    assert c.is_relay_media_url("https://conn.example/relay/media/aa11") is True
+    assert c.is_relay_media_url("http://other.host:8080/relay/media/x") is True
+    assert c.is_relay_media_url("https://cdn.discordapp.com/attachments/1/2/v.ogg") is False
+    assert c.is_relay_media_url("https://conn.example/relay/mediafile") is False
+    assert c.is_relay_media_url("") is False
+    assert c.is_relay_media_url(None) is False  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_download_routes_auth_decision_through_is_relay_media_url(monkeypatch):
+    """download() must consult is_relay_media_url (so subclasses/plugins that
+    override the classifier change auth behaviour): a disabled client refuses
+    re-host refs but still fetches public URLs without a bearer."""
+    asked: list[str] = []
+    c = RelayMediaClient("https://conn.example", None, None)  # disabled: no creds
+    assert c.enabled is False
+    orig = c.is_relay_media_url
+
+    def _spy(url):
+        asked.append(url)
+        return orig(url)
+
+    monkeypatch.setattr(c, "is_relay_media_url", _spy)
+    # Re-host ref + disabled client → None before any network call.
+    assert await c.download("https://conn.example/relay/media/deadbeef") is None
+    assert asked == ["https://conn.example/relay/media/deadbeef"]
+
+    seen: list[dict] = []
+
+    class _Resp:
+        headers = {"Content-Type": "image/png", "Content-Length": "4"}
+
+        def read(self, *_a):
+            return b"\x89PNG"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    def _fake_urlopen(req, timeout=None):  # noqa: ARG001
+        seen.append(dict(req.headers))
+        return _Resp()
+
+    import urllib.request as _ur
+
+    monkeypatch.setattr(_ur, "urlopen", _fake_urlopen)
+    assert await c.download("https://cdn.discordapp.com/attachments/1/2/i.png")
+    assert asked[-1] == "https://cdn.discordapp.com/attachments/1/2/i.png"
+    assert len(seen) == 1 and "Authorization" not in seen[0]

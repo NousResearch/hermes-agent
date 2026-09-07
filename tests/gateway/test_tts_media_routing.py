@@ -82,6 +82,7 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
         chat_id="chat-1",
         audio_path=str(media_file),
         metadata={"notify": True},
+        is_voice=True,
     )
     adapter.send_document.assert_not_awaited()
 
@@ -492,7 +493,7 @@ class _QueuedMediaAgent:
     def __init__(self, **kwargs):
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         type(self).calls += 1
         if type(self).calls == 1:
             return {

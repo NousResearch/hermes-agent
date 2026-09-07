@@ -9,7 +9,10 @@ import pytest
 import gateway.run as gateway_run
 from agent.i18n import t
 from gateway.platforms.base import MessageEvent, MessageType
-from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+from gateway.restart import (
+    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
+)
 from gateway.session import SessionEntry, build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
@@ -87,6 +90,48 @@ def test_load_busy_text_mode_follows_input_mode_and_honors_legacy(tmp_path, monk
     # Bogus legacy value is ignored → falls through to busy_input_mode (interrupt).
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "bogus")
     assert gateway_run.GatewayRunner._load_busy_text_mode() == "interrupt"
+
+
+def test_load_signal_interrupt_grace_timeout_from_typed_config(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    assert (
+        gateway_run.GatewayRunner._load_signal_interrupt_grace_timeout()
+        == DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
+    )
+
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n  signal_interrupt_grace_timeout: 0.25\n",
+        encoding="utf-8",
+    )
+    assert gateway_run.GatewayRunner._load_signal_interrupt_grace_timeout() == 0.25
+
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n  signal_interrupt_grace_timeout: 0\n",
+        encoding="utf-8",
+    )
+    assert gateway_run.GatewayRunner._load_signal_interrupt_grace_timeout() == 0.0
+
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n  signal_interrupt_grace_timeout: .inf\n",
+        encoding="utf-8",
+    )
+    assert (
+        gateway_run.GatewayRunner._load_signal_interrupt_grace_timeout()
+        == DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
+    )
+
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n  signal_interrupt_grace_timeout: invalid\n",
+        encoding="utf-8",
+    )
+    assert (
+        gateway_run.GatewayRunner._load_signal_interrupt_grace_timeout()
+        == DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
+    )
+    assert "Invalid signal_interrupt_grace_timeout" in caplog.text
 
 
 @pytest.mark.asyncio

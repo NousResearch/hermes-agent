@@ -1,35 +1,12 @@
 """Mint a provider API key by running a command (``key_cmd``).
 
-Static API keys are the exception at enterprise gateways: SSO/OIDC brokers,
-cloud IAM, and internal auth proxies all issue SHORT-LIVED bearers instead.
-A key copied into ``.env`` (``key_env``) is stale within the hour, so every
-request after that 401s and the user has to restart the session.
-
-``key_cmd`` names a command that PRINTS a token, so the credential is derived
-rather than stored::
-
-    providers:
-      my-gateway:
-        base_url: https://gateway.internal.example.com/v1
-        api_mode: chat_completions
-        key_cmd: my-auth-cli print-token --profile prod
-
-This is the established pattern for agent tooling — Claude Code's
-``apiKeyHelper``, the ``gcloud auth print-access-token`` / ``aws ecr
-get-login-password`` idiom, and vendor helpers such as ``databricks auth
-token`` all expose exactly this contract. Hermes already accepts a callable
-API key on both wire clients (the Entra ID / Azure identity path) and invokes
-it per request, so nothing downstream changes: the token is simply always
-fresh. It is cached until shortly before expiry, so the command runs about
-once per token lifetime rather than once per request.
-
-Output contract: print ONLY the token on stdout, either bare or as JSON with
-an ``access_token`` field (``expires_in`` is honoured when present) — the
-shape OAuth 2.0 token endpoints and the helpers above already emit.
-
-Precedence: an explicit ``--api-key`` still wins (the one-off recovery escape
-hatch); otherwise ``key_cmd`` is preferred over a static ``api_key`` /
-``key_env`` on the same entry.
+Enterprise gateways (SSO/OIDC brokers, cloud IAM, auth proxies) issue SHORT-LIVED bearers; a key
+copied into ``.env`` goes stale within the hour. ``key_cmd`` names a command that PRINTS a token
+(the ``apiKeyHelper`` / ``gcloud auth print-access-token`` idiom). Both wire clients accept a
+callable API key and invoke it per request; the token is cached until shortly before expiry.
+Output contract: ONLY the token on stdout, bare or as JSON with an ``access_token`` field
+(``expires_in`` / ISO ``expiry`` honoured). Precedence: explicit ``--api-key`` wins (one-off
+recovery escape hatch); otherwise ``key_cmd`` beats a static ``api_key`` / ``key_env``.
 """
 
 from __future__ import annotations
@@ -43,19 +20,13 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Treat a cached token as spent slightly before its stated expiry, so a request
-# can't be signed with a token that dies in flight. 60s matches the leeway used
-# by comparable OAuth token caches.
+# Treat a token as spent slightly before expiry so a request can't be signed with one that dies in
+# flight (60s = usual OAuth cache leeway).
 _TOKEN_REFRESH_LEEWAY_SECONDS = 60.0
-# A token helper reads a local credential cache and should answer in
-# milliseconds; anything approaching this budget is hung, not slow.
+# Helpers answer from a local cache in milliseconds; this long means hung.
 _MINT_TIMEOUT_SECONDS = 15
-# When a helper advertises NO expiry, the token cannot be cached for the life
-# of the process: nothing in the request path re-mints on 401 (the SDK retries
-# 429/5xx only), so an expired no-TTL token would 401 every request until
-# restart. Re-mint on a bounded window instead — the helper answers from a
-# local credential cache in milliseconds, so a periodic re-run is cheap, and a
-# helper that wants a longer cache can simply advertise its real expiry.
+# No advertised expiry: nothing in the request path re-mints on 401 (the SDK retries 429/5xx only), so
+# a process-lifetime cache would 401 forever once the token died. Re-mint on a bounded window instead.
 _NO_TTL_REFRESH_SECONDS = 900.0
 
 
@@ -67,29 +38,18 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
     """Run *command*, returning ``(token, ttl_seconds_or_None)``."""
     try:
         completed = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=_MINT_TIMEOUT_SECONDS,
+            command, shell=True, capture_output=True, text=True, timeout=_MINT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
         raise CommandTokenError(
-            f"key_cmd for provider {label!r} timed out after "
-            f"{_MINT_TIMEOUT_SECONDS}s"
+            f"key_cmd for provider {label!r} timed out after {_MINT_TIMEOUT_SECONDS}s"
         ) from exc
     except OSError as exc:
-        raise CommandTokenError(
-            f"key_cmd for provider {label!r} could not be executed: {exc}"
-        ) from exc
+        raise CommandTokenError(f"key_cmd for provider {label!r} could not be executed: {exc}") from exc
 
     if completed.returncode != 0:
-        # NEVER include stdout/stderr: a partially-successful auth helper can
-        # print a token or refresh secret there. The command STRING is also
-        # withheld — a key_cmd can legitimately embed a secret
-        # (`print-token --client-secret=…`), so echoing it back would leak the
-        # very credential this module exists to protect. Name the provider so
-        # the user knows which config entry to run by hand.
+        # NEVER include stdout/stderr (may hold a token) or the command string (may embed
+        # `--client-secret=…`); name the provider instead.
         raise CommandTokenError(
             f"key_cmd for provider {label!r} exited {completed.returncode}. "
             f"Run that provider's key_cmd manually to see why "
@@ -101,8 +61,6 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
         raise CommandTokenError(f"key_cmd for provider {label!r} produced no output")
 
     # JSON payload — the shape `databricks auth token --output json` prints.
-    # Token extraction mirrors databricks/ucode's get_databricks_token:
-    #   json.loads(result.stdout or "{}").get("access_token", "")
     if stdout.lstrip().startswith("{"):
         try:
             payload = json.loads(stdout)
@@ -112,34 +70,24 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
             token = str(payload.get("access_token") or "").strip()
             if not token:
                 raise CommandTokenError(
-                    f"key_cmd for provider {label!r} returned JSON without an "
-                    "'access_token' field"
+                    f"key_cmd for provider {label!r} returned JSON without an 'access_token' field"
                 )
             ttl = payload.get("expires_in")
             if isinstance(ttl, (int, float)) and ttl > 0:
                 return token, float(ttl)
-            # A relative lifetime is the OAuth 2.0 field, but CLI token helpers
-            # commonly print an absolute ISO 8601 deadline instead. Treating
-            # that as "no TTL advertised" caches the token for the life of the
-            # process, so every request 401s once the deadline passes.
-            # Imported lazily: hermes_cli.auth imports from agent.* at module
-            # level, so a top-level import here would risk a cycle.
+            # CLI helpers often print an absolute ISO 8601 deadline instead of OAuth's relative
+            # lifetime; honour it or the token 401s once past. Lazy import: hermes_cli.auth imports agent.*.
             from hermes_cli.auth import _parse_iso_timestamp
 
             for field in ("expiry", "expiresOn"):
                 deadline = _parse_iso_timestamp(payload.get(field))
-                if deadline is not None:
-                    remaining = deadline - time.time()
-                    if remaining > 0:
-                        return token, remaining
+                remaining = deadline - time.time() if deadline is not None else 0
+                if remaining > 0:
+                    return token, remaining
             return token, None
 
-    # Bare token. The contract every comparable helper documents is "stdout
-    # carries the token and nothing else" — extra output would be consumed as
-    # part of the credential. Strip surrounding whitespace and take the rest
-    # verbatim; do NOT silently keep one line of several, which converts a
-    # misconfigured helper (banner, warning, two tokens) into a corrupt-key 401
-    # that is far harder to diagnose than an explicit refusal.
+    # Bare token: stdout carries the token and nothing else. Do NOT keep one line of several — that
+    # turns a misconfigured helper (banner, warning) into a corrupt-key 401 far harder to diagnose.
     token = stdout.strip()
     if "\n" in token:
         raise CommandTokenError(
@@ -165,12 +113,8 @@ class CommandTokenSource:
                 return self._token
             token, ttl = _mint(self._command, self._label)
             self._token = token
-            self._expires_at = (
-                time.monotonic() + max(ttl - _TOKEN_REFRESH_LEEWAY_SECONDS, 5.0)
-                if ttl
-                # No advertised TTL: bounded cache (see _NO_TTL_REFRESH_SECONDS)
-                # — there is no 401-driven re-mint hook to fall back on.
-                else time.monotonic() + _NO_TTL_REFRESH_SECONDS
+            self._expires_at = time.monotonic() + (
+                max(ttl - _TOKEN_REFRESH_LEEWAY_SECONDS, 5.0) if ttl else _NO_TTL_REFRESH_SECONDS
             )
             logger.debug(
                 "Minted key_cmd token for provider %s (ttl=%s)",
@@ -179,12 +123,7 @@ class CommandTokenSource:
             return token
 
 
-def build_command_token_provider(
-    key_cmd: str,
-    provider_label: str = "custom",
-) -> Optional[Callable[[], str]]:
+def build_command_token_provider(key_cmd: str, provider_label: str = "custom") -> Optional[Callable[[], str]]:
     """A per-request token provider for *key_cmd*, or ``None`` when unset."""
     command = str(key_cmd or "").strip()
-    if not command:
-        return None
-    return CommandTokenSource(command, provider_label)
+    return CommandTokenSource(command, provider_label) if command else None

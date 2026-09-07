@@ -19,6 +19,65 @@ const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
 
+/**
+ * Reply text from a Responses-API `codex_message_items` sidecar (#68321), for rows
+ * whose `content` persisted empty. `commentary` / `analysis` items are mid-turn
+ * narration the backend routes to the reasoning channel
+ * (codex_responses_adapter `_OutputScan._message`); the remaining phases are the reply.
+ */
+function codexMessageItemText(message: SessionMessage): string {
+  const items = message.codex_message_items
+
+  if (!Array.isArray(items)) {
+    return ''
+  }
+
+  const texts: string[] = []
+
+  for (const item of items) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      continue
+    }
+
+    const record = item as Record<string, unknown>
+
+    if (record.type !== 'message' || record.role !== 'assistant') {
+      continue
+    }
+
+    if (record.phase === 'commentary' || record.phase === 'analysis') {
+      continue
+    }
+
+    const content = record.content
+
+    if (!Array.isArray(content)) {
+      continue
+    }
+
+    for (const part of content) {
+      if (!part || typeof part !== 'object' || Array.isArray(part)) {
+        continue
+      }
+
+      const partRecord = part as Record<string, unknown>
+      const partType = partRecord.type
+
+      if (partType !== 'output_text' && partType !== 'text') {
+        continue
+      }
+
+      const text = partRecord.text
+
+      if (typeof text === 'string' && text.length > 0) {
+        texts.push(text)
+      }
+    }
+  }
+
+  return texts.join('')
+}
+
 function displayContentForMessage(role: SessionMessage['role'], content: unknown): string {
   const textContent = textFromUnknown(content)
 
@@ -241,6 +300,17 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       parts.push(
         ...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex, message.timestamp))
       )
+    }
+
+    // #68321: Responses-API turns can persist with `content` empty while the reply the
+    // user saw lives only in codex_message_items; without this the rehydrated bubble
+    // blanks and reconcileResumeMessages then strips the cached row at that ordinal.
+    if (message.role === 'assistant' && !displayContent && !parts.length) {
+      const codexText = codexMessageItemText(message)
+
+      if (codexText) {
+        parts.push(assistantTextPart(codexText, message.timestamp))
+      }
     }
 
     if (!parts.length && !extractedAttachmentRefs?.length) {

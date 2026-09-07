@@ -23,12 +23,12 @@ import {
   generatedImageEchoSources,
   stripGeneratedImageEchoes
 } from '@/lib/generated-images'
-import { parseTodos } from '@/lib/todos'
+import { nextTodosFromToolEvent, parseTodoRevision } from '@/lib/todos'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
-import { setSessionTodos } from '@/store/todos'
+import { $todosBySession, setSessionTodos } from '@/store/todos'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -462,10 +462,10 @@ export function useMessageStream({
       // The composer status stack owns todo display now (no inline panel) —
       // mirror every todo state the tool reports into its session store.
       if (payload?.name === 'todo') {
-        const todos = parseTodos(payload.todos) ?? parseTodos(payload.result) ?? parseTodos(payload.args)
+        const todos = nextTodosFromToolEvent($todosBySession.get()[sessionId] ?? [], payload)
 
         if (todos) {
-          setSessionTodos(sessionId, todos)
+          setSessionTodos(sessionId, todos, parseTodoRevision(payload))
         }
       }
 
@@ -725,15 +725,33 @@ export function useMessageStream({
         const hasInlineError = nextMessages.some(m => m.role === 'assistant' && m.error && !m.hidden)
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
+
+        const sameTurnAssistant = streamId
+          ? nextMessages.find(m => m.id === streamId)
+          : [...nextMessages].reverse().find(m => m.role === 'assistant' && !m.hidden)
+
+        const localVisibleText = sameTurnAssistant ? chatMessageText(sameTurnAssistant).trim() : ''
         // Having streamed the reply normally means this window owns the whole
         // turn and re-reading stored history would be wasted work. That only
         // holds for a turn it STARTED: an adopted one (resumed onto a session
         // already running elsewhere) arrives reply-first, with no prompt row,
         // so it has to hydrate or the user's own message never shows up.
+        // Adopted turns still hydrate so a resume-onto-running session can
+        // pick up the user's prompt row — unless this window already has
+        // visible assistant text and the terminal frame is empty. In that
+        // case hydrate would replace the live bubble with a stored empty
+        // row (#95514; adoptedRunningTurn must not short-circuit).
         shouldHydrate =
           !completionError &&
           !hasInlineError &&
-          !unresolvedUserTail &&
+          // A visible user message with no reply after the terminal frame
+          // means this window never rendered the turn's output. When the
+          // frame also carries no text, the reply only exists in stored
+          // history — hydrate to catch up instead of leaving the transcript
+          // blank until restart (#88036). A non-empty frame still settles
+          // locally, so the user-tail guard keeps applying there.
+          (!unresolvedUserTail || !finalText) &&
+          !(localVisibleText && !finalText) &&
           (state.adoptedRunningTurn || !state.sawAssistantPayload || !finalText)
 
         return {

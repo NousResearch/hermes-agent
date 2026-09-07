@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
 import { AGENTS_ROUTE } from '@/app/routes'
+import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { BillingBanner } from '@/components/billing-banner'
 import { composerDockCard } from '@/components/chat/composer-dock'
 import { StatusSection } from '@/components/chat/status-section'
@@ -21,16 +22,17 @@ import {
   dismissBackgroundProcess,
   groupStatusItems,
   refreshBackgroundProcesses,
-  resetBackgroundPollingGuard,
   type StatusGroup,
   stopBackgroundProcess
 } from '@/store/composer-status'
-import { refreshSessionGoal } from '@/store/goals'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
+import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
 import { PreviewStatusRow } from './preview-row'
+import { SessionControlSections } from './session-control'
+import { useSessionValue } from './session-control-utils'
 import { StatusItemRow } from './status-row'
 
 // Slow safety-net poll for silent exits (processes without notify_on_complete
@@ -75,6 +77,7 @@ const hasRunningTodo = (group: StatusGroup) =>
   group.type === 'todo' && group.items.some(item => item.todoStatus === 'in_progress' && item.state === 'running')
 
 interface ComposerStatusStackProps {
+  onSubmit?: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   /** The queue, built by the composer (it owns the queue's callbacks). Rendered
    *  as the last group so it stays fused to the composer like before. */
   queue: ReactNode
@@ -86,7 +89,7 @@ interface ComposerStatusStackProps {
  * every session-scoped status — subagents, background tasks, queue — grouped by
  * type and separated by light dividers. Collapses to nothing when empty.
  */
-export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackProps) {
+export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   // Subscribe to THIS session's slice only. Both maps churn on other
@@ -97,21 +100,35 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   // items actually changed.
   const items = useSessionSlice($statusItemsBySession, sessionId)
   const previews = useSessionSlice($previewStatusBySession, sessionId)
+  const controlEntry = useSessionValue($sessionControlBySession, sessionId)
+
   const scrolledUp = useStore($threadScrolledUp)
   const billing = useStore($billingBlock)
 
-  const groups = useMemo(() => groupStatusItems(items), [items])
+  const isStructuredSupported = controlEntry?.capability === 'supported'
+
+  const groups = useMemo(() => {
+    const raw = groupStatusItems(items)
+
+    if (isStructuredSupported) {
+      return raw.filter(g => g.type !== 'goal')
+    }
+
+    return raw
+  }, [items, isStructuredSupported])
 
   // Seed from the registry on session open; event-driven refreshes (terminal /
-  // process tool completions) live in use-message-stream.
+  // process tool completions) live in use-message-stream. This must NOT reset
+  // the gone-polling latch: a mount/remount is not proof of a fresh runtime
+  // binding (a boot-restored tile can remount repeatedly while still bound to
+  // a dead runtime id), so clearing it here re-arms an endless 4001 storm
+  // against that id. The latch is reset at the actual rebind seams instead —
+  // gateway reconnect and runtime re-mint (see resetBackgroundPollingGuard
+  // call sites in use-gateway-boot.ts and store/gateway.ts).
   useEffect(() => {
     if (sessionId) {
-      // Opening/rebinding a session is a fresh runtime binding: clear any
-      // gone-latch left by a previous runtime under this id so the poll below
-      // is allowed to run again (see resetBackgroundPollingGuard).
-      resetBackgroundPollingGuard(sessionId)
       void refreshBackgroundProcesses(sessionId)
-      void refreshSessionGoal(sessionId)
+      void refreshSessionControl(sessionId)
     }
   }, [sessionId])
 
@@ -157,6 +174,21 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   // (not as a composer-disable) so slash commands stay usable.
   if (billing && sessionId && billing.sessionId === sessionId) {
     sections.push({ key: 'billing', node: <BillingBanner sessionId={sessionId} /> })
+  }
+
+  const hasControlContent = Boolean(
+    controlEntry &&
+    (controlEntry.error ||
+      controlEntry.snapshot?.goal ||
+      controlEntry.snapshot?.loop ||
+      controlEntry.snapshot?.heartbeat)
+  )
+
+  if (sessionId && controlEntry && hasControlContent) {
+    sections.push({
+      key: 'session-control',
+      node: <SessionControlSections entry={controlEntry} onSubmit={onSubmit} sessionId={sessionId} />
+    })
   }
 
   for (const group of groups) {

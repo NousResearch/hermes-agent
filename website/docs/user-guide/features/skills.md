@@ -1009,6 +1009,8 @@ On each sync, Hermes recomputes the hash of your local copy and compares it to t
 - **Unchanged** → safe to pull upstream changes, copy the new bundled version in, record the new origin hash.
 - **Changed** → treated as **user-modified** and skipped forever, so your edits never get stomped.
 
+Generated runtime caches inside a skill (`__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, and a `.pyc` sitting next to its `.py`) are not part of the hash, so running a skill's helper script never marks it user-modified or hides it from `hermes skills list-modified` / `diff`.
+
 The protection is good, but it has one sharp edge. If you edit a bundled skill and then later want to abandon your changes and go back to the bundled version by just copy-pasting from `~/.hermes/hermes-agent/skills/`, the manifest still holds the *old* origin hash from whenever the last successful sync ran. Your fresh copy-paste contents (current bundled hash) won't match that stale origin hash, so sync keeps flagging it as user-modified.
 
 `hermes skills reset` is the escape hatch:

@@ -1456,7 +1456,6 @@ function rebuildContextMenu() {
   ]))
 }
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
-const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 const remoteLiveness = new RemoteLivenessTracker()
 const remoteRevalidation = new RemoteRevalidationCoordinator()
 const registryDispatchRevalidation = new RemoteRevalidationCoordinator()

@@ -290,8 +290,12 @@ export async function runWindowsUpdatePreflight(
 
   let observed = await scanFailClosed()
 
+  // Every probe failure that reaches a dialog carries the observation that
+  // produced it. Most are anonymous, but a half-written psutil in the venv the
+  // scanner runs from repeats forever, and only the scanner's own envelope
+  // knows the command that repairs it (formatProbeFailedMessage).
   if (observed.kind === 'probe-failure') {
-    return { kind: 'probe-failure', error: observed.error, message: formatProbeFailedMessage() }
+    return { kind: 'probe-failure', error: observed.error, message: formatProbeFailedMessage(observed) }
   }
 
   if (observed.kind === 'blocked' && !exactDrainableOnly(observed.result)) {
@@ -304,7 +308,7 @@ export async function runWindowsUpdatePreflight(
     observed = forced.scan
 
     if (observed.kind === 'probe-failure') {
-      return { kind: 'probe-failure', error: observed.error, message: formatProbeFailedMessage() }
+      return { kind: 'probe-failure', error: observed.error, message: formatProbeFailedMessage(observed) }
     }
 
     if (observed.kind === 'blocked' && !exactDrainableOnly(observed.result)) {
@@ -323,7 +327,7 @@ export async function runWindowsUpdatePreflight(
     let genericHolderDeadline: number | null = null
 
     if (firstClear.kind === 'probe-failure') {
-      return { kind: 'probe-failure', error: firstClear.error, message: formatProbeFailedMessage() }
+      return { kind: 'probe-failure', error: firstClear.error, message: formatProbeFailedMessage(firstClear) }
     }
 
     if (
@@ -345,7 +349,7 @@ export async function runWindowsUpdatePreflight(
       }
 
       if (firstClear.kind === 'probe-failure') {
-        return { kind: 'probe-failure', error: firstClear.error, message: formatProbeFailedMessage() }
+        return { kind: 'probe-failure', error: firstClear.error, message: formatProbeFailedMessage(firstClear) }
       }
 
       if (firstClear.kind === 'blocked' && genericHoldersOnly(firstClear.result)) {
@@ -463,7 +467,7 @@ export async function runWindowsUpdatePreflight(
       firstClear = await scanFailClosed()
 
       if (firstClear.kind === 'probe-failure') {
-        return { kind: 'probe-failure', error: firstClear.error, message: formatProbeFailedMessage() }
+        return { kind: 'probe-failure', error: firstClear.error, message: formatProbeFailedMessage(firstClear) }
       }
 
       if (
@@ -483,7 +487,7 @@ export async function runWindowsUpdatePreflight(
       }
 
       if (firstClear.kind === 'probe-failure') {
-        return { kind: 'probe-failure', error: firstClear.error, message: formatProbeFailedMessage() }
+        return { kind: 'probe-failure', error: firstClear.error, message: formatProbeFailedMessage(firstClear) }
       }
 
       if (firstClear.kind === 'blocked') {
@@ -510,7 +514,7 @@ export async function runWindowsUpdatePreflight(
       let secondClear = await scanFailClosed()
 
       if (secondClear.kind === 'probe-failure') {
-        return { kind: 'probe-failure', error: secondClear.error, message: formatProbeFailedMessage() }
+        return { kind: 'probe-failure', error: secondClear.error, message: formatProbeFailedMessage(secondClear) }
       }
 
       if (secondClear.kind === 'blocked' && genericHoldersOnly(secondClear.result)) {
@@ -537,7 +541,7 @@ export async function runWindowsUpdatePreflight(
         }
 
         if (secondClear.kind === 'probe-failure') {
-          return { kind: 'probe-failure', error: secondClear.error, message: formatProbeFailedMessage() }
+          return { kind: 'probe-failure', error: secondClear.error, message: formatProbeFailedMessage(secondClear) }
         }
 
         if (secondClear.kind === 'clear') {

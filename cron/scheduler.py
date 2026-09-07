@@ -1527,10 +1527,17 @@ def _resolve_job_runtime(
         return runtime, model, primary_provider_for_drift
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during
-        # OAuth refresh); anything else re-raises.
+        # OAuth refresh); anything else re-raises. An explicit per-job --provider/--model pin
+        # must not be replaced by fallback_providers (#100437).
         is_auth = isinstance(resolve_exc, AuthError)
         is_transient_net = _is_transient_provider_resolve_error(resolve_exc)
         if not (is_auth or is_transient_net):
+            raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
+
+        pinned = bool(
+            str(job.get("provider") or "").strip() or str(job.get("model") or "").strip()
+        )
+        if pinned:
             raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
         primary_provider_for_drift = (

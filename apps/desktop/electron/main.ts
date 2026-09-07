@@ -435,8 +435,8 @@ import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   captureSpawnedUpdaterCreatedAt,
   collectRelaunchArgs,
-  describeUpdaterHandoffFailure,
   createUpdateHandoffNonce,
+  describeUpdaterHandoffFailure,
   formatPowerShellArgvForDisplay,
   isSpawnedUpdaterGenerationActive,
   launchWindowsUpdateTransport,
@@ -3213,6 +3213,7 @@ async function resolveHealedBranch(updateRoot, branch) {
 
   const originUrl = await getOriginUrl(updateRoot)
   const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
+
   const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, updateBranchRefPattern(branch)], {
     cwd: updateRoot
   })

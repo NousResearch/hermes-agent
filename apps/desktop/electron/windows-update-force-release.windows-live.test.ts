@@ -34,12 +34,10 @@ import {
   TERMINATE_JOB_WATCHER_BRIDGE,
   TERMINATE_JOB_WATCHER_COMMAND,
   TERMINATE_JOB_WRAPPER_COMMAND,
-  terminateWindowsHolderExact,
-  terminateWindowsHolderWithinDeadline
+  terminateWindowsHolderExact
 } from './windows-process-terminate'
 import {
-  type ForceReleaseHolder,
-  runWindowsUpdateForceRelease
+  type ForceReleaseHolder
 } from './windows-update-force-release'
 
 const execFileAsync = promisify(execFile)
@@ -1813,7 +1811,9 @@ Start-Sleep -Seconds 30
       const started = Date.now()
       let rootProbeCalls = 0
       let snapshotResolved = false
+
       let releaseSnapshot: () => void = () => {}
+
       // A gate, not a sleep: the boundary must return while this read is STILL
       // outstanding. A timer would only say "it returned in under N ms", which
       // a loaded host can violate without any regression.

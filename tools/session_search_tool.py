@@ -367,7 +367,10 @@ def _locate_session_db(session_id: str):
 
 def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
     """Read shape: whole session, or ``head`` + ``tail`` messages with a scroll pointer."""
-    meta = _get_session_meta(db, session_id)
+    meta, err = _loud(lambda: db.get_session(session_id), "get_session failed for %s: %s", "failed to load session",
+                      session_id)
+    if err:
+        return err
     if not meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
     rows, err = _loud(lambda: db.get_messages(session_id), "get_messages failed for %s: %s", "failed to load session",
@@ -461,7 +464,10 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
     owning = (anchor_state or {}).get("session_id")
     if current_session_id and _anchor_in_live_context(db, anchor_state, owning or session_id, current_session_id):
         return tool_error("scroll rejected: anchor lives in the current session lineage (already in your active context)", success=False)
-    session_meta = _get_session_meta(db, session_id)
+    session_meta, err = _loud(lambda: db.get_session(session_id), "get_session failed for %s: %s",
+                              "failed to load session", session_id)
+    if err:
+        return err
     if not session_meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
     view, err = _loud(lambda: db.get_messages_around(session_id, around_message_id, window=window),

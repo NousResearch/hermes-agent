@@ -791,19 +791,15 @@ group_sessions_per_user: false
 
 That reverts groups/channels to a single shared session per room, which preserves shared conversational context but also shares token costs, interrupt state, and context growth.
 
-### Session Reset Policies
+### Session continuity
 
-**By default gateway sessions never auto-reset** (`mode: none`). You can opt
-in to automatic resets via the `session_reset` section in `config.yaml`:
+Gateway conversations do not reset after inactivity or at a daily boundary. Use `/new`
+or `/reset` for an explicit new conversation; context compression remains automatic.
+Legacy `session_reset` settings, reset-policy overrides and reset-timer environment
+variables are ignored. Cached agents may be released to reclaim resources without
+replacing the durable conversation. Restart-recovery freshness limits automatic
+continuation, not the history loaded when you send a message.
 
-- **none** — never auto-reset (default; context managed by `/reset` and compression)
-- **idle** — reset after N minutes of inactivity
-- **daily** — reset at a specific hour each day
-- **both** — reset on whichever comes first (idle or daily)
-
-Before a session is auto-reset, the agent is given a turn to save any important memories or skills from the conversation.
-
-Sessions with **active background processes** are never auto-reset, regardless of policy.
 
 ### Continuity After Crashes and Restarts
 
@@ -820,9 +816,8 @@ holds across gateway crashes, restarts, and updates:
   conversation you were actually having.
 - Recovery **respects `/new` boundaries**: if the most recent event for a chat
   is an intentional reset, recovery starts fresh rather than reaching behind
-  the reset to resurrect an older session. Recovered sessions also keep their
-  real idle time, so an opt-in idle/daily reset policy applies correctly to
-  them instead of treating every recovered session as brand new.
+  the reset to resurrect an older session. Elapsed time alone never prevents
+  recovery of a durable conversation.
 
 
 ## Storage Locations

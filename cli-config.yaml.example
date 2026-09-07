@@ -916,30 +916,10 @@ memory:
   nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)
 
 # =============================================================================
-# Session Reset Policy (Messaging Platforms)
+# Session Continuity (Messaging Platforms)
 # =============================================================================
-# Controls when messaging sessions (Telegram, Discord, WhatsApp, Slack) are
-# automatically cleared. Default is "none": sessions never auto-reset —
-# conversation context lives until you /reset or /new manually, or context
-# compression kicks in. Opt in to automatic resets if you prefer sessions to
-# clear on a schedule (long-lived context increases API cost per message,
-# though prompt caching and compression keep this manageable).
-#
-# When an automatic reset triggers, the agent first saves important
-# information to its persistent memory — but the conversation context is
-# wiped. The agent starts fresh but retains learned facts via its memory
-# system.
-#
-# Modes:
-#   "none"  - Never auto-reset (default); context lives until /reset or compression
-#   "idle"  - Reset after N minutes of inactivity
-#   "daily" - Reset at a fixed hour each day
-#   "both"  - Reset on EITHER inactivity timeout or daily boundary
-#
-session_reset:
-  mode: none           # "none", "idle", "daily", or "both"
-  idle_minutes: 1440   # Inactivity timeout in minutes (used by "idle"/"both")
-  at_hour: 4           # Daily reset hour, 0-23 local time (used by "daily"/"both")
+# Conversations persist across inactivity and daily boundaries. Use /new or
+# /reset explicitly; context compression manages long conversations.
 
 # Maximum number of simultaneously active chat sessions across CLI, TUI,
 # dashboard chat, and messaging gateway. Set to null, 0, or omit to allow

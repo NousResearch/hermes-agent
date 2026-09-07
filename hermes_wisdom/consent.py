@@ -476,6 +476,9 @@ class WisdomConsent:
                     "UPDATE wisdom_consent SET state='completed',result_json=?,updated_at=? WHERE id=?",
                     (json.dumps(outcome), now, interaction_id),
                 )
+                from .operation_outbox import stage
+
+                stage(db, value, "completed", outcome, now)
                 return {**self.project(value), "state": "completed", "result": outcome}
             db.execute(
                 "UPDATE wisdom_consent SET state='applying',updated_at=? WHERE id=?",
@@ -563,6 +566,9 @@ class WisdomConsent:
             "INSERT OR IGNORE INTO wisdom_consent_outcome VALUES(?,?,?,?,NULL)",
             (value["id"], value["organization_id"], value["owner_session"], payload),
         )
+        from .operation_outbox import stage
+
+        stage(db, value, state, result, now)
 
     def pending(self, org: str) -> list[dict[str, Any]]:
         with self.service.store.transaction() as db:

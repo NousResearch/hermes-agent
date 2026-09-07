@@ -102,6 +102,7 @@ def assess(
 
     if not runtime.get("model") or not runtime.get("provider"):
         raise ValueError("no active session model runtime")
+    schema = AdviceBatch.model_json_schema()
     route = {}
     response = call_llm(
         provider=runtime["provider"],
@@ -127,7 +128,9 @@ def assess(
                     "operation outcome explicitly confirms it. Users must use a native "
                     "consent control, not conversational yes. Describe missing setup "
                     "without running commands or requesting secrets. No tool execution "
-                    "is available. Existing automatic-update policy is unchanged."
+                    "is available. Existing automatic-update policy is unchanged.\n"
+                    "Return one JSON object, without Markdown fences, matching this schema:\n"
+                    + json.dumps(schema, ensure_ascii=True)
                 ),
             },
             {
@@ -148,7 +151,7 @@ def assess(
                 "json_schema": {
                     "name": "wisdom_advice",
                     "strict": True,
-                    "schema": AdviceBatch.model_json_schema(),
+                    "schema": schema,
                 },
             }
         },
@@ -540,9 +543,11 @@ class WisdomMediation:
 
     def flush_delivery(self, org):
         from .delivery_outbox import DeliveryOutbox
+        from .operation_outbox import OperationOutbox
 
         try:
             DeliveryOutbox(self.service, clock=self.queue.clock).flush(org)
+            OperationOutbox(self.service, clock=self.queue.clock).flush(org)
         except Exception as exc:
             import logging
 

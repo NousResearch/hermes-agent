@@ -35,6 +35,543 @@
       }
     },
     "schemas": {
+      "WisdomClientDeliveryResponse": {
+        "type": "object",
+        "properties": {
+          "org_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+          },
+          "recipient_user_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+          },
+          "event_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+          },
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reference": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "candidate"
+                    ]
+                  },
+                  "key": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "key"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "skill"
+                    ]
+                  },
+                  "skill_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  "version": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 2147483647
+                  },
+                  "event_type": {
+                    "type": "string",
+                    "enum": [
+                      "teammate_published",
+                      "update_available"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "skill_id",
+                  "version",
+                  "event_type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "claimed",
+              "acknowledged",
+              "not_sent",
+              "uncertain",
+              "deferred"
+            ]
+          },
+          "lease_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "not_found",
+              "in_progress",
+              "retry_exhausted",
+              "policy_changed",
+              "recipient_muted",
+              "notifications_disabled",
+              "reference_invalid",
+              "frequency_cap"
+            ]
+          }
+        },
+        "required": [
+          "org_id",
+          "recipient_user_id",
+          "event_id",
+          "request_id",
+          "reference",
+          "state",
+          "lease_until",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "WisdomClientDeliveryClaim": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reference": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "candidate"
+                    ]
+                  },
+                  "key": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "key"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "skill"
+                    ]
+                  },
+                  "skill_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  "version": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 2147483647
+                  },
+                  "event_type": {
+                    "type": "string",
+                    "enum": [
+                      "teammate_published",
+                      "update_available"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "skill_id",
+                  "version",
+                  "event_type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "request_id",
+          "reference"
+        ],
+        "additionalProperties": false
+      },
+      "WisdomClientDeliverySettlement": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "request_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "acknowledged"
+                ]
+              },
+              "receipt": {
+                "type": "object",
+                "properties": {
+                  "platform": {
+                    "type": "string",
+                    "enum": [
+                      "telegram",
+                      "slack",
+                      "local"
+                    ]
+                  },
+                  "acknowledgement": {
+                    "type": "string",
+                    "enum": [
+                      "provider_accepted",
+                      "transport_accepted"
+                    ]
+                  },
+                  "message_key": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "destination_key": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "platform",
+                  "acknowledgement",
+                  "message_key",
+                  "destination_key"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "request_id",
+              "outcome",
+              "receipt"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "request_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "not_sent",
+                  "uncertain"
+                ]
+              }
+            },
+            "required": [
+              "request_id",
+              "outcome"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "WisdomClientOperationOutcome": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "request_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "operation_key": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "share"
+                ]
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "queued"
+                ]
+              }
+            },
+            "required": [
+              "request_id",
+              "operation_key",
+              "operation",
+              "state"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "request_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "operation_key": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "publish",
+                  "install",
+                  "update"
+                ]
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "completed"
+                ]
+              }
+            },
+            "required": [
+              "request_id",
+              "operation_key",
+              "operation",
+              "state"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "request_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "operation_key": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "share",
+                  "publish",
+                  "install",
+                  "update"
+                ]
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "failed",
+                  "stale",
+                  "expired",
+                  "needs_review"
+                ]
+              }
+            },
+            "required": [
+              "request_id",
+              "operation_key",
+              "operation",
+              "state"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "WisdomClientOperationResponse": {
+        "type": "object",
+        "properties": {
+          "org_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "recipient_user_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "event_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcome": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "operation_key": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "operation": {
+                    "type": "string",
+                    "enum": [
+                      "share"
+                    ]
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "queued"
+                    ]
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "operation_key",
+                  "operation",
+                  "state"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "operation_key": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "operation": {
+                    "type": "string",
+                    "enum": [
+                      "publish",
+                      "install",
+                      "update"
+                    ]
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "completed"
+                    ]
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "operation_key",
+                  "operation",
+                  "state"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "operation_key": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "operation": {
+                    "type": "string",
+                    "enum": [
+                      "share",
+                      "publish",
+                      "install",
+                      "update"
+                    ]
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "failed",
+                      "stale",
+                      "expired",
+                      "needs_review"
+                    ]
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "operation_key",
+                  "operation",
+                  "state"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "attestation": {
+            "type": "string",
+            "enum": [
+              "client_reported"
+            ]
+          },
+          "duplicate": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "org_id",
+          "recipient_user_id",
+          "event_id",
+          "outcome",
+          "attestation",
+          "duplicate"
+        ],
+        "additionalProperties": false
+      },
       "HealthzResponse": {
         "type": "object",
         "properties": {
@@ -2698,6 +3235,31 @@
           },
           "detail": {
             "type": "string"
+          },
+          "publication_outcome": {
+            "type": "string",
+            "enum": [
+              "published",
+              "pending_review"
+            ]
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "org_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "review_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_message": {
+            "type": "string"
           }
         },
         "required": [
@@ -4289,6 +4851,1162 @@
           "installation_id",
           "state"
         ]
+      },
+      "WisdomAgentLedPolicyResponse": {
+        "type": "object",
+        "properties": {
+          "publication_settings": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WisdomPolicyResponse"
+              },
+              {
+                "description": "Returned only after a successful admin combined save. Never included in member GET responses."
+              }
+            ]
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "usage_evidence_window_days": {
+            "type": "integer"
+          },
+          "min_aggregate_invocations": {
+            "type": "integer"
+          },
+          "consecutive_day_usage_counts": {
+            "type": "boolean"
+          },
+          "repeated_edits_count": {
+            "type": "boolean"
+          },
+          "max_recommendations_per_user_per_week": {
+            "type": "integer"
+          },
+          "publication_mode": {
+            "type": "string",
+            "enum": [
+              "open",
+              "managed",
+              "moderated"
+            ]
+          },
+          "install_popularity_threshold": {
+            "type": "integer"
+          },
+          "notification_defaults": {
+            "type": "object",
+            "properties": {
+              "skill_ready_to_share": {
+                "type": "boolean"
+              },
+              "teammate_published": {
+                "type": "boolean"
+              },
+              "update_available": {
+                "type": "boolean"
+              }
+            },
+            "description": "Default opt-in state per proactive event type for new members. Users may override via mute."
+          },
+          "manager_review_email_cadence": {
+            "type": "string",
+            "enum": [
+              "immediate",
+              "daily"
+            ]
+          },
+          "not_now_suppression_days": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "updated_by_user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "org_id",
+          "usage_evidence_window_days",
+          "min_aggregate_invocations",
+          "consecutive_day_usage_counts",
+          "repeated_edits_count",
+          "max_recommendations_per_user_per_week",
+          "publication_mode",
+          "install_popularity_threshold",
+          "notification_defaults",
+          "manager_review_email_cadence",
+          "not_now_suppression_days",
+          "version",
+          "updated_by_user_id"
+        ]
+      },
+      "WisdomAgentLedPolicyUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "publication_settings": {
+            "type": "object",
+            "properties": {
+              "publication_policy": {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "moderated"
+                ]
+              },
+              "hard_block_patterns": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "pattern": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "pattern",
+                    "detail"
+                  ]
+                },
+                "maxItems": 32
+              },
+              "allowed_update_modes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "MANUAL",
+                    "AUTO_WITH_NOTICE",
+                    "REQUIRED"
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 3
+              },
+              "default_update_mode": {
+                "type": "string",
+                "enum": [
+                  "MANUAL",
+                  "AUTO_WITH_NOTICE",
+                  "REQUIRED"
+                ]
+              },
+              "expected_version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2147483646
+              }
+            },
+            "required": [
+              "publication_policy",
+              "hard_block_patterns",
+              "allowed_update_modes",
+              "default_update_mode",
+              "expected_version"
+            ],
+            "additionalProperties": false,
+            "description": "Optional complete publication/security settings. Requires expected_version for both policies, disallows publication_mode, and commits both policies and the publication audit atomically. No separate publication-policy PUT is needed."
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483646,
+            "description": "Version displayed to the administrator. A stale version returns 409 without changing either policy. Omission retains legacy request-time version fencing; clients editing a snapshot should always supply this field."
+          },
+          "usage_evidence_window_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 90,
+            "description": "Eligibility gate: window (days) over which invocation evidence is aggregated. Default 7. Does not replace agent relevance judgment."
+          },
+          "min_aggregate_invocations": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000,
+            "description": "Eligibility gate: minimum invocations in the window before a skill may be recommended. Default 3."
+          },
+          "consecutive_day_usage_counts": {
+            "type": "boolean",
+            "description": "Eligibility signal: whether consecutive-day usage counts toward eligibility. Default true."
+          },
+          "repeated_edits_count": {
+            "type": "boolean",
+            "description": "Eligibility signal: whether repeated local edits count toward eligibility. Default true."
+          },
+          "max_recommendations_per_user_per_week": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Frequency gate: cap on skill_ready_to_share deliveries per user per rolling week. Default 3."
+          },
+          "publication_mode": {
+            "type": "string",
+            "enum": [
+              "open",
+              "managed",
+              "moderated"
+            ],
+            "description": "open ⇒ publish immediately; managed|moderated ⇒ submissions enter the manager review queue (maps to the base publication_policy 'moderated'). Default open."
+          },
+          "install_popularity_threshold": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000,
+            "description": "Install count at which meets_popularity_threshold flips true in teammate_published events. Default 10."
+          },
+          "notification_defaults": {
+            "type": "object",
+            "properties": {
+              "skill_ready_to_share": {
+                "type": "boolean"
+              },
+              "teammate_published": {
+                "type": "boolean"
+              },
+              "update_available": {
+                "type": "boolean"
+              }
+            },
+            "description": "Default opt-in state per proactive event type for new members. Users may override via mute."
+          },
+          "manager_review_email_cadence": {
+            "type": "string",
+            "enum": [
+              "immediate",
+              "daily"
+            ],
+            "description": "Manager review email cadence: immediate per submission or one daily batch. Default daily."
+          },
+          "not_now_suppression_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365,
+            "description": "Frequency gate: days a declined/not-now suggestion stays suppressed for the same content hash. Default 30."
+          }
+        },
+        "additionalProperties": false
+      },
+      "WisdomInvocationUpsertResponse": {
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "accepted"
+        ]
+      },
+      "WisdomInvocationUpsertRequest": {
+        "type": "object",
+        "properties": {
+          "invocations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "skill_key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "description": "Canonical id of an active, published skill in the caller's organization. Private/local skills are not accepted."
+                },
+                "day": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                  "description": "Valid UTC day (YYYY-MM-DD), today or within the preceding 364 days."
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000
+                },
+                "content_hash": {
+                  "type": "string",
+                  "description": "Hash of an already-published version of this skill.",
+                  "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "builtin": {
+                  "type": "boolean",
+                  "enum": [
+                    false
+                  ]
+                }
+              },
+              "required": [
+                "skill_key",
+                "day",
+                "count",
+                "content_hash"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 500
+          }
+        },
+        "required": [
+          "invocations"
+        ],
+        "additionalProperties": false
+      },
+      "WisdomInvocationAggregateResponse": {
+        "type": "object",
+        "properties": {
+          "skillKey": {
+            "type": "string"
+          },
+          "windowDays": {
+            "type": "integer"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "daysUsed": {
+            "type": "integer"
+          },
+          "lastUsedDay": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contentHash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "builtin": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "skillKey",
+          "windowDays",
+          "count",
+          "daysUsed",
+          "lastUsedDay",
+          "contentHash",
+          "builtin"
+        ]
+      },
+      "WisdomSuggestionRecord": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "skill_key": {
+            "type": "string"
+          },
+          "skill_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "event_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggested_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "rationale_summary": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "suggested",
+              "accepted",
+              "declined",
+              "dismissed",
+              "expired"
+            ]
+          },
+          "suppress_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "skill_key",
+          "skill_id",
+          "content_hash",
+          "event_type",
+          "event_id",
+          "suggested_at",
+          "rationale_summary",
+          "outcome",
+          "suppress_until"
+        ]
+      },
+      "WisdomSuggestionListResponse": {
+        "type": "object",
+        "properties": {
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WisdomSuggestionRecord"
+            }
+          },
+          "excluded": {
+            "type": "boolean",
+            "description": "True when the (skill_key, content_hash) must NOT be suggested now. A changed content_hash is re-eligible."
+          },
+          "exclusion_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "suggestions",
+          "excluded",
+          "exclusion_reason"
+        ]
+      },
+      "WisdomSuggestionCreateRequest": {
+        "type": "object",
+        "properties": {
+          "skill_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "skill_id": {
+            "type": "string"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string",
+            "enum": [
+              "skill_ready_to_share",
+              "teammate_published",
+              "update_available"
+            ]
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "rationale_summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "skill_key",
+          "content_hash",
+          "rationale_summary"
+        ],
+        "additionalProperties": false
+      },
+      "WisdomSuggestionOutcomeRequest": {
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "suggested",
+              "accepted",
+              "declined",
+              "dismissed",
+              "expired"
+            ]
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "additionalProperties": false
+      },
+      "WisdomMuteResponse": {
+        "type": "object",
+        "properties": {
+          "org_id": {
+            "type": "string"
+          },
+          "muted": {
+            "type": "boolean"
+          },
+          "duration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "1_day",
+              "1_week",
+              "30_days",
+              "forever"
+            ]
+          },
+          "muted_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "forever": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "mutation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "org_id",
+          "muted",
+          "duration",
+          "muted_until",
+          "forever"
+        ]
+      },
+      "WisdomMuteRequest": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "duration": {
+                "type": "string",
+                "enum": [
+                  "1_day",
+                  "1_week",
+                  "30_days",
+                  "forever"
+                ]
+              }
+            },
+            "required": [
+              "duration"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "duration": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "1_day",
+                  "1_week",
+                  "30_days",
+                  "forever"
+                ]
+              },
+              "expected_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2147483646
+              },
+              "mutation_id": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9-]{16,64}$"
+              },
+              "requested_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Canonical UTC millisecond timestamp of the native choice. Requests expire after 24 hours; duration starts here, not at retry time."
+              }
+            },
+            "required": [
+              "duration",
+              "expected_revision",
+              "mutation_id",
+              "requested_at"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "WisdomProactiveEventResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string",
+            "enum": [
+              "skill_ready_to_share",
+              "teammate_published",
+              "update_available"
+            ]
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "recipient_user_id": {
+            "type": "string"
+          },
+          "skill_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "skill_key": {
+            "type": "string"
+          },
+          "skill_version": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "content_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agent_title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Client-agent authored; null until deliver."
+          },
+          "agent_explanation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence_summary": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "safety_summary": {
+            "type": "object",
+            "properties": {
+              "compact": {
+                "type": "string"
+              },
+              "detailed": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/WisdomSecurityCheck"
+                  },
+                  {
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  }
+                ]
+              },
+              "professionalism_status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "compact",
+              "detailed",
+              "professionalism_status"
+            ]
+          },
+          "install_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "meets_popularity_threshold": {
+            "type": "boolean"
+          },
+          "allowed_actions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "action_token": {
+                  "type": "string",
+                  "description": "Opaque HMAC-signed token scoped to (org, recipient, event, action); expires. Stale ⇒ 410 with user_message."
+                },
+                "expires_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "action",
+                "action_token",
+                "expires_at"
+              ]
+            }
+          },
+          "dedup_key": {
+            "type": "string"
+          },
+          "rendering_hints": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "delivered",
+              "muted",
+              "failed",
+              "acted"
+            ]
+          },
+          "deduplicated": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "delivered_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "suppressed_reason": {
+            "type": "string"
+          },
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "event_type",
+          "org_id",
+          "recipient_user_id",
+          "skill_id",
+          "skill_key",
+          "skill_version",
+          "content_hash",
+          "agent_title",
+          "agent_explanation",
+          "evidence_summary",
+          "safety_summary",
+          "install_count",
+          "meets_popularity_threshold",
+          "allowed_actions",
+          "dedup_key",
+          "rendering_hints",
+          "state",
+          "deduplicated",
+          "created_at",
+          "delivered_at"
+        ]
+      },
+      "WisdomEventCreateRequest": {
+        "type": "object",
+        "properties": {
+          "event_type": {
+            "type": "string",
+            "enum": [
+              "skill_ready_to_share",
+              "teammate_published",
+              "update_available"
+            ]
+          },
+          "skill_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+          },
+          "skill_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+          },
+          "skill_version": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 2147483647
+          },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "dedup_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+          }
+        },
+        "required": [
+          "event_type"
+        ],
+        "additionalProperties": false,
+        "description": "Published events require skill_id; skill_key, if provided, must equal it. Omitted skill_version resolves to the current published version. A supplied hash must match that exact version. Local skill_ready_to_share events require skill_key and content_hash and forbid published references. dedup_key is a deprecated compatibility hint and does not control identity; identity is server-derived from org, recipient, type and exact reference."
+      },
+      "WisdomEventDeliverRequest": {
+        "type": "object",
+        "properties": {
+          "agent_title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "agent_explanation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "professionalism_review": {
+            "$ref": "#/components/schemas/WisdomProfessionalismReview"
+          }
+        },
+        "required": [
+          "agent_title",
+          "agent_explanation"
+        ],
+        "additionalProperties": false
+      },
+      "WisdomEventActRequest": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "action_token": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "string",
+            "enum": [
+              "1_day",
+              "1_week",
+              "30_days",
+              "forever"
+            ]
+          }
+        },
+        "required": [
+          "action",
+          "action_token"
+        ],
+        "additionalProperties": false
+      },
+      "WisdomOutboxListResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "audience": {
+                  "type": "string",
+                  "enum": [
+                    "org_managers"
+                  ]
+                },
+                "subject": {
+                  "type": "string"
+                },
+                "cadence": {
+                  "type": "string",
+                  "enum": [
+                    "immediate",
+                    "daily"
+                  ]
+                },
+                "batch_key": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "queued",
+                    "sent",
+                    "failed"
+                  ]
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "audience",
+                "subject",
+                "cadence",
+                "batch_key",
+                "state",
+                "created_at"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "WisdomAnalyticsEventResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "enum": [
+              "candidate_to_recommendation",
+              "recommendation_to_review",
+              "recommendation_to_publish",
+              "publish_to_install",
+              "install_setup_completed",
+              "install_verified",
+              "recommendation_dismissed",
+              "notifications_muted",
+              "skill_unpublished",
+              "skill_uninstalled",
+              "delivery_failed",
+              "delivery_retried",
+              "first_use_by_other_member"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "created_at"
+        ]
+      },
+      "WisdomAnalyticsEventRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "candidate_to_recommendation",
+              "recommendation_to_review",
+              "recommendation_to_publish",
+              "publish_to_install",
+              "install_setup_completed",
+              "install_verified",
+              "recommendation_dismissed",
+              "notifications_muted",
+              "skill_unpublished",
+              "skill_uninstalled",
+              "delivery_failed",
+              "delivery_retried",
+              "first_use_by_other_member"
+            ]
+          },
+          "skill_id": {
+            "type": "string"
+          },
+          "skill_key": {
+            "type": "string"
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "WisdomAnalyticsAggregateResponse": {
+        "type": "object",
+        "properties": {
+          "org_id": {
+            "type": "string"
+          },
+          "since_days": {
+            "type": "integer"
+          },
+          "counts": {
+            "type": "object",
+            "properties": {
+              "candidate_to_recommendation": {
+                "type": "integer"
+              },
+              "recommendation_to_review": {
+                "type": "integer"
+              },
+              "recommendation_to_publish": {
+                "type": "integer"
+              },
+              "publish_to_install": {
+                "type": "integer"
+              },
+              "install_setup_completed": {
+                "type": "integer"
+              },
+              "install_verified": {
+                "type": "integer"
+              },
+              "recommendation_dismissed": {
+                "type": "integer"
+              },
+              "notifications_muted": {
+                "type": "integer"
+              },
+              "skill_unpublished": {
+                "type": "integer"
+              },
+              "skill_uninstalled": {
+                "type": "integer"
+              },
+              "delivery_failed": {
+                "type": "integer"
+              },
+              "delivery_retried": {
+                "type": "integer"
+              },
+              "first_use_by_other_member": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "required": [
+          "org_id",
+          "since_days",
+          "counts"
+        ]
+      },
+      "WisdomUnpublishResponse": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "taken_down",
+              "archived"
+            ]
+          },
+          "takedown_generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "unpublished"
+            ]
+          },
+          "internal_state": {
+            "type": "string"
+          },
+          "restorable": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "mapping": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "takedown_generation",
+          "lifecycle",
+          "internal_state",
+          "restorable",
+          "mapping"
+        ]
+      },
+      "WisdomUnpublishRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "takedown_generation": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "takedown_generation"
+        ],
+        "additionalProperties": false
       }
     },
     "parameters": {}
@@ -8848,6 +10566,2129 @@
           },
           "403": {
             "description": "Missing wisdom:install scope, NAS-admin claim, or owned installation identity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/deliveries/claim": {
+      "post": {
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Reserve one local Agent notification send",
+        "description": "Only state=claimed authorizes a send before lease_until. Persist a random request_id before calling; retrying it reuses the same lease without extension. A definite non-send requires a new request_id for a new attempt. Private candidates use opaque suppression keys only; no names, content, usage or advice are accepted. This operation does not send a message.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomClientDeliveryClaim"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Send directive bound to the authenticated user and reference; non-claimed states never permit sending.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomClientDeliveryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid claim.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Published reference not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Event identity conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Published reference unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/deliveries/{id}/settle": {
+      "post": {
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Reconcile a prior local notification send",
+        "description": "Accepts an acknowledgement, definite non-send, or uncertain result from the authenticated claiming user. Receipt identities must be opaque SHA256 keys. Acknowledgements are client-reported transport acceptance, not server-verified delivery, user-read state, or consent. The original request can settle after lease expiry, but cannot overwrite another attempt or an acknowledged receipt. Repeating an identical settlement is idempotent; it never grants another send.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Reserved event id"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomClientDeliverySettlement"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Persisted client-reported outcome.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomClientDeliveryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid settlement.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Unknown, superseded or conflicting claim/receipt.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/deliveries/{id}/outcomes": {
+      "post": {
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Record a client-reported local operation result",
+        "description": "Requires the original acknowledged delivery request and authenticated recipient. The operation key is an opaque, stable hash of the local journal identity. Identical retries are idempotent; conflicting reuse is rejected. Only bounded typed metadata is accepted. Queued sharing is packaging only; completed publication means submission, not authoritative publication. Installed files do not imply setup or verification. This endpoint never applies an operation, grants consent, marks activity read, or changes publication state. Later unpublish/mute does not prevent recording a past result.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Acknowledged event id"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomClientOperationOutcome"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Immutable client report; does not authorize work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomClientOperationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid outcome.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Unknown, unacknowledged, foreign or conflicting operation/delivery.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/suppressions/{key}": {
+      "put": {
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Suppress an opaque exact-package key for the authenticated user and organization.",
+        "description": "No candidate names, content, paths, usage or rationale are accepted. The server determines expiry from organization policy. Replays preserve the existing active expiry; changed packages have a new key. Manual skill access is unaffected.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "required": true,
+            "name": "key",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Active suppression.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "suppress_until": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "org_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "suppress_until",
+                    "org_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid key or nonempty body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/suppressions/check": {
+      "post": {
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Check up to 100 distinct opaque keys without sending private candidate evidence.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "keys": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "maxItems": 100
+                  }
+                },
+                "required": [
+                  "keys"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Only active suppressions matching supplied keys, scoped to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "org_id": {
+                      "type": "string"
+                    },
+                    "suppressions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          },
+                          "suppress_until": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "suppress_until"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "maxItems": 100
+                    }
+                  },
+                  "required": [
+                    "org_id",
+                    "suppressions"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid, repeated or excessive keys.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/policy": {
+      "get": {
+        "summary": "Read the org's agent-led sharing policy (any member, wisdom:read).",
+        "description": "Eligibility and frequency gates for proactive recommendations. Absent row ⇒ documented defaults. These values never replace the client agent's relevance judgment.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Effective policy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomAgentLedPolicyResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Replace the org's agent-led sharing policy (ADMIN, wisdom:admin).",
+        "description": "Omitted fields preserve existing settings. expected_version rejects stale edits. publication_mode writes through atomically to the base publication policy (open ⇒ open; managed|moderated ⇒ moderated). Alternatively, publication_settings saves the full publication/security form and recommendations in one transaction, with both reviewed versions required. Member GET responses never include publication_settings.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomAgentLedPolicyUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored policy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomAgentLedPolicyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Policy version changed or publication policy is unavailable. Reload before editing again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid policy value.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/invocations": {
+      "post": {
+        "summary": "Idempotently upsert per-user per-skill per-day invocation counts.",
+        "description": "Client-reported usage of active, published organization skills only. skill_key must be the canonical registry id and content_hash must match a published version. Never send private/local skill names, paths, contents or usage. Unknown fields and built-ins are rejected. The user is the token subject; the same (skill_key, day) replaces the prior row rather than adding to it.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomInvocationUpsertRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rows accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomInvocationUpsertResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed rows.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reference is not an active published skill/version in this organization. No rows written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/invocations/aggregate": {
+      "get": {
+        "summary": "Window aggregate (count, days used, last used) for one skill.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Canonical active published skill id in this organization."
+            },
+            "required": true,
+            "name": "skill_key",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Defaults to policy usage_evidence_window_days."
+            },
+            "required": false,
+            "name": "window_days",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "self (default) or org (ADMIN)."
+            },
+            "required": false,
+            "name": "scope",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Aggregate.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomInvocationAggregateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing skill_key or bad window.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/suggestions": {
+      "get": {
+        "summary": "Suggestion history + exclusion verdict for the caller.",
+        "description": "Pass skill_key (+ content_hash) to get `excluded`: true while a matching suggestion is outstanding, accepted, or suppressed (not_now). A changed content_hash is re-eligible immediately.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter to one skill."
+            },
+            "required": false,
+            "name": "skill_key",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Hash to evaluate exclusion for."
+            },
+            "required": false,
+            "name": "content_hash",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "History.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomSuggestionListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Record a suggestion the client agent made (outcome=suggested).",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomSuggestionCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Recorded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomSuggestionRecord"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/suggestions/{id}/outcome": {
+      "post": {
+        "summary": "Set a suggestion's outcome; declined/dismissed apply policy suppression.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Suggestion id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomSuggestionOutcomeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomSuggestionRecord"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad outcome.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not the caller's suggestion.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/mute": {
+      "get": {
+        "summary": "Read the caller's proactive-notification mute.",
+        "description": "Server-owned. Every proactive dispatch checks it; manual browse/publish/install/update routes never do. GET includes revision metadata only with include_revision=1, preserving legacy strict response parsers. Queued clients use PUT with expected_revision, mutation_id and requested_at; null duration clears. A retry cannot extend expiry or overwrite a newer preference. Reuse the same payload on retry; a conflict requires a fresh user choice. Legacy duration-only PUT and DELETE remain immediate writes.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            },
+            "required": false,
+            "name": "include_revision",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Mute state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomMuteResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Set or clear proactive-notification mute.",
+        "description": "Server-owned. Every proactive dispatch checks it; manual browse/publish/install/update routes never do. GET includes revision metadata only with include_revision=1, preserving legacy strict response parsers. Queued clients use PUT with expected_revision, mutation_id and requested_at; null duration clears. A retry cannot extend expiry or overwrite a newer preference. Reuse the same payload on retry; a conflict requires a fresh user choice. Legacy duration-only PUT and DELETE remain immediate writes.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomMuteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Mute state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomMuteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid mutation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Preference changed; read current state before a fresh user choice.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Queued preference expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Clear the caller's mute.",
+        "description": "Server-owned. Every proactive dispatch checks it; manual browse/publish/install/update routes never do. GET includes revision metadata only with include_revision=1, preserving legacy strict response parsers. Queued clients use PUT with expected_revision, mutation_id and requested_at; null duration clears. A retry cannot extend expiry or overwrite a newer preference. Reuse the same payload on retry; a conflict requires a fresh user choice. Legacy duration-only PUT and DELETE remain immediate writes.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Mute state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomMuteResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/events": {
+      "post": {
+        "summary": "Compose (or find by canonical identity) an event for the caller.",
+        "description": "Server fills evidence, safety and popularity summaries and mints signed action tokens. Same recipient, event type and exact reference ⇒ 200 with deduplicated=true and no new row, regardless of the legacy dedup_key hint. Published references must exist in this organization and be active; a supplied version/hash must match. No recipient override is accepted.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomEventCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Existing (dedup).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomProactiveEventResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomProactiveEventResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Published reference not found in org or hash mismatch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stored event identity conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Published reference inactive or invalidated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/events/{id}": {
+      "get": {
+        "summary": "Read one proactive event (recipient only) with fresh action tokens.",
+        "description": "Revalidates the exact published reference and lifecycle generation before issuing actions. Inactive or invalidated references are not actionable.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Event id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomProactiveEventResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found / not the recipient.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Published reference inactive or invalidated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/events/{id}/deliver": {
+      "post": {
+        "summary": "Submit agent-authored title/explanation and deliver the event.",
+        "description": "Agent text is untrusted: bounded, control-character-free, scanned with the org's sensitive-content rules. Delivery honours the recipient mute (202 muted) and reserves weekly capacity atomically (429 when full). A configured sink and matching transport acknowledgement are required. One 120-second lease owns the send; the transport wait is bounded to 30 seconds. Definite non-sends permit at most three attempts. Missing/ambiguous acknowledgements or expired owners leave uncertain state and retain capacity: never blindly resend. Receipt and suggestion history commit together. A lost response can follow a successful commit; read/retry the same event, never create a replacement. Acknowledged deliveries return 200 idempotently. No receipt means no success.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Event id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomEventDeliverRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Delivered (or no-op).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomProactiveEventResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Suppressed: recipient muted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomProactiveEventResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found / not the recipient.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Delivery in progress, uncertain, exhausted, or policy/reference changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Published reference inactive or invalidated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Agent text invalid or blocked by scan.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Weekly recommendation cap reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Definite non-send or uncertain send/commit; inspect error and existing event before retrying.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface or acknowledged delivery sink not configured.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/events/{id}/act": {
+      "post": {
+        "summary": "Read a legacy event or require fresh native consent.",
+        "description": "Token must match (org, caller, event, action) and be unexpired; otherwise 410 with a user-facing message. Review/view/view_changes are read-only. All other legacy actions return native_consent_required without changing state. Use current Agent controls for operations and typed preference routes for mute/suppression. A click is never installation, publication or delivery evidence.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Event id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomEventActRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read-only event view.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomProactiveEventResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Action not allowed for this event type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found / not the recipient.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Fresh native consent or notification settings required; nothing changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Action token invalid/expired or published reference invalidated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/outbox": {
+      "get": {
+        "summary": "Queued manager review notifications for the org (ADMIN).",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Max rows (default 50)."
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Queued items.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomOutboxListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/analytics": {
+      "post": {
+        "summary": "Record a typed funnel analytics event.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomAnalyticsEventRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Recorded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomAnalyticsEventResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown name or oversized properties.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/analytics/aggregate": {
+      "get": {
+        "summary": "Per-org counts by analytics event name (ADMIN).",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Window (default 30)."
+            },
+            "required": false,
+            "name": "since_days",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Counts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomAnalyticsAggregateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad window.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/skills/{id}/unpublish": {
+      "post": {
+        "summary": "Unpublish a skill (ADMIN): leaves browse and new installs; restorable.",
+        "description": "Single primary lifecycle action for the agent-led flow. Internally maps to `archive`: history, versions and installations are preserved, discovery and new installs stop, and POST .../restore reverses it. `takedown` remains the separate moderation/security action. Nothing is deleted.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Skill id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomUnpublishRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Unpublished.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomUnpublishResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing takedown_generation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Skill not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already unpublished or generation changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
             "content": {
               "application/json": {
                 "schema": {

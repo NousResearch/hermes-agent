@@ -92,6 +92,9 @@ def create_schema(db: sqlite3.Connection) -> None:
     from .delivery_outbox import create_schema as create_delivery_schema
 
     create_delivery_schema(db)
+    from .operation_outbox import create_schema as create_operation_schema
+
+    create_operation_schema(db)
     # Support development databases created before renewable consent IDs.
     definition = db.execute(
         "SELECT sql FROM sqlite_master WHERE name='wisdom_consent'"

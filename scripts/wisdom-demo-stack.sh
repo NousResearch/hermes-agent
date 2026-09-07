@@ -19,6 +19,7 @@ PUBLISHER_HOME="${WISDOM_PUBLISHER_HOME:-${DEMO_HOME}/publisher}"
 PUBLISHER_METADATA="${STATE_DIR}/publisher-fixture.json"
 PORTAL_URL="${WISDOM_PORTAL_URL:-http://127.0.0.1:3111}"
 GATEWAY_URL="${WISDOM_GATEWAY_URL:-http://127.0.0.1:8787}"
+DASHBOARD_UI_PORT="${WISDOM_DASHBOARD_UI_PORT:-5173}"
 TEAM_ORG_ID="${WISDOM_TEAM_ORG_ID:-nas_organisation:wisdom-local}"
 TEAM_ORG_SLUG="${WISDOM_TEAM_ORG_SLUG:-wisdom-local}"
 PRIVY_DID="${WISDOM_PRIVY_DID:-did:privy:user-9399fb3c}"
@@ -42,7 +43,7 @@ Usage: scripts/wisdom-demo-stack.sh [up|login|status|publisher-setup|publisher-v
 
 Useful overrides:
   WISDOM_PORTAL_APP, WISDOM_GATEWAY_REPO, HERMES_HOME,
-  WISDOM_AGENT_HOME, WISDOM_DEMO_HOME,
+  WISDOM_AGENT_HOME, WISDOM_DEMO_HOME, WISDOM_DASHBOARD_UI_PORT,
   WISDOM_PRIVY_DID, WISDOM_TEAM_ORG_ID, WISDOM_TEAM_ORG_SLUG
 EOF
 }
@@ -80,13 +81,13 @@ status() {
     else
       printf '%-18s down (:%s)\n' "${label}" "${port}"
     fi
-  done <<'EOF'
+  done <<EOF
 3111 Portal
 3112 Privy mock
 3114 LiteLLM mock
 8787 Gateway
 9119 Dashboard API
-5173 Dashboard UI
+${DASHBOARD_UI_PORT} Dashboard UI
 5174 Desktop renderer
 EOF
 
@@ -324,14 +325,17 @@ open_portal_login() {
       const http = require("node:http");
       const fs = require("node:fs");
       const record = JSON.parse(fs.readFileSync(process.env.AUTH_FILE, "utf8"));
+      const close = () => {
+        server.close();
+        server.closeAllConnections();
+      };
       const timeout = setTimeout(() => {
-        server.close(() => {
-          process.exitCode = 1;
-        });
+        close();
       }, 30000);
       const server = http.createServer((_request, response) => {
         clearTimeout(timeout);
         response.statusCode = 302;
+        response.setHeader("Connection", "close");
         for (const cookie of record.cookies) {
           response.appendHeader(
             "Set-Cookie",
@@ -340,7 +344,7 @@ open_portal_login() {
         }
         response.setHeader("Location", process.env.PORTAL_REDIRECT);
         response.end();
-        setTimeout(() => server.close(), 1000);
+        setTimeout(close, 1000);
       });
       server.listen(3120, "127.0.0.1");
     ' >"${STATE_DIR}/browser-login.log" 2>&1 &
@@ -628,7 +632,7 @@ up() {
     "3114 LiteLLM-mock" \
     "8787 Gateway" \
     "9119 Dashboard-API" \
-    "5173 Dashboard-UI" \
+    "${DASHBOARD_UI_PORT} Dashboard-UI" \
     "5174 Desktop-renderer" \
     "3120 browser-login"; do
     # shellcheck disable=SC2086
@@ -689,18 +693,18 @@ up() {
 
   start_service "dashboard-ui" "${ROOT}/web" env \
     HERMES_DASHBOARD_URL=http://127.0.0.1:9119 \
-    npm run dev -- --host 127.0.0.1 --port 5173
-  wait_for_port 5173 "Dashboard UI"
+    npm run dev -- --host 127.0.0.1 --port "${DASHBOARD_UI_PORT}" --strictPort
+  wait_for_port "${DASHBOARD_UI_PORT}" "Dashboard UI"
 
   start_agent_process "desktop" "${ROOT}" npm run dev --workspace apps/desktop
   wait_for_port 5174 "Desktop renderer"
-  open "http://127.0.0.1:5173/skills"
+  open "http://127.0.0.1:${DASHBOARD_UI_PORT}/skills"
 
   echo
   echo "Collective Wisdom demo is ready"
   echo "  Portal:    ${PORTAL_URL}/orgs/${TEAM_ORG_SLUG}/wisdom"
   echo "  Management:${PORTAL_URL}/orgs/${TEAM_ORG_SLUG}/wisdom/admin"
-  echo "  Dashboard: http://127.0.0.1:5173/skills"
+  echo "  Dashboard: http://127.0.0.1:${DASHBOARD_UI_PORT}/skills"
   echo "  Messaging: supervised (log: ${STATE_DIR}/messaging-gateway.log)"
   echo "  CLI:       HERMES_HOME=${AGENT_HOME} HERMES_SHARED_AUTH_DIR=${DEMO_HOME}/shared ${ROOT}/scripts/wisdom-demo-env.sh -- hermes wisdom status"
   echo

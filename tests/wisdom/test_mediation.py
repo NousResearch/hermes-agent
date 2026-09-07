@@ -280,6 +280,8 @@ def test_assessment_uses_session_runtime_and_no_tools(monkeypatch):
         assert kwargs["provider"] == "codex" and kwargs["model"] == "session-model"
         assert kwargs["main_runtime"]["api_key"] == "private-runtime"
         assert "private-runtime" not in json.dumps(kwargs["messages"])
+        schema = kwargs["extra_body"]["response_format"]["json_schema"]["schema"]
+        assert json.dumps(schema, ensure_ascii=True) in kwargs["messages"][0]["content"]
         payload = json.dumps({
             "advice": [
                 {

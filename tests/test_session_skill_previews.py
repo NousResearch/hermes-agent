@@ -45,8 +45,7 @@ def _install_skill(tmp_path, monkeypatch, name="work", body=SKILL_BODY):
         f"---\nname: {name}\ndescription: Description for {name}\n---\n\n# {name}\n\n{body}\n"
     )
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
-    monkeypatch.setattr(skill_commands, "_skill_commands", {})
-    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
     skill_commands.scan_skill_commands()
     return skills_dir
 

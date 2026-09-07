@@ -2919,7 +2919,6 @@ export const zhHant = defineLocale({
     toggleStripTab: title => `切換 ${title} 分頁`,
     minimize: '最小化',
     restore: '還原',
-
     reload: '重新載入',
     closeOthers: '關閉其他',
     closeToRight: '關閉右側',

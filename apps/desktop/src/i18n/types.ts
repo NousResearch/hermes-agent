@@ -2961,7 +2961,6 @@ export interface Translations {
     toggleStripTab: (title: string) => string
     minimize: string
     restore: string
-
     closeRunningTitle: string
     closeRunningBody: string
     closeRunningConfirm: string

@@ -3024,7 +3024,6 @@ export const ja = defineLocale({
     toggleStripTab: title => `${title} タブを切り替え`,
     minimize: '最小化',
     restore: '復元',
-
     reload: '再読み込み',
     closeOthers: '他を閉じる',
     closeToRight: '右側を閉じる',

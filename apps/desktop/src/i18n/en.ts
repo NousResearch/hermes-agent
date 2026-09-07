@@ -3421,7 +3421,6 @@ export const en: Translations = {
     toggleStripTab: title => `Toggle ${title} tab`,
     minimize: 'Minimize',
     restore: 'Restore',
-
     closeRunningTitle: 'Close running tab?',
     closeRunningBody:
       'This chat is still working (or waiting on your input). Closing the tab hides it — the session keeps its progress and can be reopened from the sidebar.',

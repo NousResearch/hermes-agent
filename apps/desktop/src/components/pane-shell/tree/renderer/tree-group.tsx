@@ -12,6 +12,7 @@
 import { useStore } from '@nanostores/react'
 import {
   type CSSProperties,
+  Fragment,
   type ReactNode,
   type RefObject,
   useEffect,

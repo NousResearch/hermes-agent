@@ -524,6 +524,20 @@ class TestListProfiles:
         assert "alpha" in names
         assert "beta" in names
 
+    def test_default_profile_surfaces_custom_alias(self, profile_env):
+        from hermes_cli.profiles import create_wrapper_script
+
+        create_wrapper_script("coach", target="default")
+        info = next(p for p in list_profiles() if p.is_default)
+        assert info.alias_name == "coach"
+        assert info.alias_path is not None
+        assert info.alias_path.name == "coach"
+
+    def test_default_without_wrapper_reports_no_alias(self, profile_env):
+        info = next(p for p in list_profiles() if p.is_default)
+        assert info.alias_name is None
+        assert info.alias_path is None
+
 
 # ===================================================================
 # TestActiveProfile
@@ -703,6 +717,36 @@ class TestFindAliasForProfile:
         assert info.alias_name == "qiaobusi"
         assert info.alias_path is not None
         assert info.alias_path.name == "qiaobusi"
+
+
+    def test_profile_list_renders_default_alias(self, profile_env, capsys):
+        from hermes_cli.profile_cmd import _profile_list
+        from hermes_cli.profiles import create_wrapper_script
+
+        create_wrapper_script("coach", target="default")
+        _profile_list(args=None)
+        out = capsys.readouterr().out
+        default_row = next(line for line in out.splitlines() if "default" in line)
+        assert "coach" in default_row
+
+
+    def test_profile_list_renders_dash_for_default_without_wrapper(self, profile_env, capsys):
+        from hermes_cli.profile_cmd import _profile_list
+
+        _profile_list(args=None)
+        out = capsys.readouterr().out
+        default_row = next(line for line in out.splitlines() if "default" in line)
+        assert "—" in default_row
+
+
+    def test_profile_status_prints_default_alias(self, profile_env, capsys):
+        from hermes_cli.profile_cmd import _profile_status
+        from hermes_cli.profiles import create_wrapper_script
+
+        create_wrapper_script("coach", target="default")
+        _profile_status(args=None)
+        out = capsys.readouterr().out
+        assert "Alias:          coach → hermes -p default" in out
 
 
 # ===================================================================

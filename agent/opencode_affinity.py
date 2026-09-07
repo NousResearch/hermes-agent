@@ -17,9 +17,39 @@ so the header cannot drift per code path.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Optional
 
 OPENCODE_SESSION_HEADER = "x-opencode-session"
+
+_FALLBACK_SESSION_KEY: Optional[str] = None
+
+
+def _fallback_session_key() -> str:
+    """Stable per-install affinity key for calls outside any conversation scope.
+
+    Dashboard/plugin HTTP-handler threads run aux LLM calls with no turn scope and
+    no readable runtime session_id; the relay hard-rejects a header-less request
+    (400 MissingSessionID), so those calls pin to this process-cached key instead.
+    Derived from the Hermes home so separate installs (and separate containers)
+    route to independent backends.
+    """
+    global _FALLBACK_SESSION_KEY
+    if _FALLBACK_SESSION_KEY is None:
+        home = ""
+        try:
+            from hermes_constants import get_hermes_home
+
+            home = str(get_hermes_home())
+        except Exception:
+            home = ""
+        digest = (
+            hashlib.sha256(home.encode("utf-8", errors="replace")).hexdigest()[:16]
+            if home
+            else ""
+        )
+        _FALLBACK_SESSION_KEY = f"hermes-aux-{digest}" if digest else "hermes-aux"
+    return _FALLBACK_SESSION_KEY
 
 
 def is_opencode_target(provider: Optional[str], base_url: Optional[str]) -> bool:
@@ -72,7 +102,10 @@ def opencode_session_headers(
         )
     except Exception:
         key = str(session_id or "")
-    return {OPENCODE_SESSION_HEADER: key} if key else {}
+    # Out-of-turn aux callers (dashboard/plugin HTTP-handler threads) have no scope at all:
+    # pin them to the per-install fallback rather than omitting the header, which the relay
+    # hard-rejects with 400 MissingSessionID.
+    return {OPENCODE_SESSION_HEADER: key or _fallback_session_key()}
 
 
 def merge_opencode_session_headers(

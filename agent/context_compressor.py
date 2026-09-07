@@ -566,6 +566,11 @@ class _SummaryFailureKind:
         return next((reason for flagged, reason in reasons if flagged), "failed")
 
 
+def _is_transient_summary_upstream_status(status: Any) -> bool:
+    """Return True for temporary upstream statuses that must preserve history."""
+    return isinstance(status, int) and status in {408, 500, 502, 503, 504}
+
+
 def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
     """Classify a summary-call exception by status code / message shape."""
     status = _exc_status_code(e)
@@ -579,7 +584,7 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         # APIResponseValidationError "expecting value"; treat as transient.
         json_decode=isinstance(e, json.JSONDecodeError) or "expecting value" in err,
         # httpx premature-close errors are transient; treat like a timeout, not a 60s cooldown.
-        streaming_closed=_is_connection_error(e),
+        streaming_closed=_is_connection_error(e) or _is_transient_summary_upstream_status(status),
         # HTTP 200 with empty body from a degraded provider, plus the sibling "no usable response"
         # shapes from _validate_llm_response.
         empty_content=isinstance(e, RuntimeError) and any(

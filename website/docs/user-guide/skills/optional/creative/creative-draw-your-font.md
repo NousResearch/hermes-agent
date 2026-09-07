@@ -1,21 +1,21 @@
 ---
-title: "Draw Your Font — Turn a photo of handwriting into an installable font (TTF/WOFF)"
+title: "Draw Your Font — Turn a handwriting photo into an installable TTF font"
 sidebar_label: "Draw Your Font"
-description: "Turn a photo of handwriting into an installable font (TTF/WOFF)"
+description: "Turn a handwriting photo into an installable TTF font"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Draw Your Font
 
-Turn a photo of handwriting into an installable font (TTF/WOFF).
+Turn a handwriting photo into an installable TTF font.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/draw-your-font` |
-| Path | `optional-skills/creative/draw-your-font` |
+| Path | `optional-skills/creative\draw-your-font` |
 | Version | `0.1.0` |
 | Author | Danilo Znamerovszkij (https://github.com/danilo-znamerovszkij/draw-your-font), ported by Hermes Agent |
 | License | MIT |

@@ -117,7 +117,12 @@ class TestTurnRouting:
 
         assert assembled.activated
         assert mcp_name not in names
-        assert server._hud_surface_note(_session(tools=names, client_surface="hud")) == (
+        # Production computes the note from agent.valid_tool_names — the
+        # GRANTED set — not from the visible post-assembly schemas. Under
+        # #97979 the HUD kit (read_window_below, computer_use) is deferred
+        # behind the bridge yet still granted/callable, so the note must
+        # survive assembly unchanged.
+        assert server._hud_surface_note(_session(tools=FULL_KIT, client_surface="hud")) == (
             hud_surface_note(FULL_KIT)
         )
 

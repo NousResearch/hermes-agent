@@ -5852,3 +5852,38 @@ class TestFts5SanitizerCharacterClass:
         # text; keep % intact there (pre-existing contract).
         sanitized = self._sanitize("完成50%")
         assert "%" in sanitized
+
+
+class TestSessionFKSelfHeal:
+    """Verify that transcript appends self-heal missing parent session rows."""
+
+    def test_append_message_self_heals_missing_session(self, tmp_path):
+        import hermes_state
+        db = hermes_state.SessionDB(db_path=tmp_path / "state.db")
+        # append_message to a session that was never created
+        msg_id = db.append_message("orphan_s1", role="user", content="hello orphan")
+        assert msg_id is not None
+        session = db.get_session("orphan_s1")
+        assert session is not None
+        assert session["id"] == "orphan_s1"
+        assert session["source"] == "self-healed"
+        assert session["message_count"] == 1
+
+    def test_append_messages_batch_self_heals_missing_session(self, tmp_path):
+        import hermes_state
+        db = hermes_state.SessionDB(db_path=tmp_path / "state.db")
+        # append_messages_batch to an uncreated session
+        inserted = db.append_messages_batch(
+            "orphan_s2",
+            [
+                {"role": "user", "content": "batch 1"},
+                {"role": "assistant", "content": "batch 2"},
+            ],
+        )
+        assert inserted == 2
+        session = db.get_session("orphan_s2")
+        assert session is not None
+        assert session["id"] == "orphan_s2"
+        assert session["source"] == "self-healed"
+        assert session["message_count"] == 2
+

@@ -50,7 +50,7 @@ from hermes_state_dbfile import (
     _watched_sqlite_sidecar_paths, is_zeroed_state_db, quarantine_cross_process_lock, quarantine_zeroed_state_db,
     refuse_deleted_wal_generation,
 )
-from hermes_state_messages import SessionMessagesMixin
+from hermes_state_messages import SessionMessagesMixin, _ensure_session_row
 from hermes_state_wal import _WAL_INCOMPAT_MARKERS, apply_database_pragmas, apply_wal_with_fallback
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin

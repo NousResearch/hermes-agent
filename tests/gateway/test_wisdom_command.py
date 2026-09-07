@@ -39,6 +39,7 @@ def test_shared_mute_command_is_private_and_preserves_pending_feedback(monkeypat
         "mute": {"muted": False, "muted_until": None},
         "sync": {"preference_sync": "pending"},
     }
+    preferences.prepare_mute_control.side_effect = TimeoutError
     monkeypatch.setattr("hermes_wisdom.preferences.WisdomPreferences", lambda service: preferences)
     controller = WisdomCommandController()
     service = _Service()
@@ -46,6 +47,7 @@ def test_shared_mute_command_is_private_and_preserves_pending_feedback(monkeypat
     preferences.native_mute_command.assert_called_once_with("1w")
     assert "waiting to sync" in private.notice
     assert "enabled" in private.to_text()
+    assert private.actions[0].label == "Refresh settings"
     preferences.native_mute_command.reset_mock()
     group = controller.execute("mute forever", service, _context(is_group=True))
     preferences.native_mute_command.assert_not_called()
@@ -651,7 +653,7 @@ def test_notifications_are_not_marked_read_until_confirmation():
 
     assert service.calls == [("notifications", False)]
     bind_view_callbacks(view, context)
-    token = view.actions[0].callback_data.removeprefix("wi:cmd:")
+    token = next(action for action in view.actions if action.operation == "mark_notifications").callback_data.removeprefix("wi:cmd:")
     controller.execute_token(token, service, context)
     assert service.calls[-1] == ("notifications", True)
 

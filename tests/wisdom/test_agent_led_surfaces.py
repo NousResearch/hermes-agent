@@ -72,7 +72,7 @@ def test_handle_action_not_now_records_dismissal_and_is_idempotent(tmp_path, mon
     assert second["stale"] and second["message"] == STALE_ACTION_MESSAGE
 
 
-def test_handle_action_mute_requires_choice_then_records(tmp_path, monkeypatch):
+def test_legacy_mute_only_opens_current_native_settings(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_wisdom.agent_led.actions.load_policy", lambda client=None: __import__("hermes_wisdom.agent_led.policy", fromlist=["AgentLedPolicy"]).AgentLedPolicy())
     event = _teammate_event()
     ledger = DeliveryLedger(tmp_path / "l.json")
@@ -80,10 +80,11 @@ def test_handle_action_mute_requires_choice_then_records(tmp_path, monkeypatch):
     deliver(event, sender=lambda _e: None, ledger=ledger, now=NOW)
     target = next(a.target for a in event.allowed_actions if a.id == "mute")
     ask = handle_action(target, ledger=ledger, history=history, now=NOW)
-    assert ask["needs_choice"] and [a["label"] for a in ask["options"]["actions"]] == ["1 day", "1 week", "30 days", "Forever"]
+    assert ask["open_mute_settings"]
     done = handle_action(target, ledger=ledger, history=history, now=NOW, mute_choice="30d")
-    assert done["ok"] and history.is_muted("sk-9", at=NOW + timedelta(days=29))
-    assert not history.is_muted("sk-9", at=NOW + timedelta(days=31))
+    assert done["open_mute_settings"]
+    assert not history.is_muted("sk-9", at=NOW)
+    assert ledger.resolve_action(target, at=NOW)["ok"]
 
 
 def test_handle_action_install_never_claims_installed(tmp_path, monkeypatch):

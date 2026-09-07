@@ -165,8 +165,15 @@ class WisdomPreferences:
         user, now = self.identity(org), self.clock()
         with self.store.transaction() as db:
             MediationStore._check_org(db, org)
-            db.execute(
-                """INSERT INTO wisdom_mute_outbox
+            self._stage_mute(
+                db, org, user, duration, expected_revision, uuid.uuid4().hex, now
+            )
+        return self.mute_status(org)
+
+    @staticmethod
+    def _stage_mute(db, org, user, duration, expected_revision, mutation_id, now):
+        db.execute(
+            """INSERT INTO wisdom_mute_outbox
                 (organization_id,user_id,mutation_id,expected_revision,duration,
                  requested_at,expires_at,available_at) VALUES(?,?,?,?,?,?,?,?)
                 ON CONFLICT(organization_id,user_id) DO UPDATE SET
@@ -174,17 +181,108 @@ class WisdomPreferences:
                 duration=excluded.duration,requested_at=excluded.requested_at,
                 expires_at=excluded.expires_at,available_at=excluded.available_at,
                 state='pending',attempts=0,lease_token=NULL,lease_until=NULL,last_error=NULL""",
+            (
+                org,
+                user,
+                mutation_id,
+                expected_revision,
+                duration,
+                now,
+                now + 86400,
+                now,
+            ),
+        )
+
+    def prepare_mute_control(self, org: str) -> dict:
+        """Read authoritative state before binding a private native choice menu."""
+        self.service.require_setup()
+        user = self.identity(org)
+        current = self.service.client.recommendation_mute()
+        if current.org_id != org or self.identity(org) != user:
+            raise WisdomError("Preference identity changed")
+        if "revision" not in current.model_fields_set:
+            raise WisdomError("Gateway must be updated before shared mute is available")
+        now, control_id = self.clock(), uuid.uuid4().hex
+        with self.store.transaction() as db:
+            MediationStore._check_org(db, org)
+            db.execute("DELETE FROM wisdom_mute_control WHERE expires_at<=?", (now,))
+            count = db.execute(
+                "SELECT count(*) FROM wisdom_mute_control WHERE organization_id=? AND user_id=?",
+                (org, user),
+            ).fetchone()[0]
+            if count >= 128:
+                raise WisdomError(
+                    "Too many open notification controls. Try again shortly."
+                )
+            previous = db.execute(
+                "SELECT mutation_id FROM wisdom_mute_outbox WHERE organization_id=? AND user_id=?",
+                (org, user),
+            ).fetchone()
+            db.execute(
+                """INSERT INTO wisdom_mute_control
+                (id,organization_id,user_id,expected_revision,prior_mutation_id,expires_at)
+                VALUES(?,?,?,?,?,?)""",
                 (
+                    control_id,
                     org,
                     user,
-                    uuid.uuid4().hex,
-                    expected_revision,
-                    duration,
-                    now,
-                    now + 86400,
-                    now,
+                    current.revision,
+                    previous[0] if previous else None,
+                    now + 600,
                 ),
             )
+        return {
+            "id": control_id,
+            "expires_at": now + 600,
+            "mute": current.model_dump(mode="json"),
+        }
+
+    def choose_mute_control(
+        self, org: str, control_id: str, duration: str | None
+    ) -> dict:
+        """Commit one choice per menu; repeats never extend expiry or rebase it."""
+        self.service.require_setup()
+        if duration not in {None, "1_day", "1_week", "30_days", "forever"}:
+            raise ValueError("Unsupported mute duration")
+        user, now = self.identity(org), self.clock()
+        with self.store.transaction() as db:
+            MediationStore._check_org(db, org)
+            control = db.execute(
+                "SELECT * FROM wisdom_mute_control WHERE id=? AND organization_id=? AND user_id=?",
+                (control_id, org, user),
+            ).fetchone()
+            if control is None or control["expires_at"] <= now:
+                raise ValueError(
+                    "This notification control expired. Open /wisdom mute again."
+                )
+            previous = db.execute(
+                "SELECT mutation_id FROM wisdom_mute_outbox WHERE organization_id=? AND user_id=?",
+                (org, user),
+            ).fetchone()
+            previous_id = previous[0] if previous else None
+            if control["selected_at"] is not None:
+                if control["duration"] != duration or previous_id != control_id:
+                    raise ValueError(
+                        "This notification choice was superseded. Open /wisdom mute again."
+                    )
+            else:
+                if previous_id != control["prior_mutation_id"]:
+                    raise ValueError(
+                        "Your notification preference changed. Open /wisdom mute again."
+                    )
+                self._stage_mute(
+                    db,
+                    org,
+                    user,
+                    duration,
+                    control["expected_revision"],
+                    control_id,
+                    now,
+                )
+                db.execute(
+                    "UPDATE wisdom_mute_control SET selected_at=?,duration=? WHERE id=?",
+                    (now, duration, control_id),
+                )
         return self.mute_status(org)
 
     def mute_status(self, org: str) -> dict | None:

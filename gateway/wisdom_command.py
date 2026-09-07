@@ -535,6 +535,7 @@ class WisdomCommandController:
             "drafts": "drafts",
             "installed": "installed",
             "notifications": "notifications",
+            "mute": "mute",
             "status": "status",
             "setup": "setup",
             "help": "help",
@@ -567,6 +568,23 @@ class WisdomCommandController:
         def complete(view: WisdomView) -> WisdomView:
             CALLBACK_TOKENS.resolve(token, context, consume=True)
             return view
+
+        if operation == "mute_choice":
+            from hermes_wisdom.preferences import WisdomPreferences
+
+            if context.is_group:
+                raise PermissionError("Notification preferences are private. Continue in a direct message.")
+            preferences = WisdomPreferences(service)
+            preferences.choose_mute_control(
+                service.store.active_org_id(), str(args["control_id"]), args["duration"]
+            )
+            # The durable menu is the single-use fence. Keep transport callbacks
+            # retryable after a lost reply without creating a second mutation.
+            return self._attach_navigation(
+                self._mute(service, []),
+                _NavigationTarget("command", {"raw_args": "mute"}),
+                value.navigation_history,
+            )
 
         if operation == "setup_confirm":
             result = service.setup(disclosure_accepted=True)
@@ -823,6 +841,7 @@ class WisdomCommandController:
                     "notifications",
                     local_command=_wisdom_command("notifications"),
                 ),
+                WisdomAction("Notification settings", "mute", local_command=_wisdom_command("mute")),
                 WisdomAction("Help", "help", local_command=_wisdom_command("help")),
             ],
         )
@@ -865,11 +884,22 @@ class WisdomCommandController:
 
         if len(args) > 1:
             raise ValueError("Use /wisdom mute [status|1d|1w|30d|forever|off]")
-        result = WisdomPreferences(service).native_mute_command(args[0] if args else "status")
+        preferences = WisdomPreferences(service)
+        result = preferences.native_mute_command(args[0] if args else "status")
+        control = None
+        try:
+            control = preferences.prepare_mute_control(service.store.active_org_id())
+            result["mute"] = control["mute"]
+        except Exception:
+            # A failed refresh must not hide a successfully queued local choice.
+            pass
         remote, pending = result["mute"], result["sync"]
         summary = "Gateway unavailable; the shared mute state could not be confirmed."
         if remote is not None:
-            summary = "Proactive Wisdom notifications are muted." if remote["muted"] else "Proactive Wisdom notifications are enabled."
+            summary = (
+                "Proactive Wisdom notifications are muted."
+                if remote["muted"] else "Proactive Wisdom notifications are enabled."
+            )
             if remote["muted"] and remote["muted_until"]:
                 summary += f" Until {remote['muted_until']}."
         sync = pending["preference_sync"] if pending else None
@@ -880,9 +910,35 @@ class WisdomCommandController:
             "conflict": "Your preference changed on another client. Check the shared state before choosing again.",
             "expired": "This queued choice expired without confirmation. Choose again to retry.",
         }
-        return WisdomView("Wisdom notifications", summary,
+        choices = [
+            ("1 day", "1_day"), ("1 week", "1_week"),
+            ("30 days", "30_days"), ("Indefinitely", "forever"),
+        ]
+        actions = []
+        if control:
+            actions = [
+                WisdomAction(label, "mute_choice", {
+                    "control_id": control["id"], "duration": duration,
+                })
+                for label, duration in choices
+            ]
+            actions.append(WisdomAction(
+                "Turn on", "mute_choice",
+                {"control_id": control["id"], "duration": None}, primary=True,
+            ))
+        else:
+            actions.append(WisdomAction("Refresh settings", "mute"))
+        return WisdomView(
+            "Wisdom notifications", summary,
+            actions=actions[3:] if control else actions,
             notice=notices.get(sync),
-            items=[WisdomItem("Your organization", "This affects your proactive notifications across clients. Manual browse, install, update, and sharing remain available.")])
+            items=[WisdomItem(
+                "Mute proactive notifications",
+                "Choose a duration, or turn notifications on. This affects your notifications "
+                "across clients in this organization. Manual browse, install, update, and sharing remain available.",
+                actions=actions[:3] if control else [],
+            )],
+        )
 
     def _setup(self, service: WisdomService, _args: list[str]) -> WisdomView:
         return WisdomView(
@@ -1515,9 +1571,10 @@ class WisdomCommandController:
                 )
                 for item in events[:PAGE_SIZE]
             ],
-            actions=[WisdomAction("Mark all read", "mark_notifications")]
-            if events
-            else [],
+            actions=[
+                WisdomAction("Notification settings", "mute"),
+                *([WisdomAction("Mark all read", "mark_notifications")] if events else []),
+            ],
             notice=None if events else "You are all caught up.",
         )
 

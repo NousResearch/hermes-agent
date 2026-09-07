@@ -73,6 +73,10 @@ def create_schema(db: sqlite3.Connection) -> None:
           state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
           available_at REAL NOT NULL, lease_token TEXT, lease_until REAL,
           last_error TEXT, PRIMARY KEY(organization_id,user_id))""",
+        """CREATE TABLE IF NOT EXISTS wisdom_mute_control (
+          id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, user_id TEXT NOT NULL,
+          expected_revision INTEGER NOT NULL, prior_mutation_id TEXT,
+          expires_at REAL NOT NULL, selected_at REAL, duration TEXT)""",
         """CREATE TABLE IF NOT EXISTS wisdom_consent_outcome (
           interaction_id TEXT PRIMARY KEY REFERENCES wisdom_consent(id),
           organization_id TEXT NOT NULL, owner_session TEXT NOT NULL,

@@ -15,7 +15,6 @@ from typing import Any
 from .history import SuggestionHistory, history_path
 from .notify import STALE_ACTION_MESSAGE, DeliveryLedger
 from .policy import load_policy
-from .templates import mute_duration_days, render_mute_options
 
 
 def handle_action(
@@ -36,6 +35,13 @@ def handle_action(
         return {"ok": False, "stale": True, "message": STALE_ACTION_MESSAGE}
     action = str(resolved["action"])
     event = resolved["event"]
+    if action == "mute":
+        # Legacy targets carry no authenticated revision or durable choice ID.
+        # Even a duration from an old keyboard must open fresh native controls.
+        return {
+            "ok": True, "action": action, "open_mute_settings": True,
+            "message": "Open /wisdom mute to choose your notification preference.",
+        }
     policy = load_policy(client=getattr(service, "client", None))
     skill_id = str(event.get("skill_id") or "")
     content_hash = str((event.get("rendering_hints") or {}).get("content_hash") or "")
@@ -49,15 +55,6 @@ def handle_action(
             client=getattr(service, "client", None),
         )
         return {"ok": True, "action": action, "message": "Okay, I will not bring this up again for a while.", **record}
-
-    if action == "mute":
-        if mute_choice is None:
-            return {"ok": True, "action": action, "needs_choice": True, "options": render_mute_options().as_dict()}
-        days = mute_duration_days(mute_choice)
-        if not ledger_obj.mark_acted(dedup, action):
-            return {"ok": False, "stale": True, "message": STALE_ACTION_MESSAGE}
-        record = hist.record_mute(skill_id or "*", days=days, at=current, client=getattr(service, "client", None))
-        return {"ok": True, "action": action, "message": "Muted. You can still browse and install any time.", **record}
 
     if action in {"share", "review"}:
         # Share opens the resumable packaging flow; nothing is published here.

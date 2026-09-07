@@ -7884,9 +7884,20 @@ class TelegramAdapter(BasePlatformAdapter):
         """Resolve an agent-led recommendation button through the delivery ledger.
 
         Stale, expired, or already-handled targets answer with a clear message
-        and leave nothing half-applied. Mute shows the fixed duration options
-        as a second keyboard; the choice arrives as ``wa:mute:<dedup>:<key>``.
+        and leave nothing half-applied. Legacy mute buttons open the current
+        account-scoped settings; old duration callbacks never apply directly.
         """
+        caller_id = str(getattr(query.from_user, "id", ""))
+        message = getattr(query, "message", None)
+        chat_id = getattr(message, "chat_id", None)
+        chat_type = str(getattr(getattr(message, "chat", None), "type", "") or "")
+        if not self._is_callback_user_authorized(
+            caller_id, chat_id=chat_id, chat_type=chat_type,
+            thread_id=str(getattr(message, "message_thread_id", None) or "") or None,
+            user_name=getattr(query.from_user, "first_name", None), command="wisdom",
+        ):
+            await query.answer(text="You are not authorized to manage skills.")
+            return
         parts = data.split(":")
         mute_choice = parts[3] if len(parts) == 4 and parts[1] == "mute" else None
         target = ":".join(parts[:3])
@@ -7907,16 +7918,27 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             await query.answer(text="Something went wrong; the buttons are still valid.")
             return
-        if result.get("needs_choice"):
-            options = result["options"]["actions"]
-            keyboard = InlineKeyboardMarkup(
-                [[InlineKeyboardButton(o["label"], callback_data=f"{target}:{o['id'].split(':', 1)[1]}") for o in options]]
-            )
+        if result.get("open_mute_settings"):
             try:
-                await query.edit_message_reply_markup(reply_markup=keyboard)
+                def open_settings():
+                    from gateway.wisdom_command import WisdomCommandContext, WisdomCommandController
+                    from hermes_wisdom.service import WisdomService
+
+                    service = WisdomService()
+                    context = WisdomCommandContext(
+                        user_id=caller_id, chat_id=str(chat_id or caller_id),
+                        profile=getattr(self, "_owner_profile", None),
+                        organization_id=service.store.active_org_id(),
+                        is_group=chat_type.lower() != "private",
+                    )
+                    return WisdomCommandController().execute("mute", service, context), context
+
+                view, context = await self._run_wisdom_profile_operation(open_settings)
+                await self._prepare_wisdom_command_view(view, context)
+                await self._edit_wisdom_command_view(query, view)
+                await query.answer(text="Notification settings")
             except Exception:
-                pass
-            await query.answer(text=result["options"]["title"])
+                await query.answer(text="Settings are unavailable. Open /wisdom mute to try again.")
             return
         message = str(result.get("message") or ("Done." if result.get("ok") else "Unavailable."))
         await query.answer(text=message[:200])

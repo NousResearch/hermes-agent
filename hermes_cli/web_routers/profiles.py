@@ -12,6 +12,7 @@ so a test's ``monkeypatch.setattr(<owning module>, "_helper", ...)`` keeps worki
 import contextlib
 import copy
 import functools
+from hermes_cli.web_read_coalescing import coalesced_read
 import inspect
 import json
 import logging
@@ -631,15 +632,20 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
     return {"pull_requests": found, "scanned": wanted}
 
 
-@router.get("/api/profiles")
-async def list_profiles_endpoint():
+@functools.partial(coalesced_read, thread_runner=lambda func: run_in_threadpool(func))
+def _read_profiles():
     from hermes_cli import profiles as profiles_mod
     try:
-        profiles = await run_in_threadpool(profiles_mod.list_profiles)
+        profiles = profiles_mod.list_profiles()
         return {"profiles": [_profile_to_dict(p) for p in profiles]}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
+
+
+@router.get("/api/profiles")
+async def list_profiles_endpoint():
+    return await _read_profiles()
 
 
 @router.post("/api/profiles")

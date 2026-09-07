@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
+from hermes_cli.web_read_coalescing import coalesced_read
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
@@ -263,7 +264,6 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
 
 # --- GET /board -------------------------------------------------------------
 
-@router.get("/board")
 def get_board(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
     include_archived: bool = Query(False),
@@ -313,6 +313,27 @@ def get_board(
         return {
             "columns": [{"name": name, "tasks": columns[name]} for name in columns], "tenants": tenants,
             "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time())}
+
+
+_read_board = coalesced_read(get_board)
+
+
+@router.get("/board")
+async def get_board_endpoint(
+    tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
+    include_archived: bool = Query(False),
+    board: Optional[str] = _BOARD_Q,
+    workflow_template_id: Optional[str] = Query(None, description="Restrict to tasks using this workflow template id"),
+    current_step_key: Optional[str] = Query(None, description="Restrict to tasks at this workflow step key"),
+):
+    # Resolve selection before keying so a board switch cannot join an older read.
+    return await _read_board(
+        tenant=tenant,
+        include_archived=include_archived,
+        board=board or kanban_db.get_current_board(),
+        workflow_template_id=workflow_template_id,
+        current_step_key=current_step_key,
+    )
 
 
 # --- GET /tasks/:id ---------------------------------------------------------

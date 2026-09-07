@@ -317,6 +317,10 @@ def _systemctl(cmd: list, *, timeout: float):
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
 
 
+# poll() takes signed 32-bit milliseconds; keep headroom for rounding in communicate().
+_SYSTEMCTL_RESTART_TIMEOUT_MAX = (2**31 - 1) // 1000 - 1
+
+
 def _systemd_restart_timeout(scope_cmd: list, svc_name: str) -> float:
     """Outwait the unit's stop + start budgets, not just the systemctl client.
 
@@ -341,12 +345,13 @@ def _systemd_restart_timeout(scope_cmd: list, svc_name: str) -> float:
             if key in budgets:
                 # The shared parser returns None for infinity/unrecognized units.
                 try:
-                    duration = parse_systemd_duration_to_us(raw.strip())
-                    if duration is not None:
+                    raw = raw.strip()
+                    duration = int(raw) if raw.isascii() and raw.isdigit() else parse_systemd_duration_to_us(raw)
+                    if duration is not None and duration > 0:
                         budgets[key] = duration / 1_000_000
-                except OverflowError:
+                except (ValueError, OverflowError):
                     pass
-    return sum(budgets.values()) + 15.0
+    return min(sum(budgets.values()) + 15.0, _SYSTEMCTL_RESTART_TIMEOUT_MAX)
 
 
 def _systemctl_reset_and_restart(manage_cmd: list, svc_name: str, *, scope_cmd: list | None = None):

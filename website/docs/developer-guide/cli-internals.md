@@ -22,8 +22,12 @@ for that phase, keeping unattended updates bounded. Timing out the `systemctl`
 client does **not** cancel the manager's transaction. Custom multi-command stop
 chains or `EXTEND_TIMEOUT_USEC` can still outlast this estimate; a real timeout
 remains an incomplete restart, and successful commands still require the existing
-service-health and fleet-version verification. This does not change active-turn
-drain settings.
+service-health and fleet-version verification. Raw numeric `*USec` values are
+microseconds, while formatted values use systemd's fixed units, including days,
+weeks, months and years. The combined timeout is capped below the native signed
+32-bit millisecond poll limit (with rounding headroom), so exceptionally long
+unit limits cannot overflow subprocess polling. Zero/unknown/infinite phase
+limits use the bounded fallback. This does not change active-turn drain settings.
 
 ## Process identity: never infer it from argv substrings
 

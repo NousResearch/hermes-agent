@@ -1323,6 +1323,12 @@ Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accept
 
 #### Command-minted credentials (`key_cmd`)
 
+Vision, thinking, and native local-model capability probes materialize the same
+callable credential used by chat before building authentication headers. They
+reuse the command token cache without replacing the chat client's callable.
+If a command cannot mint a string token, these best-effort probes send no bearer
+rather than an object representation; chat retains its normal error handling.
+
 Enterprise gateways often issue short-lived bearer tokens (SSO/OIDC brokers, cloud IAM, internal auth proxies) rather than static API keys, so a token copied into `.env` goes stale mid-session and requests start returning 401. `key_cmd` names a command that *prints* a token; Hermes runs it and caches the result until shortly before expiry, so long sessions keep working with no restart:
 
 ```yaml

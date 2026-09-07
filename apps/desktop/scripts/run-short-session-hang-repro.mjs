@@ -662,6 +662,27 @@ function pidIsLive(pid) {
   }
 }
 
+/**
+ * Split a captured Electron process tree into the browser process and its
+ * children.
+ *
+ * Chromium's browser process supervises its zygote and GPU process and treats
+ * their unexpected death as fatal: three failed GPU launches in a row trip the
+ * `CHECK` in `gpu_data_manager_impl_private.cc` ("GPU process isn't usable.
+ * Goodbye."), which aborts the browser with SIGTRAP and dumps core. Signalling
+ * the tree children-first therefore manufactures a crash out of an ordinary
+ * shutdown.
+ *
+ * Teardown must give the root the first and only word: signal it alone, let it
+ * reap its own children, and sweep survivors afterwards.
+ */
+function teardownOrder(captured, rootPid) {
+  const root = captured.filter(row => row.pid === rootPid)
+  const children = captured.filter(row => row.pid !== rootPid)
+
+  return { root, children }
+}
+
 async function stopProcessTree(rootPid) {
   const captured = processTree(rootPid)
   const processDiscoveryErrors = new Set()
@@ -680,7 +701,30 @@ async function stopProcessTree(rootPid) {
     return live
   }
 
-  for (const { pid } of [...captured].reverse()) {
+  const { root, children } = teardownOrder(captured, rootPid)
+
+  // Root first, alone. Chromium tears its own children down in the right
+  // order; signalling them ourselves is what turns a clean exit into a
+  // SIGTRAP core dump.
+  for (const { pid } of root) {
+    try {
+      process.kill(pid, 'SIGTERM')
+    } catch {
+      // It already exited.
+    }
+  }
+
+  const rootDeadline = Date.now() + 3_000
+
+  while (Date.now() < rootDeadline && currentLive().some(row => row.pid === rootPid)) {
+    await sleep(100)
+  }
+
+  // Only now sweep whatever the browser failed to reap. A child outliving its
+  // browser is already orphaned, so SIGTERM here cannot fake a GPU crash.
+  const strays = currentLive().filter(row => children.some(child => child.pid === row.pid))
+
+  for (const { pid } of strays.reverse()) {
     try {
       process.kill(pid, 'SIGTERM')
     } catch {
@@ -1706,6 +1750,7 @@ export {
   classify,
   pairedSoftSignal,
   resultForError,
+  teardownOrder,
   validateArtifactBundle,
   validateSummary,
   waitFor,

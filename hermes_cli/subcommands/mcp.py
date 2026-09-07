@@ -55,6 +55,10 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_login_p = mcp_sub.add_parser(
         "login", help="Force re-authentication for an OAuth-based MCP server")
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
+    mcp_login_p.add_argument(
+        "--flow", choices=["browser", "device"], default=None,
+        help="OAuth flow: browser PKCE (default) or RFC 8628 device code "
+             "(for servers requiring the device_code grant; overrides oauth.flow)")
 
     mcp_reauth_p = mcp_sub.add_parser(
         "reauth", help="Re-authenticate one OAuth MCP server, or all of them (--all)")

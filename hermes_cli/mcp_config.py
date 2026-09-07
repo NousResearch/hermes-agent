@@ -620,11 +620,25 @@ def cmd_mcp_test(args):
     print()
 
 
-def _reauth_oauth_server(name: str, server_config: dict) -> bool:
+def _use_device_flow(cfg: dict, flow_arg: str | None) -> bool:
+    """True when the device-code flow is selected: explicit flag wins, then ``oauth.flow``."""
+    if flow_arg is not None:
+        return flow_arg == "device"
+    oauth_cfg = cfg.get("oauth")
+    if not isinstance(oauth_cfg, dict):
+        return False
+    return oauth_cfg.get("flow") == "device"
+
+
+def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = None) -> bool:
     """Force a fresh OAuth flow for one server. Returns True on success.
 
     Wipes cached OAuth state (disk + in-process MCPOAuthManager cache), re-probes to trigger the
     browser flow, and verifies a token actually landed. Shared by ``login`` and ``reauth``.
+    With ``flow="device"`` (or ``oauth.flow: device``) runs the RFC 8628 device-code flow
+    instead — the only path for servers requiring the device_code grant (#104742). The device
+    path only runs from these explicit login commands, never from background reconnects, so its
+    user-code display always has a human on the other end.
     """
     url = server_config.get("url")
     if not url:
@@ -634,6 +648,8 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
         _error(f"Server '{name}' is not configured for OAuth (auth={server_config.get('auth')})")
         _info("Use `hermes mcp remove` + `hermes mcp add` to reconfigure auth.")
         return False
+    if _use_device_flow(server_config, flow):
+        return _reauth_device_flow(name, server_config)
 
     try:
         from tools.mcp_oauth_manager import get_manager
@@ -696,11 +712,89 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
         return False
 
 
+def _reauth_device_flow(name: str, server_config: dict) -> bool:
+    """RFC 8628 device-code login: discover, register, show the code, poll, persist, verify.
+
+    Mirrors the browser path's contract (wipe state first, verify a token landed after) so
+    ``login``/``reauth`` callers see identical success/failure semantics.
+    """
+    from tools.mcp_oauth import remove_oauth_tokens
+    from tools.mcp_oauth_device import (
+        announce_device_authorization,
+        discover_device_endpoints,
+        persist_device_state,
+        poll_device_token,
+        register_device_client,
+        request_device_authorization,
+    )
+
+    url = server_config.get("url", "")
+    oauth_cfg = server_config.get("oauth")
+    oauth_cfg = oauth_cfg if isinstance(oauth_cfg, dict) else {}
+    _login_connect_timeout = 0.0
+    _raw_timeout = server_config.get("connect_timeout")
+    if _raw_timeout is not None:
+        try:
+            _login_connect_timeout = float(_raw_timeout)
+        except (TypeError, ValueError):
+            _login_connect_timeout = 0.0
+    timeout = max(_login_connect_timeout, 315.0)
+
+    remove_oauth_tokens(name)
+    try:
+        from tools.mcp_oauth_manager import get_manager
+        get_manager().remove(name)
+    except Exception as exc:
+        _warning(f"Could not clear existing OAuth state: {exc}")
+
+    print()
+    _info(f"Starting OAuth device flow for '{name}'...")
+    try:
+        endpoints = discover_device_endpoints(url)
+        client_info = register_device_client(
+            endpoints["registration_endpoint"],
+            client_name=oauth_cfg.get("client_name", "Hermes Agent"),
+            scope=oauth_cfg.get("scope"),
+        )
+        authorization = request_device_authorization(
+            endpoints["device_authorization_endpoint"],
+            str(client_info["client_id"]),
+            scope=oauth_cfg.get("scope"),
+            resource=endpoints["resource"],
+        )
+        announce_device_authorization(authorization)
+        token_payload = poll_device_token(
+            endpoints["token_endpoint"],
+            str(client_info["client_id"]),
+            authorization.device_code,
+            interval=authorization.interval,
+            expires_in=authorization.expires_in,
+            timeout=timeout,
+        )
+        persist_device_state(name, client_info, token_payload)
+    except Exception as exc:
+        _error(f"Device-flow authentication failed: {exc}")
+        return False
+    if not _oauth_tokens_present(name):
+        _warning("Server responded, but no OAuth token was obtained — authentication did not complete.")
+        return False
+    try:
+        tools = _probe_single_server(name, server_config)
+    except Exception as exc:
+        _error(f"Authenticated, but tool discovery failed: {exc}")
+        return False
+    if tools:
+        _success(f"Authenticated — {len(tools)} tool(s) available")
+    else:
+        _success("Authenticated (server reported no tools)")
+    return True
+
+
 def cmd_mcp_login(args):
     """Force re-authentication for an OAuth-based MCP server (wipes cached tokens, re-runs the flow)."""
     cfg = _lookup_server(args.name, _get_mcp_servers())
     if cfg is not None:
-        _reauth_oauth_server(args.name, cfg)
+        _reauth_oauth_server(args.name, cfg, flow=getattr(args, "flow", None))
 
 
 def cmd_mcp_reauth(args):

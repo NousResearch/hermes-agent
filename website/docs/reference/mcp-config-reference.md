@@ -379,6 +379,25 @@ mcp_servers:
 
 `user_agent` replaces the HTTP library's default `User-Agent` on **token-endpoint requests only** (authorization-code exchange and refresh) — some authorization servers and WAFs reject the default `python-httpx/...` value there. It never applies to MCP traffic or OAuth discovery, and no other token-request headers are configurable. Empty or null values are ignored.
 
+#### Device-code flow (RFC 8628)
+
+Some servers require the `device_code` grant, which the browser PKCE flow never requests. For those, opt into the device flow per server or per login:
+
+```yaml
+mcp_servers:
+  headless_api:
+    url: "https://mcp.example.com/mcp"
+    auth: oauth
+    oauth:
+      flow: device   # RFC 8628 device authorization instead of browser PKCE
+```
+
+```bash
+hermes mcp login <server> --flow device   # one-off override (also accepts --flow browser)
+```
+
+The device flow discovers the server's `device_authorization_endpoint`, registers a client requesting the device grant, prints a verification URL plus user code, polls until approval, then persists tokens through the same storage (and refresh machinery) as the browser flow. It runs only from explicit `login` commands — background reconnects never start one.
+
 ## Add to Hermes link
 
 MCP vendors and docs can offer a one-click **"Add to Hermes"** button that opens the Hermes desktop app with a pre-filled server config, mirroring Cursor's `cursor://anysphere.cursor-deeplink/mcp/install` scheme:

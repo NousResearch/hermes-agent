@@ -33,7 +33,20 @@ _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 _DURABLE_CLAIM_OPS = {
     "drop": ("drop_completion_delivery", "Could not drop durable completion claim"),
     "release": ("release_completion_delivery", "Could not release durable completion claim"),
+    "defer": ("defer_completion_delivery", "Could not defer unadmitted completion claim"),
+    "complete": ("complete_completion_delivery", "Could not acknowledge durable completion claim"),
 }
+
+
+def _raw_process_event_session_id(evt: dict) -> str:
+    """Recognize API routes, not malformed structured or partial messaging routes."""
+    session_key = str(evt.get("session_key") or "").strip()
+    platform = str(evt.get("platform") or "").strip().lower()
+    if session_key.startswith("agent:") or platform not in {"", "api_server"}:
+        return ""
+    if not platform and any(evt.get(field) for field in ("chat_id", "chat_type", "thread_id")):
+        return ""
+    return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
 class GatewayNotificationsMixin:
@@ -781,6 +794,10 @@ class GatewayNotificationsMixin:
         chat_type = str(evt.get("chat_type") or derived.get("chat_type") or "").strip().lower()
         chat_id = str(evt.get("chat_id") or derived.get("chat_id") or "").strip()
         if not platform_name or not chat_type or not chat_id:
+            # Raw API keys legitimately have no messaging source. Resolve persisted
+            # origins first, then leave this recognized route to the API dispatcher.
+            if _raw_process_event_session_id(evt):
+                return None
             logger.warning(
                 "Synthetic event source unresolvable: "
                 "session_key=%r platform=%r chat_type=%r chat_id=%r evt_type=%s",
@@ -896,27 +913,25 @@ class GatewayNotificationsMixin:
             return _transport.adapter
         return next((a for p, a in adapters.items() if p.value == platform_name), None)
 
-    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> Optional[bool]:
+    async def _inject_watch_notification(
+        self, synth_text: str, evt: dict, *, raise_not_accepted: bool = False,
+    ) -> Optional[bool]:
         """Inject a watch/completion notification as a synthetic message event.
 
         Routing comes from the queued event, never the active foreground message. Returns
         ``True`` on adapter acceptance, ``False`` on retryable adapter failure, ``None`` with no
         gateway route. Not transactional: a crash after acceptance can replay (at-least-once).
         """
-        from gateway.run import _parse_session_key
-        from gateway.wake import adapter_supports_push
+        from gateway.wake import WakeNotAccepted, adapter_supports_push, admit_internal_event
         source = await asyncio.to_thread(self._build_process_event_source, evt)
         if not source:
             # API-server sessions bind the RAW X-Hermes-Session-Id key, not a structured ``agent:...`` key.
-            raw_sid = str(evt.get("origin_session_id") or "").strip()
-            _sk = str(evt.get("session_key") or "").strip()
-            if not raw_sid and _sk and _parse_session_key(_sk) is None:
-                raw_sid = _sk
+            raw_sid = _raw_process_event_session_id(evt)
             if raw_sid:
                 adapter = self.adapters.get(Platform.API_SERVER)
                 if adapter is not None and not adapter_supports_push(adapter):
                     return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
-                logger.warning(
+                logger.debug(
                     "Deferring watch notification for raw session %s: no api_server adapter to self-post through",
                     raw_sid,
                 )
@@ -937,6 +952,9 @@ class GatewayNotificationsMixin:
             return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
         try:
             metadata = {}
+            session_key = str(evt.get("session_key") or "").strip()
+            if session_key.startswith("agent:"):
+                metadata["gateway_session_key"] = session_key
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
@@ -953,8 +971,13 @@ class GatewayNotificationsMixin:
             _prime = getattr(adapter, "prime_routing_cache", None)
             if callable(_prime):
                 _prime(synth_event)
-            await adapter.handle_message(synth_event)
+            await admit_internal_event(adapter, synth_event)
             return True
+        except WakeNotAccepted:
+            # Durable callers refund the claim; ordinary watch callers just requeue.
+            if raise_not_accepted:
+                raise
+            return False
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
             return False
@@ -1051,11 +1074,10 @@ class GatewayNotificationsMixin:
             import tools.async_delegation as _ad
             getattr(_ad, fn_name)(delegation_id, claim_id)
         except Exception:
-            logger.debug(fail_msg, exc_info=True)
+            logger.log(logging.WARNING if kind == "complete" else logging.DEBUG, fail_msg, exc_info=True)
 
     async def _completion_delivery_ready(self, evt: dict) -> bool:
         """Unavailable owners/transports must not spend a durable delivery attempt."""
-        from gateway.run import _parse_session_key
         from gateway.wake import adapter_supports_push
 
         parent_session_id = str(evt.get("parent_session_id") or "").strip()
@@ -1069,10 +1091,7 @@ class GatewayNotificationsMixin:
             platform = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
             adapter = self._resolve_injection_adapter(platform, source)
         else:
-            session_key = str(evt.get("session_key") or "").strip()
-            raw_sid = str(evt.get("origin_session_id") or "").strip()
-            if not raw_sid and session_key and _parse_session_key(session_key) is None:
-                raw_sid = session_key
+            raw_sid = _raw_process_event_session_id(evt)
             adapter = self.adapters.get(Platform.API_SERVER) if raw_sid else None
             if adapter is not None and adapter_supports_push(adapter):
                 return False
@@ -1151,41 +1170,49 @@ class GatewayNotificationsMixin:
             claim.proceed, claim.early_result = False, False
         return claim
 
-    async def _deliver_completion_notification(self, synth_text: str, evt: dict) -> Optional[bool]:
-        """Deliver once per live gateway, or return False for a retry.
+    async def _deliver_completion_notification(
+        self, synth_text: str, evt: dict, *, sibling_claims=(),
+    ) -> Optional[bool]:
+        """Acknowledge one admitted batch, refund refusals, or release failed deliveries.
 
-        ``True``: adapter accepted; ``False``: injection failed, claim released for retry; ``None``:
-        another same-lifecycle caller owns/delivered it, or no route. No cross-process exactly-once.
+        True means adapter admission, not model execution; None means deduplicated or
+        terminal. False remains retryable. Claims are settled together for every sibling.
         """
+        from gateway.wake import WakeNotAccepted
         identity = self._completion_delivery_identity(evt)
-        claim = await self._preflight_completion_delivery(evt)
-        if not claim.proceed:
-            return claim.early_result
-        if identity is not None and self._completion_identity_seen(identity, claim=True):
-            return None
-        accepted = False
+        claim = self._CompletionClaim()
+        accepted = identity_claimed = refused = False
         try:
-            injection_result = await self._inject_watch_notification(synth_text, evt)
+            claim = await self._preflight_completion_delivery(evt)
+            if not claim.proceed:
+                return claim.early_result
+            if identity is not None:
+                if self._completion_identity_seen(identity, claim=True):
+                    return None
+                identity_claimed = True
+            injection_result = await self._inject_watch_notification(synth_text, evt, raise_not_accepted=True)
             if injection_result is not True:
                 return injection_result
             accepted = True
             if identity is not None:
                 with self._completion_delivery_lock:
                     self._mark_completions_delivered_locked((identity,))
-            # The durable row is the authoritative replay state — ack it after adapter acceptance.
-            if claim.claim_id:
-                try:
-                    from tools.async_delegation import complete_completion_delivery
-                    complete_completion_delivery(claim.delegation_id, claim.claim_id)
-                except Exception as exc:
-                    logger.warning("Could not acknowledge durable async completion %s: %s", claim.delegation_id, exc)
             return True
+        except WakeNotAccepted:
+            refused = True
+            return False
         finally:
-            if identity is not None and not accepted:
+            if identity_claimed and not accepted:
                 with self._completion_delivery_lock:
                     self._completion_deliveries_inflight.discard(identity)
-            if claim.claim_id and not accepted:
-                self._settle_durable_claim("release", claim.delegation_id, claim.claim_id)
+            operation = "complete" if accepted else "defer" if refused else "release"
+            if claim.claim_id:
+                self._settle_durable_claim(operation, claim.delegation_id, claim.claim_id)
+            for sibling, claim_id in sibling_claims:
+                if claim_id:
+                    self._settle_durable_claim(operation, sibling["delegation_id"], claim_id)
+            if accepted and sibling_claims:
+                self._record_coalesced_completion_siblings([event for event, _claim_id in sibling_claims])
 
     @staticmethod
     def _event_route_key(evt: dict, fields: tuple[str, ...]) -> tuple[str, ...]:
@@ -1335,14 +1362,6 @@ class GatewayNotificationsMixin:
         if parsed.get("thread_id"):
             evt["thread_id"] = parsed["thread_id"]
 
-    @staticmethod
-    def _settle_sibling_claims(siblings: list[tuple[dict, str]], fn, fail_msg: str) -> None:
-        for evt, claim_id in siblings:
-            try:
-                fn(evt, claim_id)
-            except Exception:
-                logger.debug(fail_msg, exc_info=True)
-
     async def _deliver_async_delegation_group(self, group: list[dict]) -> Optional[bool]:
         """Deliver a same-session batch of async completions as ONE turn: the primary carries the
         consolidated text of every sibling THIS runner claimed (siblings owned elsewhere are excluded;
@@ -1369,7 +1388,7 @@ class GatewayNotificationsMixin:
         for evt, _text in deliverable:
             if not await self._completion_delivery_ready(evt):
                 return False
-        from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+        from tools.async_delegation import claim_event_delivery
         primary_evt, primary_text = deliverable[0]
         blocks = [primary_text]
         siblings: list[tuple[dict, str]] = []
@@ -1389,22 +1408,13 @@ class GatewayNotificationsMixin:
             "response. If a result does not change the current conclusion, absorb it silently.]"
         )
         consolidated = "\n\n".join([header, *blocks])
-        delivered: Optional[bool] = False
-        try:
-            delivered = await self._deliver_completion_notification(consolidated, primary_evt)
-        finally:
-            if delivered is True:
-                self._settle_sibling_claims(
-                    siblings, complete_event_delivery, "Could not acknowledge coalesced durable completion",
-                )
-                self._record_coalesced_completion_siblings([evt for evt, _claim_id in siblings])
-            else:
-                # Not delivered: release every sibling claim so a retry or another consumer can take it.
-                self._settle_sibling_claims(siblings, release_event_delivery, "Could not release coalesced durable claim")
-                if delivered is None:
-                    # Primary dropped/owned elsewhere: requeue just the siblings for the next tick.
-                    for evt, _claim_id in siblings:
-                        _pr.completion_queue.put(evt)
+        delivered = await self._deliver_completion_notification(
+            consolidated, primary_evt, sibling_claims=siblings,
+        )
+        if delivered is None:
+            # Primary dropped/owned elsewhere: retry the unadmitted siblings.
+            for evt, _claim_id in siblings:
+                _pr.completion_queue.put(evt)
         return delivered
 
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:

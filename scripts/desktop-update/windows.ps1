@@ -44,7 +44,9 @@
 # mutating the install -- a skipped update is recoverable, a half-updated
 # venv is not. Every exit path (success, abort, crash) writes
 # .hermes-update-result.json for the relaunched Desktop to surface, and
-# relaunches the Desktop so the user is never left stranded.
+# relaunches the Desktop so the user is never left stranded -- EXCEPT on the
+# aborts that fired because the Desktop we were handed is still running. There
+# a relaunch is not a rescue, it is a second Desktop over the same install.
 #
 # MARKER: step 0 adopts the Desktop's exact claim in
 # HERMES_HOME\.hermes-update-in-progress under one exclusive handle,
@@ -1529,6 +1531,10 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
 $finalCode = 1
 $finalMsg = "update did not complete"
 $script:TreeSafeToFinalize = $true
+# Set only on the abort paths that PROVED the Desktop we were handed is still
+# running. Relaunching there does not rescue the user -- it puts a second
+# Desktop on top of the live one, both pointed at the same install.
+$script:DesktopStillRunning = $false
 
 if ($SelfTestRelaunchCommand) {
     Get-DesktopRelaunchInvocation | ConvertTo-Json -Compress
@@ -1997,6 +2003,11 @@ try {
             throw "could not acknowledge the hand-off to the desktop"
         }
     } catch {
+        # Same rule as the step-1 abort: a Desktop still waiting on our ack is
+        # a Desktop already on screen, so relaunching would double it.
+        if ($DesktopPid -gt 0 -and (Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue)) {
+            $script:DesktopStillRunning = $true
+        }
         $finalCode = 8
         $finalMsg = "Update aborted: could not claim the authenticated update marker ($MarkerPath). Nothing was changed."
         Write-HandoffLog "$finalMsg $($_.Exception.Message)"
@@ -2030,7 +2041,10 @@ try {
         }
         if (Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue) {
             # A live Desktop means a live backend re-locking the venv at any
-            # moment. Updating under it is how installs brick. Abort.
+            # moment. Updating under it is how installs brick. Abort -- and do
+            # not relaunch, because the Desktop we would "bring back" is the
+            # one we just proved is still on screen.
+            $script:DesktopStillRunning = $true
             $finalCode = 4
             $finalMsg = "Update aborted: the Hermes window (pid $DesktopPid) did not exit within 30s. Nothing was changed. Close Hermes fully and try again."
             Write-HandoffLog $finalMsg
@@ -2219,7 +2233,13 @@ try {
         if ($finalCode -ne 0) {
             Show-ErrorFinale $finalMsg
             Close-ProgressWindow
-            [void](Start-DesktopRelaunch)
+            if ($script:DesktopStillRunning) {
+                # The abort happened BECAUSE that Desktop is alive. A relaunch
+                # here is a second Desktop over the same install, not a rescue.
+                Write-HandoffLog "not relaunching: the desktop (pid $DesktopPid) is still running"
+            } else {
+                [void](Start-DesktopRelaunch)
+            }
         } else {
             Publish-UiProgress "Opening Hermes"
             $cameBack = Start-DesktopRelaunch

@@ -209,6 +209,96 @@ def test_nonce_launch_fails_closed_when_the_ack_cannot_be_written(tmp_path: Path
     assert "sent no nonce" not in log, "a nonce WAS sent; this is not the legacy path"
 
 
+# ---------------------------------------------------------------------------
+# Relaunch suppression on the aborts that fired BECAUSE the Desktop is alive.
+# ---------------------------------------------------------------------------
+
+
+def _relaunch_probe(tmp_path: Path) -> tuple[Path, Path]:
+    """A stand-in Desktop that records the fact that it was launched."""
+    landed = tmp_path / "relaunched.txt"
+    probe = tmp_path / "relaunch probe.py"
+    probe.write_text(
+        "import os\nfrom pathlib import Path\n"
+        "Path(os.environ['HERMES_RELAUNCH_TEST_OUTPUT']).write_text('launched', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    return probe, landed
+
+
+def _run_handoff_with_relaunch(tmp_path: Path, desktop_pid: int, landed: Path,
+                               probe: Path, *, fake_interpreter: bool) -> subprocess.CompletedProcess:
+    install_root = tmp_path / "hermes-agent"
+    install_root.mkdir(exist_ok=True)
+    if fake_interpreter:
+        # The interpreter check between step 0 and step 1 is existence only;
+        # satisfying it lets the run reach step 1, where the live-Desktop abort is.
+        scripts = install_root / "venv" / "Scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        (scripts / "python.exe").write_bytes(b"")
+    started_at = 1_700_000_000
+    (tmp_path / ".hermes-update-in-progress").write_text(
+        f"{desktop_pid}\n{started_at}\n", encoding="utf-8", newline=""
+    )
+    return subprocess.run(
+        [
+            str(_powershell()), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPT),
+            "-InstallRoot", str(install_root),
+            "-DesktopPid", str(desktop_pid),
+            "-RelaunchExe", sys.executable,
+            "-RelaunchAppPath", str(probe),
+            "-NoUi", "-NoMarkerCleanup",
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HERMES_UPDATE_STARTED_AT": str(started_at),
+             "HERMES_RELAUNCH_TEST_OUTPUT": str(landed)},
+        cwd=REPO_ROOT,
+        timeout=180,
+    )
+
+
+@pytest.mark.windows_only
+def test_a_live_desktop_abort_does_not_launch_a_second_desktop(tmp_path: Path) -> None:
+    """Step 1 aborts with code 4 precisely because that Desktop is still on
+    screen. Relaunching there stacked a second Desktop on the live one, over the
+    same install, while the live one's own ack wait was still restoring."""
+    probe, landed = _relaunch_probe(tmp_path)
+    desktop = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        result = _run_handoff_with_relaunch(tmp_path, desktop.pid, landed, probe,
+                                            fake_interpreter=True)
+    finally:
+        desktop.kill()
+        desktop.wait(timeout=30)
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    log = (tmp_path / "logs" / "desktop-update-handoff.log").read_text(encoding="utf-8")
+    assert "not relaunching" in log, log
+    assert "relaunching desktop:" not in log, log
+    time.sleep(1)  # a spawn we failed to prevent would have landed by now
+    assert not landed.exists(), "a second Desktop must never be started over a live one"
+
+
+@pytest.mark.windows_only
+def test_an_abort_with_no_live_desktop_still_brings_hermes_back(tmp_path: Path) -> None:
+    """The control for the arm above: suppression must stay limited to the
+    aborts that proved the Desktop is alive, or every other failure strands the
+    user with no window at all."""
+    probe, landed = _relaunch_probe(tmp_path)
+    result = _run_handoff_with_relaunch(tmp_path, _reaped_pid(), landed, probe,
+                                        fake_interpreter=False)
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    log = (tmp_path / "logs" / "desktop-update-handoff.log").read_text(encoding="utf-8")
+    assert "relaunching desktop:" in log, log
+    deadline = time.monotonic() + 20
+    while not landed.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert landed.exists(), "an abort with no live Desktop must still relaunch"
+
+
 @pytest.mark.windows_only
 def test_log_self_test_survives_shared_reader(tmp_path: Path) -> None:
     env = {**os.environ, "TEMP": str(tmp_path), "TMP": str(tmp_path)}

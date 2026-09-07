@@ -513,8 +513,14 @@ export async function applyWindowsUpdate<TTransport, TLaunch>(
         ? observed.message || 'Updater process exited before handoff completed.'
         : 'Update aborted: the updater did not acknowledge the handoff. Retry after any running update finishes.'
 
-      await restoreAfterAbort()
+      // Tell the user BEFORE restoring. Restoration is not quick on the path
+      // that gets here: the script has already adopted the marker, so
+      // releaseMarker refuses (the owner changed) and waitForMarkerClearance
+      // polls for up to 20 minutes. Emitting afterwards left the 100% "this
+      // window will close and Hermes will restart" card on screen for the whole
+      // wait, with no backend behind it and nothing said about the failure.
       deps.emitProgress({ stage: 'error', message, percent: null })
+      await restoreAfterAbort()
 
       return { ok: false, error, message }
     }

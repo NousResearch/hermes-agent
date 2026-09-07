@@ -151,6 +151,13 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
             content = override
         ov_timestamp = getattr(agent, "_persist_user_message_timestamp", None)
         timestamp = timestamp if ov_timestamp is None else ov_timestamp
+        # Fill-only (#104653): the turn knows the inbound platform id even when the live
+        # dict was staged without it. The flushed row must share the gateway's join key
+        # instead of landing with platform_message_id=NULL; never clobber an explicit id.
+        if msg.get("platform_message_id") is None:
+            ov_platform_id = getattr(agent, "_persist_user_message_platform_id", None)
+            if ov_platform_id is not None:
+                msg = {**msg, "platform_message_id": ov_platform_id}
     if api_content == content:
         api_content = None
     # get_messages_as_conversation replays rows through sanitize_context().strip(); capture the sent bytes
@@ -176,6 +183,25 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     return row
 
 
+def _db_user_platform_id_persisted(agent, session_id, platform_id) -> bool:
+    """True when a LIVE row already carries this inbound platform id (fail-open).
+
+    Cross-writer dedup (#104653): the gateway may have persisted the inbound turn
+    first (receipt/failure path) while this flush's dict is unmarked — the in-memory
+    ``_DB_PERSISTED_MARKER`` cannot see the other writer's row. ``active = 1`` only:
+    an archived (compacted-away) row must not suppress the live copy. Any probe
+    failure returns False so a user turn is never dropped by the dedup itself.
+    """
+    db = getattr(agent, "_session_db", None)
+    if not db or not session_id or not platform_id:
+        return False
+    try:
+        return bool(db.has_platform_message_id(session_id, platform_id, active_only=True))
+    except Exception:
+        logger.debug("platform_message_id dedup probe failed for %s", session_id, exc_info=True)
+        return False
+
+
 def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optional[List[Dict]]):
     """Scan for un-flushed messages; returns ``(rows, msgs)`` to write in one transaction."""
     seed_ids = _db_flush_seed_ids(agent)
@@ -196,7 +222,19 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
         if id(msg) in history_ids or id(msg) in seed_ids:
             msg[_DB_PERSISTED_MARKER] = True
             continue
-        batch_rows.append(_db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message))
+        row = _db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message)
+        # Already durable via the OTHER writer (#104653): the gateway persisted this
+        # inbound turn with the same platform_message_id. Probe on the ROW id (it
+        # includes the turn override fill above), stamp the marker, queue nothing.
+        if (
+            row.get("role") == "user"
+            and row.get("platform_message_id")
+            and _db_user_platform_id_persisted(
+                agent, getattr(agent, "session_id", None), row["platform_message_id"])
+        ):
+            msg[_DB_PERSISTED_MARKER] = True
+            continue
+        batch_rows.append(row)
         batch_msgs.append(msg)
     return batch_rows, batch_msgs
 
@@ -370,7 +408,9 @@ class SessionPersistenceMixin:
         repeated calls (from multiple exit paths) only write truly new messages — preventing the
         duplicate-write bug (#860) without relying on positional slices that can drift after
         message-sequence repair, and without a retained ``id(msg)`` set that CPython could alias onto a
-        freed-then-reused address (#50372). The ``_flushed_db_message_ids`` attribute is now only a one-shot
+        freed-then-reused address (#50372). User rows whose ``platform_message_id`` the gateway already
+        persisted are skipped via a live-row probe (#104653: the marker cannot see the other writer).
+        The ``_flushed_db_message_ids`` attribute is now only a one-shot
         seed (translated to markers, then cleared each flush), not a persisted set.
         """
         # Persistence-isolated agents (background review fork) share the parent's session_id for cache warmth;

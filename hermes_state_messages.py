@@ -1048,16 +1048,19 @@ class SessionMessagesMixin:
         sql = "SELECT COUNT(*) FROM messages" + (" WHERE session_id = ?" if session_id else "")
         return self._read_one(sql, (session_id,) if session_id else ())[0]
 
-    def has_platform_message_id(self, session_id: str, platform_message_id: str) -> bool:
+    def has_platform_message_id(self, session_id: str, platform_message_id: str,
+                                  active_only: bool = False) -> bool:
         """True when *platform_message_id* exists (partial-index probe; the gateway's transient-failure dedupe).
 
         Uses the idx_messages_platform_msg_id partial index for efficient lookup. Used by the gateway's
         transient-failure dedupe guard (#47237) to skip re-persisting a user message that was already saved
-        on a prior retry of the same inbound platform message.
+        on a prior retry of the same inbound platform message, and by the agent flush (#104653) with
+        ``active_only=True`` so an archived (compacted-away) row never suppresses the live copy.
         """
-        return self._read_one(
-            "SELECT 1 FROM messages WHERE session_id = ? AND platform_message_id = ? LIMIT 1",
-            (session_id, platform_message_id)) is not None
+        sql = "SELECT 1 FROM messages WHERE session_id = ? AND platform_message_id = ?"
+        if active_only:
+            sql += " AND active = 1"
+        return self._read_one(sql + " LIMIT 1", (session_id, platform_message_id)) is not None
 
     def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:
         """True when *session* is a branch, delegate, or tool child of its parent. Markers only count when they

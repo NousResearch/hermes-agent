@@ -745,6 +745,19 @@ Hermes Agent supports Discord voice messages:
 - **Text-to-speech**: Use `/voice tts` to have the bot send spoken audio responses alongside text replies.
 - **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
 
+Native Discord voice messages continue to use automatic transcription when STT is enabled. Regular uploaded audio files remain file attachments by default, so the agent can inspect or process them without an automatic provider call.
+
+To opt trusted capture channels into automatic transcription for regular audio uploads, add their channel, parent channel, or thread IDs to `transcribe_audio_attachment_channels` in the existing top-level `discord` section:
+
+```yaml
+discord:
+  transcribe_audio_attachment_channels:
+    - "123456789012345678"
+    - "234567890123456789"
+```
+
+Use the single value `all` to enable this behavior for every Discord channel. The setting is still governed by the source profile: `stt.enabled: false` prevents automatic transcription even when a channel is listed.
+
 For the full setup and operational guide, see:
 - [Voice Mode](/user-guide/features/voice-mode)
 - [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)
@@ -927,5 +940,3 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 :::
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
-
-

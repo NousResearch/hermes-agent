@@ -379,6 +379,19 @@ Voice messages you send on Telegram are automatically transcribed by Hermes's co
 - `groq` uses Groq Whisper and requires `GROQ_API_KEY`
 - `openai` uses OpenAI Whisper and requires `VOICE_TOOLS_OPENAI_KEY`
 
+Native Telegram voice messages keep this automatic transcription behavior. Regular uploaded audio files remain file attachments by default.
+
+To opt trusted chats or topics into automatic transcription for regular audio uploads, list their chat or topic IDs in the existing top-level `telegram` section:
+
+```yaml
+telegram:
+  transcribe_audio_attachment_channels:
+    - "-1001234567890"
+    - "42"
+```
+
+Use the single value `all` to enable this behavior for every Telegram chat and topic. Parent chat and thread IDs are matched as well as the current chat ID.
+
 #### Skipping STT: pass the raw audio file to the agent
 
 If you'd rather have the **agent itself** handle audio — for diarization, a custom transcription tool, or just archiving the recording — set `stt.enabled: false` in `~/.hermes/config.yaml`:
@@ -388,7 +401,7 @@ stt:
   enabled: false
 ```
 
-With STT disabled, the gateway still downloads the voice/audio attachment into Hermes's audio cache, but **does not transcribe it**. The agent receives the message with a marker like:
+With STT disabled, the gateway still downloads native voice messages and regular audio attachments into Hermes's audio cache, but **does not transcribe them automatically**. This setting overrides `transcribe_audio_attachment_channels`, so a listed chat or topic still receives the raw audio path instead of a transcript. The agent receives the message with a marker like:
 
 ```
 [The user sent a voice message: /home/<user>/.hermes/cache/audio/<hash>.ogg]

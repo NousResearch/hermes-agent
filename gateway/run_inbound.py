@@ -318,7 +318,11 @@ class GatewayInboundMixin:
             return None
         if _pending_clarify is None:
             return None
-        _clarify_has_audio = bool(self._pending_event_audio_paths(event))
+        from gateway.run import _event_media_is_audio
+        _clarify_has_audio = any(
+            _event_media_is_audio(event, index)
+            for index, _ in enumerate(getattr(event, "media_urls", None) or [])
+        )
         _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
 
         def _retain(why: str) -> str:
@@ -328,7 +332,8 @@ class GatewayInboundMixin:
             )
             return ""
 
-        if _clarify_has_audio and not _raw_clarify_reply:
+        if _clarify_has_audio and not (event.text or "").strip() and not _raw_clarify_reply:
+            self._queue_or_replace_pending_event(_quick_key, event)
             return _retain("voice transcription produced no usable text")
         # Slash commands: the user wanted a command, not to answer the clarify. Leave it pending so
         # they can retry; on timeout the agent unblocks with an empty response.
@@ -1330,24 +1335,31 @@ class GatewayInboundMixin:
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
         return message_text
 
-    @staticmethod
     def _classify_inbound_media(
-        event: MessageEvent, pending_stt_prepared: bool
+        self, event: MessageEvent, pending_stt_prepared: bool
     ) -> Tuple[list, list, list, list]:
         """Split ``event.media_urls`` into (image, STT-voice, audio-file, video) paths. Per-attachment
-        MIME wins over the message-level type (a document sent alongside an image must not be routed
-        as an image). MessageType.AUDIO / mixed DOCUMENT audio is a file attachment, never STT."""
+        MIME wins over the message-level type so mixed attachments retain their own routes."""
         from gateway.run import _event_media_is_audio, _event_media_is_image, _event_media_is_stt_input
         image_paths, audio_paths, audio_file_paths, video_paths = [], [], [], []
+        audio_attachment_allowed = None
         for i, path in enumerate(event.media_urls or []):
             mtype = event.media_types[i] if i < len(event.media_types) else ""
             if _event_media_is_image(event, i):
                 image_paths.append(path)
             if _event_media_is_audio(event, i):
-                if event.message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
-                    audio_file_paths.append(path)
-                elif not pending_stt_prepared and _event_media_is_stt_input(event, i):
+                if pending_stt_prepared:
+                    continue
+                if audio_attachment_allowed is None:
+                    audio_attachment_allowed = (
+                        False
+                        if event.message_type == MessageType.VOICE
+                        else self._audio_attachment_stt_enabled_for_source(event.source)
+                    )
+                if _event_media_is_stt_input(event, i, audio_attachment_allowed):
                     audio_paths.append(path)
+                else:
+                    audio_file_paths.append(path)
             if mtype.startswith("video/") or (not mtype and event.message_type == MessageType.VIDEO):
                 video_paths.append(path)
         return image_paths, audio_paths, audio_file_paths, video_paths
@@ -1402,7 +1414,7 @@ class GatewayInboundMixin:
         self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
     ) -> str:
         message_text, _successful_transcripts = await self._enrich_message_with_transcription(
-            message_text, audio_paths,
+            message_text, audio_paths, source=source,
         )
         # Echo each successful transcript back immediately when configured so users can verify STT
         # quality in real time. On transcription failure do NOT send a hardcoded notice: that
@@ -1603,7 +1615,14 @@ class GatewayInboundMixin:
         @ references behave the same. Side effect: buffers per-session native image paths when the
         model supports native vision; the caller consumes that buffer at ``run_conversation``."""
         _pending_stt_prepared = hasattr(event, "_gateway_pending_stt_text")
-        message_text = (event._gateway_pending_stt_text if _pending_stt_prepared else event.text) or ""
+        message_text = event.text or ""
+        if _pending_stt_prepared:
+            pending_stt_prefix = event._gateway_pending_stt_text or ""
+            if pending_stt_prefix:
+                if message_text and message_text.strip() != self._EMPTY_TEXT_PLACEHOLDER:
+                    message_text = f"{pending_stt_prefix}\n\n{message_text}"
+                else:
+                    message_text = pending_stt_prefix
         # Prefer the caller's resolved session key so this write key matches the consume key at the
         # run_conversation site; derive it here only for tests and legacy standalone callers.
         session_key = session_key or self._session_key_for_source(source)
@@ -1941,14 +1960,14 @@ class GatewayInboundMixin:
         return transcript, f'"{transcript}"'
 
     async def _enrich_message_with_transcription(
-        self, user_text: str, audio_paths: List[str]
+        self, user_text: str, audio_paths: List[str], source: Optional[SessionSource] = None
     ) -> tuple[str, List[str]]:
         """Transcribe voice clips with the configured STT provider and prepend the transcripts →
         ``(enriched_text, successful_transcripts)``; the transcripts (input order; empty if every clip
         failed or STT is disabled) let callers echo them back before the agent loop."""
         from gateway.run import _probe_audio_duration
         audio_paths = list(dict.fromkeys(audio_paths))
-        if not getattr(self.config, "stt_enabled", True):
+        if not self._stt_enabled_for_source(source):
             notes = []
             for path in audio_paths:
                 abs_path = os.path.abspath(path)
@@ -1987,9 +2006,16 @@ class GatewayInboundMixin:
     def _pending_event_audio_paths(self, event) -> List[str]:
         """Return STT-eligible paths from a pending voice message."""
         from gateway.run import _event_media_is_stt_input
+        source_policy = (
+            False
+            if getattr(event, "message_type", None) == MessageType.VOICE
+            else self._audio_attachment_stt_enabled_for_source(
+                getattr(event, "source", None)
+            )
+        )
         return [
             path for i, path in enumerate(getattr(event, "media_urls", None) or [])
-            if _event_media_is_stt_input(event, i)
+            if _event_media_is_stt_input(event, i, source_policy)
         ]
 
     async def _transcribe_pending_audio_event_once(
@@ -1997,16 +2023,55 @@ class GatewayInboundMixin:
     ) -> tuple[str | None, List[str]]:
         """Transcribe a pending audio event once and cache the result on the event: the interrupt
         monitor and the pending-drain path both need it — one STT call and one echo per message."""
-        if hasattr(event, "_gateway_pending_stt_text"):
-            return event._gateway_pending_stt_text, list(getattr(event, "_gateway_pending_stt_transcripts", []) or [])
-        audio_paths = self._pending_event_audio_paths(event)
-        if not audio_paths:
-            return user_text if user_text is not None else (getattr(event, "text", None) or None), []
         text = user_text if user_text is not None else (getattr(event, "text", "") or "")
-        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths)
-        event._gateway_pending_stt_text = enriched_text
-        event._gateway_pending_stt_transcripts = list(successful_transcripts)
-        return enriched_text, successful_transcripts
+
+        def compose(prefix: Optional[str]) -> str:
+            """Compose one cached transcript prefix with caller text."""
+            prefix = prefix or ""
+            if prefix and text and text.strip() != self._EMPTY_TEXT_PLACEHOLDER:
+                return f"{prefix}\n\n{text}"
+            return prefix or text
+
+        if hasattr(event, "_gateway_pending_stt_text"):
+            return compose(event._gateway_pending_stt_text), list(
+                getattr(event, "_gateway_pending_stt_transcripts", []) or []
+            )
+        audio_paths = tuple(self._pending_event_audio_paths(event))
+        if not audio_paths:
+            return text, []
+        task_attr = "_gateway_pending_stt_task"
+        paths_attr = "_gateway_pending_stt_task_paths"
+        shared_task = getattr(event, task_attr, None)
+        if shared_task is None or getattr(event, paths_attr, None) != audio_paths:
+            async def compute_and_publish() -> tuple[str, List[str]]:
+                """Compute and publish one immutable media snapshot."""
+                owner_task = asyncio.current_task()
+                try:
+                    prefix, transcripts = await self._enrich_message_with_transcription(
+                        "", list(audio_paths), source=event.source
+                    )
+                    current_paths = tuple(self._pending_event_audio_paths(event))
+                    if (
+                        current_paths == audio_paths
+                        and getattr(event, task_attr, None) is owner_task
+                        and getattr(event, paths_attr, None) == audio_paths
+                    ):
+                        event._gateway_pending_stt_text = prefix
+                        event._gateway_pending_stt_transcripts = list(transcripts)
+                    return prefix, list(transcripts)
+                finally:
+                    if (
+                        getattr(event, task_attr, None) is owner_task
+                        and getattr(event, paths_attr, None) == audio_paths
+                    ):
+                        delattr(event, task_attr)
+                        delattr(event, paths_attr)
+
+            shared_task = asyncio.create_task(compute_and_publish())
+            setattr(event, task_attr, shared_task)
+            setattr(event, paths_attr, audio_paths)
+        prefix, transcripts = await asyncio.shield(shared_task)
+        return compose(prefix), transcripts
 
     async def _echo_pending_stt_transcripts_once(
         self, event, adapter, source, transcripts: List[str], *, metadata=None,

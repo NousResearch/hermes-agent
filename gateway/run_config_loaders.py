@@ -279,8 +279,33 @@ class GatewayConfigLoadersMixin:
         self.__dict__.setdefault("_busy_input_modes_by_profile", {})[profile_name] = input_mode
         self.__dict__.setdefault("_busy_text_modes_by_profile", {})[profile_name] = text_mode
 
-    def _busy_profile_name_for_source(self, source: SessionSource) -> Optional[str]:
-        """Return the routed profile whose busy policy applies, if any."""
+    def _snapshot_profile_stt_policy(self, profile_name: str, config) -> None:
+        """Cache one routed profile audio STT policy."""
+        channels_by_platform = {}
+        for platform, platform_config in config.platforms.items():
+            extra = platform_config.extra or {}
+            if "transcribe_audio_attachment_channels" not in extra:
+                continue
+            channels = extra["transcribe_audio_attachment_channels"]
+            if isinstance(channels, list):
+                channels = list(channels)
+            elif isinstance(channels, tuple):
+                channels = tuple(channels)
+            elif isinstance(channels, set):
+                channels = set(channels)
+            platform_name = getattr(platform, "value", platform)
+            channels_by_platform[str(platform_name)] = channels
+        self.__dict__.setdefault("_audio_attachment_channels_by_profile", {})[
+            profile_name
+        ] = channels_by_platform
+        self.__dict__.setdefault("_stt_enabled_by_profile", {})[profile_name] = bool(
+            config.stt_enabled
+        )
+
+    def _policy_profile_name_for_source(
+        self, source: Optional[SessionSource]
+    ) -> Optional[str]:
+        """Return the routed profile whose policy applies."""
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return None
         name = str(getattr(source, "profile", "") or "").strip()
@@ -290,6 +315,10 @@ class GatewayConfigLoadersMixin:
             except Exception:
                 name = ""
         return name or None
+
+    def _busy_profile_name_for_source(self, source: SessionSource) -> Optional[str]:
+        """Return the routed profile whose busy policy applies, if any."""
+        return self._policy_profile_name_for_source(source)
 
     def _effective_busy_mode(self, source: SessionSource, attr: str) -> str:
         """Busy mode from the routed profile snapshot (``attr``: ``_busy_input_mode`` / ``_busy_text_mode``)."""
@@ -307,6 +336,96 @@ class GatewayConfigLoadersMixin:
     def _effective_busy_text_mode(self, source: SessionSource) -> str:
         """Resolve legacy busy text mode from the routed profile snapshot."""
         return self._effective_busy_mode(source, "_busy_text_mode")
+
+    def _should_transcribe_audio_attachment(self, source: SessionSource) -> bool:
+        """Return whether the source opts regular audio attachments into STT."""
+        raw_channels = self._audio_attachment_channels_for_source(source)
+        if raw_channels is None:
+            return False
+        if isinstance(raw_channels, str):
+            configured_channels = [raw_channels]
+        elif isinstance(raw_channels, (list, tuple, set)):
+            configured_channels = []
+            for value in raw_channels:
+                if isinstance(value, bool) or not isinstance(value, (str, int)):
+                    logger.warning(
+                        "Invalid element in transcribe_audio_attachment_channels "
+                        "(expected string or integer, got %s)",
+                        type(value).__name__,
+                    )
+                    return False
+                configured_channels.append(str(value))
+        else:
+            logger.warning(
+                "Invalid transcribe_audio_attachment_channels "
+                "(expected string or sequence of strings or integers, got %s)",
+                type(raw_channels).__name__,
+            )
+            return False
+        configured_lower = {value.lower() for value in configured_channels}
+        if "all" in configured_lower:
+            return True
+        source_channel_ids = {
+            str(value)
+            for value in (
+                getattr(source, "chat_id", None),
+                getattr(source, "parent_chat_id", None),
+                getattr(source, "thread_id", None),
+            )
+            if value is not None
+        }
+        return bool(source_channel_ids.intersection(configured_channels))
+
+    def _profile_uses_process_config(self, profile_name: Optional[str]) -> bool:
+        """Return whether the process config owns the routed profile."""
+        if not profile_name:
+            return True
+        primary_profile = getattr(self, "_primary_profile_name", None)
+        if not primary_profile:
+            primary_profile = self._active_profile_name()
+        return profile_name == primary_profile
+
+    def _audio_attachment_channels_for_source(self, source: SessionSource) -> Any:
+        """Return the source profile audio attachment allowlist."""
+        profile_name = self._policy_profile_name_for_source(source)
+        if self._profile_uses_process_config(profile_name):
+            platforms = getattr(getattr(self, "config", None), "platforms", None)
+            if not isinstance(platforms, dict):
+                return None
+            platform_config = platforms.get(source.platform)
+            if platform_config is None:
+                return None
+            return (platform_config.extra or {}).get(
+                "transcribe_audio_attachment_channels"
+            )
+        snapshots = getattr(self, "_audio_attachment_channels_by_profile", None)
+        if not isinstance(snapshots, dict):
+            return None
+        profile_channels = snapshots.get(profile_name)
+        if not isinstance(profile_channels, dict):
+            return None
+        platform_name = getattr(source.platform, "value", source.platform)
+        return profile_channels.get(str(platform_name))
+
+    def _stt_enabled_for_source(self, source: Optional[SessionSource]) -> bool:
+        """Return whether the source profile enables automatic STT."""
+        profile_name = self._policy_profile_name_for_source(source)
+        if self._profile_uses_process_config(profile_name):
+            return bool(getattr(getattr(self, "config", None), "stt_enabled", True))
+        snapshots = getattr(self, "_stt_enabled_by_profile", None)
+        if not isinstance(snapshots, dict):
+            return False
+        return bool(snapshots.get(profile_name, False))
+
+    def _audio_attachment_stt_enabled_for_source(
+        self, source: Optional[SessionSource]
+    ) -> bool:
+        """Return whether the source permits regular audio attachment STT."""
+        return bool(
+            source
+            and self._should_transcribe_audio_attachment(source)
+            and self._stt_enabled_for_source(source)
+        )
 
     @staticmethod
     def _warn_unparsable_timeout(cfg_key: str, raw: object, default: float) -> None:

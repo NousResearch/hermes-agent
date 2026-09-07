@@ -258,6 +258,81 @@ def _install_secondary_reconnect_context(
     monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: adapter)
 
 
+@pytest.mark.asyncio
+async def test_secondary_profile_stt_policy_refreshes_at_startup_and_reconnect(
+    monkeypatch
+):
+    runner = _secondary_recovery_runner()
+    runner._primary_profile_name = "primary"
+    runner._register_config_hooks = lambda *args, **kwargs: None
+    runner._configure_profile_adapter = lambda *args, **kwargs: None
+    runner._connect_adapter_with_timeout = AsyncMock(return_value=True)
+    replacement = _SecondaryRecoveryAdapter()
+    runner._create_adapter = lambda platform, config: replacement
+    configs = iter(
+        [
+            GatewayConfig(
+                stt_enabled=True,
+                platforms={
+                    Platform.DISCORD: PlatformConfig(
+                        enabled=True,
+                        token="profile-token",
+                        extra={
+                            "transcribe_audio_attachment_channels": ["startup-channel"]
+                        },
+                    )
+                },
+            ),
+            GatewayConfig(
+                stt_enabled=False,
+                platforms={
+                    Platform.DISCORD: PlatformConfig(
+                        enabled=True,
+                        token="profile-token",
+                        extra={
+                            "transcribe_audio_attachment_channels": ["reconnect-channel"]
+                        },
+                    )
+                },
+            ),
+        ]
+    )
+
+    @contextmanager
+    def profile_scope(profile_home, *, hydrate_secrets=True):
+        """Enter a deterministic profile scope."""
+        yield
+
+    monkeypatch.setattr(gateway_run, "_profile_runtime_scope", profile_scope)
+    monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: next(configs))
+    monkeypatch.setattr(
+        "hermes_cli.env_loader.hydrate_profile_secret_sources", lambda profile_home: {}
+    )
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir", lambda profile_name: Path("/profiles") / profile_name
+    )
+
+    await runner._load_secondary_profile_config("reviewer", Path("/profiles/reviewer"))
+
+    assert runner._audio_attachment_channels_by_profile["reviewer"] == {
+        "discord": ["startup-channel"]
+    }
+    assert runner._stt_enabled_by_profile["reviewer"] is True
+
+    rebuilt, connected = await runner._secondary_reconnect_attempt(
+        "reviewer", Platform.DISCORD
+    )
+
+    assert rebuilt is replacement
+    assert connected is True
+    assert runner._audio_attachment_channels_by_profile["reviewer"] == {
+        "discord": ["reconnect-channel"]
+    }
+    assert runner._stt_enabled_by_profile["reviewer"] is False
+
+
 class TestSecondaryProfileFatalRecovery:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("entry", ["startup", "reconnect"])

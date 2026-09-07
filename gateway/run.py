@@ -2384,12 +2384,21 @@ def _event_media_is_audio(event, index: int) -> bool:
     return _event_media_kind_is(event, index, "audio/", frozenset({MessageType.VOICE, MessageType.AUDIO}))
 
 
-def _event_media_is_stt_input(event, index: int) -> bool:
-    """True when an audio attachment should enter the automatic STT pipeline."""
+def _event_media_is_stt_input(
+    event, index: int, audio_attachment_allowed: Optional[bool] = None
+) -> bool:
+    """Return whether one audio attachment enters automatic STT."""
     message_type = getattr(event, "message_type", None)
-    if message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
-        return False
-    return message_type == MessageType.VOICE or _event_media_type_at(event, index).startswith("audio/")
+    if audio_attachment_allowed is None:
+        if message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
+            return False
+        return message_type == MessageType.VOICE or _event_media_type_at(event, index).startswith("audio/")
+    if message_type == MessageType.VOICE:
+        return True
+    media_type = _event_media_type_at(event, index)
+    if media_type:
+        return audio_attachment_allowed and media_type.startswith("audio/")
+    return audio_attachment_allowed and message_type == MessageType.AUDIO
 
 
 def _event_media_is_video(event, index: int) -> bool:
@@ -3386,6 +3395,8 @@ class GatewayRunner(
         # Secondary-profile busy modes snapshotted at multiplex startup; handlers never reread config.
         self._busy_input_modes_by_profile: Dict[str, str] = {}
         self._busy_text_modes_by_profile: Dict[str, str] = {}
+        self._audio_attachment_channels_by_profile: Dict[str, Dict[str, Any]] = {}
+        self._stt_enabled_by_profile: Dict[str, bool] = {}
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
         self._cron_drain_timeout = self._load_cron_drain_timeout()

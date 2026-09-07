@@ -31,6 +31,7 @@ from gateway.platforms.base import (
     SessionSource,
     build_session_key,
 )
+from gateway.config import GatewayConfig, PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +255,7 @@ class TestBusySessionAck:
         await runner._handle_active_session_busy_message(event, sk)
 
         runner._enrich_message_with_transcription.assert_awaited_once_with(
-            "", ["/tmp/follow-up.ogg"]
+            "", ["/tmp/follow-up.ogg"], source=event.source
         )
         agent.steer.assert_called_once_with('"yönü teknik mimariye çevir"')
         agent.interrupt.assert_not_called()
@@ -262,6 +263,53 @@ class TestBusySessionAck:
         content = adapter._send_with_retry.call_args.kwargs["content"]
         assert "Steered" in content
         assert "Queued" not in content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["steer", "interrupt"])
+    async def test_busy_audio_attachment_uses_explicit_source_policy(
+        self, monkeypatch, mode
+    ):
+        import gateway.run as gateway_run
+
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = mode
+        runner._should_echo_stt_transcripts = MagicMock(return_value=False)
+        runner._enrich_message_with_transcription = AsyncMock(
+            return_value=('"busy audio transcript"', ["busy audio transcript"])
+        )
+        adapter = _make_adapter()
+        event = _make_event(text="")
+        event.message_type = MessageType.AUDIO
+        event.media_urls = ["/tmp/follow-up.mp3"]
+        event.media_types = ["audio/mpeg"]
+        runner.config = GatewayConfig(
+            stt_enabled=True,
+            platforms={
+                event.source.platform: PlatformConfig(
+                    extra={"transcribe_audio_attachment_channels": [event.source.chat_id]}
+                )
+            },
+        )
+        session_key = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[session_key] = agent
+
+        await runner._handle_active_session_busy_message(event, session_key)
+
+        runner._enrich_message_with_transcription.assert_awaited_once_with(
+            "", ["/tmp/follow-up.mp3"], source=event.source
+        )
+        if mode == "steer":
+            agent.steer.assert_called_once_with('"busy audio transcript"')
+            agent.interrupt.assert_not_called()
+            assert session_key not in adapter._pending_messages
+        else:
+            agent.interrupt.assert_called_once_with('"busy audio transcript"')
+            assert adapter._pending_messages[session_key] is event
 
 
     @pytest.mark.asyncio
@@ -489,7 +537,7 @@ class TestBusySessionOnboardingHint:
 
         # The flag is now persisted to tmp_path/config.yaml
         import yaml
-        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
         assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
 
 
@@ -512,5 +560,3 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
-
-

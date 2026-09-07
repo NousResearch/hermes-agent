@@ -20,8 +20,15 @@ Pure unit tests: no socket, no websockets dependency.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageType
 from gateway.relay.ws_transport import _event_from_wire
+from gateway.run import GatewayRunner
 
 
 def _wire_event(message_type: str, **extra):
@@ -346,3 +353,79 @@ class TestParallelArrayLengthInvariant:
         assert ev.media_urls == ["https://x/a.png", "https://x/b.png"]
         assert ev.media_types == ["", ""]
         assert len(ev.media_types) == len(ev.media_urls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed", [True, False], ids=["allowed", "denied"])
+async def test_relay_audio_localization_preserves_source_policy(allowed):
+    from gateway.relay.adapter import RelayAdapter
+
+    remote_url = "https://connector.example/relay/media/audio"
+    localized_path = "/tmp/relay-audio.mp3"
+    event = _event_from_wire(
+        _wire_event(
+            "audio",
+            source={
+                "platform": "telegram",
+                "chat_id": "relay-chat",
+                "chat_type": "dm",
+                "user_id": "relay-user",
+            },
+            media=[{"url": remote_url, "kind": "audio", "mime": "audio/mpeg"}],
+            media_urls=[remote_url],
+        )
+    )
+    media_client = SimpleNamespace(download=AsyncMock(return_value=localized_path))
+    relay_adapter = RelayAdapter.__new__(RelayAdapter)
+    relay_adapter._media_client = media_client
+    relay_adapter._get_media_client = lambda: media_client
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        stt_enabled=True,
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                extra={
+                    "transcribe_audio_attachment_channels": ["relay-chat"] if allowed else []
+                }
+            )
+        },
+    )
+    runner.adapters = {}
+    runner._consume_pending_native_image_paths = lambda session_key: []
+    runner._session_key_for_source = lambda source: "telegram:dm:relay-chat"
+    runner._thread_metadata_for_source = lambda *args, **kwargs: {}
+    runner._reply_anchor_for_event = lambda event: None
+
+    await relay_adapter._localize_inbound_media(event)
+    with (
+        patch(
+            "tools.transcription_tools.transcribe_audio",
+            return_value={"success": True, "transcript": "relay transcript"},
+        ) as transcribe,
+        patch(
+            "tools.transcription_tools.transcribe_audio_local_fallback",
+            return_value={"success": False, "error": "unused"},
+        ) as fallback,
+    ):
+        pending_text, transcripts = await runner._transcribe_pending_audio_event_once(
+            event, event.text
+        )
+        prepared = await runner._prepare_inbound_message_text(
+            event=event, source=event.source, history=[]
+        )
+
+    assert event.source.platform == Platform.TELEGRAM
+    assert event.media_urls == [localized_path]
+    assert event.media_types == ["audio/mpeg"]
+    media_client.download.assert_awaited_once_with(remote_url)
+    if allowed:
+        assert pending_text == '"relay transcript"'
+        assert transcripts == ["relay transcript"]
+        assert prepared == '"relay transcript"'
+        transcribe.assert_called_once_with(localized_path, None, "gateway")
+    else:
+        transcribe.assert_not_called()
+        assert pending_text == ""
+        assert transcripts == []
+        assert "audio file attachment" in prepared
+    fallback.assert_not_called()

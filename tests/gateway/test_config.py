@@ -1464,3 +1464,45 @@ class TestWebhookEnvOverride:
             config.platforms[Platform.WEBHOOK].extra.get("secret")
             == "shared-secret"
         )
+
+
+@pytest.mark.parametrize(
+    ("yaml_text", "expected"),
+    [
+        (
+            "telegram:\n  transcribe_audio_attachment_channels: []\n"
+            "platforms:\n  telegram:\n    transcribe_audio_attachment_channels: [platforms]\n"
+            "gateway:\n  platforms:\n    telegram:\n      transcribe_audio_attachment_channels: [gateway]\n",
+            [],
+        ),
+        (
+            "platforms:\n  telegram:\n    transcribe_audio_attachment_channels: [platforms]\n"
+            "gateway:\n  platforms:\n    telegram:\n      transcribe_audio_attachment_channels: [gateway]\n",
+            ["platforms"],
+        ),
+        (
+            "platforms:\n  telegram:\n    extra:\n"
+            "      transcribe_audio_attachment_channels: [documented-extra]\n",
+            ["documented-extra"],
+        ),
+        (
+            "gateway:\n  platforms:\n    telegram:\n"
+            "      transcribe_audio_attachment_channels: [gateway]\n",
+            ["gateway"],
+        ),
+    ],
+    ids=["empty-top-wins", "platforms-wins", "platforms-extra", "gateway-fallback"],
+)
+def test_audio_attachment_channels_follow_key_presence_precedence(
+    tmp_path, monkeypatch, yaml_text, expected
+):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(yaml_text, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    config = load_gateway_config()
+
+    assert config.platforms[Platform.TELEGRAM].extra[
+        "transcribe_audio_attachment_channels"
+    ] == expected

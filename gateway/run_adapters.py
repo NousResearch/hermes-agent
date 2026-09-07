@@ -908,6 +908,7 @@ class GatewayAdapterLifecycleMixin:
             profile_cfg = load_gateway_config()
             violation = _own_policy_open_startup_violation(profile_cfg)
         self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)
+        self._snapshot_profile_stt_policy(profile_name, profile_cfg)
         if violation:
             raise MultiplexConfigError(
                 f"Profile '{profile_name}' enables {violation}. "
@@ -1096,7 +1097,9 @@ class GatewayAdapterLifecycleMixin:
         # Hydrate external secret sources off-loop so they cannot starve heartbeats.
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-            profile_config = load_gateway_config().platforms.get(platform)
+            profile_cfg = load_gateway_config()
+            self._snapshot_profile_stt_policy(profile_name, profile_cfg)
+            profile_config = profile_cfg.platforms.get(platform)
             if profile_config is None or not profile_config.enabled:
                 return None, None
             # Startup credential gate mirror: a removed credential must not rebuild.

@@ -18,6 +18,7 @@ populate media_types.
 """
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -127,3 +128,140 @@ def test_pending_media_merge_preserves_per_attachment_inline_contract():
 
     assert existing.media_urls == ["/cache/image.png", "/cache/notes.txt"]
     assert existing.media_text_inlined == [None, False]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "message_type",
+        "media_urls",
+        "media_types",
+        "allowed",
+        "expected_route",
+        "expected_stt_paths",
+    ),
+    [
+        (
+            MessageType.VOICE,
+            ["/cache/voice.ogg"],
+            ["audio/ogg"],
+            False,
+            "stt",
+            ["/cache/voice.ogg"],
+        ),
+        (
+            MessageType.AUDIO,
+            ["/cache/audio.m4a"],
+            ["audio/mp4"],
+            True,
+            "stt",
+            ["/cache/audio.m4a"],
+        ),
+        (
+            MessageType.AUDIO,
+            ["/cache/audio.mp3"],
+            ["audio/mpeg"],
+            False,
+            "file",
+            [],
+        ),
+        (
+            MessageType.DOCUMENT,
+            ["/cache/audio.mp3"],
+            ["audio/mpeg"],
+            True,
+            "stt",
+            ["/cache/audio.mp3"],
+        ),
+        (
+            MessageType.AUDIO,
+            ["/cache/video.mp4"],
+            ["video/mp4"],
+            True,
+            "video",
+            [],
+        ),
+        (
+            MessageType.DOCUMENT,
+            ["/cache/application.mp4"],
+            ["application/mp4"],
+            True,
+            "document",
+            [],
+        ),
+        (
+            MessageType.PHOTO,
+            ["/cache/image.png", "/cache/audio.mp3", "/cache/report.pdf"],
+            ["image/png", "audio/mpeg", "application/pdf"],
+            True,
+            "mixed",
+            ["/cache/audio.mp3"],
+        ),
+    ],
+    ids=["voice", "audio-mp4", "denied", "document-audio", "video", "application", "mixed"],
+)
+async def test_audio_stt_routing_uses_source_policy_and_attachment_mime(
+    message_type,
+    media_urls,
+    media_types,
+    allowed,
+    expected_route,
+    expected_stt_paths,
+):
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        stt_enabled=True,
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                extra={
+                    "transcribe_audio_attachment_channels": ["mixed"] if allowed else []
+                }
+            )
+        },
+    )
+    runner.adapters = {}
+    runner._decide_image_input_mode = MagicMock(return_value="text")
+    runner._enrich_message_with_vision = AsyncMock(
+        return_value="[vision pipeline]\n\ncaption"
+    )
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="mixed",
+        chat_type="dm",
+        user_id="42",
+    )
+    event = MessageEvent(
+        text="caption",
+        message_type=message_type,
+        source=source,
+        media_urls=media_urls,
+        media_types=media_types,
+    )
+
+    with (
+        patch(
+            "tools.transcription_tools.transcribe_audio",
+            return_value={"success": True, "transcript": "audio transcript"},
+        ) as transcribe,
+        patch("tools.transcription_tools.transcribe_audio_local_fallback") as fallback,
+    ):
+        prepared = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[]
+        )
+
+    assert transcribe.call_args_list == [
+        call(path, None, "gateway") for path in expected_stt_paths
+    ]
+    fallback.assert_not_called()
+    if expected_route in {"stt", "mixed"}:
+        assert '"audio transcript"' in prepared
+        assert "audio file attachment" not in prepared
+    if expected_route == "file":
+        assert "audio file attachment" in prepared
+    if expected_route == "video":
+        assert "video attachment" in prepared
+    if expected_route == "document":
+        assert "The user sent a document" in prepared
+    if expected_route == "mixed":
+        runner._enrich_message_with_vision.assert_awaited_once()
+        assert "report.pdf" in prepared

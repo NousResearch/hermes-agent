@@ -5,16 +5,18 @@ import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
 import { Download, MonitorPlay } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
-import { downloadGatewayMediaFile } from '@/lib/media'
+import { downloadGatewayMediaFile, sessionDownloadOrigin } from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
 import { $previewTabSources, closePreviewForSource, openPreview, type PreviewRecordSource } from '@/store/preview'
+import { knownOwnerForSession } from '@/store/session-states'
 
 export function PreviewAttachment({ source = 'manual', target }: { source?: PreviewRecordSource; target: string }) {
   const { t } = useI18n()
+  const sessionView = useSessionView()
   // This link lives in one session's transcript; resolve it against THAT
   // session's cwd, not the primary chat's.
-  const cwd = useStore(useSessionView().$cwd)
+  const cwd = useStore(sessionView.$cwd)
   const openSources = useStore($previewTabSources)
   const [opening, setOpening] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -107,8 +109,16 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
     try {
       // Works in both modes: the Electron main process fetches the bytes
       // through the session's backend connection (local gateway or remote)
-      // and prompts for a save location.
-      const result = await downloadGatewayMediaFile(target)
+      // and prompts for a save location. Resolve THAT session's owning
+      // connection (same ladder as the cwd above) — this attachment can live
+      // in a background tile pinned to a different connection than whichever
+      // one is currently in focus.
+      const storedSessionId = sessionView.$storedId.get()
+
+      const result = await downloadGatewayMediaFile(
+        target,
+        sessionDownloadOrigin(storedSessionId, knownOwnerForSession(storedSessionId))
+      )
 
       if (mountedRef.current && result.saved) {
         setDownloaded(true)

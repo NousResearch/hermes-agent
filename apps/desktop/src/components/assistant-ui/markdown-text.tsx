@@ -10,6 +10,7 @@ import {
 import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
@@ -31,11 +32,13 @@ import {
   mediaName,
   mediaPathFromMarkdownHref,
   resolveMediaDisplaySrc,
-  resolveMediaPlaybackSrc
+  resolveMediaPlaybackSrc,
+  sessionDownloadOrigin
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
+import { knownOwnerForSession } from '@/store/session-states'
 
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
@@ -105,11 +108,22 @@ function preprocessWithTailRepair(text: string): string {
 
 function useOpenMediaFile(path: string) {
   const [openFailed, setOpenFailed] = useState(false)
+  const sessionView = useSessionView()
 
   const open = () => {
     if (window.hermesDesktop && isRemoteGateway()) {
       setOpenFailed(false)
-      void downloadGatewayMediaFile(path).catch(() => setOpenFailed(true))
+
+      // This media lives in one session's transcript, which can be a
+      // background tile pinned to a different connection than whichever one
+      // is currently in focus — resolve against THAT session's owner rather
+      // than the ambient ($connection) one.
+      const storedSessionId = sessionView.$storedId.get()
+
+      void downloadGatewayMediaFile(
+        path,
+        sessionDownloadOrigin(storedSessionId, knownOwnerForSession(storedSessionId))
+      ).catch(() => setOpenFailed(true))
     } else {
       openExternalLink(mediaExternalUrl(path))
     }

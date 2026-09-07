@@ -281,7 +281,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         // Tilde/relative hrefs have no file URL form. Keep them gateway-owned:
         // expanding them on the client would target the wrong home or cwd.
         if (isRemoteGateway() && isArtifactFilePath(artifact.value)) {
-          await downloadGatewayMediaFile(artifact.value, { sessionId: artifact.sessionId, profile: artifact.profile })
+          await downloadGatewayMediaFile(artifact.value, {
+            sessionId: artifact.sessionId,
+            connectionId: artifact.connectionId,
+            profile: artifact.profile
+          })
 
           return
         }

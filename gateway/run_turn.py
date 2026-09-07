@@ -1951,6 +1951,9 @@ class GatewayTurnMixin:
             # (a /new may move session_entry.session_id while the old run is still unwinding).
             _run_start_session_id = session_entry.session_id
             _turn_started_monotonic = time.monotonic()
+            # Admission/typing is not execution. All routing, authorization and
+            # turn preparation gates have passed when the agent runner is entered.
+            event._heartbeat_execution_started = True
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=source,
                 session_id=_run_start_session_id, session_key=session_key,

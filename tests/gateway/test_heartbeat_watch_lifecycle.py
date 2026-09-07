@@ -74,3 +74,6 @@ async def test_watch_tracks_rotated_route_owner_without_reviving_parent():
     assert len(events) == 1
     assert watch['route'][1] == 'child'
     assert HeartbeatManager('parent').state is None
+    runner.session_store.peek_session_id = lambda key: None
+    await runner._heartbeat_poll_once(watch)
+    assert not watch  # a departed route never falls back to its stale heartbeat

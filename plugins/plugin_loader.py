@@ -10,10 +10,30 @@ import importlib.machinery
 import importlib.util
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
 _PLUGINS_ROOT = Path(__file__).parent
+
+# ── Concurrent-load guards ──
+# load_plugin_module puts the module into sys.modules BEFORE exec_module runs
+# (so intra-plugin relative imports resolve). A concurrent caller can observe
+# the half-built module (__file__ present, register not yet defined), find no
+# provider, and return None — silently disabling that plugin for the agent.
+# Serialize loads per module name; the second caller waits for the in-flight
+# load and then reuses the fully evaluated module.
+_module_load_locks: dict = {}
+_module_load_locks_guard = threading.Lock()
+
+
+def _module_load_lock(module_name: str) -> threading.Lock:
+    with _module_load_locks_guard:
+        lock = _module_load_locks.get(module_name)
+        if lock is None:
+            lock = threading.Lock()
+            _module_load_locks[module_name] = lock
+        return lock
 
 
 def register_synthetic_package(name: str, search_locations: List[str]) -> None:
@@ -84,42 +104,48 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
     """Import ``plugin_dir/__init__.py`` as *module_name* (reusing sys.modules when loaded).
     Order matters: parents first (relative imports need them), then siblings as ``module_name.<stem>``
     (so ``from ._x import Y`` resolves), then the module. Finally child is bound onto parent and
-    siblings onto module — the shape normal imports produce, which monkeypatch relies on."""
+    siblings onto module — the shape normal imports produce, which monkeypatch relies on.
+    The per-module lock serializes check/create/exec: another thread can observe the module in
+    sys.modules BEFORE exec_module finishes (half-built), which would make callers that scan for
+    ``register``/subclasses find nothing and return None — silently disabling that plugin for the
+    agent (observed on concurrent agent builds as "Memory provider 'X' loaded but no provider
+    instance found")."""
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
         return None
-    # A synthetic package shell has no __file__; only reuse modules loaded from disk.
-    cached = sys.modules.get(module_name)
-    if cached is not None and getattr(cached, "__file__", None):
-        return cached
-    for parent in parents:
-        parent_path = _PLUGINS_ROOT.joinpath(*parent.split(".")[1:])
-        if parent not in sys.modules and (parent_path / "__init__.py").exists():
-            _exec(_new_module(parent, parent_path / "__init__.py", [str(parent_path)]))
-    if synthetic_namespace:
-        register_synthetic_package(synthetic_namespace, [])
-    # Reserve the name before siblings exec so their relative imports resolve.
-    mod = _new_module(module_name, init_file, [str(plugin_dir)])
-    if mod is None:
-        return None
-    loaded_submodules = []
-    for sub_file in plugin_dir.glob("*.py"):
-        full_sub_name = f"{module_name}.{sub_file.stem}"
-        if sub_file.name == "__init__.py" or full_sub_name in sys.modules:
-            continue
-        sub_mod = _new_module(full_sub_name, sub_file)
-        if _exec(sub_mod, logger):
-            loaded_submodules.append((sub_file.stem, sub_mod))
-    if not _exec(mod, logger):
-        sys.modules.pop(module_name, None)
-        return None
-    parent_name, child_name = module_name.rsplit(".", 1)
-    parent_mod = sys.modules.get(parent_name)
-    if parent_mod is not None:
-        setattr(parent_mod, child_name, mod)
-    for sub_name, sub_mod in loaded_submodules:
-        setattr(mod, sub_name, sub_mod)
-    return mod
+    with _module_load_lock(module_name):
+        # A synthetic package shell has no __file__; only reuse modules loaded from disk.
+        cached = sys.modules.get(module_name)
+        if cached is not None and getattr(cached, "__file__", None):
+            return cached
+        for parent in parents:
+            parent_path = _PLUGINS_ROOT.joinpath(*parent.split(".")[1:])
+            if parent not in sys.modules and (parent_path / "__init__.py").exists():
+                _exec(_new_module(parent, parent_path / "__init__.py", [str(parent_path)]))
+        if synthetic_namespace:
+            register_synthetic_package(synthetic_namespace, [])
+        # Reserve the name before siblings exec so their relative imports resolve.
+        mod = _new_module(module_name, init_file, [str(plugin_dir)])
+        if mod is None:
+            return None
+        loaded_submodules = []
+        for sub_file in plugin_dir.glob("*.py"):
+            full_sub_name = f"{module_name}.{sub_file.stem}"
+            if sub_file.name == "__init__.py" or full_sub_name in sys.modules:
+                continue
+            sub_mod = _new_module(full_sub_name, sub_file)
+            if _exec(sub_mod, logger):
+                loaded_submodules.append((sub_file.stem, sub_mod))
+        if not _exec(mod, logger):
+            sys.modules.pop(module_name, None)
+            return None
+        parent_name, child_name = module_name.rsplit(".", 1)
+        parent_mod = sys.modules.get(parent_name)
+        if parent_mod is not None:
+            setattr(parent_mod, child_name, mod)
+        for sub_name, sub_mod in loaded_submodules:
+            setattr(mod, sub_name, sub_mod)
+        return mod
 
 
 class NoopPluginContext:

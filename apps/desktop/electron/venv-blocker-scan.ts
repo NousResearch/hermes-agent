@@ -140,32 +140,46 @@ function classifyVenvBlocker(
   process: Pick<VenvBlockerProcess, 'pid' | 'name' | 'cmdline'>,
   hints?: Record<string, unknown>
 ): ClassifiedVenvBlocker {
-  const moduleMatch = process.cmdline.match(/(?:^|\s)-m\s+http\.server(?:\s+(\d{1,5}))?(?:\s|$)/i)
   const isPython = /^python(?:w)?(?:\.exe)?$/i.test(process.name)
   const hintedCreateTime = typeof hints?.createTime === 'number' ? hints.createTime : undefined
 
+  // The scanner is the only authority for `safeToStop`.  It classifies from the
+  // process's real argv, which it reads separately from the diagnostic command
+  // line; the command line is redacted, so it can never be part of the AND that
+  // authorizes an auto-stop.  Requiring `-m http.server` in the cmdline here is
+  // what made every holder classify as `other` on the packaged build (#104687
+  // B3).  A hint is still mandatory: a command line alone proves nothing.
   const trustedScannerIdentity =
+    isPython &&
     hints?.kind === 'local-preview' &&
     hints.safeToStop === true &&
     hintedCreateTime !== undefined &&
     Number.isFinite(hintedCreateTime) &&
     hintedCreateTime > 0
 
-  if (!isPython || !moduleMatch || !trustedScannerIdentity) {
+  if (!trustedScannerIdentity) {
     return { ...process, kind: 'other', safeToStop: false }
   }
 
-  const parsedPort = moduleMatch[1] ? Number(moduleMatch[1]) : 8000
-  const hintedPort = trustedScannerIdentity && typeof hints?.port === 'number' ? hints.port : undefined
+  // Cmdline parsing survives only as a fallback for display fields the hint
+  // omits — never as a gate.
+  const moduleMatch = process.cmdline.match(/(?:^|\s)-m\s+http\.server(?:\s+(\d{1,5}))?(?:\s|$)/i)
+  const parsedPort = moduleMatch ? (moduleMatch[1] ? Number(moduleMatch[1]) : 8000) : undefined
+  const hintedPort = typeof hints?.port === 'number' ? hints.port : undefined
   const candidatePort = hintedPort ?? parsedPort
 
   const port =
-    Number.isInteger(candidatePort) && candidatePort > 0 && candidatePort <= 65535 ? candidatePort : undefined
+    candidatePort !== undefined &&
+    Number.isInteger(candidatePort) &&
+    candidatePort > 0 &&
+    candidatePort <= 65535
+      ? candidatePort
+      : undefined
 
   const directoryMatch = process.cmdline.match(/(?:^|\s)--directory\s+(?:"([^"]+)"|'([^']+)'|(.+))$/i)
   const directory = (directoryMatch?.[1] || directoryMatch?.[2] || directoryMatch?.[3] || '').trim()
   const parsedLabel = directory ? path.win32.basename(directory.replace(/["']$/, '')) : undefined
-  const hintedLabel = trustedScannerIdentity && typeof hints?.label === 'string' ? hints.label.trim() : ''
+  const hintedLabel = typeof hints?.label === 'string' ? hints.label.trim() : ''
   const label = hintedLabel || parsedLabel
 
   return {

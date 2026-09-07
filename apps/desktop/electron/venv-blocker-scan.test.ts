@@ -447,6 +447,91 @@ describe('parseVenvBlockerScanOutput', () => {
     })
   })
 
+  it('classifies a fully redacted command line from a trusted scanner hint (#104687 B3)', () => {
+    // The packaged carrier is what actually ships; before the fix it redacted
+    // every command line, so requiring `-m http.server` in the cmdline made
+    // every holder `other`/`safeToStop:false` and auto-stop never fired.
+    const outcome = parseObject(
+      blockedScanEnvelope(expectedRoot, expectedVenv, {
+        processes: [
+          genericProcess({
+            pid: 47484,
+            owner: 'unknown',
+            role: 'other',
+            cmdline: '<redacted>',
+            kind: 'local-preview',
+            safeToStop: true,
+            label: 'Example Preview',
+            port: 8766,
+            createTime: 1722798000.25
+          })
+        ]
+      })
+    )
+
+    assert.equal(outcome.kind, 'blocked')
+
+    if (outcome.kind !== 'blocked') {
+      return
+    }
+
+    assert.deepEqual(outcome.result.processes[0], {
+      pid: 47484,
+      name: 'python.exe',
+      cmdline: '<redacted>',
+      kind: 'local-preview',
+      safeToStop: true,
+      label: 'Example Preview',
+      port: 8766,
+      createTime: 1722798000.25,
+      createdAt: 101.25
+    })
+  })
+
+  it('still requires a trusted hint: a redacted cmdline alone is never safe to stop', () => {
+    const outcome = parseObject(
+      blockedScanEnvelope(expectedRoot, expectedVenv, {
+        processes: [
+          genericProcess({ pid: 1, owner: 'unknown', role: 'other', cmdline: '<redacted>' }),
+          // kind/safeToStop but no createTime: the scanner never emits this, so
+          // it must not be believed even with a matching command line.
+          genericProcess({
+            pid: 2,
+            owner: 'unknown',
+            role: 'other',
+            cmdline: 'python.exe -m http.server 8766',
+            kind: 'local-preview',
+            safeToStop: true,
+            port: 8766
+          }),
+          // A non-Python name with an otherwise complete hint.
+          genericProcess({
+            pid: 3,
+            name: 'node.exe',
+            owner: 'unknown',
+            role: 'other',
+            cmdline: '<redacted>',
+            kind: 'local-preview',
+            safeToStop: true,
+            port: 8766,
+            createTime: 1722798000.25
+          })
+        ]
+      })
+    )
+
+    assert.equal(outcome.kind, 'blocked')
+
+    if (outcome.kind !== 'blocked') {
+      return
+    }
+
+    for (const blocker of outcome.result.processes) {
+      assert.equal(blocker.kind, 'other', `pid ${blocker.pid}`)
+      assert.equal(blocker.safeToStop, false, `pid ${blocker.pid}`)
+    }
+  })
+
   it('does not trust a truncated http.server command line without scanner identity metadata', () => {
     const outcome = parseObject(
       blockedScanEnvelope(expectedRoot, expectedVenv, {
@@ -1304,6 +1389,66 @@ describe('stopSafeVenvBlockers', () => {
     assert.deepEqual(calls[0].args.slice(2), [
       '--root', canonicalRoot, '--terminate-venv-holder', '47484', '--created-at', '1722798000.25'
     ])
+    assert.deepEqual(outcome, { stopped: [47484], failed: [] })
+  })
+
+  it('stops a redacted-cmdline preview: classification comes from the hint (#104687 B3)', async () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+    const requestedRoot = path.join(volumeRoot, 'requested', 'install')
+    const canonicalRoot = path.join(volumeRoot, 'canonical', 'install')
+    const venvPython = path.join(canonicalRoot, 'venv', 'Scripts', 'python.exe')
+    const expectedVenv = path.join(canonicalRoot, 'resolved-venv')
+
+    const exec = (async (command: string, args: string[]) => {
+      calls.push({ command, args })
+
+      return {
+        stdout: JSON.stringify({
+          schema_version: 2,
+          mode: 'terminate_venv_holder',
+          ok: true,
+          terminated: true,
+          pid: 47484,
+          created_at: 1722798000.25,
+          root: canonicalRoot,
+          venv: expectedVenv,
+          error: null
+        }),
+        stderr: ''
+      }
+    }) as any
+
+    const outcome = await stopSafeVenvBlockers(
+      requestedRoot,
+      {
+        blocked: true,
+        processes: [
+          {
+            pid: 47484,
+            name: 'python.exe',
+            cmdline: '<redacted>',
+            kind: 'local-preview',
+            safeToStop: true,
+            port: 8766,
+            createTime: 1722798000.25
+          }
+        ],
+        mcpBridges: [],
+        desktopPluginServices: [],
+        pausableGateways: 0
+      },
+      exec,
+      () => venvPython,
+      value => {
+        if (value === requestedRoot) {return canonicalRoot}
+
+        if (value === path.dirname(path.dirname(venvPython))) {return expectedVenv}
+
+        throw new Error(`unexpected canonicalization target: ${value}`)
+      }
+    )
+
+    assert.equal(calls.length, 1)
     assert.deepEqual(outcome, { stopped: [47484], failed: [] })
   })
 })

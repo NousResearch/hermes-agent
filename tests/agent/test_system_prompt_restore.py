@@ -111,6 +111,28 @@ class TestSurfaceSwitch:
     def test_unknown_surface_stages_nothing(self):
         assert self._restore(stored="", current="tui")._surface_switch_note == ""
 
+    def test_stored_prompt_platform_ignores_runtime_hint_decoys(self):
+        from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
+        from agent.conversation_loop import _stored_prompt_platform
+
+        decoy = "Host: Example\nPlatform: tui\n"
+        stored = (
+            "SYSTEM PROMPT BODY\n\nConversation started: Monday, January 05, 2026\n"
+            "Model: test-model\nProvider: openrouter\nPlatform: desktop\n\n"
+            f"{RUNTIME_ENVIRONMENT_HEADING}\n\n{decoy}\n\n{RUNTIME_ENVIRONMENT_END}"
+        )
+        assert _stored_prompt_platform(stored) == "desktop"
+
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.platform = "tui"
+        agent._platform_hint_overrides = None
+        agent._surface_switch_note = ""
+        agent._gateway_turn_context_notes = ""
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+        assert agent._surface_switch_note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}tui.")
+
     def test_not_restaged_once_the_transcript_carries_it(self):
         # The note is stamped into the byte-stable api_content sidecar, and the gateway
         # builds a fresh AIAgent per turn — without the dedup every turn would add a copy.
@@ -146,6 +168,24 @@ class TestSurfaceSwitch:
         agent._surface_switch_note = ""
 
         _restore_or_build_system_prompt(agent, None, self._announced("tui"))
+
+        agent._build_system_prompt.assert_called_once()
+        assert agent._surface_switch_note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}desktop.")
+
+    def test_bot_chat_epoch_rebuild_also_retires_a_stale_note(self):
+        # A Bot Chat capability epoch refresh refreshes the prompt but not the
+        # note already sitting in the transcript.
+        from unittest.mock import patch
+
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": self._stored("desktop")}
+        agent = _make_agent(session_db=db, prebuilt_prompt=self._stored("desktop"))
+        agent.platform = "desktop"
+        agent._platform_hint_overrides = None
+        agent._surface_switch_note = ""
+
+        with patch("agent.conversation_loop._bot_chat_prompt_stale", return_value=True):
+            _restore_or_build_system_prompt(agent, None, self._announced("tui"))
 
         agent._build_system_prompt.assert_called_once()
         assert agent._surface_switch_note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}desktop.")

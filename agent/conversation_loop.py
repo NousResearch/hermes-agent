@@ -677,6 +677,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             except Exception:
                 pass
             agent._cached_system_prompt = agent._build_system_prompt(system_message)
+            _stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
             # Persist so the NEXT turn restores the new bytes verbatim (cache break is
             # once per capability change). on_session_start not re-fired: continuation.
             _persist_system_prompt(
@@ -787,11 +788,15 @@ _SURFACE_SWITCH_NOTE_PREFIX = "[System: This conversation is now being answered 
 def _stored_prompt_platform(prompt: str) -> str:
     """The ``Platform:`` value the stored prompt was built with ("" when absent).
 
-    Last match wins, like the volatile-tier reads in ``_stored_prompt_matches_runtime``: the
-    trailer sits at the very end, so embedded project context cannot shadow it.
+    Parses only the authoritative identity portion before `# Hermes runtime environment`
+    so embedder prose (e.g. HERMES_ENVIRONMENT_HINT decoys) cannot shadow it.
     """
+    identity, runtime_marker, _ = prompt.rpartition(f"\n\n{RUNTIME_ENVIRONMENT_HEADING}\n\n")
+    runtime_marker = runtime_marker if prompt.endswith(RUNTIME_ENVIRONMENT_END) else ""
+    lines = (identity if runtime_marker else prompt).splitlines()
+
     prefix = "Platform:"
-    matches = [line[len(prefix):].strip() for line in prompt.splitlines() if line.startswith(prefix)]
+    matches = [line[len(prefix):].strip() for line in lines if line.startswith(prefix)]
     return matches[-1] if matches else ""
 
 

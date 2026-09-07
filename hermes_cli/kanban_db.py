@@ -541,6 +541,14 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "project_id": None,
         "created_at": None,
         "archived": False,
+        # Per-board override of the corresponding global kanban.* dispatch
+        # switch. True (default) means "obey the global switch, no override"
+        # — same absent-key-is-safe-default shape as `archived`. A board's
+        # own flag is narrowing-only: it can suppress this board under an
+        # enabled global switch, but a disabled global switch always wins.
+        "dispatch_enabled": True,
+        "auto_decompose_enabled": True,
+        "review_dispatch_enabled": True,
     }
     try:
         p = board_metadata_path(slug)
@@ -561,10 +569,15 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    dispatch_enabled: Optional[bool] = None, auto_decompose_enabled: Optional[bool] = None,
+    review_dispatch_enabled: Optional[bool] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
-    "" = clear (``project_id`` is not validated here)."""
+    "" = clear (``project_id`` is not validated here). ``dispatch_enabled`` /
+    ``auto_decompose_enabled`` / ``review_dispatch_enabled``: ``None`` = unchanged
+    (tri-state like ``archived``, not the string-clearing convention above).
+    """
     _assert_not_delegated_child_mutation()
     slug = _slug_or_default(board)
     meta = read_board_metadata(slug)
@@ -577,6 +590,12 @@ def write_board_metadata(
             meta[key] = str(value)
     if archived is not None:
         meta["archived"] = bool(archived)
+    if dispatch_enabled is not None:
+        meta["dispatch_enabled"] = bool(dispatch_enabled)
+    if auto_decompose_enabled is not None:
+        meta["auto_decompose_enabled"] = bool(auto_decompose_enabled)
+    if review_dispatch_enabled is not None:
+        meta["review_dispatch_enabled"] = bool(review_dispatch_enabled)
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None

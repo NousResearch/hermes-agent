@@ -82,16 +82,16 @@ export function stripGeneratedImageEchoes(text: string, sources: readonly string
     return text
   }
 
-  // Join only the gap left by an image, never normalize unrelated Markdown or code.
+  // Remove only attachment spans; surrounding whitespace may be Markdown syntax.
   let next = text
-    .replace(/([ \t]?)!\[[^\]\n]*\]\([^)\n]*\)([ \t]?)/g, (_match, before: string, after: string) => before || after)
+    .replace(/!\[[^\]\n]*\]\([^)\n]*\)/g, '')
     .replace(/\[[^\]\n]*\]\(\s*#media:[^)\n]*\)/g, '')
 
   for (const source of unique([...sources])) {
     next = next.replace(new RegExp(String.raw`(^|[\s([{])<?${regexEscape(source)}>?(?=$|[\s)\]},.!?])`, 'g'), '$1')
   }
 
-  return next.trim()
+  return next
 }
 
 /** Strip generated-image echoes from text parts, dropping any part left empty.

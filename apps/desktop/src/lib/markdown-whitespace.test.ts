@@ -1,25 +1,39 @@
 import { describe, expect, it } from 'vitest'
 
 import { assistantTextPart, renderMediaTags } from './chat-messages/parts'
-import { extractEmbeddedImages } from './embedded-images'
+import { extractEmbeddedImages, extractImageRefs } from './embedded-images'
 import { stripGeneratedImageEchoes } from './generated-images'
 import { preprocessMarkdown } from './markdown-preprocess'
 import { stripPreviewTargets } from './preview-targets'
 
+const samples = [
+  'First line  \nSecond line',
+  'Soft first\nSoft second',
+  '    value = 1\n\n',
+  '```python\nvalue = 1  ',
+  '```python\n\nvalue = 1  \nvalue = 2 \n\n\n```'
+]
+
 describe('Markdown whitespace semantics', () => {
-  it('preserves hard and soft breaks and fenced whitespace through display preprocessing', () => {
-    for (const input of ['First line  \nSecond line', 'Soft first\nSoft second', '```python\nvalue = 1  \nvalue = 2 \n```']) {
+  it('preserves significant whitespace through display preprocessing', () => {
+    for (const input of samples) {
       expect(preprocessMarkdown(input)).toBe(input)
+      expect(preprocessMarkdown('\n\n' + input)).toBe('\n\n' + input)
     }
   })
 
-  it('preserves prose hard breaks when media and preview extraction runs', () => {
-    const prose = 'First line  \nSecond line\n\n```python\nvalue = 1  \nvalue = 2 \n\n\nvalue = 3\n```'
+  it('preserves text outside removed media and preview spans', () => {
     const image = 'data:image/png;base64,' + 'A'.repeat(64)
-    expect(stripPreviewTargets(prose + '\n\n[Preview: x](#preview:test)')).toContain(prose)
-    expect(renderMediaTags(prose + '\n\nMEDIA: /tmp/image.png')).toContain(prose)
-    expect(assistantTextPart(prose)).toMatchObject({ type: 'text', text: prose })
-    expect(extractEmbeddedImages(prose + '\n\n' + image).cleanedText).toContain(prose)
-    expect(stripGeneratedImageEchoes(prose + '\n\n![result](/tmp/image.png)', ['/tmp/image.png'])).toContain(prose)
+    for (const input of samples) {
+      expect(assistantTextPart(input)).toMatchObject({ type: 'text', text: input })
+      expect(renderMediaTags(input)).toBe(input)
+      // Prefix attachments so the unfinished fence remains the document end.
+      expect(stripPreviewTargets('[Preview: x](#preview:test)' + input)).toBe(input)
+      expect(extractEmbeddedImages(image + '\n' + input).cleanedText).toBe('\n' + input)
+      expect(stripGeneratedImageEchoes('![result](/tmp/image.png)\n' + input, ['/tmp/image.png'])).toBe('\n' + input)
+      expect(extractImageRefs('@image:/tmp/image.png\n' + input).cleanedText).toBe(input)
+      expect(extractEmbeddedImages(input + '\n\n' + image).cleanedText).toBe(input + '\n\n')
+      expect(stripGeneratedImageEchoes(input + '\n\n![result](/tmp/image.png)', ['/tmp/image.png'])).toBe(input + '\n\n')
+    }
   })
 })

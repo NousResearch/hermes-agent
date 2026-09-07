@@ -154,6 +154,14 @@ export function shouldRePinOnTranscriptReload(opts: { sessionSwitched: boolean; 
   return opts.sessionSwitched || !opts.settledNonEmpty
 }
 
+export function shouldRunHydrationSettle(opts: {
+  hasGroups: boolean
+  previousHasGroups: boolean
+  sessionSwitched: boolean
+}): boolean {
+  return opts.sessionSwitched || (!opts.previousHasGroups && opts.hasGroups)
+}
+
 export function subscribeToThreadForeground(shouldReanchor: () => boolean, onReanchor: () => void): () => void {
   let frameId: number | null = null
   let framePending = false
@@ -429,6 +437,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     targetScrollTop: resolveThreadScrollTarget
   })
 
+  const scrollToBottomRef = useRef(scrollToBottom)
+  const stopScrollRef = useRef(stopScroll)
+  scrollToBottomRef.current = scrollToBottom
+  stopScrollRef.current = stopScroll
+
   const { olderAvailable, expandWindow } = useTranscriptWindow()
 
   useEffect(() => {
@@ -493,6 +506,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // a cold-load arrival re-arms. Reset on switch so a mid-settle key change
   // cannot inherit the outgoing session's settled flag.
   const settledNonEmptyRef = useRef(false)
+  const settleHadGroupsRef = useRef(false)
 
   // Record where the view should land once a prepend has grown the content,
   // measured from the BOTTOM so the added height doesn't invalidate it. Only a
@@ -678,6 +692,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     const sessionSwitched = settleKeyRef.current !== sessionKey
 
+    const shouldSettle = shouldRunHydrationSettle({
+      hasGroups,
+      previousHasGroups: settleHadGroupsRef.current,
+      sessionSwitched
+    })
+
+    settleHadGroupsRef.current = hasGroups
+
     if (sessionSwitched) {
       settledNonEmptyRef.current = false
     }
@@ -685,11 +707,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // Same-session refresh (transcript briefly cleared and repopulated) must
     // keep the reader's position. Run before stopScroll / scrollTop reset so
     // a refresh neither yanks the view nor clears the settled flag.
-    if (!shouldRePinOnTranscriptReload({ sessionSwitched, settledNonEmpty: settledNonEmptyRef.current })) {
+    if (
+      !shouldSettle ||
+      !shouldRePinOnTranscriptReload({ sessionSwitched, settledNonEmpty: settledNonEmptyRef.current })
+    ) {
       return
     }
 
-    stopScroll()
+    stopScrollRef.current()
     el.scrollTop = el.scrollHeight
     loadSettledRef.current = false
 
@@ -722,7 +747,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // the old 90-frame ceiling was for slow async image loads. Cap at 15
       // frames to minimize the settle-loop racing markdown paint on every switch.
       if (stableFrames >= 2 || ++frame > 15) {
-        void scrollToBottom('instant')
+        void scrollToBottomRef.current('instant')
         settledNonEmptyRef.current = hasGroups
         loadSettledRef.current = true
 
@@ -735,7 +760,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     let rafId = requestAnimationFrame(settle)
 
     return () => cancelAnimationFrame(rafId)
-  }, [hasGroups, scrollRef, scrollToBottom, sessionKey, stopScroll])
+  }, [hasGroups, scrollRef, sessionKey])
 
   // Prepend an older page while preserving the on-screen position. The user is
   // scrolled up (reading history) so the stick-to-bottom lock is escaped and

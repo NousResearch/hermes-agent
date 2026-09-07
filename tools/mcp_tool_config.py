@@ -12,7 +12,7 @@ import sys
 import threading
 from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_cli.stderr_timestamp import stamp_line, timestamp
-from tools.mcp_tool_common import _env_ref_name, _prepend_path
+from tools.mcp_tool_common import _env_ref_name, _prepend_path, _sanitize_error
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -510,7 +510,8 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     for name, cfg in servers.items():
         issues = validate_mcp_server_entry(name, cfg) if isinstance(cfg, dict) else None
         if issues:
-            logger.warning("Skipping suspicious MCP server '%s': %s", name, "; ".join(issues))
+            logger.warning("Skipping suspicious MCP server '%s': %s", name,
+                           _sanitize_error("; ".join(issues), _mcp_redaction_values(cfg)))
         else:
             safe_servers[name] = cfg
     return safe_servers

@@ -747,3 +747,15 @@ def test_malformed_log_and_task_reconstruction_fail_closed(
             malformed,
             local_profiles=LOCAL_PROFILES,
         )
+
+
+def test_prompt_stays_serviceable_at_every_delta_boundary(tmp_path: Path):
+    """Any valid transcript yields a prompt within the driver limit, omission marker included."""
+    for index, middle in enumerate(range(64_900, 64_980, 2)):
+        db = tmp_path / f"state-{index}.db"
+        room = hosted_rooms.create_room(
+            db, room_id=ROOM_ID, name="Release", members=MEMBERS, authority_gateway_id=GATEWAY_ID, now=1)
+        for seq, size in enumerate((1_000, middle, discussion.MAX_USER_TEXT_BYTES)):
+            _append_user(db, event_id=f"user-{seq}", text="x" * size)
+        prompt = _next_task(room, db).payload["prompt"]
+        assert len(prompt.encode("utf-8")) <= driver.MAX_PROMPT_BYTES, middle

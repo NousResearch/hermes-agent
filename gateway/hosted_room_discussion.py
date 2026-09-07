@@ -521,13 +521,17 @@ def _build_prompt(
         "- Never reveal content from private conversations. Your reply is published verbatim."]
     fixed_bytes = len("\n".join([*opening, *rules]).encode("utf-8"))
     available = max(0, driver.MAX_PROMPT_BYTES - fixed_bytes - 1)
+    marker = "  [Earlier content omitted to fit this turn.]"
+    marker_bytes = len(marker.encode("utf-8")) + 1
     selected: list[str] = []
-    for event in reversed(delta):
+    for index, event in enumerate(reversed(delta)):
+        # Newest first; while older lines remain unplaced, keep room for the omission marker.
         line = f"  {_format_message(event, room)}"
-        if (line_bytes := len(line.encode("utf-8")) + 1) > available:
-            if not selected and available > 32:
-                selected.append(_truncate_utf8_text(line, max_bytes=available))
-            selected.append("  [Earlier content omitted to fit this turn.]")
+        reserve = marker_bytes if index < len(delta) - 1 else 0
+        if (line_bytes := len(line.encode("utf-8")) + 1) > available - reserve:
+            if not selected and available - marker_bytes > 32:
+                selected.append(_truncate_utf8_text(line, max_bytes=available - marker_bytes))
+            selected.append(marker)
             break
         selected.append(line)
         available -= line_bytes

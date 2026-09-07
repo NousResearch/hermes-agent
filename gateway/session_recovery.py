@@ -181,9 +181,7 @@ class SessionRecoveryMixin:
     def _recover_session_from_db(
         self, *, session_key: str, source: SessionSource, now: datetime,
         raise_on_lookup_error: bool = False) -> Optional[SessionEntry]:
-        """Rebuild a missing session-key mapping from durable state.db data. ``None`` when no row is
-        recoverable, or when the recovered session is already overdue under the reset policy — the
-        row is then durably promoted to a reset boundary instead of resurrected."""
+        """Rebuild a missing session-key mapping from a recoverable durable row."""
         entry, migrated_legacy = self._query_recoverable_row(
             # The legacy (pre-workspace) Slack key fallback happens INSIDE _query_recoverable_session
             # (#20583/#66398 design): it performs the exact-key legacy lookup, claims the key once per
@@ -191,15 +189,6 @@ class SessionRecoveryMixin:
             session_key=session_key, source=source, now=now,
             raise_on_lookup_error=raise_on_lookup_error)
         if entry is None:
-            return None
-        reset_reason = self._should_reset(entry, source)
-        if reset_reason:
-            self._promote_session_reset(
-                session_key, entry.session_id, reset_reason,
-                log=lambda exc: logger.debug(
-                    "Gateway recovered-session reset promotion failed for %s: %s", session_key, exc,
-                ),
-            )
             return None
         self._reopen_session_row(session_key, entry.session_id)
         if migrated_legacy:

@@ -23,13 +23,7 @@ from gateway.session_stall import (
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
-_MAX_FINALIZE_RETRIES = 3
 _SESSION_STORE_PRUNE_INTERVAL = 3600.0  # once per hour
-
-
-def _platform_of_key(key: str, default: str = "") -> str:
-    """Session keys look like ``agent:main:telegram:dm:12345`` — platform is field [2]."""
-    return key.split(":")[2] if key.count(":") > 1 else default
 
 
 async def _interruptible_sleep(runner, seconds: int) -> None:
@@ -43,88 +37,17 @@ async def _interruptible_sleep(runner, seconds: int) -> None:
 class GatewaySessionWatchersMixin:
     """Session expiry / stall / catalog-refresh watcher loops for GatewayRunner."""
 
-    async def _session_expiry_watcher(self, interval: int = 300):
-        """Finalize expired sessions, then run the cache/store sweeps."""
-        await asyncio.sleep(60)  # initial delay — let the gateway fully start
-        finalize_failures: dict[str, int] = {}  # session_id -> consecutive failure count
+    async def _session_housekeeping_watcher(self, interval: int = 300):
+        """Reclaim resources without ending durable conversations."""
+        await asyncio.sleep(60)
         while self._running:
             try:
-                store = self.async_session_store
-                await store._ensure_loaded()
-                expired = [
-                    (key, entry) for key, entry in list(self.session_store._entries.items())
-                    if not entry.expiry_finalized and await store._is_session_expired(entry)
-                ]
-                if expired:
-                    await self._finalize_expired_sessions(expired, finalize_failures)
-                await self._expiry_housekeeping()
+                await self._session_housekeeping()
             except Exception as e:
-                logger.debug("Session expiry watcher error: %s", e)
+                logger.debug("Session housekeeping error: %s", e)
             await _interruptible_sleep(self, interval)
 
-    async def _finalize_expired_sessions(self, expired: list, failures: dict[str, int]) -> None:
-        """Finalize each entry; after ``_MAX_FINALIZE_RETRIES`` consecutive failures mark it
-        finalized anyway (without clearing the model override) to stop an infinite retry loop."""
-        platforms = Counter(_platform_of_key(k, "unknown") for k, _ in expired)
-        logger.info(
-            "Session expiry: %d sessions to finalize (%s)",
-            len(expired), ", ".join(f"{p}:{c}" for p, c in sorted(platforms.items())),
-        )
-        for key, entry in expired:
-            sid = entry.session_id
-            try:
-                await self._finalize_expired_session(key, entry)
-            except Exception as e:
-                count = failures[sid] = failures.get(sid, 0) + 1
-                if count < _MAX_FINALIZE_RETRIES:
-                    logger.debug("Session finalize failed (%d/%d) for %s: %s",
-                                 count, _MAX_FINALIZE_RETRIES, sid, e)
-                    continue
-                logger.warning(
-                    "Session finalize gave up after %d attempts for %s: %s. "
-                    "Marking as finalized to prevent infinite retry loop.", count, sid, e,
-                )
-                store = self.async_session_store
-                await store.set_expiry_finalized(entry, clear_model_override=False)
-            failures.pop(sid, None)
-        done = sum(1 for _, e in expired if e.expiry_finalized)
-        if failed := len(expired) - done:
-            logger.info("Session expiry done: %d finalized, %d pending retry", done, failed)
-        else:
-            logger.info("Session expiry done: %d finalized", done)
-
-    async def _finalize_expired_session(self, key: str, entry) -> None:
-        """Run finalize hooks, tear down the cached agent, clear conversation scope, persist."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        # Off-loop + bounded: plugin finalize hooks can block arbitrarily; this is the event loop.
-        with contextlib.suppress(Exception):
-            await self._finalize_session_off_loop(
-                session_id=entry.session_id, platform=_platform_of_key(key),
-                reason="session_expired",
-            )
-        # Idle agents live in _agent_cache (not _running_agents); fall back to the running turn's
-        # agent in case the session is still mid-turn when the expiry fires.
-        agent, cache_lock = None, getattr(self, "_agent_cache_lock", None)  # tests may lack it
-        if cache_lock is not None:
-            with cache_lock:
-                cached = self._agent_cache.get(key)
-            agent = cached[0] if isinstance(cached, tuple) else cached if cached else None
-        if agent is None:
-            state = self._peek_session_state(key)
-            agent = state.turn.agent if state else None
-        if agent and agent is not _AGENT_PENDING_SENTINEL:
-            await self._cleanup_agent_resources_off_loop(agent, context="session expiry")
-        # Evict so the AIAgent (LLM clients, tool schemas, memory refs) can be GC'd, then drop
-        # every conversation-scoped dict AND boundary security state — only finalize, /new, /reset
-        # may (idle-cache eviction must NOT: a resumed turn rebuilds from those overrides). The
-        # persisted flag also drops the /model override: finalization is a conversation boundary.
-        self._evict_cached_agent(key)
-        self._clear_conversation_scope(key, reason="expiry_finalized")
-        # See #9006.
-        await self.async_session_store.set_expiry_finalized(entry)
-        logger.debug("Session expiry finalized for %s", entry.session_id)
-
-    async def _expiry_housekeeping(self) -> None:
+    async def _session_housekeeping(self) -> None:
         """Idle/pressure agent-cache sweeps plus the hourly SessionStore prune."""
         # Sweep idle agents regardless of reset policy: long/"never" windows would pin memory.
         try:

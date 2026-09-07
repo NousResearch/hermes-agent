@@ -171,46 +171,34 @@ def _notify_secret_access(reference: str, *, profile: str = "", reason: str = ""
 
     Servetus design principle: informed consent, not blind authorization.
     """
-    # Only notify once per reference per process lifetime
-    if reference in _NOTIFIED_REFS:
-        return
-    _NOTIFIED_REFS.add(reference)
-
-    try:
-        # Parse the op://vault/item/field reference for human-readable parts
-        parts = reference.replace("op://", "").split("/")
-        vault = parts[0] if parts else "vault"
-        item = parts[1] if len(parts) > 1 else "item"
-        # Clean up the item name for display
-        item_display = item.replace("_", " ").replace("-", " ").title()
-
-        # Build the context: who is asking
-        who = "Hermes Agent"
-        if profile:
-            who = f"Hermes ({profile} profile)"
-        if reason:
-            who = f"{who} — {reason}"
-
-        # Build the purpose description
-        purpose = _describe_secret_purpose(reference)
-
-        # Title: what's being accessed
-        title = f"{who} needs {item_display}"
-
-        # Body: vault + purpose + scope
-        body = (f"Reading from your {vault} vault.\n"
-                f"Purpose: {purpose}\n"
-                f"A 1Password prompt will appear — you are authorizing this access.")
-
-        subprocess.run(
-            ["notify-send", "--urgency=critical", "--expire-time=0",
-             "--icon=1password", title, body],
-            capture_output=True, timeout=5,
-            env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")},
-        )
-    except Exception:
-        # Never let notification failure block secret resolution
-        pass
+    # DISABLED — causing notification storms. The 1Password prompts are now
+    # eliminated via service account tokens on all services. Re-enable when
+    # the firing logic is properly gated on actual desktop prompt detection.
+    return
+    # --- Original implementation preserved below for re-enablement ---
+    # try:
+    #     parts = reference.replace("op://", "").split("/")
+    #     vault = parts[0] if parts else "vault"
+    #     item = parts[1] if len(parts) > 1 else "item"
+    #     item_display = item.replace("_", " ").replace("-", " ").title()
+    #     who = "Hermes Agent"
+    #     if profile:
+    #         who = f"Hermes ({profile} profile)"
+    #     if reason:
+    #         who = f"{who} — {reason}"
+    #     purpose = _describe_secret_purpose(reference)
+    #     title = f"{who} needs {item_display}"
+    #     body = (f"Reading from your {vault} vault.\n"
+    #             f"Purpose: {purpose}\n"
+    #             f"A 1Password prompt will appear — you are authorizing this access.")
+    #     subprocess.run(
+    #         ["notify-send", "--urgency=critical", "--expire-time=0",
+    #          "--icon=1password", title, body],
+    #         capture_output=True, timeout=5,
+    #         env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")},
+    #     )
+    # except Exception:
+    #     pass
 
 
 def _run_op_read(op: Path, reference: str, *, account: str = "",

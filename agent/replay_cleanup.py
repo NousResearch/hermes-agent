@@ -7,7 +7,8 @@ re-issues the unanswered call → endless "thinking"/reboot loop. These pure hel
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+import time
+from typing import Any, Dict, List, Optional
 
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.tool_result_classification import tool_may_have_side_effect
@@ -124,6 +125,30 @@ def sanitize_replay_history(agent_history: List[Dict[str, Any]]) -> List[Dict[st
     if not agent_history:
         return agent_history
     return strip_dangling_tool_call_tail(strip_interrupted_tool_tails(agent_history))
+
+
+def canonicalize_replay_history(
+    agent_history: List[Dict[str, Any]], *, now: Optional[float] = None
+) -> List[Dict[str, Any]]:
+    """Apply every destructive replay transform in the shared, fixed order.
+
+    Resume surfaces and the send path must serialize the same history bytes. The
+    older consumers each applied only a subset of these transforms: interrupted
+    blocks and dangling tails were handled by TUI replay, while stale dangerous
+    confirmations were handled by gateway replay. A request built from the
+    unmodified history could therefore diverge in the middle of the cached
+    prefix after a resume.
+
+    The input is never modified. ``now`` is injectable for deterministic tests;
+    production callers use the same wall clock as the existing expiry policy.
+    """
+    if not agent_history:
+        return agent_history
+    if now is None:
+        now = time.time()
+    cleaned = strip_interrupted_tool_tails(agent_history)
+    cleaned = strip_dangling_tool_call_tail(cleaned)
+    return strip_stale_dangerous_confirmations(cleaned, now=now)
 
 
 # --- Stale dangerous-confirmation text expiry ---

@@ -982,3 +982,144 @@ describe('sync worker', () => {
     expect(configured.has('gw-b')).toBe(true)
   })
 })
+
+describe('durable disband memory (#105275)', () => {
+  it('a remembered disband keeps a stale mirror projection from resurrecting the room', async () => {
+    const { chat } = await loadRoom()
+
+    const merged = chat.mergeRemoteGroupChatSnapshotIntoRooms(
+      {
+        rooms: {
+          'id:gone-1': {
+            log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'g1', text: 'stale mirror copy' }],
+            name: 'Gone',
+            revision: 3,
+            roomId: 'gone-1'
+          }
+        },
+        version: 3
+      },
+      {},
+      { disbandedRooms: { 'id:gone-1': { name: 'Gone', rev: 4 } } }
+    )
+
+    expect(merged.Gone).toBeUndefined()
+  })
+
+  it('a projection newer than the remembered disband still merges', async () => {
+    const { chat } = await loadRoom()
+
+    const merged = chat.mergeRemoteGroupChatSnapshotIntoRooms(
+      {
+        rooms: {
+          'id:gone-1': {
+            log: [{ at: 2, from: { kind: 'user', name: 'You' }, id: 'g2', text: 'recreated later' }],
+            name: 'Gone',
+            revision: 5,
+            roomId: 'gone-1'
+          }
+        },
+        version: 3
+      },
+      {},
+      { disbandedRooms: { 'id:gone-1': { name: 'Gone', rev: 4 } } }
+    )
+
+    expect(merged.Gone).toBeTruthy()
+    expect(merged.Gone.log[0].text).toBe('recreated later')
+  })
+
+  it('a same-name recreate with a fresh roomId is not blocked by the old disband', async () => {
+    const { chat } = await loadRoom()
+
+    const merged = chat.mergeRemoteGroupChatSnapshotIntoRooms(
+      {
+        rooms: {
+          'id:new-room': {
+            log: [{ at: 3, from: { kind: 'user', name: 'You' }, id: 'n1', text: 'fresh room' }],
+            name: 'Gone',
+            revision: 1,
+            roomId: 'new-room'
+          }
+        },
+        version: 3
+      },
+      {},
+      { disbandedRooms: { 'id:gone-1': { name: 'Gone', rev: 4 } } }
+    )
+
+    expect(merged.Gone).toBeTruthy()
+    expect(merged.Gone.log[0].text).toBe('fresh room')
+  })
+
+  it('survives the sync giving up: a stale mirror cannot resurrect a disbanded room and the mirror is repaired', async () => {
+    const room = await loadRoom()
+
+    // The mirror a failed tombstone push left behind: the room is still
+    // projected with no tombstone, long after the local disband.
+    room.gateway.uiMeta['hermes-bots-groups'] = {
+      rooms: {
+        'id:gone-1': {
+          log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'g1', text: 'stale mirror copy' }],
+          name: 'Gone',
+          revision: 3,
+          roomId: 'gone-1'
+        }
+      },
+      version: 3
+    }
+
+    // Window restart: the disband survives only as hydrated storage state —
+    // the in-memory pending job is long gone.
+    room.chat.hydrateGroupChatDisbands({ 'id:gone-1': { name: 'Gone', rev: 4 } })
+
+    await room.chat.pullGroupChatServerState('')
+
+    expect(room.chat.$groupChats.get().Gone).toBeUndefined()
+    expect('Gone' in durable(room)).toBe(false)
+
+    // The pull re-queues the missed tombstone so the normal flush repairs
+    // the mirror instead of the next pull resurrecting the room forever.
+    await drain(() => room.gateway.rpcFor('profiles.configure').length < 1, 50)
+
+    const envelope = published(room)
+
+    expect((envelope.deleted as Record<string, number>)['id:gone-1']).toBeGreaterThan(0)
+    expect((envelope.rooms as Record<string, unknown>)['id:gone-1']).toBeUndefined()
+  })
+
+  it('does not re-queue a repair once the mirror carries the tombstone', async () => {
+    const room = await loadRoom()
+
+    room.gateway.uiMeta['hermes-bots-groups'] = {
+      deleted: { 'id:gone-1': 9 },
+      rooms: {},
+      version: 3
+    }
+
+    room.chat.hydrateGroupChatDisbands({ 'id:gone-1': { name: 'Gone', rev: 4 } })
+
+    await room.chat.pullGroupChatServerState('')
+
+    expect(room.gateway.rpcFor('profiles.configure')).toHaveLength(0)
+  })
+
+  it('rememberGroupChatDisbands persists room-keyed records for a later hydrate', async () => {
+    const room = await loadRoom()
+
+    await room.chat.rememberGroupChatDisbands([{ name: 'Gone', roomId: 'gone-1', syncRevision: 3 }])
+
+    expect(room.gateway.storage.get('group-chat-disbanded')).toEqual({
+      'id:gone-1': { name: 'Gone', rev: 4 }
+    })
+
+    await room.chat.rememberGroupChatDisbands([{ name: 'Legacy' }])
+
+    expect(room.gateway.storage.get('group-chat-disbanded')).toEqual({
+      'id:gone-1': { name: 'Gone', rev: 4 },
+      'name:Legacy': { name: 'Legacy', rev: 1 }
+    })
+
+    expect(Object.keys(room.chat.groupChatDisbandMemory())).toEqual(['id:gone-1', 'name:Legacy'])
+  })
+})

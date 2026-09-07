@@ -65,6 +65,7 @@ import {
   $groupNeedsYou,
   groupSpeakerLabel,
   groupThreadOf,
+  rememberGroupChatDisbands,
   scheduleGroupChatServerSync,
   setGroupChatImage,
   updateGroupChat
@@ -144,6 +145,18 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   }
 
   delete all[group]
+
+  // Remember the disband durably BEFORE any remote write can stall: the
+  // pending sync job alone forgets it once the retry ladder gives up or the
+  // window closes, and a gateway mirror that missed the tombstone push
+  // would resurrect the room on every later pull (#105275).
+  await rememberGroupChatDisbands([
+    {
+      name: group,
+      roomId: typeof prior.roomId === 'string' ? prior.roomId : null,
+      syncRevision: prior.syncRevision
+    }
+  ])
 
   // Keep a runtime-only tombstone while a drive may still be mid-turn; it
   // carries no log and is flagged so persistence and name-dedup skip it —

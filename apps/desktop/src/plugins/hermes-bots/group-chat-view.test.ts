@@ -288,4 +288,22 @@ describe('disband', () => {
 
     expect(envelope.deleted?.['name:Gone']).toBeGreaterThan(0)
   })
+
+  it('records the disband durably so a missed tombstone push cannot resurrect the room later', async () => {
+    const room = await loadRoom()
+    room.chat.$groupChats.set({
+      Gone: {
+        log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'g1', text: 'bye' }],
+        roomId: 'gone-1',
+        syncRevision: 3,
+        watermarks: {}
+      }
+    } as unknown as Record<string, GroupChat>)
+
+    await room.view.disbandGroupChat('Gone', [])
+
+    expect(room.gateway.storage.get('group-chat-disbanded')).toEqual({
+      'id:gone-1': { name: 'Gone', rev: 4 }
+    })
+  })
 })

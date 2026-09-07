@@ -75,6 +75,18 @@ def test_superseded_transport_never_admits_to_old_endpoint(tmp_path, monkeypatch
         service = HostedRoomService(SimpleNamespace(), db_path=db)
         old = registration(old_url + "/old", "reviewer", "old")
         new = registration(new_url + "/new", "reviewer-new", "new")
+        # Observer fencing snapshots the durable room roster during resolution.
+        hosted_rooms.create_room(
+            db, room_id="room-1", name="Route replacement",
+            authority_gateway_id="install-home", members=[
+                {"member_id": "local", "profile": "default", "handle": "local"},
+                {"member_id": "member", "profile": "reviewer", "handle": "reviewer", "target": {
+                    "kind": "peer", "peer_id": "install-reviewer",
+                    "installation_id": "install-reviewer", "profile": "reviewer",
+                    "capability_digest": old["catalog"].catalog_digest,
+                }},
+            ],
+        )
         service.register_peer_route(**old)
         worker = HostedRoomService(SimpleNamespace(), db_path=db)
         task = TaskIdentity("room-1", "task-1", "thread-1", "turn-1")

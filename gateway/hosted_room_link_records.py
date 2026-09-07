@@ -159,15 +159,16 @@ def complete_room_link_retirement(
             raise AuthorityConflictError("Group Chat route fence authority changed")
 
 
-def list_room_link_records(db_path: Path | str) -> list[dict[str, Any]]:
+def list_room_link_records(db_path: Path | str, *, room_id: str | None = None) -> list[dict[str, Any]]:
     """Return private RoomLink records without logging or formatting grants."""
+    where = "" if room_id is None else " WHERE room_id=?"
+    params = () if room_id is None else (_validate_identifier(room_id, label="room_id"),)
     with _transaction(db_path) as conn:
         rows = conn.execute(
             """SELECT room_id, member_id, target_url, target_profile, grant,
                       catalog_json, cancellation_scope_id, trace_id,
                       transport_security, status, updated_at
-                 FROM hosted_room_links
-             ORDER BY room_id, member_id"""
+                 FROM hosted_room_links""" + where + " ORDER BY room_id, member_id", params
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -260,6 +261,12 @@ def update_room_link_status(
                 != expected_grant_sha256
             ):
                 return False
+        # Observing/cancelling accepted work remains valid during close. Its
+        # health callback must not fail on the immutable route-update trigger.
+        if conn.execute(
+            "SELECT 1 FROM hosted_room_disband_fences WHERE room_id=?", (room_id,),
+        ).fetchone() is not None:
+            return False
         cursor = conn.execute(
             """UPDATE hosted_room_links SET status=?, updated_at=?
                  WHERE room_id=? AND member_id=?""",

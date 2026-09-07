@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 from hashlib import sha256
 import hashlib
+import logging
 import os
 import shutil
 import threading
@@ -30,9 +31,12 @@ from tui_gateway.hosted_room_peer_status import _RouteStatusPeerClient
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 from tui_gateway.hosted_room_artifact_service import HostedRoomArtifactMixin
 from tui_gateway.hosted_room_peer_http import (
-    PeerRunsHTTPClient, PeerRunsHTTPError)
+    PeerRunsHTTPClient, PeerRunsHTTPError,
+    room_grant_request_budget, room_grant_request_budget_remaining)
 from tui_gateway.hosted_room_peer_transport import (
     HostedRoomPeerClient, PeerHostedRoomTransport, PeerMemberRoute, build_member_dispatch)
+
+logger = logging.getLogger(__name__)
 
 _HOSTED_ROOM_IDLE_FALLBACK_SECONDS = 5.0
 _HOSTED_ROOM_ACTIVE_POLL_SECONDS = 0.25
@@ -91,6 +95,8 @@ class HostedRoomService(HostedRoomArtifactMixin):
         self.rpc = HostedRoomServerRPC(server)
         self._link_load_error = None
         self._peer_route_status: dict[tuple[str, str], str] = {}
+        self._peer_renewals: dict[tuple[str, str], tuple[str, float, float]] = {}
+        self._peer_renewal_scans: dict[str, float] = {}
         self._persisted_peer_route_keys: set[tuple[str, str]] = set()
         self.peer_routes: dict[tuple[str, str], PeerMemberRoute] = {}
         self.peer_clients: dict[tuple[str, str], Any] = {}
@@ -107,7 +113,9 @@ class HostedRoomService(HostedRoomArtifactMixin):
         self.runtime = HostedRoomRuntime(
             db_path=self.db_path, rooms=self.bindings, rpc=self.rpc,
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
-            prepare_room=self.prepare_room, publish_terminal=self.publish_terminal,
+            prepare_room=self.prepare_room,
+            maintain_leased_room=lambda binding, lease: self._renew_idle_peer_grants(binding, lease),
+            publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action,
             attachment_loader=self._load_task_attachments,
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
@@ -274,6 +282,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
             self.peer_clients[key] = client
             self._peer_route_status[key] = "ready"
             self._persisted_peer_route_keys.add(key)
+            self._peer_renewal_scans.pop(room_id, None)
         self._unblock_artifact_retries(room_id, member_id)
         self.runtime.wakeup()
 
@@ -338,8 +347,28 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 self.peer_routes.pop(key, None)
                 self._peer_route_status.pop(key, None)
                 self.peer_clients.pop(key, None)
+                self._peer_renewals.pop(key, None)
                 self._persisted_peer_route_keys.discard(key)
+            self._peer_renewal_scans.pop(room_id, None)
         return len(routes)
+
+    def begin_room_disband(self, room_id: str) -> dict[str, Any]:
+        """Persist the no-new-work fence before Stop and grant revocation."""
+        with self._policy_lock:
+            room = hosted_rooms.room_state(self.db_path, room_id=room_id)
+            if str(room["authority_gateway_id"]) != hosted_rooms.local_authority_gateway_id():
+                raise hosted_rooms.AuthorityConflictError(
+                    "This Group Chat is managed by another gateway.")
+            hosted_room_link_records.begin_room_link_retirement(
+                self.db_path, room_id=room_id,
+                authority_gateway_id=str(room["authority_gateway_id"]),
+                authority_epoch=int(room["authority_epoch"]))
+            return room
+
+    def _require_work_open(self, room_id: str) -> None:
+        from gateway.hosted_room_route_schema import require_room_work_open
+        with hosted_rooms._transaction(self.db_path, immediate=True) as conn:
+            require_room_work_open(conn, room_id, error=driver.RoomUnavailableError)
 
     def _resolve_member_transport(
         self,
@@ -373,8 +402,8 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 task_id=identity.task_id,
                 execution_generation=execution_generation,
             )
-        tracked_client = self._tracked_peer_client(binding.room_id, member_id, client, route=route)
-        if task.get("payload", {}).get("attachments"):
+        tracked_client = self._tracked_peer_client(binding.room_id, member_id, client, route=route, binding=binding)
+        if task.get("payload", {}).get("attachments") and task.get("status") not in {"stopping", "indeterminate"}:
             route = self._refresh_peer_attachment_catalog(
                 binding.room_id,
                 member_id,
@@ -385,7 +414,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 raise MemberTransportUnavailable(
                     "The target gateway needs an update before it can receive files in this Group Chat."
                 )
-            tracked_client = self._tracked_peer_client(binding.room_id, member_id, client, route=route)
+            tracked_client = self._tracked_peer_client(binding.room_id, member_id, client, route=route, binding=binding)
         self._recover_peer_admission(binding, task, route, tracked_client)
         return PeerHostedRoomTransport(
             binding=binding,
@@ -408,25 +437,27 @@ class HostedRoomService(HostedRoomArtifactMixin):
             or not isinstance(payload, Mapping) or execution_generation < 1
             or task.get("status") not in {"indeterminate", "stopping"}):
             return
+        receipt_only = task.get("status") == "stopping" or (
+            hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=binding.room_id))
         prompt = payload.get("prompt")
         source_event_seq = int(payload.get("source_event_seq") or 0)
         if not isinstance(prompt, str) or source_event_seq < 1 or not route.trace_id:
             raise RuntimeError("peer room admission identity is unavailable for recovery")
         attachment_payloads = [
             {**dict(attachment), "sha256": sha256(data).hexdigest(), "data": data}
-            for attachment, data in self._load_task_attachments(binding, task)]
+            for attachment, data in self._load_task_attachments(binding, task)] if not receipt_only else []
         manifest = [{key: value for key, value in item.items() if key != "data"} for item in attachment_payloads]
         dispatch = build_member_dispatch(
             binding=binding, route=route, room_id=identity.room_id, task_id=identity.task_id,
             target_profile=route.target_profile, execution_generation=execution_generation,
             source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id,
             attachment_digest=attachment_manifest_digest(manifest) if manifest else None)
-        if attachment_payloads:
+        if attachment_payloads and not receipt_only:
             stage = _hook(client, "stage_attachments")
             if stage is None:
                 raise RuntimeError("The target gateway needs an update before it can receive files in this Group Chat.")
             stage(dispatch=dispatch.as_mapping(), attachments=attachment_payloads, grant=route.grant)
-        recover(dispatch=dispatch.as_mapping(), grant=route.grant)
+        recover(dispatch=dispatch.as_mapping(), grant=route.grant, **({"receipt_only": True} if receipt_only else {}))
 
     def _member_is_peer(self, room_id: str, member_id: str) -> bool:
         for m in self._room(room_id).get("members") or []:
@@ -594,8 +625,6 @@ class HostedRoomService(HostedRoomArtifactMixin):
 
     def prepare_room(self, binding: HostedRoomBinding) -> None:
         with self._policy_lock:
-            if self._room_is_disbanding(binding.room_id):
-                raise driver.RoomUnavailableError("hosted room is being disbanded")
             room = self._room(binding.room_id)
             snapshot = self._policy_snapshot(room)  # sync() side effect feeds the publish below
             if self._publish_terminal_tasks(room):
@@ -604,6 +633,8 @@ class HostedRoomService(HostedRoomArtifactMixin):
             self.policy_checkpoint.compact_completed(room_id=binding.room_id)
             driver.prune_published_terminal_tasks(
                 self.db_path, room_id=binding.room_id, clock=self.runtime.clock)
+            if hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=binding.room_id):
+                return
             if next(iter(self._list_tasks(binding.room_id, _LIVE_STATUSES)), None) is not None:
                 return
             decision = discussion.plan_next_task(
@@ -654,7 +685,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
         event_id: str,
         payload: Any,
     ) -> dict[str, Any]:
-        room = self._owned_room(room_id)
+        room = self._owned_room(room_id, allow_disbanding=True)
         member_ids = tuple(
             str(member.get("member_id") or member.get("profile") or "")
             for member in room["members"]
@@ -665,6 +696,13 @@ class HostedRoomService(HostedRoomArtifactMixin):
             payload,
             member_ids=member_ids,
         )
+        if self._room_is_disbanding(room_id):
+            # Let the atomic journal return only an exact prior send; do not stage bytes.
+            return hosted_rooms.append_event(
+                self.db_path, room_id=room_id, event_id=event_id, kind="message.user",
+                actor={"kind": "user", "id": "desktop"}, payload=normalized,
+                authority_gateway_id=str(room["authority_gateway_id"]),
+                authority_epoch=int(room["authority_epoch"]))
         transitioned_attachment_ids: tuple[str, ...] = ()
         if normalized.get("attachments"):
             normalized["attachments"], transitioned_attachment_ids = (
@@ -738,6 +776,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
 
     def retry_room_task(self, room_id: str, *, task_id: str) -> dict[str, Any]:
         """Retry one uncertain or deferred task only after explicit user action."""
+        self._require_work_open(room_id)
         candidates = self._list_tasks(room_id, _RETRYABLE_STATUSES)
         task = next((c for c in candidates if c["identity"].task_id == task_id), None)
         if task is None:
@@ -763,6 +802,10 @@ class HostedRoomService(HostedRoomArtifactMixin):
             raise RuntimeError("room approval is no longer pending")
         if choice not in {"once", "deny"}:
             raise RuntimeError("room approval choice must be once or deny")
+        if choice != "deny":
+            # Admit Allow before invoking local/remote approval; an already
+            # admitted request may finish, but no fresh Allow enters after close.
+            self._require_work_open(room_id)
         approve = _hook(client, "approve_receipt")
         if route is not None and approve is not None:
             result = approve(
@@ -804,6 +847,61 @@ class HostedRoomService(HostedRoomArtifactMixin):
             "counts": dict(counts), "pending_actions": pending_actions,
             "needs_attention": bool(pending_actions),
             "peer_routes": self._route_statuses(room_id)}
+
+    def _renew_idle_peer_grants(self, binding: HostedRoomBinding, lease: driver.DriverLease) -> None:
+        """Bound upkeep after urgent work and inside active polling, never a new timer."""
+        now = self.runtime.clock()
+        if now < self._peer_renewal_scans.get(binding.room_id, 0):
+            return
+        if driver.list_tasks(self.db_path, room_id=binding.room_id, status="stopping"):
+            return
+        # Keep heartbeat/Stop headroom even with a non-default short driver lease.
+        budget = min(2.0, lease.expires_at - now - 5.0)
+        if budget <= 0:
+            return
+        self._peer_renewal_scans[binding.room_id] = now + 5.0
+        with room_grant_request_budget(budget, clock=self.runtime.clock):
+            self._renew_peer_grants_with_budget(binding, lease, now)
+
+    def _renew_peer_grants_with_budget(
+        self, binding: HostedRoomBinding, lease: driver.DriverLease, now: float,
+    ) -> None:
+        links, _errors = hosted_room_links.load_room_links_tolerant(self.db_path, room_id=binding.room_id)
+        current_keys = {(link.room_id, link.member_id) for link in links}
+        for key in list(self._peer_renewals):
+            if key[0] == binding.room_id and key not in current_keys:
+                self._peer_renewals.pop(key, None)
+        for link in links:
+            remaining = room_grant_request_budget_remaining()
+            if remaining is None or remaining <= 0:
+                break
+            key = (link.room_id, link.member_id)
+            if link.status == "needs_reauthorization":
+                continue
+            fingerprint = hashlib.sha256(link.grant.encode()).hexdigest()
+            observed, next_at, delay = self._peer_renewals.get(key, (fingerprint, 0.0, 30.0))
+            if observed != fingerprint:
+                delay = 30.0  # Rotation does not reset the network throttle near hard expiry.
+            if now < next_at:
+                continue
+            self._peer_renewals[key] = (fingerprint, now + 60, 30.0)
+            if not room_grant_needs_dispatch_refresh(link.grant, now=now):
+                continue
+            try:
+                driver.require_active_lease(self.db_path, lease, clock=self.runtime.clock)
+                hydrated = self._hydrate_persisted_peer_route(*key)
+                if hydrated is None or hydrated[0].grant != link.grant:
+                    continue
+                route, client = hydrated
+                self._tracked_peer_client(*key, client, route=route, renewal_lease=lease).probe(grant=route.grant)
+            except (driver.StaleLeaseError, driver.RoomUnavailableError):
+                raise
+            except Exception:
+                self._peer_renewals[key] = (fingerprint, now + delay, min(120.0, delay * 2))
+                logger.warning("Peer grant renewal pending: room=%s member=%s", *key)
+        due = [self._peer_renewals.get((link.room_id, link.member_id), ("", now + 5, 0))[1]
+               for link in links if link.status != "needs_reauthorization"]
+        self._peer_renewal_scans[binding.room_id] = max(now + 5, min(due, default=now + 60))
 
     def _hydrate_persisted_peer_route(
         self,
@@ -891,15 +989,24 @@ class HostedRoomService(HostedRoomArtifactMixin):
         client: HostedRoomPeerClient,
         *,
         route: PeerMemberRoute | None = None,
+        renewal_lease: driver.DriverLease | None = None,
+        binding: HostedRoomBinding | None = None,
     ) -> "_RouteStatusPeerClient":
         route = route or self.peer_routes.get((room_id, member_id))
         if route is None:
             raise RuntimeError("peer room route is unavailable")
         target_url = getattr(client, "base_url", None)
+        frozen_members = self._room(room_id)["members"] if binding is not None else None
 
         def require_current(grant):
+            if renewal_lease is not None:
+                driver.require_active_lease(self.db_path, renewal_lease, clock=self.runtime.clock)
             if hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=room_id):
                 raise RuntimeError("peer room route is no longer current")
+            require_route(grant)
+
+        def require_route(grant):
+            # Retirement forbids new work, not reading/stopping an accepted run.
             stored = hosted_room_links.load_room_link(self.db_path, room_id=room_id, member_id=member_id)
             if stored is None:
                 if (
@@ -920,12 +1027,34 @@ class HostedRoomService(HostedRoomArtifactMixin):
             ):
                 raise RuntimeError("peer room route changed before admission")
 
+        def resolve_observer_grant(grant):
+            # Read a CAS-published bearer, never rebind the observer's client/run identity.
+            with self._policy_lock:
+                room = self._room(room_id)
+                current_route = self.peer_routes.get((room_id, member_id))
+                if (
+                    binding.room_id != room_id or route.member_id != member_id
+                    or room["authority_gateway_id"] != binding.gateway_id
+                    or room["authority_epoch"] != binding.authority_epoch
+                    or room["members"] != frozen_members
+                    or (current_route is not None and replace(
+                        current_route, grant=route.grant, attachments=route.attachments) != route)
+                ):
+                    raise RuntimeError("peer room observer authority or membership changed")
+                stored = hosted_room_links.load_room_link(self.db_path, room_id=room_id, member_id=member_id)
+                replacement = stored.grant if stored is not None else grant
+                require_route(replacement)
+                if stored is not None and stored.status == "needs_reauthorization" and replacement != grant:
+                    raise RuntimeError("peer room observer replacement needs reauthorization")
+                return replacement
+
         return _RouteStatusPeerClient(
             client,
             grant=route.grant,
             capability_digest=route.capability_digest,
             execution_policy_digest=route.execution_policy_digest,
             before_admission=require_current,
+            resolve_observer_grant=resolve_observer_grant if binding is not None else None,
             on_ready=lambda **observation: self._set_route_status(
                 room_id, member_id, "ready", **observation
             ),
@@ -978,7 +1107,6 @@ class HostedRoomService(HostedRoomArtifactMixin):
                     for row in status.get("peer_routes", [])
                 ],
             }
-
 
     def read_attachment(
         self,
@@ -1201,23 +1329,3 @@ class HostedRoomService(HostedRoomArtifactMixin):
         except hosted_rooms.RoomNotFoundError:
             return False
         return room.get("disbanded_at") is None
-
-
-    def begin_room_disband(self, room_id: str) -> dict[str, Any]:
-        """Persist the no-new-work fence before Stop and grant revocation."""
-
-        with self._policy_lock:
-            room = hosted_rooms.room_state(self.db_path, room_id=room_id)
-            if str(room["authority_gateway_id"]) != (
-                hosted_rooms.local_authority_gateway_id()
-            ):
-                raise hosted_rooms.AuthorityConflictError(
-                    "This Group Chat is managed by another gateway."
-                )
-            hosted_room_link_records.begin_room_link_retirement(
-                self.db_path,
-                room_id=room_id,
-                authority_gateway_id=str(room["authority_gateway_id"]),
-                authority_epoch=int(room["authority_epoch"]),
-            )
-            return room

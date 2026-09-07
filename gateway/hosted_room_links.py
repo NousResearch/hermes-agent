@@ -104,8 +104,8 @@ def _short_string(value: Any, field: str) -> str:
         invalid=f"{field} is invalid")
 
 
-def _link_rows(db_path: DbPath) -> list[dict[str, Any]]:
-    rows = hosted_room_link_records.list_room_link_records(db_path)
+def _link_rows(db_path: DbPath, *, room_id: str | None = None) -> list[dict[str, Any]]:
+    rows = hosted_room_link_records.list_room_link_records(db_path, room_id=room_id)
     if len(rows) > MAX_LINKS:
         raise HostedRoomPeerError("stored room link list is invalid")
     return rows
@@ -115,10 +115,12 @@ def load_room_links(db_path: DbPath) -> tuple[StoredRoomLink, ...]:
     return tuple(StoredRoomLink.from_record(row) for row in _link_rows(db_path))
 
 
-def load_room_links_tolerant(db_path: DbPath) -> tuple[tuple[StoredRoomLink, ...], tuple[str, ...]]:
+def load_room_links_tolerant(
+    db_path: DbPath, *, room_id: str | None = None,
+) -> tuple[tuple[StoredRoomLink, ...], tuple[str, ...]]:
     """Load healthy routes while quarantining malformed rows by identity."""
     links, errors = [], []
-    for row in _link_rows(db_path):
+    for row in _link_rows(db_path, room_id=room_id):
         try:
             links.append(StoredRoomLink.from_record(row))
         except Exception:

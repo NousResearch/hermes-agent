@@ -4115,6 +4115,26 @@ class GatewayRunner(
         # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
         _adapter = (getattr(self, "adapters", None) or {}).get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        effective_cwd = context.cwd
+        if context.session_id and context.cwd:
+            from tools.terminal_tool import (
+                get_session_cwd, record_session_cwd, register_task_env_overrides,
+            )
+            observed_cwd = (
+                get_session_cwd(context.session_key) or get_session_cwd(context.session_id)
+            )
+            effective_cwd = observed_cwd or context.cwd
+            workspace_overrides = {"cwd": effective_cwd, "cwd_source": "session"}
+            from gateway.workspace import configured_docker_host_mount_source
+            host_mount_source = configured_docker_host_mount_source(context.cwd)
+            if host_mount_source:
+                workspace_overrides["host_cwd"] = host_mount_source
+                if not observed_cwd or observed_cwd == context.cwd:
+                    effective_cwd = "/workspace"
+                    workspace_overrides["cwd"] = effective_cwd
+            register_task_env_overrides(context.session_id, workspace_overrides)
+            if host_mount_source or not get_session_cwd(context.session_key):
+                record_session_cwd(context.session_key, effective_cwd)
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -4126,8 +4146,10 @@ class GatewayRunner(
             user_name=str(context.source.user_name) if context.source.user_name else "",
             scope_id=str(getattr(context.source, "scope_id", "") or ""),
             session_key=context.session_key,
+            session_id=context.session_id,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            cwd=effective_cwd,
             async_delivery=_async_delivery,
             cron_session="")
 

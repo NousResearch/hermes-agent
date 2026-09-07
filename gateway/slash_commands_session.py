@@ -109,7 +109,67 @@ def _strip_resume_name(parts: list[str]) -> str:
 
 
 class GatewaySessionCommandsMixin:
-    """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress)."""
+    """Session-transcript and workspace slash commands."""
+
+    async def _workspace_entry(self, source: SessionSource):
+        entry = await self.async_session_store.get_or_create_session(source, cwd="")
+        entry.cwd = await self.async_session_store.get_session_workspace(
+            entry.session_key, entry.session_id,
+        )
+        return entry
+
+    @staticmethod
+    def _register_workspace_task_cwd(session_key: str, session_id: str, cwd: str) -> None:
+        from tools.terminal_tool import record_session_cwd, register_task_env_overrides
+        register_task_env_overrides(session_id, {"cwd": cwd, "cwd_source": "session"})
+        record_session_cwd(session_key, cwd)
+
+    async def _handle_workspace_command(self, event: MessageEvent) -> str:
+        """Show, set, or clear the current gateway session's workspace."""
+        from gateway.workspace import WorkspaceUnavailable, normalize_gateway_workspace
+        from tools.terminal_scope import terminal_env
+
+        entry = await self._workspace_entry(event.source)
+        arg = event.get_command_args().strip()
+        if not arg or arg.lower() in {"status", "show"}:
+            if not entry.cwd:
+                configured = self._configured_workspace_for_source(event.source)
+                entry.cwd = await self.async_session_store.ensure_session_workspace(
+                    entry.session_key, entry.session_id, configured,
+                )
+            return t("gateway.workspace.status", cwd=entry.cwd)
+
+        if arg.lower() in {"clear", "reset", "default"}:
+            if not await self.async_session_store.clear_session_workspace(
+                entry.session_key, entry.session_id,
+            ):
+                return t("gateway.workspace.save_failed")
+            entry.cwd = ""
+            with contextlib.suppress(Exception):
+                from tools.terminal_tool import clear_session_cwd, clear_task_env_overrides
+                clear_task_env_overrides(entry.session_id)
+                clear_session_cwd(entry.session_key)
+            self._evict_cached_agent(entry.session_key)
+            try:
+                configured = self._configured_workspace_for_source(event.source)
+            except WorkspaceUnavailable:
+                configured = t("gateway.workspace.unavailable_default")
+            return t("gateway.workspace.cleared", cwd=configured)
+
+        try:
+            cwd = normalize_gateway_workspace(
+                arg, backend=terminal_env("TERMINAL_ENV", "local"),
+            )
+        except WorkspaceUnavailable as exc:
+            return t("gateway.workspace.invalid", error=str(exc))
+        if not await self.async_session_store.set_session_workspace(
+            entry.session_key, entry.session_id, cwd,
+        ):
+            return t("gateway.workspace.save_failed")
+        entry.cwd = cwd
+        self._register_workspace_task_cwd(entry.session_key, entry.session_id, cwd)
+        self._evict_cached_agent(entry.session_key)
+        return t("gateway.workspace.set", cwd=cwd)
 
     # ------------------------------------------------------------------ /new, /reset
 

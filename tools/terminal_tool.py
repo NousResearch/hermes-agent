@@ -511,7 +511,7 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
     if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
         return config.get("host_cwd")
     overrides = resolve_task_overrides(task_id)
-    candidate = overrides.get("cwd")
+    candidate = overrides.get("host_cwd") or overrides.get("cwd")
     if overrides.get("cwd_source") == "process" or not isinstance(candidate, str) or not candidate.strip():
         return None
     candidate = os.path.abspath(os.path.expanduser(candidate))
@@ -939,8 +939,13 @@ def _plan_execution(
     # `docker run -w` and fail with exit 125. Re-apply the guard to the
     # resolved cwd; when the host path IS this session's mounted workspace,
     # remap to /workspace instead of discarding it.
-    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd):
-        remapped = "/workspace" if host_cwd else config["cwd"]
+    mounted_host_cwd = bool(
+        host_cwd and os.path.abspath(os.path.expanduser(cwd)) == host_cwd
+    )
+    if _is_container_backend(env_type) and (
+        mounted_host_cwd or _is_unusable_container_cwd(cwd)
+    ):
+        remapped = "/workspace" if mounted_host_cwd else config["cwd"]
         if cwd != remapped:
             logger.info(
                 "Remapping host/relative cwd override %r for %s backend "

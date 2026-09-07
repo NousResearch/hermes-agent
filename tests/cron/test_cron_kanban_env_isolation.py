@@ -29,8 +29,10 @@ is left completely untouched.
 from __future__ import annotations
 
 import ast
+import logging
 import os
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -204,6 +206,96 @@ class TestKanbanGatesRespectContext:
         assert model_tools._is_dispatcher_owned_worker() is True
         with non_dispatcher_owned_context():
             assert model_tools._is_dispatcher_owned_worker() is False
+
+    def test_worker_identity_is_unusable_inside_cron_context(
+        self, monkeypatch, worker_env
+    ):
+        """Every lifecycle side channel must fail closed under the shared fence."""
+        from agent.activity_tracking import ActivityTrackingMixin
+        from agent.delegation_context import non_dispatcher_owned_context
+        from agent.kanban_stop import build_kanban_stop_nudge, kanban_stop_nudge_enabled
+        from agent import turn_finalizer
+        from tools import kanban_tools
+
+        recorded_failures = []
+        monkeypatch.setattr(
+            turn_finalizer, "_record_kanban_budget_exhausted",
+            lambda *args: recorded_failures.append(args),
+        )
+
+        agent = ActivityTrackingMixin()
+        exhausted = SimpleNamespace(
+            max_iterations=1,
+            iteration_budget=SimpleNamespace(remaining=0),
+        )
+        with non_dispatcher_owned_context():
+            assert kanban_stop_nudge_enabled() is False
+            assert build_kanban_stop_nudge(messages=[]) is None
+            with pytest.raises(kanban_tools._Reject):
+                kanban_tools._enforce_worker_task_ownership("t_worker_real_task")
+            # A deliberately configured cron orchestrator still routes other tasks;
+            # only the inherited worker identity is denied.
+            kanban_tools._enforce_worker_task_ownership("t_orchestrated_task")
+            assert kanban_tools._worker_run_id("t_worker_real_task") is None
+            assert kanban_tools._stamp_worker_session_metadata(
+                "t_worker_real_task", {"safe": True}
+            ) == {"safe": True}
+            assert kanban_tools.heartbeat_current_worker_from_env() is False
+            assert kanban_tools.inject_new_comments_from_env(agent) is False
+
+            bridge_calls = []
+            monkeypatch.setattr(
+                kanban_tools, "heartbeat_current_worker_from_env",
+                lambda: bridge_calls.append("heartbeat"),
+            )
+            monkeypatch.setattr(
+                kanban_tools, "inject_new_comments_from_env",
+                lambda _agent: bridge_calls.append("comments"),
+            )
+            agent._touch_activity("cron progress")
+            turn_finalizer._resolve_budget_fallback(
+                exhausted,
+                final_response="already final",
+                api_call_count=1,
+                interrupted=False,
+                failed=False,
+                messages=[],
+                _turn_exit_reason="unknown",
+                _pending_verification_response=None,
+                _pending_verification_response_previewed=False,
+                logger=logging.getLogger(__name__),
+            )
+
+        assert bridge_calls == []
+        assert recorded_failures == []
+
+    def test_fenced_cron_subprocess_env_drops_worker_identity(
+        self, monkeypatch, worker_env
+    ):
+        from agent.delegation_context import (
+            DELEGATED_CHILD_ENV_MARKER,
+            KANBAN_ENV_KEYS,
+            non_dispatcher_owned_context,
+        )
+        from tools.code_execution_env import _scrub_child_env
+        from tools import env_passthrough
+        from tools.environments.local import hermes_subprocess_env
+
+        monkeypatch.setattr(
+            env_passthrough, "resolve_passthrough_value",
+            lambda _name, fallback: fallback,
+        )
+
+        with non_dispatcher_owned_context():
+            child_env = hermes_subprocess_env()
+            sandbox_env = _scrub_child_env(
+                os.environ, is_passthrough=lambda _key: True
+            )
+
+        assert not (set(KANBAN_ENV_KEYS) & child_env.keys())
+        assert child_env[DELEGATED_CHILD_ENV_MARKER] == "1"
+        assert not (set(KANBAN_ENV_KEYS) & sandbox_env.keys())
+        assert sandbox_env[DELEGATED_CHILD_ENV_MARKER] == "1"
 
 
 # ---------------------------------------------------------------------------

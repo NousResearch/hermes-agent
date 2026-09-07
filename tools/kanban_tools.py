@@ -143,6 +143,8 @@ def _require_task_id(args: dict) -> str:
 
 def _own_task_env(task_id: str, var: str) -> Optional[str]:
     """``$var`` only when this worker is scoped to ``task_id``; else None."""
+    if not _is_dispatcher_owned_worker():
+        return None
     return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
 
 
@@ -171,6 +173,12 @@ def _enforce_worker_task_ownership(tid: str) -> None:
     sibling or cross-tenant runs (see #19534).
     """
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    dispatcher_owned = _is_dispatcher_owned_worker()
+    if env_tid and not dispatcher_owned:
+        if tid == env_tid:
+            raise _Reject(
+                f"refusing to mutate inherited worker task {tid} from a non-dispatcher context")
+        return
     if env_tid and tid != env_tid:
         raise _Reject(
             f"worker is scoped to task {env_tid}; refusing to mutate {tid}. Use kanban_comment "
@@ -189,7 +197,7 @@ def _worker_guard(tool_name: str, args: dict) -> str:
 def _require_orchestrator_tool(tool_name: str) -> None:
     """The check_fn already hides orchestrator tools from workers; this catches
     a stale registration or test harness routing a worker here anyway."""
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker():
         raise _Reject(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers must use "
             "kanban_complete, kanban_block, kanban_heartbeat, or kanban_comment for their "
@@ -420,6 +428,8 @@ def heartbeat_current_worker_from_env() -> bool:
     attempted. ``HERMES_KANBAN_RUN_ID`` pins the run row so a reclaimed stale run is not
     heartbeated; ``HERMES_KANBAN_CLAIM_LOCK`` absent -> default claimer (local workers)."""
     global _auto_heartbeat_last_attempt
+    if not _is_dispatcher_owned_worker():
+        return False
     tid = os.environ.get("HERMES_KANBAN_TASK")
     now = time.monotonic()
     if not tid or (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
@@ -454,6 +464,8 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     """Steer new operator comments on the worker's task into ``agent``; True iff a
     steer was injected; never raises. Own comments (``HERMES_PROFILE``) are skipped."""
     global _comment_poll_last_attempt
+    if not _is_dispatcher_owned_worker():
+        return False
     tid = os.environ.get("HERMES_KANBAN_TASK")
     now = time.monotonic()
     if (not tid or agent is None or not hasattr(agent, "steer")

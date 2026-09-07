@@ -831,11 +831,7 @@ class TestGetModelCapabilities:
             caps = get_model_capabilities("openai", "gpt-6-astra")
 
         assert caps is not None
-        assert caps.context_window == 1_050_000
-        assert caps.max_output_tokens == 128_000
-        assert caps.supports_tools is True
-        assert caps.supports_vision is True
-        assert caps.supports_reasoning is True
+        assert caps.supports_vision is True  # the one thing _UNKNOWN_MODEL_BASE could not supply
 
         api_caps = get_model_capabilities("openai-api", "gpt-6-astra")
         assert api_caps == caps

@@ -2580,7 +2580,7 @@ class GatewayTurnMixin:
             _gateway_platform_value, _has_platform_display_override, _load_gateway_config,
             _platform_config_key,
         )
-        from gateway.display_config import resolve_display_setting
+        from gateway.display_config import has_chat_display_override, resolve_display_setting
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
@@ -2602,13 +2602,19 @@ class GatewayTurnMixin:
                 getattr(_agent_display, _setter)(_cast(_val))
 
         # Tool progress mode; HERMES_TOOL_PROGRESS_MODE wins only when the config never set it.
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
+        _resolved_tp = resolve_display_setting(
+            user_config, platform_key, "tool_progress",
+            chat_id=source.chat_id, thread_id=source.thread_id,
+        )
         _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
         _platform_cfg = (_display_cfg.get("platforms") or {}).get(platform_key) or {}
         _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
         _tool_progress_configured = "tool_progress" in _display_cfg or any(
             isinstance(cfg, dict) and key in cfg
             for cfg, key in ((_platform_cfg, "tool_progress"), (_legacy_tp_overrides, platform_key))
+        ) or has_chat_display_override(
+            user_config, platform_key, "tool_progress",
+            chat_id=source.chat_id, thread_id=source.thread_id,
         )
         progress_mode = _env_tp if _env_tp and not _tool_progress_configured else (_resolved_tp or _env_tp or "all")
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)

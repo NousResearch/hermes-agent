@@ -1698,6 +1698,19 @@ display:
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
+  # Gateway chats can override tool progress without changing the rest of the
+  # platform. A <chat_id>:<thread_id> entry wins over its chat-wide entry.
+  # Quote IDs so YAML preserves them as strings. Escape dots in thread IDs
+  # when writing through `hermes config set` (for example `1712\.345`).
+  # platforms:
+  #   telegram:
+  #     tool_progress: all
+  #     chats:
+  #       "-1001234567890":
+  #         tool_progress: off
+  #       "-1001234567890:65":
+  #         tool_progress: verbose
+
   # Per-platform defaults can be quieter than the global setting. Telegram
   # tunes for mobile: tool_progress and busy_ack_detail default off (no
   # per-tool breadcrumb stream, no "iteration 21/60" debug detail in busy

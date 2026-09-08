@@ -481,6 +481,36 @@ def _make_runner(adapter):
     return runner
 
 
+def test_turn_display_resolves_tool_progress_for_the_exact_chat(monkeypatch):
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    runner._resolve_turn_toolsets = lambda *_args: (set(), set())
+    config = {
+        "display": {
+            "platforms": {
+                "telegram": {
+                    "chats": {"-100123": {"tool_progress": "off"}},
+                }
+            }
+        }
+    }
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: config)
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "verbose")
+
+    quiet = runner._run_agent_display_settings(SessionSource(
+        platform=Platform.TELEGRAM, chat_id="-100123", chat_type="group",
+    ))
+    default = runner._run_agent_display_settings(SessionSource(
+        platform=Platform.TELEGRAM, chat_id="6819688407", chat_type="dm",
+    ))
+
+    assert quiet.progress_mode == "off"
+    assert quiet.tool_progress_enabled is False
+    assert default.progress_mode == "verbose"
+    assert default.tool_progress_enabled is True
+
+
 @pytest.mark.asyncio
 async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch, tmp_path):
     """Slack DM progress should keep event ts fallback threading."""

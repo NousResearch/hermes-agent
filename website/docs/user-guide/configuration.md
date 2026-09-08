@@ -2164,6 +2164,29 @@ From the CLI, use the canonical path — `hermes config set display.platforms.te
 
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
 
+To change tool progress for one gateway chat without affecting the rest of its platform, add a `chats` entry keyed by the platform's chat ID. A topic/thread-specific `<chat_id>:<thread_id>` entry takes precedence over the chat-wide entry:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      tool_progress: all
+      chats:
+        "-1001234567890":
+          tool_progress: off
+        "-1001234567890:65":
+          tool_progress: verbose
+```
+
+The full precedence is topic/thread → chat → platform → global → built-in default. `/verbose` continues to change the platform-wide value; it does not edit a chat override.
+
+Use the canonical config path when scripting this. If a thread ID contains a dot, escape it so the dotted-key parser keeps it inside the map key:
+
+```bash
+hermes config set 'display.platforms.telegram.chats.-1001234567890.tool_progress' off
+hermes config set 'display.platforms.slack.chats.C123:1712345678\.123456.tool_progress' off
+```
+
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.

@@ -543,6 +543,14 @@ class HostedRoomReplicationPublisher:
                 record = work_records.prepare_delivery_locked(
                     conn, room_id=route.key[0], target_install_id=route.link.catalog.installation_id,
                     route_generation=route.generation, local_gateway_id=self.local_id, through_seq=checkpoint["acked_seq"])
+                if record is None and state[0] in {"source_prefix_expired", "work_record_capture_unavailable"}:
+                    # Successful unchanged capture needs no transport. Other
+                    # no-delivery outcomes must not imply acknowledgement.
+                    conn.execute(f"""UPDATE {_TABLE} SET work_record_status='acked'
+                        WHERE room_id=? AND member_id=? AND generation=? AND EXISTS (
+                            SELECT 1 FROM {work_records.PENDING_TABLE}
+                            WHERE room_id=? AND target_install_id=? AND status='acked')""",
+                        (*route.key, route.generation, route.key[0], route.link.catalog.installation_id))
             history_confirmed = checkpoint["acked_seq"] > 0 or checkpoint["status"] == "acked"
             if record is None or not history_confirmed or self._stop.is_set():
                 return False
@@ -575,10 +583,21 @@ class HostedRoomReplicationPublisher:
                     checkpoint.update(reset)
             self._work_record_error = None
         except work_records.WorkRecordPrefixError:
-            return False  # source history needed for capture is no longer retained
+            self._record_work_failure(route, "source_prefix_expired")
         except (work_records.WorkRecordError, sqlite3.Error, OSError):
-            self._work_record_error = "work_record_capture_unavailable"
+            self._record_work_failure(route, "work_record_capture_unavailable")
         return False
+
+    def _record_work_failure(self, route, status):
+        # Persist on the failing route: another worker's success or a restart
+        # must not erase it. A later valid capture may still recover normally.
+        try:
+            with self._transaction() as conn:
+                if self._current(conn, route):
+                    conn.execute(f"UPDATE {_TABLE} SET work_record_status=? WHERE room_id=? AND member_id=? AND generation=?",
+                                 (status, *route.key, route.generation))
+        except (sqlite3.Error, OSError):
+            self._work_record_error = status
 
     def _http_failure(self, route: _Route, checkpoint: dict, exc: PeerRunsHTTPError) -> bool:
         if exc.status_code == 409 and exc.error_code == "room_replica_gap":
@@ -618,10 +637,14 @@ class HostedRoomReplicationPublisher:
                 retirements = retirement.home_status(self.db_path, room_id=room_id)
         except (OSError, sqlite3.Error):
             routes, retirements, record_deliveries, error = None, None, None, "publisher_status_unavailable"
+        capture_errors = sorted({row["work_record_status"] for row in routes or []
+            if row["work_record_status"] in {"source_prefix_expired", "work_record_capture_unavailable"}
+            and not row["status"].startswith("stopped")})
         return {
             "running": any(t.is_alive() for t in self._threads), "stopping": self._stop.is_set(),
             "workers": sum(t.is_alive() for t in self._threads), "routes": routes,
             "retirements": retirements,
-            "work_records": record_deliveries, "work_records_error": self._work_record_error,
+            "work_records": record_deliveries,
+            "work_records_error": capture_errors[0] if capture_errors else self._work_record_error,
             "error": error, "mode": "passive_async_copy", "source_loss_safe": False,
         }

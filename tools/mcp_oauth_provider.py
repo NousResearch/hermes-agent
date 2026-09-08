@@ -96,6 +96,11 @@ class HermesProviderMixin:
         """Accept any 2xx refresh response; never log the body."""
         if not (200 <= response.status_code < 300):
             self._hermes_logger.warning("Token refresh failed: %s", response.status_code)
+            if await self._hermes_reload_tokens_after_refresh_failure():
+                self._hermes_logger.info(
+                    "Token refresh recovered from a peer process's persisted rotation"
+                )
+                return True
             self.context.clear_tokens()
             return False
         from httpx import HTTPError
@@ -109,6 +114,55 @@ class HermesProviderMixin:
             return False
         await self._store_tokens(token_response)
         return True
+
+    async def _hermes_reload_tokens_after_refresh_failure(self) -> bool:
+        """Adopt a valid refresh-token rotation persisted by a peer process.
+
+        Multiple Hermes processes can share one profile. If a peer consumes a
+        single-use refresh token first, our request is rejected even though the
+        peer has already written a valid replacement to the shared token store.
+        Only a different, live, refreshable disk token identifies that race;
+        otherwise the caller keeps the existing clear-and-reauthorize behavior.
+        """
+        try:
+            storage = getattr(self.context, "storage", None)
+            if storage is None:
+                return False
+
+            previous_tokens = getattr(self.context, "current_tokens", None)
+            previous_expiry = getattr(self.context, "token_expiry_time", None)
+            stale_refresh = getattr(previous_tokens, "refresh_token", None)
+            candidate = await storage.get_tokens()
+            if candidate is None:
+                return False
+
+            candidate_refresh = getattr(candidate, "refresh_token", None)
+            if not candidate_refresh or candidate_refresh == stale_refresh:
+                return False
+            if not getattr(candidate, "access_token", None):
+                return False
+
+            remaining = getattr(candidate, "expires_in", None)
+            if remaining is not None:
+                try:
+                    if int(remaining) <= 0:
+                        return False
+                except (TypeError, ValueError):
+                    return False
+
+            self.context.current_tokens = candidate
+            self.context.update_token_expiry(candidate)
+            if self.context.is_token_valid():
+                return True
+
+            self.context.current_tokens = previous_tokens
+            self.context.token_expiry_time = previous_expiry
+            return False
+        except Exception as exc:  # noqa: BLE001 - recovery must degrade to reauth
+            self._hermes_logger.debug(
+                "Post-refresh token-store recovery failed: %s", exc
+            )
+            return False
 
 
 def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict | None) -> tuple[dict, "HermesTokenStorage"]:

@@ -6341,6 +6341,8 @@ def _define_discord_view_classes() -> None:
             await self._edit(interaction, "Model selection cancelled.", color=discord.Color.greyple())
 
         async def on_timeout(self):
+            if self.resolved:
+                return
             self.resolved = True
             self.clear_items()
             msg = self._message

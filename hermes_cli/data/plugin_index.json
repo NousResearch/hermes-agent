@@ -70,7 +70,7 @@
       "author": "Andrew Vieyra",
       "tags": ["netbox", "dcim", "ipam", "infrastructure", "change-management", "network"],
       "repo": "andrewvieyra/hermes-plugin-netbox",
-      "ref": "15f94c8724b5336591ccee3cc982d04d915380f3",
+      "ref": "8ff1fc408e765294664e6ed96c4a5a437b76ceef",
       "homepage": "https://github.com/andrewvieyra/hermes-plugin-netbox",
       "capabilities": ["tools"],
       "api_version": 1,

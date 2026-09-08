@@ -396,6 +396,28 @@ def _call(tool_name, args):
 
 # ---- Remote execution support (file-based RPC via terminal backend) ----
 
+def _peer_safe_cwd(env_type: str, overrides: Dict[str, Any], config: Dict[str, Any]) -> str:
+    """Resolve the cwd for a freshly built environment, sanitized for ``ssh``.
+
+    A registered cwd override is a host path (a desktop/TUI/ACP session
+    recording its own workspace). Over ``ssh`` it is resolved by a shell on
+    the peer, where ``cd`` fails and every command returns 126 before it runs.
+    The other builders guard their own cwd; this one did not.
+    """
+    from tools.terminal_tool_config import _is_unusable_ssh_cwd
+
+    cwd = overrides.get("cwd") or config["cwd"]
+    if env_type == "ssh" and _is_unusable_ssh_cwd(cwd):
+        if cwd != config["cwd"]:
+            logger.info(
+                "Ignoring host cwd override %r for ssh backend "
+                "(won't resolve on the peer). Using %r instead.",
+                cwd, config["cwd"],
+            )
+        return config["cwd"]
+    return cwd
+
+
 def _get_or_create_env(task_id: str):
     """``(env, env_type)`` — the environment the terminal/file tools share for *task_id*, created on
     first use (same double-checked per-task lock pattern as file_tools._get_file_ops)."""
@@ -433,7 +455,7 @@ def _get_or_create_env(task_id: str):
                      env_type, effective_task_id[:8])
         env = _create_environment(
             env_type=env_type, image=_select_image(env_type, overrides, config),
-            cwd=overrides.get("cwd") or config["cwd"], timeout=config["timeout"],
+            cwd=_peer_safe_cwd(env_type, overrides, config), timeout=config["timeout"],
             ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
             container_config=container_config,
             local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,

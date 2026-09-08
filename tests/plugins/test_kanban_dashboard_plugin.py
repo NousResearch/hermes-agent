@@ -325,6 +325,18 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
         )
 
 
+@pytest.mark.parametrize("status", ["running", "not-a-status"])
+def test_patch_rejected_status_verbs_are_bad_requests(client, status):
+    task = client.post("/api/plugins/kanban/tasks", json={"title": "reject me"}).json()["task"]
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": status},
+    )
+
+    assert response.status_code == 400
+
+
 def test_reopening_parent_demotes_ready_child(client):
     """Reopening a completed parent must invalidate ready children immediately.
 

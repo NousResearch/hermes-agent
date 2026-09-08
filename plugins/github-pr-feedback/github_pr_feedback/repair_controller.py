@@ -336,6 +336,7 @@ class RepairController:
                     owner=self._owner,
                     claimed_at=claimed_at,
                     stale_before=claimed_at - timedelta(minutes=15),
+                    reopen_blocked_auto_dispatch=self._policy.auto_dispatch,
                 )
                 if lease is None:
                     if (
@@ -405,6 +406,13 @@ class RepairController:
                         self._local_git, receipt, task_id, self._policy.board or ""
                     )
                     self._ledger.finalize(receipt, task_id, lease)
+                    promote_task = getattr(self._kanban, "promote_task", None)
+                    if (
+                        promote_task is not None
+                        and self._policy.auto_dispatch
+                        and not task.evidence.get("report_only", False)
+                    ):
+                        promote_task(self._policy.board or "", task_id)
                     created += 1
                 except Exception as error:
                     import os
@@ -450,6 +458,13 @@ class RepairController:
                             self._local_git, receipt, task_id, self._policy.board or ""
                         )
                         self._ledger.finalize(receipt, task_id, lease)
+                        promote_task = getattr(self._kanban, "promote_task", None)
+                        if (
+                            promote_task is not None
+                            and self._policy.auto_dispatch
+                            and not task.evidence.get("report_only", False)
+                        ):
+                            promote_task(self._policy.board or "", task_id)
                         created += 1
                         continue
                     if outcome.resolved_head_sha is None or outcome.receipt_id is None:
@@ -787,7 +802,8 @@ def _repair_task(
         idempotency_key=f"github-pr-repair:v3:{key}",
         evidence=evidence,
         evidence_heading="Canonical PR repair receipt (JSON)",
-        initial_status="blocked" if configured.report_only else "running",
+        # Ledger binding is finalized before promotion.
+        initial_status="blocked",
         max_retries=1 if configured.report_only else 3,
         max_runtime_seconds=None if configured.report_only else 1200,
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+import json
 from pathlib import Path
 import subprocess
 import threading
@@ -45,6 +46,7 @@ def policy(
     tmp_path: Path,
     *,
     report_only: bool = False,
+    auto_dispatch: bool = False,
     merge_maintainer: bool = False,
     budget_local_ci: bool = False,
     max_base_refresh_in_flight: int | None = None,
@@ -67,6 +69,7 @@ def policy(
         "not_before": "2026-08-25T00:00:00Z",
         "assignee": "fallback",
         "board": "repairs",
+        "auto_dispatch": auto_dispatch,
         "repair_steward": {
             "enabled": True,
             "assignee": "pr-repair-steward",
@@ -287,10 +290,47 @@ class LocalGit:
 class Kanban:
     def __init__(self):
         self.tasks = []
+        self.promoted = []
 
     def create_or_get_task(self, task):
         self.tasks.append(task)
         return "repair-task"
+
+    def promote_task(self, board, task_id):
+        self.promoted.append((board, task_id))
+        self.tasks[-1] = replace(self.tasks[-1], initial_status="running")
+
+
+class PromotionFailureKanban(Kanban):
+    def __init__(self):
+        super().__init__()
+        self.status = "blocked"
+        self.fail_promotion = True
+
+    def promote_task(self, board, task_id):
+        self.promoted.append((board, task_id))
+        if self.fail_promotion:
+            raise RuntimeError("promotion subprocess failed")
+        self.status = "running"
+
+    def task_status(self, board, task_id):
+        return self.status
+
+    def task_details(self, board, task_id):
+        task = self.tasks[-1]
+        return {
+            "status": self.status,
+            "idempotency_key": task.idempotency_key,
+            "body": "Canonical PR repair receipt (JSON):\n"
+            + json.dumps(
+                {
+                    "repository": task.evidence["repository"],
+                    "pr_number": task.evidence["pr_number"],
+                    "expected_head_sha": task.evidence["expected_head_sha"],
+                    "report_only": task.evidence["report_only"],
+                }
+            ),
+        }
 
 
 class StatusKanban(Kanban):
@@ -325,7 +365,7 @@ def test_repair_controller_dedupes_exact_head_and_preserves_merge_authority(
     assert second.created == 0
     task = kanban.tasks[0]
     assert task.assignee == "pr-repair-steward"
-    assert task.initial_status == "running"
+    assert task.initial_status == "blocked"
     assert task.max_runtime_seconds == 1200
     assert "git merge --no-ff --no-edit" in task.instructions
     assert "Commit the resolved merge before running base-relative" in task.instructions
@@ -356,6 +396,32 @@ def test_repair_controller_dedupes_exact_head_and_preserves_merge_authority(
     )
     assert "require all five returned identity fields" in task.instructions.casefold()
     assert task.idempotency_key.startswith("github-pr-repair:v3:")
+    ledger.close()
+
+
+def test_auto_dispatch_promotion_failure_reopens_finalized_blocked_binding(
+    tmp_path: Path,
+) -> None:
+    configured = policy(tmp_path, auto_dispatch=True)
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    kanban = PromotionFailureKanban()
+    controller = RepairController(
+        configured,
+        ledger,
+        GitHub(),
+        kanban,
+        LocalGit(),
+        clock=lambda: datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+    )
+
+    first = controller.scan()
+    kanban.fail_promotion = False
+    second = controller.scan()
+
+    assert first.created == 0
+    assert first.skipped["dispatch_failed"] == 1
+    assert second.created == 1
+    assert len(kanban.promoted) == 2
     ledger.close()
 
 
@@ -722,6 +788,7 @@ def test_report_only_repair_scan_creates_a_blocked_observation(tmp_path: Path) -
     assert result.created == 1
     assert kanban.tasks[0].initial_status == "blocked"
     assert "Report only" in kanban.tasks[0].instructions
+    assert kanban.promoted == []
     ledger.close()
 
 
@@ -781,7 +848,7 @@ def test_report_only_receipt_does_not_block_later_active_repair(tmp_path: Path) 
 
     assert report.created == 1
     assert active.created == 1
-    assert [task.initial_status for task in kanban.tasks] == ["blocked", "running"]
+    assert [task.initial_status for task in kanban.tasks] == ["blocked", "blocked"]
     ledger.close()
 
 

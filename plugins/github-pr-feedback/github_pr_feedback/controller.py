@@ -175,6 +175,8 @@ class KanbanClient(Protocol):
 
     def create_or_get_task(self, task: KanbanTask) -> str: ...
 
+    def promote_task(self, board: str, task_id: str) -> None: ...
+
     def task_status(self, board: str, task_id: str) -> str | None: ...
 
     def task_details(self, board: str, task_id: str) -> Mapping[str, object] | None: ...
@@ -291,8 +293,10 @@ def _claim_with_orphan_recovery(
     claimed_at: datetime,
     stale_before: datetime,
     exact_dispatch_only: bool = False,
+    reopen_blocked_auto_dispatch: bool = False,
 ):
-    """Claim normally, or reclaim an exact dispatch whose card is gone/archived."""
+    """Claim normally, or reclaim an exact dispatch whose card is gone, archived,
+    or stranded in the blocked staging state used by auto-dispatch."""
 
     lease = ledger.claim(
         receipt,
@@ -317,16 +321,23 @@ def _claim_with_orphan_recovery(
         except RuntimeError:
             return None
         if (
-            exact_dispatch_only
-            and status == "blocked"
+            status == "blocked"
             and callable(task_details)
+            and (exact_dispatch_only or reopen_blocked_auto_dispatch)
         ):
             try:
                 details = task_details(board, binding.task_id)
             except RuntimeError:
                 return None
-            if _is_legacy_intake_task(details, receipt) or _is_reopenable_egress_failure(
-                details, receipt
+            if not isinstance(details, Mapping):
+                return None
+            if (
+                _is_legacy_intake_task(details, receipt)
+                or _is_reopenable_egress_failure(details, receipt)
+                or (
+                    reopen_blocked_auto_dispatch
+                    and _is_staged_auto_dispatch_task(details, receipt)
+                )
             ):
                 return ledger.reopen_legacy_exact_dispatch(
                     receipt,
@@ -411,6 +422,27 @@ def _is_reopenable_egress_failure(
             or "provider egress blocked: LLM egress blocked: base64_payload" in reason
         )
     return False
+
+
+def _is_staged_auto_dispatch_task(
+    details: Mapping[str, object], receipt: FeedbackReceipt
+) -> bool:
+    """Recognize a finalized repair card that never left its staging state."""
+    if details.get("status") != "blocked":
+        return False
+    idempotency_key = details.get("idempotency_key")
+    if not isinstance(idempotency_key, str) or not idempotency_key.startswith(
+        "github-pr-repair:v3:"
+    ):
+        return False
+    evidence = _legacy_task_evidence(details.get("body"))
+    return (
+        isinstance(evidence, Mapping)
+        and evidence.get("repository") == receipt.repository
+        and evidence.get("pr_number") == receipt.pr_number
+        and evidence.get("expected_head_sha") == receipt.head_sha
+        and evidence.get("report_only") is False
+    )
 
 
 def _legacy_task_evidence(body: object) -> Mapping[str, object] | None:
@@ -1795,6 +1827,9 @@ class ScanController:
                 self._local_git, receipt, task_id, self._policy.board or ""
             )
             self._ledger.finalize(receipt, task_id, lease)
+            promote_task = getattr(self._kanban, "promote_task", None)
+            if promote_task is not None and self._policy.auto_dispatch:
+                promote_task(self._policy.board or "", task_id)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
             if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
                 print(
@@ -1922,6 +1957,9 @@ class ScanController:
                 self._local_git, receipt, task_id, self._policy.board or ""
             )
             self._ledger.finalize(receipt, task_id, lease)
+            promote_task = getattr(self._kanban, "promote_task", None)
+            if promote_task is not None and self._policy.auto_dispatch:
+                promote_task(self._policy.board or "", task_id)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
             if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
                 print(
@@ -2218,6 +2256,9 @@ class ScanController:
                 self._local_git, receipt, task_id, self._policy.board or ""
             )
             self._ledger.finalize(receipt, task_id, lease)
+            promote_task = getattr(self._kanban, "promote_task", None)
+            if promote_task is not None and self._policy.auto_dispatch:
+                promote_task(self._policy.board or "", task_id)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
             if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
                 print(
@@ -3004,7 +3045,9 @@ def _task(
         evidence=evidence,
         # Kanban's public create CLI calls its dispatchable default "running";
         # create_task resolves that to a ready card until a worker claims it.
-        initial_status="running" if auto_dispatch else "blocked",
+        # Bind the receipt before making the card dispatchable.  A ready card
+        # can be claimed between create_task and ledger.finalize.
+        initial_status="blocked",
         max_retries=2 if auto_dispatch else 1,
         # 900s had no real margin: three separate PR-feedback repair tasks
         # observed live (2026-08-28) landed at 901-905s and were blocked as
@@ -3223,7 +3266,8 @@ def _ci_failure_task(
         idempotency_key=f"{_receipt_idempotency_key(receipt)}:typed-fixer-v3",
         evidence=evidence,
         evidence_heading="Authoritative local CI failure receipt (JSON)",
-        initial_status="running" if policy.auto_dispatch else "blocked",
+        # The ledger binding is finalized before this card is promoted.
+        initial_status="blocked",
         max_retries=2 if policy.auto_dispatch else 1,
         # Static/type repairs often need one full repository-owned lane after
         # the focused fix.  Keep the exact-head lease authoritative instead of
@@ -3316,10 +3360,11 @@ def _local_ci_task(
         idempotency_key=f"{_receipt_idempotency_key(receipt)}:supervised-v4",
         evidence=evidence,
         evidence_heading="Canonical PR audit receipt (JSON)",
-        initial_status="running",
+        # The ledger binding is finalized before an opted-in card is promoted.
+        initial_status="blocked",
         max_retries=3,
-        # Local CI audits are always created dispatchable so the deterministic
-        # repository-owned lane can run even when feedback coding is gated.
+        # Auto-dispatch promotes the card after the ledger binding; otherwise
+        # the audit remains blocked for explicit operator dispatch.
         # A deterministic required lane may run for an hour. Its durable
         # exact-head CI lease prevents duplicate restarts while the real
         # supervisor PID is alive; give the full lane sequence an 8h envelope.

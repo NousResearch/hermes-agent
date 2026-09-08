@@ -39,15 +39,15 @@ def _has_receipt(connection, binding) -> bool:
     return False
 
 
-def guard_completion(ctx, *, tool_name: str = "", args=None, **_kwargs):
-    """Model tools need ledger evidence; deterministic audit-pr uses its own CLI transition."""
-    if tool_name != "kanban_complete":
+def guard_completion(ctx, *, tool_name: str = "", args=None, task_id=None, **_kwargs):
+    """Completion needs ledger evidence; deterministic audit-pr owns its CLI transition."""
+    if tool_name and tool_name != "kanban_complete":
         return None
     worker_task = os.environ.get("HERMES_KANBAN_TASK", "").strip()
     if not worker_task and ctx.get_config("enabled", default=False) is not True:
         return None
     args = args if isinstance(args, dict) else {}
-    target = str(args.get("task_id") or worker_task or "").strip()
+    target = str(args.get("task_id") or task_id or worker_task or "").strip()
     if not target:
         return None
     try:
@@ -88,3 +88,4 @@ def register_completion_guard(ctx) -> None:
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
         register_hook("pre_tool_call", partial(guard_completion, ctx))
+        register_hook("pre_kanban_complete", partial(guard_completion, ctx))

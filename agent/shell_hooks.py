@@ -338,10 +338,13 @@ def _fail_closed_block(spec: ShellHookSpec, reason: str) -> Dict[str, Any]:
 
 def _evaluate_result(spec: ShellHookSpec, r: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """``_spawn`` result → hook contribution (live callback and ``run_once``). Spawn error/timeout fail
-    open unless fail_closed; exit 2 on a blocking event blocks (message: stdout JSON, then stderr, then
-    default); other non-zero exits warn then parse stdout; unparseable stdout on a fail_closed hook blocks."""
+    open unless fail_closed, except completion gates, which always fail closed; exit 2 on a blocking event
+    blocks (message: stdout JSON, then stderr, then default); other non-zero exits warn then parse stdout;
+    unparseable stdout on a fail_closed hook blocks."""
     blocking_event = spec.event in _BLOCKING_EVENTS
-    fail_closed = spec.fail_closed and blocking_event
+    # Completion is a durable safety boundary: a missing or broken policy must
+    # not be converted to None and filtered out by invoke_hook().
+    fail_closed = (spec.fail_closed and blocking_event) or spec.event == "pre_kanban_complete"
     if r["error"]:
         logger.warning("shell hook failed (event=%s command=%s): %s", spec.event, spec.command, r["error"])
     elif r["timed_out"]:
@@ -408,7 +411,9 @@ def _parse_pre_kanban_complete(data: Dict[str, Any]) -> Optional[Dict[str, Any]]
     action = str(data.get("action") or data.get("decision") or "").strip().lower()
     if action == "block":
         return {"action": "block", "message": _block_message(data.get("message"), data.get("reason"))}
-    return None
+    # Preserve every JSON object so the completion boundary can reject an
+    # invalid policy decision instead of treating it as a no-op.
+    return data
 
 
 def _parse_pre_verify(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:

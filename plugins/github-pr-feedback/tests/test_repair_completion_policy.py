@@ -179,33 +179,60 @@ def test_review_completion_policy_receives_redacted_summary(tmp_path, monkeypatc
     assert secret not in seen[0]
 
 
-def test_dispatched_worker_uses_control_plane_policy_without_profile_plugin(tmp_path, monkeypatch):
-    """A worker profile need not opt in to the control-plane feedback plugin."""
+def test_disabled_feedback_plugin_ignores_a_legacy_control_ledger(tmp_path, monkeypatch):
+    """An optional plugin's stale ledger must not become a core completion gate."""
+    import sqlite3
+
+    control = tmp_path / "control"
+    ledger_path = control / "github-pr-feedback" / "ledger.sqlite3"
+    ledger_path.parent.mkdir(parents=True)
+    with sqlite3.connect(ledger_path) as connection:
+        connection.execute("CREATE TABLE legacy_receipts (task_id TEXT NOT NULL)")
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "ordinary-task")
+    monkeypatch.setenv("HERMES_CONTROL_HOME", str(control))
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *args, **kwargs: [])
+
+    from hermes_cli.kanban_completion_policy import enforce_completion_policies
+
+    enforce_completion_policies(
+        task_id="ordinary-task", board="default", assignee="worker", summary="Complete"
+    )
+
+
+def test_control_plane_feedback_binding_blocks_completion_without_worker_plugin(tmp_path, monkeypatch):
+    """A bound control-plane receipt still blocks completion without a worker plugin."""
     from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
     from tools import kanban_tools
 
-    control = tmp_path / "control"
-    worker = tmp_path / "worker"
-    control.mkdir()
-    worker.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(worker))
-    monkeypatch.setenv("HERMES_CONTROL_HOME", str(control))
+    worker_home = tmp_path / "worker"
+    control_home = tmp_path / "control"
+    worker_home.mkdir()
+    control_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(worker_home))
+    monkeypatch.setenv("HERMES_CONTROL_HOME", str(control_home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *args, **kwargs: [])
     kb.init_db()
     with kbc.connect() as connection:
-        tid = kb.create_task(connection, title="Repair feedback", assignee="worker")
+        tid = kb.create_task(connection, title="Repair an exact PR", assignee="worker")
         kb.claim_task(connection, tid)
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
-    ledger = FeedbackLedger(control / "github-pr-feedback" / "ledger.sqlite3")
+    ledger = FeedbackLedger(control_home / "github-pr-feedback" / "ledger.sqlite3")
     now = datetime.now(UTC)
     receipt = FeedbackReceipt("acme/repo", 1, "review_comment", "comment-1", "a" * 40)
-    claim = ledger.claim(receipt, owner="test", claimed_at=now, stale_before=now - timedelta(minutes=5))
-    ledger.finalize(receipt, tid, claim)
     try:
-        result = json.loads(kanban_tools._handle_complete({"task_id": tid, "summary": "Local tests passed"}))
+        claim = ledger.claim(receipt, owner="test", claimed_at=now, stale_before=now - timedelta(minutes=5))
+        assert claim is not None
+        ledger.finalize(receipt, tid, claim)
+
+        result = json.loads(kanban_tools._handle_complete({"task_id": tid, "summary": "Complete"}))
+
         assert result.get("ok") is not True
         assert "unacknowledged feedback dispatch" in result["error"]
         with kbc.connect() as connection:
-            assert kb.get_task(connection, tid).status != "done"
+            task = kb.get_task(connection, tid)
+            assert task is not None
+            assert task.status != "done"
     finally:
         ledger.close()

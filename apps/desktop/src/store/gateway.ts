@@ -778,11 +778,9 @@ function createSecondary(profile: string, connectionId: null | string = null): S
       entry.reconnectAttempt = 0
       clearTimer(entry)
     } else if (state === 'closed' || state === 'error') {
-      // A dead socket cannot emit the terminal event that normally releases
-      // its turn lease. Drop the orphaned lease before deciding whether this
-      // route is still retained/active enough to reconnect.
-      releaseTurnLeasesForScope(scope)
-
+      // A transport drop does not settle a running turn. Its lease must keep
+      // the route alive so reconnect can replay missed events and receive the
+      // terminal event. Actual disposal releases orphaned leases below.
       if (entry.wantOpen) {
         scheduleReconnect(entry)
       }
@@ -1678,11 +1676,19 @@ export function touchSecondaryGateways(): void {
 // Tear a secondary down: stop its reconnect loop, detach listeners, close the
 // socket. Caller handles removal from the map.
 function disposeSecondary(entry: Secondary): void {
+  if (!entry.wantOpen) {
+    return
+  }
+
   entry.wantOpen = false
+  entry.pendingConnectionRedial = false
   clearTimer(entry)
   entry.offEvent()
   entry.offState()
   entry.gateway.close()
+  // Release can re-enter disposal at refcount zero. wantOpen is already false,
+  // and listeners are detached, so explicit teardown never rearms reconnect.
+  releaseTurnLeasesForScope(entry.scope)
 }
 
 // Invariant restore for every eviction path: if the active key names a

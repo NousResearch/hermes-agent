@@ -292,7 +292,7 @@ function buildWindowsManagedUpdateLaunch(target: RemoteUpdateTarget, correlation
     `  Move-Item -LiteralPath $tmp -Destination ${psLiteral(statusPath)} -Force`,
     '}',
     'exit $rc'
-  ].join(';')
+  ].join('\n')
 
   const outer = [
     '$ErrorActionPreference="Stop"',
@@ -305,7 +305,7 @@ function buildWindowsManagedUpdateLaunch(target: RemoteUpdateTarget, correlation
     '$deadline=[DateTime]::UtcNow.AddSeconds(10)',
     `while(-not [IO.File]::Exists(${psLiteral(intentPath)})){if($child.HasExited){throw "managed update launcher exited before intent proof"};if([DateTime]::UtcNow -ge $deadline){throw "managed update launcher intent timed out"};Start-Sleep -Milliseconds 50}`,
     '[ordered]@{started=$true;pid=$child.Id}|ConvertTo-Json -Compress'
-  ].join(';')
+  ].join('\n')
 
   return powerShellCommand(outer)
 }
@@ -464,7 +464,7 @@ function buildRemoteUpdateObservationCommand(target: RemoteUpdateTarget, correla
       '$ErrorActionPreference="Stop"',
       `& ${psLiteral(python)} -c ${psLiteral(OBSERVATION_SCRIPT)} ${psLiteral(home)} ${psLiteral(correlation)}`,
       'if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}'
-    ].join(';')
+    ].join('\n')
 
     return powerShellCommand(script)
   }

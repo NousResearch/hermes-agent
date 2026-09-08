@@ -102,6 +102,12 @@ export function selectedRosterBot(roster: RosterRow[], key: string): RosterRow |
   return (Array.isArray(roster) ? roster : []).find(bot => botRosterKey(bot) === key) || null
 }
 
+/** Group creation can route to any configured source; unavailable sources stay
+ * out of the picker rather than making remote-only Desktop fleets impossible. */
+export function groupCreationRoster(roster: RosterRow[]): RosterRow[] {
+  return (Array.isArray(roster) ? roster : []).filter(bot => botSourceStatus(bot).available)
+}
+
 /** A selected owner whose roster row is absent because its SOURCE is down —
  *  not because the bot is gone. Identity comes from the key itself, so the
  *  selection survives a relaunch with that gateway offline and reconciles
@@ -353,6 +359,7 @@ export function BotsPane() {
     }
   }, [gatewayFilterExists])
   const activeSourceRoster = roster.filter(bot => !bot.remoteSource)
+  const groupCreationBots = groupCreationRoster(roster)
   // Hidden rows remain fully alive and recoverable at the bottom. Every
   // non-display consumer continues to receive the complete roster.
   const hiddenExpanded = useValue($showHiddenBots)
@@ -760,7 +767,7 @@ export function BotsPane() {
                 <Codicon className="mr-1.5" name="hubot" />
                 {b.bot.newTitle}
               </DropdownMenuItem>
-              <DropdownMenuItem disabled={activeSourceRoster.length < 2} onSelect={() => setGroupCreateOpen(true)}>
+              <DropdownMenuItem disabled={groupCreationBots.length < 2} onSelect={() => setGroupCreateOpen(true)}>
                 <Codicon className="mr-1.5" name="organization" />
                 {b.group.newTitle}
               </DropdownMenuItem>
@@ -996,7 +1003,7 @@ export function BotsPane() {
         onCreated={groupName => openGroupChat(groupName)}
         open={groupCreateOpen} // Full multi-source roster: group chats can seat bots from other
         // registered connections — their turns route to their own machines.
-        roster={roster}
+        roster={groupCreationBots}
       />
       <SectionNameDialog
         initialName={sectionDialog?.mode === 'rename' ? sectionDialog.name : ''}

@@ -38,6 +38,13 @@ def _checks_action(identity: str, expanded: bool) -> WisdomAction:
     )
 
 
+def _assessment_action(identity: str, expanded: bool) -> WisdomAction:
+    return WisdomAction(
+        label="Hide Assessment" if expanded else "View Assessment",
+        callback_data=f"wi:agent:assessment.{'hide' if expanded else 'show'}:{identity}",
+    )
+
+
 def delivery_groups(items: list[dict]) -> list[list[dict]]:
     """Keep recommendations actionable and below native message limits."""
     recommended = [
@@ -55,7 +62,8 @@ def delivery_groups(items: list[dict]) -> list[list[dict]]:
 
 
 def advice_view(
-    items: list[dict], *, introduction: bool = False, checks_expanded: bool = False
+    items: list[dict], *, introduction: bool = False, checks_expanded: bool = False,
+    assessment_expanded: bool = False,
 ) -> WisdomView:
     qualification_only = bool(items) and all(
         item.get("assessment", {}).get("reference", {}).get("kind") == "candidate"
@@ -88,6 +96,10 @@ def advice_view(
     has_digest = False
     for item in items:
         advice = item["advice"]
+        if advice.get("assessment_kind") == "operation_receipt":
+            view.summary = advice["operation_label"]
+            view.items.append(WisdomItem(title=advice["title"], detail=""))
+            continue
         if advice["relevance"] == "digest" and not item.get("interaction"):
             has_digest = True
             view.items.append(
@@ -111,6 +123,10 @@ def advice_view(
         actions = []
         if interaction:
             facts = interaction["facts"]
+            if interaction["operation"] in {"install", "update"} and not unavailable:
+                if not assessment_expanded:
+                    detail = ""
+                actions.append(_assessment_action(interaction["id"], assessment_expanded))
             detail += "\n\nPackage facts: " + str(
                 facts.get("slug") or facts.get("skill_id") or "Local skill"
             )
@@ -170,7 +186,10 @@ def advice_view(
     return view
 
 
-def interaction_view(result: dict, *, checks_expanded: bool = False) -> WisdomView:
+def interaction_view(
+    result: dict, *, checks_expanded: bool = False,
+    assessment_expanded: bool = False,
+) -> WisdomView:
     outcome = result.get("result") or {}
     if result["state"] == "completed":
         stage = outcome.get("packaging_state")
@@ -227,6 +246,15 @@ def interaction_view(result: dict, *, checks_expanded: bool = False) -> WisdomVi
                 "",
             )
         actions = []
+        if result["operation"] in {"install", "update"}:
+            actions.append(_assessment_action(result["id"], assessment_expanded))
+            if assessment_expanded:
+                advice = result.get("assessment") or {}
+                detail = "Assessment before this operation:\n" + (
+                    advice.get("explanation") or "No saved assessment is available."
+                )
+                detail += "\n\n" + _review_summary(result["facts"], checks_expanded)
+                actions.append(_checks_action(result["id"], checks_expanded))
         if outcome.get("portal_url"):
             actions.append(WisdomAction("View in Portal", url=outcome["portal_url"]))
         elif result["operation"] == "share":
@@ -386,7 +414,7 @@ def resolve_surface_action(
     if row is None:
         raise WisdomNotFound("Wisdom interaction not found")
     actor = ConsentActor(row[0], platform, actor_id, chat_id, thread_id, scope_id)
-    if action in {"checks.show", "checks.hide"}:
+    if action in {"checks.show", "checks.hide", "assessment.show", "assessment.hide"}:
         # Reuse read-only authorization, without preparing a package or applying consent.
         result = WisdomConsent(service)._resolve(org, identity, actor, "inspect")
         with service.store.transaction() as db:
@@ -399,11 +427,16 @@ def resolve_surface_action(
         from .mediation_store import _decode
 
         job = _decode(assessment)
+        result["assessment"] = job.get("advice")
         if not job.get("advice") or result["state"] != "pending":
-            return interaction_view(result, checks_expanded=action == "checks.show")
+            return interaction_view(
+                result, checks_expanded=action == "checks.show",
+                assessment_expanded=action in {"assessment.show", "checks.show", "checks.hide"},
+            )
         return advice_view(
             [{"assessment": job, "advice": job["advice"], "interaction": result}],
             checks_expanded=action == "checks.show",
+            assessment_expanded=action == "assessment.show",
         )
     return interaction_view(
         WisdomConsent(service).resolve(org, identity, actor, action)

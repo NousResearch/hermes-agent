@@ -124,6 +124,25 @@ def present(args: dict) -> str:
     )
     reference = _reference(service, target)
     reference["user_requested"] = True
+    if target.kind == "skill":
+        with service.store.transaction() as db:
+            existing = db.execute(
+                """SELECT id FROM wisdom_consent WHERE organization_id=?
+                AND owner_session=? AND actor_id=? AND platform=?
+                AND state IN ('pending','applying','completed')
+                AND (state!='pending' OR expires_at>?)
+                AND json_extract(plan_json,'$.skill_id')=?
+                AND json_extract(plan_json,'$.version')=?
+                ORDER BY created_at DESC LIMIT 1""",
+                (org, key, user, platform, mediation.queue.clock(), target.identity, target.version),
+            ).fetchone()
+        if existing:
+            result = mediation.consent._resolve(org, existing["id"], actor, "inspect")
+            return json.dumps({
+                "status": result["state"],
+                "interaction": result,
+                "instruction": "Use the existing native consent card; no new notification was queued. A conversational yes does not apply this operation.",
+            })
     identity = mediation.queue.enqueue(
         org,
         f"request:{target.kind}:{target.identity}:{target.version or reference.get('content_hash')}",

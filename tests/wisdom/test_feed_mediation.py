@@ -473,6 +473,57 @@ def test_transient_lookup_failure_retries_without_spending_model_attempt(mediati
     assessor.assert_called_once()
 
 
+@pytest.mark.parametrize("category", ["update_available", "installed", "updated"])
+def test_existing_consent_prevents_duplicate_feed_assessment(mediation, category):
+    instance, actor, _, _ = mediation
+    request = instance.queue.enqueue("org", "request:skill:skill:2", {
+        "kind": "skill", "skill_id": "skill", "version": 2, "user_requested": True,
+    }, origin_session=actor.session_key)
+    ready(instance)
+    instance.service.install_plan.return_value = {
+        "skill_id": "skill", "version": 2, "allowed": True, "receipt": "wip_one",
+    }
+    shown = instance.consent.present("org", request, actor)
+    if category in {"installed", "updated"}:
+        instance.service.install_apply.return_value = {"state": "active"}
+        assert instance.consent.resolve("org", shown["id"], actor, "confirm")["state"] == "completed"
+    # End the current claim so the next poll can acquire the feed job.
+    with instance.service.store.transaction() as db:
+        db.execute("UPDATE wisdom_assessment SET state='delivered',lease_token=NULL,lease_until=NULL WHERE id=?", (request,))
+    enqueue(instance, category)
+    assessor = Mock(side_effect=AssertionError("already has a consent card"))
+    assert instance.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+    assert instance.consent.resolve("org", shown["id"], actor, "inspect")["state"] == (
+        "pending" if category == "update_available" else "completed"
+    )
+    assert next(j for j in instance.queue.assessments("org") if j["event_key"] == "feed:event")["state"] == "retired"
+    assessor.assert_not_called()
+
+
+def test_legacy_operation_outcome_is_not_reassessed(mediation):
+    instance, actor, _, _ = mediation
+    instance.queue.enqueue("org", "outcome:old", {"kind": "notice", "notification": {"state": "stale"}})
+    assessor = Mock(side_effect=AssertionError("outcome is already on the native card"))
+    assert instance.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+    assert instance.queue.assessments("org")[0]["state"] == "retired"
+    assessor.assert_not_called()
+
+
+@pytest.mark.parametrize("category", ["installed", "updated"])
+def test_unlinked_completion_uses_compact_receipt_without_model(mediation, category):
+    from hermes_wisdom.mediation_view import advice_view
+
+    instance, actor, _, _ = mediation
+    enqueue(instance, category)
+    assessor = Mock(side_effect=AssertionError("no assessment for a completed operation"))
+    items = instance.prepare("org", actor, runtime={}, history=[], assessor=assessor)
+    view = advice_view(items)
+    assert view.summary == category.capitalize()
+    assert view.items[0].title == "helpful"
+    assert not view.items[0].detail
+    assessor.assert_not_called()
+
+
 def test_inspection_through_real_service_and_typed_version_response(
     mediation, monkeypatch
 ):

@@ -119,6 +119,13 @@ def test_requested_consent_is_not_gated_as_an_unsolicited_recommendation(
     assert WisdomMediation(instance.service)._eligible_jobs("org", jobs) == jobs
     assert result["status"] == "pending"
     instance.service.install_apply.assert_not_called()
+    repeated = json.loads(wisdom_tool.present({
+        "kind": "skill", "identity": "skill", "version": 1,
+        "title": "Asked again", "explanation": "Another request for the same version.",
+    }))
+    assert repeated["interaction"]["id"] == result["interaction"]["id"]
+    assert "no new notification" in repeated["instruction"]
+    assert len(instance.queue.assessments("org")) == 2  # Original feed and one request.
 
 
 @pytest.mark.parametrize(
@@ -492,15 +499,52 @@ def test_presentation_keeps_canonical_warnings_and_primary_last(consent):
     assert "organisation has enabled" in view.summary
     assert "✅ Security check" in view.items[0].detail
     assert [a.label for a in view.items[0].actions] == [
+        "View Assessment",
         "Show checks",
         "Not Now",
         "Review first",
         "Install",
     ]
     assert "wip_one" not in interaction_view(shown).to_text()
+    assert "A suggestion" not in view.to_text()
+    assert "A suggestion" in advice_view([item], assessment_expanded=True).to_text()
     digest = {"advice": {**item["advice"], "relevance": "digest"}}
     groups = delivery_groups([item, *([digest] * 8)])
     assert [len(group) for group in groups] == [1, 3, 3, 2]
+
+
+@pytest.mark.parametrize("platform", ["telegram", "slack"])
+def test_completed_assessment_toggle_is_read_only_and_actor_bound(consent, platform):
+    from hermes_wisdom.mediation_view import resolve_surface_action
+
+    instance, actor, identity, _ = consent
+    if platform == "slack":
+        actor = ConsentActor(actor.session_key, platform, actor.actor_id, actor.chat_id, actor.thread_id)
+        with instance.service.store.transaction() as db:
+            db.execute("UPDATE wisdom_agent_session SET platform=?", (platform,))
+    with instance.service.store.transaction() as db:
+        db.execute("UPDATE wisdom_assessment SET advice_json=? WHERE id=?", (
+            json.dumps({"title": "Useful", "explanation": "Adds rollback readiness", "relevance": "recommend"}), identity,
+        ))
+    shown = instance.present("org", identity, actor)
+    completed = instance.resolve("org", shown["id"], actor, "confirm")
+    assert [a.label for a in interaction_view(completed).actions] == ["View Assessment"]
+    before_calls = instance.service.install_apply.call_count
+    for action in ("assessment.show", "checks.show", "assessment.hide"):
+        view = resolve_surface_action(
+            instance.service, f"wi:agent:{action}:{shown['id']}",
+            platform=platform, actor_id=actor.actor_id, chat_id=actor.chat_id, thread_id=actor.thread_id,
+        )
+        assert view.summary == "Installed"
+        assert ("Adds rollback readiness" in view.to_text()) == (action != "assessment.hide")
+        assert not any(a.primary for a in view.actions)
+        with pytest.raises(WisdomNotFound):
+            resolve_surface_action(
+                instance.service, f"wi:agent:{action}:{shown['id']}",
+                platform=platform, actor_id="stranger", chat_id=actor.chat_id, thread_id=actor.thread_id,
+            )
+    assert instance.service.install_apply.call_count == before_calls
+
 
 
 def test_refresh_throttles_across_store_connections_and_retires_stale_candidate(

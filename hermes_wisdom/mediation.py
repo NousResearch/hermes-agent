@@ -253,22 +253,19 @@ class WisdomMediation:
                 event["event_id"],
                 _feed_reference(event),
             )
+        # Native controls update their existing card. Keep committed outcomes in
+        # the journal/inbox, rather than assessing them as new recommendations.
         with self.service.store.transaction() as db:
-            outcomes = [
-                dict(row)
-                for row in db.execute(
-                    "SELECT * FROM wisdom_consent_outcome WHERE organization_id=? AND delivered_at IS NULL",
-                    (org,),
-                ).fetchall()
-            ]
+            outcomes = db.execute(
+                """SELECT o.* FROM wisdom_consent_outcome o
+                JOIN wisdom_consent c ON c.id=o.interaction_id AND c.organization_id=o.organization_id
+                WHERE o.organization_id=? AND o.delivered_at IS NULL
+                AND c.operation NOT IN ('install','update')""", (org,),
+            ).fetchall()
         for outcome in outcomes:
             self.queue.enqueue(
-                org,
-                f"outcome:{outcome['interaction_id']}",
-                {
-                    "kind": "notice",
-                    "notification": json.loads(outcome["result_json"]),
-                },
+                org, f"outcome:{outcome['interaction_id']}",
+                {"kind": "notice", "notification": json.loads(outcome["result_json"])},
                 origin_session=outcome["owner_session"],
             )
         return org
@@ -392,6 +389,33 @@ class WisdomMediation:
         current = []
         for job in jobs:
             reference = job["reference"]
+            notification = reference.get("notification") or {}
+            if job["event_key"].startswith("outcome:"):
+                with self.service.store.transaction() as db:
+                    outcome = db.execute(
+                        "SELECT operation FROM wisdom_consent WHERE id=? AND organization_id=?",
+                        (job["event_key"].removeprefix("outcome:"), org),
+                    ).fetchone()
+                if outcome is None or outcome["operation"] in {"install", "update"}:
+                    self.queue.retire(org, job)
+                    continue
+            if reference["kind"] == "skill" or notification.get("category") in {"installed", "updated"}:
+                with self.service.store.transaction() as db:
+                    existing = db.execute(
+                        """SELECT c.assessment_id FROM wisdom_consent c
+                        WHERE c.organization_id=?
+                        AND c.operation IN ('install','update')
+                        AND c.state IN ('pending','applying','completed')
+                        AND (?='skill' OR c.state='completed')
+                        AND (c.state!='pending' OR c.expires_at>?)
+                        AND json_extract(c.plan_json,'$.skill_id')=?
+                        AND json_extract(c.plan_json,'$.version')=?
+                        ORDER BY (c.state='completed') DESC,c.created_at,c.rowid LIMIT 1""",
+                        (org, reference["kind"], self.queue.clock(), reference.get("skill_id"), reference.get("version")),
+                    ).fetchone()
+                if existing and existing["assessment_id"] != job["id"]:
+                    self.queue.retire(org, job)
+                    continue
             if reference["kind"] != "skill" or not job["event_key"].startswith("feed:"):
                 current.append(job)
                 continue
@@ -659,6 +683,18 @@ class WisdomMediation:
             ],
         )
         jobs = self._current_feed_jobs(org, jobs)
+        for job in jobs:
+            notice = job["reference"].get("notification") or {}
+            if job["state"] == "assessing" and notice.get("category") in {"installed", "updated"}:
+                advice = {
+                    "assessment_kind": "operation_receipt",
+                    "operation_label": "Installed" if notice["category"] == "installed" else "Updated",
+                    "title": notice.get("editorial_name") or notice.get("skill_name") or "Skill",
+                    "relevance": "recommend",
+                    "explanation": "",
+                }
+                if self.queue.save_advice(org, job["id"], job["lease_token"], advice):
+                    job["advice"], job["state"] = advice, "ready"
         for job in jobs:
             if job["state"] != "assessing" or job["reference"]["kind"] != "candidate":
                 continue

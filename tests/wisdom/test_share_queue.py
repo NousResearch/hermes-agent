@@ -494,6 +494,7 @@ def test_publication_receipt_links_to_portal_without_expanding_checks(
 @pytest.mark.parametrize("operation,title", [("install", "Installed"), ("update", "Updated")])
 def test_install_and_update_receipts_are_compact(operation, title):
     view = interaction_view({
+        "id": "consent",
         "state": "completed",
         "operation": operation,
         "facts": {"editorial_name": "Release Evidence Brief"},
@@ -502,6 +503,7 @@ def test_install_and_update_receipts_are_compact(operation, title):
     assert view.summary == title
     assert view.items[0].title == "Release Evidence Brief"
     assert not view.items[0].detail
+    assert [a.label for a in view.actions] == ["View Assessment"]
 
 
 def test_packaging_prompt_contains_full_schema(sharing):

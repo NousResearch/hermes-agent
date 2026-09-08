@@ -26,6 +26,7 @@ Covers:
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -248,3 +249,62 @@ def test_dispatch_combines_worse_of_memory_and_cpu_pressure(
     assert spawns == []
     assert res.memory_pressure is None
     assert res.cpu_pressure == "critical"
+
+
+# ---------------------------------------------------------------------------
+# Test neutralizer reload-stability (t_4008d306 rework, review finding #2)
+# ---------------------------------------------------------------------------
+
+
+def test_default_neutralizer_returns_empty_sample_without_marker():
+    """Sanity baseline: absent ``@pytest.mark.real_cpu_guard``, the autouse
+    fixture in ``tests/conftest.py`` keeps the CPU guard neutral for every
+    test, regardless of the host's actual load."""
+    assert kbd._system_cpu_sample() == {}
+    assert kbd._cpu_pressure_level() == "unknown"
+
+
+def test_neutralizer_survives_hermes_cli_module_purge_and_reimport():
+    """The autouse neutralizer must patch a RELOAD-STABLE origin, not a
+    ``hermes_cli.kanban_db_dispatch`` module attribute directly.
+
+    ``tests/hermes_cli/test_kanban_per_profile_cap.py`` (and similar tests)
+    purge every ``hermes_cli``/``hermes_state``/``hermes_constants`` module
+    from ``sys.modules`` and reimport fresh module objects mid-test. A patch
+    applied only to the OLD ``kanban_db_dispatch`` module object is invisible
+    to that fresh module, which would then read the REAL (possibly critical)
+    host CPU state instead of the neutral default — exactly the failure the
+    independent review reproduced. ``tests/conftest.py`` patches
+    ``gateway.cpu_status.sample_cpu`` instead, which survives because
+    ``gateway.*`` modules are never purged by that pattern and
+    ``_system_cpu_sample`` re-imports ``sample_cpu`` from it on every call.
+    """
+    purge_prefixes = ("hermes_cli", "hermes_state")
+    removed = {}
+    for mod_name in list(sys.modules):
+        if mod_name.startswith(purge_prefixes) or mod_name == "hermes_constants":
+            removed[mod_name] = sys.modules.pop(mod_name)
+    try:
+        from hermes_cli import kanban_db_dispatch as fresh_kbd
+
+        assert fresh_kbd is not kbd, "expected a genuinely fresh module object after the purge"
+        assert fresh_kbd._system_cpu_sample() == {}
+        assert fresh_kbd._cpu_pressure_level() == "unknown"
+    finally:
+        # Restore the original module objects so later tests in this process
+        # keep using the identities they already hold references to.
+        for mod_name in list(sys.modules):
+            if mod_name.startswith(purge_prefixes) or mod_name == "hermes_constants":
+                del sys.modules[mod_name]
+        sys.modules.update(removed)
+
+
+@pytest.mark.real_cpu_guard
+def test_real_cpu_guard_marker_exposes_real_sampling_without_dispatch():
+    """Opting out with ``@pytest.mark.real_cpu_guard`` must expose the REAL
+    ``gateway.cpu_status.sample_cpu`` seam (not the neutralized ``{}``),
+    while this test performs no dispatch at all — proving the opt-out only
+    widens what CAN be sampled, never forces an actual worker spawn."""
+    sample = kbd._system_cpu_sample()
+    assert sample, "real_cpu_guard should expose the real, non-neutralized CPU sample"
+    assert "load1" in sample or "psi_some_avg60" in sample

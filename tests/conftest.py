@@ -609,14 +609,24 @@ def _neutralize_kanban_cpu_guard(request, monkeypatch):
     i.e. the pre-guard behaviour every existing test was written against.
     Tests that exercise the guard itself opt out with
     ``@pytest.mark.real_cpu_guard`` or patch the seam directly.
+
+    Patches the reload-stable origin ``gateway.cpu_status.sample_cpu`` rather
+    than ``hermes_cli.kanban_db_dispatch._system_cpu_sample``: several tests
+    (e.g. ``test_kanban_per_profile_cap.py``) purge every ``hermes_cli*``
+    module from ``sys.modules`` and reimport a fresh ``kanban_db_dispatch``
+    module object mid-test, which has no memory of a patch applied to the
+    OLD module object and would otherwise read the real, possibly-critical
+    host CPU state. ``gateway.cpu_status`` is never purged by that pattern,
+    and ``_system_cpu_sample`` re-imports ``sample_cpu`` from it on every
+    call, so patching it here survives any number of ``hermes_cli`` reloads.
     """
     if request.node.get_closest_marker("real_cpu_guard"):
         return
     try:
-        from hermes_cli import kanban_db_dispatch as _kbd_mod
+        from gateway import cpu_status as _cpu_status_mod
     except Exception:
         return
-    monkeypatch.setattr(_kbd_mod, "_system_cpu_sample", lambda: {}, raising=False)
+    monkeypatch.setattr(_cpu_status_mod, "sample_cpu", lambda: {}, raising=False)
 
 
 @pytest.fixture(autouse=True)

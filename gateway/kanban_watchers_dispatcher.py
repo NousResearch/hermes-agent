@@ -170,11 +170,16 @@ class _KanbanDispatcher:
         self.disabled_corrupt_boards.pop(slug, None)
         return True
 
-    def tick_once_for_board(self, slug: str) -> Optional[object]:
+    def tick_once_for_board(self, slug: str, host_cycle: Optional[Any] = None) -> Optional[object]:
         """Run one dispatch_once for a specific board.
 
         The per-board DB is opened explicitly so boards never share a
-        connection or claim across each other.
+        connection or claim across each other. ``host_cycle`` (a
+        :class:`hermes_cli.kanban_db_dispatch.HostCyclePressure`), when
+        supplied, is the CPU-pressure decision + shared elevated-admission
+        budget for the WHOLE host cycle (see :meth:`tick_once`) — passed
+        straight through to ``dispatch_once`` so this board neither resamples
+        CPU nor gets its own independent elevated-spawn slot.
         """
         conn = None
         fingerprint = self.board_db_fingerprint(slug)
@@ -185,7 +190,7 @@ class _KanbanDispatcher:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).
             conn = _kbc().connect(board=slug)
-            return _kbd().dispatch_once(conn, board=slug, **kwargs)
+            return _kbd().dispatch_once(conn, board=slug, host_cycle=host_cycle, **kwargs)
         except Exception as exc:
             if self.is_corrupt_board_db_error(exc):
                 self.disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
@@ -206,8 +211,29 @@ class _KanbanDispatcher:
                     conn.close()
 
     def tick_once(self) -> list[tuple[str, Optional[object]]]:
-        """Run one dispatch_once per board. Returns (slug, result) pairs."""
-        return [(slug, self.tick_once_for_board(slug)) for slug in self._board_slugs()]
+        """Run one dispatch_once per board. Returns (slug, result) pairs.
+
+        Host CPU pressure is sampled and classified ONCE here, for the whole
+        host cycle, and handed to every board via a shared
+        ``HostCyclePressure`` (t_4008d306 rework): the prior per-board
+        sampling let each board see its own "elevated" reading and admit its
+        own new worker, so N boards could spawn N workers in one cycle
+        instead of the intended host-wide cap of 1. One sample + one shared
+        remaining-slot counter, mutated in place as boards dispatch
+        sequentially below, keeps the SUM of new spawns across all boards in
+        this cycle at <= 1 under elevated pressure (0 under critical — every
+        board still returns ``may_spawn=False`` on its own critical reading).
+        Every board still runs its own reclaim/promotion bookkeeping
+        regardless of the shared budget.
+        """
+        kbd = _kbd()
+        sample = kbd._system_cpu_sample()
+        cpu_pressure = kbd._cpu_pressure_level(sample)
+        host_cycle = kbd.HostCyclePressure(cpu_pressure=cpu_pressure)
+        return [
+            (slug, self.tick_once_for_board(slug, host_cycle=host_cycle))
+            for slug in self._board_slugs()
+        ]
 
     def ready_nonempty(self) -> bool:
         """Is there a ready+assigned+unclaimed task on ANY board the dispatcher would spawn for?

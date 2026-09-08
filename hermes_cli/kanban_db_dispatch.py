@@ -136,9 +136,34 @@ class DispatchResult:
     cpu_pressure: Optional[str] = None
     """Host CPU pressure (load-average / PSI, see :mod:`gateway.cpu_status`)
     that restricted this tick: ``"critical"`` (no new workers), ``"elevated"``
-    (at most one), ``None`` (no restriction). Same host-global, defer-not-drop
-    contract as ``memory_pressure`` — a single reading of the whole machine,
-    not a per-board budget, so cron/CI/local-inference load registers too."""
+    (at most one), ``None`` (no restriction). Same defer-not-drop contract as
+    ``memory_pressure``. When driven by :meth:`gateway.kanban_watchers_dispatcher
+    ._KanbanDispatcher.tick_once` (the production gateway path), CPU is sampled
+    ONCE per host cycle and the elevated-admission slot is shared across every
+    board via ``host_cycle`` — the sum of new spawns across ALL boards in one
+    host cycle is capped at 1, not 1-per-board. A direct/manual ``dispatch_once``
+    call with no ``host_cycle`` still samples CPU for itself and applies the
+    same cap to that single call, unchanged from prior behavior."""
+
+
+@dataclass
+class HostCyclePressure:
+    """One host-wide CPU-pressure decision, shared across every board's
+    ``dispatch_once`` call within a single gateway host cycle
+    (:meth:`gateway.kanban_watchers_dispatcher._KanbanDispatcher.tick_once`).
+
+    ``cpu_pressure`` is sampled/classified exactly once per host cycle and
+    handed to every board so they all see the same reading — no per-board
+    resampling, no churn between boards in the same cycle.
+    ``remaining_elevated_spawns`` starts at 1 (the whole cycle's elevated-
+    admission budget) and is decremented in place as boards spawn under
+    elevated pressure, so the SUM of new spawns across all boards in this
+    cycle stays <= 1. Boards are dispatched sequentially within one
+    ``tick_once`` call, so no locking is needed around the mutation.
+    """
+
+    cpu_pressure: str
+    remaining_elevated_spawns: int = 1
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -1472,6 +1497,7 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    host_cycle: Optional[HostCyclePressure] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1480,6 +1506,15 @@ def dispatch_once(
     frames. The loser returns an empty ``DispatchResult`` with
     ``skipped_locked=True`` and writes nothing; the lock is keyed on the
     resolved DB path so unrelated boards tick in parallel.
+
+    ``host_cycle`` (optional): a :class:`HostCyclePressure` sampled once by the
+    caller (see :meth:`gateway.kanban_watchers_dispatcher._KanbanDispatcher
+    .tick_once`) and shared across every board dispatched in the same host
+    cycle, so a host-wide elevated-CPU-pressure reading admits at most one new
+    worker in total across all boards, not one per board. Omit it for a
+    direct/manual single-board call — CPU is then sampled fresh for just this
+    call, with its own independent cap of at most one new worker, unchanged
+    from prior behavior.
     """
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
@@ -1495,6 +1530,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            host_cycle=host_cycle,
         )
 
     try:
@@ -1697,6 +1733,7 @@ def _tick_spawn_budget(
     max_spawn: Optional[int],
     max_in_progress: Optional[int],
     board: Optional[str],
+    host_cycle: Optional[HostCyclePressure] = None,
 ) -> tuple[bool, Optional[int]]:
     """``(may_spawn, spawn_budget)`` for this tick; ``budget None`` = uncapped.
 
@@ -1705,6 +1742,12 @@ def _tick_spawn_budget(
     by N every tick. ``max_in_progress`` is a HOST-level cap: running workers on
     every other board count against the same budget, else N boards multiply the
     cap by N — exactly the fan-out the memory-derived default exists to prevent.
+
+    ``host_cycle``, when supplied by :meth:`_KanbanDispatcher.tick_once`, carries
+    a CPU-pressure reading already sampled/classified once for the whole host
+    cycle plus the cycle's shared remaining elevated-admission slots — this call
+    must not resample CPU itself (that would double-sample and let each board
+    see a different reading) and must not widen the shared budget back to 1.
     """
     # Count already-running tasks so max_spawn enforces concurrency, not a
     # per-tick budget: "running" tasks stay running until the worker calls
@@ -1741,13 +1784,14 @@ def _tick_spawn_budget(
         )
         return False, None
 
-    # Host-wide CPU-pressure guard (t_4008d306): same host-global, defer-not-drop
-    # contract as the memory guard above, applied to load average / PSI instead
-    # of MemAvailable. This reads the WHOLE host's CPU state — same signal for
-    # every board's tick — so it is one host-global admission decision, not a
-    # per-board budget; cron/CI/local-inference load registers here even though
-    # those processes are invisible to ``count_running_tasks*``.
-    cpu_pressure = _cpu_pressure_level()
+    # Host-wide CPU-pressure guard (t_4008d306): same defer-not-drop contract as
+    # the memory guard above, applied to load average / PSI instead of
+    # MemAvailable. When ``host_cycle`` is supplied (the production gateway
+    # path, see :meth:`_KanbanDispatcher.tick_once`), CPU was already
+    # sampled/classified ONCE for the whole host cycle — reuse that reading
+    # instead of resampling per board. A direct/manual call with no
+    # ``host_cycle`` samples for itself, exactly as before.
+    cpu_pressure = host_cycle.cpu_pressure if host_cycle is not None else _cpu_pressure_level()
     if cpu_pressure == "critical":
         result.cpu_pressure = cpu_pressure
         _kb._log.warning(
@@ -1761,12 +1805,20 @@ def _tick_spawn_budget(
     if cpu_pressure == "elevated":
         result.cpu_pressure = cpu_pressure
     if mem_pressure == "elevated" or cpu_pressure == "elevated":
-        if spawn_budget is None or spawn_budget > 1:
+        if host_cycle is not None and cpu_pressure == "elevated":
+            # Host-cycle-shared budget: the SUM of spawns across every board in
+            # this cycle must stay <= 1, not 1 per board. A board that finds the
+            # cycle's slot already spent (an earlier board in this same cycle
+            # consumed it) gets 0, never a fresh 1.
+            elevated_cap = max(host_cycle.remaining_elevated_spawns, 0)
+        else:
+            elevated_cap = 1
+        if spawn_budget is None or spawn_budget > elevated_cap:
             _kb._log.warning(
                 "kanban dispatch: system pressure is elevated (memory=%s, cpu=%s); "
-                "limiting to at most 1 new worker this tick", mem_pressure, cpu_pressure,
+                "limiting to at most %d new worker(s) this tick", mem_pressure, cpu_pressure, elevated_cap,
             )
-            spawn_budget = 1
+            spawn_budget = elevated_cap
     return True, spawn_budget
 
 
@@ -1823,12 +1875,17 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    host_cycle: Optional[HostCyclePressure] = None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
     call ``spawn_fn(task, workspace_path, board) -> Optional[int]``, recording
     the PID so later ticks catch crashes before the TTL. Cap semantics:
-    :func:`_tick_spawn_budget`."""
+    :func:`_tick_spawn_budget`. ``host_cycle`` carries the shared host-cycle
+    CPU-pressure decision (see :class:`HostCyclePressure`); its remaining
+    elevated-admission slot is decremented in place by however many workers
+    THIS board actually spawns, so the next board in the same cycle sees the
+    reduced budget."""
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
@@ -1836,6 +1893,7 @@ def _dispatch_once_locked(
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
+        host_cycle=host_cycle,
     )
     if not may_spawn:
         return result
@@ -1905,6 +1963,11 @@ def _dispatch_once_locked(
             continue
         if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
             spawned += 1
+    if host_cycle is not None and result.cpu_pressure == "elevated" and spawned:
+        # Consume this board's spawns from the cycle-shared elevated budget so
+        # the next board dispatched in this same host cycle sees the reduced
+        # remainder rather than a freshly-reset 1.
+        host_cycle.remaining_elevated_spawns = max(host_cycle.remaining_elevated_spawns - spawned, 0)
     return result
 
 

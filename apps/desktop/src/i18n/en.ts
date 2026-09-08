@@ -922,6 +922,11 @@ export const en: Translations = {
       },
       cloudRefresh: 'Refresh',
       cloudConnect: 'Connect',
+      cloudSavedTitle: 'Saved Cloud gateways',
+      cloudSavedDesc:
+        'Use a saved gateway without changing your default. Sign in below to add instances. Manage names and sign-in in the saved connections list.',
+      cloudUseSaved: 'Use gateway',
+      cloudActive: 'Active in this window',
       cloudConnecting: 'Connecting…',
       cloudDiscoverFailed: 'Could not load your Hermes Cloud agents',
       cloudConnectFailed: 'Could not connect to that agent',

@@ -1135,6 +1135,11 @@ export const ru = defineLocale({
       },
       cloudRefresh: 'Обновить',
       cloudConnect: 'Подключиться',
+      cloudSavedTitle: 'Сохранённые облачные шлюзы',
+      cloudSavedDesc:
+        'Используйте сохранённый шлюз без изменения шлюза по умолчанию. Войдите ниже, чтобы добавить экземпляры. Имена и вход — в списке сохранённых подключений.',
+      cloudUseSaved: 'Использовать шлюз',
+      cloudActive: 'Активен в этом окне',
       cloudConnecting: 'Подключение…',
       cloudDiscoverFailed: 'Не удалось загрузить агентов Hermes Cloud',
       cloudConnectFailed: 'Не удалось подключиться к этому агенту',

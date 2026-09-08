@@ -57,7 +57,14 @@ def test_invalid_tensor_placement_is_rejected_before_runtime_boot(monkeypatch):
 
     with pytest.raises(ValueError, match="unsupported tensor placement"):
         bootstrap.ensure_local_runtime(
-            {"local_runtime": {"enabled": False, "tensor_placement": "invalid"}})
+            {"local_runtime": {"enabled": True, "tensor_placement": "invalid"}})
+
+
+def test_disabled_runtime_ignores_tensor_placement_until_enabled(monkeypatch):
+    from hermes_cli.local_runtime import bootstrap
+
+    assert bootstrap.ensure_local_runtime(
+        {"local_runtime": {"enabled": False, "tensor_placement": "invalid"}}) is None
 
 
 def test_presets_stale_when_a_staged_model_has_no_section(hermes_home):

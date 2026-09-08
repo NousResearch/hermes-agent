@@ -179,10 +179,10 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
     falls back to configured providers."""
     global _SUPERVISOR
     section = (config or {}).get("local_runtime") or {}
-    tensor_placement = validate_tensor_placement(
-        str(section.get("tensor_placement", "host")))
     if not force and not section.get("enabled"):
         return None
+    tensor_placement = validate_tensor_placement(
+        str(section.get("tensor_placement", "host")))
     if _SUPERVISOR is not None:
         return _SUPERVISOR
 

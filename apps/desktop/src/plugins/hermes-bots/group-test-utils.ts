@@ -84,6 +84,8 @@ export interface GatewayOptions {
   busyResumes?: Record<string, number>
   /** Per profile: carry `pending_approval` on its first `until` resumes. */
   approvalUntil?: Record<string, { payload: Record<string, unknown>; until: number }>
+  /** Simulate older gateways that resume a session but omit the durable session_key. */
+  omitSessionKeyOnResume?: boolean
   /** Per profile: carry `pending_clarify` on its first `until` resumes. */
   clarifyUntil?: Record<string, { payload: Record<string, unknown>; until: number }>
   /** Land a competing writer's `ui_meta` under `key` during the FIRST
@@ -271,7 +273,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
         messages: busy || params.omit_messages ? [] : [...session.messages],
         running: false,
         session_id: session.runtime,
-        session_key: session.stored,
+        ...(options.omitSessionKeyOnResume ? {} : { session_key: session.stored }),
         ...(clarify && seen <= clarify.until ? { pending_clarify: clarify.payload } : {}),
         ...(approval && seen <= approval.until ? { pending_approval: approval.payload } : {})
       }

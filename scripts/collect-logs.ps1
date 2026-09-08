@@ -115,7 +115,7 @@ $auditCount = @(Get-ChildItem -LiteralPath (Join-Path $LedgerDst 'audits') -Filt
 $tmplCount  = @(Get-ChildItem -LiteralPath (Join-Path $LedgerDst 'templates') -Filter '*.md' -ErrorAction SilentlyContinue).Count
 if ($bad.Count -gt 0) { Add-Check 'FAIL' ("ledger missing/empty: {0}" -f ($bad -join ', ')) }
 if ($auditCount -lt 1) { Add-Check 'WARN' 'ledger has no AUDIT- file' } else { Add-Check 'OK' "ledger carries $auditCount audit(s), $tmplCount template(s)" }
-if ($tmplCount -lt 4)  { Add-Check 'WARN' "ledger templates/ has only $tmplCount file(s) - expected 4 (audit/change/decision/error)" }
+if ($tmplCount -lt 5)  { Add-Check 'WARN' "ledger templates/ has only $tmplCount file(s) - expected 5 (audit/change/decision/error/session-report)" }
 
 # --- 2. repo runtime logs (EXCLUDED by default) -------------------
 $RtDst = Join-Path $OutDir 'repo-runtime-logs'
@@ -213,30 +213,41 @@ if (-not $gitOk) {
     }
 }
 
-# --- 5. session-report freshness ------------------------------
+# --- 5. session-report completeness (relational: every RUN- -> a report) -----
+# Was a date compare ("a report exists dated >= the newest ledger id") - one
+# same-day report made every run that day look covered (ERR-2026-09-07-004 /
+# Codex F-02). Now: scripts/lib/report_completeness.py matches every RUN- id in
+# the ledger to a row in logs/ledger/reports/REPORT-MANIFEST.md that names a real
+# report (or an explicit ledger-only line). Missing / mismatched => FAIL.
 $reports = @(Get-ChildItem -LiteralPath $OutDir -Filter '*.md' -File | Where-Object { $_.Name -ne 'HANDOFF-INDEX.md' })
-function Get-MaxDate([string]$text) {
-    # no \b anchors: dates here sit next to '_' (a word char), e.g. TOPIC_2026-09-06.md
-    $m = [regex]::Matches($text, '(20\d\d-\d\d-\d\d)')
-    if ($m.Count -eq 0) { return $null }
-    return ($m | ForEach-Object { $_.Groups[1].Value } | Sort-Object | Select-Object -Last 1)
-}
-$reportMax = Get-MaxDate (($reports | ForEach-Object { $_.Name }) -join ' ')
-$ledgerText = ((Get-ChildItem -LiteralPath $LedgerDst -Recurse -File | Get-Content -Raw) -join "`n")
-$ledgerIds  = [regex]::Matches($ledgerText, '(?:CHG|ERR|DECISION|AUDIT|RUN)-(20\d\d-\d\d-\d\d)-\d{3}')
-$ledgerMax  = $null
-if ($ledgerIds.Count -gt 0) { $ledgerMax = ($ledgerIds | ForEach-Object { $_.Groups[1].Value } | Sort-Object | Select-Object -Last 1) }
-
 if ($reports.Count -eq 0) {
     Add-Check 'WARN' "no session-report *.md in $OutDir - a handoff normally carries a plain-language write-up"
 } else {
-    Add-Check 'OK' ("{0} session report(s) present (newest dated {1})" -f $reports.Count, $reportMax)
+    Add-Check 'OK' ("{0} session report(s) present" -f $reports.Count)
 }
-if ($ledgerMax -and $reportMax -and ($ledgerMax -gt $reportMax)) {
-    Add-Check 'WARN' "ledger has entries dated $ledgerMax but the newest session report is $reportMax - a run may not have left its handoff note"
+
+$ReportCheck = Join-Path $RepoRoot 'scripts\lib\report_completeness.py'
+$pyForCheck = $null
+foreach ($cand in @(
+        (Join-Path $RepoRoot '.venv\Scripts\python.exe'),
+        (Join-Path (Split-Path -Parent $RepoRoot) ((Split-Path -Leaf $RepoRoot) + '-venv\Scripts\python.exe')),
+        'python', 'python3')) {
+    if ($cand -match '[\\/]') { if (Test-Path -LiteralPath $cand) { $pyForCheck = $cand; break } }
+    else { $c = Get-Command $cand -ErrorAction SilentlyContinue; if ($c) { $pyForCheck = $c.Source; break } }
 }
-if ($ledgerMax -and -not $reportMax) {
-    Add-Check 'WARN' "ledger active ($ledgerMax) but no dated session report found"
+if (-not $pyForCheck -or -not (Test-Path -LiteralPath $ReportCheck)) {
+    Add-Check 'WARN' 'RUN-to-report completeness check skipped - no python or scripts\lib\report_completeness.py missing'
+} else {
+    $rcLines = & $pyForCheck $ReportCheck --ledger-dir $LedgerDst --reports-dir $OutDir --quiet 2>&1
+    $rcExit  = $LASTEXITCODE
+    foreach ($ln in $rcLines) {
+        $s = [string]$ln
+        if ($s -match '^(OK|WARN|FAIL)\t(.*)$') { Add-Check $Matches[1] ("report-manifest: {0}" -f $Matches[2]) }
+        elseif ($s.Trim()) { Add-Check 'WARN' ("report-manifest: {0}" -f $s.Trim()) }
+    }
+    if ($rcExit -ne 0 -and -not ($checks | Where-Object { $_.Level -eq 'FAIL' -and $_.Text -like 'report-manifest:*' })) {
+        Add-Check 'FAIL' "RUN-to-report completeness check exited $rcExit"
+    }
 }
 
 # --- 5b. resolve a Python that can import agent.redact -----------

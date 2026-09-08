@@ -91,7 +91,7 @@ audit_count="$(find "$OUT/ledger/audits" -name 'AUDIT-*.md' 2>/dev/null | wc -l 
 tmpl_count="$(find "$OUT/ledger/templates" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
 [ -z "$bad" ] || add_check FAIL "ledger missing/empty:$bad"
 if [ "$audit_count" -lt 1 ]; then add_check WARN "ledger has no AUDIT- file"; else add_check OK "ledger carries $audit_count audit(s), $tmpl_count template(s)"; fi
-[ "$tmpl_count" -ge 4 ] || add_check WARN "ledger templates/ has only $tmpl_count file(s) - expected 4"
+[ "$tmpl_count" -ge 5 ] || add_check WARN "ledger templates/ has only $tmpl_count file(s) - expected 5 (audit/change/decision/error/session-report)"
 
 # --- 2. repo runtime logs (EXCLUDED by default) ---------------------
 rm -rf "$OUT/repo-runtime-logs"
@@ -180,26 +180,54 @@ else
   fi
 fi
 
-# --- 5. session-report freshness -----------------------------
-report_max=""; report_n=0
+# --- 5. session-report completeness (relational: every RUN- -> a report) -----
+# Was a date compare ("a report exists dated >= the newest ledger id") - one
+# same-day report made every run that day look covered (ERR-2026-09-07-004 /
+# Codex F-02). Now: scripts/lib/report_completeness.py matches every RUN- id in
+# the ledger to a row in logs/ledger/reports/REPORT-MANIFEST.md that names a real
+# report (or an explicit ledger-only line). Missing / mismatched => FAIL.
+report_n=0
 for f in "$OUT"/*.md; do
   [ -e "$f" ] || continue
-  b="$(basename "$f")"; [ "$b" = "HANDOFF-INDEX.md" ] && continue
+  [ "$(basename "$f")" = "HANDOFF-INDEX.md" ] && continue
   report_n=$((report_n+1))
-  d="$(printf '%s' "$b" | grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}' | sort | tail -1 || true)"
-  [ -n "$d" ] && { [ -z "$report_max" ] || [ "$d" \> "$report_max" ]; } && report_max="$d"
 done
-ledger_max="$(grep -rhoE '(CHG|ERR|DECISION|AUDIT|RUN)-20[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{3}' "$OUT/ledger" 2>/dev/null | grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}' | sort | tail -1 || true)"
 if [ "$report_n" -eq 0 ]; then
   add_check WARN "no session-report *.md in $OUT - a handoff normally carries a plain-language write-up"
 else
-  add_check OK "$report_n session report(s) present (newest dated ${report_max:-?})"
+  add_check OK "$report_n session report(s) present"
 fi
-if [ -n "$ledger_max" ] && [ -n "$report_max" ] && [ "$ledger_max" \> "$report_max" ]; then
-  add_check WARN "ledger has entries dated $ledger_max but the newest session report is $report_max - a run may not have left its handoff note"
-fi
-if [ -n "$ledger_max" ] && [ -z "$report_max" ]; then
-  add_check WARN "ledger active ($ledger_max) but no dated session report found"
+
+REPORT_CHECK="$REPO/scripts/lib/report_completeness.py"
+py_check=""
+sib_check="$(dirname "$REPO")/$(basename "$REPO")-venv"
+for cand in \
+    "$REPO/.venv/Scripts/python.exe" "$REPO/.venv/bin/python" \
+    "$sib_check/Scripts/python.exe" "$sib_check/bin/python" \
+    python3 python; do
+  case "$cand" in
+    */*) [ -x "$cand" ] || continue ;;
+    *)   command -v "$cand" >/dev/null 2>&1 || continue ;;
+  esac
+  py_check="$cand"; break
+done
+if [ -z "$py_check" ] || [ ! -f "$REPORT_CHECK" ]; then
+  add_check WARN "RUN-to-report completeness check skipped - no python or scripts/lib/report_completeness.py missing"
+else
+  rc_out="$("$py_check" "$REPORT_CHECK" --ledger-dir "$OUT/ledger" --reports-dir "$OUT" --quiet 2>&1)" && rc_exit=0 || rc_exit=$?
+  saw_fail=0
+  # here-string, NOT a pipe: a `while` in a pipeline is a subshell and its
+  # add_check appends would be lost.
+  while IFS=$'\t' read -r lvl msg; do
+    [ -n "$lvl$msg" ] || continue
+    case "$lvl" in
+      OK|WARN|FAIL) add_check "$lvl" "report-manifest: $msg"; [ "$lvl" = FAIL ] && saw_fail=1 ;;
+      *)            add_check WARN "report-manifest: $lvl$msg" ;;
+    esac
+  done <<< "$rc_out"
+  if [ "$rc_exit" -ne 0 ] && [ "$saw_fail" -eq 0 ]; then
+    add_check FAIL "RUN-to-report completeness check exited $rc_exit"
+  fi
 fi
 
 # --- 5b. resolve a Python that can import agent.redact ------

@@ -1,5 +1,6 @@
 """Nous free-tier JSON-RPC handlers: a renderer reads the profile's local auth state (pull); nothing
-is pushed. ``free_tier.status`` answers from the auth store with zero network; ``free_tier.ack_notice``
+is pushed. ``free_tier.status`` answers from the auth store with zero network; ``free_tier.provision``
+is the explicit set-up request (the guided setup's first step); ``free_tier.ack_notice``
 persists the one-time notice flag on the free-tier identity itself, so it dies with that identity.
 Bodies are rebound onto server.py's globals (method_ctx.bind_module) and reference them bare.
 """
@@ -41,6 +42,32 @@ def _(rid, params: dict) -> dict:
             "model": anon_auth.GUEST_MODEL, "label": anon_auth.FREE_TIER_LABEL})
     except Exception as e:
         return _err(rid, 5090, str(e))
+
+
+@method("free_tier.provision")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Set the free tier up NOW for the focused profile: adopt the shared store's identity, else mint
+    one (blocking, short timeout). The guided setup on Hermes Desktop calls this before creating its
+    first chat, so the identity exists before any session asks for ``nous/welcome``. This is the
+    explicit provisioning request: under ``nous.guest_setup: explicit`` it is the only way an
+    identity ever gets created. ``{has_guest, enabled}``; ``error`` when the portal refused."""
+    try:
+        from hermes_cli import anon_auth
+        enabled = anon_auth.guest_enabled()
+        error = None
+        if enabled and not anon_auth.has_guest():
+            try:
+                anon_auth.provision_free_tier()
+            except Exception as exc:
+                logger.info("free tier provisioning failed: %s", exc)
+                error = str(exc)
+        payload = {"has_guest": anon_auth.has_guest(), "enabled": enabled}
+        if error:
+            payload["error"] = error
+        return _ok(rid, payload)
+    except Exception as e:
+        return _err(rid, 5092, str(e))
 
 
 @method("free_tier.ack_notice")

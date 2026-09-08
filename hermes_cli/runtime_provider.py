@@ -668,17 +668,6 @@ def _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model
     request; for "auto" (auto-detected but credentials stale/revoked) log and return None so the
     ladder falls through to env-var providers (e.g. OpenRouter)."""
     spec = _OAUTH_RUNTIME_PROVIDERS[provider]
-    if provider == "nous" and not auth_mod.get_provider_auth_state("nous"):
-        # No Nous identity anywhere this profile can see (its own store, the global root). A caller
-        # naming nous/welcome — the guided setup's session (provider=nous, which skips the
-        # resolver's nothing-configured rung), the free-tier picker row — is asking for the free
-        # tier: set it up here, on the request, instead of failing "not logged in". Any other
-        # model is not a request; the resolve below raises as before.
-        from hermes_cli.anon_auth import ensure_identity_for_model
-        try:
-            ensure_identity_for_model(_effective_model(model_cfg, target_model))
-        except Exception as exc:
-            logger.debug("nous: free tier setup for the requested model skipped: %s", exc)
     try:
         creds = spec.resolve()
     except AuthError:

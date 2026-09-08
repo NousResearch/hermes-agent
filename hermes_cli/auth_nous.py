@@ -983,7 +983,7 @@ def resolve_nous_runtime_credentials(
         clear_dead_guest("anon_credential_dead", dead_token=dead.get("anon_token"))
         # Replacing an identity the user already had is a continuation of that request, not a
         # new implicit setup: allowed under every nous.guest_setup policy.
-        if ensure_portal_identity(blocking=True, timeout_seconds=timeout_seconds, on_request=True) is None:
+        if ensure_portal_identity(blocking=True, timeout_seconds=timeout_seconds, explicit=True) is None:
             raise
         return _resolve_nous_runtime_credentials(
             timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle)

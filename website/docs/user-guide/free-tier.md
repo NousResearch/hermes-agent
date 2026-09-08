@@ -193,17 +193,17 @@ a command. Signing in (`/login`, or `hermes auth upgrade` in a terminal) moves w
 holds (your linked connectors) into your account. Turning the free tier off with
 `nous.guest: false` means no identity is created or used at all.
 
-## Creating the identity only on request
+## Creating the identity only through the guided setup
 
 ```bash
-hermes config set nous.guest_setup on-request
+hermes config set nous.guest_setup explicit
 ```
 
 By default (`nous.guest_setup: auto`) Hermes creates the free-tier identity the first time it
-needs inference or a connector and nothing else is configured. With `on-request`, it creates one
-only when the free tier is asked for by name: picking `nous/welcome` as the model (the
-**Nous · free tier** row in `hermes model`, or the guided setup on Hermes Desktop, which runs on
-that model), or signing in with `/login` or `hermes auth upgrade`. Nothing is created quietly in
-the background. Once an identity exists, every profile on the machine follows it as usual, and an
-expired one is replaced the next time it is needed. `nous.guest: false` still turns the free tier
-off entirely.
+needs inference or a connector and nothing else is configured. With `explicit`, Hermes never
+creates one on its own: only the guided setup on Hermes Desktop does, as its first step. Until
+then a fresh install behaves as if the free tier did not exist (no **Nous · free tier** row in
+`hermes model`, the usual "no provider configured" guidance, and `/login` or `hermes auth upgrade`
+point at `hermes auth add nous`). Once the identity exists, every profile on the machine follows
+it as usual, and an expired one is replaced the next time it is needed. `nous.guest: false` still
+turns the free tier off entirely.

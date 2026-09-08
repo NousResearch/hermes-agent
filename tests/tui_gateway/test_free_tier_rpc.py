@@ -83,3 +83,39 @@ def test_status_without_an_identity_starts_the_background_setup_once(tmp_path, m
     status = _call("free_tier.status")
     assert status["has_guest"] is False and status["available"] is False
     assert calls == [{"blocking": False}]
+
+
+def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_path, monkeypatch):
+    """``free_tier.provision`` is the guided setup's explicit request: it calls provision_free_tier
+    (the one explicit minting entry point) only when no identity exists, and reports the outcome."""
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
+    monkeypatch.delenv("HERMES_FORCE_GUEST", raising=False)
+    calls = []
+
+    def fake_provision(**kw):
+        calls.append(kw)
+        with _auth_store_lock():
+            store = _load_auth_store()
+            store.setdefault("providers", {})["nous"] = {
+                "auth_method": anon_auth.ANON_AUTH_METHOD, "account_tier": "anonymous", "anon_token": "anon_0002"}
+            _save_auth_store(store)
+        return store["providers"]["nous"]
+
+    monkeypatch.setattr(anon_auth, "provision_free_tier", fake_provision)
+    assert _call("free_tier.provision") == {"has_guest": True, "enabled": True}
+    assert len(calls) == 1
+    assert _call("free_tier.provision") == {"has_guest": True, "enabled": True}
+    assert len(calls) == 1                       # idempotent: an identity exists, nothing is minted
+
+    def refused(**kw):
+        raise anon_auth.AuthError("Nous free tier is not open on this portal.", code="anon_gate_closed")
+
+    with _auth_store_lock():
+        store = _load_auth_store(); store["providers"].pop("nous"); _save_auth_store(store)
+    monkeypatch.setattr(anon_auth, "provision_free_tier", refused)
+    result = _call("free_tier.provision")
+    assert result["has_guest"] is False and "not open" in result["error"]
+
+    _set_guest_off(monkeypatch)
+    monkeypatch.setattr(anon_auth, "provision_free_tier", lambda **kw: (_ for _ in ()).throw(AssertionError("must not run")))
+    assert _call("free_tier.provision") == {"has_guest": False, "enabled": False}

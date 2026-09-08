@@ -301,10 +301,11 @@ def run_sign_in(
                 if not _core.guest_enabled():
                     precondition_state = Unavailable()
                 else:
-                    state = _core.ensure_portal_identity(
-                        blocking=True, timeout_seconds=timeout_seconds, on_request=True)
+                    # Implicit: under ``guest_setup: explicit`` there is nothing to sign in FROM
+                    # unless the free tier was provisioned, so this adopts but never mints.
+                    state = _core.ensure_portal_identity(blocking=True, timeout_seconds=timeout_seconds)
                     if not _core.is_guest_state(state):
-                        # The free tier is off, or an account appeared mid-flight.
+                        # The free tier is off (or not set up), or an account appeared mid-flight.
                         precondition_state = Unavailable()
     except Exception as exc:
         # An AuthError (gate closed, rate limited) and an ordinary failure -- a cold install whose

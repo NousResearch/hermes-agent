@@ -1,18 +1,31 @@
-import { cleanup, render } from '@testing-library/react'
+import { act, cleanup, render } from '@testing-library/react'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $backgroundStatusBySession } from '@/store/composer-status'
+import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
 
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import type { VirtualSessionListProps } from './virtual-session-list'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  clearAllSessionStates()
+  $subagentsBySession.set({})
+  $backgroundStatusBySession.set({})
+})
+
+const statusDivider = { working: 'Working', done: 'Done' }
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
       sidebar: {
+        statusDivider,
+        projects: { toggle: (label: string) => label },
         dateDivider: {
           earlierThisMonth: 'Earlier this month',
           lastMonth: 'Last month',
@@ -58,6 +71,66 @@ function generateSessions(count: number): SessionInfo[] {
 }
 
 const noop = () => {}
+
+it('keeps a parked parent Working until its last child and background task settle', () => {
+  const parent = makeSession('stored-parent')
+  publishSessionState('runtime-parent', { ...createClientSessionState(parent.id), busy: false })
+
+  const child = (id: string, status: SubagentProgress['status']): SubagentProgress => ({
+    id,
+    status,
+    parentId: null,
+    goal: 'test task',
+    taskCount: 2,
+    taskIndex: 0,
+    startedAt: 0,
+    updatedAt: 0,
+    filesRead: [],
+    filesWritten: [],
+    stream: []
+  })
+
+  const { container } = render(
+    <SidebarSessionsSection
+      activeSessionId={null}
+      emptyState={null}
+      grouping="status"
+      label="Sessions"
+      onArchiveSession={noop}
+      onDeleteSession={noop}
+      onResumeSession={noop}
+      onToggle={noop}
+      onTogglePin={noop}
+      onToggleUnread={noop}
+      open
+      pinned={false}
+      sessions={[parent]}
+    />
+  )
+
+  expect(container.textContent).toContain('Done')
+
+  for (const status of ['queued', 'running'] as const) {
+    act(() => $subagentsBySession.set({ 'runtime-parent': [child('a', status), child('b', 'running')] }))
+    expect(container.textContent).toContain('Working')
+    expect(container.textContent).not.toContain('Done')
+  }
+
+  act(() => $subagentsBySession.set({ 'runtime-parent': [child('a', 'completed'), child('b', 'running')] }))
+  expect(container.textContent).toContain('Working')
+
+  act(() =>
+    $backgroundStatusBySession.set({
+      'runtime-parent': [{ id: 'process', type: 'background', state: 'running', title: 'test process' }]
+    })
+  )
+  act(() => $subagentsBySession.set({ 'runtime-parent': [child('a', 'completed'), child('b', 'failed')] }))
+  expect(container.textContent).toContain('Working')
+
+  act(() => $backgroundStatusBySession.set({}))
+  expect(container.textContent).toContain('Done')
+  expect(container.textContent).not.toContain('Working')
+})
 
 describe('SidebarSessionsSection memoization & virtualizer stability', () => {
   it('memoizes flatRows and passes the exact same rows array reference across parent re-renders', () => {

@@ -359,13 +359,13 @@ class TestSdkApprovalCanonicalizationHardening:
     def test_canonicalization_runtime_error_denies_before_auto_allow(
         self, monkeypatch,
     ):
-        from agent.transports import claude_agent_sdk_session as session_mod
+        from agent.transports import claude_agent_sdk_session_permissions as perm_mod
 
         def mutation_failure(*_args, **_kwargs):
             raise RuntimeError("dictionary changed size during iteration")
 
         monkeypatch.setattr(
-            session_mod, "_canonical_sdk_tool_request", mutation_failure,
+            perm_mod, "_canonical_sdk_tool_request", mutation_failure,
         )
         calls = []
         session, _ = _make_session(
@@ -416,7 +416,7 @@ class TestSdkApprovalCanonicalizationHardening:
     ):
         import tracemalloc
 
-        from agent.transports import claude_agent_sdk_session as session_mod
+        from agent.transports import claude_agent_sdk_session_permissions as perm_mod
         from agent.transports import claude_agent_sdk_session_sanitize as sanitize_mod
 
         marker = "SDK_CHOICE_RESULT_SECRET_27e"
@@ -432,7 +432,7 @@ class TestSdkApprovalCanonicalizationHardening:
         category_calls = []
         hostile_category_counts = []
         original_category = sanitize_mod.unicodedata.category
-        original_validator = session_mod._is_bounded_sdk_callback_string
+        original_validator = perm_mod._is_bounded_sdk_callback_string
 
         def counted_category(char):
             category_calls.append(char)
@@ -449,7 +449,7 @@ class TestSdkApprovalCanonicalizationHardening:
 
         monkeypatch.setattr(sanitize_mod.unicodedata, "category", counted_category)
         monkeypatch.setattr(
-            session_mod, "_is_bounded_sdk_callback_string", counted_validator,
+            perm_mod, "_is_bounded_sdk_callback_string", counted_validator,
         )
 
         caplog.clear()
@@ -475,7 +475,7 @@ class TestSdkApprovalCanonicalizationHardening:
     ):
         import tracemalloc
 
-        from agent.transports import claude_agent_sdk_session as session_mod
+        from agent.transports import claude_agent_sdk_session_permissions as perm_mod
         from agent.transports import claude_agent_sdk_session_sanitize as sanitize_mod
 
         marker = "SDK_REASON_RESULT_SECRET_4af"
@@ -491,7 +491,7 @@ class TestSdkApprovalCanonicalizationHardening:
         category_calls = []
         hostile_category_counts = []
         original_category = sanitize_mod.unicodedata.category
-        original_validator = session_mod._is_bounded_sdk_callback_string
+        original_validator = perm_mod._is_bounded_sdk_callback_string
 
         def counted_category(char):
             category_calls.append(char)
@@ -508,7 +508,7 @@ class TestSdkApprovalCanonicalizationHardening:
 
         monkeypatch.setattr(sanitize_mod.unicodedata, "category", counted_category)
         monkeypatch.setattr(
-            session_mod, "_is_bounded_sdk_callback_string", counted_validator,
+            perm_mod, "_is_bounded_sdk_callback_string", counted_validator,
         )
 
         caplog.clear()

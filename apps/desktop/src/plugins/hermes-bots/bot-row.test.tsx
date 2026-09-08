@@ -19,7 +19,7 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { BotRow } from './bot-row'
+import { BotRow, GroupRow } from './bot-row'
 import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
 
@@ -140,6 +140,29 @@ describe('the menu opens the same forever-chat a row click does', () => {
     fireEvent.click(await screen.findByText('Open Bot Chat'))
 
     expect(openRosterBot.mock.calls).toEqual([[bot]])
+  })
+})
+
+describe('the group row exposes its existing settings', () => {
+  it('opens Group settings from the context menu', async () => {
+    const onSettings = vi.fn()
+
+    render(
+      <GroupRow
+        active={false}
+        group="Planning"
+        members={[]}
+        needsYou={false}
+        onDisband={noop}
+        onOpen={noop}
+        onSettings={onSettings}
+      />
+    )
+
+    fireEvent.contextMenu(screen.getByRole('button'))
+    fireEvent.click(await screen.findByText('Group settings'))
+
+    expect(onSettings).toHaveBeenCalledWith({ members: [], name: 'Planning' })
   })
 })
 

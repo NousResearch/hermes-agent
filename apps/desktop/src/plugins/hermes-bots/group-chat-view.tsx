@@ -230,6 +230,13 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   }
 }
 
+/** A room name is still part of the active drive's in-process address. Keep
+ *  that address stable until the drive releases it; roomId gives the durable
+ *  room its identity, but it cannot rewrite closures already in flight. */
+export function groupChatRenameBlocked(room: GroupChatRoom | null | undefined): boolean {
+  return Boolean(room?.running)
+}
+
 /** Rename a group chat. The group's NAME is its identity everywhere — the
  *  room-map key, each local member's ui_meta membership list, and derived
  *  state — so a rename re-keys all of them. Member gateway sessions are kept
@@ -238,7 +245,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
  *  rename, so even a member whose sid is later lost falls back to the same
  *  "Group: <roomId>" title lookup instead of a fresh "Group: <new name>".
  *  Returns the new name, or null when the target name is taken. */
-async function renameGroupChat(oldName: string, newName: string, members: GroupMember[] | null | undefined) {
+export async function renameGroupChat(oldName: string, newName: string, members: GroupMember[] | null | undefined) {
   const next = String(newName || '')
     .trim()
     .slice(0, 64)
@@ -246,6 +253,18 @@ async function renameGroupChat(oldName: string, newName: string, members: GroupM
   if (!next || next === oldName) {
     return oldName
   }
+
+  if (groupChatRenameBlocked($groupChats.get()[oldName])) {
+    host.notify({
+      kind: 'info',
+      message: botsText().group.renameWait
+    })
+
+    return null
+  }
+
+  // Keep the guard-to-rekey span await-free: one JavaScript turn owns this
+  // identity transition, so a drive cannot start under the old name midway.
 
   // Renames are explicit user intent: reject a collision honestly instead of
   // silently suffixing like creation does. Disband tombstones don't hold
@@ -363,13 +382,15 @@ interface GroupChatSettingsDialogProps {
 /** Edit an existing group chat's name and picture. Renames re-key the room
  *  and every local member's membership (renameGroupChat); the picture rides
  *  the room record. Both apply on Save so a cancelled dialog changes nothing. */
-function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: GroupChatSettingsDialogProps) {
+export function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: GroupChatSettingsDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
-  const current = (rooms[group] || {}).image || null
+  const room = rooms[group] || {}
+  const current = room.image || null
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
+  const renameBlocked = name.trim() !== group && groupChatRenameBlocked(room)
   useEffect(() => {
     if (open) {
       setName(group)
@@ -430,11 +451,12 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
             value={name}
           />
         </form>
+        {renameBlocked ? <p className="text-xs text-(--ui-text-tertiary)">{b.group.renameWait}</p> : null}
         <DialogFooter>
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
           </Button>
-          <Button disabled={!name.trim()} onClick={() => void save()}>
+          <Button disabled={!name.trim() || renameBlocked} onClick={() => void save()}>
             {t.common.save}
           </Button>
         </DialogFooter>

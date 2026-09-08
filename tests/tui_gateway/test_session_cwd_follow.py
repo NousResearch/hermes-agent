@@ -167,7 +167,9 @@ def test_a_settle_adopted_cwd_can_keep_following(session, repo_with_worktree):
 def test_remote_backends_do_not_reanchor(session, repo_with_worktree, monkeypatch):
     """A remote cwd names a path on the host, not one this gateway can probe."""
     repo, worktree = repo_with_worktree
-    monkeypatch.setattr(server, "_is_local_terminal_backend", lambda: False)
+    # "Remote" is now read via _effective_terminal_backend (env OR config), so a per-profile gateway with
+    # terminal.backend=ssh in config (TERMINAL_ENV unset) is correctly seen as remote.
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "ssh")
     terminal_tool.record_session_cwd(session["session_key"], str(worktree))
 
     assert server._reconcile_session_cwd_from_terminal(session) is False

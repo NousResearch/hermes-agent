@@ -462,7 +462,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn
+from gateway.platforms.helpers import TABLE_SEPARATOR_RE, fence_state_after, typing_metadata_for_turn
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import finalize_final_obligation, ledger_bracket, record_final_obligation
 from gateway.platforms.base_exec_approval import (
@@ -4817,6 +4817,27 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                         moved = True
                 if not moved:
                     break
+            # Don't split a GFM pipe table across chunks. A split lands in a
+            # table when the chunk ends on a table line and the next starts
+            # with one; roll ``split_at`` back to just before the table header
+            # so the whole table lands in the next chunk (upstream atoms:
+            # helpers.split_markdown_atoms treats a table as indivisible).
+            _cand = remaining[:split_at]
+            _last_nl = _cand.rfind("\n")
+            if _last_nl >= 0:
+                _last_line = _cand[_last_nl + 1:]
+                _next_line = remaining[split_at:].lstrip().split("\n", 1)[0].strip()
+                if (_last_line.startswith("|") or TABLE_SEPARATOR_RE.match(_last_line.strip())) and _next_line.startswith("|"):
+                    # Find the separator row, then the header row before it.
+                    _lines = _cand.split("\n")
+                    for _li in range(len(_lines) - 2, -1, -1):
+                        if TABLE_SEPARATOR_RE.match(_lines[_li].strip()):
+                            if _li >= 2 and _lines[_li - 1].startswith("|"):
+                                _rollback = len("\n".join(_lines[:_li - 1])) + 1
+                                if 0 < _rollback < split_at:
+                                    split_at = _rollback
+                            break
+
             chunk_body = remaining[:split_at]
             remaining = remaining[split_at:].lstrip()
             full_chunk = prefix + chunk_body

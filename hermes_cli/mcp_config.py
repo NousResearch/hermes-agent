@@ -580,12 +580,12 @@ def cmd_mcp_list(args=None):
     print()
 
 
-def cmd_mcp_test(args):
-    """Test connection to an MCP server."""
+def cmd_mcp_test(args) -> int:
+    """Test connection to an MCP server and return a process exit status."""
     name = args.name
     cfg = _lookup_server(name, _get_mcp_servers(), "Available")
     if cfg is None:
-        return
+        return 1
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
     if "url" in cfg:
@@ -611,13 +611,14 @@ def cmd_mcp_test(args):
         tools = _probe_single_server(name, cfg)
     except Exception as exc:
         _error(f"Connection failed ({(time.monotonic() - start) * 1000:.0f}ms): {exc}")
-        return
+        return 1
     _success(f"Connected ({(time.monotonic() - start) * 1000:.0f}ms)")
     _success(f"Tools discovered: {len(tools)}")
     if tools:
         print()
         _print_tools(tools, 36, 55)
     print()
+    return 0
 
 
 def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = None) -> bool:
@@ -902,8 +903,7 @@ def mcp_command(args):
         "config": cmd_mcp_configure, "login": cmd_mcp_login, "reauth": cmd_mcp_reauth,
     }.get(action)
     if handler:
-        handler(args)
-        return
+        return handler(args)
     # No subcommand — drop the user into the catalog picker (same UX as `hermes plugin`).
     from hermes_cli.mcp_picker import run_picker
     run_picker()

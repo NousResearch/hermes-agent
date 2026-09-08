@@ -381,8 +381,7 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: "t
                 if piece is not None:
                     output.append(decoder.decode(piece) if isinstance(piece, bytes) else str(piece))
         elif os.name == "nt":
-            while chunk := os.read(fd, 4096):
-                output.append(decoder.decode(chunk))
+            _drain_fd_windows(proc, fd, output, decoder, stop)
         else:
             _drain_fd_select(proc, fd, output, decoder, stop)
     except Exception:
@@ -424,6 +423,72 @@ def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, st
             if idle_after_exit >= 3:
                 return
 
+
+def _windows_pipe_handle(fd: int):
+    """Return the Windows OS handle for a C file descriptor, or ``None`` if unavailable.
+
+    ``select()`` does not work on Windows pipe descriptors, so the POSIX drain path is
+    unusable there. The Windows drain uses :func:`ctypes.windll.kernel32.PeekNamedPipe`,
+    which takes an OS handle rather than a C fd; ``msvcrt.get_osfhandle`` bridges them.
+    Isolated so the Windows-only ``msvcrt`` import is lazy (never runs on POSIX) and the
+    drain logic stays unit-testable without a live Windows pipe.
+    """
+    import msvcrt  # Windows-only; lazy import keeps POSIX import paths clean.
+    try:
+        return msvcrt.get_osfhandle(fd)
+    except OSError:
+        return None
+
+
+def _peek_pipe_available(handle) -> int:
+    """Return bytes available on a Windows pipe handle via ``PeekNamedPipe``, or ``-1`` on error.
+
+    PeekNamedPipe is non-blocking: it reports how many bytes are buffered without consuming
+    them, so the drain can poll, honour *stop*, and bail shortly after the child exits even
+    when a backgrounded grandchild still holds the pipe's write end — exactly mirroring the
+    POSIX :func:`_drain_fd_select` behaviour that :issue:`8340` required.
+    """
+    import ctypes
+    avail = ctypes.c_ulong(0)
+    ok = ctypes.windll.kernel32.PeekNamedPipe(
+        handle, None, 0, None, ctypes.byref(avail), None
+    )
+    return int(avail.value) if ok else -1
+
+
+def _drain_fd_windows(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:
+    """Windows drain: ``PeekNamedPipe`` poll, stopping ~300ms after the child exits with the
+    pipe idle, or when *stop* is set (yield-to-background). Mirrors :func:`_drain_fd_select`
+    for the non-POSIX path — without this, a backgrounded grandchild (``cmd &``) inherits the
+    stdout pipe write end and the blocking ``os.read`` loop hangs for the grandchild's lifetime
+    (see :issue:`105865`)."""
+    handle = _windows_pipe_handle(fd)
+    if handle is None:
+        return  # fd already closed / not a real Windows handle
+    idle_after_exit = 0
+    while True:
+        if stop is not None and stop.is_set():
+            return
+        avail = _peek_pipe_available(handle)
+        if avail < 0:
+            return  # pipe broken / fd closed
+        if avail > 0:
+            try:
+                chunk = os.read(fd, min(avail, 4096))
+            except (ValueError, OSError):
+                return
+            if not chunk:
+                return  # true EOF — all writers closed
+            output.append(decoder.decode(chunk))
+            idle_after_exit = 0
+            continue
+        # pipe idle this cycle
+        if proc.poll() is not None:
+            # child is gone and the pipe was idle; allow two more cycles for a buffered
+            # tail, then stop (a grandchild may still hold the write end).
+            idle_after_exit += 1
+            if idle_after_exit >= 3:
+                return
 
 def _start_drain_thread(
         proc: ProcessHandle, output: _BoundedOutputCollector, stop: "threading.Event | None" = None,

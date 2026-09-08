@@ -9,14 +9,33 @@ INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 def test_termux_pkg_list_includes_network_basics() -> None:
     text = INSTALL_SH.read_text()
-    assert "local termux_pkgs=(clang rust make pkg-config libffi openssl ca-certificates curl)" in text
+    assert (
+        "local termux_pkgs=(clang rust make pkg-config libffi openssl ca-certificates curl)"
+        in text
+    )
 
 
 def test_install_script_has_connectivity_probe_and_termux_guidance() -> None:
     text = INSTALL_SH.read_text()
     assert "check_network_prerequisites()" in text
     assert "https://pypi.org/simple/" in text
-    assert "https://duckduckgo.com/" in text
+    assert "https://github.com/" in text
     assert "termux-change-repo" in text
     assert "pkg install -y ca-certificates curl && pkg update" in text
     assert "check_network_prerequisites" in text
+
+
+def test_web_search_probe_never_gates_the_connectivity_warning() -> None:
+    # duckduckgo.com is policy-blocked on networks where the install itself works;
+    # its probe result must be informational only and must not set failed=true.
+    text = INSTALL_SH.read_text()
+    assert 'local checks=("https://pypi.org/simple/" "https://github.com/")' in text
+    assert '"$tmpdir/web_search_blocked"' in text
+    assert "web_search_reachable" in text
+    # the DDG probe writes its own marker instead of joining the gating loop
+    checks_loop = text[
+        text.index('for url in "${checks[@]}"') : text.index('rm -rf "$tmpdir"')
+    ]
+    assert "duckduckgo.com" not in checks_loop
+    # the manual Termux test hint points at install-critical hosts, not DDG
+    assert "curl -I https://pypi.org/simple/ && curl -I https://github.com/" in text

@@ -347,3 +347,44 @@ class TestAuxiliaryResolverHonoursKeyCmd:
         assert self._resolve(
             monkeypatch, {**self.BASE, "key_cmd": "   "}
         ) == "no-key-required"
+
+
+class TestApiKeyBranchHonoursCallable:
+    """``_resolve_api_key_branch`` must not ``.strip()`` a callable credential.
+
+    This is the sibling of the ``custom`` arm covered by #88668: a registered
+    ``api_key`` provider (an alias whose base credential comes from
+    PROVIDER_REGISTRY) reached through an explicit override. A ``key_cmd``
+    credential arrives here as a ``CommandTokenSource``, and the unguarded
+    ``.strip()`` raised ``AttributeError: 'CommandTokenSource' object has no
+    attribute 'strip'`` — killing the auxiliary call. The user sees
+    "Auxiliary title generation failed"; the chat turn itself is unaffected,
+    which is why it reads as cosmetic rather than as a credential bug.
+    """
+
+    @staticmethod
+    def _resolve(monkeypatch, explicit_api_key):
+        """Resolve through the api_key branch; return the key handed to the client."""
+        import agent.auxiliary_client as ac
+
+        seen = {}
+
+        def _spy(*, api_key, base_url, **kw):
+            seen["api_key"] = api_key
+            return SimpleNamespace(api_key=api_key, base_url=base_url)
+
+        monkeypatch.setattr(ac, "_create_openai_client", _spy)
+        ac.resolve_provider_client("openai-api", explicit_api_key=explicit_api_key)
+        return seen.get("api_key", "__unset__")
+
+    def test_callable_survives_resolution(self, monkeypatch):
+        source = build_command_token_provider("printf minted-token", "gw")
+        api_key = self._resolve(monkeypatch, source)
+        assert callable(api_key), (
+            "a key_cmd credential was stringified or dropped; the auxiliary "
+            "call cannot re-mint and the request goes out unauthenticated"
+        )
+        assert api_key() == "minted-token"
+
+    def test_string_key_is_still_stripped(self, monkeypatch):
+        assert self._resolve(monkeypatch, "  sk-static  ") == "sk-static"

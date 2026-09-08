@@ -71,9 +71,9 @@ class SubagentMonitor:
             index = next((i for i, r in enumerate(self.entries) if r['subagent_id'] == self.selected_id), 0)
             self.selected_id = self.entries[(index + delta) % len(self.entries)]['subagent_id']
 
-    def control(self, action, message=None):
+    def control(self, action, message=None, *, target=None):
         from tools.delegate_tool_registry import _handle_control_action
-        return json.loads(_handle_control_action(action, self.selected_id, message, getattr(self.cli, 'agent', None)))
+        return json.loads(_handle_control_action(action, target or self.selected_id, message, getattr(self.cli, 'agent', None)))
 
     def dock_text(self, *, columns, rows):
         if not self.entries:
@@ -152,10 +152,13 @@ def build_monitor_application(monitor, **kwargs):
         return [('bold', _clip(title, app.output.get_size().columns))]
 
     def footer():
+        narrow = app.output.get_size().columns < 60
         if state['confirm']:
-            return 'Stop selected subagent? y confirm · Esc cancel'
+            return 'Stop? y yes · Esc cancel' if narrow else 'Stop selected subagent? y confirm · Esc cancel'
         if state['steering']:
-            return 'Enter queues guidance · Esc cancels (does not interrupt)'
+            return 'Enter send · Esc cancel' if narrow else 'Enter queues guidance · Esc cancels (does not interrupt)'
+        if narrow:
+            return 'PgUp/Dn · s steer x stop · Esc' if state['detail'] else '↑↓ select Enter tail F6 close'
         return ('Esc roster · PgUp/PgDn tail · s steer · x stop' if state['detail'] else
                 '↑/↓ select · Enter tail · s steer · x stop · q/F6 close')
 
@@ -182,13 +185,14 @@ def build_monitor_application(monitor, **kwargs):
     def start_steer(event):
         if monitor.selected:
             state['steering'] = True
+            state['target'] = monitor.selected_id
             app.layout.focus(steer)
 
     @kb.add('enter', filter=Condition(lambda: state['steering']))
     def send_steer(event):
         if not steer.text.strip():
             return
-        result = monitor.control('steer', steer.text)
+        result = monitor.control('steer', steer.text, target=state['target'])
         state['notice'] = result.get('error') or result.get('note') or str(result)
         steer.text = ''
         state['steering'] = False
@@ -198,10 +202,11 @@ def build_monitor_application(monitor, **kwargs):
     def stop(event):
         if monitor.selected:
             state['confirm'] = True
+            state['target'] = monitor.selected_id
 
     @kb.add('y', filter=Condition(lambda: state['confirm']))
     def confirm(event):
-        result = monitor.control('stop')
+        result = monitor.control('stop', target=state['target'])
         state['notice'] = result.get('error') or result.get('note') or str(result)
         state['confirm'] = False
 

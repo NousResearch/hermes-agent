@@ -23,17 +23,28 @@ def test_monitor_keys_navigate_steer_and_preserve_chat_draft(monkeypatch):
 
     async def run():
         with create_pipe_input() as pipe:
-            app = build_monitor_application(dock, input=pipe, output=DummyOutput())
+            output = DummyOutput()
+            from prompt_toolkit.data_structures import Size
+            output.get_size = lambda: Size(rows=14, columns=32)
+            app = build_monitor_application(dock, input=pipe, output=output)
+            footer = app.layout.container.children[-1].content.text()
+            assert 'F6' in footer and len(footer) <= 32
             task = asyncio.create_task(app.run_async())
             await asyncio.sleep(0.1)
             pipe.send_text('\x1b[B\rsFocus on tests\r')
             await asyncio.sleep(0.2)
+            pipe.send_text('x')
+            await asyncio.sleep(0.1)
+            registry._active_subagents.pop('second')
+            dock.refresh()
+            pipe.send_text('y')
+            await asyncio.sleep(0.1)
             pipe.send_text('\x1b')
             await asyncio.sleep(0.6)
             pipe.send_text('q')
             await asyncio.wait_for(task, 3)
     asyncio.run(run())
-    assert dock.selected_id == 'second'
+    assert dock.selected_id == 'first'
     assert received == ['Focus on tests']
     assert composer.text == 'my unfinished draft'
 

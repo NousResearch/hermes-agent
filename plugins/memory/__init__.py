@@ -16,7 +16,7 @@ import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from hermes_cli.config import cfg_get
 from plugins import plugin_loader as _loader
@@ -315,6 +315,17 @@ class _ProviderCollector:
 
     def register_memory_provider(self, provider):
         self.provider = provider
+
+    def call_mcp(
+        self, server: str, tool: str, arguments: Optional[Dict[str, Any]] = None,
+        timeout: float = 30,
+    ) -> Dict[str, Any]:
+        """Use the lifecycle-owned context's MCP connection and per-plugin grants.
+
+        Unlike secondary registration failures, denied or failed calls must reach
+        the provider so it cannot mistake a failed memory operation for success.
+        """
+        return self._plugin_context().call_mcp(server, tool, arguments, timeout=timeout)
 
     def register_skill(self, *args, **kwargs):
         """Forward skills to the plugin registry, tracking qualified name + path so

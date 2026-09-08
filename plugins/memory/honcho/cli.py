@@ -1007,17 +1007,23 @@ def _preview_peer_resolution(
     user_id: str, *, pin: bool, aliases: dict, prefix: str, peer_name: str,
     user_id_alt: str = "",
 ) -> str:
-    """Mirror the runtime resolver ladder for display: pin → alias → prefix → raw."""
+    """Resolve through the runtime resolver and label the rung that decided: pin, alias, prefix, raw.
+    Only the runtime knows when a prefixed id gets a hash suffix, so the CLI must not recompute it."""
+    from plugins.memory.honcho.client import HonchoClientConfig
+    from plugins.memory.honcho.session import HonchoSessionManager
+
+    config = HonchoClientConfig(peer_name=peer_name or None, pin_peer_name=bool(pin),
+                                user_peer_aliases=aliases, runtime_peer_prefix=prefix)
+    manager = HonchoSessionManager(config=config, runtime_user_peer_name=user_id,
+                                   runtime_user_peer_name_alt=user_id_alt or None)
+    resolved = manager._resolve_user_peer_id("preview")
     if pin and peer_name:
-        return f"{_sanitize_peer_id(peer_name)} (pinned)"
+        return f"{resolved} (pinned)"
     # The runtime resolver tries the alt ID (Signal UUID, Feishu union_id) after the primary.
-    for rid in (user_id, user_id_alt):
-        alias = aliases.get(rid) if rid else None
-        if isinstance(alias, str) and alias.strip():
-            return _sanitize_peer_id(alias.strip())
-    if prefix:
-        return f"{_sanitize_peer_id(prefix + user_id)} (prefixed)"
-    return _sanitize_peer_id(user_id)
+    aliased = any(isinstance(aliases.get(rid), str) and aliases[rid].strip() for rid in (user_id, user_id_alt) if rid)
+    if not aliased and prefix.strip():
+        return f"{resolved} (prefixed)"
+    return resolved
 
 
 def _resolution_base(resolved: str) -> str:

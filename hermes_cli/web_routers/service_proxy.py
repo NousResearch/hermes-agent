@@ -60,6 +60,8 @@ def _merge_platform_block(config: dict, name: str) -> dict:
         merged.update(block)
         if isinstance(block.get("extra"), dict):
             merged_extra.update(block["extra"])
+    if name == "api_server" and "port" in merged and "port" not in merged_extra:
+        merged_extra["port"] = merged.pop("port")
     if merged_extra:
         merged["extra"] = merged_extra
     return merged

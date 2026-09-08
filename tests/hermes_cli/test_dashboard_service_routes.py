@@ -166,6 +166,29 @@ def test_api_route_strips_dashboard_credentials_and_keeps_api_key(
     assert payload["session_token"] is None
 
 
+def test_api_route_uses_gateway_api_server_port(
+    public_dashboard, echo_server, monkeypatch
+):
+    monkeypatch.setattr(service_proxy, "load_config", lambda: {
+        "gateway": {
+            "api_server": {
+                "enabled": True,
+                "port": echo_server,
+                "extra": {"public_route": True},
+            }
+        }
+    })
+    monkeypatch.delenv("API_SERVER_PORT", raising=False)
+
+    response = public_dashboard.get(
+        "/hermes-api/health",
+        headers={"Authorization": "Bearer api-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["path"] == "/health"
+
+
 def test_a2a_public_url_includes_forwarded_prefix(monkeypatch):
     monkeypatch.delenv("A2A_PUBLIC_URL", raising=False)
     handler = object.__new__(A2ARequestHandler)

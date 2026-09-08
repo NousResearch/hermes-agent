@@ -571,8 +571,8 @@ class _CombinedCancelEvent:
 
 
 def get_running_job_ids() -> "frozenset[str]":
-    """Thread-safe snapshot of executing job IDs (dispatch until ``_process_job`` returns). Read by
-    the gateway shutdown drain, otherwise blind to cron work (runs outside ``_running_agents``).
+    """Thread-safe snapshot of reserved job IDs until ``_process_job`` returns. Read by the
+    gateway shutdown drain, otherwise blind to cron work (runs outside ``_running_agents``).
 
     _drain_active_agents``) reads this to treat in-flight cron work as active the same way it already treats
     in-flight chat sessions via ``_running_agents`` — cron jobs run through their own thread pool here,
@@ -587,7 +587,7 @@ def try_register_running_job(job_id: str) -> bool:
     Single dedupe owner for ticker + manual runs (the fire claim's 300s TTL is outlived by real
     jobs). Callers MUST pair success with ``release_running_job`` in a ``finally``.
 
-    This is the single dedupe owner shared by the ticker's ``_submit_with_guard`` and manual runs
+    This is the single dedupe owner shared by the ticker's ``_reserve_with_guard`` and manual runs
     (``tools/cronjob_tools``): the fire claim alone cannot prevent a double-fire because its TTL (300s) is
     routinely outlived by real jobs, after which a manual ``cronjob(action='run')`` would claim successfully
     and run the same job concurrently (idea from #53395 by @izumi0uu).
@@ -3648,9 +3648,13 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
 
 
-def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, process_job):
-    """Submit with the in-flight dedup guard; None if a prior tick's run is still in flight.
-    Running-set membership is released in the worker's finally."""
+def _reserve_with_guard(job: dict):
+    """Reserve one due job before its recurring schedule advances.
+
+    Returns ``(job_with_execution, True)`` when the job can dispatch,
+    ``(None, True)`` when it is already running, and ``(None, False)`` when
+    dispatch setup fails. The second value controls schedule advancement.
+    """
     job_id = job["id"]
     job_label = job.get("name", job_id)
 
@@ -3692,25 +3696,49 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
     if _interpreter_shutting_down():
         _not_dispatched_shutdown()
         _clear_run_claim_best_effort()
-        return None
+        return None, False
     if not try_register_running_job(job_id):
         logger.info("Job '%s' already running — skipping", job_label)
-        return None
+        return None, True
     # Record the attempt before dispatch; recovery marks abandoned rows unknown (no retry).
     try:
         execution = create_execution(
             job_id, source="builtin", scheduled_instant=job.get("_scheduled_instant"))
         dispatched_job = dict(job, execution_id=execution["id"])
-        _ctx = contextvars.copy_context()
     except Exception as execution_err:
         # Release the claim so the next tick retries instead of wedging "already running".
         release_running_job(job_id)
         _clear_run_claim_best_effort()
         logger.exception(
             "Job '%s' not dispatched: execution creation failed: %s", job_label, execution_err)
-        return None
+        return None, False
 
-    def _run_and_release(j=dispatched_job, ctx=_ctx):
+    return dispatched_job, True
+
+
+def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, process_job):
+    """Submit a reserved job and release its in-flight guard after execution."""
+    job_id = job["id"]
+    job_label = job.get("name", job_id)
+    execution_id = job["execution_id"]
+    _ctx = contextvars.copy_context()
+
+    def _not_dispatched_shutdown() -> None:
+        logger.warning("Job '%s' not dispatched — interpreter is shutting down", job_label)
+
+    def _clear_run_claim_best_effort() -> None:
+        _schedule = job.get("schedule")
+        if not (isinstance(_schedule, dict) and _schedule.get("kind") == "once"):
+            return
+        try:
+            clear_run_claim(job_id)
+        except Exception as claim_err:
+            logger.warning(
+                "Could not clear run_claim for job '%s' after dispatch "
+                "failure: %s (claim will expire at TTL)",
+                job_label, claim_err)
+
+    def _run_and_release(j=job, ctx=_ctx):
         try:
             return ctx.run(process_job, j)
         finally:
@@ -3721,8 +3749,14 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
     except Exception as submit_err:
         release_running_job(job_id)
         _clear_run_claim_best_effort()
-        finish_execution(
-            execution["id"], success=False, error=f"Executor dispatch failed: {submit_err}")
+        try:
+            finish_execution(
+                execution_id, success=False,
+                error=f"Executor dispatch failed: {submit_err}")
+        except Exception as finish_err:
+            logger.error(
+                "Could not finish execution after dispatch failed for job '%s': %s",
+                job_label, finish_err)
         if isinstance(submit_err, RuntimeError) and _interpreter_shutting_down(submit_err):
             _not_dispatched_shutdown()
         else:
@@ -3813,11 +3847,6 @@ def tick(
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        # Advance next_run_at for recurring jobs FIRST, under the lock, before any execution
-        # (at-most-once). Re-advancing running jobs keeps the grace window alive; mark_job_run
-        # overwrites it on completion. Composes with the claim-time advance in claim_job_for_fire.
-        advance_next_runs([job["id"] for job in due_jobs])
-
         _max_workers = _resolve_max_parallel_workers()
         if verbose:
             logger.info(
@@ -3828,12 +3857,42 @@ def tick(
         def _process_job(job: dict) -> bool:
             return _process_due_job(job, adapters, loop, verbose)
 
-        # Persistent pool, non-blocking dispatch. Already-running jobs are skipped; mark_job_run
-        # re-arms next_run_at on completion, so no catch-up queue is needed.
+        # Build the pool before reserving jobs. A pool setup failure must not leave execution
+        # records claimed or recurring schedules advanced without an executor.
+        pool = _get_parallel_pool(_max_workers)
+
+        # Reserve execution records before schedule advancement. A failed record write leaves
+        # that job due for the next tick. Already-running jobs still advance their recurrence.
+        reserved_jobs = []
+        advance_ids = []
+        for job in due_jobs:
+            reserved_job, should_advance = _reserve_with_guard(job)
+            if should_advance:
+                advance_ids.append(job["id"])
+            if reserved_job is not None:
+                reserved_jobs.append(reserved_job)
+
+        # Advance recurring jobs before any execution begins (at-most-once). One batch preserves
+        # the existing atomic due-set write. Failed execution records are intentionally absent.
+        try:
+            advance_next_runs(advance_ids)
+        except Exception as advance_err:
+            for job in reserved_jobs:
+                release_running_job(job["id"])
+                try:
+                    finish_execution(
+                        job["execution_id"], success=False,
+                        error=f"Schedule advance failed: {advance_err}")
+                except Exception:
+                    logger.exception(
+                        "Could not finish execution after schedule advance failed for job '%s'",
+                        job.get("name", job["id"]))
+            raise
+
+        # Persistent pool, non-blocking dispatch. mark_job_run re-arms next_run_at on completion.
         _results: list = []
         _all_futures: list = []
-        pool = _get_parallel_pool(_max_workers)
-        for job in due_jobs:
+        for job in reserved_jobs:
             fut = _submit_with_guard(job, pool, _process_job)
             if fut is None:
                 continue

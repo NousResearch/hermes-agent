@@ -170,7 +170,12 @@ class TestRunningJobGuard:
             return {"id": f"{job_id}-execution"}
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [failing_job, healthy_job])
-        monkeypatch.setattr(sched, "advance_next_runs", lambda *_a, **_kw: 0)
+        advance_calls = []
+        monkeypatch.setattr(
+            sched,
+            "advance_next_runs",
+            lambda ids: advance_calls.append(list(ids)) or len(list(ids)),
+        )
         monkeypatch.setattr(sched, "create_execution", create_execution_side_effect)
         monkeypatch.setattr(sched, "run_job", lambda j, **_kw: called.append(j["id"]) or (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: None)
@@ -194,10 +199,75 @@ class TestRunningJobGuard:
 
         assert n == 1
         assert called == ["healthy-job"]
+        assert advance_calls == [["healthy-job"]]
         assert "failing-job" not in sched._running_job_ids
         assert "healthy-job" not in sched._running_job_ids
 
         sched._shutdown_parallel_pool()
+
+
+    def test_submit_and_finish_failures_do_not_wedge_later_job(self, monkeypatch):
+        """A failed cleanup write must not block later reserved jobs."""
+        import cron.scheduler as sched
+
+        sched._running_job_ids.clear()
+        jobs = [
+            {
+                "id": job_id,
+                "name": job_id,
+                "prompt": "test",
+                "schedule": "every 5m",
+                "enabled": True,
+                "next_run_at": "2020-01-01T00:00:00",
+                "deliver": "local",
+            }
+            for job_id in ("submit-fails", "still-runs")
+        ]
+        called = []
+
+        class FirstSubmitFailsPool:
+            def __init__(self):
+                self.calls = 0
+
+            def submit(self, callback):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("executor rejected")
+                future = concurrent.futures.Future()
+                future.set_result(callback())
+                return future
+
+        def finish_execution(execution_id, **_kwargs):
+            if execution_id == "submit-fails-execution":
+                raise RuntimeError("execution ledger unavailable")
+
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: jobs)
+        monkeypatch.setattr(sched, "advance_next_runs", lambda ids: len(list(ids)))
+        monkeypatch.setattr(
+            sched, "create_execution",
+            lambda job_id, **_kwargs: {"id": f"{job_id}-execution"},
+        )
+        monkeypatch.setattr(sched, "_get_parallel_pool", lambda _workers: FirstSubmitFailsPool())
+        monkeypatch.setattr(
+            sched, "claim_job_for_fire",
+            lambda job_id, **_kwargs: next(job for job in jobs if job["id"] == job_id),
+        )
+        monkeypatch.setattr(
+            sched, "run_job",
+            lambda job, **_kwargs: called.append(job["id"]) or (True, "out", "resp", None),
+        )
+        monkeypatch.setattr(sched, "save_job_output", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(sched, "mark_job_run", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(sched, "finish_execution", finish_execution)
+        monkeypatch.setattr(sched, "claim_dispatch", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(sched, "mark_execution_running", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr(sched, "heartbeat_fire_claim", lambda *_args, **_kwargs: True)
+
+        assert sched.tick(verbose=False) == 1
+        assert called == ["still-runs"]
+        assert "submit-fails" not in sched.get_running_job_ids()
+        assert "still-runs" not in sched.get_running_job_ids()
 
 
 class TestSyncMode:
@@ -358,10 +428,7 @@ class TestWorkdirParallelPool:
         sched._shutdown_parallel_pool()
 
 class TestTickBatchAdvance:
-    """The tick's pre-dispatch advance must go through advance_next_runs
-    exactly once with the whole due set — a revert to the per-job loop
-    (or back to advance_next_run) must fail this test, not slip past the
-    helper-level I/O pin."""
+    """The tick advances reserved and already-running jobs in one batch."""
 
     def test_tick_calls_advance_next_runs_once_with_all_due_ids(self, tmp_path, monkeypatch):
         import cron.scheduler as sched
@@ -394,3 +461,49 @@ class TestTickBatchAdvance:
             f"tick must batch-advance the due set in ONE call; got {advance_calls}")
 
         sched._shutdown_parallel_pool()
+
+    def test_advance_failure_releases_reserved_execution(self, monkeypatch):
+        """No worker or running guard survives a failed schedule write."""
+        import cron.scheduler as sched
+
+        sched._running_job_ids.clear()
+        job = {
+            "id": "advance-fail",
+            "name": "advance-fail",
+            "prompt": "test",
+            "schedule": "every 5m",
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "local",
+        }
+        submitted = []
+        finished = []
+
+        class RecordingPool:
+            def submit(self, callback):
+                submitted.append(callback)
+
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
+        monkeypatch.setattr(
+            sched, "create_execution", lambda *_a, **_kw: {"id": "execution-1"})
+        monkeypatch.setattr(
+            sched, "advance_next_runs",
+            lambda _ids: (_ for _ in ()).throw(RuntimeError("jobs store unavailable")),
+        )
+        monkeypatch.setattr(sched, "_get_parallel_pool", lambda _workers: RecordingPool())
+        monkeypatch.setattr(
+            sched, "finish_execution",
+            lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+        )
+
+        with pytest.raises(RuntimeError, match="jobs store unavailable"):
+            sched.tick(verbose=False, sync=False)
+
+        assert submitted == []
+        assert finished == [
+            ("execution-1", {
+                "success": False,
+                "error": "Schedule advance failed: jobs store unavailable",
+            })
+        ]
+        assert "advance-fail" not in sched.get_running_job_ids()

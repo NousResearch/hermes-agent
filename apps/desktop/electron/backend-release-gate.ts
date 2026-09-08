@@ -1,3 +1,5 @@
+import { setTimeout as delay } from 'node:timers/promises'
+
 /**
  * backend-release-gate.ts
  *
@@ -187,4 +189,50 @@ export function isPidAliveWindows(pid: number): boolean {
   } catch (err: any) {
     return Boolean(err) && err.code === 'EPERM'
   }
+}
+
+
+export type InstallUnlockWaitResult = 'clear' | 'cancelled' | 'claim-lost' | 'probe-failed'
+
+/** Wait without terminating anything; a fresh preflight still authorizes the handoff. */
+export async function waitForInstallUnlock(deps: {
+  isLocked: () => Promise<boolean>
+  ownsClaim: () => boolean
+  signal: AbortSignal
+  pollMs?: number
+  wait?: (ms: number, signal: AbortSignal) => Promise<void>
+}): Promise<InstallUnlockWaitResult> {
+  const sleep = deps.wait ?? (async (ms: number, signal: AbortSignal) => {
+    try {
+      await delay(ms, undefined, { signal })
+    } catch (error) {
+      if (!signal.aborted) { throw error }
+    }
+  })
+
+  const ownsClaim = () => {
+    try { return deps.ownsClaim() } catch { return false }
+  }
+
+  while (!deps.signal.aborted) {
+    if (!ownsClaim()) { return 'claim-lost' }
+
+    let locked: boolean
+
+    try {
+      locked = await deps.isLocked()
+    } catch {
+      return deps.signal.aborted ? 'cancelled' : 'probe-failed'
+    }
+
+    if (deps.signal.aborted) { return 'cancelled' }
+
+    if (!ownsClaim()) { return 'claim-lost' }
+
+    if (!locked) { return 'clear' }
+
+    await sleep(Math.max(1, deps.pollMs ?? 1_000), deps.signal)
+  }
+
+  return 'cancelled'
 }

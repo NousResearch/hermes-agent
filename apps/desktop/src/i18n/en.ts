@@ -2853,6 +2853,7 @@ export const en: Translations = {
     rebuildBody:
       'Your code is current, but the app you’re running was built from an older version. Update now to rebuild it.',
     stages: {
+      waiting: 'Waiting for processes to close',
       idle: 'Getting ready…',
       prepare: 'Getting ready…',
       fetch: 'Downloading…',

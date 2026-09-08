@@ -526,6 +526,7 @@ declare global {
       updates: {
         check: () => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
+        cancelWaiting: () => Promise<boolean>
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
@@ -715,6 +716,7 @@ export interface DesktopUpdateApplyResult {
 }
 
 export type DesktopUpdateStage =
+  | 'waiting'
   | 'idle'
   | 'prepare'
   | 'fetch'
@@ -732,6 +734,8 @@ export type DesktopUpdateStage =
   | 'error'
 
 export interface DesktopUpdateProgress {
+  /** Exact manual process-stop command while waiting for installation locks. */
+  command?: string | null
   stage: DesktopUpdateStage
   message: string
   percent: number | null

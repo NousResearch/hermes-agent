@@ -65,7 +65,7 @@ import {
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { recycleOwnedBackend } from './backend-recycle'
-import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
+import { isPidAliveWindows, waitForBackendRelease, waitForInstallUnlock } from './backend-release-gate'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
@@ -496,6 +496,7 @@ import {
 import { installWindowsSystemCaTrust } from './windows-system-ca'
 import {
   applyWindowsUpdate,
+  cancelWindowsUpdateWait,
   discardUpdateHandoffAck,
   runRecoveryUpdaterHandoff,
   waitForAcknowledgedUpdaterClaim,
@@ -4173,6 +4174,11 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     emitProgress: emitUpdateProgress,
     preflightStateDb: () => preflightStateDb(HERMES_HOME, rememberLog),
     runPreflight: (prepared, claim) => runWindowsHandoffPreflight(prepared.updateRoot, claim),
+    waitForBlockers: (updateRoot, claim, signal) => waitForInstallUnlock({
+      isLocked: createInstallLockGateProbeForRoot(updateRoot),
+      ownsClaim: () => ownsDesktopUpdateClaim(claim),
+      signal
+    }),
     stopSafeBlockers: (updateRoot, blockers) => stopSafeVenvBlockers(updateRoot, blockers),
     launch: (_permit, prepared, claim) => {
       const launch = launchWindowsUpdateTransport(
@@ -17567,6 +17573,8 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
     message: error?.message || String(error)
   }))
 )
+
+ipcMain.handle('hermes:updates:cancel-wait', () => cancelWindowsUpdateWait(updateState))
 
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 

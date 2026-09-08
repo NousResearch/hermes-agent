@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 
+import type { InstallUnlockWaitResult } from './backend-release-gate'
 import {
   acquireUpdateMarker,
   markerPath,
@@ -17,6 +18,8 @@ import {
 } from './update-preflight'
 import type { VenvBlockerScanResult } from './venv-blocker-scan'
 import { queryProcessCreatedAt } from './windows-process-identity'
+import { formatHolderLine, formatWindowsHolderStopCommand } from './windows-update-force-release'
+import { forceReleaseHoldersFromScan } from './windows-update-holder-policy'
 import {
   runUpdaterHandoffTransaction,
   type UpdaterHandoffObservation,
@@ -356,10 +359,21 @@ export async function runRecoveryUpdaterHandoff<TChild, TValue>(
   })
 }
 
-export type WindowsUpdatePhase = 'idle' | 'updating' | 'restoring'
+export type WindowsUpdatePhase = 'idle' | 'updating' | 'waiting' | 'restoring'
 
 export interface WindowsUpdateState {
   phase: WindowsUpdatePhase
+  waitAbortController?: AbortController
+}
+
+export function cancelWindowsUpdateWait(state: WindowsUpdateState): boolean {
+  if (state.phase !== 'waiting' || !state.waitAbortController || state.waitAbortController.signal.aborted) {
+    return false
+  }
+
+  state.waitAbortController.abort()
+
+  return true
 }
 
 export function windowsUpdateIsBusy(state: WindowsUpdateState): boolean {
@@ -368,7 +382,7 @@ export function windowsUpdateIsBusy(state: WindowsUpdateState): boolean {
 
 /** The owned restoration phase may start a backend, but still excludes UI retries. */
 export function windowsUpdateBlocksBackendStart(state: WindowsUpdateState): boolean {
-  return state.phase === 'updating'
+  return state.phase === 'updating' || state.phase === 'waiting'
 }
 
 export type PreparedWindowsUpdate<TTransport> =
@@ -384,12 +398,17 @@ export interface WindowsUpdateApplyDeps<TTransport, TLaunch> {
   state: WindowsUpdateState
   hermesHome: string
   prepare: () => Promise<PreparedWindowsUpdate<TTransport>>
-  emitProgress: (progress: { stage: string; message: string; percent: number | null }) => void
+  emitProgress: (progress: { stage: string; message: string; percent: number | null; command?: string | null }) => void
   preflightStateDb: () => void
   runPreflight: (
     prepared: Extract<PreparedWindowsUpdate<TTransport>, { kind: 'handoff' }>,
     claim: UpdateMarkerClaim
   ) => Promise<UpdatePreflightOutcome>
+  waitForBlockers?: (
+    updateRoot: string,
+    claim: UpdateMarkerClaim,
+    signal: AbortSignal
+  ) => Promise<InstallUnlockWaitResult>
   stopSafeBlockers: (updateRoot: string, result: VenvBlockerScanResult) => Promise<unknown>
   launch: (
     permit: UpdateMutationPermit,
@@ -430,6 +449,7 @@ export async function applyWindowsUpdate<TTransport, TLaunch>(
     if (!claim || abortRestored) {
       return
     }
+
     abortRestored = true
 
     const releaseMarker = deps.releaseMarker ?? releaseUpdateMarkerIfOwnedBy
@@ -476,6 +496,60 @@ export async function applyWindowsUpdate<TTransport, TLaunch>(
 
     if (preflight.kind === 'blocked' && preflight.result && opts.stopSafeBlockers) {
       await deps.stopSafeBlockers(prepared.updateRoot, preflight.result)
+      preflight = await deps.runPreflight(prepared, claim)
+    }
+
+    while (preflight.kind === 'blocked' && preflight.reason !== 'marker-unavailable' && deps.waitForBlockers) {
+      const controller = new AbortController()
+      const holders = preflight.elevationHolders ?? preflight.holders ?? []
+
+      const commandTargets = holders.length ? holders : preflight.result
+        ? forceReleaseHoldersFromScan(preflight.result)
+        : []
+
+      const command = formatWindowsHolderStopCommand(commandTargets)
+      const holderSummary = holders.slice(0, 5).map(formatHolderLine).join('; ')
+
+      deps.log(`[updates] waiting for blockers: ${preflight.message}`)
+      deps.state.phase = 'waiting'
+      deps.state.waitAbortController = controller
+      deps.emitProgress({
+        stage: 'waiting',
+        message: 'Close the processes using this installation. Hermes will continue automatically once their file locks are released.' +
+          (command ? '\nRun the command below in PowerShell (as Administrator if needed) to stop the detected processes.' : '') +
+          (holderSummary ? `\n${holderSummary}` : ''),
+        command,
+        percent: null
+      })
+
+      let outcome: InstallUnlockWaitResult
+
+      try {
+        outcome = await deps.waitForBlockers(prepared.updateRoot, claim, controller.signal)
+      } catch {
+        outcome = controller.signal.aborted ? 'cancelled' : 'probe-failed'
+      } finally {
+        delete deps.state.waitAbortController
+        deps.state.phase = 'updating'
+      }
+
+      if (controller.signal.aborted) { outcome = 'cancelled' }
+
+      if (outcome !== 'clear') {
+        const error = outcome === 'cancelled' ? 'update-cancelled' : 'venv-probe-failed'
+
+        const message = outcome === 'cancelled'
+          ? 'Update cancelled.'
+          : outcome === 'claim-lost'
+            ? 'Update stopped because Hermes no longer owns the update marker.'
+            : 'Update stopped because Hermes could not check the installation file locks.'
+
+        deps.emitProgress({ stage: outcome === 'cancelled' ? 'prepare' : 'error', message, percent: null })
+
+        return { ok: false, error, message }
+      }
+
+      deps.emitProgress({ stage: 'prepare', message: 'Processes closed. Checking the installation before updating…', percent: null })
       preflight = await deps.runPreflight(prepared, claim)
     }
 

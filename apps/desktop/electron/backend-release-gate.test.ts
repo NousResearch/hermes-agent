@@ -241,6 +241,7 @@ describe('install lock probe the gate polls', () => {
 
   it('stays locked when attribution fails', async () => {
     let t = 0
+
     const probe = createInstallLockGateProbe({
       now: () => t,
       probeLocks: () => ({ definite: [], shared: ['C:\\i\\venv\\shared.pyd'] }),
@@ -254,6 +255,7 @@ describe('install lock probe the gate polls', () => {
 
   it('reports unlocked without attribution when nothing is locked', async () => {
     const attributions: number[] = []
+
     const probe = createInstallLockGateProbe({
       probeLocks: () => ({ definite: [], shared: [] }),
       countAttributedHolders: async budgetMs => {
@@ -265,5 +267,52 @@ describe('install lock probe the gate polls', () => {
 
     expect(await probe()).toBe(false)
     expect(attributions).toEqual([])
+  })
+})
+
+import { waitForInstallUnlock } from './backend-release-gate'
+
+describe('waiting for installation locks', () => {
+  it('polls until unlocked without authorizing mutation', async () => {
+    let probes = 0
+    let waits = 0
+    expect(await waitForInstallUnlock({
+      isLocked: async () => ++probes < 3,
+      ownsClaim: () => true,
+      signal: new AbortController().signal,
+      wait: async () => { waits++ }
+    })).toBe('clear')
+    expect(probes).toBe(3)
+    expect(waits).toBe(2)
+  })
+
+  it('cancellation wins over an in-flight probe reporting clear', async () => {
+    const controller = new AbortController()
+    expect(await waitForInstallUnlock({
+      isLocked: async () => { controller.abort();
+
+ return false },
+      ownsClaim: () => true,
+      signal: controller.signal
+    })).toBe('cancelled')
+  })
+
+  it('rejects clearance after losing the claim during a probe', async () => {
+    let owned = true
+    expect(await waitForInstallUnlock({
+      isLocked: async () => { owned = false;
+
+ return false },
+      ownsClaim: () => owned,
+      signal: new AbortController().signal
+    })).toBe('claim-lost')
+  })
+
+  it('fails closed when the lock probe fails', async () => {
+    expect(await waitForInstallUnlock({
+      isLocked: async () => { throw new Error('probe failed') },
+      ownsClaim: () => true,
+      signal: new AbortController().signal
+    })).toBe('probe-failed')
   })
 })

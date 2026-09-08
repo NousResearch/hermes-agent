@@ -75,11 +75,23 @@ is not itself a demonstrated defect.
 
 ## Follow-up and verification boundary
 
-One concrete UI defect was found at the reviewed head: the access-denied
-holder message tells the user to choose **Force update (Administrator)**,
-but this branch has no such control. The focused correction is to direct the
-user to close the listed processes, using administrator permission if needed,
-and retry. The refusal must continue to prevent mutation while holders remain.
+The access-denied holder message referred to a nonexistent **Force update
+(Administrator)** control. The follow-up replaces that instruction with a
+Windows waiting dialog, a copyable PowerShell command, and Cancel. The command
+opens each detected process handle and checks its creation time before stopping
+it, so a copied command cannot target a later process that reused the PID.
+
+Waiting preserves the update claim and backend-start gate, polls the actual
+installation file locks without terminating processes, and reruns full preflight
+after clearance before authorizing handoff. Cancel uses the existing abort and
+restoration path. Probe failure or claim loss prevents handoff. This dialog is
+on the Windows-only blocker path; POSIX update behavior is unchanged.
+
+Focused checks cover wait/clear, repeated preflight, claim loss, probe failure,
+and cancellation during an in-flight probe; the real renderer covers Copy,
+Cancel, and progress-state transitions. A native Windows test launches a hidden
+disposable Node process and executes the generated PowerShell command: a
+mismatched creation time leaves it alive, while its exact identity is stopped.
 
 An adjacent observation is the Desktop gateway-stop wrapper's 20-second
 timeout versus a CLI drain that may take longer. The recovery had no active

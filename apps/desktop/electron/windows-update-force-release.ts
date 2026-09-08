@@ -308,15 +308,37 @@ export function formatHolderLine(holder: ForceReleaseHolder): string {
   return `PID ${holder.pid} ${holder.name}${resource}`
 }
 
+/** A PowerShell command bound to the detected process instances, even if copied later. */
+export function formatWindowsHolderStopCommand(holders: readonly Pick<ForceReleaseHolder, 'pid' | 'createdAt'>[]): string | null {
+  const targets = new Map<number, number>()
+
+  for (const { pid, createdAt } of holders) {
+    if (Number.isSafeInteger(pid) && pid > 0 && pid <= 0x7fffffff && Number.isFinite(createdAt) && createdAt > 0) {
+      targets.set(pid, createdAt)
+    }
+  }
+
+  if (!targets.size) { return null }
+
+  const records = [...targets].map(([pid, createdAt]) => `@{Id=${pid};Started=${createdAt}}`).join(', ')
+
+  // Opening Handle keeps the identity stable through StartTime and Kill. A
+  // recycled PID or an inaccessible creation time must never authorize a kill.
+  return `@(${records}) | ForEach-Object { $p = Get-Process -Id $_.Id -ErrorAction SilentlyContinue; if ($p) { try { $null = $p.Handle; if ([Math]::Abs(($p.StartTime.ToUniversalTime() - [datetime]'1970-01-01').TotalSeconds - $_.Started) -lt 0.001) { $p.Kill() } } finally { $p.Dispose() } } }`
+}
+
 function elevationMessage(holders: readonly ForceReleaseHolder[]): string {
   const sample = holders
     .slice(0, 5)
     .map(formatHolderLine)
     .join('; ')
 
+  const command = formatWindowsHolderStopCommand(holders)
+
   return (
     'Update could not stop processes still locking this Hermes install. ' +
-    `Survivors: ${sample || 'unknown'}. Close the listed processes (using Administrator permission if needed), then retry the update.`
+    `Survivors: ${sample || 'unknown'}. Close the listed processes (using Administrator permission if needed), then retry the update.` +
+    (command ? `\nRun in PowerShell (as Administrator if needed):\n${command}` : '')
   )
 }
 

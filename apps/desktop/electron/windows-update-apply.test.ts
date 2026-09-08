@@ -57,6 +57,7 @@ test('the real apply entrypoint owns marker, preflight, immediate observation, a
   const state: WindowsUpdateState = { phase: 'idle' }
   const events: string[] = []
   let releaseAuthentication!: () => void
+
   const authentication = new Promise<void>(resolve => {
     releaseAuthentication = resolve
   })
@@ -139,12 +140,15 @@ test('abort restoration keeps retries excluded while allowing its backend start 
   const state: WindowsUpdateState = { phase: 'idle' }
   let finishRestore!: () => void
   let restoreStarted!: () => void
+
   const restoring = new Promise<void>(resolve => {
     finishRestore = resolve
   })
+
   const started = new Promise<void>(resolve => {
     restoreStarted = resolve
   })
+
   let restores = 0
 
   const pending = applyWindowsUpdate(
@@ -232,12 +236,15 @@ test('restoration cannot enter its backend-start phase until marker clearance is
   const state: WindowsUpdateState = { phase: 'idle' }
   let clearMarker!: () => void
   let clearanceStarted!: () => void
+
   const clearance = new Promise<'clear'>(resolve => {
     clearMarker = () => resolve('clear')
   })
+
   const started = new Promise<void>(resolve => {
     clearanceStarted = resolve
   })
+
   let restored = false
 
   const pending = applyWindowsUpdate(
@@ -287,6 +294,7 @@ test('a restoration error still releases the UI busy state', async () => {
 
 test('a blocked preflight can stop safe blockers once and must obtain a fresh clear permit', async () => {
   const state: WindowsUpdateState = { phase: 'idle' }
+
   const empty = {
     blocked: true as const,
     processes: [],
@@ -716,4 +724,103 @@ test('an updater that exits during the dwell is not a successful handoff', async
   assert.ok(!trace.includes('commit'))
   // Authentication passed, so the marker did move; restore has to know that.
   assert.ok(trace.includes('restore transferred=true createdAt=1723330000'))
+})
+
+import { cancelWindowsUpdateWait } from './windows-update-apply'
+import { formatWindowsHolderStopCommand } from './windows-update-force-release'
+
+test('manual stop command includes only valid process identities and checks creation time', () => {
+  const command = formatWindowsHolderStopCommand([12, 34, 12, -1, 0, NaN, 1.5, 2 ** 32].map(pid => ({ pid, createdAt: 100 })))!
+  assert.equal(command.split('@{Id=').length - 1, 2)
+  assert.ok(command.includes('@{Id=12;Started=100}'))
+  assert.ok(command.includes('$null = $p.Handle'))
+  assert.ok(command.indexOf('$p.StartTime') < command.indexOf('$p.Kill()'))
+  assert.equal(formatWindowsHolderStopCommand([{ pid: 12, createdAt: NaN }]), null)
+  assert.equal(formatWindowsHolderStopCommand([]), null)
+})
+
+test('waiting holds the update gate and reruns preflight before handoff', async () => {
+  const state: WindowsUpdateState = { phase: 'idle' }
+  const events: string[] = []
+  let preflights = 0
+
+  const result = await applyWindowsUpdate({}, deps(state, {
+    runPreflight: async (_prepared, claim) => {
+      assert.equal(claim, LIVE_CLAIM)
+      events.push('preflight')
+
+      return ++preflights < 3 ? { kind: 'blocked', reason: 'holders', message: 'locked' } : clearPreflight()
+    },
+    waitForBlockers: async () => {
+      assert.equal(state.phase, 'waiting')
+      assert.equal(windowsUpdateBlocksBackendStart(state), true)
+      assert.equal(windowsUpdateIsBusy(state), true)
+      events.push('wait')
+
+      return 'clear'
+    },
+    releaseMarker: () => { events.push('release');
+
+ return true },
+    authorize: () => { events.push('authorize');
+
+ return PERMIT },
+    commit: () => { events.push('commit') }
+  }))
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(events, ['preflight', 'wait', 'preflight', 'wait', 'preflight', 'authorize', 'commit'])
+  assert.equal(state.phase, 'idle')
+})
+
+test('cancel while waiting prevents handoff even if the probe returns clear and restores before resolving', async () => {
+  const state: WindowsUpdateState = { phase: 'idle' }
+  const events: string[] = []
+
+  const result = await applyWindowsUpdate({}, deps(state, {
+    runPreflight: async () => ({ kind: 'blocked', reason: 'holders', message: 'locked' }),
+    waitForBlockers: async () => {
+      assert.equal(cancelWindowsUpdateWait(state), true)
+      assert.equal(cancelWindowsUpdateWait(state), false)
+
+      return 'clear'
+    },
+    authorize: () => { throw new Error('must not authorize') },
+    releaseMarker: () => { events.push('release');
+
+ return true },
+    restoreBackends: async () => {
+      assert.equal(state.phase, 'restoring')
+      events.push('restore')
+    }
+  }))
+
+  assert.equal(result.ok, false)
+  assert.equal('error' in result && result.error, 'update-cancelled')
+  assert.deepEqual(events, ['release', 'restore'])
+  assert.equal(state.phase, 'idle')
+  assert.equal(state.waitAbortController, undefined)
+})
+
+test('wait failures never authorize handoff and restore through the abort path', async () => {
+  for (const outcome of ['claim-lost', 'probe-failed', 'throw'] as const) {
+    const state: WindowsUpdateState = { phase: 'idle' }
+    let restored = false
+
+    const result = await applyWindowsUpdate({}, deps(state, {
+      runPreflight: async () => ({ kind: 'blocked', reason: 'holders', message: 'locked' }),
+      waitForBlockers: async () => {
+        if (outcome === 'throw') { throw new Error('probe unavailable') }
+
+        return outcome
+      },
+      authorize: () => { throw new Error('must not authorize') },
+      restoreBackends: async () => { restored = true }
+    }))
+
+    assert.equal('error' in result && result.error, 'venv-probe-failed')
+    assert.equal(restored, true)
+    assert.equal(state.phase, 'idle')
+    assert.equal(state.waitAbortController, undefined)
+  }
 })

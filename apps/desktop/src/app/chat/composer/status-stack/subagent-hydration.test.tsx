@@ -25,12 +25,14 @@ afterEach(() => {
 })
 
 it('hydrates the empty owner composer and exposes an extended owner-routed transcript without leaking on session change', async () => {
-  const text = 'Full transcript line with preserved whitespace\n'.repeat(100)
+  const text = '  Full transcript\tline with preserved whitespace  \n\n'.repeat(100)
 
   const request = vi.spyOn(gateway, 'requestGatewayForAgent').mockImplementation(async (_c, _p, method) => {
     if (method === 'subagent.list') {
       return {
-        subagents: [{ subagent_id: 'worker', goal: 'Recovered work', started_at: 1000, status: 'running' }],
+        subagents: [
+          { subagent_id: 'worker', goal: 'Recovered work', started_at: 1000, status: 'running', last_tool: 'read_file' }
+        ],
         delegations: []
       } as never
     }
@@ -51,6 +53,8 @@ it('hydrates the empty owner composer and exposes an extended owner-routed trans
   )
 
   await screen.findByText('Recovered work')
+  expect(screen.getByText('Read File')).toBeTruthy()
+  expect(request).toHaveBeenCalledWith('remote-owner', 'research', 'subagent.list', { session_id: 'parent' })
   expect($subagentsBySession.get().parent[0].startedAt).toBe(1000000)
   fireEvent.click(screen.getByRole('button', { name: /Recovered work/ }))
   await waitFor(() => expect(document.querySelector('[data-slot="subagent-transcript"]')?.textContent).toContain(text))

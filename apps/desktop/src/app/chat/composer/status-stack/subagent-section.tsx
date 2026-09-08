@@ -79,19 +79,15 @@ export function SubagentSection({ sessionId }: SubagentSectionProps) {
       </StatusSection>
       {detail && (
         <div className="max-h-[25vh] overflow-y-auto overscroll-contain px-3 py-2" data-slot="composer-subagent-detail">
-          {!detail.id.startsWith('delegation:') && (
-            <SubagentControls
-              key={`${sessionId}:${detail.id}`}
-              sessionId={sessionId}
-              setText={text => setDrafts(previous => ({ ...previous, [detail.id]: text }))}
-              subagentId={detail.id}
-              text={drafts[detail.id] ?? ''}
-            />
-          )}
+          <SubagentControls
+            key={`${sessionId}:${detail.id}`}
+            sessionId={sessionId}
+            setText={text => setDrafts(previous => ({ ...previous, [detail.id]: text }))}
+            subagentId={detail.id}
+            text={drafts[detail.id] ?? ''}
+          />
           <SubagentRow node={{ ...detail, children: [] }} nowMs={nowMs} />
-          {!detail.id.startsWith('delegation:') && (
-            <SubagentTranscript key={`tail:${sessionId}:${detail.id}`} sessionId={sessionId} subagentId={detail.id} />
-          )}
+          <SubagentTranscript key={`tail:${sessionId}:${detail.id}`} sessionId={sessionId} subagentId={detail.id} />
         </div>
       )}
     </div>

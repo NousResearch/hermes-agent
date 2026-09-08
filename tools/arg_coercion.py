@@ -143,12 +143,27 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
         return None
 
     if isinstance(expected_type, list):
-        return next((r for t in expected_type if (r := _coerce_value(value, t, schema=schema)) is not value), value)
+        # A zero-padded value in a union that also permits a string is a formatted
+        # code/id ("007", "0123"), not a number. The string variant is a no-op, so
+        # without this skip the numeric variant always wins and drops the zeros. #55369
+        skip = {"integer", "number"} if "string" in expected_type and _has_leading_zero(value) else ()
+        return next((r for t in expected_type
+                     if t not in skip and (r := _coerce_value(value, t, schema=schema)) is not value), value)
 
     coercer = _SCALAR_COERCERS.get(expected_type)
     if coercer is not None:
         return coercer(value)
     return None if expected_type == "null" and value.strip().lower() == "null" else value
+
+
+def _has_leading_zero(value) -> bool:
+    """True when *value* is a zero-padded string ("007", "0123", "-0123"): a formatted code/id whose zeros a numeric coercion would drop. "0", "0.5" and "0x1F" are ordinary values."""
+    if not isinstance(value, str):
+        return False
+    s = value.strip()
+    if s[:1] in {"+", "-"}:
+        s = s[1:]
+    return len(s) >= 2 and s[0] == "0" and s[1].isdigit()
 
 
 def _schema_allows_null(schema: dict | None) -> bool:

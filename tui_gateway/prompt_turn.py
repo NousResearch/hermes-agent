@@ -293,6 +293,7 @@ def _goal_followup_after_turn(
         return goal_followup
     try:
         if session.get("session_key") and (goal_mgr := _active_goal_manager(session)) is not None:
+            from hermes_cli.goals import extract_turn_evidence as _extract_evidence
             _active_deleg = 0
             try:
                 from hermes_cli.goals import count_active_delegations, gather_background_processes as _gather_bg
@@ -303,7 +304,10 @@ def _goal_followup_after_turn(
             except Exception:
                 _bg_procs = None
             decision = goal_mgr.evaluate_after_turn(
-                raw, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
+                raw, user_initiated=True, background_processes=_bg_procs,
+                active_delegations=_active_deleg,
+                evidence=_extract_evidence(result),
+            )
             if verdict_msg := decision.get("message") or "":
                 _emit("status.update", sid, {"kind": "goal", "text": verdict_msg})
             if decision.get("should_continue") and (

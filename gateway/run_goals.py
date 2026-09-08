@@ -261,9 +261,12 @@ class GatewayGoalsMixin:
 
     async def _post_turn_goal_continuation(
         self, *, session_entry: Any, source: Any, final_response: str,
+        agent_result: Any = None,
     ) -> None:
         """Run the goal judge after a gateway turn (AFTER delivery) and, if still active, enqueue a
-        continuation through the adapter FIFO so a simultaneous real user message takes priority."""
+        continuation through the adapter FIFO so a simultaneous real user message takes priority.
+        ``agent_result`` (when available) is mined for concrete work evidence so the judge can verify
+        a genuinely-complete goal instead of re-judging the bare final prose CONTINUE."""
         def _load():
             from hermes_cli.goals import GoalManager
             max_turns = self._goal_max_turns_from_config()
@@ -281,6 +284,12 @@ class GatewayGoalsMixin:
             _bg_procs = _gather_bg(owner_task_id=getattr(session_entry, "session_id", None) or None)
             _active_deleg = count_active_delegations(getattr(session_entry, "session_id", None))
 
+        _evidence = None
+        if agent_result is not None:
+            with suppress(Exception):
+                from hermes_cli.goals import extract_turn_evidence as _extract_ev
+                _evidence = _extract_ev(agent_result)
+
         # judge_goal() is a synchronous aux-LLM HTTP call (10-40 s; would block Discord heartbeats).
         # _run_in_executor_with_context carries the profile secret scope / aux runtime contextvars
         # without which aux credential resolution fails under multiplexing.
@@ -288,6 +297,7 @@ class GatewayGoalsMixin:
             lambda: mgr.evaluate_after_turn(
                 final_response or "", user_initiated=True, background_processes=_bg_procs,
                 active_delegations=_active_deleg,
+                evidence=_evidence,
             ),
         )
         msg = decision.get("message") or ""
@@ -325,7 +335,13 @@ class GatewayGoalsMixin:
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:
-                await hook(session_entry=session_entry, source=source, final_response=final_text)
+                if label == "goal continuation" and agent_result is not None:
+                    await hook(
+                        session_entry=session_entry, source=source, final_response=final_text,
+                        agent_result=agent_result,
+                    )
+                else:
+                    await hook(session_entry=session_entry, source=source, final_response=final_text)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
 

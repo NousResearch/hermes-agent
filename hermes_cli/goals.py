@@ -44,6 +44,73 @@ DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 # 401 every call and must not spend every turn on an unreachable judge.
 DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
 
+# Evidence cap: keep the cumulative work artifacts bounded so a long goal's full tool history can't
+# blow the judge context (the judge already sees a 4000-char response snippet; evidence is additive).
+_JUDGE_EVIDENCE_MAX_ITEMS = 5
+_JUDGE_EVIDENCE_MAX_CHARS = 1200
+
+JUDGE_EVIDENCE_BLOCK_TEMPLATE = (
+    "Concrete evidence from the agent's recent work (tool results, file " 
+    "excerpts, output lines). Use this to VERIFY completion instead of relying "
+    "only on the response's assertions:\n{evidence_lines}\n\n"
+)
+
+
+def _append_evidence_to_judge_prompt(prompt: str, evidence: List[str]) -> str:
+    """Append a bounded, labelled evidence block to a judge user prompt.
+
+    Only the most recent ``_JUDGE_EVIDENCE_MAX_ITEMS`` items are kept, each truncated to
+    ``_JUDGE_EVIDENCE_MAX_CHARS``, so the block stays small and the prompt shape is unchanged
+    (same templates + one append) when evidence is absent.
+    """
+    cleaned = []
+    for item in evidence:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        cleaned.append(item.strip())
+        if len(cleaned) >= _JUDGE_EVIDENCE_MAX_ITEMS:
+            break
+    if not cleaned:
+        return prompt
+    lines = "\n".join(f"- {_truncate(line, _JUDGE_EVIDENCE_MAX_CHARS)}" for line in cleaned)
+    return prompt + JUDGE_EVIDENCE_BLOCK_TEMPLATE.format(evidence_lines=lines)
+
+
+def extract_turn_evidence(result: Any, *, max_items: int = _JUDGE_EVIDENCE_MAX_ITEMS) -> List[str]:
+    """Pull the concrete work artifacts from a ``run_conversation`` result for the judge.
+
+    The judge needs the *evidence* a goal was completed — a file excerpt, an output line, a
+    command result — which lives in the turn's tool messages, not the final assistant prose. This
+    walks the assistant's ``messages`` list and collects the contents of the last tool-call
+    results (+ an optional assistant summary) most likely to prove completion. Returns a bounded
+    list, newest-first, non-empty only when proof exists.
+    """
+    if not isinstance(result, dict):
+        return []
+    messages = result.get("messages")
+    if not isinstance(messages, list):
+        return []
+    evidence: List[str] = []
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        if role == "tool":
+            tag = msg.get("tool_name")
+            prefix = f"{tag}: " if tag else ""
+            evidence.append(f"{prefix}{content.strip()}")
+        elif role == "assistant" and "tool_calls" not in msg and msg.get("content"):
+            # Cap assistant additions so the final prose doesn't crowd out tool evidence.
+            if len(evidence) == 0:
+                continue
+            evidence.append(f"response: {content.strip()}")
+        if len(evidence) >= max_items:
+            break
+    return evidence
+
 # Quality gates: deterministic shell commands that must pass before the judge may declare DONE. A
 # failed gate short-circuits the judge — its output IS the continuation prompt, so the agent works
 # on concrete evidence instead of a vibe check.
@@ -876,12 +943,17 @@ def judge_goal(
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
+    evidence: Optional[List[str]] = None,
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
     Returns ``(verdict, reason, parse_failed, wait_directive, transport_failed)``; verdict is done /
     blocked / continue / wait / skipped. ``parse_failed`` means unusable output; transport errors
-    set ``transport_failed`` instead and fail-open to ``continue``.
+    set ``transport_failed`` instead and fail-open to ``continue``. ``evidence`` is a list of
+    concrete work artifacts (tool results, file excerpts, output lines) from the underlying turn —
+    the strict subgoal/contract judge requires specific evidence for a criterion to count as met,
+    and the final assistant prose alone often drops it. Rendering it keeps a genuinely-complete
+    goal from being endlessly re-judged CONTINUE because the proof lives in an earlier tool call.
     """
     if not goal.strip():
         return "skipped", "empty goal", False, None, False
@@ -916,6 +988,9 @@ def judge_goal(
         prompt = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(subgoals_block=_truncate(subgoals_block, 2000), **common)
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(**common)
+
+    if evidence:
+        prompt = _append_evidence_to_judge_prompt(prompt, evidence)
 
     try:
         raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
@@ -1130,6 +1205,46 @@ class GoalManager:
         self._state.status = "paused"
         self._state.paused_reason = reason
         self._save()
+
+    def _persist_turn_state(self, state: GoalState) -> Optional[GoalState]:
+        """Atomically persist a turn's state mutation; never clobber a concurrent terminal state.
+
+        The judge is a slow (10-40s) aux-LLM call. While it runs, the user can pause, clear, or
+        mark the goal done from the Desktop control surface. ``evaluate_after_turn`` holds an
+        in-memory snapshot whose ``status`` is still ``active`` when the judge returns, and a
+        naive whole-object ``_save`` would write that stale ``active`` back — resurrecting a
+        paused/done/cleared goal and re-dispatching continuations the user asked to stop.
+
+        This writes through ``mutate_meta`` (BEGIN IMMEDIATE read-compute-upsert): it re-reads
+        the FRESH persisted row inside the transaction and, if that row is no longer ``active``
+        (a concurrent user action already won), keeps the persisted row untouched instead of
+        overwriting it. Returns the state that actually ended up persisted, or None if the DB is
+        unavailable.
+        """
+        db = _get_session_db()
+        if db is None:
+            return None
+        new_json = state.to_json()
+
+        def _mutate(current_json: Optional[str]) -> Optional[str]:
+            if not current_json:
+                return new_json
+            current = GoalState.from_json(current_json)
+            # A concurrent user pause/clear/done already moved the persisted goal to a terminal
+            # status while the judge ran — that user action wins. Preserve it, never resurrect.
+            if current.status != "active":
+                return current_json
+            return new_json
+
+        try:
+            persisted = db.mutate_meta(_meta_key(self.session_id), _mutate)
+        except Exception as exc:
+            logger.debug("GoalManager: atomic turn persist failed: %s", exc)
+            return None
+        if persisted is None:
+            return None
+        self._state = GoalState.from_json(persisted)
+        return self._state
 
     def _pause_decision(self, paused_reason: str, verdict: str, reason: str, message: str) -> Dict[str, Any]:
         self._pause_state(paused_reason)
@@ -1473,10 +1588,14 @@ class GoalManager:
         self, last_response: str, *, user_initiated: bool = True,
         background_processes: Optional[List[Dict[str, Any]]] = None,
         active_delegations: int = 0,
+        evidence: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
-        own continuations increment ``turns_used`` — both consume model budget."""
+        own continuations increment ``turns_used`` — both consume model budget. ``evidence`` is the
+        turn's concrete work artifacts, forwarded to the judge so it can verify a genuinely-complete
+        goal (the strict judge won't accept bare prose). The final state write is atomic against a
+        concurrent user pause/clear/done (see ``_persist_turn_state``)."""
         state = self._state
         if state is None or state.status != "active":
             return _decision(state.status if state else None, False, None, "inactive", "no active goal", "")
@@ -1498,7 +1617,9 @@ class GoalManager:
 
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
-            contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
+            contract=state.contract if state.has_contract() else None,
+            active_delegations=active_delegations,
+            evidence=evidence or None,
         )
         state.last_verdict = verdict
         state.last_reason = reason
@@ -1523,7 +1644,17 @@ class GoalManager:
 
         if verdict == "done":
             state.status = "done"
-            self._save()
+            persisted = self._persist_turn_state(state)
+            if persisted is None:
+                self._save()
+                return _decision("done", False, None, "done", reason, f"✓ Goal achieved: {reason}")
+            if persisted.status != "done":
+                # A concurrent user pause/clear/done won while the judge ran — it must not be
+                # overwritten by our done (the user asked to stop).
+                return _decision(
+                    persisted.status, False, None, "done", reason,
+                    f"✓ Goal achieved: {reason} (goal stopped by user before it could be marked done)",
+                )
             return _decision("done", False, None, "done", reason, f"✓ Goal achieved: {reason}")
 
         # Persistent judge failures (API unreachable / unparseable output) auto-pause and point at the
@@ -1547,7 +1678,17 @@ class GoalManager:
         if state.turns_used >= state.max_turns:
             return self._budget_pause(state, "continue", reason)
 
-        self._save()
+        persisted = self._persist_turn_state(state)
+        if persisted is None:
+            self._save()
+            persisted = self._state
+        if persisted.status != "active":
+            # A concurrent user pause/clear/done landed during the judge; preserve it and do NOT
+            # dispatch another continuation onto a stopped goal.
+            return _decision(
+                persisted.status, False, None, "continue", reason,
+                f"⏸ Goal {persisted.status} during judge — no continuation dispatched.",
+            )
         return _decision(
             "active", True, self.next_continuation_prompt(), "continue", reason,
             f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}",
@@ -1724,5 +1865,5 @@ __all__ = [
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE", "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
     "DRAFT_CONTRACT_SYSTEM_PROMPT", "KANBAN_GOAL_CONTINUATION_TEMPLATE", "KANBAN_GOAL_FINALIZE_TEMPLATE",
     "DEFAULT_MAX_TURNS", "load_goal", "save_goal", "clear_goal", "migrate_goal_to_session", "judge_goal",
-    "run_kanban_goal_loop",
+    "run_kanban_goal_loop", "extract_turn_evidence",
 ]

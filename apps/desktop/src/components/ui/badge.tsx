@@ -18,7 +18,10 @@ const badgeVariants = cva(
         destructive: 'bg-destructive/10 text-destructive',
         outline: 'border border-(--ui-stroke-secondary) text-muted-foreground',
         // Solid fill — icon-corner counts (titlebar unread, etc.).
-        solid: 'bg-primary text-primary-foreground'
+        solid: 'bg-primary text-primary-foreground',
+        // Solid amber — the same corner when what it counts is sessions that
+        // need the user, so it can't be mistaken for the finished count.
+        'solid-warn': 'bg-amber-500 text-black'
       },
       size: {
         default: 'px-1.5 py-0.5 text-[0.65rem] [&_svg]:size-3',

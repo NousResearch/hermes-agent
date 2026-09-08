@@ -8,6 +8,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
+import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
@@ -29,6 +30,8 @@ vi.mock('@/i18n', () => ({
         row: {
           ageMin: 'm',
           ageNow: 'now',
+          attentionApproval: 'Approve',
+          attentionQuestion: 'Reply',
           backgroundRunning: 'Running in background',
           finishedUnread: 'Finished',
           handoffOrigin: (platform: string) => `Started on ${platform}`,
@@ -105,7 +108,6 @@ vi.mock('@/store/session-states', async importOriginal => {
 
   return {
     ...actual,
-    $attentionSessionIds: atom<string[]>([]),
     $stalledSessionIds: atom<string[]>([]),
     openSessionTile: vi.fn()
   }
@@ -227,6 +229,58 @@ describe('SidebarSessionRow running arc', () => {
 
     expect(sessionTitle).toHaveBeenCalledTimes(1)
     expect(sessionTitle).toHaveBeenCalledWith(expect.objectContaining({ id: 's1' }))
+  })
+})
+
+// Same real-store drive as the arc tests: $attentionSessionIds is the actual
+// computed (the mock above no longer overrides it), so this covers the wiring
+// from a needsInput publish through to the chip.
+describe('SidebarSessionRow attention chip', () => {
+  afterEach(() => {
+    clearAllPrompts()
+    clearAllSessionStates()
+  })
+
+  const blocked = () => publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true, needsInput: true })
+
+  const chip = (container: HTMLElement) => container.querySelector<HTMLElement>('[data-attention]')
+
+  it('renders no chip for a session that is not waiting on the user', () => {
+    const { container } = renderRow(makeSession({ title: 'Quiet' }))
+
+    expect(chip(container)).toBeNull()
+  })
+
+  it('says "Reply" in the trailing slot when a turn is blocked on a question', () => {
+    blocked()
+
+    const { container } = renderRow(makeSession({ title: 'Asking' }))
+    const node = chip(container)
+
+    expect(node?.dataset.attention).toBe('question')
+    expect(node?.textContent).toContain('Reply')
+    expect(node?.closest('[data-row-actions]')).toBeTruthy()
+  })
+
+  it('says "Approve" when the blocking prompt is a parked approval for this session', () => {
+    blocked()
+    setApprovalRequest({ command: 'rm -rf build', description: 'dangerous', sessionId: 'rt1' })
+
+    const { container } = renderRow(makeSession({ title: 'Approving' }))
+
+    expect(chip(container)?.dataset.attention).toBe('approval')
+    expect(chip(container)?.textContent).toContain('Approve')
+  })
+
+  it('never yields to the kebab on hover — only the slot tail does', () => {
+    blocked()
+
+    const { container } = renderRow(makeSession({ title: 'Asking' }))
+    const wrapper = chip(container)?.parentElement?.parentElement
+
+    // The wrapper span around a slot entry carries TAIL_HIDES only when it is
+    // the last thing in the slot; the chip leads it, so it must not.
+    expect(wrapper?.className ?? '').not.toContain('group-hover:opacity-0')
   })
 })
 

@@ -23,7 +23,7 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
-import { $unreadSessionCount } from '@/store/session-dot-state'
+import { $attentionSessionCount, $unreadSessionCount } from '@/store/session-dot-state'
 
 import { appViewForPath, isOverlayView } from '../routes'
 
@@ -49,6 +49,9 @@ export interface TitlebarTool {
   actionId?: string
   /** Overlay count on the glyph (unread sessions). Hidden when 0/undefined. */
   badge?: number
+  /** The badge's meaning: `attention` paints it amber — sessions blocked on
+   *  the user outrank finished-unread ones for the one corner the glyph has. */
+  badgeTone?: 'attention' | 'unread'
   title?: string
   to?: string
   /** Durable `data-tour` handle. Tools are addressed by icon and translated
@@ -89,7 +92,7 @@ function LayoutGlyph({ modHeld }: { modHeld: boolean }) {
 }
 
 /** Overlay count on a titlebar glyph. Hidden when count is 0/undefined. */
-function withCountBadge(icon: ReactNode, count: number | undefined): ReactNode {
+function withCountBadge(icon: ReactNode, count: number | undefined, tone: TitlebarTool['badgeTone']): ReactNode {
   if (!count) {
     return icon
   }
@@ -98,7 +101,7 @@ function withCountBadge(icon: ReactNode, count: number | undefined): ReactNode {
     <span className="relative inline-flex">
       {icon}
       <span className="pointer-events-none absolute -top-2.5 -right-1.5 z-1">
-        <Badge aria-hidden size="overlay" variant="solid">
+        <Badge aria-hidden data-tone={tone} size="overlay" variant={tone === 'attention' ? 'solid-warn' : 'solid'}>
           {compactNumber(count)}
         </Badge>
       </span>
@@ -139,8 +142,18 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
-  const unreadBadge = unreadCount > 0 ? unreadCount : undefined
-  const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
+  const attentionCount = useStore($attentionSessionCount)
+  // One corner, two things it could say. A session waiting on the user beats
+  // one that merely finished: it is the only state that costs the user time
+  // for every minute they don't see it, so it takes the badge (amber) whenever
+  // there is one, and the finished count waits its turn.
+  const badgeTone: TitlebarTool['badgeTone'] = attentionCount > 0 ? 'attention' : 'unread'
+  const badgeCount = attentionCount > 0 ? attentionCount : unreadCount
+  const unreadBadge = badgeCount > 0 ? badgeCount : undefined
+
+  const unreadHint = unreadBadge
+    ? ` · ${attentionCount > 0 ? t.titlebar.attentionSessions(attentionCount) : t.titlebar.unreadSessions(unreadBadge)}`
+    : ''
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -168,6 +181,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     {
       actionId: 'view.toggleSidebar',
       badge: panesFlipped ? undefined : unreadBadge,
+      badgeTone,
       icon: <TitlebarIcon name="layout-sidebar-left" />,
       id: 'sidebar',
       label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
@@ -192,6 +206,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const rightSidebarTool: TitlebarTool = {
     actionId: 'view.toggleRightSidebar',
     badge: panesFlipped ? unreadBadge : undefined,
+    badgeTone,
     icon: <TitlebarIcon name="layout-sidebar-right" />,
     id: 'right-sidebar',
     label: `${rightLabel}${panesFlipped ? unreadHint : ''}`,
@@ -343,7 +358,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
             rel="noreferrer"
             target="_blank"
           >
-            {withCountBadge(tool.icon, tool.badge)}
+            {withCountBadge(tool.icon, tool.badge, tool.badgeTone)}
           </a>
         </Button>
       </Tip>
@@ -370,7 +385,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
         type="button"
         variant="ghost"
       >
-        {withCountBadge(tool.icon, tool.badge)}
+        {withCountBadge(tool.icon, tool.badge, tool.badgeTone)}
       </Button>
     </Tip>
   )

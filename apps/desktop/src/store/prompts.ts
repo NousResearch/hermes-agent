@@ -115,6 +115,9 @@ const secret = keyedPromptStore<SecretRequest>()
 const $approvalInlineAnchors = atom<Record<string, number>>({})
 
 export const $approvalRequest = approval.$active
+/** Every parked approval, keyed by runtime session id — for surfaces that
+ *  describe sessions other than the active one (the sidebar's attention chip). */
+export const $approvalRequests = approval.$all
 export const setApprovalRequest = approval.set
 export const clearApprovalRequest = approval.clear
 

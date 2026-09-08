@@ -5,6 +5,7 @@ import asyncio
 import email as email_lib
 from contextlib import contextmanager, suppress
 import imaplib
+import json
 import logging
 import os
 import re
@@ -366,10 +367,21 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
         self._last_fetch_failed, self._last_fetch_error = False, ""  # "checked, nothing new" vs "the check itself failed"
-        # chat_id (sender email) -> last subject + message-id for threading
         # Track the last IMAP fetch attempt so the poll loop can distinguish "checked, nothing new" from
         # "the check itself failed" (#80016).
-        self._thread_context: Dict[str, Dict[str, str]] = {}
+        # Thread-context persistence (per-account path, multiplexing-safe): chat_id (sender email) ->
+        # last subject + message-id for reply threading. Persisted to a small JSON file on every
+        # mutation and reloaded here so replies keep their thread's subject/Message-ID across gateway
+        # restarts.
+        try:
+            from hermes_constants import get_hermes_home
+
+            _state_dir = Path(get_hermes_home()) / "state"
+        except Exception:
+            _state_dir = Path.home() / ".hermes" / "state"
+        _addr_slug = re.sub(r"[^a-z0-9]+", "_", self._address.lower()).strip("_") or "default"
+        self._thread_context_path: Optional[Path] = _state_dir / f"email_thread_context_{_addr_slug}.json"
+        self._thread_context: Dict[str, Dict[str, Any]] = self._load_thread_context()
         logger.info("[Email] Adapter initialized for %s", self._address)
 
     def _trim_seen_uids(self) -> None:
@@ -412,6 +424,48 @@ class EmailAdapter(BasePlatformAdapter):
             yield imap
         finally:
             _close_imap(imap)
+
+# ── Thread-context persistence ─────────────────────────────────────────
+    # _thread_context is in-memory; without persistence a gateway restart loses every thread's
+    # subject/Message-ID and replies fall back to the generic "Hermes Agent" subject. Persist the map
+    # to a small per-account JSON file on every mutation and reload on adapter construction.
+    _thread_context_max_entries: int = 500
+
+    def _load_thread_context(self) -> Dict[str, Dict[str, Any]]:
+        """Load persisted thread context (subject/message_id per chat key)."""
+        if not self._thread_context_path or not self._thread_context_path.exists():
+            return {}
+        try:
+            raw = json.loads(self._thread_context_path.read_text("utf-8"))
+            if not isinstance(raw, dict):
+                return {}
+            return {
+                str(k): dict(v)
+                for k, v in raw.items()
+                if isinstance(v, dict) and isinstance(v.get("subject"), str)
+            }
+        except Exception as e:  # corrupt/partial file — start fresh
+            logger.warning("[Email] Thread-context load failed (%s); starting fresh", e)
+            return {}
+
+    def _save_thread_context(self) -> None:
+        """Persist the thread-context map atomically (tmp + rename)."""
+        if not self._thread_context_path:
+            return
+        try:
+            self._thread_context_path.parent.mkdir(parents=True, exist_ok=True)
+            data = dict(self._thread_context)
+            if len(data) > self._thread_context_max_entries:
+                # Overwriting a key keeps its dict position, so this trims by first-inserted
+                # (FIFO), not by last-used — and the live map is trimmed with the persisted copy
+                # so per-sender key growth stays bounded in memory too.
+                trimmed = dict(list(data.items())[-self._thread_context_max_entries:])
+                data, self._thread_context = trimmed, trimmed
+            tmp = self._thread_context_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data), "utf-8")
+            tmp.replace(self._thread_context_path)
+        except Exception as e:
+            logger.warning("[Email] Thread-context persist failed: %s", e)
 
     def _connect_smtp(self) -> smtplib.SMTP:
         """SMTP connection with TLS established (callers go straight to ``login()``). An unreachable IPv6 address can
@@ -641,7 +695,9 @@ class EmailAdapter(BasePlatformAdapter):
         # DOCUMENT wins over PHOTO for mixed attachments: run.py keys image handling off the per-path mime type regardless
         # of message_type, but document-context injection gates strictly on MessageType.DOCUMENT — so DOCUMENT surfaces both.
         kinds = {att["type"] for att in attachments}
-        self._thread_context[sender_addr] = {"subject": subject, "message_id": msg_data["message_id"]}
+        _ctx_entry = {"subject": subject, "message_id": msg_data["message_id"]}
+        self._thread_context[sender_addr] = _ctx_entry
+        self._save_thread_context()
         name = msg_data["sender_name"] or sender_addr
         event = MessageEvent(
             text=text or "(empty email)", message_id=msg_data["message_id"],

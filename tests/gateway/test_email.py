@@ -1202,3 +1202,54 @@ class TestExplicitOutboundSubject(unittest.TestCase):
     def test_format_tool_event_suppressed(self):
         adapter = self._make_adapter()
         self.assertIsNone(adapter.format_tool_event(None))
+
+
+class TestThreadContextPersistence(unittest.TestCase):
+    """Thread context must survive gateway restarts (replies keep subject)."""
+
+    def _make_adapter(self, tmp_dir):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "HERMES_HOME": str(tmp_dir),
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_save_then_reload_roundtrip(self):
+        """Saved context loads back with subject + message_id intact."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = self._make_adapter(tmp)
+            adapter._thread_context["user@test.com:my-thread"] = {
+                "subject": "Re: My Thread",
+                "message_id": "<m@test.com>",
+                "epoch": 0,
+                "msg_count": 3,
+            }
+            adapter._save_thread_context()
+            self.assertTrue(adapter._thread_context_path.exists())
+
+            # New adapter instance (simulates gateway restart) reloads it
+            adapter2 = self._make_adapter(tmp)
+            self.assertEqual(
+                adapter2._thread_context["user@test.com:my-thread"]["subject"],
+                "Re: My Thread",
+            )
+            self.assertEqual(
+                adapter2._thread_context["user@test.com:my-thread"]["message_id"],
+                "<m@test.com>",
+            )
+
+    def test_corrupt_file_starts_fresh(self):
+        """A corrupt/partial JSON file must not crash adapter construction."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = self._make_adapter(tmp)
+            adapter._thread_context_path.parent.mkdir(parents=True, exist_ok=True)
+            adapter._thread_context_path.write_text("{not json", "utf-8")
+            adapter2 = self._make_adapter(tmp)
+            self.assertEqual(adapter2._thread_context, {})

@@ -125,9 +125,8 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
 
-  # The default suite deliberately omits opt-in messaging SDKs. Keep the
-  # real python-telegram-bot edited-update regression under CI rather than
-  # making a clean default test slice fail at import time.
+  # The default suite deliberately omits opt-in messaging SDKs. Keep one real
+  # python-telegram-bot dispatch regression in CI.
   telegram-sdk:
     name: Telegram SDK regression
     runs-on: ubuntu-latest
@@ -155,7 +154,7 @@ jobs:
         with:
           command: uv sync --locked --python 3.11 --extra all --extra dev --extra messaging
 
-      - name: Run real Telegram edited-update regression
+      - name: Run real Telegram dispatch regression
         run: scripts/run_tests.sh tests/test_telegram_background_location_dispatch.py -q
         env:
           OPENROUTER_API_KEY: ""

@@ -19,33 +19,6 @@ from agent.message_metadata import append_message
 logger = logging.getLogger("agent.conversation_loop")
 
 
-class _EphemeralUserContextChanged(RuntimeError):
-    """The volatile context changed after request middleware ran."""
-
-
-def assert_ephemeral_user_context_current(
-    *,
-    ephemeral_user_context: Any,
-    resolved_ephemeral_user_context: Any,
-    ephemeral_api_messages_base: Any,
-    ephemeral_context_force_empty: Any,
-) -> None:
-    """Reject work derived from a superseded volatile-context snapshot.
-
-    Callable context is rebuilt from ``ephemeral_api_messages_base`` for each
-    request.  The same comparison must remain available after the provider
-    returns: a stop or newer live-location edit can otherwise land between the
-    transport check and response persistence/tool execution.
-    """
-    if ephemeral_api_messages_base is None or ephemeral_context_force_empty:
-        return
-    from agent.turn_context import resolve_ephemeral_user_context
-
-    current_context = resolve_ephemeral_user_context(ephemeral_user_context)
-    if current_context != resolved_ephemeral_user_context:
-        raise _EphemeralUserContextChanged
-
-
 def stop_thinking_spinner(agent: Any, thinking_spinner: Any) -> None:
     """Stop the spinner silently and clear the thinking callback; returns ``None`` so
     callers can rebind ``thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)``."""
@@ -58,12 +31,8 @@ def stop_thinking_spinner(agent: Any, thinking_spinner: Any) -> None:
 
 @dataclass
 class ApiCallVerdict:
-    """Outcome of one physical provider attempt.
-
-    ``action`` is ``"fallthrough"`` when ``response`` is ready for verification,
-    ``"rebuild"`` when volatile request context changed before transmission, or
-    ``"break"`` when a redirect crossed the response.
-    """
+    """``action``: ``"fallthrough"`` (``response`` is ready for verification) or ``"break"``
+    (a redirect crossed the response — rebuild armed on ``_retry`` or ``interrupted``)."""
 
     action: str
     response: Any
@@ -93,9 +62,7 @@ def perform_api_call(
     agent: Any, *, api_kwargs: Any, _original_api_kwargs: Any, _llm_middleware_trace: Any,
     _moa_prepared_request: Any, _retry: Any, thinking_spinner: Any, retry_count: Any,
     api_call_count: Any, api_request_id: Any, effective_task_id: Any, turn_id: Any,
-    interrupted: Any, ephemeral_user_context: Any,
-    resolved_ephemeral_user_context: Any, ephemeral_api_messages_base: Any,
-    ephemeral_context_force_empty: Any,
+    interrupted: Any,
 ) -> ApiCallVerdict:
     """Issue the request (see ``_should_stream`` for the streaming decision)."""
     response = None
@@ -112,56 +79,38 @@ def perform_api_call(
 
     _use_streaming = _should_stream(agent)
 
-    def _assert_ephemeral_context_current() -> None:
-        # Middleware, Relay, and client construction may all block. The same
-        # guard is propagated to the physical provider callback, so a stop or
-        # newer snapshot always forces a clean request rebuild.
-        assert_ephemeral_user_context_current(
-            ephemeral_user_context=ephemeral_user_context,
-            resolved_ephemeral_user_context=resolved_ephemeral_user_context,
-            ephemeral_api_messages_base=ephemeral_api_messages_base,
-            ephemeral_context_force_empty=ephemeral_context_force_empty,
-        )
-
     def _perform_api_call(next_api_kwargs):
-        _assert_ephemeral_context_current()
         if agent.api_mode == "codex_responses":
             next_api_kwargs = agent._get_transport().preflight_kwargs(
                 next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
                 sanitize_harmony_tokens=agent._is_codex_backend(),
             )
+        if _use_streaming:
+            return agent._interruptible_streaming_api_call(
+                next_api_kwargs, on_first_delta=_stop_spinner
+            )
         from agent import relay_llm
 
-        with relay_llm.provider_call_guard(
-            _assert_ephemeral_context_current,
-            contains_ephemeral_user_context=bool(
-                resolved_ephemeral_user_context
-            ),
-        ):
-            if _use_streaming:
-                return agent._interruptible_streaming_api_call(
-                    next_api_kwargs, on_first_delta=_stop_spinner
-                )
-            return relay_llm.execute(
-                next_api_kwargs,
-                agent._interruptible_api_call,
-                session_id=str(agent.session_id or ""),
-                name=str(agent.provider or "provider"),
-                model_name=str(agent.model or ""),
-                metadata={
-                    "api_mode": agent.api_mode,
-                    "api_request_id": api_request_id,
-                    "call_role": (
-                        "delegated"
-                        if getattr(agent, "is_subagent", False)
-                        else "fallback"
-                        if int(getattr(agent, "_fallback_index", 0) or 0) > 0
-                        else "primary"
-                    ),
-                    "retry_count": retry_count,
-                },
-                defer_logical_completion=True,
-            )
+        return relay_llm.execute(
+            next_api_kwargs,
+            agent._interruptible_api_call,
+            session_id=str(agent.session_id or ""),
+            name=str(agent.provider or "provider"),
+            model_name=str(agent.model or ""),
+            metadata={
+                "api_mode": agent.api_mode,
+                "api_request_id": api_request_id,
+                "call_role": (
+                    "delegated"
+                    if getattr(agent, "is_subagent", False)
+                    else "fallback"
+                    if int(getattr(agent, "_fallback_index", 0) or 0) > 0
+                    else "primary"
+                ),
+                "retry_count": retry_count,
+            },
+            defer_logical_completion=True,
+        )
 
     from hermes_cli.middleware import run_llm_execution_middleware
 
@@ -174,21 +123,13 @@ def perform_api_call(
         if _model_request_active is not None:
             _model_request_active.set()
     try:
-        try:
-            response = run_llm_execution_middleware(
-                api_kwargs, _perform_api_call, original_request=_original_api_kwargs,
-                task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
-                session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
-                provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
-                api_call_count=api_call_count, middleware_trace=list(_llm_middleware_trace),
-            )
-            # The provider may finish after a live-location stop. Its response
-            # was derived from the now-revoked coordinates and can contain a
-            # tool call that repeats them; discard it before normalization or
-            # tool execution and rebuild without volatile context.
-            _assert_ephemeral_context_current()
-        except _EphemeralUserContextChanged:
-            return _verdict("rebuild")
+        response = run_llm_execution_middleware(
+            api_kwargs, _perform_api_call, original_request=_original_api_kwargs,
+            task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
+            session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
+            provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
+            api_call_count=api_call_count, middleware_trace=list(_llm_middleware_trace),
+        )
     finally:
         with _bracket:
             if _model_request_active is not None:

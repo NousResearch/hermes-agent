@@ -77,16 +77,14 @@ class MessageEvent:
     # so untrusted payload text stays conversational. Kept last for positional compat.
     allow_gateway_control: bool = True
 
-    # Per-turn user-side context for volatile platform data. Appended last to
-    # preserve the positional constructor order of the existing event fields.
-    # The gateway injects it into the current API user message while persisting
-    # only the original event text, so it cannot alter the cached system prefix
-    # or leak into later transcript replay.
-    ephemeral_user_context: Optional[str] = None
-    # Adapter-owned, non-serializable capability used to resolve volatile
-    # context once when a foreground worker starts. It must never contain the
-    # context itself (notably, location coordinates).
+    # Adapter-owned, process-local capability for resolving volatile context immediately
+    # before a foreground agent turn. It must never contain the context itself (notably,
+    # location coordinates) and is intentionally omitted from every serialized shape.
     ephemeral_context_ref: Any = field(default=None, repr=False, compare=False)
+    # Coordinate-free veto propagated through batching/dataclasses.replace. A fixed
+    # location pin sets it so ambient live context cannot join the same turn.
+    _ephemeral_context_blocked: bool = field(default=False, repr=False, compare=False)
+
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
 

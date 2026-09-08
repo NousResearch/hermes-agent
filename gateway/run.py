@@ -37,7 +37,10 @@ from agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
-from agent.turn_context import compression_made_progress
+from agent.turn_context import (
+    VOLATILE_USER_CONTEXT_REPLAY_ID_KEY,
+    compression_made_progress,
+)
 from agent.session_activity import ActivityProvenance
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
@@ -1060,6 +1063,13 @@ def _build_replay_entry(
     providers.
     """
     entry: Dict[str, Any] = {"role": role, "content": content}
+    if role == "user":
+        # Coordinate-free key for RAM-only volatile context replay.  SessionDB exposes
+        # ``platform_message_id`` as ``message_id``; the agent strips this private marker
+        # before every provider call.
+        replay_id = msg.get("message_id") or msg.get("platform_message_id")
+        if replay_id is not None and str(replay_id).strip():
+            entry[VOLATILE_USER_CONTEXT_REPLAY_ID_KEY] = str(replay_id)
     # api_content sidecar keeps the request prefix byte-stable — ONLY if this pipeline did not rewrite
     # content. The caller renders timestamps AFTER this check so a stamp alone never drops the sidecar.
     _sidecar = msg.get("api_content")

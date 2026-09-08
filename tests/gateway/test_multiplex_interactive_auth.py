@@ -110,39 +110,6 @@ def test_bot_sender_reaches_allow_bots_policy_through_callback(mux_home):
         assert tg._is_user_authorized_from_message(msg(4343, False)) is False
 
 
-def test_background_location_auth_uses_thread_routed_pairing_store(mux_home):
-    """Sensitive location retention must use the same routed profile as the turn."""
-    runner = _runner(mux_home)
-    runner.config.profile_routes = [
-        ProfileRoute(
-            name="topic",
-            platform="telegram",
-            chat_id="-100555",
-            thread_id="42",
-            profile="secondary",
-        )
-    ]
-    runner.pairing_stores["secondary"]._save_json(
-        runner.pairing_stores["secondary"]._approved_path("telegram"),
-        {"777": {}},
-    )
-    tg = _telegram(runner)
-
-    def msg(thread_id):
-        return SimpleNamespace(
-            from_user=SimpleNamespace(
-                id=777, is_bot=False, username="alice", full_name="Alice"
-            ),
-            chat=SimpleNamespace(id=-100555, type="supergroup", is_forum=True),
-            sender_chat=None,
-            message_thread_id=thread_id,
-            is_topic_message=thread_id is not None,
-        )
-
-    assert tg._is_background_location_authorized(msg(42)) is True
-    assert tg._is_background_location_authorized(msg(None)) is False
-
-
 def test_slack_interactive_auth_prefers_wired_profile_check(mux_home, monkeypatch):
     """#72657: a multiplexed Slack adapter's button gate resolves through the
     wired ``_make_adapter_auth_check`` for its own profile; the DEFAULT

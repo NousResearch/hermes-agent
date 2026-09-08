@@ -29,7 +29,7 @@ from agent.error_classifier import (FailoverReason, PROVIDER_STREAM_NON_JSON_ERR
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.fast_mode import effective_request_overrides
-from agent.turn_context import substitute_api_content
+from agent.turn_context import replay_volatile_user_context, substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
 # boxes. Non-Ollama remotes (sglang, vLLM, OpenAI-compat) expose Ollama-compat endpoints that can
@@ -57,24 +57,26 @@ _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 
 
+def _private_provider_context_active() -> bool:
+    from agent.redact import has_volatile_sensitive_text
+
+    return has_volatile_sensitive_text()
+
+
+def _safe_provider_error_summary(agent: Any, error: BaseException) -> str:
+    """Provider error text safe for logs and user-visible failure strings."""
+    try:
+        return agent._summarize_api_error(error)
+    except Exception:
+        if _private_provider_context_active():
+            return "Provider error details withheld for private-context turn"
+        return str(error)
+
+
 def _context_thread_target(callback):
     """Bind a no-argument thread target to the caller's ContextVars."""
     context = contextvars.copy_context()
     return lambda: context.run(callback)
-
-
-def _run_provider_call_guard() -> None:
-    """Run any request-local admission check at the physical transport edge."""
-    from agent import relay_llm
-
-    relay_llm.run_provider_call_guard()
-
-
-def _safe_provider_error_for_log(error: BaseException) -> str:
-    """Avoid logging provider-echoed request data for volatile-context calls."""
-    from agent import relay_llm
-
-    return relay_llm.safe_provider_error_message(error)
 
 
 def _join_worker_for_relay_teardown(worker, *, label: str) -> None:
@@ -675,16 +677,12 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     client = _get_bedrock_runtime_client(region)
     method = client.converse_stream if stream else client.converse
     finish = (lambda raw: raw.get("stream", [])) if stream else normalize_converse_response
-    def _invoke(final_kwargs: dict) -> Any:
-        _run_provider_call_guard()
-        return method(**final_kwargs)
-
     try:
-        raw_response = _invoke(api_kwargs)
+        raw_response = method(**api_kwargs)
     except Exception as exc:
         retry_kwargs = recover_from_cache_point_rejection(exc, api_kwargs)
         if retry_kwargs is not None:
-            return finish(_invoke(retry_kwargs))
+            return finish(method(**retry_kwargs))
         if on_stream_denied is not None and is_streaming_access_denied_error(exc):
             return on_stream_denied(client, api_kwargs, exc)
         if is_stale_connection_error(exc):
@@ -708,7 +706,6 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         # Request-local client so the stale/interrupt watchdog aborts sockets
         # from the stranger thread while the worker owns the SDK close (#67142).
         request_client = make_client("anthropic_messages_request", kind="anthropic_messages")
-        _run_provider_call_guard()
         return agent._anthropic_messages_create(api_kwargs, client=request_client)
     if agent.api_mode == "bedrock_converse":
         return _bedrock_converse_call(api_kwargs, stream=False)
@@ -721,11 +718,8 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         _completions = getattr(getattr(agent.client, "chat", None), "completions", None)
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)
-        _run_provider_call_guard()
         return agent.client.chat.completions.create(**api_kwargs)
-    request_client = make_client("chat_completion_request")
-    _run_provider_call_guard()
-    return request_client.chat.completions.create(**api_kwargs)
+    return make_client("chat_completion_request").chat.completions.create(**api_kwargs)
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -1944,7 +1938,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         except Exception as e:
             if fb_provider == "nous":
                 unavailable.add(fb_key)
-            logger.error("Failed to activate fallback %s: %s", fb_model, e)
+            logger.error(
+                "Failed to activate fallback %s: %s",
+                fb_model,
+                _safe_provider_error_summary(agent, e),
+            )
             continue  # try next in chain
 
 
@@ -1952,11 +1950,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 # Go, Mistral, Moonshot/Kimi) reject with 422. The transport's convert_messages() drops them
 # in the main loop; the summary path calls chat.completions.create() directly, so mirror it.
 _SUMMARY_FOREIGN_MESSAGE_KEYS = ("reasoning", "finish_reason", "tool_name", "codex_reasoning_items",
-    "codex_message_items", "timestamp", "platform_message_id")
+    "codex_message_items", "timestamp", "message_id", "platform_message_id")
 _EMPTY_SUMMARY_RESPONSE = "I reached the iteration limit and couldn't generate a summary."
 
 
-def _iteration_summary_api_messages(agent, messages: list) -> list:
+def _iteration_summary_api_messages(
+    agent, messages: list, *, allow_volatile_replay: bool = True,
+) -> list:
     """Wire-ready messages for the summary call, mirroring the main loop's api_messages build
     (sidecar substitution, tool-call repair, thinking-only drop, underscore-key sweep)."""
     needs_sanitize = agent._should_sanitize_tool_calls()
@@ -1965,9 +1965,13 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         # MoA: agent.model is the virtual preset; use the real aggregator so Gemini keeps thought_signature.
         agg_slot = getattr(getattr(agent, "client", None), "last_aggregator_slot", None)
         sanitize_model = (agg_slot or {}).get("model") or sanitize_model
+    from agent.conversation_loop import _clone_message_for_send
+
     api_messages = []
     for msg in messages:
-        api_msg = msg.copy()
+        # Volatile replay may append a text block. Use the same structural clone as
+        # the main send path so list content can never mutate the durable transcript.
+        api_msg = _clone_message_for_send(msg)
         agent._copy_reasoning_content_for_api(msg, api_msg)
         for key in _SUMMARY_FOREIGN_MESSAGE_KEYS:
             api_msg.pop(key, None)
@@ -1986,6 +1990,8 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         # gateway user replay entries for the stale-confirmation expiry check — #47868 rejection class), and
         # every Hermes-internal underscore-prefixed scaffolding key.
         substitute_api_content(api_msg)
+        if allow_volatile_replay:
+            replay_volatile_user_context(agent, msg, api_msg)
         if needs_sanitize:
             agent._sanitize_tool_calls_for_strict_api(api_msg, model=sanitize_model)
         api_messages.append(api_msg)
@@ -2120,7 +2126,9 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
 _SUMMARY_ATTEMPT_BUILDERS = {"codex_responses": _codex_summary_attempt, "anthropic_messages": _anthropic_summary_attempt}
 
 
-def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
+def handle_max_iterations(
+    agent, messages: list, api_call_count: int, *, allow_volatile_replay: bool = True,
+) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
     if getattr(agent, "suppress_status_output", False):
@@ -2141,7 +2149,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
 
     try:
-        api_messages = _iteration_summary_api_messages(agent, messages)
+        api_messages = _iteration_summary_api_messages(
+            agent, messages, allow_volatile_replay=allow_volatile_replay,
+        )
         build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
         attempt = build_attempt(agent, api_messages, summary_api_request_id)
 
@@ -2160,8 +2170,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             break
 
     except Exception as e:
-        logger.warning("Failed to get summary response: %s", e)
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        safe_error = _safe_provider_error_summary(agent, e)
+        logger.warning("Failed to get summary response: %s", safe_error)
+        final_response = (
+            f"I reached the maximum iterations ({agent.max_iterations}) but "
+            f"couldn't summarize. Error: {safe_error}"
+        )
     finally:
         from agent import relay_llm
         relay_llm.complete_logical_call(summary_api_request_id, outcome=summary_call_outcome)
@@ -2274,7 +2288,13 @@ def _with_stream_emitters(agent, run):
     except Exception as exc:
         end = getattr(agent, "_emit_stream_end", None)
         if end is not None:
-            end(final_text="", finished=False, error=str(exc))
+            # Hook payloads may be queued or persisted after this turn's ContextVar
+            # is gone. Never hand provider-controlled request echoes to them.
+            end(
+                final_text="",
+                finished=False,
+                error=_safe_provider_error_summary(agent, exc),
+            )
         raise
     end = getattr(agent, "_emit_stream_end", None)
     if end is not None:
@@ -2319,7 +2339,6 @@ class _BedrockStream:
         return self.api_kwargs.get("modelId", "unknown")
 
     def _fire_first(self):
-        _run_provider_call_guard()
         self.response_started = True
         if not self.first_delta_fired and self.on_first_delta:
             self.first_delta_fired = True
@@ -2330,7 +2349,6 @@ class _BedrockStream:
         """Wrap a delta callback so the first delivered event also fires ``on_first_delta``."""
         def _on(value):
             self._fire_first()
-            _run_provider_call_guard()
             fire(value)
         return _on
 
@@ -2347,7 +2365,6 @@ class _BedrockStream:
             "   Grant that action to restore streaming output.\n")
         logger.info("bedrock: converse_stream denied by IAM (%s) — "
             "using non-streaming converse() for this session.", type(exc).__name__)
-        _run_provider_call_guard()
         return normalize_converse_response(client.converse(**final_kwargs))
 
     def _worker(self):
@@ -2363,16 +2380,11 @@ class _BedrockStream:
                 writer_token["value"] = claim_stream_writer(agent)
 
             def _accept_event(_event: Any) -> bool:
-                _run_provider_call_guard()
                 token = writer_token["value"]
                 return token is None or stream_writer_is_current(agent, token)
 
             def _stamp_event() -> None:
                 self.last_event = time.time()
-
-            def _interrupt_or_revoked() -> bool:
-                _run_provider_call_guard()
-                return bool(agent._interrupt_requested)
 
             try:
                 from agent.plugin_stream_hooks import has_reasoning_stream_observer_hooks
@@ -2393,7 +2405,7 @@ class _BedrockStream:
                 on_text_delta=self._after_first(agent._fire_stream_delta) if agent._has_stream_consumers() else None,
                 on_tool_start=self._after_first(agent._fire_tool_gen_started),
                 on_reasoning_delta=self._after_first(agent._fire_reasoning_delta) if wants_reasoning else None,
-                on_interrupt_check=_interrupt_or_revoked, on_event=_stamp_event)
+                on_interrupt_check=lambda: agent._interrupt_requested, on_event=_stamp_event)
             self.result["response"] = stream.final_response or streamed_response
         except Exception as e:
             self.result["error"] = e
@@ -2620,24 +2632,20 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _fire_first_delta(self):
         if not self.first_delta_fired["done"] and self.on_first_delta:
-            _run_provider_call_guard()
             self.first_delta_fired["done"] = True
             self._quiet(self.on_first_delta)
 
     def _emit_text(self, text: str) -> None:
         self._fire_first_delta()
-        _run_provider_call_guard()
         self.agent._fire_stream_delta(text)
         self.deltas_were_sent["yes"] = True
 
     def _emit_reasoning(self, text: str) -> None:
         self._fire_first_delta()
-        _run_provider_call_guard()
         self.agent._fire_reasoning_delta(text)
 
     def _emit_tool_started(self, name: str) -> None:
         self._fire_first_delta()
-        _run_provider_call_guard()
         self.agent._fire_tool_gen_started(name)
 
     def _route_suppressed_text(self, text: str) -> None:
@@ -2646,7 +2654,6 @@ class _StreamingCall(StreamingWaitMonitor):
         the delta callback for tag extraction (the CLI drops non-reasoning text
         once the stream box is closed)."""
         if self.agent.stream_delta_callback:
-            _run_provider_call_guard()
             self._quiet(lambda: (self.agent.stream_delta_callback(text), self.agent._record_streamed_assistant_text(text)))
 
     def _new_diag(self) -> dict:
@@ -2722,7 +2729,6 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
         self.last_chunk_time["t"] = time.time()
         self.agent._touch_activity("waiting for provider response (streaming)")
-        _run_provider_call_guard()
         return request_client.chat.completions.create(**stream_kwargs)
 
     def _chat_stream_created(self, raw_stream: Any) -> None:
@@ -2734,7 +2740,6 @@ class _StreamingCall(StreamingWaitMonitor):
         self._writer_token = claim_stream_writer(self.agent)
 
     def _accept_chat_chunk(self, stream_attempt_id: int, chunk: Any) -> bool:
-        _run_provider_call_guard()
         with contextlib.suppress(Exception):
             choices = getattr(chunk, "choices", None)
             choice = choices[0] if choices else None
@@ -2887,7 +2892,6 @@ class _StreamingCall(StreamingWaitMonitor):
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the
         session to non-streaming and replay its content as deltas."""
-        _run_provider_call_guard()
         logger.info("Streaming request returned a final response object instead of an iterator; "
             "switching %s/%s to non-streaming for this session.", self.agent.provider or "unknown",
             self.agent.model or "unknown")
@@ -2901,7 +2905,6 @@ class _StreamingCall(StreamingWaitMonitor):
             content = getattr(message, "content", None)
             if isinstance(content, str) and content:
                 self._fire_first_delta()
-                _run_provider_call_guard()
                 self.agent._fire_stream_delta(content)  # not _emit_text: deltas_were_sent stays False here
         return final_response
 
@@ -3018,7 +3021,6 @@ class _StreamingCall(StreamingWaitMonitor):
             sanitize_anthropic_kwargs(final_kwargs, log_prefix=getattr(self.agent, "log_prefix", ""))
             manager = request_client.messages.stream(**final_kwargs)
             _stream_context["manager"] = manager
-            _run_provider_call_guard()
             return manager.__enter__()
 
         def _anthropic_stream_created(raw_stream: Any) -> None:
@@ -3028,14 +3030,10 @@ class _StreamingCall(StreamingWaitMonitor):
                 lambda: self.agent._stream_diag_capture_response(_diag, getattr(raw_stream, "response", None)))
             self._writer_token = claim_stream_writer(self.agent)
 
-        def _accept_anthropic_event(_event: Any) -> bool:
-            _run_provider_call_guard()
-            return self._writer_still_current("Anthropic streaming")
-
         stream = self._set_managed_stream(relay_llm.stream(self.api_kwargs, _open_anthropic_stream,
             **_relay_stream_identity(self.agent, "anthropic"), finalizer=accumulator.finalize,
             on_stream_created=_anthropic_stream_created, on_chunk=accumulator.observe,
-            accept_chunk=_accept_anthropic_event,
+            accept_chunk=lambda _event: self._writer_still_current("Anthropic streaming"),
             metadata=_relay_stream_metadata(self.agent, "anthropic_messages"), defer_logical_completion=True))
         try:
             for event in stream:
@@ -3120,13 +3118,6 @@ class _StreamingCall(StreamingWaitMonitor):
         ``result["error"]`` set (unless our own interrupt force-closed the
         socket). Runs inside the ``except`` so ``logger.exception`` works."""
         import httpx as _httpx
-        from agent.turn_api_call import _EphemeralUserContextChanged
-
-        # The request's volatile context was revoked while streaming. Never
-        # retry, log provider details, or convert this into a partial response.
-        if isinstance(e, _EphemeralUserContextChanged):
-            self.result["error"] = e
-            return False
         # Our own interrupt force-close: no retry/fallback/"reconnecting" (the
         # poll loop raises InterruptedError).
         if self._request_cancelled["value"]:
@@ -3148,7 +3139,7 @@ class _StreamingCall(StreamingWaitMonitor):
             if not (_partial_tool_in_flight and _is_transient and attempt < max_retries):
                 logger.warning(
                     "Streaming failed after partial delivery, not retrying: %s",
-                    _safe_provider_error_for_log(e),
+                    _safe_provider_error_summary(self.agent, e),
                 )
                 self.result["error"] = e
                 return False
@@ -3178,15 +3169,17 @@ class _StreamingCall(StreamingWaitMonitor):
                 f"❌ {_what} {max_retries + 1} attempts. The provider may be experiencing issues — try again in a moment.")
         else:
             self._maybe_disable_streaming(e)
-            from agent import relay_llm
-
-            if relay_llm.provider_call_contains_ephemeral_user_context():
+            safe_error = _safe_provider_error_summary(self.agent, e)
+            if _private_provider_context_active():
+                # Tracebacks render the original exception again, bypassing the safe
+                # summary when a provider echoed a transformed request fragment.
                 logger.warning(
-                    "Streaming failed before delivery: %s",
-                    _safe_provider_error_for_log(e),
+                    "Streaming failed before delivery: %s (%s)",
+                    safe_error,
+                    type(e).__name__,
                 )
             else:
-                logger.exception("Streaming failed before delivery: %s", e)
+                logger.exception("Streaming failed before delivery: %s", safe_error)
         # Propagate to the main retry loop (credential rotation, fallback, backoff).
         self.result["error"] = e
         return False
@@ -3308,6 +3301,7 @@ class _StreamingCall(StreamingWaitMonitor):
         Content may be EMPTY on purpose — the loop skips appending an empty stub and
         only sends the nudge (placeholder text leaked into the stitched response)."""
         error = self.result["error"]
+        safe_error = _safe_provider_error_summary(self.agent, error)
         _partial_text = (getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip() or None
         _partial_names = list(self.result.get("partial_tool_names") or [])
         if _partial_names:
@@ -3321,17 +3315,12 @@ class _StreamingCall(StreamingWaitMonitor):
             self._quiet(self.agent._fire_stream_delta, _warn)  # visible immediately
             logger.warning(
                 "Partial stream dropped tool call(s) %s after %s chars of text; surfaced warning to user: %s",
-                _partial_names,
-                len(_partial_text or ""),
-                _safe_provider_error_for_log(error),
-            )
+                _partial_names, len(_partial_text or ""), safe_error)
         else:
             logger.warning(
                 "Partial stream delivered before error; returning length-truncated stub with %s chars of "
                 "recovered content so the loop can continue from where the stream died: %s",
-                len(_partial_text or ""),
-                _safe_provider_error_for_log(error),
-            )
+                len(_partial_text or ""), safe_error)
         # Classify content filtering (MiniMax 1027, Azure content_filter, Anthropic refusal)
         # before the error is swallowed into the stub: the loop reads the tag and falls back.
         _stub = _build_partial_stream_stub("assistant", _partial_text, None,
@@ -3373,10 +3362,6 @@ class _StreamingCall(StreamingWaitMonitor):
         if self.agent._interrupt_requested:  # worker returned early before the monitor saw the flag
             raise InterruptedError("Agent interrupted during streaming API call (post-worker)")
         if self.result["error"] is not None:
-            from agent.turn_api_call import _EphemeralUserContextChanged
-
-            if isinstance(self.result["error"], _EphemeralUserContextChanged):
-                raise self.result["error"]
             if self.deltas_were_sent["yes"]:
                 return self._partial_stream_stub()
             raise self.result["error"]

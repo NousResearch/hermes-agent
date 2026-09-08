@@ -39,14 +39,6 @@ def _make_runner():
     runner._running_agents = {}
     runner._background_tasks = set()
 
-    async def _run_inline(func, *args):
-        return func(*args)
-
-    # Bare runners do not own a gateway lifecycle that shuts down the real
-    # thread pool. Keep these unit tests synchronous at that boundary so the
-    # per-file test process cannot be held open by an orphan executor.
-    runner._run_in_executor_with_context = AsyncMock(side_effect=_run_inline)
-
     mock_store = MagicMock()
     # A real SessionStore returns None when no persisted /model override exists.
     # MagicMock's default truthy return would otherwise rehydrate a fake model
@@ -85,40 +77,6 @@ class TestHandleBackgroundCommand:
         result = await runner._handle_background_command(event)
         assert "Usage:" in result
 
-    @pytest.mark.asyncio
-    async def test_telegram_dm_topic_passes_trigger_anchor_and_context_to_task(self):
-        runner = _make_runner()
-        runner._run_background_task = AsyncMock()
-
-        def capture_task(coro, *args, **kwargs):
-            coro.close()
-            return MagicMock()
-
-        source = SessionSource(
-            platform=Platform.TELEGRAM,
-            user_id="12345",
-            chat_id="67890",
-            chat_type="dm",
-            thread_id="20197",
-        )
-        event = MessageEvent(
-            text="/background summarize",
-            source=source,
-            message_id="463",
-            reply_to_message_id="462",
-            ephemeral_user_context="Location: 40.4168, -3.7038",
-        )
-
-        with patch("gateway.run.asyncio.create_task", side_effect=capture_task):
-            result = await runner._handle_background_command(event)
-
-        assert "Background task started" in result
-        runner._run_background_task.assert_called_once()
-        kwargs = runner._run_background_task.call_args.kwargs
-        assert kwargs["event_message_id"] == "463"
-        assert kwargs["ephemeral_user_context"] == "Location: 40.4168, -3.7038"
-        assert kwargs["context_event"] is event
-
 
 # ---------------------------------------------------------------------------
 # _run_background_task
@@ -153,16 +111,6 @@ class TestRunBackgroundTask:
         assert "failed" in call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "").lower()
 
     @pytest.mark.asyncio
-    async def test_auxiliary_dispatch_does_not_re_resolve_event_context(self):
-        runner = _make_runner()
-        event = _make_event(text="/bg hello")
-        event.ephemeral_context_ref = object()
-
-        await runner._refresh_event_ephemeral_user_context(event)
-
-        assert event.ephemeral_user_context is None
-
-    @pytest.mark.asyncio
     async def test_successful_task_sends_result(self):
         """When the agent completes successfully, the result is sent."""
         runner = _make_runner()
@@ -170,7 +118,6 @@ class TestRunBackgroundTask:
         mock_adapter.send = AsyncMock()
         mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
         mock_adapter.extract_images = MagicMock(return_value=([], "Hello from background!"))
-        mock_adapter.toolsets_for_source = MagicMock(return_value=None)
         runner.adapters[Platform.TELEGRAM] = mock_adapter
 
         source = SessionSource(
@@ -199,12 +146,7 @@ class TestRunBackgroundTask:
             mock_agent_instance.run_conversation.return_value = mock_result
             MockAgent.return_value = mock_agent_instance
 
-            await runner._run_background_task(
-                "say hello",
-                source,
-                "bg_test",
-                ephemeral_user_context="Location: 40.4168, -3.7038",
-            )
+            await runner._run_background_task("say hello", source, "bg_test")
 
         # Should have sent the result
         mock_adapter.send.assert_called_once()
@@ -217,59 +159,8 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_snapshots"] == 8
         assert agent_kwargs["checkpoint_max_total_size_mb"] == 222
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
-        mock_agent_instance.run_conversation.assert_called_once_with(
-            user_message="say hello",
-            task_id="bg_test",
-            ephemeral_user_context="Location: 40.4168, -3.7038",
-        )
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_task_does_not_refresh_live_location_before_model_dispatch(self):
-        runner = _make_runner()
-        source = SessionSource(
-            platform=Platform.TELEGRAM,
-            user_id="12345",
-            chat_id="67890",
-            user_name="testuser",
-        )
-        event = MessageEvent(
-            text="/background say hello",
-            source=source,
-            ephemeral_user_context="Location: 40.4168, -3.7038",
-        )
-        mock_adapter = AsyncMock()
-        mock_adapter.extract_media = MagicMock(return_value=([], "done"))
-        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
-        mock_adapter.toolsets_for_source = MagicMock(return_value=None)
-
-        runner.adapters[Platform.TELEGRAM] = mock_adapter
-
-        with patch(
-            "gateway.run._resolve_runtime_agent_kwargs",
-            return_value={"api_key": "test-key"},
-        ), patch("gateway.run._load_gateway_config", return_value={}), patch(
-            "run_agent.AIAgent"
-        ) as MockAgent:
-            agent = MagicMock()
-            agent.run_conversation.return_value = {
-                "final_response": "done",
-                "messages": [],
-            }
-            MockAgent.return_value = agent
-            await runner._run_background_task(
-                "say hello",
-                source,
-                "bg_test",
-                ephemeral_user_context=event.ephemeral_user_context,
-                context_event=event,
-            )
-
-        agent.run_conversation.assert_called_once_with(
-            user_message="say hello", task_id="bg_test",
-            ephemeral_user_context="Location: 40.4168, -3.7038",
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +262,6 @@ class TestHandleBtwCommand:
         runner._adapter_for_source = MagicMock(return_value=mock_adapter)
 
         event = _make_event(text="/btw which file was that?")
-        event.ephemeral_user_context = "Location: 1.0, 2.0"
 
         with patch("agent.side_question.answer_side_question",
                    return_value="it was foo.py") as mock_answer:
@@ -387,79 +277,11 @@ class TestHandleBtwCommand:
         assert args[0] == "which file was that?"
         assert args[1][0]["content"] == "fix foo.py"
         assert kwargs["main_runtime"]["model"] == "test-model"
-        assert kwargs["ephemeral_user_context"] == "Location: 1.0, 2.0"
 
         # The answer was delivered to the chat.
         mock_adapter.send.assert_called_once()
         sent_text = mock_adapter.send.call_args[0][1]
         assert "it was foo.py" in sent_text
-
-    @pytest.mark.asyncio
-    async def test_side_question_does_not_receive_ambient_live_location(self):
-        runner = _make_runner()
-        store = AsyncMock()
-        store.get_or_create_session.return_value = MagicMock(session_id="s1")
-        store.load_transcript.return_value = [
-            {"role": "user", "content": "fix foo.py"},
-            {"role": "assistant", "content": "done"},
-        ]
-        store._store = runner.session_store
-        runner._async_session_store = store
-        runner._resolve_session_agent_runtime = MagicMock(
-            return_value=("test-model", {"api_key": "k"})
-        )
-        mock_adapter = AsyncMock()
-
-        runner._adapter_for_source = MagicMock(return_value=mock_adapter)
-        event = _make_event(text="/btw which file?")
-        event.ephemeral_context_ref = object()
-
-        with patch(
-            "agent.side_question.answer_side_question", return_value="foo.py"
-        ) as mock_answer:
-            await runner._handle_btw_command(event)
-            for task in list(runner._background_tasks):
-                await task
-
-        assert "ephemeral_user_context" not in mock_answer.call_args.kwargs
-
-    @pytest.mark.asyncio
-    async def test_side_question_failure_omits_ephemeral_provider_echo(
-        self, caplog
-    ):
-        runner = _make_runner()
-        store = AsyncMock()
-        store.get_or_create_session.return_value = MagicMock(session_id="s1")
-        store.load_transcript.return_value = [
-            {"role": "user", "content": "where am I?"},
-            {"role": "assistant", "content": "checking"},
-        ]
-        store._store = runner.session_store
-        runner._async_session_store = store
-        runner._resolve_session_agent_runtime = MagicMock(
-            return_value=("test-model", {"api_key": "k"})
-        )
-        mock_adapter = AsyncMock()
-        runner._adapter_for_source = MagicMock(return_value=mock_adapter)
-        event = _make_event(text="/btw what is nearby?")
-        marker = "Location: 1.0, 2.0"
-        event.ephemeral_user_context = marker
-        caplog.set_level("WARNING")
-
-        with patch(
-            "agent.side_question.answer_side_question",
-            side_effect=RuntimeError(f"provider echoed {marker}"),
-        ):
-            await runner._handle_btw_command(event)
-            for task in list(runner._background_tasks):
-                await task
-
-        sent_text = mock_adapter.send.call_args.args[1]
-        retained = f"{caplog.text}\n{sent_text}"
-        assert marker not in retained
-        assert "1.0" not in retained
-        assert "2.0" not in retained
-        assert "ephemeral user context" in retained
 
     @pytest.mark.asyncio
     async def test_no_credentials_reports_error(self):

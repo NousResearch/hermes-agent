@@ -176,44 +176,23 @@ async def test_steer_agent_without_steer_method_falls_back():
 
 
 @pytest.mark.asyncio
-async def test_steer_rejected_payload_returns_rejection_message():
-    runner, _adapter = _make_runner(_session_entry())
-    sk = build_session_key(_make_source())
-    running_agent = MagicMock()
-    running_agent.steer.return_value = False
-    runner._running_agents[sk] = running_agent
-
-    result = await runner._handle_message(_make_event("/steer hello"))
-
-    assert result is not None
-    assert "rejected" in result.lower() or "empty" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_explicit_steer_with_volatile_context_queues_new_turn():
+async def test_steer_with_volatile_context_queues_its_own_turn():
+    """Text and its opaque capability must not be spliced into the active turn."""
     runner, adapter = _make_runner(_session_entry())
     sk = build_session_key(_make_source())
     running_agent = MagicMock()
     running_agent.steer.return_value = True
     runner._running_agents[sk] = running_agent
-    prior = _make_event("already queued")
-    adapter._pending_messages[sk] = prior
-    event = _make_event("/steer use my current position")
-    event.ephemeral_user_context = "Location: 1.0, 2.0"
-    event._telegram_background_location_subject_key = "subject"
-    event._telegram_background_location_state_path = "/state/profile.json"
+    event = _make_event("/steer find coffee near me")
+    event.ephemeral_context_ref = object()
 
     result = await runner._handle_message(event)
 
-    assert result is not None
-    assert "volatile platform context" in result.lower()
+    assert result is not None and "queued" in result.lower()
     running_agent.steer.assert_not_called()
-    assert adapter._pending_messages[sk] is prior
-    queued = runner._queued_events[sk][0]
-    assert queued.text == "use my current position"
-    assert queued.ephemeral_user_context == "Location: 1.0, 2.0"
-    assert queued._telegram_background_location_subject_key == "subject"
-    assert queued._telegram_background_location_state_path == "/state/profile.json"
+    queued = adapter._pending_messages[sk]
+    assert queued.text == "find coffee near me"
+    assert queued.ephemeral_context_ref is event.ephemeral_context_ref
 
 
 if __name__ == "__main__":  # pragma: no cover

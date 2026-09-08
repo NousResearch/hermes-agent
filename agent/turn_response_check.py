@@ -89,7 +89,6 @@ def check_api_response(
     truncated_tool_call_retries: Any, current_turn_user_idx: Any, api_call_count: Any,
     api_request_id: Any, api_start_time: Any, effective_task_id: Any, turn_id: Any,
     _preflight_compression_blocked: Any, _last_preflight_pressure: Any,
-    resolved_ephemeral_user_context: Any = None,
 ) -> ResponseCheckVerdict:
     """Verify ``response`` in the original order. The retry buffer is NOT cleared on success
     (bytes back != usable content); ``_preflight_compression_blocked``/``_last_preflight_pressure``
@@ -110,7 +109,6 @@ def check_api_response(
         )
 
     api_duration = time.time() - api_start_time
-    contains_ephemeral_user_context = bool(resolved_ephemeral_user_context)
 
     # Silent stop: the response box / tool messages that follow are more informative.
     thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
@@ -119,20 +117,10 @@ def check_api_response(
         agent._vprint(f"{agent.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
 
     if agent.verbose_logging:
-        if contains_ephemeral_user_context:
-            logging.debug(
-                "API response received; provider fields omitted because the request "
-                "contained ephemeral user context"
-            )
-        else:
-            resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
-            logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
+        resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
+        logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
 
-    response_invalid, error_details = validate_response_shape(
-        agent,
-        response,
-        contains_ephemeral_user_context=contains_ephemeral_user_context,
-    )
+    response_invalid, error_details = validate_response_shape(agent, response)
     if response_invalid:
         _iv = retry_invalid_response(
             agent, response=response, error_details=error_details, _retry=_retry,
@@ -143,7 +131,6 @@ def check_api_response(
             api_call_count=api_call_count, api_request_id=api_request_id,
             api_start_time=api_start_time, api_duration=api_duration,
             effective_task_id=effective_task_id, turn_id=turn_id,
-            contains_ephemeral_user_context=contains_ephemeral_user_context,
         )
         thinking_spinner = _iv.thinking_spinner
         active_system_prompt = _iv.active_system_prompt
@@ -164,7 +151,6 @@ def check_api_response(
             api_call_count=api_call_count, effective_task_id=effective_task_id, turn_id=turn_id,
             api_request_id=api_request_id, api_start_time=api_start_time, retry_count=retry_count,
             max_retries=max_retries,
-            contains_ephemeral_user_context=contains_ephemeral_user_context,
         )
         thinking_spinner = None
         active_system_prompt = _rv.active_system_prompt
@@ -216,11 +202,7 @@ def check_api_response(
             pass
     from agent import relay_llm
 
-    relay_llm.complete_logical_call(
-        api_request_id,
-        outcome="success",
-        contains_ephemeral_user_context=contains_ephemeral_user_context,
-    )
+    relay_llm.complete_logical_call(api_request_id, outcome="success")
     agent._touch_activity(f"API call #{api_call_count} completed")
     return _verdict("break")
 
@@ -246,7 +228,6 @@ def retry_invalid_response(
     conversation_history: Any, retry_count: Any, max_retries: Any, compression_attempts: Any,
     api_call_count: Any, api_request_id: Any, api_start_time: Any, api_duration: Any,
     effective_task_id: Any, turn_id: Any,
-    contains_ephemeral_user_context: bool = False,
 ) -> InvalidResponseVerdict:
     """Malformed/empty provider response: fire the error hook, stop the spinner, eager
     fallback (empty responses often mean rate limiting), terminal result at max retries,
@@ -262,16 +243,11 @@ def retry_invalid_response(
             compression_attempts=compression_attempts, result=result,
         )
 
-    safe_error_details = (
-        ["provider response details omitted: request contained ephemeral user context"]
-        if contains_ephemeral_user_context
-        else list(error_details)
-    )
     agent._invoke_api_request_error_hook(
         task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
         api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
         error_type="InvalidAPIResponse",
-        error_message=", ".join(safe_error_details) or "Invalid API response",
+        error_message=", ".join(error_details) or "Invalid API response",
         status_code=getattr(getattr(response, "error", None), "code", None),
         retry_count=retry_count, max_retries=max_retries, retryable=True, reason="invalid_response",
     )
@@ -290,15 +266,9 @@ def retry_invalid_response(
         return _verdict("break")
 
     error_msg, provider_name, _failure_hint = describe_invalid_response(
-        agent,
-        response,
-        api_duration,
-        contains_ephemeral_user_context=contains_ephemeral_user_context,
+        agent, response, api_duration
     )
-    agent._buffer_vprint(
-        f"⚠️  Invalid API response (attempt {retry_count}/{max_retries}): "
-        f"{', '.join(safe_error_details)}"
-    )
+    agent._buffer_vprint(f"⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}")
     agent._buffer_vprint(f"   🏢 Provider: {provider_name}")
     agent._buffer_vprint(f"   📝 Provider message: {agent._clean_error_message(error_msg)}")
     agent._buffer_vprint(f"   ⏱️  {_failure_hint}")
@@ -329,13 +299,7 @@ def retry_invalid_response(
 
     wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
     agent._buffer_vprint(f"⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...")
-    logger.warning(
-        "Invalid API response (retry %d/%d): %s | Provider: %s",
-        retry_count,
-        max_retries,
-        ", ".join(safe_error_details),
-        provider_name,
-    )
+    logger.warning("Invalid API response (retry %d/%d): %s | Provider: %s", retry_count, max_retries, ', '.join(error_details), provider_name)
 
     # A redirect cancels only the live request; the helper preserves the pending
     # correction (restart_with_redirected_messages) instead of clear_interrupt()-ing it.

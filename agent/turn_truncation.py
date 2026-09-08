@@ -474,7 +474,6 @@ def handle_content_policy_refusal(
     messages: List[Dict[str, Any]], api_messages: Any, api_kwargs: Any, active_system_prompt: Any,
     conversation_history: Any, api_call_count: int, effective_task_id: Any, turn_id: Any,
     api_request_id: Any, api_start_time: float, retry_count: int, max_retries: int,
-    contains_ephemeral_user_context: bool = False,
 ) -> RefusalVerdict:
     """HTTP-200 refusal (``finish_reason`` ``content_filter`` / ``guardrail_intervened``).
     Deterministic for the unchanged prompt — never retried: one configured-fallback try,
@@ -487,18 +486,12 @@ def handle_content_policy_refusal(
     _refusal_text = (getattr(_refusal_result, "content", None) or "").strip()
     if not _refusal_text:
         _refusal_text = (agent._extract_reasoning(_refusal_result) or "").strip()
-    _safe_refusal_text = (
-        "Model declined to respond; provider details omitted because the request "
-        "contained ephemeral user context."
-        if contains_ephemeral_user_context
-        else _refusal_text
-    )
 
     agent._invoke_api_request_error_hook(
         task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
         api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
         error_type="ContentPolicyBlocked",
-        error_message=_safe_refusal_text or "model declined to respond (content_filter)",
+        error_message=_refusal_text or "model declined to respond (content_filter)",
         status_code=None, retry_count=retry_count, max_retries=max_retries, retryable=False,
         reason=FailoverReason.content_policy_blocked.value,
     )
@@ -511,11 +504,7 @@ def handle_content_policy_refusal(
         return RefusalVerdict("break", None, active_system_prompt)
 
     agent._flush_status_buffer()
-    _refusal_log = (
-        _safe_refusal_text[:500] + "..."
-        if len(_safe_refusal_text) > 500
-        else _safe_refusal_text
-    )
+    _refusal_log = _refusal_text[:500] + "..." if len(_refusal_text) > 500 else _refusal_text
     logger.warning(
         "%sModel declined to respond (finish_reason=content_filter). model=%s provider=%s refusal=%s",
         agent.log_prefix, agent.model, agent.provider,
@@ -523,9 +512,7 @@ def handle_content_policy_refusal(
     )
     agent._emit_status("⚠️ The model declined to respond to this request (safety refusal).")
     _refusal_detail = (
-        f"Model's explanation: {_safe_refusal_text}"
-        if _safe_refusal_text
-        else "The model returned no explanation."
+        f"Model's explanation: {_refusal_text}" if _refusal_text else "The model returned no explanation."
     )
     _refusal_response = (
         "⚠️  The model declined to respond to this request (safety refusal — not a Hermes/gateway failure).\n\n"
@@ -536,5 +523,5 @@ def handle_content_policy_refusal(
     agent._persist_session(messages, conversation_history)
     return RefusalVerdict("return", _content_policy_blocked_result(
         messages, api_call_count, final_response=_refusal_response,
-        error_detail=_safe_refusal_text or "model declined (content_filter)",
+        error_detail=_refusal_text or "model declined (content_filter)",
     ), active_system_prompt)

@@ -889,13 +889,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     def _request_is_current() -> bool:
         return request_token is None or getattr(agent, "_active_codex_stream_request_token", None) is request_token
 
-    def _fenced(fn: Callable[..., Any]) -> Callable[..., Any]:
+    def _fenced(fn: Callable[[Any], None]) -> Callable[[Any], None]:
         """Wrap a callback so a retired request's late frames never reach the agent."""
-        def _callback(*args: Any) -> Any:
-            relay_llm.run_provider_call_guard()
-            return fn(*args) if _request_is_current() else None
-
-        return _callback
+        return lambda value: fn(value) if _request_is_current() else None
 
     def _on_text_delta(text: str) -> None:
         agent._codex_streamed_text_parts.append(text)
@@ -915,7 +911,6 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         agent._touch_activity("receiving stream response")
 
     def _interrupt_or_superseded() -> bool:
-        relay_llm.run_provider_call_guard()
         # A retired request must NOT break out of the consume loop (that returns a partial ``final`` with
         # status "completed"); raise so the watchdog's TimeoutError is seen.
         if not _request_is_current():
@@ -925,15 +920,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     def _open_codex_stream(next_api_kwargs: dict[str, Any]):
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
-        relay_llm.run_provider_call_guard()
         return active_client.responses.create(**_bypass_sdk_request_transform(stream_kwargs))
 
     def _log_failure(exc: BaseException) -> None:
-        if relay_llm.provider_call_contains_ephemeral_user_context():
-            request_body_bytes = None
-            exception_chain = relay_llm.safe_provider_error_message(exc)
-        else:
-            request_body_bytes, exception_chain = _codex_request_failure_details(exc)
+        request_body_bytes, exception_chain = _codex_request_failure_details(exc)
         logger.warning("Codex Responses request failed: serialized_request_body_bytes=%s stream_opened=%s "
                        "exception_chain=%s model=%s", "unknown" if request_body_bytes is None else request_body_bytes,
                        str(writer_token["value"] is not None).lower(), exception_chain, getattr(agent, "model", "unknown"))
@@ -943,7 +933,6 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         writer_token["value"] = claim_stream_writer(agent)
 
     def _accept_codex_chunk(_chunk: Any) -> bool:
-        relay_llm.run_provider_call_guard()
         token = writer_token["value"]
         if token is None or stream_writer_is_current(agent, token):
             return True
@@ -960,9 +949,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         except (*transport_errors, _APIConnectionError) as exc:
             if not isinstance(exc, transport_errors):
                 _log_failure(exc)
+            from agent.api_error_summary import provider_error_log_detail
+
             logger.warning("Codex Responses stream transport finalization failed after a terminal response was already "
                            "received; returning the completed response instead of retrying. %s error=%s",
-                           agent._client_log_context(), relay_llm.safe_provider_error_message(exc))
+                           agent._client_log_context(), provider_error_log_detail(exc))
 
     def _close_event_stream(event_stream: Any) -> None:
         close_fn = getattr(event_stream, "close", None)  # None while connect never succeeded
@@ -1009,19 +1000,20 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 final = _consume_codex_event_stream(
                     event_stream, model=model, on_text_delta=_fenced(_on_text_delta),
                     on_reasoning_delta=_fenced(lambda text: agent._fire_reasoning_delta(text)),
-                    on_commentary_message=on_commentary_message,
-                    on_first_delta=_fenced(on_first_delta) if on_first_delta else None,
+                    on_commentary_message=on_commentary_message, on_first_delta=on_first_delta,
                     on_event=_fenced(_on_event), interrupt_check=_interrupt_or_superseded,
                 )
             except transport_errors as exc:
                 if attempt >= max_stream_retries:
                     _log_failure(exc)
                     raise
+                from agent.api_error_summary import provider_error_log_detail
+
                 logger.debug(
                     "Codex Responses stream connect failed (attempt %s/%s); retrying. %s error=%s" if event_stream is None
                     else "Codex Responses stream transport failed mid-iteration (attempt %s/%s); retrying. %s error=%s",
                     attempt + 1, max_stream_retries + 1, agent._client_log_context(),
-                    relay_llm.safe_provider_error_message(exc),
+                    provider_error_log_detail(exc),
                 )
                 continue
             except RuntimeError:
@@ -1035,15 +1027,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             if not agent._interrupt_requested:
                 _drain_for_finalizer(event_stream)
             if final.status in {"incomplete", "failed"}:
-                if relay_llm.provider_call_contains_ephemeral_user_context():
-                    incomplete_details = "omitted: ephemeral user context"
-                    terminal_error = "omitted: ephemeral user context"
-                else:
-                    incomplete_details = final.incomplete_details
-                    terminal_error = final.error
+                from agent.redact import has_volatile_sensitive_text
+
+                private_context = has_volatile_sensitive_text()
                 logger.warning("Codex Responses stream terminal status=%s "
                                "(incomplete_details=%s, error=%s, streamed_chars=%d). %s",
-                               final.status, incomplete_details, terminal_error,
+                               final.status,
+                               "withheld" if private_context else final.incomplete_details,
+                               "withheld" if private_context else final.error,
                                sum(len(p) for p in agent._codex_streamed_text_parts), agent._client_log_context())
             return final
         finally:

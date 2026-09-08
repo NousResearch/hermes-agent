@@ -18,7 +18,7 @@ import re
 import time
 from contextlib import suppress
 from gateway.config import Platform
-from gateway.platforms.base import EphemeralReply, copy_ephemeral_context_metadata
+from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_common import _UNSET
 from gateway.session import (
@@ -69,9 +69,7 @@ class GatewayInboundMixin:
             if _action == "rewrite":
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
-                    prior_event = event
                     event = dataclasses.replace(event, text=_new_text)
-                    copy_ephemeral_context_metadata(prior_event, event)
                 break
             if _action == "allow":
                 break
@@ -557,15 +555,8 @@ class GatewayInboundMixin:
     def _hm_busy_steer(self, event: "MessageEvent", running_agent: Any, _quick_key: str) -> None:
         """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics."""
         steer_text = (event.text or "").strip()
-        ephemeral_user_context = getattr(event, "ephemeral_user_context", None)
-        has_ephemeral_user_context = bool(
-            isinstance(ephemeral_user_context, str) and ephemeral_user_context.strip()
-        )
         steered = False
-        if (
-            self._hm_text_only(event) and steer_text and not has_ephemeral_user_context
-            and hasattr(running_agent, "steer")
-        ):
+        if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
             try:
                 steered = bool(running_agent.steer(self._steer_text_with_origin(steer_text, event)))
             except Exception as exc:
@@ -581,19 +572,10 @@ class GatewayInboundMixin:
     ) -> None:
         """Interrupt path: redirect text-only corrections when supported, else ``agent.interrupt()``."""
         from gateway.run import _build_media_placeholder
-        ephemeral_user_context = getattr(event, "ephemeral_user_context", None)
-        has_ephemeral_user_context = bool(
-            isinstance(ephemeral_user_context, str) and ephemeral_user_context.strip()
-        )
         # Text-only corrections redirect the live turn (preserving displayed context) when the
         # runtime supports it; media/voice and older runtimes use the interrupt path below.
         _can_redirect = getattr(running_agent, "_supports_active_turn_redirect", False) is True
-        if (
-            self._hm_text_only(event)
-            and not has_ephemeral_user_context
-            and _can_redirect
-            and hasattr(running_agent, "redirect")
-        ):
+        if self._hm_text_only(event) and _can_redirect and hasattr(running_agent, "redirect"):
             try:
                 if running_agent.redirect(
                     self._steer_text_with_origin((event.text or "").strip(), event)
@@ -603,10 +585,6 @@ class GatewayInboundMixin:
             except Exception as exc:
                 logger.warning("PRIORITY redirect failed for session %s: %s", _quick_key, exc)
         logger.debug("PRIORITY interrupt for session %s", _quick_key)
-        if has_ephemeral_user_context:
-            # ``interrupt()`` accepts text only. Preserve the full event so its
-            # API-only context is consumed as the next turn after cancellation.
-            self._queue_or_replace_pending_event(_quick_key, event)
         _interrupt_text = event.text
         if self._pending_event_audio_paths(event):
             _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
@@ -628,6 +606,12 @@ class GatewayInboundMixin:
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
         if _handled:
             return _result
+
+        if getattr(event, "ephemeral_context_ref", None) is not None:
+            # Volatile context is resolved only at a user-turn boundary; never splice
+            # its text alone into an already-running turn via steer/redirect.
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return None
 
         effective_busy_input_mode = self._effective_busy_input_mode(source)
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):

@@ -212,6 +212,15 @@ _SHARED_KEYS: tuple = (
     *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text"),
 )
 
+
+def shared_platform_config_keys(platform: Platform) -> frozenset[str]:
+    """Shared keys whose explicit platform-section value outranks plugin extras."""
+    return frozenset(
+        key
+        for key, only, _transform in _SHARED_KEYS
+        if only is None or platform in only
+    )
+
 # Top-level port/host/secret bridged into ``extra`` for adapters that read them from config.extra
 # (PlatformConfig.from_dict only reads the ``extra:`` sub-key, so ``platforms.webhook.port`` would be lost).
 _PORT_BRIDGE_KEYS: dict = {
@@ -304,7 +313,17 @@ def apply_plugin_yaml_hooks(yaml_cfg: dict, gateway_platforms: Any, platforms_da
             logger.debug("apply_yaml_config_fn for %s raised: %s", entry.name, e)
             continue
         if isinstance(seeded, dict) and seeded:
-            _dict_slot(_dict_slot(platforms_data, entry.name), "extra").update(seeded)
+            # The shared-key bridge ran first and uses presence-based precedence.
+            # A plugin may also read legacy ``extra`` keys, but its hook must never
+            # replace an explicit (including empty/False) platform-section value.
+            try:
+                authoritative = shared_platform_config_keys(Platform(entry.name)).intersection(
+                    platform_cfg
+                )
+            except (TypeError, ValueError):
+                authoritative = frozenset()
+            filtered = {key: value for key, value in seeded.items() if key not in authoritative}
+            _dict_slot(_dict_slot(platforms_data, entry.name), "extra").update(filtered)
 
 
 def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:

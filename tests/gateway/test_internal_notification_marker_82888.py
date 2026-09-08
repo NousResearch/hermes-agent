@@ -93,16 +93,12 @@ def _source():
     )
 
 
-def _event(
-    *, internal: bool, text: str = "hello world",
-    ephemeral_user_context: str | None = None,
-):
+def _event(*, internal: bool, text: str = "hello world"):
     return MessageEvent(
         text=text,
         source=_source(),
         message_id=None if internal else "msg-82888",
         internal=internal,
-        ephemeral_user_context=ephemeral_user_context,
     )
 
 
@@ -155,53 +151,11 @@ async def test_real_user_event_gets_no_marker(monkeypatch, tmp_path):
     )
 
     await runner._handle_message_with_agent(
-        _event(internal=False, ephemeral_user_context="Location: 1.0, 2.0"),
-        _source(), SESSION_KEY, 1,
+        _event(internal=False), _source(), SESSION_KEY, 1,
     )
 
     kwargs = runner._run_agent.call_args.kwargs
     assert kwargs["persist_user_display_kind"] is None
-    assert kwargs["ephemeral_user_context"] == "Location: 1.0, 2.0"
-
-
-@pytest.mark.asyncio
-async def test_foreground_turn_refreshes_volatile_context_after_start_hook(
-    monkeypatch, tmp_path
-):
-    runner = _bootstrap(monkeypatch, tmp_path)
-    hook_finished = False
-
-    async def emit_hook(*_args, **_kwargs):
-        nonlocal hook_finished
-        hook_finished = True
-
-    async def refresh_after_stop(event):
-        assert hook_finished is True
-        event.ephemeral_user_context = None
-
-    runner.hooks.emit = AsyncMock(side_effect=emit_hook)
-    runner._refresh_event_ephemeral_user_context = AsyncMock(
-        side_effect=refresh_after_stop
-    )
-    runner._run_agent = AsyncMock(
-        return_value={
-            "final_response": "ack",
-            "messages": [],
-            "tools": [],
-            "history_offset": 0,
-            "last_prompt_tokens": 0,
-        }
-    )
-    event = _event(
-        internal=False,
-        ephemeral_user_context="Location: 1.0, 2.0",
-    )
-    event._telegram_background_location_subject_key = "subject"
-
-    await runner._handle_message_with_agent(event, _source(), SESSION_KEY, 1)
-
-    runner._refresh_event_ephemeral_user_context.assert_awaited_once_with(event)
-    assert runner._run_agent.call_args.kwargs["ephemeral_user_context"] is None
 
 
 # ── 3: gateway-side fallback rows carry the marker for internal events ─────

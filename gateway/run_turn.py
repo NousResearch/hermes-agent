@@ -22,10 +22,10 @@ from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
-    build_session_context,
+    build_session_context, is_shared_multi_user_session,
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
@@ -46,42 +46,36 @@ logger = logging.getLogger("gateway.run")
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
-    async def _refresh_event_ephemeral_user_context(
-        self, event: Optional[MessageEvent]
-    ) -> None:
-        """Compatibility no-op: ambient context is foreground-only."""
-        return None
-
-    def _resolve_event_ephemeral_user_context_sync(
-        self, event: Optional[MessageEvent]
-    ) -> Optional[str]:
-        """Resolve one adapter reference exactly once at foreground turn start."""
-        if event is None:
+    def _resolve_event_volatile_user_context(self, event: MessageEvent) -> Optional[str]:
+        """Resolve an adapter-owned capability once at a foreground turn boundary."""
+        if (
+            event is None
+            or getattr(event, "ephemeral_context_ref", None) is None
+            or getattr(event, "_ephemeral_context_blocked", False)
+            or getattr(event, "internal", False)
+            or getattr(event, "message_type", None) not in {MessageType.TEXT, MessageType.COMMAND}
+            or bool(getattr(event, "media_urls", None))
+            or not getattr(event, "message_id", None)
+        ):
             return None
-        current = getattr(event, "ephemeral_user_context", None)
-        adapter = self._adapter_for_source(event.source)
-        resolver = getattr(
-            adapter, "_resolve_ephemeral_user_context_for_dispatch_sync", None
-        )
+        source = getattr(event, "source", None)
+        config = getattr(self, "config", None)
+        if source is None or is_shared_multi_user_session(
+            source,
+            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+        ):
+            return None
+        adapter = self._adapter_for_source(source)
+        resolver = getattr(adapter, "_resolve_ephemeral_user_context_for_dispatch_sync", None)
         if not callable(resolver):
-            return current if isinstance(current, str) and current.strip() else None
+            return None
         try:
             resolved = resolver(event)
         except Exception:
-            logger.warning(
-                "Could not resolve volatile user context at the model boundary; "
-                "dropping it",
-                exc_info=True,
-            )
+            logger.warning("Volatile user context resolution failed closed", exc_info=True)
             return None
-        return resolved if isinstance(resolved, str) and resolved.strip() else None
-
-    def _event_ephemeral_user_context_supplier(
-        self, event: Optional[MessageEvent]
-    ) -> Optional[Callable[[], Optional[str]]]:
-        # A supplier would re-resolve mutable location state between tool calls.
-        # Foreground turns instead pass the one static snapshot captured below.
-        return None
+        return resolved.strip() if isinstance(resolved, str) and resolved.strip() else None
 
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
@@ -1987,16 +1981,12 @@ class GatewayTurnMixin:
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
-            # Resolve the adapter-owned reference once, after all foreground
-            # preparation and immediately before entering the agent. A stop
-            # after this point affects the next turn, not this authorized one.
-            event.ephemeral_user_context = self._resolve_event_ephemeral_user_context_sync(event)
-
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
             from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
             if not heartbeat_owner_is_current(self, event, session_key):
                 return
+            volatile_user_context = self._resolve_event_volatile_user_context(event)
             _run_start_session_id = session_entry.session_id
             _turn_started_monotonic = time.monotonic()
             # Admission/typing is not execution. All routing, authorization and
@@ -2013,7 +2003,7 @@ class GatewayTurnMixin:
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner},
                 message_type=event.message_type,
-                ephemeral_user_context=getattr(event, "ephemeral_user_context", None),
+                volatile_user_context=volatile_user_context,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -2102,21 +2092,13 @@ class GatewayTurnMixin:
     async def _run_background_task(
         self, prompt: str, source: "SessionSource", task_id: str,
         event_message_id: Optional[str] = None, media_urls: Optional[List[str]] = None,
-        media_types: Optional[List[str]] = None, ephemeral_user_context: Optional[str] = None,
-        context_event: Optional[MessageEvent] = None,
+        media_types: Optional[List[str]] = None,
     ) -> None:
         """Profile-scoping wrapper around the background agent task (mirrors ``_run_agent``)."""
         with self._profile_scope_for_source(source):
-            args = (prompt, source, task_id, event_message_id, media_urls, media_types)
-            if context_event is not None:
-                return await self._run_background_task_inner(
-                    *args,
-                    ephemeral_user_context=ephemeral_user_context,
-                    context_event=context_event,
-                )
-            if isinstance(ephemeral_user_context, str) and ephemeral_user_context.strip():
-                return await self._run_background_task_inner(*args, ephemeral_user_context)
-            return await self._run_background_task_inner(*args)
+            return await self._run_background_task_inner(
+                prompt, source, task_id, event_message_id, media_urls, media_types,
+            )
 
     def _resolve_enabled_toolsets_for_source(
         self, user_config: dict, source: "SessionSource", platform_key: str,
@@ -2146,8 +2128,7 @@ class GatewayTurnMixin:
     async def _run_background_task_inner(
         self, prompt: str, source: "SessionSource", task_id: str,
         event_message_id: Optional[str] = None, media_urls: Optional[List[str]] = None,
-        media_types: Optional[List[str]] = None, ephemeral_user_context: Optional[str] = None,
-        context_event: Optional[MessageEvent] = None,
+        media_types: Optional[List[str]] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from gateway.run import (
@@ -2195,17 +2176,6 @@ class GatewayTurnMixin:
                 except Exception as e:
                     logger.warning("Background task vision enrichment failed: %s", e)
 
-            if context_event is not None:
-                await self._refresh_event_ephemeral_user_context(context_event)
-                ephemeral_user_context = getattr(
-                    context_event, "ephemeral_user_context", None
-                )
-            ephemeral_user_context_supplier = (
-                self._event_ephemeral_user_context_supplier(context_event)
-                if context_event is not None
-                else None
-            )
-
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
@@ -2236,22 +2206,7 @@ class GatewayTurnMixin:
                     fallback_model=self._refresh_fallback_model(),
                 )
                 try:
-                    conversation_kwargs = {
-                        "user_message": enriched_prompt,
-                        "task_id": task_id,
-                    }
-                    if ephemeral_user_context_supplier is not None:
-                        conversation_kwargs["ephemeral_user_context"] = (
-                            ephemeral_user_context_supplier
-                        )
-                    elif (
-                        isinstance(ephemeral_user_context, str)
-                        and ephemeral_user_context.strip()
-                    ):
-                        conversation_kwargs["ephemeral_user_context"] = (
-                            ephemeral_user_context
-                        )
-                    return agent.run_conversation(**conversation_kwargs)
+                    return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
                 finally:
                     self._cleanup_agent_resources(agent)
 
@@ -3513,8 +3468,8 @@ class GatewayTurnMixin:
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
-        next_message_id = next_channel_prompt = next_message_type = None
-        next_ephemeral_user_context = None
+        next_message_id = next_inbound_message_id = None
+        next_channel_prompt = next_message_type = next_volatile_user_context = None
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3539,8 +3494,14 @@ class GatewayTurnMixin:
             if next_message is None:
                 return result
             next_message_id = self._reply_anchor_for_event(pending_event)
+            next_inbound_message_id = (
+                str(pending_event.message_id) if pending_event.message_id else None
+            )
             next_channel_prompt = getattr(pending_event, "channel_prompt", None)
             next_message_type = getattr(pending_event, "message_type", None)
+            next_volatile_user_context = self._resolve_event_volatile_user_context(
+                pending_event
+            )
 
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
         # See #60671.
@@ -3570,28 +3531,14 @@ class GatewayTurnMixin:
         # guard will consult. Fail-safe in helper.
         await self._refresh_agent_cache_message_count(session_key, session_id)
 
-        if pending_event is not None:
-            # The event was popped before first-response delivery and inbound
-            # preprocessing, both of which may yield long enough for volatile
-            # platform state to be revoked. Re-resolve at the last boundary
-            # before the recursive turn; failures drop the stale value.
-            await self._refresh_event_ephemeral_user_context(pending_event)
-            next_ephemeral_user_context = getattr(
-                pending_event, "ephemeral_user_context", None
-            )
-
         followup_result = await self._run_agent(
             message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
             source=next_source, session_id=session_id, session_key=next_session_key,
             run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-            event_message_id=next_message_id, channel_prompt=next_channel_prompt,
-            ephemeral_user_context=next_ephemeral_user_context,
-            ephemeral_user_context_supplier=(
-                self._event_ephemeral_user_context_supplier(pending_event)
-                if pending_event is not None
-                else None
-            ),
+            event_message_id=next_message_id, inbound_message_id=next_inbound_message_id,
+            channel_prompt=next_channel_prompt,
             message_type=next_message_type,
+            volatile_user_context=next_volatile_user_context,
         )
         return _preserve_queued_followup_history_offset(result, followup_result)
 
@@ -3876,21 +3823,16 @@ class GatewayTurnMixin:
         source: SessionSource, session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None, inbound_message_id: Optional[str] = None,
-        channel_prompt: Optional[str] = None, ephemeral_user_context: Optional[str] = None,
-        ephemeral_user_context_supplier: Optional[Callable[[], Optional[str]]] = None,
-        moa_config: Optional[dict] = None,
+        channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        volatile_user_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
         if self._get_proxy_url():
-            if isinstance(ephemeral_user_context, str) and ephemeral_user_context.strip():
-                logger.warning(
-                    "Dropping volatile user context at the gateway proxy boundary"
-                )
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
@@ -3905,13 +3847,12 @@ class GatewayTurnMixin:
             run_generation=run_generation, context_prompt=context_prompt, history=history,
             session_id=session_id, _interrupt_depth=_interrupt_depth,
             event_message_id=event_message_id, inbound_message_id=inbound_message_id,
-            channel_prompt=channel_prompt, ephemeral_user_context=ephemeral_user_context,
-            ephemeral_user_context_supplier=ephemeral_user_context_supplier,
-            moa_config=moa_config,
+            channel_prompt=channel_prompt, moa_config=moa_config,
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
+            volatile_user_context=volatile_user_context,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

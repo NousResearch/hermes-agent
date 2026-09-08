@@ -29,128 +29,6 @@ _RELAY_PROTOCOL_BY_API_MODE = {
     "codex_responses": ("openai.responses", "OpenAIResponsesCodec"),
     "anthropic_messages": ("anthropic.messages", "AnthropicMessagesCodec"),
 }
-_PROVIDER_CALL_GUARD: contextvars.ContextVar[Callable[[], None] | None] = (
-    contextvars.ContextVar("relay_provider_call_guard", default=None)
-)
-_PROVIDER_CALL_HAS_EPHEMERAL_USER_CONTEXT: contextvars.ContextVar[bool] = (
-    contextvars.ContextVar(
-        "relay_provider_call_has_ephemeral_user_context", default=False
-    )
-)
-
-
-@contextlib.contextmanager
-def provider_call_guard(
-    callback: Callable[[], None] | None,
-    *,
-    contains_ephemeral_user_context: bool = False,
-) -> Iterator[None]:
-    """Install a request-local check that runs at every physical provider edge.
-
-    Relay may queue or transform a request long after Hermes request middleware
-    returns. A ContextVar keeps the check attached across Relay callbacks and
-    Hermes worker threads without placing a non-serializable value in the
-    provider payload.
-    """
-    token = _PROVIDER_CALL_GUARD.set(callback)
-    context_token = _PROVIDER_CALL_HAS_EPHEMERAL_USER_CONTEXT.set(
-        _PROVIDER_CALL_HAS_EPHEMERAL_USER_CONTEXT.get()
-        or bool(contains_ephemeral_user_context)
-    )
-    try:
-        yield
-    finally:
-        _PROVIDER_CALL_HAS_EPHEMERAL_USER_CONTEXT.reset(context_token)
-        _PROVIDER_CALL_GUARD.reset(token)
-
-
-def run_provider_call_guard() -> None:
-    """Run the current request's last-moment provider admission check."""
-    callback = _PROVIDER_CALL_GUARD.get()
-    if callback is not None:
-        callback()
-
-
-def provider_call_contains_ephemeral_user_context() -> bool:
-    """Whether the current physical request contains volatile user context."""
-    return _PROVIDER_CALL_HAS_EPHEMERAL_USER_CONTEXT.get()
-
-
-def safe_provider_error_message(
-    error: BaseException,
-    *,
-    contains_ephemeral_user_context: bool | None = None,
-) -> str:
-    """Render provider failures without persisting echoed volatile request data."""
-    sensitive = (
-        provider_call_contains_ephemeral_user_context()
-        if contains_ephemeral_user_context is None
-        else bool(contains_ephemeral_user_context)
-    )
-    if not sensitive:
-        return str(error)
-    status_code = getattr(error, "status_code", None)
-    if not isinstance(status_code, int) or isinstance(status_code, bool):
-        status_code = getattr(getattr(error, "response", None), "status_code", None)
-    status = (
-        f" HTTP {status_code}"
-        if isinstance(status_code, int) and not isinstance(status_code, bool)
-        else ""
-    )
-    return (
-        f"{type(error).__name__}{status} "
-        "(details omitted: request contained ephemeral user context)"
-    )
-
-
-def safe_provider_error_summary(
-    agent: Any,
-    error: BaseException,
-    *,
-    contains_ephemeral_user_context: bool | None = None,
-) -> str:
-    """Use Hermes' normal summary unless the provider may echo volatile data."""
-    sensitive = (
-        provider_call_contains_ephemeral_user_context()
-        if contains_ephemeral_user_context is None
-        else bool(contains_ephemeral_user_context)
-    )
-    if sensitive:
-        return safe_provider_error_message(
-            error, contains_ephemeral_user_context=True
-        )
-    return agent._summarize_api_error(error)
-
-
-def _log_provider_internal_failure(
-    level: int,
-    message: str,
-    error: BaseException,
-    *,
-    contains_ephemeral_user_context: bool | None = None,
-) -> None:
-    """Log an internal Relay failure without traceback-retaining request echoes."""
-    sensitive = (
-        provider_call_contains_ephemeral_user_context()
-        if contains_ephemeral_user_context is None
-        else bool(contains_ephemeral_user_context)
-    )
-    if sensitive:
-        logger.log(
-            level,
-            "%s: %s",
-            message,
-            safe_provider_error_message(
-                error, contains_ephemeral_user_context=True
-            ),
-        )
-        return
-    logger.log(level, message, exc_info=True)
-
-
-def _guarded_provider_call(callback: Callable[..., Any], request: Any) -> Any:
-    run_provider_call_guard()
-    return callback(request)
 
 
 def _api_mode(metadata: dict[str, Any] | None) -> str:
@@ -208,9 +86,6 @@ class _ManagedAttempt:
         # Provider callback bookkeeping: "value"/"json" once it returned, "error" if it raised.
         self.raw_response: dict[str, Any] = {}
         self.context = contextvars.copy_context()
-        self.contains_ephemeral_user_context = (
-            provider_call_contains_ephemeral_user_context()
-        )
 
     def provider_request(self, next_request: Any) -> dict[str, Any]:
         return _provider_request(
@@ -248,17 +123,12 @@ class _ManagedAttempt:
     def invoke(self, callback: Callable[..., Any], next_request: Any) -> Any:
         """Provider callback handed to Relay: run ``callback`` on Relay's (possibly rewritten) request."""
         with self._recording_errors():
-            raw = self.run_callback(
-                _guarded_provider_call,
-                callback,
-                self.provider_request(next_request),
-            )
+            raw = self.run_callback(callback, self.provider_request(next_request))
         return self._record(raw)
 
     async def invoke_async(self, callback: Callable[..., Any], next_request: Any) -> Any:
         async def call_provider() -> Any:
             with relay_runtime.managed_callback_guard():  # nested relay calls run unmanaged
-                run_provider_call_guard()
                 return await callback(final_request)
 
         with self._recording_errors():
@@ -280,11 +150,9 @@ class _ManagedAttempt:
             raise callback_error
         if not isinstance(exc, Exception) or callback_error is not None or "value" not in self.raw_response:
             raise
-        _log_provider_internal_failure(
-            logging.WARNING,
+        logger.warning(
             "NeMo Relay LLM post-processing failed after provider success; returning the provider response",
-            exc,
-            contains_ephemeral_user_context=self.contains_ephemeral_user_context,
+            exc_info=True,
         )
         self._complete(defer_logical_completion)
         return self.raw_response["value"]
@@ -297,11 +165,7 @@ class _ManagedAttempt:
 
     def _complete(self, defer_logical_completion: bool) -> None:
         if not defer_logical_completion:
-            _complete_logical(
-                self.logical,
-                outcome="success",
-                contains_ephemeral_user_context=self.contains_ephemeral_user_context,
-            )
+            _complete_logical(self.logical, outcome="success")
 
 
 def _current_session_id() -> str | None:
@@ -318,7 +182,7 @@ def execute(
     ``session_id`` defaults to the inherited Hermes turn's session (unmanaged when there is none)."""
     attempt = _ManagedAttempt.resolve(session_id, request, metadata, name=name, model_name=model_name)
     if attempt is None:
-        return _guarded_provider_call(callback, request)
+        return callback(request)
     try:
         managed = _run_awaitable(attempt.run_managed(
             attempt.runtime.relay.llm.execute, partial(attempt.invoke, callback)
@@ -335,7 +199,6 @@ async def execute_async(
     """Async ``execute``."""
     attempt = _ManagedAttempt.resolve(session_id, request, metadata, name=name, model_name=model_name)
     if attempt is None:
-        run_provider_call_guard()
         return await callback(request)
     try:
         managed = await attempt.run_managed(attempt.runtime.relay.llm.execute, partial(attempt.invoke_async, callback))
@@ -421,9 +284,6 @@ class ManagedLlmStream(Iterator[Any]):
         metadata: dict[str, Any] | None = None, defer_logical_completion: bool = False,
     ) -> None:
         self._defer_logical_completion = defer_logical_completion
-        self._contains_ephemeral_user_context = (
-            provider_call_contains_ephemeral_user_context()
-        )
         # Only auxiliary calls report model/provider on their logical scope.
         auxiliary = str((metadata or {}).get("call_role") or "").startswith("auxiliary:")
         self._logical_model_name, self._logical_provider_name = (model_name, name) if auxiliary else (None, None)
@@ -440,7 +300,7 @@ class ManagedLlmStream(Iterator[Any]):
         self._start_managed(attempt)
 
     def _start_unmanaged(self, request: dict[str, Any]) -> None:
-        raw_stream = _guarded_provider_call(self._stream_factory, request)
+        raw_stream = self._stream_factory(request)
         predicate = self._completed_response_predicate
         if predicate is not None and predicate(raw_stream):
             self.final_response = raw_stream
@@ -456,11 +316,7 @@ class ManagedLlmStream(Iterator[Any]):
         run_callback = attempt.run_callback
         raw_stream = None
         try:
-            raw_stream = run_callback(
-                _guarded_provider_call,
-                self._stream_factory,
-                attempt.provider_request(next_request),
-            )
+            raw_stream = run_callback(self._stream_factory, attempt.provider_request(next_request))
             predicate = self._completed_response_predicate
             if predicate is not None and run_callback(predicate, raw_stream):
                 self.final_response = raw_stream
@@ -550,11 +406,9 @@ class ManagedLlmStream(Iterator[Any]):
         """Relay post-processing failed after the provider already succeeded."""
         recoverable = isinstance(exc, Exception) and self._provider_completed and self._callback_error is None
         if recoverable:
-            _log_provider_internal_failure(
-                logging.WARNING,
+            logger.warning(
                 "NeMo Relay stream post-processing failed after provider success; preserving the provider result",
-                exc,
-                contains_ephemeral_user_context=self._contains_ephemeral_user_context,
+                exc_info=True,
             )
         return recoverable
 
@@ -566,7 +420,6 @@ class ManagedLlmStream(Iterator[Any]):
             self._logical, outcome=outcome, model_name=self._logical_model_name,
             provider_name=self._logical_provider_name, response_model_name=self._logical_response_model_name,
             operation_lease=self._runtime_lease,
-            contains_ephemeral_user_context=self._contains_ephemeral_user_context,
         )
         self._logical = None
 
@@ -629,13 +482,8 @@ class ManagedLlmStream(Iterator[Any]):
             if loop is not None:
                 try:
                     _aclose_on_loop(loop, relay_stream)
-                except Exception as exc:
-                    _log_provider_internal_failure(
-                        logging.DEBUG,
-                        "Relay stream cleanup failed during provider fallback",
-                        exc,
-                        contains_ephemeral_user_context=self._contains_ephemeral_user_context,
-                    )
+                except Exception:
+                    logger.debug("Relay stream cleanup failed during provider fallback", exc_info=True)
                 loop.close()
             self._finish_logical("success")
         finally:
@@ -657,12 +505,7 @@ class ManagedLlmStream(Iterator[Any]):
                     close()
             except Exception as exc:
                 self._keep_first_close_error(exc)
-                _log_provider_internal_failure(
-                    logging.DEBUG,
-                    "Provider stream cleanup failed",
-                    exc,
-                    contains_ephemeral_user_context=self._contains_ephemeral_user_context,
-                )
+                logger.debug("Provider stream cleanup failed", exc_info=True)
 
     def _close(self, *, logical_outcome: str) -> None:
         if self._closed:
@@ -798,7 +641,6 @@ def _logical_parent(
 def _complete_logical(
     logical: _LogicalCall | None, *, outcome: str, model_name: str | None = None, provider_name: str | None = None,
     response_model_name: str | None = None, operation_lease: relay_runtime.RelayOperationLease | None = None,
-    contains_ephemeral_user_context: bool | None = None,
 ) -> None:
     if logical is None:
         return
@@ -822,14 +664,9 @@ def _complete_logical(
                 lease.session, relay_runtime.pop_relay_scope, lease.host.relay, handle,
                 output=output, metadata=relay_runtime.runtime_metadata(lease.host.runtime_id),
             )
-        except Exception as exc:
+        except Exception:
             # Provider result is authoritative; retain the handle so turn finalization can retry.
-            _log_provider_internal_failure(
-                logging.WARNING,
-                "Hermes Relay logical LLM finalization failed",
-                exc,
-                contains_ephemeral_user_context=contains_ephemeral_user_context,
-            )
+            logger.warning("Hermes Relay logical LLM finalization failed", exc_info=True)
             return
         with turn.logical_llm_lock:
             if turn.logical_llm_calls.get(request_id) is handle:
@@ -843,7 +680,6 @@ def _is_cancellation(error: BaseException) -> bool:
 def complete_logical_call(
     api_request_id: str, *, outcome: str, model_name: str | None = None,
     provider_name: str | None = None, response_model_name: str | None = None,
-    contains_ephemeral_user_context: bool | None = None,
 ) -> None:
     """Complete the active turn's logical LLM call after caller validation."""
     turn = relay_runtime.active_turn()
@@ -855,7 +691,6 @@ def complete_logical_call(
         _complete_logical(
             (turn, handle, api_request_id), outcome=outcome, model_name=model_name,
             provider_name=provider_name, response_model_name=response_model_name,
-            contains_ephemeral_user_context=contains_ephemeral_user_context,
         )
 
 
@@ -962,12 +797,8 @@ def _codec_round_trip_request_body(
     try:
         encoded = codec.encode(codec.decode(relay_request), relay_request)
         content = getattr(encoded, "content", encoded)
-    except Exception as exc:
-        _log_provider_internal_failure(
-            logging.WARNING,
-            "NeMo Relay request codec baseline failed; ignoring request rewrites",
-            exc,
-        )
+    except Exception:
+        logger.warning("NeMo Relay request codec baseline failed; ignoring request rewrites", exc_info=True)
         return None
     if isinstance(content, dict):
         return _provider_request_body(content, metadata)

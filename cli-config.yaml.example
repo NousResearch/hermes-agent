@@ -1296,8 +1296,7 @@ platform_toolsets:
 # Gateway Platform Settings
 # =============================================================================
 # Optional per-platform messaging settings.
-# Common Telegram behavior settings live directly under the platform. Advanced
-# adapter-specific settings remain under `extra`.
+# Platform-specific knobs live under `extra`.
 #
 # platforms:
 #   telegram:
@@ -1306,8 +1305,10 @@ platform_toolsets:
 #     # Default false; ordinary messages, replies, and regex wake words stay blocked.
 #     guest_mode: false
 #     # allowed_chats: ["-1001234567890"]
-#     # Persist active live-location updates as silent profile-local state.
-#     # One-time pins and venues remain normal conversational turns. Default false.
+#     # Keep active Telegram live-location updates silently in process memory and
+#     # make one immutable snapshot available to eligible foreground text turns.
+#     # Coordinates are never written to Hermes state; fixed pins/venues remain
+#     # ordinary conversational messages. Long polling only. Default false.
 #     background_locations: false
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages

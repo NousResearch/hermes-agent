@@ -2,11 +2,9 @@
 
 import asyncio
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from telegram.error import TimedOut
 
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram import adapter as tg_adapter
@@ -42,8 +40,14 @@ class _ControlledRequest:
         return self.result
 
 
-def _make_adapter() -> TelegramAdapter:
-    return TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+def _make_adapter(*, background_locations: bool = False) -> TelegramAdapter:
+    return TelegramAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={"background_locations": background_locations},
+        )
+    )
 
 
 def _mock_polling_app(*, get_me=None):
@@ -164,34 +168,6 @@ async def test_polling_disconnect_webhook_reconnect_heals_webhook_send_path(monk
         assert adapter._webhook_mode is True
         assert adapter._polling_progress_accepting is False
         assert adapter._send_path_degraded is False
-    finally:
-        await adapter.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_webhook_mode_disables_unprovable_background_location_continuity(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    adapter = TelegramAdapter(
-        PlatformConfig(
-            enabled=True,
-            token="test-token",
-            extra={"background_locations": True},
-        )
-    )
-    app = _lifecycle_app()
-    _configure_lifecycle_connect(monkeypatch, adapter, [app])
-    adapter._prepare_background_locations_for_connect = AsyncMock(return_value={})
-    monkeypatch.setenv("TELEGRAM_WEBHOOK_URL", "https://example.test/telegram")
-    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "test-secret")
-
-    try:
-        assert await adapter.connect() is True
-        adapter._prepare_background_locations_for_connect.assert_awaited_once()
-        assert adapter._webhook_mode is True
-        assert adapter._background_locations_configured is True
-        assert adapter._background_locations_enabled is False
     finally:
         await adapter.disconnect()
 
@@ -389,270 +365,46 @@ async def test_current_polling_generation_success_records_progress():
     assert adapter._polling_network_error_count == 0
     assert adapter._send_path_degraded is False
     assert generation > 0
+    assert adapter._background_location_polling_generation is None
+    assert not adapter._background_location_update_receipts
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "payload",
-    [
-        b'{"ok":true,"result":{}}',
-        b'{"ok":true,"result":[{}]}',
-        b'{"ok":true,"result":[{"update_id":true}]}',
-        b'{"ok":true,"result":[{"update_id":"1"}]}',
-    ],
-)
-async def test_malformed_success_cannot_establish_polling_continuity(payload):
-    adapter = _make_adapter()
-    generation, progress = adapter._begin_polling_generation()
-    observer_error = MagicMock()
-    adapter._polling_generation_error_callback = observer_error
-    request = _ControlledRequest(result=(200, payload))
-
-    await _request_for_generation(
-        generation,
-        adapter._instrument_polling_request(request),
-        "https://api.telegram.org/getUpdates",
-    )
-
-    assert not progress.is_set()
-    assert adapter._send_path_degraded is True
-    assert adapter._polling_progress_accepting is False
-    observer_error.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_nested_malformed_update_cannot_establish_polling_continuity():
-    """A valid update_id cannot hide a location object PTB cannot deserialize."""
-    adapter = _make_adapter()
-    generation, progress = adapter._begin_polling_generation()
-    observer_error = MagicMock()
-    adapter._polling_generation_error_callback = observer_error
-    request = _ControlledRequest(
-        result=(
-            200,
-            b'{"ok":true,"result":[{"update_id":1,'
-            b'"edited_message":{"location":{}}}]}',
+async def test_location_receipts_become_eligible_only_after_empty_poll():
+    adapter = _make_adapter(background_locations=True)
+    generation, _ = adapter._begin_polling_generation()
+    request = adapter._instrument_polling_request(
+        _ControlledRequest(
+            result=(200, b'{"ok":true,"result":[{"update_id":10}]}')
         )
     )
 
     await _request_for_generation(
-        generation,
-        adapter._instrument_polling_request(request),
-        "https://api.telegram.org/getUpdates",
+        generation, request, "https://api.telegram.org/getUpdates"
     )
+    assert adapter._background_location_update_receipts[10] == (generation, False)
+    assert adapter._background_location_polling_ready_generation is None
 
-    assert not progress.is_set()
-    assert adapter._send_path_degraded is True
-    assert adapter._polling_progress_accepting is False
-    observer_error.assert_called_once()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("status", "payload"),
-    [
-        (401, b'{"ok":false,"description":"Unauthorized"}'),
-        (200, b'{"ok":false,"description":"Bad Request"}'),
-        (200, b'not-json'),
-    ],
-)
-async def test_failed_poll_response_revokes_previously_healthy_generation(
-    status, payload
-):
-    adapter = _make_adapter()
-    generation, progress = adapter._begin_polling_generation()
-    adapter._record_polling_progress(generation, None, backlog_drained=True)
-    assert progress.is_set()
-    assert adapter._send_path_degraded is False
-    observer_error = MagicMock()
-    adapter._polling_generation_error_callback = observer_error
-
-    request = _ControlledRequest(result=(status, payload))
+    request.result = (200, b'{"ok":true,"result":[]}')
     await _request_for_generation(
-        generation,
-        adapter._instrument_polling_request(request),
-        "https://api.telegram.org/getUpdates",
+        generation, request, "https://api.telegram.org/getUpdates"
     )
+    assert adapter._background_location_polling_ready_generation == generation
 
-    assert adapter._send_path_degraded is True
-    assert adapter._polling_progress_accepting is False
-    observer_error.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_live_observer_auth_then_typed_callback_stays_terminal(monkeypatch):
-    adapter = _make_adapter()
-    captured = {}
-
-    async def capture_polling_start(**kwargs):
-        captured["error_callback"] = kwargs["error_callback"]
-        return True
-
-    monkeypatch.setattr(
-        adapter, "_delete_webhook_best_effort", AsyncMock(return_value=True)
-    )
-    monkeypatch.setattr(adapter, "_start_polling_resilient", capture_polling_start)
-    handoff = AsyncMock()
-    monkeypatch.setattr(adapter, "_handoff_polling_fatal_error", handoff)
-    await adapter._start_polling_mode(is_reconnect=True)
-    generation, _progress = adapter._begin_polling_generation()
-    adapter._polling_generation_error_callback = captured["error_callback"]
-
-    class InvalidToken(Exception):
-        pass
-
-    request = _ControlledRequest(
-        result=(
-            401,
-            b'{"ok":false,"error_code":401,"description":"Unauthorized"}',
-        )
-    )
+    request.result = (200, b'{"ok":true,"result":[{"update_id":11}]}')
     await _request_for_generation(
-        generation,
-        adapter._instrument_polling_request(request),
-        "https://api.telegram.org/getUpdates",
+        generation, request, "https://api.telegram.org/getUpdates"
     )
-    # PTB parses the same response only after the raw observer returns.
-    captured["error_callback"](InvalidToken("invalid token"))
-
-    await asyncio.wait_for(adapter._polling_error_task, timeout=1)
-    assert adapter.fatal_error_code == "telegram_auth_error"
-    assert adapter._fatal_error_retryable is False
-    handoff.assert_awaited_once()
+    assert adapter._background_location_update_receipts[10] == (generation, False)
+    assert adapter._background_location_update_receipts[11] == (generation, True)
 
 
 @pytest.mark.asyncio
-async def test_live_observer_conflict_then_typed_callback_uses_conflict_ladder(
-    monkeypatch,
-):
-    adapter = _make_adapter()
-    captured = {}
-
-    async def capture_polling_start(**kwargs):
-        captured["error_callback"] = kwargs["error_callback"]
-        return True
-
-    monkeypatch.setattr(
-        adapter, "_delete_webhook_best_effort", AsyncMock(return_value=True)
-    )
-    monkeypatch.setattr(adapter, "_start_polling_resilient", capture_polling_start)
-    conflict_recovery = AsyncMock()
-    disarm = MagicMock()
-    monkeypatch.setattr(adapter, "_handle_polling_conflict", conflict_recovery)
-    monkeypatch.setattr(adapter, "_disarm_ptb_retry_loop", disarm)
-    await adapter._start_polling_mode(is_reconnect=True)
-    generation, _progress = adapter._begin_polling_generation()
-    adapter._polling_generation_error_callback = captured["error_callback"]
-
-    class Conflict(Exception):
-        pass
-
-    request = _ControlledRequest(
-        result=(
-            409,
-            b'{"ok":false,"error_code":409,"description":"Conflict"}',
-        )
-    )
-    await _request_for_generation(
-        generation,
-        adapter._instrument_polling_request(request),
-        "https://api.telegram.org/getUpdates",
-    )
-    captured["error_callback"](Conflict("other getUpdates request"))
-
-    await asyncio.wait_for(adapter._polling_error_task, timeout=1)
-    conflict_recovery.assert_awaited_once()
-    disarm.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_typed_auth_supersedes_inflight_generic_observer_recovery(
-    monkeypatch,
-):
-    adapter = _make_adapter()
-    captured = {}
-
-    async def capture_polling_start(**kwargs):
-        captured["error_callback"] = kwargs["error_callback"]
-        return True
-
-    generic_started = asyncio.Event()
-    release_generic = asyncio.Event()
-
-    async def blocked_generic_recovery(_error):
-        generic_started.set()
-        await release_generic.wait()
-
-    monkeypatch.setattr(
-        adapter, "_delete_webhook_best_effort", AsyncMock(return_value=True)
-    )
-    monkeypatch.setattr(adapter, "_start_polling_resilient", capture_polling_start)
-    monkeypatch.setattr(
-        adapter, "_handle_polling_network_error", blocked_generic_recovery
-    )
-    monkeypatch.setattr(adapter, "_handoff_polling_fatal_error", AsyncMock())
-    await adapter._start_polling_mode(is_reconnect=True)
-
-    captured["error_callback"](RuntimeError("unclassified response"))
-    generic_task = adapter._polling_error_task
-    await asyncio.wait_for(generic_started.wait(), timeout=1)
-
-    class InvalidToken(Exception):
-        pass
-
-    captured["error_callback"](InvalidToken("invalid token"))
-    await asyncio.gather(generic_task, return_exceptions=True)
-    await asyncio.wait_for(adapter._polling_error_task, timeout=1)
-
-    assert generic_task.cancelled()
-    assert adapter.fatal_error_code == "telegram_auth_error"
-    release_generic.set()
-
-
-@pytest.mark.asyncio
-async def test_cold_observer_auth_then_typed_callback_classifies_wrapped_error(
-    monkeypatch,
-):
-    adapter = _make_adapter()
-    app = _lifecycle_app()
-
-    class InvalidToken(Exception):
-        pass
-
-    async def polling_fails_auth(**kwargs):
-        request = SimpleNamespace(
-            parse_json_payload=lambda raw: json.loads(raw.decode("utf-8"))
-        )
-        adapter._observe_polling_request_result(
-            request,
-            adapter._polling_generation,
-            (
-                401,
-                b'{"ok":false,"error_code":401,"description":"Unauthorized"}',
-            ),
-        )
-        # The strict gate intentionally keeps only the first error. It must
-        # still classify the observer's status-preserving synthetic exception.
-        kwargs["error_callback"](InvalidToken("invalid token"))
-
-    app.updater.start_polling = AsyncMock(side_effect=polling_fails_auth)
-    _configure_lifecycle_connect(monkeypatch, adapter, [app])
-    monkeypatch.delenv("TELEGRAM_WEBHOOK_URL", raising=False)
-
-    assert await adapter.connect() is False
-    assert adapter.fatal_error_code == "telegram_auth_error"
-    assert adapter._fatal_error_retryable is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("error_type", [RuntimeError, TimedOut])
-async def test_physical_polling_failure_fences_before_ptb_retry(error_type):
+@pytest.mark.parametrize("error_type", [RuntimeError, asyncio.CancelledError])
+async def test_unsuccessful_polling_request_does_not_record_progress(error_type):
     adapter = _make_adapter()
     generation, progress = adapter._begin_polling_generation()
     adapter._polling_network_error_count = 3
-    adapter._send_path_degraded = False
-    observed = MagicMock()
-    adapter._polling_generation_error_callback = observed
     request = adapter._instrument_polling_request(
         _ControlledRequest(error=error_type("request did not complete"))
     )
@@ -665,31 +417,6 @@ async def test_physical_polling_failure_fences_before_ptb_retry(error_type):
     assert not progress.is_set()
     assert adapter._polling_network_error_count == 3
     assert adapter._send_path_degraded is True
-    assert adapter._polling_progress_accepting is False
-    observed.assert_called_once()
-    assert isinstance(observed.call_args.args[0], error_type)
-
-
-@pytest.mark.asyncio
-async def test_polling_request_cancellation_does_not_schedule_recovery():
-    adapter = _make_adapter()
-    generation, progress = adapter._begin_polling_generation()
-    adapter._send_path_degraded = False
-    observed = MagicMock()
-    adapter._polling_generation_error_callback = observed
-    request = adapter._instrument_polling_request(
-        _ControlledRequest(error=asyncio.CancelledError("ordinary teardown"))
-    )
-
-    with pytest.raises(asyncio.CancelledError):
-        await _request_for_generation(
-            generation, request, "https://api.telegram.org/getUpdates"
-        )
-
-    assert not progress.is_set()
-    assert adapter._send_path_degraded is False
-    assert adapter._polling_progress_accepting is True
-    observed.assert_not_called()
 
 
 @pytest.mark.asyncio

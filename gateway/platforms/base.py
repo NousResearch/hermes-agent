@@ -1522,6 +1522,44 @@ def _append_text(existing: Optional[str], new: Optional[str]) -> str:
     return f"{existing}\n{new}" if existing else new
 
 
+def _ephemeral_context_sender_identity(event: MessageEvent) -> Optional[tuple[str, str, str]]:
+    """Return a coordinate-free sender scope for safely merging adapter capabilities."""
+    source = getattr(event, "source", None)
+    if source is None:
+        return None
+    sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
+    chat_id = getattr(source, "chat_id", None)
+    if sender is None or chat_id is None:
+        return None
+    return (_platform_name(getattr(source, "platform", None)), str(chat_id), str(sender))
+
+
+def merge_ephemeral_context_ref(existing: MessageEvent, incoming: MessageEvent) -> None:
+    """Merge an opaque volatile-context capability while failing closed on ambiguity.
+
+    A one-time location pin marks its batch as blocked so an adjacent live-location
+    capability can never make the pin appear to be the user's current position. The
+    marker and reference are process-local attributes and contain no coordinates.
+    """
+    existing_ref = getattr(existing, "ephemeral_context_ref", None)
+    incoming_ref = getattr(incoming, "ephemeral_context_ref", None)
+    existing_identity = _ephemeral_context_sender_identity(existing)
+    blocked = bool(
+        getattr(existing, "_ephemeral_context_blocked", False)
+        or getattr(incoming, "_ephemeral_context_blocked", False)
+    )
+    if (existing_ref is not None or incoming_ref is not None) and (
+        existing_identity is None
+        or existing_identity != _ephemeral_context_sender_identity(incoming)
+    ):
+        blocked = True
+    if blocked:
+        existing.ephemeral_context_ref = None
+        existing._ephemeral_context_blocked = True
+    elif incoming_ref is not None:
+        existing.ephemeral_context_ref = incoming_ref
+
+
 @dataclass
 class _ExtractedResponse:
     """Deliverable parts of a handler response (see ``_extract_response_content``)."""
@@ -1656,80 +1694,13 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
-def _pending_event_sender_key(event: MessageEvent) -> Optional[tuple[str, ...]]:
-    """Return an identity key only when the event names a stable individual."""
-    source = getattr(event, "source", None)
-    user_id = str(getattr(source, "user_id", "") or "").strip()
-    if not user_id:
-        return None
-    return (
-        str(getattr(source, "platform", "") or ""),
-        str(getattr(source, "profile", "") or ""),
-        str(getattr(source, "chat_id", "") or ""),
-        user_id,
-    )
-
-
-def copy_ephemeral_context_metadata(source: MessageEvent, target: MessageEvent) -> None:
-    """Copy private revocation metadata when deriving/merging a user event.
-
-    ``ephemeral_user_context`` is only the current snapshot. Platform-owned
-    metadata identifies whether and how that snapshot may be refreshed at the
-    final dispatch boundary.
-    """
-    target.ephemeral_context_ref = source.ephemeral_context_ref
-
-
-def merge_pending_message_event(
-    pending_messages: Dict[str, MessageEvent],
-    session_key: str,
-    event: MessageEvent,
-    *,
-    merge_text: bool = False,
-) -> None:
-    """Store or merge a pending event for a session.
-
-    Photo bursts/albums often arrive as multiple near-simultaneous PHOTO
-    events. Merge those into the existing queued event so the next turn sees
-    the whole burst.
-
-    When ``merge_text`` is enabled, rapid follow-up TEXT events are appended
-    instead of replacing the pending turn. This is used for Telegram bursty
-    follow-ups so a multi-part user thought is not silently truncated to only
-    the last queued fragment.
-    """
+def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], session_key: str,
+                                event: MessageEvent, *, merge_text: bool = False) -> None:
+    """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
+    turn sees the whole burst; with ``merge_text`` rapid TEXT follow-ups append instead of
+    replace."""
     existing = pending_messages.get(session_key)
     if existing:
-        # Volatile context belongs to an individual, even when several people
-        # intentionally share one downstream group/thread session. Never let a
-        # merge attach one sender's location to another sender's queued text.
-        same_sender = (
-            _pending_event_sender_key(existing) is not None
-            and _pending_event_sender_key(existing)
-            == _pending_event_sender_key(event)
-        )
-        incoming_context = getattr(event, "ephemeral_user_context", None)
-        if not same_sender:
-            # The surviving event keeps the first sender's source metadata.
-            # Mark any cross/unknown-sender merge so a platform's just-in-time
-            # resolver cannot later reattach that sender's private context to
-            # a mixed turn.
-            existing._ephemeral_context_refresh_unsafe = True  # type: ignore[attr-defined]
-            existing.ephemeral_user_context = None
-        elif same_sender:
-            copy_ephemeral_context_metadata(event, existing)
-            # The newest event is authoritative even when it carries no
-            # volatile context. Keeping the prior non-empty value can replay
-            # revoked platform state after several messages are merged.
-            if getattr(existing, "_ephemeral_context_refresh_unsafe", False):
-                existing.ephemeral_user_context = None
-            else:
-                existing.ephemeral_user_context = (
-                    incoming_context
-                    if isinstance(incoming_context, str) and incoming_context.strip()
-                    else None
-                )
-
         existing_type = getattr(existing, "message_type", None)
         existing_is_photo = existing_type == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
@@ -1746,6 +1717,7 @@ def merge_pending_message_event(
         # A photo burst always absorbs; otherwise merge only when media is involved on either
         # side. Captions merge in every absorbing case.
         if both_photo or existing.media_urls or incoming_has_media:
+            merge_ephemeral_context_ref(existing, event)
             if both_photo or incoming_has_media:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
@@ -1764,6 +1736,7 @@ def merge_pending_message_event(
             return
         both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
         if merge_text and both_text:
+            merge_ephemeral_context_ref(existing, event)
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             return
@@ -2357,22 +2330,9 @@ class BasePlatformAdapter(ABC):
         if existing is None:
             existing = self._pending_text_batches[key] = event
         else:
+            merge_ephemeral_context_ref(existing, event)
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
-            # A location snapshot (or similar volatile context) is per-turn
-            # state, not part of the text aggregation. The latest fragment is
-            # authoritative, including an empty value after revocation.
-            incoming_context = getattr(event, "ephemeral_user_context", None)
-            copy_ephemeral_context_metadata(event, existing)
-            existing.ephemeral_user_context = (
-                None
-                if getattr(existing, "_ephemeral_context_refresh_unsafe", False)
-                else (
-                    incoming_context
-                    if isinstance(incoming_context, str) and incoming_context.strip()
-                    else None
-                )
-            )
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
@@ -3392,19 +3352,9 @@ class BasePlatformAdapter(ABC):
             state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
             store[session_key] = state
         else:
+            merge_ephemeral_context_ref(state.event, event)
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
-            incoming_context = getattr(event, "ephemeral_user_context", None)
-            copy_ephemeral_context_metadata(event, state.event)
-            state.event.ephemeral_user_context = (
-                None
-                if getattr(state.event, "_ephemeral_context_refresh_unsafe", False)
-                else (
-                    incoming_context
-                    if isinstance(incoming_context, str) and incoming_context.strip()
-                    else None
-                )
-            )
             latest_message_id = getattr(event, "message_id", None)
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
             if latest_message_id is not None:

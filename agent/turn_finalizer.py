@@ -118,7 +118,7 @@ def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: List[str], logge
 
 def _resolve_budget_fallback(
     agent, *, final_response, api_call_count, interrupted, failed, messages, _turn_exit_reason,
-    _pending_verification_response, _pending_verification_response_previewed, logger,
+    _pending_verification_response, _pending_verification_response_previewed, moa_config, logger,
 ) -> Tuple[Any, Any, bool]:
     """Iteration-budget exhaustion. Returns ``(final_response, _turn_exit_reason,
     preserved_verification_fallback)``."""
@@ -151,7 +151,14 @@ def _resolve_budget_fallback(
                     f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
                     "— requesting summary..."
                 )
-            final_response = agent._handle_max_iterations(messages, api_call_count)
+            if moa_config is None:
+                final_response = agent._handle_max_iterations(messages, api_call_count)
+            else:
+                # Inline MoA turns intentionally exclude volatile user context. Preserve
+                # that boundary in the direct, toolless iteration-summary request too.
+                final_response = agent._handle_max_iterations(
+                    messages, api_call_count, allow_volatile_replay=False,
+                )
 
     # A kanban worker must record a terminal outcome whether or not a fallback path
     # was eligible, so the dispatcher learns the worker could not complete.
@@ -434,7 +441,7 @@ def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
     _turn_exit_reason, _pending_verification_response=None,
-    _pending_verification_response_previewed=False,
+    _pending_verification_response_previewed=False, moa_config=None,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
@@ -445,6 +452,7 @@ def finalize_turn(
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
         _pending_verification_response_previewed=_pending_verification_response_previewed,
+        moa_config=moa_config,
         logger=logger,
     )
 

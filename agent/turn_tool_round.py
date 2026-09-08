@@ -39,7 +39,6 @@ class ToolRoundVerdict:
     failed: Any
     _turn_exit_reason: Any
     truncated_tool_call_retries: Any
-    current_turn_user_idx: Any
     result: Optional[Dict[str, Any]] = None
 
 
@@ -48,25 +47,20 @@ def run_tool_round(
     conversation_history: Any, api_call_count: Any, effective_task_id: Any, user_message: Any,
     system_message: Any, active_system_prompt: Any, compression_attempts: Any,
     max_compression_attempts: Any, final_response: Any, failed: Any, _turn_exit_reason: Any,
-    truncated_tool_call_retries: Any, current_turn_user_idx: Any,
+    truncated_tool_call_retries: Any,
 ) -> ToolRoundVerdict:
     """Execute one tool round in the exact original order. Persist-before-execute is a
     durability invariant: resume must see the executed block if a destructive tool restarts
     Hermes; a failed canonical append ends the turn rather than running tools from
     process-only state."""
-    from agent import relay_llm
     from agent.conversation_loop import _invalid_tool_name_error_content
-    from agent.turn_api_call import _EphemeralUserContextChanged
-
-    relay_llm.run_provider_call_guard()
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ToolRoundVerdict:
         return ToolRoundVerdict(
             action=action, messages=messages, conversation_history=conversation_history,
             active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
             final_response=final_response, failed=failed, _turn_exit_reason=_turn_exit_reason,
-            truncated_tool_call_retries=truncated_tool_call_retries,
-            current_turn_user_idx=current_turn_user_idx, result=result,
+            truncated_tool_call_retries=truncated_tool_call_retries, result=result,
         )
 
     if not agent.quiet_mode:
@@ -88,7 +82,6 @@ def run_tool_round(
     if _tvv.action == "continue":
         return _verdict("continue")
 
-    relay_llm.run_provider_call_guard()
     # Post-call guardrails.
     assistant_message.tool_calls = agent._deduplicate_tool_calls(
         agent._cap_delegate_task_calls(assistant_message.tool_calls)
@@ -103,7 +96,6 @@ def run_tool_round(
     assistant_msg, duplicate_previous_interim = stage_tool_call_message(
         agent, assistant_message=assistant_message, finish_reason=finish_reason, messages=messages
     )
-    relay_llm.run_provider_call_guard()
     append_message(messages, assistant_msg)
 
     # Mixed batch: error-result invalid calls and drop them from execution.
@@ -124,10 +116,7 @@ def run_tool_round(
     # Persist the tool-call turn before any tool side effects so resume sees the executed
     # block if a destructive tool restarts Hermes.
     try:
-        relay_llm.run_provider_call_guard()
         _tool_turn_persisted = agent._flush_messages_to_session_db(messages, conversation_history)
-    except _EphemeralUserContextChanged:
-        raise
     except Exception as exc:
         _tool_turn_persisted = False
         from hermes_state import classify_persistence_error
@@ -149,18 +138,9 @@ def run_tool_round(
         failed = True
         return _verdict("break")
 
-    # A stop can land while the DB append is in flight. In that case the
-    # physical-dispatch guard below turns every not-yet-started call into a
-    # blocked result; do not additionally project stale arguments to the UI.
-    try:
-        relay_llm.run_provider_call_guard()
-        _ephemeral_context_revoked_after_persist = False
-    except _EphemeralUserContextChanged:
-        _ephemeral_context_revoked_after_persist = True
-
     # A UI must never observe an assistant/tool-call row that is only an in-memory
     # projection: emit interim commentary after the DB append.
-    if not duplicate_previous_interim and not _ephemeral_context_revoked_after_persist:
+    if not duplicate_previous_interim:
         agent._emit_interim_assistant_message(assistant_msg)
 
     # Flush open streaming boxes before tools so early content doesn't wrap tool feed
@@ -211,7 +191,6 @@ def run_tool_round(
         compression_attempts=compression_attempts,
         max_compression_attempts=max_compression_attempts, effective_task_id=effective_task_id,
         final_response=final_response, turn_exit_reason=_turn_exit_reason,
-        current_turn_user_idx=current_turn_user_idx,
     )
     messages = _ptc.messages
     active_system_prompt = _ptc.active_system_prompt
@@ -219,7 +198,6 @@ def run_tool_round(
     compression_attempts = _ptc.compression_attempts
     final_response = _ptc.final_response
     _turn_exit_reason = _ptc.turn_exit_reason
-    current_turn_user_idx = _ptc.current_turn_user_idx
     if _ptc.end_turn:
         return _verdict("break")
 

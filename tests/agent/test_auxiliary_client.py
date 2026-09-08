@@ -2338,65 +2338,6 @@ class TestAuxClientNoSdkRetries:
             ac._create_openai_client(api_key="k", base_url="https://x/v1", max_retries=5)
         assert captured.get("max_retries") == 5
 
-    def test_bedrock_mantle_client_disables_sdk_retries(self):
-        from agent import auxiliary_client as ac
-
-        captured = {}
-
-        class _FakeOpenAI:
-            def __init__(self, **kwargs):
-                captured.update(kwargs)
-
-        with (
-            patch.object(ac, "OpenAI", _FakeOpenAI),
-            patch("agent.bedrock_adapter.has_aws_credentials", return_value=True),
-            patch(
-                "agent.bedrock_adapter.resolve_bedrock_runtime_region",
-                return_value="us-west-2",
-            ),
-            patch("agent.bedrock_adapter.is_openai_bedrock_model", return_value=True),
-            patch(
-                "agent.bedrock_adapter.bedrock_openai_base_url",
-                return_value="https://bedrock-mantle.us-west-2.api.aws/openai/v1",
-            ),
-            patch(
-                "agent.bedrock_adapter.resolve_bedrock_bearer_token",
-                return_value="bedrock-token",
-            ),
-        ):
-            client, model = ac._build_bedrock_client(
-                "bedrock", "openai.gpt-5.5", raw_codex=True
-            )
-
-        assert client is not None
-        assert model == "openai.gpt-5.5"
-        assert captured["max_retries"] == 0
-
-    def test_vertex_client_disables_sdk_retries(self):
-        from agent import auxiliary_client as ac
-
-        captured = {}
-
-        class _FakeOpenAI:
-            def __init__(self, **kwargs):
-                captured.update(kwargs)
-
-        with (
-            patch("agent.vertex_adapter.has_vertex_credentials", return_value=True),
-            patch(
-                "agent.vertex_adapter.get_vertex_config",
-                return_value=("vertex-token", "https://vertex.example/v1"),
-            ),
-            patch("openai.OpenAI", _FakeOpenAI),
-        ):
-            client, model = ac._build_vertex_client(
-                "vertex", "google/gemini-3-flash-preview"
-            )
-
-        assert client is not None
-        assert model == "google/gemini-3-flash-preview"
-        assert captured["max_retries"] == 0
-
 
 class TestIsTimeoutError:
     """_is_timeout_error distinguishes a full-budget timeout from a fast

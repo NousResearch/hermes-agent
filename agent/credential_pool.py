@@ -397,24 +397,43 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
 def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(error_context, dict):
         return {}
+    from agent.redact import has_volatile_sensitive_text, redact_sensitive_text
+
+    private_turn = has_volatile_sensitive_text()
     normalized: Dict[str, Any] = {}
     for key in ("reason", "message"):
         value = error_context.get(key)
         if isinstance(value, str) and value.strip():
-            normalized[key] = value.strip()
-    reset_at = (
-        error_context.get("reset_at")
-        or error_context.get("resets_at")
-        or error_context.get("retry_until")
-    )
-    parsed_reset_at = _parse_absolute_timestamp(reset_at)
-    message = error_context.get("message")
-    if parsed_reset_at is None and isinstance(message, str):
-        retry_delay_seconds = _extract_retry_delay_seconds(message)
-        if retry_delay_seconds is not None:
-            parsed_reset_at = time.time() + retry_delay_seconds
-    if parsed_reset_at is not None:
-        normalized["reset_at"] = parsed_reset_at
+            cleaned = value.strip()
+            if private_turn:
+                # Persist status/classification/reset metadata only. A provider can
+                # echo a sliced request fragment that exact-literal redaction cannot
+                # prove safe; retain only known canonical auth reason codes.
+                canonical = cleaned.lower()
+                if key == "reason" and canonical in (
+                    _TERMINAL_AUTH_REASONS | {CREDENTIAL_PERSIST_FAILED_REASON}
+                ):
+                    normalized[key] = canonical
+            else:
+                redacted = redact_sensitive_text(cleaned)
+                normalized[key] = redacted if isinstance(redacted, str) else ""
+    if not private_turn:
+        # These values are provider-controlled. During a private-context turn even
+        # numeric fields can be a request fragment (for example, an echoed latitude),
+        # so use the ordinary local cooldown instead of persisting them.
+        reset_at = (
+            error_context.get("reset_at")
+            or error_context.get("resets_at")
+            or error_context.get("retry_until")
+        )
+        parsed_reset_at = _parse_absolute_timestamp(reset_at)
+        message = error_context.get("message")
+        if parsed_reset_at is None and isinstance(message, str):
+            retry_delay_seconds = _extract_retry_delay_seconds(message)
+            if retry_delay_seconds is not None:
+                parsed_reset_at = time.time() + retry_delay_seconds
+        if parsed_reset_at is not None:
+            normalized["reset_at"] = parsed_reset_at
     return normalized
 
 

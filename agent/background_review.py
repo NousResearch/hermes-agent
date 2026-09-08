@@ -887,6 +887,12 @@ def build_cache_parity_fork(
     if not _routed:
         review_agent._cached_system_prompt = agent._cached_system_prompt
         review_agent.session_start = agent.session_start
+        # The fork replays the parent's already-sent rows to the same runtime. Copy
+        # the bounded RAM-only private suffix sidecar so those bytes stay identical;
+        # routed/digest forks intentionally receive none of it.
+        from agent.turn_context import copy_volatile_user_context_history
+
+        copy_volatile_user_context_history(agent, review_agent)
     _detach_fork_compression(review_agent)
     # Compaction bounds a single request; this bounds the WHOLE review (checked in
     # conversation_loop via _review_input_budget_exhausted).
@@ -1020,14 +1026,21 @@ def _run_review_fork(
     try:
         if review_run is None or review_run.begin_request(st.review_agent):
             # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
-            st.review_agent.run_conversation(
-                user_message=(
-                    prompt + "\n\nYou can only call memory and skill "
-                    "management tools. Other tools will be denied "
-                    "at runtime — do not attempt them." + prompt_extra
-                ),
-                conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
-            )
+            from agent.turn_context import bind_volatile_user_context
+
+            # No new ambient snapshot is eligible for this synthetic review turn.
+            # The binding only protects/replays historical sidecars copied above.
+            with bind_volatile_user_context(st.review_agent, None, None):
+                st.review_agent.run_conversation(
+                    user_message=(
+                        prompt + "\n\nYou can only call memory and skill "
+                        "management tools. Other tools will be denied "
+                        "at runtime — do not attempt them." + prompt_extra
+                    ),
+                    conversation_history=(
+                        _digest_history(messages_snapshot) if _routed else messages_snapshot
+                    ),
+                )
     finally:
         clear_thread_tool_whitelist()
         # Attribute usage to the PARENT session. Snapshot BEFORE unregister/close so counters

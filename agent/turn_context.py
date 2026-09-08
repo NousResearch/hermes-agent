@@ -8,12 +8,15 @@ returns a ``TurnContext`` with only the locals the loop reads back.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import sys
 import threading
 import time
 import uuid
-from contextlib import suppress
+from collections import OrderedDict
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -24,85 +27,190 @@ from agent.memory_provider import is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.image_token_cost import bind_image_token_cost
+from agent.redact import bind_volatile_sensitive_text
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 
 logger = logging.getLogger(__name__)
 
 
-def _str_attr(agent: Any, name: str) -> str:
-    """``getattr(agent, name, "") or ""`` — route facts read off partial agents/doubles."""
-    return getattr(agent, name, "") or ""
+# Gateway-only replay marker. It contains a platform message id, never the volatile
+# context itself, and is stripped from every provider-bound copy below.
+VOLATILE_USER_CONTEXT_REPLAY_ID_KEY = "_volatile_user_context_replay_id"
+_VOLATILE_USER_CONTEXT_HISTORY_LIMIT = 256
+_VOLATILE_USER_CONTEXT_HISTORY_ATTR = "_volatile_user_context_history"
+_TURN_VOLATILE_USER_CONTEXT_ATTR = "_turn_volatile_user_context"
+_TURN_VOLATILE_USER_CONTEXT_ID_ATTR = "_turn_volatile_user_context_id"
+_MISSING = object()
 
 
-def append_ephemeral_user_context(content: Any, user_context: Optional[str]) -> Any:
-    """Return an API-only copy of a user message with volatile context appended.
+def _nonempty_string(value: Any) -> Optional[str]:
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
-    ``messages`` is Hermes' canonical transcript and must never contain this
-    context. Native image turns use OpenAI-style content lists, so preserve
-    their image blocks while extending the first text block (or append one when
-    no text block exists).
+
+@contextmanager
+def bind_volatile_user_context(
+    agent: Any, user_context: Any, platform_message_id: Any,
+):
+    """Bind one private, immutable user-context snapshot for an agent turn.
+
+    The binding is process-local and never touches the canonical message list. A stable
+    platform message id is mandatory because the exact same bytes must be recoverable on
+    subsequent API calls; without one, injecting the snapshot would silently invalidate
+    the conversation's cached prefix on the next turn.
     """
-    context = user_context.strip() if isinstance(user_context, str) else ""
-    if not context:
-        return content
+    context = _nonempty_string(user_context)
+    replay_id = _nonempty_string(str(platform_message_id)) if platform_message_id is not None else None
+    if context and not replay_id:
+        logger.warning(
+            "Dropping volatile user context without a stable platform message id; "
+            "prompt-cache replay would be unsafe"
+        )
+        context = None
 
-    suffix = f"\n\n{context}"
+    previous_context = getattr(agent, _TURN_VOLATILE_USER_CONTEXT_ATTR, _MISSING)
+    previous_id = getattr(agent, _TURN_VOLATILE_USER_CONTEXT_ID_ATTR, _MISSING)
+    existing_history = getattr(agent, _VOLATILE_USER_CONTEXT_HISTORY_ATTR, None)
+    replay_contexts = []
+    if isinstance(existing_history, dict):
+        for saved in existing_history.values():
+            if (
+                isinstance(saved, tuple)
+                and len(saved) == 2
+                and (saved_context := _nonempty_string(saved[0]))
+            ):
+                replay_contexts.append(saved_context)
+    setattr(agent, _TURN_VOLATILE_USER_CONTEXT_ATTR, context)
+    setattr(agent, _TURN_VOLATILE_USER_CONTEXT_ID_ATTR, replay_id)
+    try:
+        # Historical snapshots can be replayed from the RAM sidecar even when this
+        # turn has no new context, so bind every candidate for failure-path redaction.
+        with bind_volatile_sensitive_text(context, *replay_contexts):
+            yield
+    finally:
+        for attr, previous in (
+            (_TURN_VOLATILE_USER_CONTEXT_ATTR, previous_context),
+            (_TURN_VOLATILE_USER_CONTEXT_ID_ATTR, previous_id),
+        ):
+            if previous is _MISSING:
+                with suppress(AttributeError):
+                    delattr(agent, attr)
+            else:
+                setattr(agent, attr, previous)
+
+
+def _volatile_user_context_history(
+    agent: Any,
+) -> "OrderedDict[str, tuple[str, str]]":
+    history = getattr(agent, _VOLATILE_USER_CONTEXT_HISTORY_ATTR, None)
+    if not isinstance(history, OrderedDict):
+        history = OrderedDict(history.items()) if isinstance(history, dict) else OrderedDict()
+        setattr(agent, _VOLATILE_USER_CONTEXT_HISTORY_ATTR, history)
+    return history
+
+
+def _append_volatile_user_context(content: Any, user_context: str) -> Any:
+    """Append private context to a cloned provider payload without mutating history."""
     if isinstance(content, str):
-        return f"{content}{suffix}"
-
+        return f"{content}\n\n{user_context}" if content else user_context
     if isinstance(content, list):
-        copied = [dict(part) if isinstance(part, dict) else part for part in content]
-        for part in copied:
-            if isinstance(part, dict) and part.get("type") in {"text", "input_text"}:
-                part["text"] = f"{part.get('text', '')}{suffix}"
-                return copied
-        return copied + [{"type": "text", "text": context}]
-
+        content.append({"type": "text", "text": user_context})
     return content
 
 
-def resolve_ephemeral_user_context(value: Any) -> Optional[str]:
-    """Resolve a volatile context value for one provider request.
-
-    Gateway-owned context may be supplied lazily so revocation that happens
-    between tool-loop iterations takes effect before the next API call. A
-    failing supplier is privacy-sensitive, so it fails closed.
-    """
-    if callable(value):
-        try:
-            value = value()
-        except Exception:
-            logger.warning(
-                "Volatile user-context supplier failed; dropping context",
-                exc_info=True,
-            )
-            return None
-    if not isinstance(value, str):
+def _volatile_base_content_fingerprint(content: Any) -> Optional[str]:
+    """Hash the pre-injection content so rewritten rows cannot inherit old context."""
+    try:
+        payload = json.dumps(
+            content, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError):
         return None
-    value = value.strip()
-    return value or None
+    return hashlib.sha256(payload).hexdigest()
 
 
-def append_ephemeral_context_to_last_user(
-    api_messages: List[Dict[str, Any]], value: Any
+def _message_volatile_replay_id(msg: Mapping[str, Any]) -> Optional[str]:
+    for key in (
+        VOLATILE_USER_CONTEXT_REPLAY_ID_KEY,
+        "platform_message_id",
+        "message_id",
+    ):
+        value = msg.get(key)
+        if value is not None and (normalized := _nonempty_string(str(value))):
+            return normalized
+    return None
+
+
+def replay_volatile_user_context(
+    agent: Any, source_msg: Mapping[str, Any], api_msg: Dict[str, Any],
 ) -> bool:
-    """Resolve and append volatile context to the active request's last user row.
+    """Replay one previously-sent private suffix from the agent's RAM sidecar.
 
-    Request assembly may insert a system prompt, prefills, or context-engine
-    output after the canonical current-turn index is known.  The last surviving
-    user row is therefore the only stable request-local target.  Returns whether
-    non-empty context was attached.
+    This helper only replays an existing entry; it never captures a new snapshot.
+    Alternate send paths such as the iteration-limit summary use it to preserve the
+    same provider prefix as :func:`build_api_messages` without widening location
+    eligibility to their synthetic user turn.
     """
-    context = resolve_ephemeral_user_context(value)
-    if context is None:
+    if getattr(agent, "provider", None) == "moa" or source_msg.get("role") != "user":
         return False
-    for message in reversed(api_messages):
-        if isinstance(message, dict) and message.get("role") == "user":
-            message["content"] = append_ephemeral_user_context(
-                message.get("content", ""), context
-            )
-            return True
-    return False
+    history = getattr(agent, _VOLATILE_USER_CONTEXT_HISTORY_ATTR, None)
+    if not isinstance(history, dict):
+        return False
+    replay_id = _message_volatile_replay_id(source_msg)
+    if not replay_id:
+        return False
+    saved = history.get(replay_id)
+    if not (isinstance(saved, tuple) and len(saved) == 2):
+        if saved is not None:
+            history.pop(replay_id, None)
+        return False
+    context = _nonempty_string(saved[0])
+    fingerprint = _volatile_base_content_fingerprint(api_msg.get("content", ""))
+    if not context or not fingerprint or saved[1] != fingerprint:
+        # The row was rewritten (compression, rewind, redaction, or repair). An id
+        # alone is not authority to transplant private context onto different text.
+        history.pop(replay_id, None)
+        return False
+    api_msg["content"] = _append_volatile_user_context(
+        api_msg.get("content", ""), context
+    )
+    return True
+
+
+def copy_volatile_user_context_history(source_agent: Any, target_agent: Any) -> None:
+    """Copy the bounded RAM replay sidecar into a same-runtime cache-parity fork."""
+    history = getattr(source_agent, _VOLATILE_USER_CONTEXT_HISTORY_ATTR, None)
+    if not isinstance(history, dict) or not history:
+        return
+    # Entries contain immutable strings. ``OrderedDict.copy`` avoids aliasing the
+    # mutable container while retaining insertion order for the bounded eviction rule.
+    try:
+        snapshot = OrderedDict(history.copy())
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        logger.warning(
+            "Could not snapshot volatile user-context replay state for cache-parity fork; "
+            "continuing without private historical replay"
+        )
+        return
+    copied: "OrderedDict[str, tuple[str, str]]" = OrderedDict()
+    for replay_id, saved in snapshot.items():
+        if (
+            isinstance(replay_id, str)
+            and isinstance(saved, tuple)
+            and len(saved) == 2
+            and _nonempty_string(saved[0])
+            and isinstance(saved[1], str)
+            and saved[1]
+        ):
+            copied[replay_id] = (saved[0], saved[1])
+    while len(copied) > _VOLATILE_USER_CONTEXT_HISTORY_LIMIT:
+        copied.popitem(last=False)
+    if copied:
+        setattr(target_agent, _VOLATILE_USER_CONTEXT_HISTORY_ATTR, copied)
+
+
+def _str_attr(agent: Any, name: str) -> str:
+    """``getattr(agent, name, "") or ""`` — route facts read off partial agents/doubles."""
+    return getattr(agent, name, "") or ""
 
 
 def _preflight_request_tokens(
@@ -1020,7 +1128,6 @@ def _sanitize_model_for(agent: Any, moa_config: Any) -> Any:
 def build_api_messages(
     agent: Any, messages: List[Dict[str, Any]], *, current_turn_user_idx: Any,
     ext_prefetch_cache: Any, plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
-    ephemeral_user_context: Any = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """Build the wire copy of ``messages`` for one API call plus the effective system
     message. Returns ``(api_messages, effective_system)``.
@@ -1028,16 +1135,66 @@ def build_api_messages(
     Prompt-cache invariant: historical user/assistant rows replay their ``api_content``
     sidecar (the exact bytes sent live) so the prefix stays byte-stable; the current
     user turn reuses the prologue's stamp (or composes live when a caller bypassed the
-    prologue). Durable API-only context (prefetch, ``pre_llm_call`` hooks,
+    prologue). Ephemeral context (prefetch, ``pre_llm_call`` hooks,
     ``ephemeral_system_prompt``) is added at API time only — ``messages`` stays untouched
     beyond the sidecar stamp, and the system prompt is built ONCE per session and
-    replayed verbatim. Volatile ``ephemeral_user_context`` is the privacy-motivated
-    exception: it is never replayed historically, so the next request can reuse the
-    older stable prefix but must reprocess the immediately preceding location-bearing
-    turn."""
+    replayed verbatim."""
     from agent.agent_runtime_helpers import fill_empty_non_final_wire_payload
     from agent.conversation_loop import _clone_message_for_send
 
+    # MoA fans one request out to multiple model providers. Ambient private context
+    # is intentionally excluded from that wider surface, including historical RAM
+    # replay and inline-MoA turns decoded after the gateway boundary.
+    volatile_context_allowed = (
+        moa_config is None and getattr(agent, "provider", None) != "moa"
+    )
+    current_volatile_context = (
+        _nonempty_string(getattr(agent, _TURN_VOLATILE_USER_CONTEXT_ATTR, None))
+        if volatile_context_allowed
+        else None
+    )
+    current_volatile_id = (
+        _nonempty_string(getattr(agent, _TURN_VOLATILE_USER_CONTEXT_ID_ATTR, None))
+        if volatile_context_allowed
+        else None
+    )
+    existing_volatile_history = (
+        getattr(agent, _VOLATILE_USER_CONTEXT_HISTORY_ATTR, None)
+        if volatile_context_allowed
+        else None
+    )
+    volatile_history = (
+        _volatile_user_context_history(agent)
+        if (
+            (current_volatile_context and current_volatile_id)
+            or (isinstance(existing_volatile_history, dict) and existing_volatile_history)
+        )
+        else None
+    )
+    if volatile_history is not None:
+        # Drop only sidecars whose transcript rows have already gone away. Evicting an
+        # entry for a still-active row would resend that historical row without the
+        # context it carried previously and invalidate the cached prefix. At capacity,
+        # the safe bounded behavior is therefore to omit a *new* snapshot until a
+        # compression/rewind removes an old row and frees a slot.
+        active_replay_ids = {
+            replay_id
+            for msg in messages
+            if isinstance(msg, Mapping)
+            and msg.get("role") == "user"
+            and (replay_id := _message_volatile_replay_id(msg))
+        }
+        for replay_id in tuple(volatile_history):
+            if replay_id not in active_replay_ids:
+                volatile_history.pop(replay_id, None)
+        if (
+            current_volatile_context
+            and current_volatile_id
+            and current_volatile_id not in volatile_history
+            and len(volatile_history) >= _VOLATILE_USER_CONTEXT_HISTORY_LIMIT
+        ):
+            current_volatile_context = None
+    seen_replay_ids: set[str] = set()
     api_messages = []
     for idx, msg in enumerate(messages):
         # Structural clone, NOT msg.copy(): in-place transforms below must not reach
@@ -1048,7 +1205,15 @@ def build_api_messages(
         # (strict OpenAI backends reject unknown keys); _row_id is the durable row id
         # from _rows_to_conversation and only chat-completions strips underscore keys.
         _api_content = api_msg.pop("api_content", None)
-        for key in ("display_kind", "display_metadata", "_row_id"):
+        replay_id = (
+            _message_volatile_replay_id(msg) if volatile_history is not None else None
+        )
+        if replay_id:
+            seen_replay_ids.add(replay_id)
+        for key in (
+            "display_kind", "display_metadata", "message_id", "platform_message_id", "_row_id",
+            VOLATILE_USER_CONTEXT_REPLAY_ID_KEY,
+        ):
             api_msg.pop(key, None)
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
@@ -1065,16 +1230,6 @@ def build_api_messages(
                 )
                 if _composed is not None:
                     api_msg["content"] = _composed
-            resolved_ephemeral_user_context = resolve_ephemeral_user_context(
-                ephemeral_user_context
-            )
-            if resolved_ephemeral_user_context:
-                # Platform context is intentionally current-turn-only. Applied
-                # after the persisted api_content sidecar has been substituted
-                # so exact coordinates never become durable transcript data.
-                api_msg["content"] = append_ephemeral_user_context(
-                    api_msg.get("content", ""), resolved_ephemeral_user_context
-                )
         elif (
             isinstance(_api_content, str) and _api_content
             and msg.get("role") in ("user", "assistant")
@@ -1083,6 +1238,25 @@ def build_api_messages(
             # prefix stays byte-stable. User rows carry the injection sidecar; user
             # and assistant rows may carry a sanitize-divergence sidecar.
             api_msg["content"] = _api_content
+
+        if (
+            volatile_history is not None
+            and idx == current_turn_user_idx
+            and msg.get("role") == "user"
+            and current_volatile_context
+            and current_volatile_id
+            and replay_id == current_volatile_id
+        ):
+            fingerprint = _volatile_base_content_fingerprint(api_msg.get("content", ""))
+            if fingerprint:
+                volatile_history[current_volatile_id] = (
+                    current_volatile_context,
+                    fingerprint,
+                )
+                volatile_history.move_to_end(current_volatile_id)
+                seen_replay_ids.add(current_volatile_id)
+        if volatile_history is not None and replay_id:
+            replay_volatile_user_context(agent, msg, api_msg)
 
         # Pass reasoning back to the API for ALL assistant messages so multi-turn
         # reasoning context is preserved.
@@ -1108,6 +1282,14 @@ def build_api_messages(
         # 'reasoning_details' is kept: OpenRouter uses it for multi-turn reasoning
         # continuity.
         api_messages.append(api_msg)
+
+    if volatile_history is not None:
+        # Compression/rewind removed these rows, so their private sidecars can go too.
+        for replay_id in tuple(volatile_history):
+            if replay_id not in seen_replay_ids:
+                volatile_history.pop(replay_id, None)
+        while len(volatile_history) > _VOLATILE_USER_CONTEXT_HISTORY_LIMIT:
+            volatile_history.popitem(last=False)
 
     # Final system message = cached prompt + ephemeral additions (API-time only).
     # Plugin/recall context goes into the user message, never the system prompt: the

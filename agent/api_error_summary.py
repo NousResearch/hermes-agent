@@ -8,7 +8,7 @@ import json
 import re
 from typing import Any, Dict, Optional
 
-from agent.redact import redact_sensitive_text
+from agent.redact import has_volatile_sensitive_text, redact_sensitive_text
 
 # Offline DNS failures are wrapped in a generic "Connection error" by SDKs — inspect the chain.
 _NETWORK_RESOLUTION_MARKERS = (
@@ -42,6 +42,17 @@ def _is_xai_entitlement_text(lower: str) -> bool:
 def _http_prefix(error: Exception) -> str:
     status_code = getattr(error, "status_code", None)
     return f"HTTP {status_code}: " if status_code else ""
+
+
+def provider_error_log_detail(error: BaseException) -> str:
+    """Render provider-owned exception text for a log sink.
+
+    Exact-literal redaction cannot prove a boundary-sliced request echo safe. While
+    volatile private context is bound, retain only the local exception type.
+    """
+    if has_volatile_sensitive_text():
+        return f"{type(error).__name__} (details withheld for private-context turn)"
+    return redact_sensitive_text(str(error))
 
 
 class ApiErrorSummaryMixin:
@@ -142,8 +153,15 @@ class ApiErrorSummaryMixin:
                 )
             current = current.__cause__ or current.__context__
 
+        if has_volatile_sensitive_text():
+            # Provider-controlled strings can echo arbitrary, even boundary-sliced,
+            # request fragments. No literal redactor can prove those safe after
+            # truncation, so expose only the provider-independent HTTP class.
+            prefix = _http_prefix(error)
+            return f"{prefix}Provider error details withheld for private-context turn"
+
         if isinstance(error, ValueError) and "expected ident at line" in raw.lower():
-            return f"Malformed provider streaming response: {raw[:300]}"
+            return redact_sensitive_text(f"Malformed provider streaming response: {raw[:300]}")
 
         prefix = _http_prefix(error)
         # Cloudflare / proxy HTML pages: grab the <title> (and Ray ID) for a clean summary
@@ -155,7 +173,7 @@ class ApiErrorSummaryMixin:
             parts.append(title)
             if ray:
                 parts.append(f"Ray {ray.group(1).strip()}")
-            return " — ".join(parts)
+            return redact_sensitive_text(" — ".join(parts))
 
         # GeminiAPIError already composes a clean one-liner with guidance; don't re-extract the raw body.
         if type(error).__name__ == "GeminiAPIError":
@@ -167,7 +185,9 @@ class ApiErrorSummaryMixin:
             msg = body.get("error", {}).get("message") if isinstance(body.get("error"), dict) else body.get("message")
             if msg:
                 msg = ApiErrorSummaryMixin._coerce_api_error_detail(msg)
-                return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
+                return redact_sensitive_text(
+                    ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
+                )
 
         # SDK may leave body empty while httpx has the payload. Redact: the body is attacker-influenced
         # and may echo Authorization / x-api-key / request JSON.
@@ -194,7 +214,9 @@ class ApiErrorSummaryMixin:
                 return redact_sensitive_text(f"{prefix}{snippet[:300]}")
 
         # Fallback: truncate the raw string but give more room than 200 chars
-        return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
+        return redact_sensitive_text(
+            ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
+        )
 
     def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
         # Azure Foundry Entra ID bearer providers are callables — never invoke them in log
@@ -209,6 +231,8 @@ class ApiErrorSummaryMixin:
 
     def _clean_error_message(self, error_msg: str) -> str:
         """Clean up error messages for user display, removing HTML content and truncating."""
+        if has_volatile_sensitive_text():
+            return "Provider error details withheld for private-context turn"
         if not error_msg:
             return "Unknown error"
         # HTML content is common with CloudFlare and gateway error pages

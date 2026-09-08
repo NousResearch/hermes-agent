@@ -41,13 +41,6 @@ class TurnContext:
     history: Any = None
     context_prompt: Optional[str] = None
     channel_prompt: Optional[str] = None
-    # Volatile platform context for the current user turn only. It is passed
-    # to AIAgent's API-only sidecar, never persisted into the transcript or
-    # folded into the system/channel prompt.
-    ephemeral_user_context: Optional[str] = None
-    # Re-evaluated by the agent for every provider request so a platform stop
-    # received between tool-loop iterations revokes the captured snapshot.
-    ephemeral_user_context_supplier: Optional[Callable[[], Optional[str]]] = None
     session_id: Optional[str] = None
     session_key: Optional[str] = None
     run_generation: Optional[int] = None
@@ -57,6 +50,9 @@ class TurnContext:
     event_message_id: Optional[str] = None
     # Raw inbound platform id (not the event_message_id reply anchor); stamped on the user turn.
     inbound_message_id: Optional[str] = None
+    # Immutable, process-local snapshot resolved from an adapter capability at turn admission.
+    # It is bound around run_conversation and never stored in canonical history.
+    volatile_user_context: Optional[str] = None
     moa_config: Optional[dict] = None
     persist_user_message: Optional[Any] = None
     persist_user_timestamp: Optional[float] = None

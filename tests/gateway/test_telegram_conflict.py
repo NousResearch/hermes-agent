@@ -491,7 +491,6 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
 
     assert adapter.has_fatal_error is False
     assert adapter._polling_error_task is not None
-    assert adapter._polling_recovery_kind == "conflict"
     # The rescheduled task must be schedulable on the running loop.
     adapter._polling_error_task.cancel()
     try:

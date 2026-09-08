@@ -706,11 +706,19 @@ def _classify_400(c: _Ctx) -> Verdict:
     # Malformed message array before overflow: input can be tiny and compression
     # cannot fix it. litellm/Bedrock proxies use errorCode=INVALID_REQUEST_BODY.
     if any(p in msg for p in _INVALID_MESSAGE_BODY_PATTERNS) or code == "invalid_request_body":
+        from agent.redact import has_volatile_sensitive_text
+
+        detail = ""
+        args = (c.num_messages, c.approx_tokens)
+        if not has_volatile_sensitive_text():
+            detail = " error=%.200s"
+            args += (msg,)
         logger.warning(
             "Malformed message array 400 (invalid request body) classified as format_error, NOT context "
             "overflow — failing fast + falling back instead of entering the compression loop. This usually "
-            "means an empty-content assistant stub is in the transcript; num_messages=%s approx_tokens=%s. "
-            "error=%.200s", c.num_messages, c.approx_tokens, msg,
+            "means an empty-content assistant stub is in the transcript; num_messages=%s approx_tokens=%s."
+            + detail,
+            *args,
         )
         return _V_FORMAT_ERROR
     verdict = _first_match(msg, _400_TAIL_RULES)

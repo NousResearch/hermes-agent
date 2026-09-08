@@ -60,14 +60,6 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
-class RevokingContextProgressAdapter(ProgressCaptureAdapter):
-    refresh_calls = 0
-
-    async def _refresh_ephemeral_user_context_for_dispatch(self, event):
-        type(self).refresh_calls += 1
-        event.ephemeral_user_context = None
-
-
 class DiscordProgressCaptureAdapter(ProgressCaptureAdapter):
     """Capture sends while exercising Discord's real preview formatter."""
 
@@ -939,27 +931,6 @@ class QueuedSilenceAgent:
         }
 
 
-class QueuedEphemeralContextAgent:
-    calls = []
-
-    def __init__(self, **kwargs):
-        self.tools = []
-
-    def run_conversation(
-        self,
-        message,
-        conversation_history=None,
-        task_id=None,
-        ephemeral_user_context=None,
-    ):
-        type(self).calls.append((message, ephemeral_user_context))
-        return {
-            "final_response": f"final response {len(type(self).calls)}",
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
 class QueuedFailedEmptyAgent:
     """First turn fails empty; its normalized error must send before follow-up."""
 
@@ -1028,7 +999,6 @@ async def _run_with_agent(
     *,
     session_id,
     pending_text=None,
-    pending_ephemeral_user_context=None,
     config_data=None,
     platform=Platform.TELEGRAM,
     chat_id="-1001",
@@ -1075,7 +1045,6 @@ async def _run_with_agent(
             message_type=MessageType.TEXT,
             source=source,
             message_id="queued-1",
-            ephemeral_user_context=pending_ephemeral_user_context,
         )
 
     result = await runner._run_agent(
@@ -1388,54 +1357,6 @@ async def test_run_agent_suppresses_silent_first_turn_and_processes_queued_follo
     assert QueuedSilenceAgent.calls == 2
     assert result["final_response"] == "follow-up processed"
     assert "NO_REPLY" not in sent_texts
-
-
-@pytest.mark.asyncio
-async def test_recursive_queued_followup_forwards_volatile_context(
-    monkeypatch, tmp_path
-):
-    QueuedEphemeralContextAgent.calls = []
-    volatile = "Location: 1.0, 2.0"
-
-    _adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        QueuedEphemeralContextAgent,
-        session_id="sess-queued-volatile",
-        pending_text="queued follow-up",
-        pending_ephemeral_user_context=volatile,
-    )
-
-    assert result["final_response"] == "final response 2"
-    assert QueuedEphemeralContextAgent.calls == [
-        ("hello", None),
-        ("queued follow-up", volatile),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_recursive_queued_followup_keeps_non_live_volatile_context_static(
-    monkeypatch, tmp_path
-):
-    QueuedEphemeralContextAgent.calls = []
-    RevokingContextProgressAdapter.refresh_calls = 0
-
-    _adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        QueuedEphemeralContextAgent,
-        session_id="sess-queued-revoked",
-        pending_text="queued follow-up",
-        pending_ephemeral_user_context="Location: 1.0, 2.0",
-        adapter_cls=RevokingContextProgressAdapter,
-    )
-
-    assert result["final_response"] == "final response 2"
-    assert RevokingContextProgressAdapter.refresh_calls == 0
-    assert QueuedEphemeralContextAgent.calls == [
-        ("hello", None),
-        ("queued follow-up", "Location: 1.0, 2.0"),
-    ]
 
 
 @pytest.mark.asyncio

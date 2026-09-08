@@ -6,12 +6,9 @@ Import-safe, stdlib-only — importable from anywhere without circular-import ri
 import contextlib
 import os
 import re
-import secrets
 import shutil
 import stat
 import sys
-import tempfile
-import threading
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -167,9 +164,6 @@ def get_default_hermes_root() -> Path:
 
 # Tombstone lives beside the profile dir (not inside) so a stale mkdir or rmtree cannot erase it.
 _DELETED_PROFILES_DIR = ".deleted"
-_PROFILE_INCARNATIONS_DIR = ".incarnations"
-_PROFILE_INCARNATION_LOCKS_GUARD = threading.Lock()
-_PROFILE_INCARNATION_LOCKS: dict[str, threading.RLock] = {}
 # Files marking a real Hermes home; arbitrary dirs with a ``profiles`` segment lack them.
 _HERMES_HOME_MARKERS = ("config.yaml", ".env", "state.db")
 
@@ -216,143 +210,18 @@ def profile_tombstone_path(profile_home: Path) -> Path:
     return profile_home.parent / _DELETED_PROFILES_DIR / profile_home.name
 
 
-def profile_incarnation_path(profile_home: str | Path) -> Path:
-    home = Path(profile_home)
-    return home.parent / _PROFILE_INCARNATIONS_DIR / home.name
-
-
-@contextlib.contextmanager
-def named_profile_incarnation_lock(profile_home: str | Path):
-    """Serialize incarnation-sensitive work across threads and processes.
-
-    The lock lives beside the out-of-profile incarnation marker, so deleting
-    the profile directory cannot remove the object on which stale writers are
-    blocked. This is also the Windows fallback's deletion/recreation fence,
-    where Python has no dir-fd-relative atomic replace.
-    """
-    home = Path(profile_home)
-    marker = profile_incarnation_path(home)
-    lock_path = marker.with_name(f".{marker.name}.lock")
-    key = os.path.normcase(str(lock_path.resolve(strict=False)))
-    with _PROFILE_INCARNATION_LOCKS_GUARD:
-        thread_lock = _PROFILE_INCARNATION_LOCKS.setdefault(
-            key, threading.RLock()
-        )
-    with thread_lock:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a+b") as handle:
-            with contextlib.suppress(OSError):
-                os.chmod(lock_path, 0o600)
-            if os.name == "nt":  # pragma: no cover - exercised on Windows CI
-                import msvcrt
-
-                if handle.seek(0, os.SEEK_END) == 0:
-                    handle.write(b"\0")
-                    handle.flush()
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                if os.name == "nt":  # pragma: no cover - exercised on Windows CI
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-
-def read_named_profile_incarnation(profile_home: str | Path) -> str | None:
-    """Read the opaque generation token for a named profile, if valid."""
-    try:
-        token = profile_incarnation_path(profile_home).read_text(
-            encoding="ascii"
-        ).strip()
-    except (OSError, UnicodeError):
-        return None
-    return token if re.fullmatch(r"[0-9a-f]{32}", token) else None
-
-
-def ensure_named_profile_incarnation(profile_home: str | Path) -> str | None:
-    """Return a stable profile generation token, creating it atomically once.
-
-    The marker lives beside the profile so deleting/recreating the directory
-    cannot accidentally restore a stale process's identity.
-    """
-    home = Path(profile_home)
-    with named_profile_incarnation_lock(home):
-        if named_profile_is_deleted(home) or not home.is_dir():
-            return None
-        existing = read_named_profile_incarnation(home)
-        if existing is not None:
-            return existing
-        marker = profile_incarnation_path(home)
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        token = secrets.token_hex(16)
-        try:
-            fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            return read_named_profile_incarnation(home)
-        try:
-            with os.fdopen(fd, "w", encoding="ascii") as handle:
-                handle.write(token + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-        except BaseException:
-            with contextlib.suppress(OSError):
-                marker.unlink()
-            raise
-        return token
-
-
-def _rotate_named_profile_incarnation_unlocked(profile_home: str | Path) -> str:
-    """Assign a new token while the caller holds the incarnation lock."""
-    marker = profile_incarnation_path(profile_home)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    token = secrets.token_hex(16)
-    fd, temporary = tempfile.mkstemp(
-        dir=str(marker.parent), prefix=f".{marker.name}.", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="ascii") as handle:
-            handle.write(token + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, marker)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(temporary)
-        raise
-    return token
-
-
-def rotate_named_profile_incarnation(profile_home: str | Path) -> str:
-    """Atomically assign a fresh generation token to a named profile path."""
-    with named_profile_incarnation_lock(profile_home):
-        return _rotate_named_profile_incarnation_unlocked(profile_home)
-
-
 def named_profile_is_deleted(profile_home: str | Path) -> bool:
     return profile_tombstone_path(Path(profile_home)).exists()
 
 
 def mark_named_profile_deleted(profile_home: str | Path) -> None:
-    home = Path(profile_home)
-    with named_profile_incarnation_lock(home):
-        marker = profile_tombstone_path(home)
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("deleted\n", encoding="utf-8")
-        # Invalidate caches in long-lived processes before rmtree starts.
-        _rotate_named_profile_incarnation_unlocked(home)
+    marker = profile_tombstone_path(Path(profile_home))
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("deleted\n", encoding="utf-8")
 
 
 def clear_named_profile_deleted(profile_home: str | Path) -> None:
-    with named_profile_incarnation_lock(profile_home):
-        profile_tombstone_path(Path(profile_home)).unlink(missing_ok=True)
+    profile_tombstone_path(Path(profile_home)).unlink(missing_ok=True)
 
 
 def assert_named_profile_home_live(path: str | Path) -> None:

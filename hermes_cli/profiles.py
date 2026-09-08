@@ -17,12 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
-from hermes_constants import (
-    clear_named_profile_deleted,
-    mark_named_profile_deleted,
-    named_profile_is_deleted,
-    rotate_named_profile_incarnation,
-)
+from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted, named_profile_is_deleted
 
 logger = logging.getLogger(__name__)
 
@@ -842,10 +837,6 @@ def create_profile(
         shutil.rmtree(profile_dir)
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
-    # Establish the new identity before making the profile live. A stale
-    # background writer from a deleted profile with the same name can then
-    # never observe a recreated directory carrying its old generation token.
-    rotate_named_profile_incarnation(profile_dir)
     clear_named_profile_deleted(profile_dir)
     source_dir = None
     if clone_from is not None or clone_all or clone_config:

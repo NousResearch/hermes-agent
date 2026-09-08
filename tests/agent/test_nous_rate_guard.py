@@ -59,6 +59,24 @@ class TestRecordNousRateLimit:
             state = json.load(f)
         assert state["reset_seconds"] == pytest.approx(120, abs=2)
 
+    def test_private_turn_ignores_provider_reset_metadata(self, rate_guard_env):
+        from agent.nous_rate_guard import record_nous_rate_limit, _state_path
+        from agent.redact import bind_volatile_sensitive_text
+
+        snapshot = "Latitude: 37.7749\nLongitude: 122.4194"
+        with bind_volatile_sensitive_text(snapshot):
+            record_nous_rate_limit(
+                headers={"x-ratelimit-reset-requests-1h": "122.4194"},
+                error_context={"reset_at": 37.7749},
+            )
+
+        with open(_state_path()) as f:
+            state = json.load(f)
+        assert state["reset_seconds"] == pytest.approx(300, abs=2)
+        serialized = json.dumps(state)
+        assert "37.7749" not in serialized
+        assert "122.4194" not in serialized
+
 
 
 class TestNousRateLimitRemaining:

@@ -173,29 +173,6 @@ def _resume_event() -> MessageEvent:
 
 class TestGatewayResumeRestartsWork:
     @pytest.mark.asyncio
-    async def test_goal_kickoff_preserves_current_turn_ephemeral_context(
-        self, hermes_home
-    ):
-        runner, adapter = _make_runner()
-        event = MessageEvent(
-            text="/goal navigate home",
-            message_type=MessageType.TEXT,
-            source=_resume_event().source,
-            message_id="msg-goal-start",
-            ephemeral_user_context="Location: 1.0, 2.0",
-        )
-        event._telegram_background_location_subject_key = "subject"
-        event._telegram_background_location_state_path = "/state/profile.json"
-
-        await GatewayRunner._handle_goal_command(runner, event)
-
-        pending = adapter._pending_messages[_GW_KEY]
-        assert pending.text == "navigate home"
-        assert pending.ephemeral_user_context == "Location: 1.0, 2.0"
-        assert pending._telegram_background_location_subject_key == "subject"
-        assert pending._telegram_background_location_state_path == "/state/profile.json"
-
-    @pytest.mark.asyncio
     async def test_resume_after_budget_exhaustion_enqueues_continuation(
         self, hermes_home
     ):

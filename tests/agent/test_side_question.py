@@ -1,6 +1,7 @@
 """Tests for agent/side_question.py — the /btw context-aware side question engine."""
 
-import logging
+from collections import OrderedDict
+
 from unittest.mock import patch
 
 from agent.side_question import (
@@ -93,52 +94,6 @@ class TestAnswerSideQuestion:
         # The instructions steer the model to answer only the side question.
         assert "side" in captured["instructions"].lower()
 
-    def test_oneshot_appends_ephemeral_context_only_to_request(self):
-        captured = {}
-
-        def fake_run_oneshot(**kwargs):
-            from agent import relay_llm
-
-            captured.update(kwargs)
-            captured["sensitive_provider_guard"] = (
-                relay_llm.provider_call_contains_ephemeral_user_context()
-            )
-            return "nearby"
-
-        history = [{"role": "user", "content": "prior message"}]
-        with patch("agent.oneshot.run_oneshot", side_effect=fake_run_oneshot):
-            answer_side_question(
-                "what is nearby?",
-                history,
-                ephemeral_user_context="Location: 1.0, 2.0",
-            )
-
-        assert captured["user_input"].endswith("Location: 1.0, 2.0")
-        assert captured["sensitive_provider_guard"] is True
-        assert history == [{"role": "user", "content": "prior message"}]
-
-    def test_oneshot_drops_revocable_ephemeral_context(self):
-        captured = {}
-        supplier_calls = 0
-
-        def supplier():
-            nonlocal supplier_calls
-            supplier_calls += 1
-            return "Location: 1.0, 2.0"
-
-        def fake_run_oneshot(**kwargs):
-            captured.update(kwargs)
-            return "safe fallback"
-
-        with patch("agent.oneshot.run_oneshot", side_effect=fake_run_oneshot):
-            answer = answer_side_question(
-                "what is nearby?", [], ephemeral_user_context=supplier
-            )
-
-        assert answer == "safe fallback"
-        assert "Location: 1.0, 2.0" not in captured["user_input"]
-        assert supplier_calls == 0
-
 
 class TestTrimSnapshotForFork:
     def test_trims_unresolved_tool_loop_tail(self):
@@ -193,28 +148,6 @@ class TestForkPath:
         assert out == "digest answer"
         oneshot.assert_called_once()
 
-    def test_fork_failure_log_omits_ephemeral_provider_echo(self, caplog):
-        marker = "Location: 1.0, 2.0"
-        caplog.set_level(logging.WARNING)
-        with patch(
-            "agent.side_question._answer_via_fork",
-            side_effect=RuntimeError(f"provider echoed {marker}"),
-        ), patch(
-            "agent.side_question._answer_via_oneshot", return_value="safe fallback"
-        ):
-            out = answer_side_question(
-                "q?",
-                [],
-                parent_agent=object(),
-                ephemeral_user_context=marker,
-            )
-
-        assert out == "safe fallback"
-        assert marker not in caplog.text
-        assert "1.0" not in caplog.text
-        assert "2.0" not in caplog.text
-        assert "ephemeral user context" in caplog.text
-
     def test_no_parent_agent_uses_oneshot(self):
         with patch("agent.side_question._answer_via_fork") as fork, patch(
             "agent.side_question._answer_via_oneshot", return_value="digest"
@@ -230,10 +163,24 @@ class TestForkPath:
 
         calls = {}
 
+        from agent.turn_context import _volatile_base_content_fingerprint
+
         class FakeFork:
+            _volatile_user_context_history = OrderedDict(
+                {
+                    "tg-old": (
+                        "Latitude: 37.7749\nLongitude: -122.4194",
+                        _volatile_base_content_fingerprint("fix foo.py"),
+                    )
+                }
+            )
+
             def run_conversation(self, user_message, conversation_history):
+                from agent.redact import has_volatile_sensitive_text
+
                 calls["user_message"] = user_message
                 calls["history"] = conversation_history
+                calls["private_context_bound"] = has_volatile_sensitive_text()
                 return {"final_response": "it was foo.py"}
 
             def shutdown_memory_provider(self):
@@ -249,7 +196,11 @@ class TestForkPath:
         whitelists = []
 
         history = [
-            {"role": "user", "content": "fix foo.py"},
+            {
+                "role": "user",
+                "content": "fix foo.py",
+                "_volatile_user_context_replay_id": "tg-old",
+            },
             {"role": "assistant", "content": "fixed"},
         ]
         with patch("agent.background_review.build_cache_parity_fork", fake_build), \
@@ -265,37 +216,5 @@ class TestForkPath:
         assert calls["history"] == history  # full snapshot replayed verbatim
         assert "which file?" in calls["user_message"]
         assert calls["write_origin"] == "side_question"
+        assert calls["private_context_bound"] is True
         assert calls.get("shutdown") and calls.get("closed")
-
-    def test_fork_forwards_ephemeral_context(self):
-        from agent.side_question import _answer_via_fork
-
-        calls = {}
-
-        class FakeFork:
-            def run_conversation(self, **kwargs):
-                calls.update(kwargs)
-                return {"final_response": "nearby"}
-
-            def shutdown_memory_provider(self):
-                pass
-
-            def close(self):
-                pass
-
-        with patch(
-            "agent.background_review.build_cache_parity_fork",
-            return_value=(FakeFork(), {}, False),
-        ), patch("hermes_cli.plugins.set_thread_tool_whitelist"), patch(
-            "hermes_cli.plugins.clear_thread_tool_whitelist"
-        ), patch(
-            "agent.background_review._snapshot_review_usage", return_value={}
-        ), patch("agent.background_review._record_review_usage_to_parent"):
-            _answer_via_fork(
-                object(),
-                "what is nearby?",
-                [],
-                ephemeral_user_context="Location: 1.0, 2.0",
-            )
-
-        assert calls["ephemeral_user_context"] == "Location: 1.0, 2.0"

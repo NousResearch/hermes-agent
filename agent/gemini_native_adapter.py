@@ -679,12 +679,6 @@ class GeminiNativeClient:
     def _stream_completion(self, model: str, url: str, request: Dict[str, Any], timeout: Any) -> Iterator[_GeminiStreamChunk]:
         try:
             headers = {**self._headers(), "Accept": "text/event-stream"}
-            # This method is a lazy generator: ``create(stream=True)`` returns
-            # before any network I/O. Revalidate volatile request context at
-            # iteration time, immediately before opening the physical stream.
-            from agent import relay_llm
-
-            relay_llm.run_provider_call_guard()
             with self._http.stream("POST", url, json=request, headers=headers, timeout=timeout) as response:
                 if response.status_code != 200:
                     raise gemini_http_error(response, body_text=read_streaming_error_body(response))

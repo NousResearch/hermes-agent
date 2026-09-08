@@ -51,7 +51,6 @@ class PreflightGateVerdict:
     _preflight_compression_blocked: Any
     _provider_overflow_recovery_pending: Any
     _last_preflight_pressure: Any
-    current_turn_user_idx: Any
     result: Optional[Dict[str, Any]] = None
 
 
@@ -172,16 +171,6 @@ def run_preflight_compression(
             v.conversation_history = conversation_history_after_compression(
                 agent, v.messages, v.conversation_history
             )
-            # Compression rebuilt ``messages``; re-anchor the current-turn index so
-            # the api_content stamp and any current-turn-only injection (ephemeral
-            # platform context, prefetch) hit the surviving dict, not a stale
-            # position.
-            from agent.turn_context import reanchor_current_turn_user_idx
-
-            v.current_turn_user_idx = reanchor_current_turn_user_idx(
-                v.messages, user_message
-            )
-            agent._persist_user_message_idx = v.current_turn_user_idx
             # Never reaches the provider on skip or re-run — refund the call/budget
             # in BOTH cases, else budget leaks and api_call_count over-reports.
             v.api_call_count = _refund_api_call(agent, v.api_call_count)
@@ -246,14 +235,13 @@ class PostToolCompressionVerdict:
     compression_attempts: int
     final_response: Any
     turn_exit_reason: Any
-    current_turn_user_idx: Any
 
 
 def compress_after_tool_results(
     agent: Any, *, messages: List[Dict[str, Any]], system_message: Any, user_message: Any,
     active_system_prompt: Any, conversation_history: Any, compression_attempts: int,
     max_compression_attempts: int, effective_task_id: Any, final_response: Any,
-    turn_exit_reason: Any, current_turn_user_idx: Any,
+    turn_exit_reason: Any,
 ) -> PostToolCompressionVerdict:
     """Post-tool-call compression decision. Pressure comes from API-reported
     ``prompt_tokens`` (a tight lower bound; thinking models inflate completion tokens),
@@ -272,7 +260,6 @@ def compress_after_tool_results(
             end_turn=end_turn, messages=messages, active_system_prompt=active_system_prompt,
             conversation_history=conversation_history, compression_attempts=compression_attempts,
             final_response=final_response, turn_exit_reason=turn_exit_reason,
-            current_turn_user_idx=current_turn_user_idx,
         )
 
     _compressor = agent.context_compressor
@@ -349,13 +336,6 @@ def compress_after_tool_results(
             conversation_history = conversation_history_after_compression(
                 agent, messages, conversation_history
             )
-            # Post-tool compaction can move the surviving live user turn. Keep
-            # any current-turn-only injection (ephemeral platform context,
-            # prefetch) anchored to that turn before the next request is built.
-            from agent.turn_context import reanchor_current_turn_user_idx
-
-            current_turn_user_idx = reanchor_current_turn_user_idx(messages, user_message)
-            agent._persist_user_message_idx = current_turn_user_idx
             if _should_skip_model_call_for_reference_handoff(messages, user_message):
                 logger.info(
                     "Skipping post-tool compaction model call: "

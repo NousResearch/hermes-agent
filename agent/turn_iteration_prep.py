@@ -89,13 +89,9 @@ class IterationPrep:
     action: str
     messages: Any
     request_logger: Any
-    current_turn_user_idx: Any = None
 
 
-def prepare_iteration(
-    agent: Any, *, messages: Any, api_call_count: Any, user_message: Any = None,
-    current_turn_user_idx: Any = None,
-) -> IterationPrep:
+def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> IterationPrep:
     """Prepare ``messages`` for this iteration in the original order. Every mutation here is
     cache-safe by construction: steer text lands in the newest tool result, the ghost-row
     filter only drops hidden scaffold placeholders, and repair runs BEFORE the request build."""
@@ -186,16 +182,7 @@ def prepare_iteration(
             repaired_seq,
             agent.session_id or "-",
         )
-        # Repair can delete or merge entries before the live user turn.
-        # Re-anchor so the request build and persist-override row target the
-        # surviving dict, not a stale position.
-        if user_message is not None:
-            current_turn_user_idx = reanchor_current_turn_user_idx(messages, user_message)
-            agent._persist_user_message_idx = current_turn_user_idx
-    return IterationPrep(
-        action="fallthrough", messages=messages, request_logger=request_logger,
-        current_turn_user_idx=current_turn_user_idx,
-    )
+    return IterationPrep(action="fallthrough", messages=messages, request_logger=request_logger)
 
 
 def _previous_tool_round(messages: Any) -> list:

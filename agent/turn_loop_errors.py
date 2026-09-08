@@ -95,10 +95,23 @@ def handle_outer_loop_error(
         tb_module_names & _API_CALL_MODULES
     )
 
-    if _is_local_processing_error:
-        error_msg = f"Error during local message processing after OpenAI-compatible API call #{api_call_count}: {str(e)}"
+    from agent.redact import has_volatile_sensitive_text
+
+    private_context = has_volatile_sensitive_text()
+    if private_context:
+        try:
+            safe_detail = agent._summarize_api_error(e)
+        except Exception:
+            safe_detail = f"{type(e).__name__} (details withheld for private-context turn)"
     else:
-        error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
+        safe_detail = str(e)
+    if _is_local_processing_error:
+        error_msg = (
+            "Error during local message processing after OpenAI-compatible API call "
+            f"#{api_call_count}: {safe_detail}"
+        )
+    else:
+        error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {safe_detail}"
     # Honor the _vprint contract: suppress_status_output silences hard failures;
     # quiet_mode -q still shows them. Traceback is logged below.
     if getattr(agent, "suppress_status_output", False):
@@ -110,7 +123,16 @@ def handle_outer_loop_error(
             logger.error(error_msg)
 
     # ERROR level with traceback so outer-loop failures land in agent.log AND errors.log.
-    logger.exception("Outer loop error in API call #%d", api_call_count)
+    if private_context:
+        # A traceback renders the original exception, including any transformed
+        # provider echo that exact-literal redaction cannot recognize.
+        logger.error(
+            "Outer loop error in API call #%d (%s; details withheld)",
+            api_call_count,
+            type(e).__name__,
+        )
+    else:
+        logger.exception("Outer loop error in API call #%d", api_call_count)
 
     # An appended assistant tool_calls message needs a role="tool" result per
     # tool_call_id; fill in error results for unanswered ones.

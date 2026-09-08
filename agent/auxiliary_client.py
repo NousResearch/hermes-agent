@@ -32,20 +32,6 @@ from agent.codex_headers import (
 )
 from agent.codex_runtime import _codex_event_has_content
 
-
-def _run_provider_call_guard() -> None:
-    """Run any request-local volatile-context check at the wire edge."""
-    from agent import relay_llm
-
-    relay_llm.run_provider_call_guard()
-
-
-def _safe_provider_error_text(error: BaseException) -> str:
-    """Render provider failures without retaining echoed volatile request data."""
-    from agent import relay_llm
-
-    return relay_llm.safe_provider_error_message(error)
-
 # `openai.OpenAI` is imported lazily (~240 ms cold); `OpenAI` below is a proxy
 # so in-module calls, `auxiliary_client.OpenAI` reads and
 # `patch("agent.auxiliary_client.OpenAI")` all keep working.
@@ -1471,7 +1457,6 @@ class _CodexCompletionsAdapter:
             from agent.codex_runtime import _bypass_sdk_request_transform, _consume_codex_event_stream
             # Keep bulk wire payload out of the SDK's GIL-holding request transform.
             stream_kwargs = _bypass_sdk_request_transform({**resp_kwargs, "stream": True})
-            _run_provider_call_guard()
             event_stream = self._client.responses.create(**stream_kwargs)
             guard.adopt_stream(event_stream)
             # The timer may fire while responses.create() is blocked; if the cancelled attempt
@@ -1495,10 +1480,7 @@ class _CodexCompletionsAdapter:
         except Exception as exc:
             if guard.timed_out.is_set():
                 raise TimeoutError(guard.timeout_message()) from exc
-            logger.debug(
-                "Codex auxiliary Responses API call failed: %s",
-                _safe_provider_error_text(exc),
-            )
+            logger.debug("Codex auxiliary Responses API call failed: %s", exc)
             raise
         finally:
             guard.finish()
@@ -1682,7 +1664,6 @@ class _AnthropicCompletionsAdapter:
                 if not isinstance(existing, dict):
                     existing = {}
                 anthropic_kwargs["extra_body"] = {**existing, **passthrough}
-        _run_provider_call_guard()
         response = create_anthropic_message(
             self._client,
             anthropic_kwargs,
@@ -1756,7 +1737,6 @@ class _BedrockCompletionsAdapter:
                 "BedrockAuxiliaryClient: stream=True requested for %s — returning a complete response "
                 "(Converse shim does not stream); caller downgrades to non-streaming.", model,
             )
-        _run_provider_call_guard()
         response = call_converse(
             region=self._region, model=model, messages=kwargs.get("messages", []), tools=kwargs.get("tools"),
             # Converse specifically defaults to the model maximum when omitted.
@@ -2464,20 +2444,15 @@ def _relay_sync_completion(
 
     kwargs = prepare_chat_messages(client, kwargs)
     callback = create or (lambda request: client.chat.completions.create(**request))
-
-    def guarded_callback(request: dict[str, Any]) -> Any:
-        _run_provider_call_guard()
-        return callback(request)
-
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
     if route is None:
-        return _run_protected_sync_provider_call(guarded_callback, kwargs)
+        return _run_protected_sync_provider_call(callback, kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.execute_current(
-        kwargs, lambda request: _run_protected_sync_provider_call(guarded_callback, request),
+        kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
         name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
         metadata=metadata, defer_logical_completion=True,
     )
@@ -2491,18 +2466,13 @@ async def _relay_async_completion(
 
     kwargs = prepare_chat_messages(client, kwargs)
     callback = create or (lambda request: client.chat.completions.create(**request))
-
-    async def guarded_callback(request: dict[str, Any]) -> Any:
-        _run_provider_call_guard()
-        return await callback(request)
-
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
-        return await guarded_callback(kwargs)
+        return await callback(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return await relay_llm.execute_current_async(
-        kwargs, guarded_callback, name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
+        kwargs, callback, name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
         metadata=metadata, defer_logical_completion=True,
     )
 
@@ -2513,18 +2483,13 @@ def _relay_sync_stream(
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
-
-    def create_stream(request: dict[str, Any]) -> Any:
-        _run_provider_call_guard()
-        return client.chat.completions.create(**request)
-
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
-        return create_stream(kwargs)
+        return client.chat.completions.create(**kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.stream_current(
-        kwargs, create_stream, name=provider_name,
+        kwargs, lambda request: client.chat.completions.create(**request), name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model), finalizer=dict, metadata=metadata,
         completed_response_predicate=lambda value: hasattr(value, "choices"),
     )
@@ -3356,16 +3321,9 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     status_code = getattr(exc, "status_code", None)
 
     def _rotate(fallback_status: int) -> bool:
-        from agent import relay_llm
-
-        # Credential pools persist normalized provider error details.  A
-        # provider is allowed to echo request text in those details, so never
-        # hand a location-bearing auxiliary error to that durable store.
-        error_context: Dict[str, Any] = {}
-        if not relay_llm.provider_call_contains_ephemeral_user_context():
-            error_context["message"] = str(exc)
-            if status_code is not None:
-                error_context["status_code"] = status_code
+        error_context: Dict[str, Any] = {"message": str(exc)}
+        if status_code is not None:
+            error_context["status_code"] = status_code
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,
             error_context=error_context, api_key_hint=failed_api_key or None,
@@ -3713,8 +3671,7 @@ def _quarantine_fallback_candidate(
     """Refresh unavailable or still 401s: token is dead. Quarantine the candidate so the caller moves on."""
     _mark_provider_unhealthy(fb_provider or fb_label, base_url=base_url)
     logger.warning("Auxiliary %s%s: fallback candidate %s has a stale/unrefreshable "
-                   "credential (%s) — skipping to next fallback", task or "call", tag, fb_label,
-                   _safe_provider_error_text(fb_err))
+                   "credential (%s) — skipping to next fallback", task or "call", tag, fb_label, fb_err)
 
 
 def _plan_fallback_auth_retry(
@@ -4426,9 +4383,7 @@ def _build_vertex_client(provider: str, model: Optional[str]) -> Tuple[Optional[
     try:
         # Aliased import: a bare `from openai import OpenAI` would shadow the module-level lazy proxy.
         from openai import OpenAI as _VertexOpenAI
-        # Hermes owns auxiliary retry/fallback and rechecks any volatile
-        # context before each physical attempt.
-        client = _VertexOpenAI(api_key=token, base_url=base_url, max_retries=0)
+        client = _VertexOpenAI(api_key=token, base_url=base_url)
     except Exception as exc:
         logger.warning("resolve_provider_client: cannot create Vertex client: %s", exc)
         return None, None
@@ -6089,16 +6044,9 @@ def _validate_llm_response(
     except (AttributeError, TypeError, IndexError) as exc:
         recovered = _recover_aux_response_message(response)
         if recovered is None:
-            from agent import relay_llm
-
-            response_detail = (
-                "details omitted: request contained ephemeral user context"
-                if relay_llm.provider_call_contains_ephemeral_user_context()
-                else repr(str(response)[:120])
-            )
             raise RuntimeError(
                 f"Auxiliary {task or 'call'}: LLM returned invalid response (type={type(response).__name__}): "
-                f"{response_detail}. Expected object with .choices[0].message — check provider "
+                f"{str(response)[:120]!r}. Expected object with .choices[0].message — check provider "
                 f"adapter or custom endpoint compatibility."
             ) from exc
         response = recovered
@@ -6299,7 +6247,7 @@ def _create_with_progress(
             auxiliary_max_tokens_param(affordable, model=str(kwargs.get("model") or "") or None))
         logger.info("Auxiliary %s: credit-limited 402 (affordable=%d tokens); "
                     "retrying once with a clamped output cap instead of failing: %s",
-                    task or "call", affordable, _safe_provider_error_text(exc))
+                    task or "call", affordable, exc)
         return _create_with_progress_once(client, retry_kwargs, task, force_stream=force_stream)
 
 
@@ -6333,14 +6281,12 @@ def _create_with_progress_once(
     _notify_aux_dispatch()
     _notify_aux_progress()  # Preserve the watchdog's historical dispatch tick.
     if (not _aux_progress_active() and not force_stream) or _client_streams_internally(client):
-        _run_provider_call_guard()
         response = client.chat.completions.create(**kwargs)
         if not _client_streams_internally(client):
             _notify_aux_provider_response()
         return response
     stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
     try:
-        _run_provider_call_guard()
         chunks = client.chat.completions.create(**stream_kwargs)
     except Exception as exc:
         # Genuine provider failures aren't streaming's fault — surface unchanged so the
@@ -6351,9 +6297,8 @@ def _create_with_progress_once(
         # Possibly a streaming-specific rejection: retry non-streaming once; a genuinely bad
         # request reproduces the real error for the except-chains.
         logger.debug("Auxiliary %s: streamed request failed (%s); retrying non-streaming",
-                     task or "call", _safe_provider_error_text(exc))
+                     task or "call", exc)
         _notify_aux_dispatch()
-        _run_provider_call_guard()
         response = client.chat.completions.create(**kwargs)
         _notify_aux_provider_response()
         return response
@@ -6540,7 +6485,6 @@ async def _aggregate_chat_stream_async(
 async def _acreate_with_stream(client: Any, kwargs: Dict[str, Any], task: Optional[str] = None) -> Any:
     """Async create() for stream-only providers: ``stream=True`` + aggregate the async chunks."""
     stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
-    _run_provider_call_guard()
     chunks = await client.chat.completions.create(**stream_kwargs)
     if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
         return chunks
@@ -6757,8 +6701,7 @@ def _ladder_parameter_rungs(
         if retry_kwargs is not None:
             logger.info("Auxiliary %s%s: provider rejected the structured-output "
                         "format field; retrying once without it (schema "
-                        "enforcement degrades to prompt compliance): %s", task or "call", tag,
-                        _safe_provider_error_text(first_err))
+                        "enforcement degrades to prompt compliance): %s", task or "call", tag, first_err)
             resp, first_err = yield from _rung(
                 _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
             if first_err is None:
@@ -6915,8 +6858,7 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
             _recoverable_pool_provider(resolved_provider, route.client, main_runtime=route.main_runtime)
             or resolved_provider, base_url=route.base_info)
     logger.info("Auxiliary %s%s: %s on %s (%s), trying fallback",
-                task or "call", tag, reason, resolved_provider,
-                _safe_provider_error_text(first_err))
+                task or "call", tag, reason, resolved_provider, first_err)
     # Skip only the failed model for model-specific failures; 401/402 are provider-wide, so
     # auth keeps skipping the credential surface, while billing is scoped to the endpoint:
     # separate custom URLs can carry separate credentials (or no billing relationship at all).
@@ -7155,8 +7097,7 @@ def _should_retry_same_provider(task: Optional[str], exc: Exception, tag: str) -
         return False
     if _should_skip_same_provider_retry(task, exc):
         logger.info("Auxiliary %s%s: timeout on the critical path; "
-                    "skipping same-provider retry and falling back: %s", task, tag,
-                    _safe_provider_error_text(exc))
+                    "skipping same-provider retry and falling back: %s", task, tag, exc)
         return False
     return True
 
@@ -7258,8 +7199,7 @@ def _call_llm_impl(
                 _backoff = min(_TRANSIENT_RETRY_BACKOFF_BASE * (2.0 ** (_attempt - 1)), 8.0)
                 logger.info("Auxiliary %s: transient transport error (attempt %d/%d); "
                             "retrying same provider after %.1fs before fallback: %s",
-                            task or "call", _attempt, _max_transient_retries, _backoff,
-                            _safe_provider_error_text(_last_transient))
+                            task or "call", _attempt, _max_transient_retries, _backoff, _last_transient)
                 time.sleep(_backoff)
                 try:
                     return _primary()
@@ -7405,7 +7345,6 @@ async def _async_call_llm_impl(
         async def _acreate(_kwargs: Dict[str, Any]) -> Any:
             if _force_stream_async:
                 return await _acreate_with_stream(client, _kwargs, task)
-            _run_provider_call_guard()
             return await client.chat.completions.create(**_kwargs)
 
         async def _primary(**validate_kw: Any) -> Any:
@@ -7421,8 +7360,7 @@ async def _async_call_llm_impl(
             if not _should_retry_same_provider(task, transient_err, " (async)"):
                 raise
             logger.info("Auxiliary %s (async): transient transport error; retrying "
-                        "once on the same provider before fallback: %s", task or "call",
-                        _safe_provider_error_text(transient_err))
+                        "once on the same provider before fallback: %s", task or "call", transient_err)
             return await _primary()
     except Exception as first_err:
         async def _perform(step: _LadderStep) -> Any:

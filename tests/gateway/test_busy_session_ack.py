@@ -228,6 +228,29 @@ class TestBusySessionAck:
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
+    async def test_steer_mode_queues_event_with_volatile_context(self, monkeypatch):
+        """A ref-only event must retain its own foreground-turn boundary."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+        event = _make_event(text="find coffee near me")
+        event.ephemeral_context_ref = object()
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        agent = MagicMock()
+        agent.steer.return_value = True
+        agent.get_activity_summary.return_value = {}
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_not_called()
+        assert adapter._pending_messages[sk].ephemeral_context_ref is event.ephemeral_context_ref
+
+    @pytest.mark.asyncio
     async def test_steer_mode_transcribes_voice_before_injection(self, monkeypatch):
         """A busy voice follow-up is transcribed and steered, never queued."""
         import gateway.run as _gr
@@ -298,60 +321,6 @@ class TestBusySessionAck:
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
         assert "Queued for the next turn" in content
         assert "Steered" not in content
-
-    @pytest.mark.asyncio
-    async def test_steer_mode_queues_event_with_volatile_context(self):
-        """API-only context cannot enter agent.steer(); queue the full event."""
-        runner, _sentinel = _make_runner()
-        runner._busy_input_mode = "steer"
-        adapter = _make_adapter()
-
-        event = _make_event(text="use my current position")
-        event.ephemeral_user_context = "Location: 1.0, 2.0"
-        event._telegram_background_location_subject_key = "subject"
-        event._telegram_background_location_state_path = "/state/profile.json"
-        sk = build_session_key(event.source)
-        runner.adapters[event.source.platform] = adapter
-
-        agent = MagicMock()
-        agent.steer = MagicMock(return_value=True)
-        runner._running_agents[sk] = agent
-
-        await runner._handle_active_session_busy_message(event, sk)
-
-        agent.steer.assert_not_called()
-        agent.interrupt.assert_not_called()
-        assert adapter._pending_messages.get(sk) is event
-        assert (
-            adapter._pending_messages[sk].ephemeral_user_context
-            == "Location: 1.0, 2.0"
-        )
-        assert (
-            adapter._pending_messages[sk]._telegram_background_location_subject_key
-            == "subject"
-        )
-
-    @pytest.mark.asyncio
-    async def test_interrupt_mode_does_not_redirect_volatile_context(self):
-        runner, _sentinel = _make_runner()
-        runner._busy_input_mode = "interrupt"
-        adapter = _make_adapter()
-        event = _make_event(text="use my current position")
-        event.ephemeral_user_context = "Location: 1.0, 2.0"
-        sk = build_session_key(event.source)
-        runner.adapters[event.source.platform] = adapter
-
-        agent = MagicMock()
-        agent._supports_active_turn_redirect = True
-        agent.redirect.return_value = True
-        runner._running_agents[sk] = agent
-
-        await runner._handle_active_session_busy_message(event, sk)
-
-        agent.redirect.assert_not_called()
-        agent.interrupt.assert_called_once_with("use my current position")
-        assert adapter._pending_messages.get(sk) is event
-        assert adapter._pending_messages[sk].ephemeral_user_context == "Location: 1.0, 2.0"
 
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_pending(self):
@@ -571,3 +540,4 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
+

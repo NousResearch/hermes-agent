@@ -123,23 +123,12 @@ The first word filters the catalog; everything after it is carried into the sent
 
 Results are only served to users who pass your gateway allowlist — unauthorized users get an empty list, so your installed skill catalog is not exposed to strangers (inline queries can be sent from any chat, even ones the bot is not in).
 
-### Background live locations (Optional)
+### Background live locations (optional)
 
-Telegram uses a `Location` object for both one-time pins and live shares. A
-one-time pin has coordinates and optional horizontal accuracy but no
-`live_period`; an active live share has a `live_period` and Telegram delivers
-its movement as edited-message updates. A venue is also a fixed, non-live
-location.
-
-Fixed pins and venues are always ordinary conversational input: Hermes stores
-them as normal user content and responds using the current conversation. When
-a user sends nearby text and a fixed pin in quick succession, Hermes batches
-the same sender's updates into one normal turn, so a request such as “find
-coffee near me” can use the pin. Fixed pins and venues never enter the
-background RAM store or the ephemeral-context path.
-
-To consume only active live-location telemetry silently in the background,
-enable `background_locations` in `~/.hermes/config.yaml`:
+Telegram uses location messages for both fixed pins and live shares. Fixed pins
+and venues remain ordinary conversational input. To consume active live-location
+updates silently and make the latest position available to later foreground text
+turns, opt in through `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:
@@ -147,78 +136,45 @@ platforms:
     background_locations: true
 ```
 
-Background live locations require Telegram long polling. Hermes disables this
-option in webhook mode because a healthy local webhook server cannot prove that
-the reverse proxy is still delivering updates; without that proof, a stop
-update could be missed while an indefinite location remained cached.
+This option requires long polling. It is disabled in webhook mode because Hermes
+cannot independently prove that a reverse proxy delivered every stop update.
 
-With this option enabled:
+With the option enabled:
 
-- accepted active live-location updates, plus the matching edited stop update,
-  do not start an agent turn or trigger a reply;
-- only the latest live-location lifecycle record for each Telegram
-  bot/sender/chat tuple lives in the running adapter's RAM. It is discarded on
-  reconnect or restart; older `telegram_background_locations` files are no
-  longer read and may be removed manually;
-- a later foreground text question or command from the same sender snapshots
-  the latest live location when its worker begins. Questions such as
-  "Where am I?" or "What's nearby?" can therefore use it without changing the
-  cached system prompt or cached-agent signature, or writing the injected live
-  context to the Hermes conversation transcript or its `api_content` sidecar.
+- active updates and their matching stop update do not start an agent turn or
+  trigger a reply;
+- the latest active record is bounded and held only in the running Telegram
+  adapter's memory, scoped by bot, sender, chat, topic, and profile;
+- an eligible foreground text or command turn resolves the latest record exactly
+  once and receives an immutable snapshot; movement or stopping after admission
+  affects future turns, not the already-running turn;
+- fixed pins and venues remain normal transcript content and suppress ambient
+  live-location context when batched with adjacent text;
+- shared multi-user sessions, media turns, internal/automatic turns, `/bg`,
+  `/btw`, MoA, proxy, and API-server paths do not capture a new ambient snapshot.
 
-The live snapshot is appended only to the current API-copy user message, after
-normal per-turn user-message composition. It remains fixed for that turn's
-retries and tool calls; stopping sharing after the turn starts prevents later
-turns from receiving location but does not cancel the authorized running turn.
-`/bg`, `/btw`, automatic goal resumes, internal events, media-only events, and
-proxy/API-server paths do not receive ambient live-location context.
+Hermes does not directly write raw live updates or its injected snapshot to the
+session database, transcript, trajectory, debug request dumps, or state files. To
+keep provider prompt prefixes byte-stable, snapshots that were already sent are
+replayed from a bounded, agent-local RAM sidecar while their original user rows
+remain in the active context. They disappear when those rows are compressed or
+rewound, the cached agent is evicted, or the process restarts. Stopping a share
+prevents new snapshots but does not rewrite context already sent to the model.
 
-Records are scoped to the configured Telegram bot identity, sender, and chat;
-forum/group topics are isolated from one another, while private-chat topics
-share the same sender/chat location. Reconnecting, restarting, replacing the
-adapter, or rotating its token discards the RAM state. Location posts sent
-through a shared `sender_chat` persona (including anonymous-admin/on-behalf-of
-messages) are not retained because Telegram does not expose a stable individual
-identity for safely attaching them to a later turn. Records are not currently
-available to turns from Discord or other platforms because Hermes does not have
-a cross-platform identity mapping for gateway users.
-Telegram business-account messages are also ignored for this feature because
-the current session identity does not include a business-connection ID.
+Model responses and tool calls remain ordinary conversation data. If a model echoes
+coordinates or passes them to a tool, those outputs follow the normal transcript,
+tool, and provider retention rules; Hermes does not attempt to identify and rewrite
+them after the model has consumed the snapshot.
 
-Temporary live-location records are retained only until Telegram's
-`live_period` expires. Stopping a live share removes its retained coordinates
-for future turns; `0x7FFFFFFF` shares remain active until explicitly stopped.
-A fixed pin or venue does not replace the retained RAM record; it remains
-ordinary conversational input.
+Reconnects, polling errors, expiry, adapter replacement, and shutdown clear the
+latest active records. A fresh live update is required after polling continuity is
+restored. Anonymous `sender_chat` and Telegram business-account locations are not
+retained because Hermes cannot safely bind them to its current user identity.
 
-If long polling loses continuity, Hermes discards retained coordinates before
-polling can become healthy again. A fresh live-location edit is required before
-coordinates become available after that reconnect. The same fail-closed
-invalidation applies when conflict recovery intentionally drops
-Telegram's queued updates.
-
-No active coordinates are written to a Hermes state file. Normal Telegram
-authorization and chat/topic gates still apply, and the option defaults to
-`false` for compatibility. Stopping or restarting the gateway clears all
-retained live locations. Files created by an earlier disk-backed development
-version under `$HERMES_HOME/state/telegram_background_locations/` are ignored
-and may be removed manually while the gateway is stopped.
-
-This option intentionally sends the latest active-live coordinates with each
-later eligible foreground text message or command from that sender, including
-turns unrelated to location. Hermes does not persist that ephemeral user
-context in its conversation transcript, but the coordinates are sent to your
-configured model provider and an agent response may repeat them. Any enabled
-plugin, observability integration, or provider that records raw request
-payloads can therefore retain it; Hermes does not add a special redaction layer
-for those external records. The RAM-only store avoids adding coordinates to
-Hermes state snapshots or filesystem backups.
-
-The volatile user-side context is currently a local gateway-to-`AIAgent` path.
-Hermes does not forward it through proxy/API-server mode, and the stateful
-`codex_app_server` runtime does not accept it without making it part of its
-durable thread history. Enable this option only when these privacy and runtime
-tradeoffs match your deployment and retention policy.
+The option defaults to `false`. When enabled, every eligible foreground turn from
+that sender—not only location-related questions—may send the current coordinates
+to the configured model provider. Providers or plugins that log raw requests may
+retain them outside Hermes's RAM-only boundary.
 
 ## Step 3: Privacy Mode (Critical for Groups)
 

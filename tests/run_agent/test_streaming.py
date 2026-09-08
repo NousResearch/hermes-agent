@@ -3,6 +3,7 @@
 Tests the unified streaming API call, delta callbacks, tool-call
 suppression, provider fallback, and CLI streaming display.
 """
+import logging
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -486,63 +487,6 @@ class TestStreamingCallbacks:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_ephemeral_context_revocation_stops_later_callbacks(
-        self, mock_close, mock_create
-    ):
-        """A revoked location-bearing request cannot emit later stream output."""
-        from agent import relay_llm
-        from agent.turn_api_call import _EphemeralUserContextChanged
-        from run_agent import AIAgent
-
-        context_is_current = {"value": True}
-
-        def _chunks():
-            yield _make_stream_chunk(content="before")
-            context_is_current["value"] = False
-            yield _make_stream_chunk(
-                content="after",
-                tool_calls=[
-                    _make_tool_call_delta(
-                        index=0, tc_id="call_1", name="terminal"
-                    )
-                ],
-            )
-
-        def _assert_context_current():
-            if not context_is_current["value"]:
-                raise _EphemeralUserContextChanged
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = _chunks()
-        mock_create.return_value = mock_client
-        deltas = []
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            model="test/model",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-            stream_delta_callback=deltas.append,
-        )
-        agent.api_mode = "chat_completions"
-        agent._interrupt_requested = False
-        agent._fire_tool_gen_started = MagicMock()
-
-        with (
-            relay_llm.provider_call_guard(
-                _assert_context_current,
-                contains_ephemeral_user_context=True,
-            ),
-            pytest.raises(_EphemeralUserContextChanged),
-        ):
-            agent._interruptible_streaming_api_call({})
-
-        assert deltas == ["before"]
-        agent._fire_tool_gen_started.assert_not_called()
-
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_deltas_fire_in_order(self, mock_close, mock_create):
         """Callbacks receive text deltas in order."""
         from run_agent import AIAgent
@@ -983,6 +927,39 @@ class TestCodexStreamCallbacks:
         # 1 initial + 1 retry = 2 calls
         assert call_count["n"] == 2
 
+    def test_private_codex_retry_log_omits_boundary_sliced_echo(self, caplog):
+        from agent.redact import bind_volatile_sensitive_text
+        from run_agent import AIAgent
+        import httpx
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._interrupt_requested = False
+        mock_client = MagicMock()
+        mock_client.responses.create.side_effect = httpx.RemoteProtocolError(
+            "provider echoed 37.77 / -122.41"
+        )
+        snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+
+        with (
+            bind_volatile_sensitive_text(snapshot),
+            caplog.at_level(logging.DEBUG, logger="agent.codex_runtime"),
+            pytest.raises(httpx.RemoteProtocolError),
+        ):
+            agent._run_codex_stream({}, client=mock_client)
+
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        assert "details withheld for private-context turn" in logged
+        assert "37.77" not in logged
+        assert "-122.41" not in logged
+
     def test_codex_create_stream_fallback_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent
 
@@ -1244,6 +1221,59 @@ class TestPartialToolCallWarning:
     error, the stub now appends a user-visible warning to content AND fires
     it as a stream delta so the user sees it immediately.
     """
+
+    @pytest.mark.parametrize("partial_delivery", [False, True])
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_private_context_stream_errors_never_log_provider_fragments(
+        self,
+        mock_close,
+        mock_create,
+        monkeypatch,
+        caplog,
+        partial_delivery,
+    ):
+        from agent.redact import bind_volatile_sensitive_text
+        from run_agent import AIAgent
+
+        def _failing_stream():
+            if partial_delivery:
+                yield _make_stream_chunk(content="safe partial response")
+            raise RuntimeError("provider echoed slices 37.77 and -122.41")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *args, **kwargs: _failing_stream()
+        )
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent._fire_stream_delta = lambda _text: None
+        agent._current_streamed_assistant_text = (
+            "safe partial response" if partial_delivery else ""
+        )
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+
+        with bind_volatile_sensitive_text(snapshot), caplog.at_level(logging.WARNING):
+            if partial_delivery:
+                response = agent._interruptible_streaming_api_call({})
+                assert response is not None
+            else:
+                with pytest.raises(RuntimeError):
+                    agent._interruptible_streaming_api_call({})
+
+        assert "Provider error details withheld for private-context turn" in caplog.text
+        assert "37.77" not in caplog.text
+        assert "-122.41" not in caplog.text
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")

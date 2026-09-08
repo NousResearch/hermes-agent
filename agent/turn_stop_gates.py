@@ -93,14 +93,9 @@ def _kanban_stop_nudge(agent, messages) -> Optional[str]:
 def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
     """Real content: persist and emit as interim so the user sees the attempted answer;
     only the nudge is flagged synthetic (#65919)."""
-    from agent import relay_llm
-
-    relay_llm.run_provider_call_guard()
     agent._emit_interim_assistant_message(final_msg)
-    relay_llm.run_provider_call_guard()
     append_message(messages, final_msg)
     try:
-        relay_llm.run_provider_call_guard()
         agent._flush_messages_to_session_db(messages, conversation_history)
     except Exception:
         logger.debug(flush_fail_msg, exc_info=True)
@@ -115,11 +110,9 @@ def apply_stop_gates(
     are user-role rows appended only after the assistant answer row, so role alternation
     holds. Hook lookups are imported lazily from their origin modules (tests patch them
     there)."""
-    from agent import relay_llm
 
     def _continue(nudge: str, flag: str) -> StopGateVerdict:
         """Append the synthetic nudge row and hand the turn back to the loop."""
-        relay_llm.run_provider_call_guard()
         append_message(messages, {"role": "user", "content": nudge, flag: True})
         agent._session_messages = messages
         # Keep the answer only as a budget-exhaustion fallback; clear ``final_response`` so
@@ -133,7 +126,6 @@ def apply_stop_gates(
             ),
         )
 
-    relay_llm.run_provider_call_guard()
     _verify_nudge = _verify_on_stop_nudge(agent)
     if _verify_nudge:
         agent._verification_stop_nudges = getattr(agent, "_verification_stop_nudges", 0) + 1
@@ -147,7 +139,6 @@ def apply_stop_gates(
         return verdict
 
     _attempt = getattr(agent, "_pre_verify_nudges", 0)
-    relay_llm.run_provider_call_guard()
     _verify_nudge2 = _pre_verify_nudge(agent, final_response, _attempt)
     if _verify_nudge2:
         agent._pre_verify_nudges = _attempt + 1
@@ -159,13 +150,11 @@ def apply_stop_gates(
         logger.debug("pre_verify nudge issued (attempt %d)", agent._pre_verify_nudges)
         return verdict
 
-    relay_llm.run_provider_call_guard()
     _kanban_nudge = _kanban_stop_nudge(agent, messages)
     if _kanban_nudge:
         agent._kanban_stop_nudges = getattr(agent, "_kanban_stop_nudges", 0) + 1
         final_msg["finish_reason"] = "kanban_terminal_required"
         final_msg["_kanban_stop_synthetic"] = True
-        relay_llm.run_provider_call_guard()
         append_message(messages, final_msg)
         verdict = _continue(_kanban_nudge, "_kanban_stop_synthetic")
         logger.info(

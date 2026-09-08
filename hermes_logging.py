@@ -85,7 +85,7 @@ def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
 _NOISY_LOGGERS = (
     "openai", "openai._base_client", "httpx", "httpcore", "asyncio", "hpack", "hpack.hpack",
     "grpc", "modal", "urllib3", "urllib3.connectionpool", "websockets", "charset_normalizer",
-    "markdown_it",
+    "markdown_it", "telegram", "telegram.ext.Application", "telegram.ext.Updater",
 )
 
 
@@ -436,7 +436,16 @@ class _NonFormattingQueueHandler(QueueHandler):
     """
 
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
-        return copy.copy(record)
+        queued_record = copy.copy(record)
+        # The listener thread does not inherit the emitting turn's ContextVars.
+        # Carry only the in-memory redaction literals until this record is formatted.
+        try:
+            from agent.redact import volatile_sensitive_literals
+
+            queued_record._hermes_volatile_sensitive_text = volatile_sensitive_literals()
+        except Exception:
+            queued_record._hermes_volatile_sensitive_text = ()
+        return queued_record
 
 
 def _stop_queue_listener() -> None:

@@ -653,37 +653,6 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
-    def _ephemeral_context_block() -> Optional[str]:
-        """Block instead of dispatching when the response snapshot was revoked.
-
-        Returning an ordinary matching tool result preserves role alternation
-        and the persist-before-execute invariant. The next model iteration is
-        rebuilt from the now-current (usually empty) volatile context.
-        """
-        from agent import relay_llm
-        from agent.turn_api_call import _EphemeralUserContextChanged
-
-        try:
-            relay_llm.run_provider_call_guard()
-        except _EphemeralUserContextChanged:
-            _advance_start_order()
-            state.blocked = True
-            return _blocked_tool_result(
-                agent,
-                ref,
-                block_message=(
-                    "Tool execution skipped because volatile user context "
-                    "changed before execution"
-                ),
-                block_error_type="ephemeral_context_changed",
-                guardrail_decision=None,
-            )
-        return None
-
-    ephemeral_block = _ephemeral_context_block()
-    if ephemeral_block is not None:
-        return ephemeral_block
-
     block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"
@@ -711,9 +680,6 @@ def _dispatch_authorized_once(
         agent._iters_since_skill = 0
 
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
-    ephemeral_block = _ephemeral_context_block()
-    if ephemeral_block is not None:
-        return ephemeral_block
     return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
 
 

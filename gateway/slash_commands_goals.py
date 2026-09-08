@@ -6,7 +6,6 @@ from __future__ import annotations
 import logging
 
 from agent.i18n import t
-from gateway.platforms.base import copy_ephemeral_context_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 
 # Log-record parity with gateway/run.py and the origin module.
@@ -91,12 +90,7 @@ class GatewayGoalCommandsMixin:
                     source=event.source,
                     message_id=event.message_id if kickoff else None,
                     channel_prompt=event.channel_prompt if kickoff else None,
-                    ephemeral_user_context=(
-                        getattr(event, "ephemeral_user_context", None) if kickoff else None
-                    ),
                 )
-                if kickoff:
-                    copy_ephemeral_context_metadata(event, turn)
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:
             logger.debug("goal %s failed: %s", label, exc)

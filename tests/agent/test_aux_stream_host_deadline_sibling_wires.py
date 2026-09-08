@@ -17,6 +17,7 @@ billed to completion on a socket nobody is waiting for.
 
 from __future__ import annotations
 
+import logging
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -187,3 +188,31 @@ def test_anthropic_stream_without_host_deadline_runs_to_completion():
         )
     assert message.content[0].text == "summary"
     assert stream.yielded == 5
+
+
+def test_private_anthropic_stream_fallback_log_omits_sliced_echo(caplog):
+    from agent.redact import bind_volatile_sensitive_text
+
+    fallback = SimpleNamespace(content=[])
+
+    def unavailable(**_kwargs):
+        raise RuntimeError("stream not supported; echoed 37.77 / -122.41")
+
+    client = SimpleNamespace(
+        messages=SimpleNamespace(
+            stream=unavailable,
+            create=lambda **_kwargs: fallback,
+        )
+    )
+    snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+    with (
+        bind_volatile_sensitive_text(snapshot),
+        caplog.at_level(logging.DEBUG, logger="agent.anthropic_adapter"),
+    ):
+        result = create_anthropic_message(client, {"model": "m", "messages": []})
+
+    assert result is fallback
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "details withheld for private-context turn" in logged
+    assert "37.77" not in logged
+    assert "-122.41" not in logged

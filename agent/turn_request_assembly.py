@@ -16,10 +16,7 @@ from typing import Any
 from agent.message_sanitization import _sanitize_messages_surrogates
 from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
-from agent.turn_context import (
-    append_ephemeral_context_to_last_user,
-    build_api_messages,
-)
+from agent.turn_context import build_api_messages
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -32,7 +29,6 @@ class AssembledRequest:
 
     action: str
     api_messages: Any
-    ephemeral_api_messages_base: Any
     tools_for_api: Any
     _moa_prepared_request: Any
     pending_moa_prepared_request: Any
@@ -110,7 +106,6 @@ def _prepare_moa_request(agent: Any, api_messages: Any, pending_moa_prepared_req
 def assemble_api_request(
     agent: Any, *, messages: Any, current_turn_user_idx: Any, _ext_prefetch_cache: Any,
     _plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
-    ephemeral_user_context: Any,
     original_user_message: Any, pending_moa_prepared_request: Any, request_logger: Any,
 ) -> AssembledRequest:
     """Assemble the request in the original order. ORDER IS LOAD-BEARING: cache breakpoints
@@ -122,19 +117,10 @@ def assemble_api_request(
     )
     from agent.model_metadata import estimate_messages_tokens_rough
 
-    lazy_ephemeral_context = (
-        ephemeral_user_context if callable(ephemeral_user_context) else None
-    )
     api_messages, effective_system = build_api_messages(
         agent, messages, current_turn_user_idx=current_turn_user_idx,
         ext_prefetch_cache=_ext_prefetch_cache, plugin_user_context=_plugin_user_context,
         moa_config=moa_config, active_system_prompt=active_system_prompt,
-        # A callable is resolved below, after request-local transforms, and then
-        # again immediately before every retry.  Keeping this first build clean
-        # prevents a stopped location from surviving in a reused request copy.
-        ephemeral_user_context=(
-            None if lazy_ephemeral_context is not None else ephemeral_user_context
-        ),
     )
 
     if moa_config:
@@ -199,24 +185,6 @@ def assemble_api_request(
     # No send-time pad loop here: ``repair_empty_non_final_messages`` (inside
     # ``_sanitize_api_messages``) is the single owner of empty-turn repair.
 
-    # Keep a clean post-transform baseline for volatile suppliers.  The retry
-    # loop rebuilds from this copy before each provider attempt, so a location
-    # stop received during backoff takes effect without rerunning context-engine
-    # hooks or MoA advisor fan-out.  Attach after those transforms to keep the
-    # baseline free of sensitive bytes.
-    ephemeral_api_messages_base = None
-    if lazy_ephemeral_context is not None:
-        ephemeral_api_messages_base = [
-            _clone_message_for_send(message) for message in api_messages
-        ]
-        api_messages = [
-            _clone_message_for_send(message)
-            for message in ephemeral_api_messages_base
-        ]
-        append_ephemeral_context_to_last_user(
-            api_messages, lazy_ephemeral_context
-        )
-
     # Build the request-local cache sections LAST, after every transcript mutation;
     # the canonical tool registry stays undecorated. Marked ``content`` becomes text
     # blocks the whitespace pass skips, so the same row's bytes vary across turns.
@@ -251,7 +219,7 @@ def assemble_api_request(
     # ephemeral advisor output is absent from ``messages``; ``create()`` reuses the
     # prepared request instead of running the advisors again.
     _moa_prepared_request = None
-    if agent.provider == "moa" and lazy_ephemeral_context is None:
+    if agent.provider == "moa":
         _moa_prepared_request, api_messages, pending_moa_prepared_request = _prepare_moa_request(
             agent, api_messages, pending_moa_prepared_request
         )
@@ -288,7 +256,6 @@ def assemble_api_request(
             agent.context_compressor, request_pressure_tokens
         )
     return AssembledRequest(
-        "fallthrough", api_messages, ephemeral_api_messages_base,
-        tools_for_api, _moa_prepared_request,
+        "fallthrough", api_messages, tools_for_api, _moa_prepared_request,
         pending_moa_prepared_request, approx_tokens, request_pressure_tokens, approx_tokens * 4,
     )

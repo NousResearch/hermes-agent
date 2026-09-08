@@ -56,6 +56,7 @@ import {
   waitForHermesReady
 } from './backend-health'
 import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
+import { readBackendOwnershipFile } from './backend-ownership-file'
 import {
   canImportHermesCli,
   execProbeSync,
@@ -3682,13 +3683,7 @@ const backendOwnership = createBackendOwnership({
   matchesParent: backendParentMatches,
   stop: stopOwnedBackend,
   store: {
-    read: () => {
-      try {
-        return fs.readFileSync(DESKTOP_BACKEND_OWNERSHIP_PATH, 'utf8')
-      } catch {
-        return null
-      }
-    },
+    read: () => readBackendOwnershipFile(DESKTOP_BACKEND_OWNERSHIP_PATH),
     write: writeBackendOwnership,
     // A corrupt ownership file is moved aside instead of being rewritten
     // away by the reap sweep — its records are the only pointer to any

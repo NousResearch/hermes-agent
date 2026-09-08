@@ -447,6 +447,75 @@ def test_relay_fronted_matching_is_case_insensitive(relay_env, monkeypatch, conf
     assert eg.authorize_relay_target("discord", "999") is not None
 
 
+@pytest.mark.parametrize("requested", ["Discord", "DISCORD", " discord "])
+def test_requested_platform_name_is_also_normalised(relay_env, monkeypatch, requested):
+    """The OTHER half of round 3, finding 3 — and it was never covered.
+
+    The test above varies the CONFIGURED name while always requesting
+    lowercase "discord", so it only pins `_relay_fronted`'s normalisation.
+    Removing `.lower()` from the REQUESTED name in `relay_routed_platform`
+    (and in `authorize_relay_target`) therefore survived the whole suite,
+    while a probe showed the real effect: `relay_routed=False` and the
+    unattested target AUTHORIZED — the exact bypass round 3 reported.
+
+    The model names the target, so a mixed-case `send_message(target=
+    "Discord:999")` must be guarded identically.
+    """
+    import gateway.relay as gr
+    import gateway.relay.egress as eg
+
+    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
+    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: set())
+
+    assert eg.relay_routed_platform(requested) is True
+    assert eg.authorize_relay_target(requested, "999") is not None
+
+
+@pytest.mark.parametrize("requested", ["Discord", "DISCORD"])
+def test_mixed_case_request_still_reaches_attested_targets(relay_env, monkeypatch, requested):
+    """Control: normalising the requested name must not refuse real traffic.
+
+    The attestation store is keyed by the LOWERCASE platform. If the lookup in
+    `attested_relay_targets` / `authorize_relay_target` stops normalising, a
+    mixed-case request misses its own attested set and is refused — an OUTAGE
+    for legitimate traffic rather than a bypass. Both directions matter, so the
+    lookup name is asserted, not just the routing decision.
+    """
+    import gateway.relay as gr
+    import gateway.relay.egress as eg
+
+    seen = []
+
+    def _attested(platform):
+        seen.append(platform)
+        return {"999"} if platform == "discord" else set()
+
+    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
+    monkeypatch.setattr(eg, "attested_relay_targets", _attested)
+
+    assert eg.authorize_relay_target(requested, "999") is None
+    # The store was queried with the NORMALISED name.
+    assert seen and all(p == "discord" for p in seen), seen
+
+
+@pytest.mark.parametrize("requested", ["Discord", "DISCORD", " discord "])
+def test_attested_lookup_normalises_before_querying_the_sources(relay_env, monkeypatch, requested):
+    """`attested_relay_targets` does its OWN normalisation, and every other
+    test monkeypatches this function away — so that `.lower()` was covered by
+    nothing. Dropping it made a mixed-case platform find an EMPTY attested set
+    (its sources are keyed lowercase), refusing legitimate traffic.
+
+    Asserted against the real function with only its leaf sources stubbed.
+    """
+    import gateway.relay.egress as eg
+
+    monkeypatch.setattr(eg, "_home_channel_id", lambda n: None)
+    monkeypatch.setattr(eg, "_directory_ids", lambda n: {"999"} if n == "discord" else set())
+    monkeypatch.setattr(eg, "_session_ids", lambda n: set())
+
+    assert eg.attested_relay_targets(requested) == {"999"}
+
+
 def test_attested_target_still_allowed_when_config_case_differs(relay_env, monkeypatch):
     """Control: normalizing must not start refusing legitimate traffic."""
     import gateway.relay as gr

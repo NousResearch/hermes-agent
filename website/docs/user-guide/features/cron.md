@@ -917,6 +917,7 @@ For recurring jobs that don't need LLM reasoning — classic watchdogs, disk/mem
 hermes cron create "every 5m" \
   --no-agent \
   --script memory-watchdog.sh \
+  --target scheduler \
   --deliver telegram \
   --name "memory-watchdog"
 ```
@@ -929,7 +930,15 @@ Semantics:
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
 
-`.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). `script` is always a **file**, never a command line: `--script "echo hi"` is refused at creation (write the command into `~/.hermes/scripts/hi.sh` and pass `hi.sh`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. A Python `script` or `monitor_script` can also pin a user-managed venv (for packages the Hermes runtime doesn't carry) by passing `--interpreter ~/venvs/.../bin/python` at create/edit time — see [Using your own Python environment](../../guides/cron-script-only.md#using-your-own-python-environment). The Hermes-managed venv stays Hermes-owned; nothing is installed or restored automatically. The subprocess environment is sanitized (`_sanitize_subprocess_env`), so provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
+### Script execution targets
+
+New script jobs default to `target="backend"`: the script must be an absolute, non-traversing regular-file path visible to the owning profile's terminal backend (for example `/workspace/scripts/check.py` inside a container). Validation runs at creation, on relevant resource updates, and before execution. The backend's working directory is the job's `workdir` when set. `.sh` / `.bash` scripts use backend `bash`; other scripts use the backend's default Python. Backend execution never falls back to the scheduler host.
+
+Use `--target scheduler` for host-side scripts, including the relative-path example above. These scripts must resolve inside `$HERMES_HOME/scripts/`; relative names, absolute paths, and `~`-prefixed paths are accepted only when they stay inside that directory. Persisted legacy jobs with no target retain scheduler-host execution. Both script-only jobs and agent pre-run scripts follow the selected target.
+
+An explicit `--interpreter` override currently requires `target="scheduler"`; backend jobs with an interpreter override fail clearly rather than silently ignoring it. Scheduler Python scripts can pin a user-managed venv — see [Using your own Python environment](../../guides/cron-script-only.md#using-your-own-python-environment). The Hermes-managed venv stays Hermes-owned; nothing is installed or restored automatically. Scheduler subprocess environments are sanitized, so provider API credentials and other Hermes-managed secrets are not inherited automatically. Backend scripts follow the owning profile's terminal environment policy.
+
+`script` always names a **file**, never a command line. For shell commands, create a `.sh` file and select the target explicitly.
 
 #### Giving a script a credential
 

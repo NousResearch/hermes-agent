@@ -358,26 +358,6 @@ class RelayAdapter(BasePlatformAdapter):
             return candidates[0]
         return None
 
-    # ── terminal-decline latch ──────────────────────────────────────────────
-    #
-    # THE STRUCTURAL FIX. Rounds 3-6 of review found the SAME defect in eleven
-    # lanes: the connector refuses one op, and some caller downstream reads that
-    # as "this lane is unavailable" and retries the same content through a
-    # DIFFERENT op against the SAME chat. Each was closed with a local check at
-    # one more call site — but there are ~60 outbound call sites in gateway/,
-    # and a per-site check is a race between reviewers and new code.
-    #
-    # Every relay frame, from every one of those callers, passes through
-    # `_transport.send_outbound`. One latch here covers them all: once the
-    # connector has refused a chat, this adapter stops emitting content frames
-    # for that chat until the latch is cleared.
-    #
-    # Scope is deliberately narrow:
-    #   * per CHAT, not global — a refusal must not mute other conversations;
-    #   * CONTENT ops only — typing/delete/read-state carry nothing and their
-    #     refusal is already silent;
-    #   * cleared when the connector accepts anything for that chat again, so a
-    #     transient policy change self-heals rather than needing a restart.
     async def _outbound(self, chat_id: str, action: Dict[str, Any]) -> Dict[str, Any]:
         """Send one outbound frame tagged with the chat's underlying platform.
 

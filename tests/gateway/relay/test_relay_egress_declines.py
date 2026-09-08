@@ -19,12 +19,10 @@ not to the adapter itself.
 
 from __future__ import annotations
 
-import os
-
 import asyncio
-from types import SimpleNamespace
-from types import SimpleNamespace
 import logging
+import os
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -698,10 +696,15 @@ def test_declined_stream_edit_does_not_send_the_unseen_tail():
 
     THE DOUBLE IS DELIBERATELY COMPLETE. An earlier version implemented only the
     guarded path, so removing either guard raised AttributeError inside the fake
-    (`_is_flood_error`, `_clean_for_display`) BEFORE any send could be observed
-    — the test went red for the wrong reason and proved nothing. Every attribute
-    the UNGUARDED path reaches is present here, so the mutation now fails on the
-    assertion that a send reached the wire.
+    (`_is_flood_error`, `_clean_for_display`) and the test went red for the wrong
+    reason, proving nothing. Each guard now dies on its OWN observable, and the
+    two are different — state for the first, the wire for the second:
+
+        remove the _on_edit_failure decline check
+            -> assert consumer._egress_declined is True
+               (execution stops here; this mutant never reaches the fallback)
+        remove the _send_fallback_final early return
+            -> AssertionError: the unseen tail reached the wire: ['send']
     """
     from gateway.platforms.base import SendResult
     from gateway.stream_consumer_fallback import StreamFallbackMixin

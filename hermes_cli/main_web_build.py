@@ -460,10 +460,18 @@ def _cpu_pin_prefix() -> list[str]:
     return [taskset, "-c", f"{cpus[0]}-{cpus[1]}"]
 
 
-def _web_ui_build_command(npm: str, *, light: bool | None = None) -> list[str]:
-    """Argv for the web UI production build (``build:light`` + optional CPU pin)."""
+def _web_ui_build_command(
+    npm: str, *, light: bool | None = None, env: dict[str, str] | None = None,
+) -> list[str]:
+    """Argv for the web UI production build (``build:light`` + optional CPU pin).
+
+    ``light`` wins when passed. Otherwise the flag is read from *env* (or
+    ``os.environ``), the same source ``_web_ui_build_env`` uses — so injecting
+    ``HERMES_WEB_BUILD_LIGHT`` into the build env cannot pick a smaller heap
+    while still running the full ``build`` script.
+    """
     if light is None:
-        light = _web_ui_build_light()
+        light = _web_ui_build_light(env)
     cmd = [npm, "run", "build:light" if light else "build"]
     if light:
         cmd = [*_cpu_pin_prefix(), *cmd]
@@ -617,7 +625,7 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         # it looks identical to a hang and users reboot mid-install). Heap cap
         # on vite_env so low-RAM hosts don't OOM during vite build (#63338).
         return _run_with_idle_timeout(
-            _web_ui_build_command(npm, light=light), cwd=web_dir, env=vite_env, stream=False,
+            _web_ui_build_command(npm, light=light, env=vite_env), cwd=web_dir, env=vite_env, stream=False,
         )
 
     try:

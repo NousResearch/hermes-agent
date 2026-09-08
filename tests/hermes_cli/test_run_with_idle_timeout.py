@@ -68,3 +68,22 @@ def test_on_line_callback_fires_even_when_not_streaming(tmp_path):
     )
     assert result.returncode == 0
     assert any("via callback" in line for line in seen)
+
+
+def test_on_line_exception_does_not_fail_the_run(tmp_path):
+    """A typo in a future on_line callback must not kill the build."""
+    script = tmp_path / "cb.py"
+    script.write_text("print('still ok')\n")
+
+    def boom(_line: str) -> None:
+        raise RuntimeError("callback typo")
+
+    result = _run_with_idle_timeout(
+        [_sys.executable, str(script)],
+        cwd=tmp_path,
+        idle_timeout_seconds=10,
+        stream=False,
+        on_line=boom,
+    )
+    assert result.returncode == 0
+    assert "still ok" in result.stdout

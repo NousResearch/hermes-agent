@@ -466,6 +466,34 @@ class TestWebUiBuildEnvAndCommand:
             "build:light",
         ]
 
+    def test_injected_env_dict_selects_light_build_without_os_environ(self, monkeypatch):
+        """A caller that injects HERMES_WEB_BUILD_LIGHT into the build env
+        (not os.environ) must get both the 1024 MB heap and build:light."""
+        monkeypatch.delenv("HERMES_WEB_BUILD_LIGHT", raising=False)
+        monkeypatch.delenv("NODE_OPTIONS", raising=False)
+        monkeypatch.delenv("HERMES_WEB_BUILD_MAX_OLD_SPACE_SIZE", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._resolve_tui_heap_mb", lambda default_mb=1024: default_mb,
+        )
+        injected = {"HERMES_WEB_BUILD_LIGHT": "1"}
+        env = _web_ui_build_env(injected)
+        cmd = _web_ui_build_command("/usr/bin/npm", env=injected)
+        assert "--max-old-space-size=1024" in env.get("NODE_OPTIONS", "")
+        assert cmd[-3:] == ["/usr/bin/npm", "run", "build:light"]
+
+    def test_cpu_pin_uses_this_process_affinity_not_hardcoded_zero_one(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.main_web_build.shutil.which",
+            lambda name: "/usr/bin/taskset" if name == "taskset" else None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.main_web_build.os.sched_getaffinity", lambda _pid: {2, 5}, raising=False,
+        )
+        monkeypatch.setattr("hermes_cli.main_web_build.sys.platform", "linux")
+        cmd = _web_ui_build_command("/usr/bin/npm", light=True)
+        assert cmd[:3] == ["/usr/bin/taskset", "-c", "2-5"]
+        assert cmd[-3:] == ["/usr/bin/npm", "run", "build:light"]
+
     def test_cpu_pin_skips_single_core(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.main_web_build.shutil.which", lambda name: "/usr/bin/taskset" if name == "taskset" else None)
         monkeypatch.setattr("hermes_cli.main_web_build.os.sched_getaffinity", lambda _pid: {0}, raising=False)

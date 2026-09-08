@@ -141,6 +141,48 @@ def test_done_verdict_is_not_resurrected_by_a_later_continue_judge():
     assert second["should_continue"] is False
 
 
+def test_stale_judge_cannot_complete_after_contract_or_gate_change():
+    sid = "definition-changed-during-judge"
+    mgr = GoalManager(sid)
+    mgr.set("original objective")
+
+    def judge_changes_definition(*_args, **_kwargs):
+        fresh = load_goal(sid)
+        fresh.contract.outcome = "new required outcome"
+        save_goal(sid, fresh)
+        return "done", "old scope complete", False, None, False
+
+    with patch("hermes_cli.goals.judge_goal", side_effect=judge_changes_definition):
+        decision = mgr.evaluate_after_turn("old work complete")
+    assert load_goal(sid).status == "active"
+    assert decision["should_continue"] is False
+
+
+def test_continuation_token_rejects_pause_or_replacement_after_judging():
+    mgr = GoalManager("continuation-admission")
+    mgr.set("original objective")
+    token = mgr.continuation_token()
+    assert mgr.continuation_is_current(token)
+    mgr.pause(reason="user-paused")
+    assert not GoalManager("continuation-admission").continuation_is_current(token)
+
+    replacement = GoalManager("continuation-admission")
+    replacement.resume()
+    old_token = replacement.continuation_token()
+    replacement.set("replacement objective")
+    assert not GoalManager("continuation-admission").continuation_is_current(old_token)
+
+
+def test_evidence_keeps_error_result_when_tool_arguments_are_large():
+    from hermes_cli.goals import extract_turn_evidence
+
+    evidence = extract_turn_evidence({"messages": [
+        {"role": "assistant", "tool_calls": [{"id": "w1", "function": {"name": "write_file", "arguments": {"content": "x" * 5000}}}]},
+        {"role": "tool", "tool_call_id": "w1", "content": "permission denied"},
+    ]})
+    assert evidence and "permission denied" in evidence[0]
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Defect 2 — judge must receive cumulative evidence, not just last prose
 # ──────────────────────────────────────────────────────────────────────

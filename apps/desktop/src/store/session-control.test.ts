@@ -185,6 +185,14 @@ describe('session-control store', () => {
     })
   })
 
+  it('keeps a post-mutation snapshot failure unavailable because completion is uncertain', async () => {
+    applySessionControlSnapshot('s1', FULL_SNAPSHOT)
+    useGateway(vi.fn(async () => { throw new JsonRpcGatewayError('snapshot failed', { code: 5031 }) }))
+
+    await expect(runSessionControlAction('s1', 'goal.update', { prompt: 'new objective' })).rejects.toThrow('snapshot failed')
+    expect($sessionControlBySession.get().s1).toMatchObject({ error: 'snapshot failed', actionError: null })
+  })
+
   it('keeps a transport action failure unavailable after a prior busy rejection', async () => {
     applySessionControlSnapshot('s1', FULL_SNAPSHOT)
     useGateway(

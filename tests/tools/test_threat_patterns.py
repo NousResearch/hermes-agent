@@ -111,6 +111,23 @@ class TestC2Patterns:
             "Command and control will be reached via …", scope="context"
         )
 
+    def test_known_framework_names_still_trigger_at_context_scope(self):
+        findings = scan_for_threats(
+            "Cobalt Strike and Sliver are red-team frameworks.",
+            scope="context",
+        )
+        assert "known_c2_framework" in findings
+
+    def test_havoc_still_caught_by_context_rich_pattern(self):
+        # Pins the comment in threat_patterns.py: after dropping bare "havoc"
+        # (a common English word), the Havoc C2 *framework* must still be
+        # caught by the generic context-rich tell ("c2 ... server").
+        findings = scan_for_threats(
+            "Communication traces to the Havoc C2 server were observed.",
+            scope="context",
+        )
+        assert "c2_explicit" in findings
+
 
 # =========================================================================
 # False-positive guards (THIS IS THE WHOLE POINT)
@@ -149,6 +166,15 @@ class TestFalsePositives:
             "like Cobalt Strike and Sliver use encrypted channels."
         )
         assert scan_for_threats(text, scope="all") == []
+
+    def test_common_word_havoc_does_not_trip_known_c2(self):
+        # "havoc" is a common English word (see the "praxis" precedent —
+        # both were removed from the known_c2_framework alternation).
+        # A legitimate persona/value file quoting prose like "wreaks havoc"
+        # must not be blocked from the system prompt.
+        text = "Thoughtlessness — not malice — is what wreaks havoc."
+        findings = scan_for_threats(text, scope="context")
+        assert findings == []
 
 
 # =========================================================================

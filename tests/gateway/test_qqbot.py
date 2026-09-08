@@ -920,13 +920,13 @@ class TestDefaultInteractionDispatch:
                 "id": "i",
                 "chat_type": 2,
                 "user_openid": "u-42",
-                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:c2c:u-42:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:u-42:allow-once"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
             tools.approval.resolve_gateway_approval = orig
 
-        assert resolve_calls == [("agent:main:qqbot:c2c:u-42", "once", False)]
+        assert resolve_calls == [("agent:main:qqbot:dm:u-42", "once", False)]
 
 
     @pytest.mark.asyncio

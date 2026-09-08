@@ -810,12 +810,6 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
-    # Prefer the request-scoped api_server origin binding over HERMES_SESSION_ID: the env
-    # var is clobbered with a subagent's internal id whenever a child agent is constructed
-    # in-process, which would stamp — and later wake — the wrong session.
-    from tools.async_delegation import _current_origin_session_id
-    session_id = (args.get("session_id") or _current_origin_session_id()
-                  or os.environ.get("HERMES_SESSION_ID"))
     # Workspace sharing is always explicit: omitted fields mean a fresh scratch workspace
     # even for a dispatcher-spawned creator (reusing the parent's path would let a child
     # mutate review evidence or race its checkout). Project identity is the one safe thing
@@ -831,9 +825,14 @@ def _handle_create(args: dict, **kw) -> str:
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
+        from tools.async_delegation import _current_origin_session_id
+        self_tid = (os.environ.get("HERMES_KANBAN_TASK")
+                    if _is_dispatcher_owned_worker() else None)
+        self_task = kb.get_task(conn, self_tid) if self_tid else None
+        # The worker/API runtime may be transient; the owning task's origin is durable.
+        session_id = (args.get("session_id") or (self_task.session_id if self_task else None)
+                      or _current_origin_session_id() or os.environ.get("HERMES_SESSION_ID"))
         if project_id is None and workspace_kind is None and workspace_path is None:
-            self_tid = os.environ.get("HERMES_KANBAN_TASK")
-            self_task = kb.get_task(conn, self_tid) if self_tid else None
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
         new_tid = kb.create_task(
@@ -843,6 +842,7 @@ def _handle_create(args: dict, **kw) -> str:
             workspace_kind=str(workspace_kind if workspace_kind is not None else "scratch"),
             workspace_path=workspace_path, project_id=project_id,
             project_source_task_id=project_source_task_id, triage=triage,
+            creator_task_id=self_tid,
             idempotency_key=args.get("idempotency_key"),
             max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
             model_override=model_override, provider_override=provider_override,
@@ -878,7 +878,11 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
         except Exception:
             notifier_profile = "default"
     delivery_metadata: dict[str, Any] = {
-        k: v for k, v in (("thread_id", thread_id), ("chat_type", chat_type)) if v}
+        k: v for k, v in (
+            ("thread_id", thread_id), ("chat_type", chat_type),
+            ("scope_id", env("HERMES_SESSION_SCOPE_ID", "")),
+            ("parent_chat_id", env("HERMES_SESSION_PARENT_CHAT_ID", "")),
+        ) if v}
     if (platform.lower() == "telegram" and thread_id
             and (chat_type or "").lower() in {"dm", "direct", "private"}):
         delivery_metadata["telegram_dm_topic_reply_fallback"] = True
@@ -910,8 +914,13 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         target = _resolve_notify_target()
         if target is None:
             return False  # CLI / cron / test — no persistent channel
-        from hermes_cli import kanban_db as _kb
         from hermes_cli import kanban_db_notify as _kbn
+        # Inheritance and explicit subscriptions already encode the delivery policy.
+        # Auto-subscribe must not turn a passive destination into an agent wake.
+        if any(sub["platform"] == target["platform"] and sub["chat_id"] == target["chat_id"]
+               and (sub["thread_id"] or "") == (target["thread_id"] or "")
+               for sub in _kbn.list_notify_subs(conn, task_id)):
+            return True
         _kbn.add_notify_sub(conn, task_id=task_id, **target)
         return True
     except Exception as _exc:

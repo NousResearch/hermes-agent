@@ -106,6 +106,7 @@ describe('ContextUsagePanel', () => {
       const { container, unmount } = render(
         <ContextUsagePanel breakdown={breakdown} loading={false} usage={{ ...usage, context_estimated: estimated }} />
       )
+
       const header = container.querySelector('[data-slot="context-usage-panel"] > div')?.textContent ?? ''
 
       expect(header.includes('~')).toBe(estimated)

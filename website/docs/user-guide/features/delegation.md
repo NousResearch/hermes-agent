@@ -10,6 +10,21 @@ The `delegate_task` tool spawns child AIAgent instances with isolated context, i
 
 Top-level model calls run in the background automatically. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. An orchestrator subagent waits for its own workers so it can synthesize their results before returning.
 
+## Completion delivery
+
+Messaging gateways acknowledge background completions only after their adapter actually
+schedules the event or inserts it into the session's queue. Missing handlers, mismatched
+session routes, and full queues leave the completion pending for retry; these admission
+refusals do not consume the durable delivery-attempt budget. A successful admission suppresses
+repeat delivery within the running gateway, but is not proof that a model turn or outbound
+reply completed. Crash/restart delivery remains at least once, subject to the existing replay
+age limit; actual transport failures retain their bounded retry policy.
+
+An unavailable API-server route stays pending without repeated missing-route warnings.
+Malformed messaging routes still produce diagnostics. On the API server, an async delegation
+completion adds a durable timeline delivery row only: the client owns the next model turn.
+Setting background process notifications to `off` still drains pattern-watch events silently.
+
 ## Background process lifetime
 
 Background terminal processes belong to the agent that starts them. Closing a child during delegation teardown terminates its remaining processes, including work started in earlier turns, without stopping processes owned by the parent or sibling agents. Sharing a terminal environment does not transfer process ownership.
@@ -188,6 +203,16 @@ attribution line):
 delegation:
   surface_child_process_notifications: true   # default: false
 ```
+
+### Handing a process to the parent
+
+A subagent's background processes are also **killed when the subagent finishes**, so a CI watcher or build a child starts with `notify=true` never reports to anyone. The child's `terminal` result says so (`notify_on_complete: false` plus a `subagent_note`), and the child has three honest options before it finishes:
+
+- **wait** — `process_manage(action="wait", session_id=...)` and report the result itself;
+- **kill** — `process_manage(action="kill", ...)`;
+- **hand off** — `process_manage(action="handoff", session_id=..., data="<one sentence: what it is for>")`. The runtime transfers ownership to the parent under the registry lock (up to 3 per child; only a running process the child owns is accepted, anything else is a tool error). The parent's completion notice then arrives in the parent chat with `Handed off to you by a subagent… Purpose: …`, and the parent can poll/log/kill it like its own.
+
+A process that finishes while the child is still running needs no handoff: the child reads it (`poll`/`wait`/`log`) and reports it. If the child never reads it, the exit code and output tail are attached to its result as `unread_completions` and shown to the parent. Whatever is still running and was neither killed nor handed off is named on its result (`orphaned_processes`) and in the parent's delegation notice as terminated, so the parent hears from the runtime, never from the child's prose, that "the watcher is running" is no longer true. For CI watchers the better pattern is still: the child returns the fact (PR number, SHA) and the parent launches its own watcher.
 
 ## Model Override
 

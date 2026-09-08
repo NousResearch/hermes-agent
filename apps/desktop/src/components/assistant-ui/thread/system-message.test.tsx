@@ -16,13 +16,13 @@ $displayTimestamps.set(true)
 const timestamp = new Date('2026-05-01T00:00:00.000Z')
 stubThreadEnvironment()
 
-function Harness({ text }: { text: string }) {
+function Harness({ asyncResult, text }: { asyncResult?: string; text: string }) {
   const message = {
     id: 'system-1',
     role: 'system',
     content: [{ type: 'text', text }],
     createdAt: timestamp,
-    metadata: { custom: { timelineTimestamp: timestamp.getTime() / 1000 } }
+    metadata: { custom: { asyncResult, timelineTimestamp: timestamp.getTime() / 1000 } }
   } as unknown as ThreadMessage
 
   const runtime = useExternalStoreRuntime<ThreadMessage>({
@@ -65,6 +65,12 @@ describe('system message timestamp text separation', () => {
     const { container } = render(<Harness text="steer:rerun tests" />)
 
     expectTimestampSeparated(container, 'rerun tests')
+  })
+
+  it('separates a background-result timestamp in accessible and copied text', () => {
+    const { container } = render(<Harness asyncResult="Private report details" text="1 background agent finished" />)
+
+    expectTimestampSeparated(container, '1 background agent finished')
   })
 })
 

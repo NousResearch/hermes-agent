@@ -180,10 +180,7 @@ function asyncResultBody(content: string): string | undefined {
         const output = body.startsWith('Cron job ') ? body.match(/^--- JOB OUTPUT ---\r?\n/m) : null
         const result = output ? body.slice(output.index! + output[0].length) : body
 
-        return result
-          .replace(/\nFull live transcript \(complete tool\/assistant trace\): [^\n]*\n*$/, '')
-          .replace(/\n─{8,} \[SUMMARY TRUNCATED\] ─{8,}[\s\S]*$/, '')
-          .trim()
+        return result.replace(/\nFull live transcript \(complete tool\/assistant trace\): [^\n]*\n*$/, '').trim()
       })
       .filter(Boolean)
       .join('\n\n') || undefined

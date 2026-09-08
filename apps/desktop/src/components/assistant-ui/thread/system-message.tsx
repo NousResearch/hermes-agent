@@ -28,7 +28,11 @@ export function AsyncResultDisclosure({
 
   return (
     <div className="w-full min-w-0">
-      <DisclosureRow onToggle={() => setOpen(current => !current)} open={open} trailing={timestamp}>
+      <DisclosureRow
+        onToggle={() => setOpen(current => !current)}
+        open={open}
+        trailing={timestamp ? <> {timestamp}</> : undefined}
+      >
         <span className="text-[0.6875rem] leading-5 text-muted-foreground/55">{label}</span>
       </DisclosureRow>
       {open && (

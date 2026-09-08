@@ -338,6 +338,8 @@ export default {
                   hostedMembersVerified: room.hostedMembersVerified === true,
                   continuityMode: room.hosted ? 'gateway' : room.continuityMode === 'gateway' ? 'gateway' : 'desktop',
                   image: typeof room.image === 'string' && room.image ? room.image : null,
+                  rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
+                  pinned: Boolean(room.pinned),
                   syncRevision: Math.max(0, Number(room.syncRevision || 0)),
                   epoch: 0,
                   running: false

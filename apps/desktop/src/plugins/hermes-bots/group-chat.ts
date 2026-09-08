@@ -1023,6 +1023,8 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       hostedMembersVerified: room.hostedMembersVerified === true,
       continuityMode: groupChatContinuityMode(room),
       image: room.image || null,
+      rosterOrder: room.rosterOrder,
+      pinned: room.pinned,
       syncRevision: Math.max(0, Number(room.syncRevision || 0))
     }
   }
@@ -1670,6 +1672,8 @@ export function updateGroupChat(
         continuityMode: groupChatContinuityMode(room),
         // Room picture (small data URL, same normalization as bot avatars).
         image: room.image || null,
+        rosterOrder: room.rosterOrder,
+        pinned: room.pinned,
         syncRevision: Math.max(0, Number(room.syncRevision || 0))
       }
     }

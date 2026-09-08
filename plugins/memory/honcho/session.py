@@ -368,6 +368,21 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         with session._flush_lock:
             return self._flush_session_locked(session)
 
+    def _flush_session_before(self, session: HonchoSession, deadline: float | None) -> bool:
+        """_flush_session bounded by ``deadline``. False, with nothing sent, when the budget is spent or another
+        flush of this session holds the lock past it."""
+        if deadline is None:
+            self._flush_session(session)
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not session._flush_lock.acquire(timeout=remaining):
+            return False
+        try:
+            self._flush_session_locked(session)
+        finally:
+            session._flush_lock.release()
+        return True
+
     def _flush_session_locked(self, session: HonchoSession) -> bool:
         new_messages = [m for m in session.messages if not m.get("_synced")]
         if not new_messages:
@@ -457,27 +472,39 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         else:
             self._keep_until_flushed(session)
 
-    def flush_all(self) -> None:
-        """Flush unsynced messages for all cached sessions, then drain the async queue inline."""
+    def flush_all(self, timeout: float | None = None) -> None:
+        """Flush unsynced messages for all cached sessions, then drain the async queue inline. ``timeout`` bounds
+        the whole pass: a session it cannot reach in time keeps its messages and is counted in one warning."""
+        deadline = None if timeout is None else time.monotonic() + timeout
         with self._cache_lock:
             sessions = list(self._cache.values())
+        skipped: list[HonchoSession] = []
         for session in sessions:
             try:
-                self._flush_session(session)
+                if not self._flush_session_before(session, deadline):
+                    skipped.append(session)
             except Exception as e:
                 logger.error("Honcho flush_all error for %s: %s", session.key, e)
-        self._drain_async_queue()
+        skipped.extend(self._drain_async_queue(deadline))
+        left = [s for s in {id(s): s for s in skipped}.values() if self._has_unsynced(s)]
+        if left:
+            unsynced = sum(1 for s in left for m in list(s.messages) if not m.get("_synced"))
+            logger.warning("Honcho flush ran out of time after %.1fs with %d message(s) in %d session(s) still unsynced",
+                           timeout, unsynced, len(left))
 
-    def _drain_async_queue(self) -> None:
+    def _drain_async_queue(self, deadline: float | None = None) -> list[HonchoSession]:
+        """Flush every queued session inline. Returns the sessions ``deadline`` left unflushed."""
+        skipped: list[HonchoSession] = []
         if self._async_queue is None:
-            return
+            return skipped
         while not self._async_queue.empty():
             try:
                 item = self._async_queue.get_nowait()
-                if item is not _ASYNC_SHUTDOWN:
-                    self._flush_session(item)
             except queue.Empty:
                 break
+            if item is not _ASYNC_SHUTDOWN and not self._flush_session_before(item, deadline):
+                skipped.append(item)
+        return skipped
 
     def _ensure_async_writer(self) -> None:
         """Start the async writer on first enqueue (idempotent, thread-safe)."""
@@ -502,11 +529,12 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         self._drain_async_queue()
 
     def shutdown(self, timeout: float = 10.0) -> None:
-        """Flush everything, then stop the async writer thread."""
+        """Flush everything, then stop the async writer thread, both within ``timeout``."""
         self._shutting_down = True
         if self._async_queue is not None:
-            self.flush_all()
-            self.stop_async_writer(timeout=timeout)
+            deadline = time.monotonic() + timeout
+            self.flush_all(timeout=timeout)
+            self.stop_async_writer(timeout=max(0.0, deadline - time.monotonic()))
 
     # ----- Prefetch cache -----
 

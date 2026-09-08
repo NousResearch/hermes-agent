@@ -810,15 +810,9 @@ def _pid_is_alive(pid: int) -> bool:
 
     if pid < 2:
         return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    from gateway.status import _pid_exists
+
+    return _pid_exists(pid)
 
 
 def _lane_argv(

@@ -113,7 +113,7 @@ class StackStore:
     def load(self, repository: str, stack_id: str) -> StackManifest:
         path = self.path(repository, stack_id)
         try:
-            raw = json.loads(path.read_text())
+            raw = json.loads(path.read_text(encoding="utf-8"))
             return StackManifest(
                 repository=raw["repository"],
                 stack_id=raw["stack_id"],

@@ -1225,7 +1225,7 @@ def _github_api_paginate_terminal_call_limits(value: Any) -> dict[str, int]:
             return None
         path = tokens[3]
         if not re.fullmatch(
-            r"/repos/[^/\s]+/[^/\s]+/(?:issues|pulls)\?state=open(?:&per_page=[1-9]\d{0,2})?",
+            r"/repos/[^/\s]+/[^/\s]+/(?:issues|pulls)\?state=open(?:&per_page=[1-9]\d{0,2})?",  # windows-footgun: ok — regex literal
             path,
         ):
             return None

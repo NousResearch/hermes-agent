@@ -490,7 +490,7 @@ def _read_bounded_slice_fd(descriptor: int, line_start: int, line_end: int) -> b
     selected: list[bytes] = []
     total = 0
     try:
-        with os.fdopen(os.dup(descriptor), "rb") as handle:
+        with os.fdopen(os.dup(descriptor), "rb") as handle:  # windows-footgun: ok — binary mode
             for line_number, line in enumerate(handle, start=1):
                 if line_number < line_start:
                     continue

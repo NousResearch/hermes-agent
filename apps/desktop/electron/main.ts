@@ -6996,7 +6996,13 @@ function buildApplicationMenu() {
             click: () => sendClosePreviewRequested(),
             label: 'Close'
           }
-        : { role: 'quit' }
+        : {
+            label: '退出',
+            click: () => {
+              if (mainWindow) { mainWindow.destroy(); mainWindow = null }
+              app.quit()
+            }
+          }
     ]
   })
   template.push({
@@ -14725,7 +14731,15 @@ function createWindow() {
   bindGeometryPersistence(mainWindow, schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  mainWindow.on('close', (event) => {
+    // When tray is available, close button should hide to tray instead of quitting
+    if (systemTray && !IS_MAC) {
+      event.preventDefault()
+      mainWindow.hide()
+      return
+    }
+    schedulePersistWindowState.flush()
+  })
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   mainWindow.on('closed', () => {
@@ -18471,6 +18485,11 @@ app.on('window-all-closed', () => {
   // the bundle and relaunch — without this the script's PID-wait spins to its
   // full timeout and the user is left with an invisible app (or an uninstall
   // that appears to do nothing).
+  // Also: when tray is present (non-macOS), keep process alive so tray remains
+  // accessible for quit via menu.
+  if (process.platform !== 'darwin' && systemTray) {
+    return // Keep alive, tray handles exit
+  }
   if (process.platform !== 'darwin' || isQuittingForHandoff) {
     app.quit()
   }

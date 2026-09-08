@@ -111,7 +111,15 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _count_rows(conn: sqlite3.Connection) -> dict[str, int]:
-    return {t: int(conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]) for t in _COUNTED_TABLES}
+    # Export bypasses init_db so an older source board stays untouched.
+    # Only the newly added recipe tables are optional in those snapshots.
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    optional = {'recipe_instances', 'recipe_instance_tasks'}
+    return {
+        t: 0 if t in optional and t not in tables
+        else int(conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0])
+        for t in _COUNTED_TABLES
+    }
 
 
 def export_board(

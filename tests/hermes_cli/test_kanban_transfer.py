@@ -131,6 +131,47 @@ def test_round_trip_preserves_content(kanban_root, tmp_path):
     assert tasks["scratch task"]["assignee"] == "coder"
 
 
+def test_public_export_of_pre_recipe_board_does_not_migrate_source(kanban_root, tmp_path):
+    import os
+    import sqlite3
+    import subprocess
+
+    ids = _seed_board()
+    db_path = kb.kanban_db_path('alpha')
+    # The previous schema has neither recipe table. Do not use the native
+    # connection again: it would migrate the fixture before exercising export.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute('DROP TABLE recipe_instance_tasks')
+        conn.execute('DROP TABLE recipe_instances')
+        before = list(conn.iterdump())
+    source_bytes = db_path.read_bytes()
+    archive = tmp_path / 'legacy.tar.gz'
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith('HERMES_KANBAN_') and k != 'HERMES_PROFILE'}
+    env.update(HOME=str(tmp_path), HERMES_KANBAN_HOME=os.environ['HERMES_HOME'],
+               PYTHONPATH=str(_WORKTREE))
+    exported = subprocess.run(
+        [sys.executable, '-m', 'hermes_cli.main', 'kanban', 'boards',
+         'export', 'alpha', '--output', str(archive), '--json'],
+        env=env, cwd=_WORKTREE, capture_output=True, text=True, timeout=60,
+    )
+    assert exported.returncode == 0, exported.stdout + exported.stderr
+    counts = json.loads(exported.stdout)['counts']
+    assert counts['tasks'] == len(ids)
+    assert counts['recipe_instances'] == counts['recipe_instance_tasks'] == 0
+    assert db_path.read_bytes() == source_bytes
+    with sqlite3.connect(db_path) as conn:
+        assert list(conn.iterdump()) == before
+    with tarfile.open(archive) as bundle:
+        manifest = json.load(bundle.extractfile('alpha/manifest.json'))
+    assert manifest['counts'] == counts
+    kanban_root('legacy-target')
+    imported = kt.import_board(str(archive))
+    assert imported['counts']['tasks'] == len(ids)
+    assert imported['counts']['recipe_instances'] == 0
+    assert set(_tasks_by_title(imported['board'])) == {'scratch task', 'worktree task'}
+
+
 def test_attachment_blob_travels_and_is_readable(kanban_root, tmp_path):
     _seed_board()
     archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]

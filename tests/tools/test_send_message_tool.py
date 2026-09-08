@@ -240,12 +240,28 @@ def _make_config():
 
 
 def _install_telegram_mock(monkeypatch, bot):
+    class _InputFile:
+        def __init__(self, obj, filename=None, attach=False):
+            self.obj = obj
+            self.filename = filename
+            self.attach = attach
+
+    class _InputMediaPhoto:
+        def __init__(self, media):
+            self.media = media
+
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
     # MessageEntity needed by #27865 mention-detection path; tests don't
     # inspect it but the import must succeed.
     _MessageEntity = lambda **_kw: SimpleNamespace(**_kw)
-    telegram_mod = SimpleNamespace(Bot=lambda token: bot, MessageEntity=_MessageEntity, constants=constants_mod)
+    telegram_mod = SimpleNamespace(
+        Bot=lambda token: bot,
+        InputFile=_InputFile,
+        InputMediaPhoto=_InputMediaPhoto,
+        MessageEntity=_MessageEntity,
+        constants=constants_mod,
+    )
     monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
     monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
 
@@ -412,9 +428,219 @@ class TestSendTelegramMediaDelivery:
         assert result["success"] is True
         assert result["message_id"] == "2"
         # No separate text send — the caption rides the photo bubble.
-        bot.send_message.assert_not_awaited()
         bot.send_photo.assert_awaited_once()
         assert bot.send_photo.await_args.kwargs.get("caption") == "Hello there"
+
+    def test_sends_multiple_photos_as_native_album(self, tmp_path, monkeypatch):
+        paths = []
+        for index in range(2):
+            path = tmp_path / f"photo-{index}.png"
+            path.write_bytes(f"image-{index}".encode())
+            paths.append(path)
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_media_group = AsyncMock(return_value=[
+            SimpleNamespace(message_id=10, media_group_id="group-1"),
+            SimpleNamespace(message_id=11, media_group_id="group-1"),
+        ])
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram(
+            "token", "12345", "", media_files=[(str(p), False) for p in paths]
+        ))
+
+        assert result["success"] is True
+        assert result["message_id"] == "11"
+        bot.send_photo.assert_not_awaited()
+        bot.send_media_group.assert_awaited_once()
+        media = bot.send_media_group.await_args.kwargs["media"]
+        assert [item.media.filename for item in media] == [p.name for p in paths]
+        assert all(item.media.attach is True for item in media)
+
+    def test_photo_albums_are_chunked_at_ten_items(self, tmp_path, monkeypatch):
+        paths = []
+        for index in range(12):
+            path = tmp_path / f"photo-{index}.png"
+            path.write_bytes(f"image-{index}".encode())
+            paths.append(path)
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_media_group = AsyncMock(side_effect=[
+            [SimpleNamespace(message_id=index, media_group_id="group-a") for index in range(10)],
+            [SimpleNamespace(message_id=10 + index, media_group_id="group-b") for index in range(2)],
+        ])
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram(
+            "token", "12345", "", media_files=[(str(p), False) for p in paths]
+        ))
+
+        assert result["success"] is True
+        assert bot.send_media_group.await_count == 2
+        assert [len(call.kwargs["media"]) for call in bot.send_media_group.await_args_list] == [10, 2]
+        bot.send_photo.assert_not_awaited()
+
+    def test_mixed_media_preserves_individual_send_path(self, tmp_path, monkeypatch):
+        photo = tmp_path / "photo.png"
+        document = tmp_path / "notes.pdf"
+        photo.write_bytes(b"image")
+        document.write_bytes(b"document")
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_document = AsyncMock(return_value=SimpleNamespace(message_id=2))
+        bot.send_media_group = AsyncMock()
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram(
+            "token", "12345", "",
+            media_files=[(str(photo), False), (str(document), False)],
+        ))
+
+        assert result["success"] is True
+        bot.send_media_group.assert_not_awaited()
+        bot.send_photo.assert_awaited_once()
+        bot.send_document.assert_awaited_once()
+
+    def test_album_retries_without_missing_thread(self, tmp_path, monkeypatch):
+        paths = []
+        for index in range(2):
+            path = tmp_path / f"photo-{index}.png"
+            path.write_bytes(b"image")
+            paths.append(path)
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_media_group = AsyncMock(side_effect=[
+            RuntimeError("Message thread not found"),
+            [
+                SimpleNamespace(message_id=1, media_group_id="group"),
+                SimpleNamespace(message_id=2, media_group_id="group"),
+            ],
+        ])
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram(
+            "token", "12345", "",
+            media_files=[(str(p), False) for p in paths],
+            thread_id="42",
+        ))
+
+        assert result["success"] is True
+        assert bot.send_media_group.await_count == 2
+        assert bot.send_media_group.await_args_list[0].kwargs["message_thread_id"] == 42
+        assert "message_thread_id" not in bot.send_media_group.await_args_list[1].kwargs
+
+    def test_album_receipt_mismatch_fails_without_single_photo_fallback(
+        self, tmp_path, monkeypatch
+    ):
+        paths = []
+        for index in range(2):
+            path = tmp_path / f"photo-{index}.png"
+            path.write_bytes(b"image")
+            paths.append(path)
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_media_group = AsyncMock(return_value=[
+            SimpleNamespace(message_id=1, media_group_id="group"),
+        ])
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram(
+            "token", "12345", "", media_files=[(str(p), False) for p in paths]
+        ))
+
+        assert "error" in result
+        assert "receipt count mismatch" in result["warnings"][0]
+        bot.send_photo.assert_not_awaited()
+
+    def test_album_receipts_require_one_non_null_group_id(
+        self, tmp_path, monkeypatch
+    ):
+        paths = []
+        for index in range(2):
+            path = tmp_path / f"photo-{index}.png"
+            path.write_bytes(b"image")
+            paths.append(path)
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_media_group = AsyncMock(return_value=[
+            SimpleNamespace(message_id=1, media_group_id=None),
+            SimpleNamespace(message_id=2, media_group_id=None),
+        ])
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram(
+            "token", "12345", "", media_files=[(str(p), False) for p in paths]
+        ))
+
+        assert "error" in result
+        assert "did not share one media_group_id" in result["error"]
+        bot.send_photo.assert_not_awaited()
+
+    def test_missing_photo_keeps_existing_file_on_individual_path(
+        self, tmp_path, monkeypatch
+    ):
+        present = tmp_path / "present.png"
+        missing = tmp_path / "missing.png"
+        present.write_bytes(b"image")
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_media_group = AsyncMock()
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram(
+            "token", "12345", "",
+            media_files=[(str(present), False), (str(missing), False)],
+        ))
+
+        assert result["success"] is True
+        assert any("Media file not found" in warning for warning in result["warnings"])
+        bot.send_media_group.assert_not_awaited()
+        bot.send_photo.assert_awaited_once()
+
+    def test_album_same_basenames_use_distinct_attached_files(
+        self, tmp_path, monkeypatch
+    ):
+        paths = []
+        for index in range(2):
+            directory = tmp_path / str(index)
+            directory.mkdir()
+            path = directory / "photo.png"
+            path.write_bytes(f"image-{index}".encode())
+            paths.append(path)
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_media_group = AsyncMock(return_value=[
+            SimpleNamespace(message_id=1, media_group_id="group"),
+            SimpleNamespace(message_id=2, media_group_id="group"),
+        ])
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram(
+            "token", "12345", "", media_files=[(str(p), False) for p in paths]
+        ))
+
+        assert result["success"] is True
+        media = bot.send_media_group.await_args.kwargs["media"]
+        assert media[0].media is not media[1].media
+        assert [item.media.filename for item in media] == ["photo.png", "photo.png"]
+        bot.send_message.assert_not_awaited()
+        bot.send_photo.assert_not_awaited()
 
     def test_sends_voice_for_ogg_with_voice_directive(self, tmp_path, monkeypatch):
         voice_path = tmp_path / "voice.ogg"

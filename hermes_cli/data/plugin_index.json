@@ -63,6 +63,18 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "tool-belt",
+      "description": "Adaptive tool loadouts for uncached agents. Carry only what you need, drop the rest. Sharpens with use. Reduces tool token overhead.",
+      "author": "dalemugford",
+      "tags": ["tools", "tokens", "prompt-caching", "cost"],
+      "repo": "dalemugford/hermes-tool-belt",
+      "ref": "171f29a4b4a2d04810c128b7eaa4e359a0cd2219",
+      "homepage": "https://github.com/dalemugford/hermes-tool-belt",
+      "capabilities": ["tools"],
+      "api_version": 1,
+      "added_at": "2026-09-04"
     }
   ]
 }

@@ -336,7 +336,7 @@ def _(rid, params: dict) -> dict:
     try:
         with _session_profile_runtime_scope(session):
             control = _snapshot_control(session_key, include_loop_min_interval=include_loop_min_interval)
-            event_control = _snapshot_control(session_key)
+        event_control = {key: value for key, value in control.items() if key != "loop_min_interval_seconds"}
     except Exception as exc:
         logger.debug("session.control snapshot after %s failed: %s", action, exc, exc_info=True)
         return _err(rid, 5031, f"session.control snapshot failed: {exc}")

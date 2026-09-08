@@ -573,3 +573,26 @@ class TestLoopMinInterval:
         assert response["result"]["control"]["loop_min_interval_seconds"] == 30
         update = next(payload for event, _, payload in emitted if event == "session.control.update")
         assert "loop_min_interval_seconds" not in update["control"]
+
+    def test_opted_in_action_derives_legacy_event_from_its_single_snapshot(self, server, session, monkeypatch):
+        sid, _, _ = session
+        _forbid_dispatch(server, monkeypatch)
+        emitted = []
+        snapshots = []
+        original_snapshot = server._snapshot_control
+        monkeypatch.setattr(server, "_emit", lambda event, sid_, payload=None: emitted.append((event, sid_, payload)))
+
+        def snapshot_once(session_key, *, include_loop_min_interval=False):
+            snapshots.append(include_loop_min_interval)
+            return original_snapshot(session_key, include_loop_min_interval=include_loop_min_interval)
+
+        monkeypatch.setattr(server, "_snapshot_control", snapshot_once)
+        response = _call(server, "session.control", session_id=sid, action="loop.create", include_loop_min_interval=True, args={
+            "prompt": "Check deploy", "interval_seconds": 30,
+        })
+
+        assert snapshots == [True]
+        update = next(payload for event, _, payload in emitted if event == "session.control.update")
+        expected_event = dict(response["result"]["control"])
+        expected_event.pop("loop_min_interval_seconds")
+        assert update["control"] == expected_event

@@ -17,39 +17,54 @@ gains a `Superseded-by:` / `Supersedes:` link.
 
 ## Open
 
-### DECISION-2026-09-07-002 — Rebrand-claim wording — "engine used unmodified" / "full rebrand"
-
-- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
-- **Run:** RUN-2026-09-07-006
-- **Source:** Codex audit **F-07** (see `logs/CODEX-AUDIT-2026-09-07.md`).
-- **Confidence:** Confirmed Fact — the phrases and the counter-examples are
-  verified in the tree.
-- **Supersedes:** —
-- **The call:** two `README.md` / `BRANDING.md` claims are broader than the code:
-  1. *"engine used unmodified"* — fork commits do modify application files
-     (`agent/prompt_builder.py`, `cli.py`, `hermes_cli/**`). Accurate would be
-     *"core behavior retained; identity entry points patched."*
-  2. *"full rebrand"* — true only under `BRANDING.md`'s narrow ownership taxonomy;
-     it is not a full operator journey while some visible CLI strings (interactive
-     welcome, chat subparser description) still say Hermes and (pre-`CHG-011`)
-     Quick Install installed upstream. Those may be deliberate compatibility
-     surfaces, but the boundary should be stated plainly.
-- **Options:**
-  - **A — Tighten the wording.** Replace the two phrases with the precise form
-    above; add one sentence in `BRANDING.md` naming the deliberately-Hermes
-    visible surfaces. No identifier churn.
-  - **B — Leave as-is.** Defensible under `BRANDING.md`'s stated taxonomy; the
-    detailed category tables already qualify it. Cost: an operator reading only
-    the headline claims is mildly misled.
-- **Leaning:** A (cheap, honest, no code risk) — **not yet done**; logged for
-  scheduling.
-- **Blocking:** nothing.
-- **Owner:** Kenneth C. Walker Jr.
-- **Status:** OPEN
+_None._
 
 ---
 
 ## Resolved
+
+### DECISION-2026-09-07-002 — Rebrand-claim wording — "engine used unmodified" / "full rebrand"
+
+- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
+- **Run:** RUN-2026-09-07-006 (opened) · RUN-2026-09-08-004 (decided + implemented)
+- **Source:** Codex audit **F-07** (see `logs/CODEX-AUDIT-2026-09-07.md`).
+- **Confidence:** Confirmed Fact — the phrases and the counter-examples were
+  verified in the tree.
+- **Supersedes:** —
+- **The call:** two `README.md` / `BRANDING.md` claims were broader than the code:
+  1. *"engine used unmodified"* — fork commits do modify application files
+     (`agent/prompt_builder.py`, `cli.py`, `hermes_cli/**`).
+  2. *"full rebrand"* — true only under `BRANDING.md`'s narrow ownership taxonomy;
+     not a full operator journey while some visible CLI strings (interactive
+     welcome, chat subparser description) still said Hermes.
+- **Options:**
+  - **A — Tighten the wording.** Replace the phrases with a precise form; name the
+    deliberately-Hermes visible surfaces in `BRANDING.md`. No identifier churn.
+  - **B — Leave as-is.** Defensible under the stated taxonomy; headline claims
+    mildly mislead an operator who reads only those.
+- **Decided:** 2026-09-08 (`RUN-2026-09-08-004`) — chose **A**, owner-preference
+  as leaned. Implemented by **`CHG-2026-09-08-010`** (wording) and
+  **`CHG-2026-09-08-011`** (the two CLI surfaces):
+  - "engine used unmodified" / "whatever Hermes Agent does, North Forge does"
+    replaced with *"North Forge keeps Hermes Agent's functional engine behavior;
+    its downstream changes are identity, presentation, and workflow only"* in
+    `README.md` (×2), `README.es.md`, `README.zh-CN.md`, `README.ur-pk.md`, and
+    `BRANDING.md` (×2).
+  - `BRANDING.md` intro now names the visible CLI strings that stay Hermes on
+    purpose (the `hermes` command + examples, `HERMES_HOME` paths, the engine
+    help guidance, the `agent_name` skin fallback, OS-service descriptions,
+    upstream setup/update/uninstall copy).
+  - The two surfaces F-07 called out as still-Hermes were *fixed*, not just
+    documented: `cli.py` interactive `_welcome_text` fallback → "Welcome to North
+    Forge!" (matches `skins/north-forge.yaml`); `hermes_cli/_parser.py` `chat`
+    subparser `description` → "Start an interactive chat session with North Forge
+    (on the Hermes Agent engine)." Both added to `BRANDING.md` category 1.
+  - "full rebrand" as a historical *decision label* stays in
+    `DECISION-2026-09-06-001` (ids are immutable); no outward-facing doc makes the
+    overstated headline claim any more.
+- **Blocking:** nothing.
+- **Owner:** Kenneth C. Walker Jr.
+- **Status:** DECIDED
 
 ### DECISION-2026-09-06-003 — Install model — drive-native run-in-place vs machine-local managed install?
 
@@ -351,4 +366,4 @@ gains a `Superseded-by:` / `Supersedes:` link.
 | DECISION-2026-09-06-003 | 2026-09-07 | Install model | Drive-native run-in-place vs machine-local managed install? | DECIDED — A (drive-native run-in-place), `RUN-2026-09-07-011` / `CHG-2026-09-07-023`. Sibling-venv + `nf-preflight.ps1` + `nf_tier.py` (`NF-v0.5.1`→`NF-v0.6.0`) already implement it; two Codex audits concur. Hardened form (seal / dual-volume / certify) now unblocked, not mandated | 2026-09-07 |
 | DECISION-2026-09-07-001 | 2026-09-07 | Branding | Keep the stock Hermes launch splash, or swap it? | DECIDED — C (swap via a North Forge skin), landed `CHG-2026-09-07-012`; reaffirmed `RUN-2026-09-07-006` (deferral floated then withdrawn, never executed) | 2026-09-07 |
 | DECISION-2026-09-07-003 | 2026-09-07 | Access architecture | What is an "edition", and how is Basic tier enforced? | DECIDED — A (edition = Hermes profile; HMAC-signed `provisioning.json` + gates at every profile-selection path), landed `CHG-2026-09-07-022` (`NF-v0.6.0`). Signature is tamper-evident not tamper-proof; hardened key store deferred to `DECISION-2026-09-06-003` | 2026-09-07 |
-| DECISION-2026-09-07-002 | 2026-09-07 | Branding wording | "engine used unmodified" / "full rebrand" broader than the code (Codex F-07) | OPEN — leaning A (tighten wording, no identifier churn); logged only | — |
+| DECISION-2026-09-07-002 | 2026-09-07 | Branding wording | "engine used unmodified" / "full rebrand" broader than the code (Codex F-07) | **DECIDED** — A (tighten wording), `RUN-2026-09-08-004` / `CHG-2026-09-08-010`+`-011`. README ×2 + 3 translations + BRANDING ×2 reworded; `cli.py` welcome + `_parser.py` chat description moved to North Forge; BRANDING names the deliberately-Hermes surfaces | 2026-09-08 |

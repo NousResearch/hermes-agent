@@ -8,6 +8,216 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.8.0] — 2026-09-08 — hermes@c076d653a2 (0 behind upstream/main — rebased onto origin/main)
+
+**`RUN-2026-09-08-004` — full hygiene / cleanup pass + a second Codex
+progress-check batch, one session.** Close every genuinely-open ledger item and
+land the `CODEX-PROGRESS-CHECK-2026-09-08.md` findings (report supplied in the run
+prompt; not on disk this session). Started level with `origin/main` on
+`hermes@85518051ed`-era base `520e63661c`; between committing and pushing,
+`origin/main` advanced +33 (a `NousResearch:main` merge `8409e486d8` — desktop /
+bot-mode / gateway work + `fmt(js)` + a copilot GH-Actions fix). The 7 NF commits
+rebased **clean, 0 conflicts** — none of the 33 origin-only commits touch any file
+in `CHG-2026-09-08-008..016` (verified with `git rev-list --count <mb>..origin/main
+-- <file>` = 0 for every one). Coordinates stamped at the rebase:
+`hermes@c076d653a2`, 0 behind `upstream/main`. **MINOR** — new tooling / skill surface
+(`scripts/lib/report_completeness.py`, the report manifest + workflow, the
+`pbf-canon` skill) alongside the fixes. Committed per-CHG and pushed.
+
+Closed this pass: `ERR-2026-09-07-004`, `ERR-2026-09-07-007` (filename half),
+`DECISION-2026-09-07-002`; opened + resolved same run: `ERR-2026-09-08-001..004`
+(Codex `PC-2026-09-08-001..005`). `ERR-2026-09-06-001` (the live `.env` key)
+**left untouched** — accepted, owner-decided, time-limited risk.
+
+### Added
+
+- **CHG-2026-09-08-008** — **Relational RUN-to-report completeness check**
+  (closes `ERR-2026-09-07-004` / Codex F-02 / R-01). The old check in
+  `scripts/collect-logs.{ps1,sh}` proved only "a report exists dated ≥ the newest
+  ledger id" — one same-day report made every run that day look covered, and a
+  report could omit its `RUN-` id entirely. New `scripts/lib/report_completeness.py`
+  (stdlib; invoked by both collectors so the PS and POSIX paths stay identical)
+  requires **every `RUN-YYYY-MM-DD-NNN` id in the ledger** to have a row in the new
+  `logs/ledger/reports/REPORT-MANIFEST.md` (run id · report basename · covered
+  `CHG-`/`ERR-`/`DECISION-` ids · source-of-truth · sha256), and that row to name
+  a session report present in the out-dir **and** mentioning that run id — else
+  an explicit `ledger-only` disposition. A run with no row, a row naming a missing
+  or wrong report ⇒ **FAIL** (not WARN). Also emits WARNs for a sha256 drift, a
+  stale manifest row, and an unresolved ledger `[[wiki-link]]`. New
+  `logs/ledger/templates/SESSION-REPORT-TEMPLATE.md` carries the required
+  `Run:` / `Covers:` / `Source-Of-Truth:` header. The four recent runs that had
+  changed the ledger but left no report (`RUN-2026-09-07-011`,
+  `RUN-2026-09-08-001` / `-002` / `-003`) were **backfilled** with proper reports.
+  `collect-logs.{ps1,sh}` §5 rewritten to call the validator and map its lines to
+  checks. Paths: `scripts/lib/report_completeness.py`,
+  `scripts/collect-logs.ps1`, `scripts/collect-logs.sh`,
+  `logs/ledger/reports/REPORT-MANIFEST.md`,
+  `logs/ledger/templates/SESSION-REPORT-TEMPLATE.md`,
+  `D:\logs\LEDGER-RATIFICATION_2026-09-07.md`,
+  `D:\logs\NF-v0.7.0-INSTALLER-GUI-SKIN-DOCS_2026-09-08.md`,
+  `D:\logs\PREVIEW-PAGE-REAL-ART_2026-09-08.md`,
+  `D:\logs\RECONCILE-PUSH-EDITIONS_2026-09-08.md` (the last four are out-of-tree
+  handoff reports, not tracked). Ref: `ERR-2026-09-07-004`. Run: RUN-2026-09-08-004.
+
+- **CHG-2026-09-08-012** — **Document the GUI installer in the README install
+  section** (the `CHG-2026-09-08-001` note said "unmentioned in docs until it
+  lands on `origin/main`" — it has now landed and pushed). `README.md` § "Quick
+  Install" restructured: **North Forge Setup** (`North-Forge-Setup.exe`,
+  double-click, no terminal) is the recommended path for a non-technical
+  recipient; the `north-forge.cmd` launcher is now the "advanced / no GUI"
+  secondary path; the shared drive-native explanation was hoisted above both. The
+  `.exe` behaviour described matches the shipped app (drive/folder picker that
+  rejects the system drive, one-time bootstrap with progress + log, a **Launch**
+  button; re-runs go through the same screen with the data folder untouched).
+  Paths: `README.md`. Ref: `CHG-2026-09-08-001`. Run: RUN-2026-09-08-004.
+
+- **CHG-2026-09-08-015** — **`editions/pine-barron-farms` canon loader** (closes
+  `ERR-2026-09-08-003` / Codex `PC-2026-09-08-004`). `SOUL.md` claimed *"I follow
+  the loaded canon packet exactly"* while nothing read
+  `canon/PINE_BARRON_FARMS_CANON.md`. New `editions/pine-barron-farms/canon/load_canon.py`
+  (standard library; **exit 0 always** — a missing packet is a state, not an
+  error) resolves the packet (explicit dir → profile `canon/` → `HERMES_HOME` →
+  skill-relative) and prints either a `canon loaded: <path>, sha256=<hex>, <n>
+  bytes` receipt followed by the packet between `--- BEGIN/END PINE BARRON FARMS
+  CANON ---` markers (truncated to a budget with a "read the full file" pointer
+  when it does not fit), or a `WARNING: canon packet NOT FOUND` message naming
+  every path checked and stating that only the SOUL.md persona/method are in
+  force. Loaded two **existing-mechanism, no-engine-change** ways: a session-start
+  command mandated by `SOUL.md` (*"before my first substantive reply … run
+  `python canon/load_canon.py` … treat its output as canon"*), and the new
+  `editions/pine-barron-farms/skills/pbf-canon/SKILL.md` skill (its body — the
+  loader invocation and how to read the output — assembles into the
+  preloaded-skills system prompt). `distribution.yaml` ships the loader + skill
+  (`distribution_owned`), so `hermes profile update` refreshes them but never the
+  deploy-time packet. `canon/README.md` documents the mechanism.
+  `tests/test_pbf_canon_loader.py` (6): present / absent / truncation-with-pointer
+  / CLI-exit-0 ×2, and an end-to-end test that a distinctive fact from a test
+  canon file reaches the assembled context. Paths:
+  `editions/pine-barron-farms/canon/load_canon.py`,
+  `editions/pine-barron-farms/canon/README.md`,
+  `editions/pine-barron-farms/skills/pbf-canon/SKILL.md`,
+  `editions/pine-barron-farms/SOUL.md`,
+  `editions/pine-barron-farms/distribution.yaml`,
+  `tests/test_pbf_canon_loader.py`. Ref: `ERR-2026-09-08-003`,
+  `DECISION-2026-09-07-003`. Run: RUN-2026-09-08-004.
+
+### Changed
+
+- **CHG-2026-09-08-010** — **Soften the overstated rebrand wording** (implements
+  `DECISION-2026-09-07-002` Option A). *"engine used unmodified"* /
+  *"whatever Hermes Agent does, North Forge does"* replaced with
+  *"North Forge keeps Hermes Agent's functional engine behavior; its downstream
+  changes are identity, presentation, and workflow only"* in `README.md` (the
+  lead paragraph **and** the provenance paragraph), `README.es.md`,
+  `README.zh-CN.md`, `README.ur-pk.md`, and `BRANDING.md` (the intro **and** the
+  category-3 note). `BRANDING.md`'s intro now also names the visible CLI strings
+  that stay Hermes on purpose (the `hermes` command + its examples, `HERMES_HOME`
+  paths, `HERMES_AGENT_HELP_GUIDANCE`, the `agent_name` skin fallback, the
+  OS-service descriptions, upstream's setup/update/uninstall copy). No identifier
+  churn. Paths: `README.md`, `README.es.md`, `README.zh-CN.md`, `README.ur-pk.md`,
+  `BRANDING.md`. Ref: `DECISION-2026-09-07-002`. Run: RUN-2026-09-08-004.
+
+- **CHG-2026-09-08-011** — **North-Forge-leading sweep of two visible CLI
+  strings** (the surfaces Codex F-07 / `DECISION-2026-09-07-002` named as still
+  Hermes). `cli.py` interactive `_welcome_text` fallback
+  *"Welcome to Hermes Agent!"* → *"Welcome to North Forge!"* (matches
+  `skins/north-forge.yaml`'s `branding.welcome`, which drives the live path).
+  `hermes_cli/_parser.py` `chat` subparser `description`
+  *"Start an interactive chat session with Hermes Agent"* → *"… with North Forge
+  (on the Hermes Agent engine)."* — North Forge leads, Hermes stays as honest
+  attribution (same hierarchy as the `DEFAULT_SOUL_MD` line and the top-level
+  parser). A fresh grep for a *leading* "Hermes Agent" product name turned up only
+  these two on user-visible runtime surfaces; the rest are category 2 (engine
+  internals / command names) or 3 (upstream docstrings / how-to copy) and stay.
+  Both added to `BRANDING.md` category 1. Paths: `cli.py`,
+  `hermes_cli/_parser.py`, `BRANDING.md`. Ref: `DECISION-2026-09-07-002`. Run:
+  RUN-2026-09-08-004.
+
+- **CHG-2026-09-08-014** — **Installer: one shared checkout validator + a
+  no-silent-pick autodetect** (closes `ERR-2026-09-08-002` / Codex
+  `PC-2026-09-08-002` + `-003`). `apps/bootstrap-installer`'s Rust backend fed a
+  frontend-supplied `repoRoot` straight to the bootstrap (`repo::describe` does
+  not re-check `is_checkout()` and never consulted `on_system_drive`), and the
+  drive scan returned the **first** drive with a checkout. New
+  `repo::validate_target(&Path)` — canonicalize → resolve to a real North Forge
+  checkout (`scripts/bootstrap-north-forge.ps1` **and** `pyproject.toml`) → reject
+  the OS system drive — is now called by **both** `set_repo_root` (the picker) and
+  `run_bootstrap` immediately before spawning PowerShell. `resolve_checkout` (and
+  a new pure `target_policy` / `is_under_drive_prefix`) auto-picks **only** when
+  exactly one checkout exists across every visible drive; otherwise `detect_repo`
+  returns `source="ambiguous"` and `location.tsx` shows a "pick the exact one"
+  prompt and disables Install (which is also disabled for an on-system-drive
+  checkout). `+8` Rust unit tests (`src-tauri` 9 → 17: `cargo test` /
+  `cargo build` clean; `tsc` + `eslint` on `location.tsx` clean; `tauri build`
+  not re-run — Rust/TS, outside the pytest lane). Paths:
+  `apps/bootstrap-installer/src-tauri/src/repo.rs`,
+  `apps/bootstrap-installer/src-tauri/src/bootstrap.rs`,
+  `apps/bootstrap-installer/src/routes/location.tsx`. Ref: `ERR-2026-09-08-002`.
+  Run: RUN-2026-09-08-004.
+
+- **CHG-2026-09-08-016** — **Narrow the `editions/penny-pincher` persona
+  language** (closes `ERR-2026-09-08-004` / Codex `PC-2026-09-08-005`). Wording
+  only — no ledger mechanism built (per the finding's stated scope). `SOUL.md`:
+  *"I hold the running picture"* / *"I keep track"* / *"tracking bills and due
+  dates"* → *"I write it down"*, *"I work only from what you give me — no bank
+  connection, no transaction feed, no ledger of its own"*; affordability answers
+  now always state what they leave out (bills not mentioned, irregular costs,
+  estimates). `README.md` matched. Paths: `editions/penny-pincher/SOUL.md`,
+  `editions/penny-pincher/README.md`. Ref: `ERR-2026-09-08-004`. Run:
+  RUN-2026-09-08-004.
+
+### Fixed
+
+- **CHG-2026-09-08-009** — **Broaden the `secret-guard` filename blocklist**
+  (closes the filename half of `ERR-2026-09-07-007` / Codex F-09). `.githooks/secret-guard`
+  `is_forbidden()` went from `.env`-family-only to: `.env` family; OpenSSH private
+  keys (`id_rsa` / `id_dsa` / `id_ecdsa` / `id_ed25519`, `.pub` allowed);
+  `*.p12` / `*.pfx` / `*.pkcs12` / `*.jks` / `*.keystore`; `credentials.json`,
+  `service-account.json`, `*-service-account.json`, `gcloud-service-key*.json`;
+  `.netrc` / `_netrc` / `.pgpass` / `.htpasswd`; and PEM / `*.key` / `*.priv` /
+  `*.pk8` private keys **except** public CA/cert bundles (`cacert.pem`,
+  `*-bundle.pem`, `fullchain.pem`, `chain.pem`, `cert.pem`, …) and **except**
+  files under a `test/` / `tests/` / `fixtures/` / `testdata/` / `mocks/` /
+  `spec/` / `e2e/` path (throwaway test certs). A `_glob_any` helper does real
+  `|`-alternation (POSIX `case` does not expand an alternation from a variable);
+  lowercasing is lazy (skips a `tr` fork per path on a full-tree scan); an
+  `ALLOWLIST` array at the top of the script is the reviewed, line-by-line escape
+  hatch. New `.githooks/tests/secret-guard.sh` (31 cases, green under `sh` **and**
+  `dash`). `.github/workflows/nf-secret-scan.yml` now runs both hook self-test
+  suites and `secret-guard --tree` / `--range` (filenames) alongside the existing
+  `content-scan --commits` (content). `.githooks/README.md` documents the
+  blocklist. Verified `secret-guard --tree HEAD` clean on the current tree.
+  *Not done (future add, not a regression):* a maintained broad-provider content
+  scanner (Gitleaks-class) — R-02.4. Paths: `.githooks/secret-guard`,
+  `.githooks/tests/secret-guard.sh`, `.github/workflows/nf-secret-scan.yml`,
+  `.githooks/README.md`. Ref: `ERR-2026-09-07-007`. Run: RUN-2026-09-08-004.
+
+- **CHG-2026-09-08-013** — **`nf_tier` fails closed on a malformed-but-signed
+  provisioning record** (closes `ERR-2026-09-08-001` / Codex `PC-2026-09-08-001`).
+  `hermes_cli/nf_tier.py::_load_uncached()` did `int(rec.get("schema", 0))` on a
+  record whose signature had already verified — a correctly-signed record with
+  `"schema": "one"` raised `ValueError` out of `load()`, and
+  `hermes_cli/main.py::_nf_tier_gate()`'s broad `except Exception: return None`
+  then treated the drive as un-provisioned (a Basic drive would run `-p <other>`
+  unblocked). Fix: `_load_uncached()` now validates every signed field's
+  type/bounds explicitly (`schema` is an `int` and `== SCHEMA`, `bool` rejected;
+  `tier` / `pinned_edition` / `installed_editions` / the text fields typed) and
+  every failure — plus a defensive outer `except Exception` — returns
+  `Provisioning(STATE_TAMPERED)`. `load()` is now **total** over arbitrary signed
+  JSON. `_nf_tier_gate()` additionally fails **closed** (`("block", …)`) on an
+  unexpected error whenever a provisioning record file is physically present (new
+  import-free `_nf_provisioning_file_present()`); with no record it still returns
+  `None` so dev / upstream is byte-identical. `+11` tests in
+  `tests/test_nf_tier_enforcement.py` (19 → 30): the exact Codex repro (signed
+  record, non-numeric `schema`) as a parametrised unit test **and** an integration
+  test (`hermes -p kyocera` exits non-zero, `HERMES_HOME` unmoved), plus a
+  fuzz-ish "load is total over arbitrary signed JSON" sweep. Paths:
+  `hermes_cli/nf_tier.py`, `hermes_cli/main.py`,
+  `tests/test_nf_tier_enforcement.py`. Ref: `ERR-2026-09-08-001`. Run:
+  RUN-2026-09-08-004.
+
+---
+
 ## [NF-v0.7.0] — 2026-09-08 — hermes@0333d48214 (0 behind upstream/main — rebased onto origin/main)
 
 **`RUN-2026-09-08-003` (reconcile + push):** the block was investigated

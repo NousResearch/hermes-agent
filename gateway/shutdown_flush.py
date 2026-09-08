@@ -204,10 +204,11 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
     """Replay flush-dir ``*.json`` files via ``SessionDB.append_message``, deleting each on success.
 
     ``session_db=None`` opens (and afterwards releases) the shared default ``state.db``.
-    ``session_resolver`` (optional ``session_key -> session_id``, e.g.
-    ``SessionStore.peek_session_id``) is required for real flush files: adapter ``MessageEvent``
-    objects carry no ``session_id``, so without it every recovery lands in the skip branch.
-    Returns the number of messages recovered.
+    ``session_resolver`` (optional ``(session_key, not_after=ts) -> (session_id, db) | None``, e.g.
+    ``SessionStore.resolve_session_id_for_key``) is required for real flush files: adapter
+    ``MessageEvent`` objects carry no ``session_id``, so without it every recovery lands in the skip
+    branch. A returned ``db`` routes the append to the profile store owning the key (multiplexed
+    gateways); ``None`` falls back to ``session_db``. Returns the number of messages recovered.
     """
     flush_files = sorted(_get_flush_dir().glob("*.json"))
     if not flush_files:
@@ -261,19 +262,23 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
         return False
     # session_key is a gateway routing key (e.g. "agent:main:telegram:..."); appending a row
     # needs the real session_id, which real payloads lack — the resolver supplies it.
-    session_id = data.get("session_id", "")
+    session_id, target_db = data.get("session_id", ""), session_db
     if not session_id and session_resolver is not None:
         try:
-            session_id = session_resolver(session_key) or ""
-        except Exception:
-            session_id = ""
+            resolved = session_resolver(session_key, not_after=payload.get("ts"))
+        except Exception as exc:
+            logger.debug("Session key->id resolution failed for %s: %s", session_key, exc)
+            resolved = None
+        if resolved:
+            session_id, routed_db = resolved
+            target_db = routed_db if routed_db is not None else session_db
     if not session_id:
         logger.warning("Cannot recover pending message for %s: no session_id in flush file and "
                        "session_key-to-id resolution failed. "
                        "The message text is preserved in %s", session_key, path)
         return False
-    session_db.append_message(session_id=session_id, role="user", content=text,
-                              timestamp=payload.get("ts", int(time.time())))
+    target_db.append_message(session_id=session_id, role="user", content=text,
+                             timestamp=payload.get("ts", int(time.time())))
     return True
 
 

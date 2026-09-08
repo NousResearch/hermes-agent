@@ -71,6 +71,21 @@ def test_preview_peer_resolution(user_id, kwargs, expected):
     assert _preview_peer_resolution(user_id, **kwargs) == expected
 
 
+@pytest.mark.parametrize("user_id, peer_name", [("a:b", "eri"), ("111", "tg_111")],
+                         ids=["sanitizing-changed-the-id", "collides-with-peer-name"])
+def test_prefixed_preview_matches_runtime_hash_suffix(user_id, peer_name):
+    """The runtime appends a hash when sanitizing changed the id or it collides with an explicit peer."""
+    from plugins.memory.honcho.client import HonchoClientConfig
+    from plugins.memory.honcho.session import HonchoSessionManager
+
+    manager = HonchoSessionManager(
+        config=HonchoClientConfig(peer_name=peer_name, runtime_peer_prefix="tg_"), runtime_user_peer_name=user_id,
+    )
+    runtime = manager._resolve_user_peer_id("telegram:dm:1")
+    assert runtime.startswith(honcho_cli._sanitize_peer_id(f"tg_{user_id}") + "-")
+    assert _preview_peer_resolution(user_id, pin=False, aliases={}, prefix="tg_", peer_name=peer_name) == f"{runtime} (prefixed)"
+
+
 def _run_map(monkeypatch, tmp_path, *, answers, cfg, db_rows=(), ws_peers=None, workspaces=None):
     """Drive cmd_peers_map with scripted answers; returns what _write_config received."""
     db = tmp_path / "state.db"

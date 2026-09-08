@@ -1241,6 +1241,32 @@ def _opencode_free_catalog(normalized: str, force_refresh: bool) -> list[str]:
     return _fetch_opencode_free_models(force_refresh=force_refresh) or list(_PROVIDER_MODELS.get(normalized, []))
 
 
+def _commandcode_oauth_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
+    """Command Code OAuth catalog: user-configured models from config.yaml if set,
+    otherwise live discovery from the provider."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        user_provs = cfg.get("providers") or {}
+        entry = user_provs.get("commandcode-oauth") or user_provs.get("command-code") or {}
+        configured = entry.get("models")
+        if isinstance(configured, list) and configured:
+            return list(configured)
+    except Exception:
+        pass
+
+    from providers import get_provider_profile
+    profile = get_provider_profile("commandcode-oauth")
+    if profile:
+        try:
+            live = profile.fetch_models()
+            if live:
+                return live
+        except Exception:
+            pass
+    return list(_PROVIDER_MODELS.get("commandcode-oauth", []))
+
+
 # Per-provider catalog sources tried before the generic profile fetch. A fetcher returning None
 # falls through to the profile/curated path; a list is returned as-is (even empty).
 _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
@@ -1261,6 +1287,8 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "openai-api": _openai_catalog,
     "custom": _custom_catalog,
     "bedrock": _bedrock_catalog,
+    "commandcode-oauth": lambda normalized, force_refresh: _commandcode_oauth_catalog(normalized, force_refresh),
+    "command-code": lambda normalized, force_refresh: _commandcode_oauth_catalog(normalized, force_refresh),
     "opencode-free": _opencode_free_catalog}
 
 

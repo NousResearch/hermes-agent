@@ -437,20 +437,12 @@ def _model_flow_commandcode_oauth(_config, current_model="", args=None):
         from hermes_cli.auth_commandcode import resolve_commandcode_runtime_credentials
         creds = resolve_commandcode_runtime_credentials()
 
-    models = [
-        "command-code/deepseek-deepseek-v4-flash",
-        "command-code/deepseek-deepseek-v4-flash-vision-exp",
-        "command-code/deepseek-deepseek-v4-pro",
-        "command-code/meituan-LongCat-2.0:free",
-        "command-code/meta-muse-spark-1.3-contributor",
-        "command-code/MiniMaxAI-MiniMax-M3",
-        "command-code/moonshotai-Kimi-K3",
-        "command-code/poolside-laguna-s-2.1-free",
-        "command-code/Qwen-Qwen3.8-Max-0902",
-        "command-code/xai-grok-4.5",
-        "command-code/xiaomi-mimo-v2.5-pro",
-        "command-code/z-ai-glm-5.3-flash",
-    ]
+    from hermes_cli.models import provider_model_ids
+    models = provider_model_ids("commandcode-oauth")
+    if not models:
+        from providers import get_provider_profile
+        prof = get_provider_profile("commandcode-oauth")
+        models = list(prof.fallback_models) if prof and prof.fallback_models else ["meituan/LongCat-2.0:free"]
     default = current_model if current_model in models else models[0]
     selected = _prompt_model_selection(models, current_model=default, confirm_provider="commandcode-oauth", confirm_base_url="https://api.commandcode.ai")
     _activate_provider_model(selected, "commandcode-oauth", "https://api.commandcode.ai", f"Default model set to: {selected} (via Command Code OAuth)")

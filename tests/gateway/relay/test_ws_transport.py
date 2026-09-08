@@ -445,3 +445,121 @@ async def test_provisional_4401_never_starts_a_second_dialer_while_the_superviso
         assert t._auth_retry_generation == t._dial_generation
     finally:
         await t.disconnect(budget_s=0)
+
+
+class _FakeCloseError(Exception):
+    """Stand-in for websockets' ConnectionClosed: carries a close code + reason."""
+
+    def __init__(self, code: int, reason: str = ""):
+        super().__init__(f"closed {code} {reason}")
+        self.code = code
+        self.reason = reason
+
+
+class _FakeWS:
+    """Scriptable socket for dialer-ownership tests. ``hello`` decides what
+    happens when the transport sends its hello: a callable is awaited (and may
+    raise); ``reader`` decides what the reader sees: an exception to raise once
+    released, or None to idle until close()."""
+
+    def __init__(self, *, reader: Exception | None = None, hello=None):
+        self._reader_exc = reader
+        self._hello = hello
+        self.released = asyncio.Event()
+        self.stopped = asyncio.Event()
+
+    async def send(self, _data):
+        self.released.set()
+        if self._hello is not None:
+            await self._hello(self)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await self.released.wait()
+        if self._reader_exc is not None:
+            raise self._reader_exc
+        await self.stopped.wait()
+        raise StopAsyncIteration
+
+    async def close(self):
+        self.released.set()
+        self.stopped.set()
+
+
+def _scripted_connect(monkeypatch, outcomes: list):
+    """Patch websockets.connect to pop ``outcomes`` in order: an Exception is
+    raised (connect-time failure), anything else is returned as the socket.
+    Returns the dial log."""
+    import gateway.relay.ws_transport as mod
+
+    dials: list = []
+
+    async def fake_connect(*_args, **_kwargs):
+        item = outcomes[len(dials)]
+        dials.append(item)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(mod.websockets, "connect", fake_connect)
+    return dials
+
+
+def _fake_transport() -> WebSocketRelayTransport:
+    t = WebSocketRelayTransport(
+        "ws://unused", "discord", "bot", reconnect=True,
+        reconnect_backoff_s=0, reconnect_max_backoff_s=0,
+    )
+    t._handshake_succeeded = True
+    return t
+
+
+@pytest.mark.asyncio
+async def test_fresh_token_retry_socket_dropping_during_hello_still_reconnects(monkeypatch):
+    """Mirror of the supervisor race: the auth-retry is the only live dialer and
+    its fresh socket's reader dies (non-4401) after the hello was sent but before
+    the dial returns. The reader must not arm a dialer (one is live) — so the
+    DIAL itself must notice its reader is gone, report failure, and hand off to
+    the supervisor. Otherwise the transport ends with no socket, no reader and
+    no dialer: silently dead."""
+    first = _FakeWS(reader=_FakeCloseError(1006, "lost"))
+
+    async def hello_then_let_reader_die(ws):
+        # hello send succeeds; the reader (released by send) raises and finishes
+        # BEFORE _dial_and_start returns, so _ws is already None on return.
+        await asyncio.sleep(0.02)
+
+    first._hello = hello_then_let_reader_die
+    second = _FakeWS()
+    dials = _scripted_connect(monkeypatch, [first, second])
+    t = _fake_transport()
+    t._auth_retry_pending = True
+    t._auth_retry = asyncio.create_task(t._redial_with_fresh_token())
+    try:
+        assert await _wait_until(lambda: len(dials) == 2 and t._ws is second)
+        assert t._reader is not None and not t._reader.done()
+        assert not t.auth_revoked
+    finally:
+        await t.disconnect(budget_s=0)
+
+
+@pytest.mark.asyncio
+async def test_network_failure_on_the_retry_dial_does_not_unmark_it(monkeypatch):
+    """The fresh-token marker must survive connect-time failures that never
+    reached authentication (network, timeout). If a blip consumed it, the NEXT
+    dial — the one whose fresh token actually gets judged — would be unmarked
+    and its 4401 read as another first strike, so a real revocation would never
+    latch (unbounded provisional retries)."""
+    refused = _FakeWS(reader=_FakeCloseError(4401, "unauthorized"))
+    dials = _scripted_connect(monkeypatch, [RuntimeError("network blip"), refused, _FakeWS(), _FakeWS()])
+    t = _fake_transport()
+    t._auth_retry_pending = True
+    t._auth_retry = asyncio.create_task(t._redial_with_fresh_token())
+    try:
+        assert await _wait_until(lambda: t.auth_revoked)
+        assert len(dials) == 2, "the 4401 on the first judged fresh token must be terminal"
+        assert not t._dialer_running()
+    finally:
+        await t.disconnect(budget_s=0)

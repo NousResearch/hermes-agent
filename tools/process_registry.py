@@ -12,6 +12,7 @@ import os
 import platform
 import shlex
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -137,6 +138,61 @@ def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
     ]
 
 
+def _default_user_runtime_dir() -> Path:
+    """``/run/user/<uid>``; a function so tests can point it at a temp dir with a real socket."""
+    return Path(f"/run/user/{os.getuid()}")  # windows-footgun: ok — only reached behind the _IS_LINUX gate in systemd_user_bus_env
+
+
+def _secure_user_runtime_dir(path: Path) -> bool:
+    """Accept only an absolute, owned, non-writable real directory."""
+    try:
+        metadata = path.lstat()
+        return (
+            path.is_absolute()
+            and stat.S_ISDIR(metadata.st_mode)
+            and metadata.st_uid == os.getuid()  # windows-footgun: ok — only reached behind the _IS_LINUX gate in systemd_user_bus_env
+            and metadata.st_mode & 0o022 == 0
+        )
+    except OSError:
+        return False
+
+
+def systemd_user_bus_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Build an environment that can reach this user's lingering systemd manager.
+
+    System-level gateway units run as an unprivileged ``User=`` but normally do
+    not inherit login-session variables.  When the conventional runtime
+    directory is owned by this uid and its bus exists, derive the two standard
+    variables.  Derived fresh on every call rather than adopted once at boot: a
+    system unit has no ordering against ``user@<uid>.service``, and linger may be
+    enabled after the gateway started, so the bus can appear later (#104893).
+    The returned copy is passed explicitly to the probe and every scoped spawn;
+    ``os.environ`` is left unchanged.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    if not _IS_LINUX:
+        return env
+    configured = env.get("XDG_RUNTIME_DIR")
+    if configured and _secure_user_runtime_dir(Path(configured)):
+        runtime_dir = Path(configured)
+    else:
+        runtime_dir = _default_user_runtime_dir()
+        if not _secure_user_runtime_dir(runtime_dir):
+            return env
+
+    bus_path = runtime_dir / "bus"
+    try:
+        bus_metadata = bus_path.lstat()
+    except OSError:
+        return env
+    if not stat.S_ISSOCK(bus_metadata.st_mode) or bus_metadata.st_uid != os.getuid():  # windows-footgun: ok — behind the _IS_LINUX gate above
+        return env
+
+    env["XDG_RUNTIME_DIR"] = str(runtime_dir)
+    env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
+    return env
+
+
 def _systemd_scope_cached() -> Optional[bool]:
     """Cached probe verdict, or None when a (re)probe is due. True is permanent; False
     expires after ``_SYSTEMD_SCOPE_FAILURE_TTL_SECONDS`` so a D-Bus blip isn't sticky."""
@@ -171,7 +227,10 @@ def _systemd_run_user_scope_available() -> bool:
                     # Unique unit avoids collisions; the timeout bounds D-Bus.
                     probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
                     result = subprocess.run(
-                        _systemd_scope_argv(binary, probe_unit, "/bin/true"), capture_output=True, timeout=3,
+                        _systemd_scope_argv(binary, probe_unit, "/bin/true"),
+                        capture_output=True,
+                        timeout=3,
+                        env=systemd_user_bus_env(),
                     )
                     available = result.returncode == 0
                     if not available:
@@ -266,8 +325,13 @@ def _stop_systemd_unit(unit_name: str) -> bool:
     if binary is None:
         return False
     try:
-        result = subprocess.run([binary, "--user", "stop", unit_name], capture_output=True, timeout=15,
-                                stdin=subprocess.DEVNULL)
+        result = subprocess.run(
+            [binary, "--user", "stop", unit_name],
+            capture_output=True,
+            timeout=15,
+            stdin=subprocess.DEVNULL,
+            env=systemd_user_bus_env(),
+        )
         if result.returncode != 0:
             stderr = (result.stderr or b"").decode(errors="replace").strip()
             if any(marker in stderr.lower() for marker in ("not loaded", "not found", "does not exist")):
@@ -815,12 +879,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
             from winpty import PtyProcess as _PtyProcessCls
         else:
             from ptyprocess import PtyProcess as _PtyProcessCls
+        pty_argv = self._scope_argv(session, safe_command, session.id, "PTY")
         pty_env = self._spawn_env(env_vars)
+        if session.systemd_unit:
+            pty_env = systemd_user_bus_env(pty_env)
         # A PTY is a real TTY, so pager-happy tools (git log/diff, man) WILL page and
         # hang waiting for `q` — default them to cat, honoring any pager the user set.
         pty_env.setdefault("GIT_PAGER", "cat")
         pty_env.setdefault("PAGER", "cat")
-        pty_argv = self._scope_argv(session, safe_command, session.id, "PTY")
         pty_proc = _PtyProcessCls.spawn(pty_argv, cwd=session.cwd, env=pty_env, dimensions=(30, 120))
         session.pid = pty_proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
@@ -862,13 +928,16 @@ class ProcessRegistry(ProcessCheckpointMixin):
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
         unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
         spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local")
+        spawn_env = self._spawn_env(env_vars)
+        if session.systemd_unit:
+            spawn_env = systemd_user_bus_env(spawn_env)
         # start_new_session is REQUIRED with systemd-run --scope too: the scope does not
         # give the worker a new session, so from an interactive TUI the worker would
         # share the foreground process group and background spawns would stop the whole
         # session (observed as dead TUIs in state T). Cgroup isolation is unaffected —
         # the scope attaches to the invoked process, not the spawning session.
         proc = subprocess.Popen(
-            spawn_argv, text=True, cwd=session.cwd, env=self._spawn_env(env_vars), encoding="utf-8",
+            spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
             errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             start_new_session=True, **_popen_kwargs)
         session.process = proc

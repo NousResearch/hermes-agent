@@ -2257,7 +2257,11 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.
-    cmd = _restart_safe_worker_argv(task, cmd)
+    scoped_cmd = _restart_safe_worker_argv(task, cmd)
+    if scoped_cmd != cmd:
+        from tools.process_registry import systemd_user_bus_env
+        env = systemd_user_bus_env(env)
+    cmd = scoped_cmd
     log_f = _open_worker_log(task, board)
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above

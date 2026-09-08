@@ -144,6 +144,29 @@ for (const owner of ['primary', 'pool'] as const) {
         })
       }
 
+      // Observe Node's actual spawn as well as Python startup. A post-spawn
+      // ownership rejection can kill Python before sitecustomize ever executes;
+      // a Python-only counter would miss that forbidden transient process.
+      await running.app.evaluate((_electron, directory) => {
+        const childProcess = process.getBuiltinModule('child_process')
+        const fs = process.getBuiltinModule('fs')
+        const path = process.getBuiltinModule('path')
+        const spawn = childProcess.spawn
+        childProcess.spawn = ((...args: Parameters<typeof spawn>) => {
+          const child = Reflect.apply(spawn, childProcess, args)
+          const options = args[2] as { env?: Record<string, string> } | undefined
+
+          if (options?.env?.HERMES_DASHBOARD_SESSION_TOKEN) {
+            const target = path.join(directory, 'spawn-attempts')
+            fs.mkdirSync(target, { recursive: true })
+            fs.writeFileSync(path.join(target, `${child.pid}.json`), JSON.stringify({ pid: child.pid, argv: args[1] }))
+          }
+
+          return child
+        }) as typeof spawn
+        process.getBuiltinModule('module').syncBuiltinESMExports()
+      }, hook)
+
       const applied = await running.page.evaluate(
         scope =>
           (window as any).hermesDesktop.applyConnectionConfig({
@@ -162,9 +185,17 @@ for (const owner of ['primary', 'pool'] as const) {
       expect(result.status, result.error).toBe('rejected')
       await expect.poll(() => records(hook, 'exited').length, { timeout: 15_000 }).toBeGreaterThan(0)
       expect(records(hook, 'timed-out')).toEqual([])
+
+      const attempts = records(hook, 'spawn-attempts').filter(
+        record => owner === 'primary' || record.argv.includes('race-pool')
+      )
+
+      expect(attempts, 'invalidated attempts must not even spawn a short-lived child').toEqual([])
       const stale = records(hook, 'spawned').filter(record => owner === 'primary' || record.argv.includes('race-pool'))
       expect(stale).toEqual([])
-      console.log(`${owner}: real serve-help exited; stale backend Python spawns=${stale.length}`)
+      console.log(
+        `${owner}: real serve-help exited; stale Node spawns=${attempts.length}, Python starts=${stale.length}`
+      )
     } finally {
       fs.writeFileSync(path.join(hook, 'release'), '')
 

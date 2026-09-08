@@ -12239,6 +12239,79 @@ def test_session_info_includes_turn_started_at():
     assert server._session_info(agent, session)["turn_started_at"] is None
 
 
+def test_session_info_default_profile_on_named_gateway_labels_default(monkeypatch, tmp_path):
+    """Regression: a session pinned to profile 'default' on a NON-default gateway must
+    report profile_name 'default' — never raise FileNotFoundError("Profile '.hermes'
+    does not exist.").
+
+    The gateway's launch home is a named profile (<root>/profiles/mlperf), so a session
+    pinned to 'default' resolves its profile_home to the ROOT home. Labeling that home
+    by raw basename yields '.hermes' (the root dir's name), which is not a valid profile
+    id and cannot exist on disk; the old labeling crashed session.info with exactly that
+    FileNotFoundError, which the deferred build turned into an agent_init_failed error
+    card plus repeated gateway-crash entries."""
+    root = tmp_path / ".hermes"  # basename '.hermes' mirrors the real ~/.hermes
+    launch_home = root / "profiles" / "mlperf"
+    launch_home.mkdir(parents=True)
+    # A named-profile gateway: HERMES_HOME = <root>/profiles/<name>.
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setattr(server, "_hermes_home", str(launch_home))
+
+    def _clear():
+        for session in list(server._sessions.values()):
+            server._teardown_session(session)
+        server._sessions.clear()
+
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+    _clear()
+    try:
+        resp = server._methods["session.create"]("r1", {"profile": "default", "cols": 80})
+        assert "result" in resp, resp
+        sid = resp["result"]["session_id"]
+        # The default-profile pin resolves to the ROOT home on this named gateway.
+        assert server._sessions[sid]["profile_home"] == str(root)
+
+        # Create-time (lazy) label.
+        assert resp["result"]["info"]["profile_name"] == "default"
+
+        # Deferred-build session.info label — the path that used to crash.
+        agent = types.SimpleNamespace(tools=[], model="", provider="")
+        info = server._session_info(agent, server._sessions[sid])
+        assert info["profile_name"] == "default"
+    finally:
+        _clear()
+
+
+def test_response_profile_name_falls_back_on_unresolvable_name(monkeypatch):
+    """_response_profile_name must never raise: a name that resolves to no profile dir
+    ('.hermes' — the default home's basename — or any unknown/deleted id) falls back to
+    the launch profile instead of aborting the caller."""
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "launch-profile")
+    assert server._response_profile_name(".hermes") == "launch-profile"
+    assert server._response_profile_name("definitely-not-a-real-profile-xyz") == "launch-profile"
+    assert server._response_profile_name("") == "launch-profile"
+
+    # A real, existing profile still wins over the fallback.
+    from hermes_constants import get_hermes_home
+    real_home = Path(get_hermes_home())
+    (real_home / "profiles" / "ok").mkdir(parents=True)
+    assert server._response_profile_name("ok") == "ok"
+
+
+def test_profile_name_for_home_never_returns_bare_basename(monkeypatch, tmp_path):
+    """Home-path → profile-name labeling mirrors Hermes' profile semantics: the root
+    home labels 'default' (never its basename, e.g. '.hermes'), <root>/profiles/<name>
+    labels by name, and anything else labels 'custom'."""
+    root = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "mlperf"))
+
+    assert server._profile_name_for_home(str(root)) == "default"
+    assert server._profile_name_for_home(str(root / "profiles" / "it-agent")) == "it-agent"
+    assert server._profile_name_for_home(str(root / "some-overlay")) == "custom"
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either

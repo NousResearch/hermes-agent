@@ -444,9 +444,41 @@ def _profile_db(params: dict | None = None):
 
 
 def _response_profile_name(profile: str | None = None) -> str:
-    """Profile name for session.* payloads: the requested real non-launch profile, else the launch one."""
+    """Profile name for session.* payloads: the requested real non-launch profile, else the launch one.
+
+    Never raises: an unresolvable name (a home-path basename like ``.hermes``, a deleted profile, a
+    client race) falls back to the launch profile instead of aborting the session build."""
     name = (profile or "").strip()
-    return name if name and _profile_home(name) is not None else _current_profile_name()
+    if name:
+        try:
+            if _profile_home(name) is not None:
+                return name
+        except FileNotFoundError:
+            pass
+    return _current_profile_name()
+
+
+def _profile_name_for_home(home: str) -> str:
+    """Profile name a home path serves, mirroring ``resolve_profile_env`` semantics: ``default`` for
+    the root home (``~/.hermes`` or the custom root), ``<name>`` for any ``<root>/profiles/<name>``
+    home, ``custom`` otherwise.
+
+    Never the raw basename: ``Path('~/.hermes').name`` is ``.hermes``, which is not a valid profile
+    id and cannot exist on disk — feeding it back into ``_profile_home`` raises ``Profile '.hermes'
+    does not exist.``"""
+    from hermes_cli import profiles as profiles_mod
+    try:
+        resolved = Path(home).expanduser().resolve()
+        root = profiles_mod.get_profile_dir("default").resolve()
+        if resolved == root:
+            return "default"
+        # Hermes treats ANY ``<root>/profiles/<name>`` home as the named profile ``<name>`` — the
+        # root can be the platform default or a custom deployment root (resolve_profile_env).
+        if resolved.parent.name == "profiles":
+            return resolved.name
+    except (ValueError, OSError):
+        pass
+    return "custom"
 
 
 def _db_unavailable_error(rid, *, code: int):
@@ -2054,7 +2086,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "version": "", "release_date": "", "update_behind": None, "update_command": "",
         "usage": _session_usage_snapshot(session),
         "profile_name": (
-            _response_profile_name(Path(session["profile_home"]).name)
+            _response_profile_name(_profile_name_for_home(session["profile_home"]))
             if isinstance(session, dict) and session.get("profile_home") else _current_profile_name()),
     }
     with contextlib.suppress(Exception):

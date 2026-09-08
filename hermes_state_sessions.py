@@ -829,8 +829,50 @@ class SessionSessionsMixin:
         ) > 0
 
     def set_session_archived(self, session_id: str, archived: bool) -> bool:
-        """Soft-hide (or unhide) a session and its compression lineage; messages are kept."""
-        return self._set_lineage_column("archived", session_id, int(archived))
+        """Soft-hide (or unhide) a session and its compression lineage; messages are kept.
+
+        First archive stamps ``archived_at`` (unix seconds) so Done/KPI credit
+        the calendar day of the archive, not last activity. Unarchive clears it.
+        Re-archive of an already-archived row keeps the original stamp.
+        """
+        archived_flag = 1 if archived else 0
+        now = time.time()
+        return self._write_rowcount(
+            """
+            WITH RECURSIVE
+              ancestors(id) AS (
+                SELECT ?
+                UNION
+                SELECT parent.id
+                FROM ancestors a
+                JOIN sessions child ON child.id = a.id
+                JOIN sessions parent ON parent.id = child.parent_session_id
+                WHERE parent.end_reason = 'compression'
+              ),
+              descendants(id) AS (
+                SELECT ?
+                UNION
+                SELECT child.id
+                FROM descendants d
+                JOIN sessions parent ON parent.id = d.id
+                JOIN sessions child ON child.parent_session_id = parent.id
+                WHERE parent.end_reason = 'compression'
+              ),
+              lineage(id) AS (
+                SELECT id FROM ancestors
+                UNION
+                SELECT id FROM descendants
+              )
+            UPDATE sessions
+            SET archived = ?,
+                archived_at = CASE
+                    WHEN ? = 1 THEN COALESCE(archived_at, ?)
+                    ELSE NULL
+                END
+            WHERE id IN (SELECT id FROM lineage)
+            """,
+            (session_id, session_id, archived_flag, archived_flag, now),
+        ) > 0
 
     # Accidental end reasons recovery treats as resumable (also interpolated into
     # the recovery/promotion SQL so literals cannot drift).
@@ -964,6 +1006,7 @@ class SessionSessionsMixin:
             for key in (
                 "id", "ended_at", "end_reason", "message_count", "tool_call_count", "title", "last_active",
                 "preview", "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+                "archived", "archived_at",
             ):
                 if key in tip_row:
                     merged[key] = tip_row[key]
@@ -1204,6 +1247,13 @@ class SessionSessionsMixin:
             outer_where, id_params = self._chain_search_where(
                 where_sql, (id_query or "").strip().lower(), (search_query or "").strip().lower(),
             )
+            # Archived-only lists order by archive flip time so idle chats
+            # archived today page first instead of burying under stale last_active.
+            order_expr = (
+                "COALESCE(s.archived_at, _effective_last_active)"
+                if archived_only
+                else "_effective_last_active"
+            )
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
@@ -1230,7 +1280,7 @@ class SessionSessionsMixin:
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
                 {prompt_join}
                 {outer_where}
-                ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
+                ORDER BY {order_expr} DESC, s.started_at DESC, s.id DESC
                 LIMIT ? OFFSET ?
             """
             params = params + params + id_params + [limit, offset]  # WHERE binds twice (seed + outer)

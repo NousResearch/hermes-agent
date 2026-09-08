@@ -39,6 +39,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +226,45 @@ class TestAdapterInit:
         assert captured["checkpoint_max_snapshots"] == 7
         assert captured["checkpoint_max_total_size_mb"] == 321
         assert captured["checkpoint_max_file_size_mb"] == 4
+
+    def test_create_agent_keeps_gateway_user_id_and_sets_private_credential_owner(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openai-codex",
+                "base_url": "https://example.test/v1",
+                "api_mode": "codex_responses",
+                "user_id": "gateway-user-123",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda model="": {"enabled": True, "effort": "xhigh"}),
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(
+            session_id="api-session",
+            credential_owner="api-credential:owner-xyz",
+        )
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["user_id"] == "gateway-user-123"
+        assert captured["user_id"] != "api-credential:owner-xyz"
+        assert getattr(agent, "_credential_owner", None) == "api-credential:owner-xyz"
 
 
 # ---------------------------------------------------------------------------
@@ -889,7 +929,8 @@ class TestCapabilitiesEndpoint:
 
     @pytest.mark.asyncio
     async def test_capabilities_reports_in_memory_idempotency_fallback(self, adapter):
-        adapter._run_idempotency_store._db_path = None
+        adapter._run_idempotency_store.close()
+        adapter._run_idempotency_store = RunIdempotencyStore(":memory:")
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             response = await cli.get("/v1/capabilities")

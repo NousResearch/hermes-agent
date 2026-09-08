@@ -113,7 +113,10 @@ _SESSION_MODEL_USAGE_V20_SEED_SQL = """INSERT OR IGNORE INTO session_model_usage
                                  + COALESCE(cache_write_tokens, 0)
                                  + COALESCE(reasoning_tokens, 0) > 0"""
 _TITLE_UNIQUE_INDEX_SQL = (
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique ON sessions(title) WHERE title IS NOT NULL"
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique ON sessions(title) "
+    "WHERE title IS NOT NULL AND credential_owner IS NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_owned_title_unique ON sessions(title, credential_owner) "
+    "WHERE title IS NOT NULL AND credential_owner IS NOT NULL",
 )
 _STALE_KEY_UPSERT_SQL = (
     "INSERT INTO state_meta (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
@@ -994,10 +997,16 @@ class SessionSchemaMixin:
             logger.debug("v22 session_model_usage rebuild skipped: %s", exc)
 
     def _ensure_unique_title_index(self, cursor: sqlite3.Cursor) -> None:
-        """Unique title index. Older DBs may hold duplicate aliases from before the constraint;
-        the newest keeps the alias. Must never abort opening the DB, so the repair is guarded."""
+        """Keep titles unique within explicit credential-owner scope and legacy global scope."""
         try:
-            cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
+            legacy = cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_title_unique'"
+            ).fetchone()
+            legacy_sql = str(legacy[0] or "").lower() if legacy else ""
+            if legacy and "credential_owner" not in legacy_sql:
+                cursor.execute("DROP INDEX idx_sessions_title_unique")
+            for statement in _TITLE_UNIQUE_INDEX_SQL:
+                cursor.execute(statement)
         except sqlite3.IntegrityError:
             try:
                 cursor.execute("""UPDATE sessions AS older
@@ -1006,12 +1015,14 @@ class SessionSchemaMixin:
                          AND EXISTS (
                              SELECT 1 FROM sessions AS newer
                              WHERE newer.title = older.title
+                               AND newer.credential_owner IS older.credential_owner
                                AND newer.rowid > older.rowid
                          )""")
                 logger.warning(
                     "Cleared %d duplicate session title(s) while restoring the unique index", cursor.rowcount,
                 )
-                cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
+                for statement in _TITLE_UNIQUE_INDEX_SQL:
+                    cursor.execute(statement)
             except sqlite3.Error:
                 logger.exception("Could not repair duplicate session titles; unique title index not created")
         except sqlite3.OperationalError:

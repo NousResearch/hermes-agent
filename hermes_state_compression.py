@@ -24,7 +24,7 @@ _COOLDOWN_ROW_SQL = (
 
 # One forward step of get_compression_chain: the preferred continuation child of ``?``.
 _CHAIN_STEP_SQL = f"""
-                    SELECT child.id
+                    SELECT child.id, child.credential_owner
                     FROM sessions parent
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.id = ?
@@ -167,15 +167,16 @@ class SessionCompressionMixin:
                    system_prompt_hash,
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
-                   thread_id, display_name, origin_json, started_at
-                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   thread_id, display_name, origin_json, credential_owner, started_at
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 child_session_id, source, model, json.dumps(model_config) if model_config else None,
                 system_prompt_hash, parent_session_id, cwd or parent["cwd"], parent["git_branch"],
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
                 parent["user_id"], parent["session_key"], parent["chat_id"], parent["chat_type"],
-                parent["thread_id"], parent["display_name"], parent["origin_json"], time.time()),
+                parent["thread_id"], parent["display_name"], parent["origin_json"],
+                parent["credential_owner"], time.time()),
         )
 
     def publish_compression_child(
@@ -184,7 +185,8 @@ class SessionCompressionMixin:
         system_prompt: str = None, cwd: str = None, profile_name: str = None,
         compression_lock_holder: str = None, require_compression_lease: bool = True,
         require_lease_refresh: bool = False, lease_ttl_seconds: float = 300.0,
-        watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None) -> None:
+        watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None,
+        expected_credential_owner: Optional[str] = None) -> None:
         """Atomically close a parent and publish its durable compression child: closure, child row, and
         handoff commit in one transaction, so readers see the live parent or a complete child, never an
         ended parent with a missing/empty child. *watermark* (parent's ``get_active_message_watermark`` at compression start): parent rows with ``id
@@ -198,7 +200,7 @@ class SessionCompressionMixin:
         See #75316.
         ``None`` = unbounded (no internal flush happened). See #47202.
         """
-        from hermes_state_errors import CompressionSessionBusyError
+        from hermes_state_errors import CompressionSessionBusyError, SessionTurnLeaseLostError
         def _do(conn):
             if require_lease_refresh and compression_lock_holder:
                 conn.execute(
@@ -215,12 +217,20 @@ class SessionCompressionMixin:
             parent = conn.execute(
                 """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
-                          thread_id, display_name, origin_json, profile_name
+                          thread_id, display_name, origin_json, profile_name, credential_owner
                    FROM sessions WHERE id = ?""",
                 (parent_session_id,),
             ).fetchone()
             if parent is None:
                 raise RuntimeError(f"Compression parent not found: {parent_session_id}")
+            if (
+                expected_credential_owner is not None
+                and parent["credential_owner"] != expected_credential_owner
+            ):
+                raise SessionTurnLeaseLostError(
+                    "Session credential ownership changed; refusing compression publication "
+                    f"for {parent_session_id!r}"
+                )
             if parent["ended_at"] is not None:
                 # An AUTOMATIC end stamp (tui_shutdown, ws_disconnect, orphan reap, idle/LRU
                 # evict) is stale by construction — this lease holder is still continuing the
@@ -468,17 +478,27 @@ class SessionCompressionMixin:
             return self._session_turn_lease_key_on_conn(conn, session_id)
 
     def try_acquire_session_turn_lease(
-        self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,
+        self, session_id: str, holder: str, *, ttl_seconds: float = 300.0,
+        patience_s: Optional[float] = None, expected_credential_owner: Optional[str] = None,
     ) -> bool:
         """Atomically acquire the cross-process turn lease for a conversation (keyed by the
-        lineage root). The walk, the INSERT, and reclaim of expired or dead-local-PID leases
-        share one write transaction."""
+        lineage root). When supplied, ``expected_credential_owner`` is validated in the same
+        write transaction as the lease claim."""
         from hermes_state import _compression_lock_holder_process_is_dead
+        from hermes_state_errors import SessionTurnLeaseLostError
         if not session_id or not holder:
             return False
         now = time.time()
         expires_at = now + max(0.1, float(ttl_seconds))
         def _do(conn):
+            if expected_credential_owner is not None:
+                row = conn.execute(
+                    "SELECT credential_owner FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if row is None or row["credential_owner"] != expected_credential_owner:
+                    raise SessionTurnLeaseLostError(
+                        f"Session credential ownership changed; refusing turn lease for {session_id!r}"
+                    )
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             return _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
@@ -490,6 +510,7 @@ class SessionCompressionMixin:
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0,
         wait_seconds: float = 1800.0, poll_interval_seconds: float = 1.0, on_wait=None,
         wait_notice_interval_seconds: float = 15.0, should_abort=None, acquire_patience_s: float = 0.5,
+        expected_credential_owner: Optional[str] = None,
     ) -> bool:
         """Wait for a cross-process turn lease without holding a SQLite lock. ``on_wait(elapsed)`` is
         best-effort: called when the first attempt fails and about every ``wait_notice_interval_seconds``
@@ -508,7 +529,8 @@ class SessionCompressionMixin:
                     logger.debug("session turn lease should_abort callback failed", exc_info=True)
             try:
                 if self.try_acquire_session_turn_lease(
-                    session_id, holder, ttl_seconds=ttl_seconds, patience_s=acquire_patience_s):
+                    session_id, holder, ttl_seconds=ttl_seconds, patience_s=acquire_patience_s,
+                    expected_credential_owner=expected_credential_owner):
                     return True
             except sqlite3.Error as exc:
                 # Long holder transactions can exhaust one write-patience budget; keep
@@ -531,12 +553,22 @@ class SessionCompressionMixin:
                 last_notice_at = now
             time.sleep(min(max(0.01, float(poll_interval_seconds)), remaining))
 
-    def refresh_session_turn_lease(self, session_id: str, holder: str, *, ttl_seconds: float = 300.0) -> bool:
-        """Extend a turn lease only while ``holder`` still owns it."""
+    def refresh_session_turn_lease(
+        self, session_id: str, holder: str, *, ttl_seconds: float = 300.0,
+        expected_credential_owner: Optional[str] = None,
+    ) -> bool:
+        """Extend a turn lease only while ``holder`` still owns it and, when supplied,
+        the session still has the exact credential owner."""
         if not session_id or not holder:
             return False
         expires_at = time.time() + max(0.1, float(ttl_seconds))
         def _do(conn):
+            if expected_credential_owner is not None:
+                row = conn.execute(
+                    "SELECT credential_owner FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if row is None or row["credential_owner"] != expected_credential_owner:
+                    return False
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             return conn.execute(
                 "UPDATE session_turn_leases SET expires_at = ? "

@@ -6,6 +6,7 @@ JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2
 and neither replaces a name the user typed."""
 
 import json
+import inspect
 import logging
 import re
 import threading
@@ -298,7 +299,10 @@ def _has_upgraded_title(session_db, session_id: str) -> bool:
         return True
 
 
-def _persist_session_title(session_db, session_id, title, *, source, dedupe=True):
+def _persist_session_title(
+    session_db, session_id, title, *, source, dedupe=True,
+    expected_credential_owner: Optional[str] = None,
+):
     """Persist at *source* authority via ``set_auto_title`` (precedence check + write in one
     transaction, so a manual ``/title`` is never overwritten); None when a higher authority held the row.
     ``ValueError`` = unique-title index collision → append ``#N`` via ``get_next_title_in_lineage``;
@@ -312,7 +316,10 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
 
     def _set(candidate):
         if auto_fn is not None:
-            if auto_fn(session_id, candidate, source=source):
+            if auto_fn(
+                session_id, candidate, source=source,
+                expected_credential_owner=expected_credential_owner,
+            ):
                 return candidate
             logger.debug("Skipping %s title: a higher-authority title already holds session %s", source, session_id)
             return None
@@ -327,19 +334,42 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
         return _set(title)
     except ValueError:
         next_title_fn = getattr(session_db, "get_next_title_in_lineage", None)
-        deduped = next_title_fn(title) if dedupe and next_title_fn is not None else None
+        deduped = None
+        if dedupe and next_title_fn is not None:
+            owner = expected_credential_owner
+            try:
+                signature = inspect.signature(next_title_fn)
+            except (TypeError, ValueError):
+                # Unknown signatures do not justify dropping the owner boundary.
+                deduped = next_title_fn(title, credential_owner=owner)
+            else:
+                try:
+                    signature.bind(title, credential_owner=owner)
+                except TypeError:
+                    if expected_credential_owner is not None:
+                        raise
+                    deduped = next_title_fn(title)
+                else:
+                    deduped = next_title_fn(title, credential_owner=owner)
         if not deduped or deduped == title:
             raise
         return _set(deduped)
 
 
-def apply_instant_title(session_db, session_id: str, user_message: str, title_callback: Optional[TitleCallback] = None) -> Optional[str]:
+def apply_instant_title(
+    session_db, session_id: str, user_message: str,
+    title_callback: Optional[TitleCallback] = None,
+    expected_credential_owner: Optional[str] = None,
+) -> Optional[str]:
     """Write the derived title inline. Returns it, or None (no usable text, or a ``derived``+ title exists). Never raises."""
     if not session_db or not session_id:
         return None
     try:
         title = derive_title(user_message) if is_titleable_user_message(user_message) else None
-        persisted = _persist_session_title(session_db, session_id, title, source="derived", dedupe=False) if title else None
+        persisted = _persist_session_title(
+            session_db, session_id, title, source="derived", dedupe=False,
+            expected_credential_owner=expected_credential_owner,
+        ) if title else None
         if persisted:
             _notify_title(title_callback, persisted, "derived", "Instant-title")
         return persisted
@@ -356,6 +386,7 @@ def auto_title_session(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    expected_credential_owner: Optional[str] = None,
 ) -> None:
     """Generate and store the model title (daemon-thread target); skips sessions already carrying an
     ``llm``/``user`` title (a ``derived`` one is expected — upgrading it is the point). Never lets an
@@ -383,7 +414,10 @@ def auto_title_session(
         if not title:
             return
         try:
-            persisted = _persist_session_title(session_db, session_id, title, source=source)
+            persisted = _persist_session_title(
+                session_db, session_id, title, source=source,
+                expected_credential_owner=expected_credential_owner,
+            )
         except Exception as e:
             logger.debug("Failed to set auto-generated title: %s", e)
             return
@@ -424,6 +458,7 @@ def maybe_auto_title(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    expected_credential_owner: Optional[str] = None,
 ) -> None:
     """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model."""
     if not session_db or not session_id or not user_message:
@@ -436,11 +471,20 @@ def maybe_auto_title(
     if not _auto_title_enabled():  # config read after the cheap guards so the file isn't touched every turn
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
-    apply_instant_title(session_db, session_id, user_message, title_callback)
+    apply_instant_title(
+        session_db, session_id, user_message, title_callback,
+        expected_credential_owner=expected_credential_owner,
+    )
     threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message),
-        kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback, runtime_validator=runtime_validator),
+        kwargs=dict(
+            failure_callback=failure_callback,
+            main_runtime=main_runtime,
+            title_callback=title_callback,
+            runtime_validator=runtime_validator,
+            expected_credential_owner=expected_credential_owner,
+        ),
         daemon=True,
         name="auto-title",
     ).start()

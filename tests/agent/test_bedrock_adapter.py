@@ -255,6 +255,61 @@ class TestConvertMessagesToConverse:
         # Empty string should get a space placeholder
         assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
 
+    def test_image_url_with_null_url_does_not_crash(self):
+        """A null ``url`` inside an image_url part must not abort conversion.
+
+        ``url.startswith`` on a None/non-string url raised ``AttributeError``,
+        which propagates out of ``convert_messages_to_converse`` and drops the
+        whole request. The Gemini and Codex converters already tolerate it.
+        """
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([
+            {"type": "text", "text": "look"},
+            {"type": "image_url", "image_url": {"url": None}},
+        ])
+        # The text block survives; the unusable image degrades, not fatal.
+        assert any(b.get("text") == "look" for b in blocks)
+
+    def test_image_url_with_non_string_url_does_not_crash(self):
+        """A non-string url (e.g. int) is also tolerated."""
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([
+            {"type": "image_url", "image_url": {"url": 123}},
+        ])
+        assert isinstance(blocks, list)
+
+    def test_image_url_missing_dict_entirely_does_not_crash(self):
+        """``image_url`` absent altogether degrades rather than raising."""
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([{"type": "image_url"}])
+        assert isinstance(blocks, list)
+
+    def test_image_url_bare_string_data_url_converted(self):
+        """A bare-string data: image_url (no wrapping dict) is converted.
+
+        Main returned "" for any non-dict ``image_url``, so this shape was
+        silently downgraded to an ``[Image: ]`` text block instead of an image.
+        """
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([
+            {"type": "image_url",
+             "image_url": "data:image/png;base64,iVBORw0KGgo="},
+        ])
+        image_blocks = [b for b in blocks if "image" in b]
+        assert len(image_blocks) == 1
+        assert image_blocks[0]["image"]["format"] == "png"
+
+    def test_null_image_url_does_not_abort_the_whole_request(self):
+        """End-to-end: the raise reached convert_messages_to_converse."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        _, msgs = convert_messages_to_converse([
+            {"role": "user", "content": [
+                {"type": "text", "text": "describe this"},
+                {"type": "image_url", "image_url": {"url": None}},
+            ]},
+        ])
+        assert any(b.get("text") == "describe this" for b in msgs[0]["content"])
+
 
 # ---------------------------------------------------------------------------
 # Response normalization: Converse → OpenAI

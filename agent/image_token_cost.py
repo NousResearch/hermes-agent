@@ -6,7 +6,7 @@ request that carries it, so the cost is observable: with a fresh usage anchor (r
 the previous response), the residual between the next real ``prompt_tokens`` and
 ``anchor + text-only delta`` is the price of the N images that delta introduced (#70328).
 
-The learned value is kept per ``model@host`` in ``~/.hermes/cache/image_token_costs.json`` so a new
+The learned value is kept per model and endpoint in ``~/.hermes/cache/image_token_costs.json`` so a new
 session starts calibrated, and bound per turn through a ContextVar so every estimator
 (preflight trigger, tail-budget walk, gateway hygiene) prices images the same way.
 """
@@ -14,6 +14,7 @@ session starts calibrated, and bound per turn through a ContextVar so every esti
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
@@ -37,9 +38,11 @@ def _cache_path():
 
 
 def _key(model: Any, base_url: Any) -> str:
-    from utils import base_url_hostname
-
-    return f"{model or ''}@{base_url_hostname(base_url or '') or ''}"
+    # A host can serve different models behind separate ports or proxy paths.
+    # Hash the full endpoint so URL credentials never enter cache keys or logs.
+    # Legacy host-only entries are ambiguous and must be learned again.
+    endpoint = str(base_url or "").strip().rstrip("/")
+    return f"{model or ''}@sha256:{hashlib.sha256(endpoint.encode()).hexdigest()}"
 
 
 def _load() -> None:
@@ -55,7 +58,7 @@ def _load() -> None:
 
 
 def learned_image_token_cost(model: Any, base_url: Any) -> int:
-    """Learned per-image cost for ``model@host``, else the flat default."""
+    """Learned per-image cost for this model and endpoint, else the flat default."""
     _load()
     return _LEARNED.get(_key(model, base_url), DEFAULT_IMAGE_TOKEN_COST)
 

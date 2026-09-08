@@ -6,6 +6,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator,
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import { addComposerTextAttachment } from '@/store/composer'
+import { subscribeToDocumentSelection } from '@/store/selection'
 
 interface MessageContextMenuProps {
   children: ReactNode
@@ -39,13 +40,20 @@ function selectionIntersects(selection: Selection | null, host: Element | null):
 
   const range = selection.getRangeAt(0)
 
-  // A zero-offset range inside a text node reports intersectsNode() === false
-  // on some engines; anchor/focus containment covers the degenerate cases.
-  return (
-    range.intersectsNode(host) ||
+  // jsdom has no Range.intersectsNode; guard it and fall back to
+  // anchor/focus containment. Cover both shapes: `selectNodeContents(host)`
+  // makes the anchor/focus the host ELEMENT itself (not a child), and a
+  // text-level selection anchors a child text node. Either satisfies us.
+  const intersects =
+    typeof range.intersectsNode === 'function'
+      ? range.intersectsNode(host)
+      : false
+
+  return intersects ||
+    host === (selection.anchorNode as Element) ||
+    host === (selection.focusNode as Element) ||
     host.contains(selection.anchorNode) ||
     host.contains(selection.focusNode)
-  )
 }
 
 /** Shared right-click context menu for message blocks (user + assistant).
@@ -65,24 +73,36 @@ function selectionIntersects(selection: Selection | null, host: Element | null):
 export function MessageContextMenu({ children, messageId }: MessageContextMenuProps) {
   const { t } = useI18n()
   const scope = useComposerScope()
-  const [hasSelection, setHasSelection] = useState(false)
+  // Lazy-init from the CURRENT selection: a row that mounts while a selection
+  // already exists over it (a new streaming row, a branch-restore remount)
+  // must arm immediately — `selectionchange` only fires on the NEXT change,
+  // and a disabled trigger in that window means no menu at all on a user
+  // bubble (the app menu defers to the disabled trigger's subtree).
+  const [hasSelection, setHasSelection] = useState(() => {
+    // Lazy-init from the CURRENT document selection; the host ref doesn't
+    // exist yet at mount, so "selection exists" is the honest initial state
+    // — the effect's post-ref-mount check narrows it to this message.
+    const selection = typeof document !== 'undefined' ? document.getSelection() : null
+
+    return Boolean(selection && !selection.isCollapsed && selection.toString().trim().length > 0)
+  })
   const snapshotRef = useRef<SelectionSnapshot>(EMPTY_SNAPSHOT)
   const hostRef = useRef<HTMLElement | null>(null)
 
-  // Track the live selection so the trigger's `disabled` flag follows it —
-  // but only selections that intersect THIS message. selectionchange fires on
-  // drag-end, click-away, and programmatic clears — every path that changes
-  // the selection. State (not a ref) so the flag is reactive, and the updater
-  // bails out when the value hasn't actually flipped so steady-state
-  // selection changes don't re-render at all.
+  // Follow the shared document-selection atom (one listener for the whole
+  // app) and intersect the selection with THIS message's subtree — a caret
+  // move in the composer must not arm every row's trigger. The updater bails
+  // out when the answer hasn't flipped so steady-state changes don't
+  // re-render.
   useEffect(() => {
-    const sync = () => {
-      const next = selectionIntersects(window.getSelection(), hostRef.current)
-      setHasSelection(previous => (previous === next ? previous : next))
-    }
-    document.addEventListener('selectionchange', sync)
+    // The lazy init runs before the ref exists (mount-time host is null), so
+    // re-check once the element is attached.
+    setHasSelection(selectionIntersects(window.getSelection(), hostRef.current))
 
-    return () => document.removeEventListener('selectionchange', sync)
+    return subscribeToDocumentSelection(selection => {
+      const next = selectionIntersects(selection, hostRef.current)
+      setHasSelection(previous => (previous === next ? previous : next))
+    })
   }, [])
 
   // Snapshot the selection at right-click time — before the menu takes

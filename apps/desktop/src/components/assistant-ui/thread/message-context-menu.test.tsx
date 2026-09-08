@@ -4,6 +4,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '@/app/chat/composer/scope'
 import { MessageContextMenu } from '@/components/assistant-ui/thread/message-context-menu'
 import { createComposerAttachmentScope } from '@/store/composer'
+import { $documentSelection } from '@/store/selection'
 
 // Radix ContextMenu uses PointerEvent; jsdom doesn't fire it by default.
 // fireEvent.contextMenu triggers the right-click that opens the menu.
@@ -71,6 +72,7 @@ describe('MessageContextMenu', () => {
   afterEach(() => {
     cleanup()
     clearSelection()
+    $documentSelection.set(null)
     document.querySelectorAll('body > div:not([id])').forEach(node => {
       if (node.textContent === 'text somewhere else entirely') {
         node.remove()

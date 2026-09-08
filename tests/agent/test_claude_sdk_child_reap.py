@@ -17,6 +17,7 @@ import psutil
 import pytest
 
 from agent.transports import claude_agent_sdk_session as M
+from agent.transports import claude_agent_sdk_session_child as C
 
 
 def _alive(proc: subprocess.Popen) -> bool:
@@ -50,7 +51,7 @@ def test_cooperative_child_dies_on_terminate(child):
     proc = child([sys.executable, "-c", "import time; time.sleep(300)"])
     assert _alive(proc)
 
-    M._force_kill_sdk_child(proc.pid)
+    C._force_kill_sdk_child(proc.pid)
 
     proc.wait(timeout=5)
     assert not _alive(proc)
@@ -82,9 +83,9 @@ def test_uncooperative_child_escalates_after_wait_timeout(monkeypatch):
             self.killed = True
 
     process = _StubbornProcess()
-    monkeypatch.setattr(M, "_own_sdk_child_process", lambda pid: process)
+    monkeypatch.setattr(C, "_own_sdk_child_process", lambda pid: process)
 
-    M._force_kill_sdk_child(123)
+    C._force_kill_sdk_child(123)
 
     assert process.terminated is True
     assert process.killed is True
@@ -92,14 +93,14 @@ def test_uncooperative_child_escalates_after_wait_timeout(monkeypatch):
 
 @pytest.mark.live_system_guard_bypass
 def test_never_signals_a_process_that_is_not_our_live_child(child):
-    assert M._is_own_sdk_child(psutil.Process().pid) is False
+    assert C._is_own_sdk_child(psutil.Process().pid) is False
 
     proc = child([sys.executable, "-c", "import time; time.sleep(300)"])
     proc.kill()
     proc.wait()
-    assert M._is_own_sdk_child(proc.pid) is False  # reaped: pid may be reused
+    assert C._is_own_sdk_child(proc.pid) is False  # reaped: pid may be reused
 
-    assert M._force_kill_sdk_child(None) is None
+    assert C._force_kill_sdk_child(None) is None
 
 
 @pytest.mark.live_system_guard_bypass
@@ -130,7 +131,7 @@ def test_close_reaps_child_when_disconnect_hangs(child, monkeypatch):
     session._loop_thread = thread
 
     monkeypatch.setattr(M, "_SDK_DISCONNECT_TIMEOUT_S", 1.0)
-    assert M._sdk_child_pid(session._client) == proc.pid
+    assert C._sdk_child_pid(session._client) == proc.pid
     assert _alive(proc)
 
     session.close()
@@ -141,5 +142,5 @@ def test_close_reaps_child_when_disconnect_hangs(child, monkeypatch):
 
 
 def test_child_pid_lookup_is_defensive():
-    assert M._sdk_child_pid(object()) is None
-    assert M._sdk_child_pid(None) is None
+    assert C._sdk_child_pid(object()) is None
+    assert C._sdk_child_pid(None) is None

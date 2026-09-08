@@ -18,7 +18,8 @@ def test_results_from_same_job_open_distinct_content_named_threads():
     with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=run_now):
         for headline in ("Search indexing restored", "Newsletter needs your approval"):
             assert _open_continuable_cron_thread(
-                job, adapter, "C123", object(), result_text=f"## {headline}\n\nDetails",
+                job, adapter, "C123", object(),
+                result_text=f"## **[{headline}](https://github.com/example/repo/issues/42)**\n\nDetails",
             ) == "123.456"
             assert adapter.create_handoff_thread.call_args.args == ("C123", headline)
 

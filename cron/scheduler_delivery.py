@@ -217,10 +217,11 @@ def _open_continuable_cron_thread(
     if not callable(create_thread) or loop is None:
         return None
     from agent.title_generator import derive_title
+    from gateway.platforms.helpers import strip_markdown
     # The completed result is already available: use its opening headline, not
     # the recurring job's identity. No additional inference on scheduled wakes.
     headline = next((line.strip() for line in result_text.splitlines() if line.strip()), "")
-    thread_name = derive_title(headline.lstrip("# ").strip("*")) or job.get("name") or "Scheduled result"
+    thread_name = derive_title(strip_markdown(headline)) or job.get("name") or "Scheduled result"
     try:
         from agent.async_utils import safe_schedule_threadsafe
         coro = create_thread(str(chat_id), thread_name)

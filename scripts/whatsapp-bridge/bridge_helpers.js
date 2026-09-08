@@ -189,17 +189,41 @@ export function buildLocationPayload({ latitude, longitude, name, address } = {}
   return { location };
 }
 
+// Baileys wraps a concrete payload inside envelope messages (disappearing
+// messages, view-once media, document-with-caption). These carry the real
+// message under `.message` and can nest (an ephemeral wrapping a view-once),
+// so peel repeatedly until the concrete payload is reached.
+const WRAPPED_MESSAGE_KEYS = [
+  'ephemeralMessage',
+  'viewOnceMessage',
+  'viewOnceMessageV2',
+  'documentWithCaptionMessage',
+];
+
+function unwrapMessageContent(content) {
+  let inner = content;
+  for (let depth = 0; inner && typeof inner === 'object' && depth < 8; depth += 1) {
+    const key = WRAPPED_MESSAGE_KEYS.find((k) => inner[k]?.message);
+    if (!key) break;
+    inner = inner[key].message;
+  }
+  return inner;
+}
+
 function textFromQuotedMessage(quotedMessage) {
-  if (!quotedMessage) return '';
-  if (quotedMessage.conversation) return quotedMessage.conversation;
-  if (quotedMessage.extendedTextMessage?.text) return quotedMessage.extendedTextMessage.text;
-  if (quotedMessage.imageMessage?.caption) return quotedMessage.imageMessage.caption;
-  if (quotedMessage.videoMessage?.caption) return quotedMessage.videoMessage.caption;
-  if (quotedMessage.documentMessage?.caption) return quotedMessage.documentMessage.caption;
-  if (quotedMessage.documentMessage?.fileName) return `[Document: ${quotedMessage.documentMessage.fileName}]`;
-  if (quotedMessage.locationMessage) return formatLocationText(quotedMessage.locationMessage, false);
-  if (quotedMessage.contactMessage) return formatContactText(quotedMessage.contactMessage);
-  if (quotedMessage.pollCreationMessage) return formatPollText(quotedMessage.pollCreationMessage);
+  // A quoted message can arrive inside the same envelopes as a top-level one
+  // (e.g. replying to a disappearing message), so unwrap before reading text.
+  const quoted = unwrapMessageContent(quotedMessage);
+  if (!quoted) return '';
+  if (quoted.conversation) return quoted.conversation;
+  if (quoted.extendedTextMessage?.text) return quoted.extendedTextMessage.text;
+  if (quoted.imageMessage?.caption) return quoted.imageMessage.caption;
+  if (quoted.videoMessage?.caption) return quoted.videoMessage.caption;
+  if (quoted.documentMessage?.caption) return quoted.documentMessage.caption;
+  if (quoted.documentMessage?.fileName) return `[Document: ${quoted.documentMessage.fileName}]`;
+  if (quoted.locationMessage) return formatLocationText(quoted.locationMessage, false);
+  if (quoted.contactMessage) return formatContactText(quoted.contactMessage);
+  if (quoted.pollCreationMessage) return formatPollText(quoted.pollCreationMessage);
   return '';
 }
 

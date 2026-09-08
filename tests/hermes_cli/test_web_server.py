@@ -1711,12 +1711,8 @@ class TestWebServerEndpoints:
 
     def test_telegram_onboarding_worker_request_uses_httpx(self, monkeypatch):
         import httpx
-        import hermes_cli.web_server as ws
 
         calls = {}
-
-        def fail_urlopen(*_args, **_kwargs):
-            raise AssertionError("Telegram onboarding should not use urllib")
 
         class FakeHttpxClient:
             def __init__(self, *args, **kwargs):
@@ -1737,10 +1733,9 @@ class TestWebServerEndpoints:
                 )
 
         monkeypatch.setenv("TELEGRAM_ONBOARDING_URL", "https://worker.example")
-        monkeypatch.setattr(ws.urllib.request, "urlopen", fail_urlopen)
         monkeypatch.setattr(httpx, "Client", FakeHttpxClient)
 
-        payload = ws._telegram_onboarding_request_sync(
+        payload = _web_server_messaging._telegram_onboarding_request_sync(
             "POST",
             "/v1/telegram/pairings",
             body={"bot_name": "Hermes Agent"},
@@ -1760,12 +1755,10 @@ class TestWebServerEndpoints:
     def test_telegram_onboarding_worker_request_maps_unexpected_errors(
         self, monkeypatch
     ):
-        import hermes_cli.web_server as ws
-
         monkeypatch.setenv("TELEGRAM_ONBOARDING_URL", "not a valid url")
 
-        with pytest.raises(ws.HTTPException) as exc:
-            ws._telegram_onboarding_request_sync(
+        with pytest.raises(_web_server_messaging.HTTPException) as exc:
+            _web_server_messaging._telegram_onboarding_request_sync(
                 "POST",
                 "/v1/telegram/pairings",
                 body={"bot_name": "Hermes Agent"},
@@ -1778,10 +1771,8 @@ class TestWebServerEndpoints:
         )
 
     def test_telegram_onboarding_start_strips_poll_token(self, monkeypatch):
-        import hermes_cli.web_server as ws
-
-        with ws._telegram_onboarding_lock:
-            ws._telegram_onboarding_pairings.clear()
+        with _web_server_messaging._telegram_onboarding_lock:
+            _web_server_messaging._telegram_onboarding_pairings.clear()
 
         calls = []
 
@@ -1796,7 +1787,9 @@ class TestWebServerEndpoints:
                 "expires_at": "2027-05-18T00:00:00.000Z",
             }
 
-        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+        monkeypatch.setattr(
+            _web_server_messaging, "_telegram_onboarding_request_sync", fake_request
+        )
 
         resp = self.client.post(
             "/api/messaging/telegram/onboarding/start",
@@ -1820,8 +1813,9 @@ class TestWebServerEndpoints:
         import hermes_cli.web_server as ws
         from hermes_cli.config import load_config, load_env
 
-        with ws._telegram_onboarding_lock:
-            ws._telegram_onboarding_pairings.clear()
+        monkeypatch.setattr(ws, "_LAST_GATEWAY_RESTART", None)
+        with _web_server_messaging._telegram_onboarding_lock:
+            _web_server_messaging._telegram_onboarding_pairings.clear()
 
         def fake_request(method, path, *, body=None, bearer_token=None):
             if method == "POST":
@@ -1843,8 +1837,10 @@ class TestWebServerEndpoints:
                 "token": "123456:SECRET",
             }
 
-        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
-        ws._ACTION_PROCS.pop("gateway-restart", None)
+        monkeypatch.setattr(
+            _web_server_messaging, "_telegram_onboarding_request_sync", fake_request
+        )
+        _web_server_gateway._ACTION_PROCS.pop("gateway-restart", None)
         restart_calls = []
 
         class FakeRestartProc:
@@ -1854,7 +1850,7 @@ class TestWebServerEndpoints:
             restart_calls.append((subcommand, name))
             return FakeRestartProc()
 
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", fake_spawn_action)
 
         start = self.client.post("/api/messaging/telegram/onboarding/start", json={})
         assert start.status_code == 200
@@ -1886,6 +1882,7 @@ class TestWebServerEndpoints:
         assert env["TELEGRAM_BOT_TOKEN"] == "123456:SECRET"
         assert env["TELEGRAM_ALLOWED_USERS"] == "123456789"
         assert load_config()["platforms"]["telegram"]["enabled"] is True
+        _web_server_gateway._ACTION_PROCS.pop("gateway-restart", None)
 
     def test_telegram_onboarding_apply_reports_restart_failure_after_save(
         self, monkeypatch
@@ -5369,6 +5366,22 @@ class TestServeIndexMissingIndex:
         assert resp.status_code == 200
         assert "SPA-rebuilt" in resp.text
 
+    def test_index_uses_ssh_token_applied_after_spa_mount(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_SESSION_TOKEN", "before-mount")
+        client, _dist = self._client_with_dist(
+            tmp_path, monkeypatch, write_index=True
+        )
+
+        ws._apply_ssh_session_token("after-mount")
+        resp = client.get("/chat")
+
+        assert resp.status_code == 200
+        assert 'window.__HERMES_SESSION_TOKEN__="after-mount"' in resp.text
+
 
 class TestHeadlessServeTokenPage:
     """Headless `hermes serve` must serve the Desktop token handshake page
@@ -5413,6 +5426,25 @@ class TestHeadlessServeTokenPage:
 
         assert _json.loads(match.group(1)) == ws._SESSION_TOKEN
         assert "window.__HERMES_AUTH_REQUIRED__=false" in resp.text
+
+    def test_root_uses_ssh_token_applied_after_spa_mount(self, monkeypatch):
+        import json
+        import re
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_SESSION_TOKEN", "before-mount")
+        client, ws = self._headless_client(monkeypatch, gated=False)
+
+        ws._apply_ssh_session_token("after-mount")
+        resp = client.get("/")
+        match = re.search(
+            r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+            resp.text,
+        )
+
+        assert match, resp.text
+        assert json.loads(match.group(1)) == "after-mount"
 
     def test_root_stays_404_json_when_auth_gated(self, monkeypatch):
         client, ws = self._headless_client(monkeypatch, gated=True)

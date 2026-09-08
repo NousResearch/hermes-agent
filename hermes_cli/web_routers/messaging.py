@@ -131,6 +131,17 @@ _ENV_VALUE_RULES: dict[tuple[str, str], tuple[Any, str]] = {
 
 
 def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> None:
+    options = _messaging_env_info(key).get("options") or []
+    allowed = [
+        str(option["value"])
+        for option in options
+        if isinstance(option, dict) and option.get("value") is not None
+    ]
+    if value and allowed and value not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{key} must be one of: {', '.join(allowed)}.",
+        )
     rule = _ENV_VALUE_RULES.get((platform_id, key))
     if value and rule and not rule[0](value):
         raise HTTPException(status_code=400, detail=rule[1])
@@ -240,14 +251,18 @@ def _platform_enablement(
     os.environ and would leak the root install's tokens into the profile's state."""
     required = entry["required_env"]
     if scoped:
+        configured = bool(required) and all(env_on_disk.get(key) for key in required)
         try:
             plat_cfg = (load_config().get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
             hc = plat_cfg.get("home_channel")
-            enabled, home_channel = bool(plat_cfg.get("enabled")), (hc if isinstance(hc, dict) else None)
+            # Setup writes credentials without a platforms entry; explicit disable wins.
+            raw_enabled = plat_cfg.get("enabled")
+            enabled = False if raw_enabled is False else bool(raw_enabled) or configured
+            home_channel = hc if isinstance(hc, dict) else None
         except Exception:
             enabled, home_channel = False, None
-        return enabled, all(env_on_disk.get(key) for key in required), home_channel
+        return enabled, configured, home_channel
     try:
         from gateway.config import Platform, load_gateway_config
 
@@ -308,7 +323,7 @@ def _messaging_platform_payload(
         })
 
     enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
-    if scoped:
+    if scoped and entry["required_env"]:
         configured = all(
             values.get(key)
             for key in entry["required_env"]

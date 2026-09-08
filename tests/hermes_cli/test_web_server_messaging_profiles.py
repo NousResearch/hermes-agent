@@ -296,3 +296,41 @@ class TestMultiplexPortBindingGuard:
                 json={"clear_env": [api_server["env_vars"][0]["key"]]},
             )
             assert resp.status_code == 200
+
+def test_named_current_home_matches_unscoped(client, isolated_profiles, monkeypatch):
+    from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
+    for scope in (None, "current", "default"):
+        response = client.get("/api/messaging/platforms", params={"profile": scope} if scope else {})
+        assert response.status_code == 200
+        assert _telegram(response.json())["enabled"] is True
+    with _hermes_home_scope(isolated_profiles["worker_alpha"]):
+        with _config_profile_scope("default") as scoped:
+            assert scoped is None
+            assert get_hermes_home() == isolated_profiles["default"]
+
+
+def test_scoped_enablement_uses_only_own_credentials(client, isolated_profiles, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
+    worker = isolated_profiles["worker_alpha"]
+    params = {"profile": "worker_alpha"}
+    assert _telegram(client.get("/api/messaging/platforms", params=params).json())["enabled"] is False
+    (worker / ".env").write_text("TELEGRAM_BOT_TOKEN=worker-token\n", encoding="utf-8")
+    payload = client.get("/api/messaging/platforms", params=params).json()
+    assert _telegram(payload)["enabled"] is True
+    assert _telegram(payload)["configured"] is True
+    assert _telegram(payload)["state"] != "disabled"
+    from hermes_cli.web_server_messaging import _messaging_platform_catalog
+    empty = {entry["id"] for entry in _messaging_platform_catalog() if not entry["required_env"]}
+    for platform in payload["platforms"]:
+        if platform["id"] in empty:
+            assert platform["enabled"] is False
+            assert platform["configured"] is False
+    for enabled in (False, True):
+        (worker / "config.yaml").write_text(yaml.safe_dump({"platforms": {"telegram": {"enabled": enabled}}}), encoding="utf-8")
+        platform = _telegram(client.get("/api/messaging/platforms", params=params).json())
+        assert platform["enabled"] is enabled
+        assert platform["configured"] is True
+    assert "root-token" in (isolated_profiles["default"] / ".env").read_text(encoding="utf-8")

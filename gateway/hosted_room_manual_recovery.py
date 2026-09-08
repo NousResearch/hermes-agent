@@ -59,36 +59,41 @@ def prepare_recovery(
     target_gateway_id = _validate_identifier(
         target_gateway_id, label="target_gateway_id", max_chars=MAX_ACTOR_ID_CHARS)
     with replicas._replica_transaction(db_path) as conn:
-        state = replicas._replica_state_locked(conn, room_id)
-        blockers = []
-        if state["safety_status"] != "passive":
-            blockers.append("copy_" + state["safety_status"])
-        if state["disbanded_at"] is not None:
-            blockers.append("group_disbanded")
-        if state["last_seq"] != state["latest_seq"]:
-            blockers.append("copy_incomplete")
-        if state["authority"]["gateway_id"] == target_gateway_id:
-            blockers.append("target_is_previous_host")
-        candidates, host_members = _member_origins(state, target_gateway_id)
-        if not candidates:
-            blockers.append("target_not_a_participant")
-        records = state["work_records"]
-        if records.get("availability") != "available":
-            blockers.append("work_records_unavailable")
-        if records.get("stop", {}).get("closing"):
-            blockers.append("group_closing")
-        history_digest = _history_digest(conn, room_id) if state["safety_status"] == "passive" else None
-        # Retransmission timestamps are not a new decision. Bind actual content,
-        # authority, roster and work records instead of the latest poll time.
-        binding = {
-            "room_id": room_id, "target_gateway_id": target_gateway_id,
-            "source_authority": state["authority"], "members": state["members"],
-            "saved_through_seq": state["last_seq"], "advertised_latest_seq": state["latest_seq"],
-            "history_digest": history_digest, "work_records": records,
-            "safety_status": state["safety_status"], "disbanded_at": state["disbanded_at"],
-            "copy_retired_at": state.get("copy_retired_at"),
-        }
-        snapshot_id = hashlib.sha256(encode(binding).encode("utf-8")).hexdigest()
+        return prepare_recovery_locked(conn, room_id=room_id, target_gateway_id=target_gateway_id)
+
+
+def prepare_recovery_locked(conn, *, room_id: str, target_gateway_id: str) -> dict[str, Any]:
+    """Use the caller's audited transaction for the preview and later decision."""
+    state = replicas._replica_state_locked(conn, room_id)
+    blockers = []
+    if state["safety_status"] != "passive":
+        blockers.append("copy_" + state["safety_status"])
+    if state["disbanded_at"] is not None:
+        blockers.append("group_disbanded")
+    if state["last_seq"] != state["latest_seq"]:
+        blockers.append("copy_incomplete")
+    if state["authority"]["gateway_id"] == target_gateway_id:
+        blockers.append("target_is_previous_host")
+    candidates, host_members = _member_origins(state, target_gateway_id)
+    if not candidates:
+        blockers.append("target_not_a_participant")
+    records = state["work_records"]
+    if records.get("availability") != "available":
+        blockers.append("work_records_unavailable")
+    if records.get("stop", {}).get("closing"):
+        blockers.append("group_closing")
+    history_digest = _history_digest(conn, room_id) if state["safety_status"] == "passive" else None
+    # Retransmission timestamps are not a new decision. Bind actual content,
+    # authority, roster and work records instead of the latest poll time.
+    binding = {
+        "room_id": room_id, "target_gateway_id": target_gateway_id,
+        "source_authority": state["authority"], "members": state["members"],
+        "saved_through_seq": state["last_seq"], "advertised_latest_seq": state["latest_seq"],
+        "history_digest": history_digest, "work_records": records,
+        "safety_status": state["safety_status"], "disbanded_at": state["disbanded_at"],
+        "copy_retired_at": state.get("copy_retired_at"),
+    }
+    snapshot_id = hashlib.sha256(encode(binding).encode("utf-8")).hexdigest()
     return {
         "object": "hermes.group_recovery.preview", "room_id": room_id, "name": state["name"],
         "snapshot_id": snapshot_id, "source_authority": state["authority"],

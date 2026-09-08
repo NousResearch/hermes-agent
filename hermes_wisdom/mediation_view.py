@@ -182,9 +182,10 @@ def advice_view(
                 )
         else:
             detail += "\nUse /wisdom notifications or /wisdom candidates to inspect current details."
-        view.items.append(
-            WisdomItem(title=advice["title"], detail=detail, actions=actions)
-        )
+        title = advice["title"]
+        if interaction and interaction["facts"].get("local_version"):
+            title += f" · local v{interaction['facts']['local_version']}"
+        view.items.append(WisdomItem(title=title, detail=detail, actions=actions))
     if has_digest:
         view.notice = "Nothing has been changed. Use /wisdom notifications to review these skills."
     return view
@@ -273,7 +274,7 @@ def interaction_view(
                 WisdomItem(
                     title=str(
                         facts.get("editorial_name") or facts.get("slug") or "Skill"
-                    ),
+                    ) + (f" · local v{facts['local_version']}" if facts.get("local_version") else ""),
                     detail=detail,
                 )
             ],
@@ -391,7 +392,7 @@ def interaction_view(
             WisdomItem(
                 title=str(
                     facts.get("editorial_name") or facts.get("slug") or "Skill details"
-                ),
+                ) + (f" · local v{facts['local_version']}" if facts.get("local_version") else ""),
                 detail=detail,
             )
         ],

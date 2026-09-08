@@ -21,6 +21,38 @@ RECEIPT = DeliveryReceipt(
 )
 
 
+@pytest.mark.parametrize("version,expected", [("0.2.0", "0.2.0"), ("v1.2.3-beta.1", "1.2.3-beta.1"), ("true", None), ("'[install](https://example.org)'", None)])
+def test_candidate_version_comes_from_exact_source(staged, version, expected):
+    from hermes_wisdom.service import _source_fingerprint
+
+    service, _, source, _ = staged
+    (source / "SKILL.md").write_text(f"---\nname: notes\nversion: {version}\n---\nSkill body\n")
+    content_hash = _source_fingerprint(source)
+    skill = service.store.register_skill(source, content_hash=content_hash, source_kind="local")
+    assert service.candidate_local_version(skill, content_hash) == expected
+    with pytest.raises(WisdomConflict):
+        service.candidate_local_version(skill, "sha256:outdated")
+
+
+def test_local_version_is_visible_without_claiming_a_published_version(sharing, monkeypatch):
+    from hermes_wisdom.consent import public_plan
+
+    service, mediation, _, shown, _, _, _ = sharing
+    monkeypatch.setattr(service, "candidate_local_version", lambda *_: "0.2.0")
+    with service.store.transaction() as db:
+        reference = json.loads(db.execute("SELECT reference_json FROM wisdom_assessment WHERE id=?", (shown["assessment_id"],)).fetchone()[0])
+    operation, plan = mediation.consent._plan(reference)
+    facts = public_plan(plan)
+    assert facts["local_version"] == "0.2.0"
+    assert "version" not in facts
+    interaction = {**shown, "operation": operation, "facts": facts}
+    assert "local v0.2.0" in interaction_view(interaction).items[0].title
+    view = advice_view([{"advice": {"title": "Notes", "explanation": "Refined skill", "relevance": "recommend", "assessment_kind": "qualification"}, "interaction": interaction}])
+    assert view.items[0].title == "Notes · local v0.2.0"
+    completed = {**interaction, "state": "completed", "result": {"packaging_state": "ready"}}
+    assert "local v0.2.0" in interaction_view(completed).items[0].title
+
+
 class PublishingClient(FakeClient):
     """In-memory remote using the production CAS reconstruction path."""
 

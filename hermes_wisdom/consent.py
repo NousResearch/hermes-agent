@@ -43,6 +43,7 @@ def public_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "skill_id",
         "slug",
         "version",
+        "local_version",
         "from_version",
         "compatibility",
         "allowed",
@@ -106,6 +107,7 @@ class WisdomConsent:
             if reference.get("content_hash") not in {None, source_hash}:
                 raise WisdomConflict("candidate changed after recommendation")
             existing = self.service.store.latest_draft_for_source(skill_id, source_hash)
+            local_version = self.service.candidate_local_version(skill_id, source_hash)
             editorial = (
                 self.service.store.candidate_editorial_metadata(
                     skill_id, content_hash=source_hash
@@ -124,6 +126,7 @@ class WisdomConsent:
                 return "share", {
                     "skill_id": skill_id,
                     "slug": name,
+                    "local_version": local_version,
                     "event_id": event_id,
                     "source_hash": source_hash,
                     "allowed": security["upload_allowed"],
@@ -157,6 +160,7 @@ class WisdomConsent:
             return "publish", {
                 "skill_id": skill_id,
                 "slug": name,
+                "local_version": local_version,
                 "event_id": event_id,
                 "source_hash": source_hash,
                 "sharing_stage": "approve",

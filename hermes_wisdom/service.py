@@ -1391,6 +1391,28 @@ class WisdomService:
         self._candidate_source(skill_name, local_skill_id)
         return event, local_skill_id, content_hash, skill_name
 
+    def candidate_local_version(self, skill_id: str, content_hash: str) -> str | None:
+        """Read the author-declared version from the exact qualified source."""
+        from agent.skill_utils import parse_frontmatter
+        import re
+
+        local = self.store.local_skill(skill_id)
+        if not local:
+            return None
+        source = Path(local["canonical_path"])
+        try:
+            text = (source / "SKILL.md").read_text(encoding="utf-8")
+            if _source_fingerprint(source) != content_hash:
+                raise WisdomConflict("candidate changed while reading its version")
+            value = parse_frontmatter(text)[0].get("version")
+        except (OSError, UnicodeError, ValueError):
+            return None
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            version = str(value).strip().removeprefix("v")
+            if re.fullmatch(r"[0-9][0-9A-Za-z.+_-]{0,63}", version):
+                return version
+        return None
+
     def _candidate_event(self, event_id: str) -> dict[str, Any]:
         """Return a candidate event even after another surface resolved it.
 

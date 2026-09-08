@@ -1325,6 +1325,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         return _ollama_local_catalog(force_refresh)
 
     normalized = normalize_provider(provider)
+
+    # Check user-configured explicit model overrides in config.yaml (providers.<slug>.models)
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        user_provs = cfg.get("providers") or {}
+        entry = user_provs.get(normalized) or user_provs.get(requested) or {}
+        configured = entry.get("models")
+        if isinstance(configured, list) and configured:
+            return list(configured)
+    except Exception:
+        pass
+
     fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
     if fetcher is not None:
         models = fetcher(normalized, force_refresh)

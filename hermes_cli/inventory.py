@@ -412,9 +412,16 @@ def _append_unconfigured_rows(
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
     cur_model = str(ctx.current_model or "").strip()
+    excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
+    from hermes_cli.config import is_provider_enabled
+    disabled = {
+        str(name).strip().lower() for name, pcfg in (ctx.user_providers or {}).items()
+        if isinstance(pcfg, dict) and not is_provider_enabled(pcfg)
+    }
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:
-        if entry.slug.lower() in seen:
+        s_low = entry.slug.lower()
+        if s_low in seen or s_low in excluded or s_low in disabled:
             continue
         if current_only and entry.slug.lower() != cur:
             continue

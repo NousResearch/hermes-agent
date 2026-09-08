@@ -26,12 +26,6 @@ def _remote_stub(url: str = "https://bridge.example.com:8443"):
     return argparse.Namespace(url=url)  # structurally RemoteCuaConfig for the call sites under test
 
 
-def _patch_backend_cfg(monkeypatch, resolve):
-    """Pin the module-level config seam is_available/_empty_discovery_reason read."""
-    monkeypatch.setattr(cua_backend, "_computer_use_cfg", lambda: {})
-    monkeypatch.setattr(cua_backend, "resolve_remote_cua_config", resolve)
-
-
 class TestCheckFnRemoteAvailability:
     def test_remote_active_true_without_local_binary(self, monkeypatch):
         # Remote transport: no local cua-driver binary needed, even on a host that has none.
@@ -69,70 +63,37 @@ class TestCheckFnRemoteAvailability:
 
 
 class TestBackendIsAvailable:
-    def _backend(self) -> CuaDriverBackend:
-        # is_available reads no instance state; skip __init__ (it wires a session bridge).
-        return object.__new__(CuaDriverBackend)
+    def _backend(self, remote=None) -> CuaDriverBackend:
+        # Unit probe of already-constructed state; real construction/config edits
+        # are covered by test_direct_config_safety.py.
+        backend = object.__new__(CuaDriverBackend)
+        backend._remote_config = remote
+        return backend
 
     def test_remote_active_true_without_local_binary(self, monkeypatch):
-        _patch_backend_cfg(monkeypatch, lambda *a, **k: _remote_stub())
         monkeypatch.setattr(cua_backend, "cua_driver_binary_available", lambda: False)
-        assert self._backend().is_available() is True
+        assert self._backend(_remote_stub()).is_available() is True
 
     def test_no_remote_no_binary_false(self, monkeypatch):
-        _patch_backend_cfg(monkeypatch, lambda *a, **k: None)
         monkeypatch.setattr(cua_backend, "cua_driver_binary_available", lambda: False)
         assert self._backend().is_available() is False
 
     def test_no_remote_local_binary_true(self, monkeypatch):
-        _patch_backend_cfg(monkeypatch, lambda *a, **k: None)
         monkeypatch.setattr(cua_backend, "cua_driver_binary_available", lambda: True)
         assert self._backend().is_available() is True
 
 
-class TestRemoteCfgSuppressionScope:
-    """_remote_cfg must suppress only RuntimeError (the 'not configured' signal from
-    resolve_remote_cua_config) and let unexpected exceptions propagate so a config-loading
-    bug surfaces instead of silently selecting the local desktop."""
-
-    def test_runtime_error_suppressed_to_none(self, monkeypatch):
-        # RuntimeError = legitimate 'not configured / misconfigured' signal → suppressed.
-        _patch_backend_cfg(monkeypatch, lambda *a, **k: (_ for _ in ()).throw(
-            RuntimeError("HERMES_CUA_REMOTE_TOKEN must contain at least 32 bytes")))
-        assert cua_backend._remote_cfg() is None
-
-    def test_unexpected_exception_not_silenced(self, monkeypatch):
-        # TypeError / KeyError / ImportError etc. = config-loading BUG, not 'not configured'.
-        # It must propagate — _remote_cfg must NOT convert it to None (→ local-available).
-        _patch_backend_cfg(monkeypatch, lambda *a, **k: (_ for _ in ()).throw(
-            TypeError("config dict is actually a list")))
-        with pytest.raises(TypeError, match="config dict is actually a list"):
-            cua_backend._remote_cfg()
-
-    def test_unexpected_exception_does_not_select_local_available(self, monkeypatch):
-        # The availability signal: is_available calls _remote_cfg(); an unexpected exception
-        # from the resolver must NOT be swallowed into a local-available True.
-        _patch_backend_cfg(monkeypatch, lambda *a, **k: (_ for _ in ()).throw(
-            KeyError("remote")))
-        monkeypatch.setattr(cua_backend, "cua_driver_binary_available", lambda: True)
-        backend = object.__new__(CuaDriverBackend)
-        with pytest.raises(KeyError):
-            backend.is_available()
-
-
 class TestEmptyDiscoveryReason:
     def test_remote_active_skips_local_probing(self, monkeypatch):
-        _patch_backend_cfg(monkeypatch, lambda *a, **k: _remote_stub())
-
         def _must_not_probe():
             raise AssertionError("local session probe must not run while remote transport is active")
 
         monkeypatch.setattr(cua_backend, "_linux_session_locked", _must_not_probe)
-        reason = cua_backend._empty_discovery_reason()
+        reason = cua_backend._empty_discovery_reason(remote=True)
         assert "remote desktop returned no windows" in reason
         assert "host bridge" in reason
 
     def test_remote_inactive_engages_local_probing(self, monkeypatch):
-        _patch_backend_cfg(monkeypatch, lambda *a, **k: None)
         probed = []
 
         def _probe():

@@ -119,3 +119,30 @@ def test_normal_config_preserves_direct_target_and_approval(profile_home, deskto
     assert events == [("start", expected), (action, expected)]
     assert prompts == (["click"] if action == "click" else [])
     assert cu.check_computer_use_requirements() is True
+
+
+@pytest.mark.parametrize("initial,current", [(REMOTE, LOCAL), (LOCAL, REMOTE)])
+def test_backend_availability_stays_bound_after_config_edit(profile_home, desktop, monkeypatch, initial, current):
+    path = profile_home / "config.yaml"
+    path.write_text("computer_use:\n" + initial)
+    backend = CuaDriverBackend()
+    path.write_text("computer_use:\n" + current)
+    probes = []
+    monkeypatch.setattr(cua_backend, "cua_driver_binary_available", lambda: probes.append("local") or False)
+    assert backend.is_available() is (initial == REMOTE)
+    assert probes == ([] if initial == REMOTE else ["local"])
+    assert not desktop[0]
+
+
+@pytest.mark.parametrize("initial,current", [(REMOTE, LOCAL), (LOCAL, REMOTE)])
+def test_empty_discovery_diagnosis_stays_bound_after_config_edit(profile_home, desktop, monkeypatch, initial, current):
+    path = profile_home / "config.yaml"
+    path.write_text("computer_use:\n" + initial)
+    backend = CuaDriverBackend()
+    path.write_text("computer_use:\n" + current)
+    probes = []
+    monkeypatch.setattr(cua_backend, "_linux_session_locked", lambda: probes.append("local") or True)
+    reason = cua_backend._empty_discovery_reason(remote=backend._remote_config is not None)
+    assert ("remote desktop returned no windows" in reason) is (initial == REMOTE)
+    assert probes == ([] if initial == REMOTE else ["local"])
+    assert not desktop[0]

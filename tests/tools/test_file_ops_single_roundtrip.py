@@ -15,7 +15,6 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.file_operations as file_operations
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ExecuteResult, ShellFileOperations
 
@@ -300,17 +299,6 @@ class TestNativeRead:
         ops.read_file(p)
         assert len(calls) == 1 and READ_PROBE_MARK in calls[0]
 
-    def test_config_switch_routes_to_the_shell(self, native, tmp_path, monkeypatch):
-        ops, calls = native
-        p = _write(tmp_path, "a.txt", b"one\n")
-        monkeypatch.delenv("HERMES_NATIVE_FILE_READ", raising=False)
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text("terminal:\n  native_file_read: false\n", encoding="utf-8")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        ops.read_file(p)
-        assert len(calls) == 1 and READ_PROBE_MARK in calls[0]
-
     def test_non_local_environment_keeps_the_shell_path(self):
         from unittest.mock import MagicMock
 
@@ -352,29 +340,6 @@ class TestNativeRead:
         t.join(20)
         assert not t.is_alive(), "native read_file blocked on a writer-less FIFO"
         assert "not a regular file" in box["r"].error
-        assert calls == []
-
-    def test_large_scan_honors_interrupt(self, native, tmp_path, monkeypatch):
-        ops, calls = native
-        p = _write(tmp_path, "large.txt", b"line\n" * 300_000)
-        states = iter((False, True))
-        monkeypatch.setattr(file_operations, "is_interrupted", lambda: next(states))
-
-        result = ops.read_file(p)
-
-        assert result.error == "Interrupted"
-        assert calls == []
-
-    def test_large_scan_honors_terminal_timeout(self, native, tmp_path, monkeypatch):
-        ops, calls = native
-        p = _write(tmp_path, "large.txt", b"line\n")
-        ops.env.timeout = 1
-        times = iter((0.0, 1.0))
-        monkeypatch.setattr(file_operations.time, "monotonic", lambda: next(times))
-
-        result = ops.read_file(p)
-
-        assert result.error == "File read timed out after 1s."
         assert calls == []
 
 

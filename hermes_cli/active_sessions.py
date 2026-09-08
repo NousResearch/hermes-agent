@@ -151,11 +151,12 @@ def session_already_owned_message(session_id: str, entry: dict[str, Any]) -> str
     surface = str(entry.get("surface") or "another surface")
     pid = entry.get("pid")
     started = _optional_float(entry.get("started_at"))
-    age = f", running {format_age(time.time() - started)}" if started else ""
+    age = f", lease age {format_age(time.time() - started)}" if started else ""
     return (
         f"Session {session_id} already has a live owner ({surface}, pid {pid}{age}). "
-        "Only one surface at a time may run a session, because a second one would "
-        "reason from a transcript that does not include the first one's work."
+        "Its turn activity is unknown; an open lease does not mean a turn is running. "
+        "Attach through a compatible owner, or close the session in its owning surface "
+        "before resuming here. Do not delete a live owner's lease to force a takeover."
     )
 
 
@@ -665,13 +666,13 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
 
 
 def active_session_registry_snapshot(
-    registry_home: str | Path | None = None,
+    registry_home: str | Path | None = None, *, strict: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return the pruned active-session registry for diagnostics/tests."""
+    """Return live leases; attachment callers require provable liveness."""
     state_path, lock_path = _lease_paths(registry_home=registry_home)
     with _FileLock(lock_path):
         raw_entries = _read_entries(state_path, strict=True)
-        entries = _prune_dead(raw_entries)
+        entries = _prune_dead(raw_entries, strict=strict)
         if entries != raw_entries:
             _write_entries(state_path, entries)
         return entries

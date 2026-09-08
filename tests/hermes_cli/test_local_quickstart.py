@@ -57,17 +57,6 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
     Each leg is asserted by its observable call, in order."""
     calls: list[str] = []
 
-    from hermes_cli.local_runtime.catalog import VariantChoice
-
-    monkeypatch.setattr(
-        "hermes_cli.local_runtime.catalog.select_variant",
-        lambda entry, budget: VariantChoice(variant=entry.variants[0],
-                                            zero_spill=True,
-                                            reason_key="best-fits"))
-    monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models._engine_too_old",
-        lambda min_engine: False)
-
     # Supply the same supported backend to preflight and the stubbed install;
     # host auto-detection may select CUDA without a published Linux archive.
     from hermes_cli.config import load_config, save_config
@@ -128,17 +117,6 @@ def test_quickstart_skips_satisfied_legs(client, monkeypatch):
     """Runtime present and model already staged: the response says so and
     the job goes straight to activation."""
     calls: list[str] = []
-
-    from hermes_cli.local_runtime.catalog import VariantChoice
-
-    monkeypatch.setattr(
-        "hermes_cli.local_runtime.catalog.select_variant",
-        lambda entry, budget: VariantChoice(variant=entry.variants[0],
-                                            zero_spill=True,
-                                            reason_key="best-fits"))
-    monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models._engine_too_old",
-        lambda min_engine: False)
 
     monkeypatch.setattr(
         "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10362"])

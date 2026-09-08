@@ -518,8 +518,8 @@ def _stage_turn_user_message(
     # row; the model still receives role/content unchanged (api_messages strips both).
     if persist_user_display_kind:
         user_msg["display_kind"] = persist_user_display_kind
-        if persist_user_display_metadata:
-            user_msg["display_metadata"] = persist_user_display_metadata
+    if persist_user_display_metadata:
+        user_msg["display_metadata"] = persist_user_display_metadata
     # The platform message id survives the turn-start flush; restart drain-window
     # recovery dedups via ``has_platform_message_id`` against this row.
     if persist_user_platform_id is not None:

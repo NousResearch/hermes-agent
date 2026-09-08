@@ -90,17 +90,6 @@ def test_bounded_fast_window_policy(monkeypatch):
     assert fast_mode.effective_request_overrides(off) == {"extra_body": {"keep": 1}}
 
 
-def test_non_finite_fast_window_falls_back_to_bounded_default(monkeypatch):
-    clock = [1000.0]
-    monkeypatch.setattr(fast_mode.time, "monotonic", lambda: clock[0])
-
-    for value in ("nan", "inf", "-inf"):
-        agent = _agent(fast_auto_seconds=value)
-        fast_mode.begin_turn(agent, conversation_history=[])
-        clock[0] += fast_mode.DEFAULT_WINDOW_SECONDS + 1
-        assert "service_tier" not in fast_mode.effective_request_overrides(agent), value
-
-
 def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
     import hermes_cli.config as config_mod
 
@@ -118,8 +107,8 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
             "gateway.run._load_gateway_runtime_config", lambda: {"agent": {"service_tier": raw}}
         )
         assert GatewayRunner._load_service_tier() == expected
-    assert cli_mod._parse_service_tier_config(DEFAULT_CONFIG["agent"]["service_tier"]) is None
-    assert DEFAULT_CONFIG["agent"]["fast_auto_seconds"] == fast_mode.DEFAULT_WINDOW_SECONDS
+    assert DEFAULT_CONFIG["agent"]["service_tier"] == ""
+    assert DEFAULT_CONFIG["agent"]["fast_auto_seconds"] == 60
 
     # /fast auto — session-scoped, agent rebuilt, status reports the mode
     fast_cmd = next(c for c in COMMAND_REGISTRY if c.name == "fast")

@@ -36,7 +36,7 @@ class RecordingEnv:
 
     def execute(self, command, timeout=60, **kwargs):
         proc = subprocess.run(
-            ["bash", "-c", command], cwd=self.cwd,
+            ["bash", "-c", command],
             capture_output=True, text=True, errors="replace",
             timeout=timeout + 30,
         )

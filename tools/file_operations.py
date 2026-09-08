@@ -17,7 +17,6 @@ import hashlib
 import json
 import logging
 import secrets
-import time
 import unicodedata
 from abc import ABC, abstractmethod
 from typing import Optional, Dict
@@ -31,7 +30,6 @@ from tools.file_operations_common import (
     _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
 from tools.file_operations_search import SearchMixin
-from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
@@ -654,17 +652,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def _native_read_enabled(self) -> bool:
         """Whether ``read_file`` and ``search_files`` may bypass the shell: only POSIX + ``LocalEnvironment``
         (file is on this host, path already native; Windows keeps the shell path since
-        file_operations holds Git-Bash-style paths there). The ``terminal.native_file_read``
-        config setting controls the fast path; the legacy environment override remains a
-        narrow emergency disable for existing deployments."""
-        try:
-            from hermes_cli.config import load_config_readonly
-
-            terminal_config = (load_config_readonly() or {}).get("terminal") or {}
-            if terminal_config.get("native_file_read", True) is False:
-                return False
-        except Exception:  # noqa: BLE001 - file tools remain usable in stripped installs
-            logger.debug("Could not load native file-read config; using defaults", exc_info=True)
+        file_operations holds Git-Bash-style paths there). ``HERMES_NATIVE_FILE_READ=0``
+        turns the fast path off."""
         flag = os.environ.get("HERMES_NATIVE_FILE_READ", "1").strip().lower()
         if flag in ("0", "false", "no", "off"):
             return False
@@ -708,12 +697,6 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         kept = bytearray()      # first ``clamp`` bytes of that line
         have_partial = False    # that line has bytes but no newline yet
         last_byte = b""
-        terminal_timeout = getattr(self.env, "timeout", None)
-        deadline = (
-            time.monotonic() + float(terminal_timeout)
-            if terminal_timeout and float(terminal_timeout) > 0
-            else None
-        )
         try:
             with open(full, "rb") as fh:
                 sample = fh.read(1000)
@@ -722,11 +705,6 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     return self._read_binary_file(path, offset, limit, file_size, sample)
                 fh.seek(0)
                 while True:
-                    if is_interrupted():
-                        return ReadResult(error="Interrupted")
-                    if deadline is not None and time.monotonic() >= deadline:
-                        return ReadResult(
-                            error=f"File read timed out after {terminal_timeout}s.")
                     chunk = fh.read(1 << 20)
                     if not chunk:
                         break

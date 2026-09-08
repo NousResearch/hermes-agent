@@ -160,7 +160,7 @@ def _history_replay_updates(history: list[dict[str, Any]]):
             result = message.get("content")
             result_text = result if isinstance(result, str) else None
             yield build_tool_complete(tool_call_id, tool_name, result=result_text, function_args=function_args)
-            if tool_name in {"todo", "todo_list"}:
+            if tool_name == "todo":
                 plan_update = _build_plan_update_from_todo_result(result_text)
                 if plan_update is not None:
                     yield plan_update

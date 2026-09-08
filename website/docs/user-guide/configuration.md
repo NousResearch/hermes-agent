@@ -2462,7 +2462,7 @@ The `web_search` and `web_extract` tools support five backend providers. Configu
 
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | searxng | parallel | tavily | keenable | exa
+  backend: firecrawl    # firecrawl | searxng | parallel | tavily | perplexity | keenable | exa
 
   # Or use per-capability keys to mix providers (e.g. free search + paid extract):
   search_backend: "searxng"
@@ -2492,9 +2492,10 @@ web:
 | **SearXNG** | `SEARXNG_URL` | ✔ | — |
 | **Parallel** | `PARALLEL_API_KEY` (optional — keyless free tier) | ✔ | ✔ |
 | **Tavily** | `TAVILY_API_KEY` (optional — keyless when selected) | ✔ | ✔ |
+| **Perplexity** | `PERPLEXITY_API_KEY` | ✔ | ✔ (query-relevant snippets) |
 | **Exa** | `EXA_API_KEY` (optional — keyless free tier) | ✔ | ✔ |
 
-**Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PARALLEL_API_KEY` is set, Parallel; if only `KEENABLE_API_KEY` is set, Keenable. With **no selection and no credentials at all**, requests rotate round-robin across the keyless free-tier ring (Exa / Parallel / Firecrawl / Keenable) with automatic next-in-line failover on rate limits — see the [Web Search guide](/user-guide/features/web-search) for details. Once a selection exists, adding a key to `.env` does not change the route. Selecting Tavily, Firecrawl, or Keenable in `hermes tools` also works without a key.
+**Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PERPLEXITY_API_KEY` is set, Perplexity; if only `PARALLEL_API_KEY` is set, Parallel; if only `KEENABLE_API_KEY` is set, Keenable. With **no selection and no credentials at all**, requests rotate round-robin across the keyless free-tier ring (Exa / Parallel / Firecrawl / Keenable) with automatic next-in-line failover on rate limits — see the [Web Search guide](/user-guide/features/web-search) for details. Once a selection exists, adding a key to `.env` does not change the route. Selecting Tavily, Firecrawl, or Keenable in `hermes tools` also works without a key.
 
 **SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
 
@@ -2703,6 +2704,8 @@ delegation:
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 
+**Subagent fallback chain:** Set `delegation.fallback_providers` to give workers their own chain (same entry shape as the top-level list). An explicitly pinned child (by provider, endpoint, or model) uses that chain only when it is declared; otherwise it fails loudly instead of borrowing the parent agent's route. For an unpinned child, an absent or `null` setting preserves parent-chain inheritance. Use `fallback_providers: []` under `delegation:` to disable child fallback entirely.
+
 **Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only. When `delegation.provider` is set alongside `delegation.base_url`, the explicit endpoint and key still win, but that provider's request settings (`extra_body` overrides and max output tokens from your `custom_providers` entry) are carried into the subagent.
 
 **Per-child request settings (`request_overrides`):** `delegation.request_overrides` is a dict of request settings sent on every subagent API call. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. It is honored on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit — so the key always takes effect. Precedence: explicit `request_overrides` values merge **over** any runtime- or parent-derived overrides — top-level explicit keys win, and `extra_body` is deep-merged one level so runtime `extra_body` keys (e.g. a provider's `thinking: {type: disabled}` personality) survive unless your key redefines them. The canonical use case is OpenRouter routing hints for delegation children:
@@ -2717,7 +2720,6 @@ delegation:
       provider:
         sort: throughput   # route children to the fastest OpenRouter provider
 ```
-
 **Wire protocol (`api_mode`):** Hermes auto-detects the wire protocol from `delegation.base_url` (e.g. paths ending in `/anthropic` → `anthropic_messages`; Codex / native Anthropic / Kimi-coding hostnames keep their existing detection). For endpoints the heuristic can't classify — for example Azure AI Foundry, MiniMax, Zhipu GLM, or LiteLLM proxies fronting an Anthropic-shaped backend — set `delegation.api_mode` explicitly to one of `chat_completions`, `codex_responses`, or `anthropic_messages`. Leave it empty (the default) to keep auto-detection.
 
 The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `copilot`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.

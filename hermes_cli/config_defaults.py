@@ -264,8 +264,6 @@ DEFAULT_CONFIG = {
         # traceback.
         "degraded_mode": "warn",
         "cwd": ".",  # Use current directory
-        # Use the native POSIX file-read/search fast path when the configured environment is local.
-        "native_file_read": True,
         # Root for terminal session temp files (background logs/pid/exit files, code-exec
         # sandboxes). Empty = TMPDIR/TMP/TEMP if set, else HERMES_HOME/cache/terminal (auto-pruned
         # after 72h) — NOT tmpfs /tmp, which is RAM-capped and fills under load. Must be an existing
@@ -1213,6 +1211,11 @@ DEFAULT_CONFIG = {
     "delegation": {
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
+        # Fallback chain for delegated children (same entry format as the top-level list).
+        # For an unpinned child, null = inherit the parent chain; [] = disable fallback.
+        # A child pinned by provider, endpoint, or model gets no fallback unless this
+        # setting declares one explicitly.
+        "fallback_providers": None,
         "base_url": "",  # direct OpenAI-compatible endpoint for subagents
         "api_key": "",  # key for delegation.base_url (falls back to OPENAI_API_KEY)
         # Wire protocol for delegation.base_url: "chat_completions" | "codex_responses" |
@@ -2519,6 +2522,10 @@ OPTIONAL_ENV_VARS = {
     "TAVILY_API_KEY": _tool(
         "Tavily API key for AI-native web search and extract (optional — keyless works when "
         "Tavily is selected)", "Tavily API key", "https://app.tavily.com/home",
+        tools=["web_search", "web_extract"]),
+    "PERPLEXITY_API_KEY": _tool(
+        "Perplexity API key for the Search API web backend (ranked results + query-relevant page "
+        "snippets)", "Perplexity API key", "https://www.perplexity.ai/account/api",
         tools=["web_search", "web_extract"]),
     "KEENABLE_API_KEY": _tool(
         "Keenable API key for fast independent-index web search and page fetch (optional — "

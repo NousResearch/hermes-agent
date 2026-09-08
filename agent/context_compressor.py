@@ -1745,6 +1745,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             self._resolved_context_length = get_model_context_length(
                 self.model, base_url=self.base_url, api_key=self.api_key,
                 config_context_length=self._config_context_length, provider=self.provider,
+                custom_providers=self.custom_providers,
             )
             # Raise-only small-context floor; must run after context_length resolves and before threshold_tokens derives.
             self.threshold_percent = self._effective_threshold_percent(self._resolved_context_length, self._base_threshold_percent)
@@ -2161,9 +2162,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._tail_token_budget = None
         _ = self.tail_token_budget  # eager recompute, same timing as before
         self.max_summary_tokens = min(int(context_length * 0.05), _SUMMARY_TOKENS_CEILING)
-        # Calibration state is only valid for the model that produced it: carried to a smaller window it would let
-        # should_defer_preflight_to_real_usage() suppress a compaction the new model needs. 0 (not the -1 sentinel)
-        # means "no real usage yet -> use the rough estimate" so post-response should_compress still fires.
+        # Old usage cannot price a new model. Clear it without arming the post-compaction
+        # latch: the next response supplies usage or enables the usage-less fallback.
         self.last_prompt_tokens = self.last_completion_tokens = self.last_total_tokens = 0
         self._reset_real_usage_pairing()
         # Strikes were judged against the previous threshold; void them durably too.
@@ -2264,10 +2264,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
+        custom_providers: list | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
+        # Per-model context_length overrides live in custom_providers; without them deferred
+        # resolution falls back to the hardcoded family catalog (#83324).
+        self.custom_providers = custom_providers or None
         # Per-model overrides (longest substring match wins); floor applied on top.
         self.model_thresholds = model_thresholds or {}
         # Raw config value, before override/floor; fallback when switching to a model with no override.
@@ -2436,9 +2440,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             return False
         if self.awaiting_real_usage_after_compression:
             return True
-        # A real reading already at/over threshold needs no second opinion, and a rough figure past
-        # the whole window describes a request certain to fail — sending it only buys an overflow error.
-        if self.last_real_prompt_tokens >= self.threshold_tokens or rough_tokens >= self.context_length:
+        # Estimate magnitude is not evidence of overflow, even past the full window.
+        # Let the provider adjudicate; its overflow error still triggers reactive recovery.
+        if self.last_real_prompt_tokens >= self.threshold_tokens:
             return False
         return not self._provider_omits_usage
 

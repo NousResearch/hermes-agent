@@ -4,6 +4,8 @@ import time
 import uuid
 from typing import Any, Optional
 
+from gateway.hosted_room_passive_protocol import passive_capabilities
+
 try:
     from aiohttp import web
 except ImportError:
@@ -171,7 +173,7 @@ async def _handle_room_member_invitation(
         "authority_epoch",
         "member_id",
     }
-    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds", "replication"}
+    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds", "replication", "passive_only"}
     if set(body) - allowed or not required <= set(body):
         return web.json_response(
             _openai_error(
@@ -193,7 +195,7 @@ async def _handle_room_member_invitation(
 
         profile = _effective_room_profile(_api_request_profile)
         target_install_id = hosted_rooms.local_authority_gateway_id()
-        permissions = invitation_permissions(body.get("replication", False))
+        permissions = invitation_permissions(body.get("replication", False), passive_only=body.get("passive_only", False))
         ttl = float(body.get("ttl_seconds", 3600))
         if not 60 <= ttl <= 24 * 60 * 60:
             raise ValueError("ttl_seconds must be between 60 and 86400")
@@ -254,6 +256,7 @@ async def _handle_room_member_invitation(
             "grant": token,
             "target_profile": profile,
             "catalog": catalog,
+            "passive_replication": passive_capabilities(),
             "expires_at": float(claims["expires_at"]),
             "status_expires_at": float(claims["status_expires_at"]),
         },
@@ -280,7 +283,7 @@ async def _handle_room_member_capabilities(
         )
     return web.json_response({
         "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
-        "target_profile": profile, "catalog": catalog,
+        "target_profile": profile, "catalog": catalog, "passive_replication": passive_capabilities(),
         **({"retirement_enrollment": enrollment} if enrollment is not None else {})})
 
 

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from gateway import hosted_rooms as rooms
+from gateway import hosted_room_passive_lineage as lineage
 from gateway.hosted_room_peer import validate_room_link_url
 from gateway.hosted_rooms_common import compact_json, table_exists
 
@@ -71,13 +72,14 @@ class RetirementNotice:
     target_install_id: str
     endpoint: str
     value: str = field(repr=False)
+    version: int | None = None
+    lineage_sha256: str | None = None
 
     def payload(self) -> dict[str, Any]:
-        return {
-            name: getattr(self, name)
-            for name in _SCOPE_FIELDS
-            if name != "roster_sha256"
-        }
+        result = {name: getattr(self, name) for name in _SCOPE_FIELDS if name != "roster_sha256"}
+        if self.version == 2:
+            result.update(version=2, lineage_sha256=self.lineage_sha256)
+        return result
 
 
 def _identifier(value: Any, name: str) -> str:
@@ -95,17 +97,26 @@ def roster_digest(members: Any) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _public_fields(row):
+    return (*_PUBLIC_FIELDS, "version", "lineage_sha256") if lineage.is_v2(row) else _PUBLIC_FIELDS
+
+
+def _scope_fields(row):
+    return (*_SCOPE_FIELDS, "version", "lineage_sha256") if lineage.is_v2(row) else _SCOPE_FIELDS
+
+
 def _public(row: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: row[key] for key in _PUBLIC_FIELDS}
+    return {key: row[key] for key in _public_fields(row)}
 
 
 def _closing_value(secret: bytes, row: Mapping[str, Any]) -> str:
     if not isinstance(secret, bytes) or len(secret) < 32:
         raise RetirementKeyUnavailable("retirement key is unavailable")
-    material = {key: row[key] for key in _SCOPE_FIELDS}
+    material = {key: row[key] for key in _scope_fields(row)}
     material["nonce"] = row["nonce"]
     raw = hmac.new(
-        secret, _DOMAIN + compact_json(material).encode("utf-8"), hashlib.sha256
+        secret, (_DOMAIN.replace(b".v1\0", b".v2\0") if lineage.is_v2(row) else _DOMAIN)
+        + compact_json(material).encode("utf-8"), hashlib.sha256
     ).digest()
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
@@ -113,9 +124,10 @@ def _closing_value(secret: bytes, row: Mapping[str, Any]) -> str:
 def _commitment(value: str, scope: Mapping[str, Any]) -> str:
     if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9_-]{43}", value) is None:
         raise RetirementAuthorizationError("invalid retirement capability")
-    binding = compact_json({key: scope[key] for key in _SCOPE_FIELDS}).encode("utf-8")
+    binding = compact_json({key: scope[key] for key in _scope_fields(scope)}).encode("utf-8")
+    domain = _COMMITMENT_DOMAIN.replace(b".v1\0", b".v2\0") if lineage.is_v2(scope) else _COMMITMENT_DOMAIN
     return hashlib.sha256(
-        _COMMITMENT_DOMAIN + binding + b"\0" + value.encode("ascii")
+        domain + binding + b"\0" + value.encode("ascii")
     ).hexdigest()
 
 
@@ -144,6 +156,18 @@ def _initialize(conn: sqlite3.Connection) -> None:
         authority_gateway_id TEXT NOT NULL, authority_epoch INTEGER NOT NULL,
         target_install_id TEXT NOT NULL, commitment TEXT NOT NULL,
         retired_at REAL NOT NULL, stored_seq INTEGER NOT NULL, source_latest_seq INTEGER NOT NULL)""")
+    lineage.initialize(conn)
+    from gateway.hosted_room_replicas import _initialize_replica_schema
+    _initialize_replica_schema(conn)
+    columns = {r["name"] for r in conn.execute(f"PRAGMA table_info({RETIREMENT_TABLE})")}
+    for name, kind in (("version", "INTEGER"), ("lineage_sha256", "TEXT"), ("lineage_status", "TEXT")):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE {RETIREMENT_TABLE} ADD COLUMN {name} {kind}")
+    conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_replica_retired_lineage_update_v2
+        BEFORE UPDATE ON hosted_room_replicas
+        WHEN EXISTS (SELECT 1 FROM {RETIREMENT_TABLE} WHERE room_id IN (OLD.room_id,NEW.room_id))
+          AND (NEW.replica_version IS NOT OLD.replica_version OR NEW.lineage_sha256 IS NOT OLD.lineage_sha256)
+        BEGIN SELECT RAISE(ABORT, 'replica copy is retired'); END""")
     for table, suffix in (
         ("hosted_room_replicas", "room"),
         ("hosted_room_replica_events", "event"),
@@ -210,13 +234,8 @@ def prepare_home_enrollment(
         ).fetchone()
         if room is None or room["disbanded_at"] is not None:
             raise RetirementConflictError("Group Chat is not active")
-        if (
-            room["authority_gateway_id"] != local_gateway_id
-            or room["authority_epoch"] != 1
-        ):
-            raise RetirementConflictError(
-                "retirement setup requires the current initial authority"
-            )
+        if room["authority_gateway_id"] != local_gateway_id:
+            raise RetirementConflictError("retirement setup requires the current authority")
         if not table_exists(conn, "hosted_room_disband_fences"):
             raise RetirementError("irreversible Group Chat disband support is required")
         if conn.execute(
@@ -238,10 +257,16 @@ def prepare_home_enrollment(
         scope = dict(
             room_id=room_id,
             authority_gateway_id=local_gateway_id,
-            authority_epoch=1,
+            authority_epoch=room["authority_epoch"],
             target_install_id=target_install_id,
             roster_sha256=roster_digest(members),
         )
+        history_json = None
+        if room["authority_epoch"] != 1:
+            history, digest = lineage.source_locked(conn, room_id, {
+                "gateway_id": local_gateway_id, "epoch": room["authority_epoch"]})
+            history_json = lineage.canonical(history)
+            scope.update(version=2, lineage_sha256=digest)
         existing = conn.execute(
             f"SELECT * FROM {HOME_TABLE} WHERE enrollment_id=?", (enrollment_id,)
         ).fetchone()
@@ -293,6 +318,8 @@ def prepare_home_enrollment(
             raise RetirementCapacityError(
                 "pending retirement delivery capacity is full"
             )
+        if history_json is not None:
+            lineage.ensure_descriptor_capacity(conn, history_json)
         row = dict(
             scope,
             enrollment_id=enrollment_id or secrets.token_hex(16),
@@ -305,7 +332,8 @@ def prepare_home_enrollment(
                 f"UPDATE {HOME_TABLE} SET is_current=0 WHERE enrollment_id=?",
                 (current["enrollment_id"],),
             )
-        fields = (*_PUBLIC_FIELDS, "endpoint", "nonce")
+        row["authority_history_json"] = history_json
+        fields = (*_public_fields(row), "endpoint", "nonce", "authority_history_json")
         conn.execute(
             f"INSERT INTO {HOME_TABLE} ({','.join(fields)},created_at) VALUES ({','.join('?' for _ in fields)},?)",
             (*[row[k] for k in fields], time.time()),
@@ -314,7 +342,7 @@ def prepare_home_enrollment(
 
 
 def _validate_enrollment(value: Any, target_install_id: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != set(_PUBLIC_FIELDS):
+    if not isinstance(value, Mapping) or set(value) != set(_public_fields(value)):
         raise RetirementError("invalid retirement enrollment fields")
     value = dict(value)
     for key in (
@@ -323,9 +351,15 @@ def _validate_enrollment(value: Any, target_install_id: str) -> dict[str, Any]:
         "authority_gateway_id",
         "target_install_id",
     ):
-        value[key] = _identifier(value[key], key)
-    if type(value["authority_epoch"]) is not int or value["authority_epoch"] != 1:
-        raise RetirementConflictError("verified initial authority is required")
+        validated = _identifier(value[key], key)
+        if lineage.is_v2(value) and validated != value[key]:
+            raise RetirementError("v2 enrollment identifiers must be canonical")
+        value[key] = validated
+    if (type(value["authority_epoch"]) is not int or not 1 <= value["authority_epoch"] < 2**63
+            or (not lineage.is_v2(value) and value["authority_epoch"] != 1)):
+        raise RetirementConflictError("verified initial authority or v2 lineage is required")
+    if lineage.is_v2(value):
+        _digest(value["lineage_sha256"], "lineage_sha256")
     if (
         value["target_install_id"] != target_install_id
         or value["authority_gateway_id"] == target_install_id
@@ -339,7 +373,7 @@ def _validate_enrollment(value: Any, target_install_id: str) -> dict[str, Any]:
 
 
 def _check_replica_namespace(
-    conn: sqlite3.Connection, value: Mapping[str, Any]
+    conn: sqlite3.Connection, value: Mapping[str, Any], *, spans=None
 ) -> sqlite3.Row | None:
     from gateway.hosted_room_replicas import _audit_existing_replicas_locked
 
@@ -369,8 +403,9 @@ def _check_replica_namespace(
     ).fetchone()
     if replica is not None and (
         replica["quarantine_reason"] is not None
-        or replica["authority_gateway_id"] != value["authority_gateway_id"]
-        or replica["authority_epoch"] != value["authority_epoch"]
+        or (spans is None and (
+            replica["authority_gateway_id"] != value["authority_gateway_id"]
+            or replica["authority_epoch"] != value["authority_epoch"]))
         or roster_digest(json.loads(replica["members_json"])) != value["roster_sha256"]
     ):
         raise RetirementConflictError(
@@ -388,9 +423,18 @@ def enroll_target(
     target_install_id: str,
     expected_enrollment_id: str | None = None,
     expected_state: str = "active",
+    authority_history: Any = None,
 ) -> dict[str, Any]:
     """Owner-only enrollment; ordinary RoomLink bearers must never call this."""
     value = _validate_enrollment(enrollment, target_install_id)
+    spans, history_json = None, None
+    if lineage.is_v2(value):
+        spans, history_json, digest = lineage.descriptor(authority_history,
+            gateway_id=value["authority_gateway_id"], epoch=value["authority_epoch"])
+        if digest != value["lineage_sha256"]:
+            raise RetirementConflictError("enrollment lineage digest differs")
+    elif authority_history is not None:
+        raise RetirementError("v1 enrollment cannot carry a lineage descriptor")
     if expected_state not in {"active", "revoked"}:
         raise RetirementError("invalid expected enrollment state")
     with _transaction(db_path) as conn:
@@ -398,14 +442,15 @@ def enroll_target(
             raise RetirementConflictError(
                 "a retired Group Chat copy cannot be reenrolled"
             )
-        _check_replica_namespace(conn, value)
+        replica = _check_replica_namespace(conn, value, spans=spans)
         reservations = conn.execute(
             """SELECT authority_gateway_id,authority_epoch
             FROM hosted_room_peer_reservations WHERE room_id=? AND revoked_at IS NULL AND expires_at>?""",
             (value["room_id"], time.time()),
         ).fetchall()
         if any(
-            (r[0], r[1]) != (value["authority_gateway_id"], value["authority_epoch"])
+            (r[0], r[1]) not in ({(s.gateway_id, s.epoch) for s in spans} if spans else
+                {(value["authority_gateway_id"], value["authority_epoch"])})
             for r in reservations
         ):
             raise RetirementConflictError(
@@ -417,7 +462,7 @@ def enroll_target(
         ).fetchone()
         if existing is not None:
             if (
-                any(existing[k] != value[k] for k in _PUBLIC_FIELDS)
+                _public(existing) != value or existing["authority_history_json"] != history_json
                 or not existing["is_current"]
             ):
                 raise RetirementConflictError(
@@ -440,14 +485,17 @@ def enroll_target(
                 raise RetirementConflictError(
                     "target enrollment replacement lost its expected state"
                 )
-            if any(
-                current[k] != value[k] for k in _SCOPE_FIELDS if k != "enrollment_id"
-            ):
+            fixed = ("room_id", "target_install_id", "roster_sha256") if spans else tuple(
+                k for k in _scope_fields(current) if k != "enrollment_id")
+            if any(current[k] != value.get(k) for k in fixed):
                 raise RetirementConflictError(
                     "implicit enrollment lineage changes are not allowed"
                 )
         elif expected_enrollment_id is not None:
             raise RetirementConflictError("expected target enrollment does not exist")
+        if spans is not None:
+            lineage.compatible_extension(conn, value["room_id"], spans, previous=current, replica=replica)
+            lineage.ensure_descriptor_capacity(conn, history_json)
         active = conn.execute(
             f"SELECT COUNT(*) FROM {ENROLLMENT_TABLE} WHERE is_current=1 AND state='active'"
         ).fetchone()[0]
@@ -460,10 +508,14 @@ def enroll_target(
                 f"UPDATE {ENROLLMENT_TABLE} SET is_current=0 WHERE enrollment_id=?",
                 (current["enrollment_id"],),
             )
+        fields = (*_public_fields(value), "authority_history_json")
         conn.execute(
-            f"INSERT INTO {ENROLLMENT_TABLE} ({','.join(_PUBLIC_FIELDS)},created_at) VALUES ({','.join('?' for _ in _PUBLIC_FIELDS)},?)",
-            (*[value[k] for k in _PUBLIC_FIELDS], time.time()),
+            f"INSERT INTO {ENROLLMENT_TABLE} ({','.join(fields)},created_at) VALUES ({','.join('?' for _ in fields)},?)",
+            (*[value[k] for k in _public_fields(value)], history_json, time.time()),
         )
+        if spans is not None and replica is not None:
+            conn.execute("UPDATE hosted_room_replicas SET replica_version=2,lineage_sha256=? WHERE room_id=?",
+                         (value["lineage_sha256"], value["room_id"]))
         return {**value, "state": "active"}
 
 
@@ -509,10 +561,19 @@ def current_home_enrollment(
         if not table_exists(conn, HOME_TABLE):
             return None
         row = conn.execute(
-            f"SELECT {','.join(_PUBLIC_FIELDS)},state FROM {HOME_TABLE} WHERE room_id=? AND target_install_id=? AND is_current=1",
+            f"SELECT * FROM {HOME_TABLE} WHERE room_id=? AND target_install_id=? AND is_current=1",
             (room_id, target_install_id),
         ).fetchone()
-        return dict(row) if row is not None else None
+        return {**_public(row), "state": row["state"]} if row is not None else None
+
+
+def home_enrollment_history(db_path, *, enrollment_id):
+    """The owner setup response carries the descriptor beside its public scope."""
+    with _transaction(db_path) as conn:
+        row = conn.execute(f"SELECT * FROM {HOME_TABLE} WHERE enrollment_id=?", (enrollment_id,)).fetchone()
+        if row is None or not lineage.is_v2(row):
+            return {}
+        return {"authority_history": [s.as_mapping() for s in lineage.enrolled_history(row)]}
 
 
 def current_target_enrollment(
@@ -546,7 +607,9 @@ def confirm_home_enrollment(
             not isinstance(proof, Mapping)
             or proof.get("state") != "active"
             or type(proof.get("authority_epoch")) is not int
-            or any(proof.get(k) != row[k] for k in _PUBLIC_FIELDS)
+            or any(proof.get(k) != row[k] for k in _public_fields(row))
+            or (lineage.is_v2(row) and type(proof.get("version")) is not int)
+            or (not lineage.is_v2(row) and "version" in proof)
         ):
             conn.execute(
                 f"UPDATE {HOME_TABLE} SET last_error='retirement_enrollment_unconfirmed' WHERE enrollment_id=?",
@@ -590,12 +653,20 @@ def reconcile_home_close_locked(conn: sqlite3.Connection, room_id: str) -> None:
         )
 
 
+def _block_stale_home_locked(conn):
+    conn.execute(f"""UPDATE {HOME_TABLE} SET state='blocked_authority',last_error='stale_authority'
+        WHERE state NOT IN ('acknowledged','superseded','revoked','blocked_authority')
+          AND EXISTS (SELECT 1 FROM hosted_rooms r WHERE r.room_id={HOME_TABLE}.room_id
+            AND (r.authority_gateway_id!={HOME_TABLE}.authority_gateway_id OR r.authority_epoch!={HOME_TABLE}.authority_epoch))""")
+
+
 def pending_notice_ids(
     db_path: Path | str, *, local_gateway_id: str, limit: int = MAX_PENDING_ENROLLMENTS
 ) -> list[str]:
     if type(limit) is not int or not 1 <= limit <= MAX_PENDING_ENROLLMENTS:
         raise RetirementError("invalid retirement notice limit")
     with _transaction(db_path) as conn:
+        _block_stale_home_locked(conn)
         for row in conn.execute(
             f"SELECT DISTINCT room_id FROM {HOME_TABLE} WHERE authority_gateway_id=? AND state='closing'",
             (local_gateway_id,),
@@ -637,6 +708,7 @@ def materialize_notice(
             raise RetirementConflictError(
                 "retirement notice is not owned by this gateway"
             )
+        _block_stale_home_locked(conn)
         reconcile_home_close_locked(conn, row["room_id"])
         row = conn.execute(
             f"SELECT * FROM {HOME_TABLE} WHERE enrollment_id=?", (enrollment_id,)
@@ -671,7 +743,7 @@ def materialize_notice(
                     "endpoint",
                 )
             },
-            value=value,
+            value=value, version=row["version"], lineage_sha256=row["lineage_sha256"],
         )
 
 
@@ -693,18 +765,33 @@ def copy_scope_matches_locked(
     authority_gateway_id: str,
     authority_epoch: int,
     members_json: str,
+    replica_version: int | None = None,
+    lineage_sha256: str | None = None,
 ) -> bool:
-    if not table_exists(conn, ENROLLMENT_TABLE):
-        return True
-    row = conn.execute(
-        f"SELECT authority_gateway_id,authority_epoch,roster_sha256 FROM {ENROLLMENT_TABLE} WHERE room_id=? AND is_current=1",
-        (room_id,),
-    ).fetchone()
-    return row is None or tuple(row) == (
-        authority_gateway_id,
-        authority_epoch,
-        hashlib.sha256(members_json.encode("utf-8")).hexdigest(),
-    )
+    row = lineage.current_locked(conn, room_id)
+    if row is None:
+        return replica_version is None
+    if lineage.is_v2(row):
+        if replica_version != 2 or lineage_sha256 != row["lineage_sha256"] or row["state"] != "active":
+            return False
+    elif replica_version is not None:
+        return False
+    return (row["authority_gateway_id"], row["authority_epoch"], row["roster_sha256"]) == (
+        authority_gateway_id, authority_epoch, hashlib.sha256(members_json.encode("utf-8")).hexdigest())
+
+
+def _retired_response(row):
+    result = dict(row)
+    if lineage.is_v2(result):
+        _digest(result.get("lineage_sha256"), "lineage_sha256")
+        if result.get("lineage_status") not in {"pending", "verified"}:
+            raise RetirementConflictError("retired lineage coverage is unavailable")
+    else:
+        if result["authority_epoch"] != 1 or result.get("version") is not None:
+            raise RetirementConflictError("retired lineage format is unavailable")
+        for key in ("version", "lineage_sha256", "lineage_status"):
+            result.pop(key, None)
+    return {"retired": True, **result}
 
 
 def retire_copy(
@@ -721,12 +808,19 @@ def retire_copy(
         "authority_epoch",
         "target_install_id",
     }
+    if isinstance(payload, Mapping) and lineage.is_v2(payload):
+        fields |= {"version", "lineage_sha256"}
+        _digest(payload.get("lineage_sha256"), "lineage_sha256")
     if not isinstance(payload, Mapping) or set(payload) != fields:
         raise RetirementError("invalid retirement notice fields")
     payload = dict(payload)
-    for key in fields - {"authority_epoch"}:
-        payload[key] = _identifier(payload[key], key)
-    if type(payload["authority_epoch"]) is not int or payload["authority_epoch"] != 1:
+    for key in fields - {"authority_epoch", "version", "lineage_sha256"}:
+        validated = _identifier(payload[key], key)
+        if lineage.is_v2(payload) and validated != payload[key]:
+            raise RetirementError("v2 notice identifiers must be canonical")
+        payload[key] = validated
+    if (type(payload["authority_epoch"]) is not int or not 1 <= payload["authority_epoch"] < 2**63
+            or (not lineage.is_v2(payload) and payload["authority_epoch"] != 1)):
         raise RetirementError("invalid retirement authority epoch")
     if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9_-]{43}", value) is None:
         raise RetirementAuthorizationError("invalid retirement capability")
@@ -764,7 +858,7 @@ def retire_copy(
                     raise RetirementConflictError(
                         "copy was retired under another enrollment"
                     )
-                return {"retired": True, **dict(done)}
+                return _retired_response(done)
     with _transaction(db_path) as conn:
         row = conn.execute(
             f"SELECT * FROM {ENROLLMENT_TABLE} WHERE enrollment_id=?",
@@ -787,12 +881,15 @@ def retire_copy(
                 raise RetirementConflictError(
                     "copy was retired under another enrollment"
                 )
-            return {"retired": True, **dict(retired)}
+            return _retired_response(retired)
         if not row["is_current"] or row["state"] != "active":
             raise RetirementAuthorizationError(
                 "retirement capability has been revoked or replaced"
             )
-        replica = _check_replica_namespace(conn, row)
+        spans = lineage.enrolled_history(row) if lineage.is_v2(row) else None
+        replica = _check_replica_namespace(conn, row, spans=spans)
+        if replica is not None and spans is not None:
+            lineage.replica_history_locked(conn, replica)
         now = time.time()
         conn.execute(
             "INSERT OR IGNORE INTO hosted_room_id_reservations(room_id,owner_kind,reserved_at) VALUES (?,'replica',?)",
@@ -812,19 +909,16 @@ def retire_copy(
                 int(replica["latest_seq"]) if replica is not None else 0,
             ),
         )
+        if spans is not None:
+            conn.execute(f"UPDATE {RETIREMENT_TABLE} SET version=2,lineage_sha256=?,lineage_status=? WHERE room_id=?",
+                (row["lineage_sha256"], lineage.status(spans, replica["last_seq"] if replica is not None else 0), row["room_id"]))
         conn.execute(
             f"UPDATE {ENROLLMENT_TABLE} SET state='retired' WHERE enrollment_id=?",
             (row["enrollment_id"],),
         )
-        return {
-            "retired": True,
-            **dict(
-                conn.execute(
-                    f"SELECT * FROM {RETIREMENT_TABLE} WHERE room_id=?",
-                    (row["room_id"],),
-                ).fetchone()
-            ),
-        }
+        return _retired_response(conn.execute(
+            f"SELECT * FROM {RETIREMENT_TABLE} WHERE room_id=?", (row["room_id"],),
+        ).fetchone())
 
 
 def acknowledge_notice(
@@ -892,6 +986,7 @@ def home_status(
     db_path: Path | str, *, room_id: str | None = None
 ) -> list[dict[str, Any]]:
     with _transaction(db_path) as conn:
+        _block_stale_home_locked(conn)
         rows = conn.execute(
             f"SELECT enrollment_id,room_id,target_install_id,authority_gateway_id,authority_epoch,state,frozen_at,closed_at,acknowledged_at,last_error,superseded_by FROM {HOME_TABLE} WHERE (? IS NULL OR room_id=?) ORDER BY CASE WHEN state IN ('acknowledged','superseded','revoked') THEN 1 ELSE 0 END,created_at,enrollment_id LIMIT ?",
             (room_id, room_id, MAX_PENDING_ENROLLMENTS * 2),

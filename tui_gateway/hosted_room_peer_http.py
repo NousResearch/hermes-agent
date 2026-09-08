@@ -662,10 +662,11 @@ class PeerRunsHTTPClient:
     def issue_invitation(
         self, *, room_id: str, home_install_id: str, authority_gateway_id: str,
         authority_epoch: int, member_id: str, grant_id: str, ttl_seconds: float = 3600,
-        status_ttl_seconds: float | None = None, replication: bool = False) -> Mapping[str, Any]:
+        status_ttl_seconds: float | None = None, replication: bool = False,
+        passive_only: bool = False) -> Mapping[str, Any]:
         """Ask the target gateway to mint a scoped room-member grant."""
-        if type(replication) is not bool:
-            raise ValueError("replication must be a boolean")
+        from gateway.hosted_room_peer import invitation_permissions
+        invitation_permissions(replication, passive_only=passive_only)
         if not self.api_key:
             raise PeerRunsHTTPError("issuing an invitation requires the target gateway API key")
         return self._request(
@@ -675,6 +676,7 @@ class PeerRunsHTTPClient:
                 "authority_gateway_id": authority_gateway_id, "authority_epoch": authority_epoch,
                 "member_id": member_id, "grant_id": grant_id, "ttl_seconds": ttl_seconds,
                 **({"replication": True} if replication else {}),
+                **({"passive_only": True} if passive_only else {}),
                 **({} if status_ttl_seconds is None else {
                     "status_ttl_seconds": status_ttl_seconds})})
 

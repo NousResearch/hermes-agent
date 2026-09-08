@@ -22,8 +22,17 @@ def ingest_granted_page(
     Replication never confers execution authority. The receiver must have
     explicitly issued this permission to the caller's room-member scope.
     """
-    claims = decode_room_grant(secret, token, permission="replicate")
     authority = page.get("authority") if isinstance(page, dict) else None
+    authorize = authorize_granted_room(
+        token=token, secret=secret, target_install_id=target_install_id, target_profile=target_profile,
+        room_id=room_id, members=members, authority=authority, permission="replicate")
+    return replicas.ingest_page(
+        db_path, room_id=room_id, room_name=room_name, members=members, page=page, _authorize=authorize)
+
+
+def authorize_granted_room(*, token, secret, target_install_id, target_profile, room_id, members, authority, permission):
+    """Share exact room authorization; callers recheck under their target write transaction."""
+    claims = decode_room_grant(secret, token, permission=permission)
     expected = {"gateway_id": claims["authority_gateway_id"], "epoch": claims["authority_epoch"]}
     if (
         claims["room_id"] != room_id or authority != expected
@@ -46,13 +55,10 @@ def ingest_granted_page(
     def authorize_locked(conn: sqlite3.Connection) -> None:
         # Recheck after waiting for SQLite: expiry/revocation may race body validation.
         now = time.time()
-        decode_room_grant(secret, token, permission="replicate", now=now)
-        reserved = rooms.peer_room_grant_is_current(db_path, claims=claims, now=now, _conn=conn)
-        revoked = rooms.room_grant_is_revoked(db_path, claims=claims, now=now, _conn=conn)
+        decode_room_grant(secret, token, permission=permission, now=now)
+        reserved = rooms.peer_room_grant_is_current(None, claims=claims, now=now, _conn=conn)
+        revoked = rooms.room_grant_is_revoked(None, claims=claims, now=now, _conn=conn)
         if not reserved or revoked:
             raise HostedRoomGrantError("replica grant is revoked or no longer current")
 
-    return replicas.ingest_page(
-        db_path, room_id=room_id, room_name=room_name, members=members,
-        page=page, _authorize=authorize_locked,
-    )
+    return authorize_locked

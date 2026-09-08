@@ -412,10 +412,14 @@ _GRANT_REFRESH_FIELDS = _GRANT_FIELDS | {"status_expires_at"}
 _GRANT_PERMISSIONS = {"approve", "dispatch", "status", "stop", "replicate"}
 
 
-def invitation_permissions(replication: Any = False) -> tuple[str, ...]:
+def invitation_permissions(replication: Any = False, *, passive_only: Any = False) -> tuple[str, ...]:
     """Keep opt-in semantics identical on JSON-RPC and HTTP invitations."""
-    if type(replication) is not bool:
-        raise HostedRoomGrantError("replication must be a boolean")
+    if type(replication) is not bool or type(passive_only) is not bool:
+        raise HostedRoomGrantError("replication and passive_only must be booleans")
+    if passive_only:
+        if not replication:
+            raise HostedRoomGrantError("passive_only requires explicit replication")
+        return ("status", "replicate")
     normal = ("approve", "dispatch", "status", "stop")
     return (*normal, "replicate") if replication else normal
 MAX_DISPATCH_GRANT_TTL_SECONDS = 24 * 60 * 60

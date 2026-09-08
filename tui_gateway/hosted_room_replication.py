@@ -20,6 +20,8 @@ from typing import Any
 from gateway import hosted_room_links as links
 from gateway import hosted_rooms as rooms
 from gateway import hosted_room_replica_retirement as retirement
+from gateway import hosted_room_passive_lineage as lineage
+from gateway.hosted_room_passive_protocol import supports_lineage
 from gateway.hosted_room_peer import PROTOCOL_VERSION, _split_token, gateway_room_grant_secret
 from gateway.hosted_rooms_common import open_sqlite, table_exists
 from gateway.status import _release_file_lock, _try_acquire_file_lock
@@ -31,7 +33,7 @@ PAGE_LIMIT = 32
 WORKERS = 2
 _TABLE = "hosted_room_replication_publishers"
 _TARGET_TABLE = "hosted_room_replication_targets"
-_BLOCKED = {"needs_reauthorization", "replica_rejected", "invalid_ack", "source_gap"}
+_BLOCKED = {"needs_reauthorization", "replica_rejected", "invalid_ack", "source_gap", "unsupported_lineage"}
 
 
 def _digest(value: Any) -> str:
@@ -43,7 +45,16 @@ def _generation(link: links.StoredRoomLink, room: dict) -> str:
     # Health timestamps change during ordinary execution and are not route identity.
     for key in ("status", "updated_at"):
         record.pop(key)
-    return _digest([record, room["authority_gateway_id"], room["authority_epoch"], room["members"]])
+    return _digest([record, room["authority_gateway_id"], room["authority_epoch"], room["members"]]
+                   + ([room["lineage_sha256"]] if room["authority_epoch"] != 1 else []))
+
+
+def _attach_lineage(conn, room):
+    if room["authority_epoch"] != 1:
+        history, digest = lineage.source_locked(conn, room["room_id"], {
+            "gateway_id": room["authority_gateway_id"], "epoch": room["authority_epoch"]})
+        room.update(authority_history=history, lineage_sha256=digest)
+    return room
 
 
 def _replication_hint(token: str) -> dict:
@@ -60,7 +71,7 @@ def _replication_hint(token: str) -> dict:
 
 def _eligible(link: links.StoredRoomLink, room: dict, local_id: str) -> bool:
     if (
-        room["authority_gateway_id"] != local_id or room["authority_epoch"] != 1
+        room["authority_gateway_id"] != local_id
         or link.status == "needs_reauthorization" or room.get("safety_status")
         or link.catalog.installation_id == local_id
         or PROTOCOL_VERSION not in link.catalog.protocol_versions
@@ -70,7 +81,7 @@ def _eligible(link: links.StoredRoomLink, room: dict, local_id: str) -> bool:
     hint = _replication_hint(link.grant)
     expected = {
         "version": PROTOCOL_VERSION, "room_id": link.room_id, "member_id": link.member_id,
-        "home_install_id": local_id, "authority_gateway_id": local_id, "authority_epoch": 1,
+        "home_install_id": local_id, "authority_gateway_id": local_id, "authority_epoch": room["authority_epoch"],
         "target_install_id": link.catalog.installation_id, "target_profile": link.target_profile,
         "execution_policy_digest": link.catalog.execution_policy.policy_digest,
     }
@@ -134,6 +145,12 @@ class HostedRoomReplicationPublisher:
                 source_latest_seq INTEGER NOT NULL DEFAULT 0, pending_end INTEGER,
                 pending_latest INTEGER, pending_name TEXT, status TEXT NOT NULL DEFAULT 'pending',
                 updated_at REAL NOT NULL, PRIMARY KEY(room_id, target_install_id))""")
+            for table in (_TABLE, _TARGET_TABLE):
+                columns = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+                if "pending_lineage_sha256" not in columns:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN pending_lineage_sha256 TEXT")
+            if "passive_version" not in {r["name"] for r in conn.execute(f"PRAGMA table_info({_TABLE})")}:
+                conn.execute(f"ALTER TABLE {_TABLE} ADD COLUMN passive_version INTEGER")
 
     @contextmanager
     def _transaction(self):
@@ -286,6 +303,8 @@ class HostedRoomReplicationPublisher:
         try:
             link = links.StoredRoomLink.from_record(raw)
             room = rooms.room_state(self.db_path, room_id=key[0], include_disbanded=True)
+            with rooms._transaction(self.db_path) as conn:
+                _attach_lineage(conn, room)
             if _eligible(link, room, self.local_id):
                 return _Route(key, link, room, _generation(link, room))
         except (rooms.HostedRoomError, ValueError):
@@ -306,9 +325,9 @@ class HostedRoomReplicationPublisher:
             return False
         try:
             link = links.StoredRoomLink.from_record(raw)
-            state = {**dict(room), "members": json.loads(room["members_json"])}
+            state = _attach_lineage(conn, {**dict(room), "members": json.loads(room["members_json"])})
             return _eligible(link, state, self.local_id) and _generation(link, state) == route.generation
-        except ValueError:
+        except (ValueError, rooms.HostedRoomError):
             return False
 
     def _checkpoint(self, route: _Route) -> dict | None:
@@ -322,7 +341,8 @@ class HostedRoomReplicationPublisher:
                 target_install_id=excluded.target_install_id, target_profile=excluded.target_profile,
                 authority_gateway_id=excluded.authority_gateway_id, authority_epoch=excluded.authority_epoch,
                 acked_seq=0, source_latest_seq=0, pending_end=NULL, pending_latest=NULL,
-                pending_name=NULL, status='pending', updated_at=excluded.updated_at
+                pending_name=NULL, pending_lineage_sha256=NULL, passive_version=NULL,
+                status='pending', updated_at=excluded.updated_at
                 WHERE generation!=excluded.generation""", (
                     *route.key, route.generation, route.link.catalog.installation_id, route.link.target_profile,
                     route.room["authority_gateway_id"], route.room["authority_epoch"], time.time(),
@@ -364,6 +384,8 @@ class HostedRoomReplicationPublisher:
             ).fetchall()
         selected = []
         room = rooms.room_state(self.db_path, room_id=initial.key[0], include_disbanded=True)
+        with rooms._transaction(self.db_path) as conn:
+            _attach_lineage(conn, room)
         for raw in candidates:
             if not _replication_hint(raw["grant"]):
                 continue
@@ -380,7 +402,8 @@ class HostedRoomReplicationPublisher:
         return min(selected, key=lambda item: item[:2])[2] if selected else None
 
     def _target_checkpoint(self, route: _Route) -> dict | None:
-        lineage = _digest([route.room["authority_gateway_id"], route.room["authority_epoch"], route.room["members"]])
+        lineage = _digest([route.room["authority_gateway_id"], route.room["authority_epoch"], route.room["members"]]
+            + ([route.room["lineage_sha256"]] if route.room["authority_epoch"] != 1 else []))
         key = (route.key[0], route.link.catalog.installation_id)
         with self._transaction() as conn:
             if not self._current(conn, route):
@@ -389,7 +412,7 @@ class HostedRoomReplicationPublisher:
                 (room_id,target_install_id,lineage,selected_member_id,updated_at) VALUES (?,?,?,?,?)
                 ON CONFLICT(room_id,target_install_id) DO UPDATE SET lineage=excluded.lineage,
                 acked_seq=0, source_latest_seq=0, pending_end=NULL, pending_latest=NULL,
-                pending_name=NULL, status='pending', updated_at=excluded.updated_at
+                pending_name=NULL, pending_lineage_sha256=NULL, status='pending', updated_at=excluded.updated_at
                 WHERE lineage!=excluded.lineage""", (*key, lineage, route.key[1], time.time()))
             conn.execute(f"UPDATE {_TARGET_TABLE} SET selected_member_id=? WHERE room_id=? AND target_install_id=?",
                          (route.key[1], *key))
@@ -414,6 +437,27 @@ class HostedRoomReplicationPublisher:
             finally:
                 _release_file_lock(handle)
 
+    def _negotiate_lineage(self, route, checkpoint, client):
+        cached = self._checkpoint(route)
+        if cached is None or cached["status"] in _BLOCKED:
+            return False, None
+        if cached["passive_version"] == 2:
+            return True, None
+        try:
+            proof = client.probe(grant=route.link.grant)
+        except PeerRunsHTTPError as exc:
+            self._http_failure(route, checkpoint, exc)
+            return False, None
+        if not supports_lineage(proof):
+            self._save(route, checkpoint, status="unsupported_lineage")
+            return False, None
+        with self._transaction() as conn:
+            if not self._current(conn, route):
+                return False, None
+            conn.execute(f"UPDATE {_TABLE} SET passive_version=2 WHERE room_id=? AND member_id=? AND generation=?",
+                         (*route.key, route.generation))
+        return True, proof
+
     def _publish_locked(self, route: _Route) -> bool:
         key = route.key
         checkpoint = self._target_checkpoint(route)
@@ -424,13 +468,25 @@ class HostedRoomReplicationPublisher:
             target_profile=route.link.target_profile if route.link.target_profile != "default" else None,
             timeout_seconds=PAGE_TIMEOUT_SECONDS,
         )
+        v2 = route.room["authority_epoch"] != 1
+        probe = None
+        if v2:
+            supported, probe = self._negotiate_lineage(route, checkpoint, client)
+            if not supported:
+                return False
         enrollment = retirement.current_home_enrollment(
             self.db_path, room_id=key[0], target_install_id=route.link.catalog.installation_id,
         )
+        if v2 and (enrollment is None or enrollment.get("version") != 2
+                or enrollment.get("lineage_sha256") != route.room["lineage_sha256"]
+                or enrollment["authority_gateway_id"] != self.local_id
+                or enrollment["authority_epoch"] != route.room["authority_epoch"]):
+            self._save(route, checkpoint, status="retirement_enrollment_required")
+            return False
         if enrollment is not None:
             if enrollment["state"] == "prepared":
                 try:
-                    proof = client.probe(grant=route.link.grant).get("retirement_enrollment")
+                    proof = (probe if probe is not None else client.probe(grant=route.link.grant)).get("retirement_enrollment")
                 except PeerRunsHTTPError as exc:
                     return self._http_failure(route, checkpoint, exc)
                 if not retirement.confirm_home_enrollment(
@@ -445,23 +501,26 @@ class HostedRoomReplicationPublisher:
         limit = PAGE_LIMIT if pending is None else max(1, pending - cursor)
         page = rooms.read_events(
             self.db_path, room_id=key[0], since_seq=cursor, limit=limit, include_disbanded=True,
+            **({"replica_version": 2} if v2 else {}),
         )
-        expected_authority = {"gateway_id": route.room["authority_gateway_id"], "epoch": 1}
-        if page["authority"] != expected_authority:
+        expected_authority = {"gateway_id": route.room["authority_gateway_id"], "epoch": route.room["authority_epoch"]}
+        if (page["authority"] != expected_authority
+                or (v2 and page["lineage_sha256"] != route.room["lineage_sha256"])):
             return False
         name = route.room["name"]
         if pending is not None:
             # New source events cannot change the in-flight retry's coverage claim.
             if pending == cursor:
                 page.update(events=[], cursor=cursor)
-            if page["cursor"] != pending:
+            if page["cursor"] != pending or (v2 and checkpoint["pending_lineage_sha256"] != page["lineage_sha256"]):
                 self._save(route, checkpoint, status="source_gap")
                 return False
             page.update(latest_seq=checkpoint["pending_latest"], has_more=pending < checkpoint["pending_latest"])
             name = checkpoint["pending_name"]
         else:
             values = dict(pending_end=page["cursor"], pending_latest=page["latest_seq"], pending_name=name,
-                          source_latest_seq=page["latest_seq"], status="pending")
+                          source_latest_seq=page["latest_seq"], status="pending",
+                          pending_lineage_sha256=page.get("lineage_sha256"))
             if not self._save(route, checkpoint, **values):
                 return False
             checkpoint.update(values)
@@ -479,12 +538,16 @@ class HostedRoomReplicationPublisher:
             or reply.get("authority") != expected_authority
             or type(reply.get("stored_seq")) is not int or reply["stored_seq"] < page["cursor"]
             or reply["stored_seq"] > page["latest_seq"]
+            or (v2 and (type(reply.get("replica_version")) is not int or reply["replica_version"] != 2
+                or reply.get("lineage_sha256") != page["lineage_sha256"]
+                or reply.get("lineage_status") != ("verified" if reply["stored_seq"] >=
+                    route.room["authority_history"][-1]["from_seq"] else "pending")))
         ):
             self._save(route, checkpoint, status="invalid_ack")
             return False
         saved = self._save(
             route, checkpoint, acked_seq=page["cursor"], source_latest_seq=page["latest_seq"],
-            pending_end=None, pending_latest=None, pending_name=None,
+            pending_end=None, pending_latest=None, pending_name=None, pending_lineage_sha256=None,
             status="pending" if page["has_more"] else "acked",
         )
         return saved and page["has_more"]

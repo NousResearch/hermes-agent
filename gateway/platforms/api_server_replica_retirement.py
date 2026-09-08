@@ -49,7 +49,7 @@ def http_routes(adapter):
             if operation == "enroll":
                 if (
                     set(body)
-                    - {"enrollment", "expected_enrollment_id", "expected_state"}
+                    - {"enrollment", "expected_enrollment_id", "expected_state", "authority_history"}
                     or "enrollment" not in body
                 ):
                     raise retirement.RetirementError("invalid enrollment request")
@@ -60,6 +60,7 @@ def http_routes(adapter):
                     target_install_id=rooms.local_authority_gateway_id(),
                     expected_enrollment_id=body.get("expected_enrollment_id"),
                     expected_state=body.get("expected_state", "active"),
+                    authority_history=body.get("authority_history"),
                 )
             elif operation == "revoke":
                 if set(body) != {"room_id", "enrollment_id"}:

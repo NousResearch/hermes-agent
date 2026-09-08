@@ -43,6 +43,7 @@ from gateway.hosted_rooms import (
 )
 
 from gateway.hosted_room_safety import _prune_disbanded_replicas_locked
+from gateway import hosted_room_passive_lineage as lineage
 
 MAX_REPLICA_ROOMS = 256
 MAX_REPLICA_EVENT_BYTES = MAX_GATEWAY_EVENT_BYTES
@@ -107,6 +108,9 @@ def _initialize_replica_schema(conn: sqlite3.Connection) -> None:
         str(row["name"])
         for row in conn.execute("PRAGMA table_info(hosted_room_replicas)")
     }
+    for name, kind in (("replica_version", "INTEGER"), ("lineage_sha256", "TEXT")):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE hosted_room_replicas ADD COLUMN {name} {kind}")
     if "disbanded_at" not in columns:
         conn.execute("ALTER TABLE hosted_room_replicas ADD COLUMN disbanded_at REAL")
     if "quarantined_at" not in columns:
@@ -135,9 +139,7 @@ def _initialize_replica_schema(conn: sqlite3.Connection) -> None:
 def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
     """Quarantine lineage written by the pre-fix replica implementation."""
     for row in conn.execute(
-        """SELECT room_id, authority_gateway_id, authority_epoch, last_seq,
-                  latest_seq, event_bytes, disbanded_at, quarantine_reason
-             FROM hosted_room_replicas"""
+        """SELECT * FROM hosted_room_replicas"""
     ).fetchall():
         room_id = str(row["room_id"])
         events = conn.execute(
@@ -152,7 +154,13 @@ def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
         event_ids = [str(event["event_id"]) for event in events]
         last_seq = int(row["last_seq"])
         latest_seq = int(row["latest_seq"])
-        if int(row["authority_epoch"]) != 1:
+        spans = None
+        if "replica_version" in row.keys() and row["replica_version"] is not None:
+            try:
+                spans = lineage.replica_history_locked(conn, row)
+            except lineage.PassiveLineageError:
+                reasons.append("unverified_authority_lineage")
+        elif int(row["authority_epoch"]) != 1:
             reasons.append("unverified_authority_epoch")
         if seqs != list(range(1, last_seq + 1)):
             reasons.append("non_contiguous_history")
@@ -168,7 +176,7 @@ def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
             reasons.append("events_after_disband")
         if disband_positions and last_seq != latest_seq:
             reasons.append("incomplete_terminal_history")
-        if any(
+        if spans is None and any(
             event["authority_epoch"] != int(row["authority_epoch"])
             for event in events
         ):
@@ -189,10 +197,10 @@ def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
                 actor, _ = _validate_actor(
                     json.loads(event["actor_json"]), kind=kind
                 )
-                if (
-                    actor["kind"] == "gateway"
-                    and actor["id"] != str(row["authority_gateway_id"])
-                ):
+                if spans is not None:
+                    lineage.event_span(spans, event)
+                if (spans is None and actor["kind"] == "gateway"
+                        and actor["id"] != str(row["authority_gateway_id"])):
                     reasons.append("gateway_actor_authority_mismatch")
                 payload = json.loads(event["payload_json"])
                 if not isinstance(payload, dict):
@@ -261,6 +269,14 @@ def _validate_page(
 ) -> tuple[list[dict[str, Any]], dict[str, Any], int, int, bool]:
     if not isinstance(page, dict):
         raise ReplicaError("page must be an object")
+    v2 = "replica_version" in page
+    if v2:
+        if type(page["replica_version"]) is not int or page["replica_version"] != 2 or set(page) != {
+            "events", "authority", "cursor", "latest_seq", "has_more", "replica_version", "lineage_sha256"
+        }:
+            raise ReplicaError("invalid v2 replica fields")
+    elif "lineage_sha256" in page:
+        raise ReplicaError("lineage digest requires v2")
     _canonical_json(page, label="page", max_bytes=MAX_LOG_PAGE_BYTES)
     events = page.get("events")
     authority = page.get("authority")
@@ -278,10 +294,14 @@ def _validate_page(
     epoch = authority.get("epoch")
     if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 1:
         raise ReplicaError("page.authority.epoch must be a positive integer")
+    if v2 and (gateway_id != authority.get("gateway_id") or set(authority) != {"gateway_id", "epoch"} or epoch >= 2**63):
+        raise ReplicaError("invalid v2 authority")
     cursor = _validate_non_negative_int(page.get("cursor"), label="page.cursor")
     latest_seq = _validate_non_negative_int(
         page.get("latest_seq"), label="page.latest_seq"
     )
+    if v2 and (cursor >= 2**63 or latest_seq >= 2**63):
+        raise ReplicaError("v2 replay coordinates exceed SQLite bounds")
     has_more = page.get("has_more")
     if not isinstance(has_more, bool):
         raise ReplicaError("page.has_more must be a boolean")
@@ -317,7 +337,10 @@ def _validate_page(
         event_ids.add(event_id)
         kind = _validate_event_kind(event.get("kind"))
         actor, actor_json = _validate_actor(event.get("actor"), kind=kind)
-        if actor["kind"] == "gateway" and actor["id"] != gateway_id:
+        if v2 and (actor != event.get("actor") or event_id != event.get("event_id")
+                or event_room_id != event.get("room_id") or kind != event.get("kind")):
+            raise ReplicaError("v2 event identifiers and actors must be canonical")
+        if not v2 and actor["kind"] == "gateway" and actor["id"] != gateway_id:
             raise ReplicaError("gateway actor does not match page authority")
         payload = event.get("payload")
         if not isinstance(payload, dict):
@@ -390,6 +413,7 @@ def ingest_page(
     room_name = _validate_room_name(room_name)
     _, members_json = _validate_members(members)
     events, authority, _cursor, latest_seq, _has_more = _validate_page(page)
+    v2 = page.get("replica_version") == 2
     for event in events:
         if event["room_id"] != room_id:
             raise ReplicaError("page contains an event for a different room")
@@ -403,8 +427,15 @@ def ingest_page(
         if not copy_scope_matches_locked(
             conn, room_id=room_id, authority_gateway_id=authority["gateway_id"],
             authority_epoch=authority["epoch"], members_json=members_json,
+            replica_version=2 if v2 else None, lineage_sha256=page.get("lineage_sha256"),
         ):
             raise ReplicaError("copy scope differs from owner enrollment")
+        spans = None
+        if v2:
+            enrolled = lineage.current_locked(conn, room_id)
+            spans = lineage.enrolled_history(enrolled)
+            for event in events:
+                lineage.event_span(spans, event)
         _prune_disbanded_replicas_locked(conn, now=now)
         if conn.execute(
             "SELECT 1 FROM hosted_rooms WHERE room_id=?", (room_id,)
@@ -415,10 +446,7 @@ def ingest_page(
         ).fetchone():
             raise ReplicaError("room_id is permanently retired on this gateway")
         row = conn.execute(
-            """SELECT name, members_json, authority_gateway_id, authority_epoch,
-                      last_seq, latest_seq, event_bytes, disbanded_at,
-                      quarantined_at, quarantine_reason
-                 FROM hosted_room_replicas WHERE room_id=?""",
+            """SELECT * FROM hosted_room_replicas WHERE room_id=?""",
             (room_id,),
         ).fetchone()
         if row is None:
@@ -445,7 +473,7 @@ def ingest_page(
             last_seq = 0
             stored_latest = 0
             disbanded_at = None
-            if authority["epoch"] != 1:
+            if not v2 and authority["epoch"] != 1:
                 raise ReplicaLineageUnverifiedError(
                     "replica lineage is incomplete; the first authority epoch is required"
                 )
@@ -460,7 +488,7 @@ def ingest_page(
                 )
             if (row["name"] != room_name and _authorize is None) or row["members_json"] != members_json:
                 raise ReplicaError("replica metadata conflicts with stored state")
-            if (
+            if not v2 and (
                 row["authority_gateway_id"] != authority["gateway_id"]
                 or stored_epoch != authority["epoch"]
             ):
@@ -471,7 +499,7 @@ def ingest_page(
                 raise ReplicaError("page.latest_seq regresses stored replica coverage")
 
         for event in events:
-            if event["authority_epoch"] != stored_epoch and row is not None:
+            if not v2 and event["authority_epoch"] != stored_epoch and row is not None:
                 raise ReplicaError("event authority conflicts with stored replica lineage")
             existing = conn.execute(
                 """SELECT seq, event_id, kind, actor_json, authority_epoch,
@@ -581,6 +609,8 @@ def ingest_page(
         terminal_at = (
             new_events[-1]["created_at"] if disband_indexes else disbanded_at
         )
+        prefix = lineage.at_sequence(spans, new_last) if v2 else None
+        prefix_authority = {"gateway_id": prefix.gateway_id, "epoch": prefix.epoch} if prefix else authority
         if row is None:
             conn.execute(
                 """INSERT INTO hosted_room_replicas
@@ -592,8 +622,8 @@ def ingest_page(
                     room_id,
                     projected_name,
                     members_json,
-                    authority["gateway_id"],
-                    authority["epoch"],
+                    prefix_authority["gateway_id"],
+                    prefix_authority["epoch"],
                     new_last,
                     latest_seq,
                     added_bytes,
@@ -618,7 +648,13 @@ def ingest_page(
                     room_id,
                 ),
             )
+        if v2:
+            conn.execute("""UPDATE hosted_room_replicas SET authority_gateway_id=?,authority_epoch=?,
+                replica_version=2,lineage_sha256=? WHERE room_id=?""",
+                (prefix.gateway_id, prefix.epoch, page["lineage_sha256"], room_id))
     return {
+        **({"replica_version": 2, "lineage_sha256": page["lineage_sha256"],
+            "lineage_status": lineage.status(spans, new_last)} if v2 else {}),
         "room_id": room_id,
         "stored_seq": new_last,
         "ingested": len(new_events),
@@ -637,13 +673,10 @@ def replica_state(db_path: Path | str, *, room_id: Any) -> dict[str, Any]:
         from gateway.hosted_rooms_common import table_exists
         retired = conn.execute(f"SELECT retired_at FROM {RETIREMENT_TABLE} WHERE room_id=?", (room_id,)).fetchone() if table_exists(conn, RETIREMENT_TABLE) else None
         row = conn.execute(
-            """SELECT room_id, name, members_json, authority_gateway_id,
-                      authority_epoch, last_seq, latest_seq, event_bytes,
-                      created_at, updated_at, disbanded_at,
-                      quarantined_at, quarantine_reason
-                 FROM hosted_room_replicas WHERE room_id=?""",
+            """SELECT * FROM hosted_room_replicas WHERE room_id=?""",
             (room_id,),
         ).fetchone()
+        lineage_fields = lineage.state_fields_locked(conn, row) if row is not None else {}
         reservation = (
             conn.execute(
                 """SELECT owner_kind FROM hosted_room_id_reservations
@@ -660,6 +693,7 @@ def replica_state(db_path: Path | str, *, room_id: Any) -> dict[str, Any]:
             )
         raise ReplicaError("replica not found")
     return {
+        **lineage_fields,
         "room_id": row["room_id"],
         "name": row["name"],
         "members": json.loads(row["members_json"]),

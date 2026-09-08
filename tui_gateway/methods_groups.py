@@ -222,6 +222,7 @@ def _room_method(
 def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
     """Describe the hosted-room protocol implemented by this gateway."""
     from gateway.hosted_rooms import MAX_LOG_LIMIT, PROTOCOL_VERSION, local_authority_gateway_id
+    from gateway.hosted_room_passive_protocol import passive_capabilities
     service = get_hosted_room_service()
     driver_ready = bool(service and service.runtime.status()["running"])
     try:
@@ -234,7 +235,7 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
         catalog = _catalog(local_authority_gateway_id(), profile, policy)
         room_link = {
             "enabled": True, "profile": profile, "catalog": catalog,
-            "endpoint": catalog["endpoint"]}
+            "passive_replication": passive_capabilities(), "endpoint": catalog["endpoint"]}
     except Exception:
         room_link = {"enabled": False, "reason": (
             "durable_run_storage_required" if not _room_link_run_storage_durable()
@@ -264,18 +265,20 @@ def _(rid, params: dict, db_path) -> dict:
         secret=gateway_room_grant_secret(), enrollment_id=params.get("enrollment_id"),
         replace_enrollment_id=params.get("replace_enrollment_id"),
     )
-    return _ok(rid, {"enrollment": enrollment})
+    return _ok(rid, {"enrollment": enrollment,
+        **retirement.home_enrollment_history(db_path, enrollment_id=enrollment["enrollment_id"])})
 
 
 @_room_method("groups.replication.enroll", code=5127, room_code=4127, db=True)
 def _(rid, params: dict, db_path) -> dict:
     from gateway import hosted_room_replica_retirement as retirement
     from gateway.hosted_rooms import local_authority_gateway_id
-    if set(params) - {"enrollment", "expected_enrollment_id", "expected_state"}:
+    if set(params) - {"enrollment", "expected_enrollment_id", "expected_state", "authority_history"}:
         raise retirement.RetirementError("invalid retirement enrollment fields")
     return _ok(rid, retirement.enroll_target(
         db_path, enrollment=params.get("enrollment"), target_install_id=local_authority_gateway_id(),
         expected_enrollment_id=params.get("expected_enrollment_id"), expected_state=params.get("expected_state", "active"),
+        authority_history=params.get("authority_history"),
     ))
 
 
@@ -314,13 +317,15 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
         authority_epoch=int(params.get("authority_epoch") or 0),
         member_id=str(params.get("member_id") or ""), target_install_id=installation_id,
         target_profile=profile, execution_policy_digest=execution_policy["policy_digest"],
-        permissions=invitation_permissions(params.get("replication", False)),
+        permissions=invitation_permissions(params.get("replication", False), passive_only=params.get("passive_only", False)),
         ttl_seconds=ttl, status_ttl_seconds=status_ttl)
     claims = decode_room_grant(grant_secret, token, permission="status")
     reserve_grant_state(_profile_state_db_paths(profile), claims=claims, expires_at=_expiry(claims))
     catalog = _catalog(installation_id, profile, execution_policy)
+    from gateway.hosted_room_passive_protocol import passive_capabilities
     return _ok(rid, {
         "grant": token, "target_profile": profile, "catalog": catalog,
+        "passive_replication": passive_capabilities(),
         "endpoint": catalog["endpoint"], "expires_at": float(claims["expires_at"]),
         "status_expires_at": float(claims["status_expires_at"])})
 

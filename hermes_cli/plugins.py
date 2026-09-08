@@ -146,6 +146,7 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked",
     # Read-only completion policy before the board write. Any block wins; no approve override.
     "pre_kanban_complete",
+    "pre_kanban_review",
     # Kanban worker/mutation/tick observers; returns ignored; fire sites short-circuit on
     # has_hook(). Kwargs: task_id, profile_name, board, assignee, run_id plus, per hook:
     # worker_spawned (DISPATCHER, after PID persisted, inside the dispatch lock — stay fast):
@@ -1671,10 +1672,10 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """Invoke a lifecycle hook (lazy-discovers first); return non-``None`` callback results.
 
     Hot-path / observer hooks in ``_HOOK_TIMEOUT_BOUNDED_HOOKS`` and the policy hooks
-    ``pre_tool_call`` and ``pre_kanban_complete`` are bounded by ``plugins.hook_callback_timeout``
+    ``pre_tool_call``, ``pre_kanban_complete``, and ``pre_kanban_review`` are bounded by ``plugins.hook_callback_timeout``
     (default 30s). On timeout the worker is abandoned (not joined) so we do not reintroduce the #6622
     hang. Timed-out or still-running policy callbacks fail closed with a block directive;
-    ``pre_kanban_complete`` also blocks on callback exceptions. Other bounded hooks fail open (skip).
+    ``pre_kanban_complete`` and ``pre_kanban_review`` also block on callback exceptions. Other bounded hooks fail open (skip).
     Ensures plugins are discovered on first invocation so callers in processes that never explicitly call
     ``discover_plugins()`` (gateway platform events, TUI slash workers, query mode, cron) still fire
     callbacks registered by user plugins (tracking #64178).

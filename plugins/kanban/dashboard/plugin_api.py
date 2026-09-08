@@ -796,8 +796,11 @@ def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str],
         entry.update(ok=False, error="archive refused")
     if payload.status is not None and not payload.archive:
         s = payload.status
-        if not _apply_status(conn, tid, s, payload, f"unknown status {s!r}"):
-            entry.update(ok=False, error=f"transition to {s!r} refused")
+        try:
+            if not _apply_status(conn, tid, s, payload, f"unknown status {s!r}"):
+                entry.update(ok=False, error=f"transition to {s!r} refused")
+        except CompletionPolicyError as exc:
+            entry.update(ok=False, error=str(exc))
     if payload.assignee is not None:
         try:
             ok = (kanban_db.reassign_task(conn, tid, payload.assignee or None, reclaim_first=True) if payload.reclaim_first

@@ -38,6 +38,7 @@ def test_ci_completion_gate_registers_the_generic_completion_hook():
     module.register(ctx)
 
     assert "pre_kanban_complete" in hooks
+    assert "pre_kanban_review" in hooks
 
 
 def test_generic_completion_hook_uses_its_task_id(tmp_path, monkeypatch):

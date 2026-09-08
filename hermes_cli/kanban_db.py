@@ -3423,15 +3423,16 @@ def request_review(
     def _ret(ok: bool, reason: Optional[str] = None):
         return (ok, reason) if with_reason else ok
 
-    from hermes_cli.kanban_completion_policy import CompletionPolicyError, enforce_completion_policies
+    from hermes_cli.kanban_completion_policy import CompletionPolicyError, enforce_review_policies
 
     task = get_task(conn, task_id)
     if task is None:
         return _ret(False, "task not found")
+    initial_state = (task.status, task.current_run_id)
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
     try:
-        enforce_completion_policies(
+        enforce_review_policies(
             task_id=task_id, board=_lifecycle_board(conn, None), assignee=task.assignee,
             summary=summary or "",
         )
@@ -3447,6 +3448,8 @@ def request_review(
         ).fetchone()
         if trow is None:
             return _ret(False, "task not found")
+        if (trow["status"], trow["current_run_id"]) != initial_state:
+            return _ret(False, "task changed while review policy was running")
         # Refuse to clear a live worker's claim without proof of ownership
         # (expected_run_id) or an explicit human override (force=True).
         if (

@@ -153,7 +153,7 @@ def test_kanban_complete_policy_receives_redacted_summary(tmp_path, monkeypatch)
     assert secret not in seen[0]
 
 
-def test_review_completion_policy_receives_redacted_summary(tmp_path, monkeypatch):
+def test_review_policy_receives_redacted_summary(tmp_path, monkeypatch):
     from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
 
     home = tmp_path / "home"
@@ -168,7 +168,7 @@ def test_review_completion_policy_receives_redacted_summary(tmp_path, monkeypatc
 
     seen = []
     manager = registered_manager(monkeypatch, home)
-    manager._hooks["pre_kanban_complete"] = [
+    manager._hooks["pre_kanban_review"] = [
         lambda **kwargs: seen.append(kwargs["summary"]) or {"action": "allow"},
     ]
     secret = "ghp_" + "A" * 40

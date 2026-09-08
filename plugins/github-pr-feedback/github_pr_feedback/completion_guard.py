@@ -89,3 +89,4 @@ def register_completion_guard(ctx) -> None:
     if callable(register_hook):
         register_hook("pre_tool_call", partial(guard_completion, ctx))
         register_hook("pre_kanban_complete", partial(guard_completion, ctx))
+        register_hook("pre_kanban_review", partial(guard_completion, ctx))

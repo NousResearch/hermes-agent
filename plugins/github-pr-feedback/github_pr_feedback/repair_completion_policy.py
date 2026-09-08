@@ -47,3 +47,4 @@ def register_repair_completion_policy(ctx):
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
         register_hook("pre_kanban_complete", partial(guard_repair_completion, ctx))
+        register_hook("pre_kanban_review", partial(guard_repair_completion, ctx))

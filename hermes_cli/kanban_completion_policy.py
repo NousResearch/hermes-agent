@@ -20,6 +20,22 @@ def enforce_completion_policies(*, task_id, board, assignee, summary):
         assignee=assignee, summary=summary,
     ))
     results.extend(_control_plane_github_feedback_results(task_id=task_id))
+    _raise_on_policy_results(results)
+
+
+def enforce_review_policies(*, task_id, board, assignee, summary):
+    """Apply feedback contracts before handing a task to human review."""
+    from hermes_cli.plugins import invoke_hook
+
+    results = list(invoke_hook(
+        "pre_kanban_review", task_id=task_id, board=board,
+        assignee=assignee, summary=summary,
+    ))
+    results.extend(_control_plane_github_feedback_results(task_id=task_id))
+    _raise_on_policy_results(results)
+
+
+def _raise_on_policy_results(results):
     for result in results:
         if result is None:
             continue

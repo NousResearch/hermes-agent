@@ -250,3 +250,82 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     assert "Active:       2 session(s)" in output
     assert "Last activity:" in output
     assert "1m ago" in output
+
+
+def test_show_status_json_schema_and_keys(monkeypatch, capsys, tmp_path):
+    """hermes status --json emits valid JSON with expected contract keys (#103176)."""
+    import json
+    from hermes_cli import status as status_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": "test-model-42"}, raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False, json=True))
+    out = capsys.readouterr().out
+    data = json.loads(out)
+
+    assert isinstance(data, dict)
+    assert "version" in data
+    assert "model" in data
+    assert data["model"] == "test-model-42"
+    assert "provider" in data
+    assert "estop" in data
+    assert isinstance(data["estop"], dict)
+    assert "paused" in data["estop"]
+    assert "gateway" in data
+    assert isinstance(data["gateway"], dict)
+    assert "running" in data["gateway"]
+    assert "manager" in data["gateway"]
+    assert "auth" in data
+    assert isinstance(data["auth"], dict)
+    assert "api_keys" in data["auth"]
+    assert "oauth" in data["auth"]
+    assert "sessions" in data
+    assert isinstance(data["sessions"], dict)
+    assert "active" in data["sessions"]
+    assert "total" in data["sessions"]
+    assert "recent" in data["sessions"]
+    assert "usage" in data
+    assert isinstance(data["usage"], dict)
+    assert "tokens" in data["usage"]
+    assert "cost_usd" in data["usage"]
+
+
+def test_show_status_json_does_not_leak_secrets(monkeypatch, capsys, tmp_path):
+    """hermes status --json must never output secret API keys or token strings."""
+    import json
+    from hermes_cli import status as status_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    sentinel = "SUPER_SECRET_TOKEN_DO_NOT_LEAK_999888"
+    monkeypatch.setenv("OPENROUTER_API_KEY", sentinel)
+
+    status_mod.show_status(SimpleNamespace(all=True, deep=False, json=True))
+    out = capsys.readouterr().out
+    assert sentinel not in out
+
+    data = json.loads(out)
+    assert "OpenRouter" in data["auth"]["api_keys"]
+
+
+def test_show_status_json_estop_active(monkeypatch, capsys, tmp_path):
+    """hermes status --json reflects active ESTOP pause state and reason."""
+    import json
+    import agent.estop as estop_mod
+    from hermes_cli import status as status_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        estop_mod,
+        "get_state",
+        lambda: {"reason": "Maintenance window", "timestamp": 1757000000.0},
+        raising=False,
+    )
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False, json=True))
+    out = capsys.readouterr().out
+    data = json.loads(out)
+
+    assert data["estop"]["paused"] is True
+    assert data["estop"]["reason"] == "Maintenance window"
+    assert data["estop"]["timestamp"] == 1757000000.0

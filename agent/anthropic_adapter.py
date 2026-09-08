@@ -345,13 +345,18 @@ def _build_anthropic_client_with_bearer_hook(
 def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
     """``sdk.Anthropic(**kwargs)`` with ``headers`` attached. Bearer-only construction leaves
     ``api_key`` unset, so the SDK fills it from ANTHROPIC_API_KEY (loaded from ~/.hermes/.env) and
-    sends dual auth — X-Api-Key *and* Authorization: Bearer — on every Portal/MiniMax/OAuth/Entra
-    request; clear it whenever we intentionally authenticated via auth_token."""
+    sends dual auth — X-Api-Key *and* Authorization: Bearer *** on every Portal/MiniMax/OAuth/Entra
+    request; clear it whenever we intentionally authenticated via auth_token. Api-key-only
+    construction has the mirror problem: the SDK fills ``auth_token`` from ANTHROPIC_AUTH_TOKEN in
+    the environment and ships that Bearer credential to third-party Anthropic-compatible endpoints
+    alongside x-api-key — clear it whenever we intentionally authenticated via api_key."""
     if headers:
         kwargs["default_headers"] = headers
     client = sdk.Anthropic(**kwargs)
     if "auth_token" in kwargs and "api_key" not in kwargs:
         client.api_key = None
+    if "api_key" in kwargs and "auth_token" not in kwargs:
+        client.auth_token = None
     return client
 
 

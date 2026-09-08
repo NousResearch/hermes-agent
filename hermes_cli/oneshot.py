@@ -28,7 +28,7 @@ _ALL_TOOLSETS = {"all", "*"}
 _USAGE_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "api_calls",
-    "model", "provider", "session_id", "completed",
+    "model", "provider", "session_id", "completed", "reasoning_effort",
 )
 
 
@@ -167,6 +167,7 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    reasoning: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -177,6 +178,14 @@ def run_oneshot(
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
     logging.disable(logging.CRITICAL)
+
+    from hermes_constants import parse_reasoning_effort
+
+    if reasoning is not None and parse_reasoning_effort(reasoning) is None:
+        sys.stderr.write(
+            f"hermes -z: invalid --reasoning: unrecognized effort {reasoning!r}\n"
+        )
+        return 2
 
     # --provider without --model is ambiguous (the provider may not host the configured model, and
     # picking its catalog default hides the mismatch). Validate BEFORE the stderr redirect.
@@ -220,6 +229,8 @@ def run_oneshot(
                 toolsets=explicit_toolsets,
                 use_config_toolsets=use_config_toolsets,
                 skills=skills,
+                reasoning=reasoning,
+                run_metadata=result,
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
@@ -347,6 +358,8 @@ def _run_agent(
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
+    reasoning: Optional[str] = None,
+    run_metadata: Optional[dict] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
@@ -354,9 +367,28 @@ def _run_agent(
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
+    from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
 
     cfg = load_config()
     choice = _resolve_model_and_provider(cfg, model, provider)
+    # Resolve reasoning the same way an interactive turn would (CLI override → per-model override
+    # → agent.reasoning_effort) and attest the EFFECTIVE effort up front, so the usage report can
+    # prove which identity was requested even when the provider fails before the run completes.
+    reasoning_config = (
+        parse_reasoning_effort(reasoning)
+        if reasoning is not None
+        else resolve_reasoning_config(cfg, choice.model)
+    )
+    effective_reasoning_effort = (
+        "none"
+        if reasoning_config == {"enabled": False}
+        else reasoning_config.get("effort")
+        if reasoning_config
+        else None
+    )
+    if run_metadata is not None:
+        run_metadata["reasoning_effort"] = effective_reasoning_effort
+
     runtime = resolve_runtime_provider(
         requested=choice.provider,
         target_model=choice.model or None,
@@ -400,6 +432,7 @@ def _run_agent(
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
             ephemeral_system_prompt=skills_prompt,
+            reasoning_config=reasoning_config,
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
             # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
             # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.
@@ -411,6 +444,7 @@ def _run_agent(
         agent.tool_gen_callback = None
 
         result = agent.run_conversation(prompt)
+        result["reasoning_effort"] = effective_reasoning_effort
         return (result.get("final_response") or "", result)
     finally:
         _close_agent(agent, session_db)

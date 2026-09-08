@@ -3166,7 +3166,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
 
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import build_subprocess_env
-    from tools.process_registry import restart_safe_gateway_child_argv
+    from tools.process_registry import (
+        restart_safe_gateway_child_argv,
+        systemd_user_bus_env,
+    )
 
     multiplex_active = is_multiplex_active()
     scoped_command = restart_safe_gateway_child_argv(
@@ -3208,6 +3211,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         inherit_profile_home=True,
         extra={"HERMES_HOME": str(_get_hermes_home().resolve())},
     )
+    worker_env = systemd_user_bus_env(worker_env)
     try:
         process = subprocess.Popen(
             scoped_command,

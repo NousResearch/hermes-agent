@@ -45,4 +45,10 @@ describe('async report hydration', () => {
     ).toBeUndefined()
     expect(hydrate('').metadata.custom.asyncResult).toBeUndefined()
   })
+
+  it('keeps agent-only truncation recovery instructions out of the report', () => {
+    const truncated = `${report}\n\n──────── [SUMMARY TRUNCATED] ────────\nShowing 1,500 chars (head) + 500 chars (tail) of 7,220 total.\nFull subagent output saved to: /private/cache/result.txt\nTo read the omitted middle: read_file path="/private/cache/result.txt" offset=10 limit=200`
+
+    expect(hydrate(envelope(truncated)).metadata.custom.asyncResult).toBe(report)
+  })
 })

@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { $displayTimestamps } from '@/store/display-timestamps'
@@ -7,6 +7,7 @@ import { $displayTimestamps } from '@/store/display-timestamps'
 import { stubThreadEnvironment } from '../test-utils'
 
 import { Thread } from '.'
+import { AsyncResultDisclosure } from './system-message'
 
 // Timeline timestamps render only when `display.timestamps` is enabled.
 $displayTimestamps.set(true)
@@ -63,5 +64,21 @@ describe('system message timestamp text separation', () => {
     const { container } = render(<Harness text="steer:rerun tests" />)
 
     expectTimestampSeparated(container, 'rerun tests')
+  })
+})
+
+describe('AsyncResultDisclosure', () => {
+  it('keeps a completed background report collapsed until requested', () => {
+    render(<AsyncResultDisclosure label="1 background agent finished" result="Private report details" />)
+
+    const trigger = screen.getByRole('button', { name: '1 background agent finished' })
+
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText('Private report details')).toBeNull()
+
+    fireEvent.click(trigger)
+
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByText('Private report details')).toBeTruthy()
   })
 })

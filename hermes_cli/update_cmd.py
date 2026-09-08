@@ -514,6 +514,15 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         _print_fetch_failure(fetch_result.stderr)
         sys.exit(1)
 
+    if is_shallow:
+        # The depth-1 fetch above leaves the previous tip behind as a ``.git/shallow`` graft
+        # (git never removes old grafts); prune the stale ones so the file stops growing and
+        # merge-base / the orphan-divergence heuristic keep working (#105951).
+        from hermes_cli.gitlock import prune_stale_shallow_grafts
+        pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
+        if pruned:
+            print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
+
     # rev-list on a bogus ref exits 128 and (check=True) would traceback; verify first.
     verify_result = _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", compare_branch])
     if verify_result.returncode != 0:

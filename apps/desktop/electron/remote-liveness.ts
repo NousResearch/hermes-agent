@@ -17,7 +17,9 @@ export interface RemoteLivenessFailure {
 
 interface RemoteConnectionDescriptor {
   baseUrl?: null | string
+  connectionId?: null | string
   mode?: null | string
+  sharedRemote?: boolean
 }
 
 export interface RevalidateRemoteConnectionOptions<TConnection extends RemoteConnectionDescriptor> {
@@ -194,8 +196,9 @@ export interface RevalidatePooledRemoteBackendsOptions<TConnection extends Remot
  * keepalive touch keeps the idle reaper off it. Without this the pool serves a
  * descriptor for an unreachable host indefinitely.
  *
- * Entries share the primary's failure policy, keyed per base URL, so a profile
- * pointing at the same host as another does not burn the streak twice as fast.
+ * Descriptors explicitly marked as one shared remote connection share a probe
+ * and failure streak. Same-URL descriptors without that producer guarantee
+ * remain independent: they can represent different tunnels or credentials.
  */
 export async function revalidatePooledRemoteBackends<TConnection extends RemoteConnectionDescriptor>({
   entries,
@@ -205,31 +208,52 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
   tracker
 }: RevalidatePooledRemoteBackendsOptions<TConnection>): Promise<{ dropped: string[] }> {
   const remotes = [...entries].filter(([, entry]) => !entry.process && entry.remoteBaseUrl)
-  const remotesByBaseUrl = new Map<string, typeof remotes>()
+  const probeGroups = new Map<string, { connection: TConnection; profiles: string[] }>()
   const dropped: string[] = []
 
-  for (const remote of remotes) {
-    const baseUrl = String(remote[1].remoteBaseUrl).replace(/\/+$/, '')
-    const siblings = remotesByBaseUrl.get(baseUrl) ?? []
+  for (const [profile, entry] of remotes) {
+    if (!entry.connectionPromise) {
+      log(`Pooled remote backend for profile "${profile}" has no connection descriptor; dropping stale entry.`)
+      stopBackend(profile)
+      dropped.push(profile)
 
-    siblings.push(remote)
-    remotesByBaseUrl.set(baseUrl, siblings)
+      continue
+    }
+
+    let connection: TConnection
+
+    try {
+      connection = await entry.connectionPromise
+    } catch {
+      log(`Pooled remote backend for profile "${profile}" has an unavailable connection descriptor; dropping stale entry.`)
+      stopBackend(profile)
+      dropped.push(profile)
+
+      continue
+    }
+
+    const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
+    const connectionId = String(connection.connectionId ?? '').trim()
+    const sharesProbe = connection.sharedRemote === true && connectionId.length > 0
+    const failureKey = sharesProbe ? `shared:${connectionId}:${baseUrl}` : `profile:${profile}:${baseUrl}`
+    const group = probeGroups.get(failureKey)
+
+    if (group) {
+      group.profiles.push(profile)
+    } else {
+      probeGroups.set(failureKey, { connection, profiles: [profile] })
+    }
   }
 
   await Promise.all(
-    [...remotesByBaseUrl].map(async ([baseUrl, siblings]) => {
-      const [profile, entry] = siblings[0]
+    [...probeGroups].map(async ([failureKey, group]) => {
+      const profile = group.profiles[0]
 
       try {
-        if (!entry.connectionPromise) {
-          throw new Error('Remote backend descriptor is unavailable.')
-        }
-
-        const connection = await entry.connectionPromise
-        await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
-        tracker.recordSuccess(baseUrl)
+        await probe(group.connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+        tracker.recordSuccess(failureKey)
       } catch {
-        const failure = tracker.recordFailure(baseUrl)
+        const failure = tracker.recordFailure(failureKey)
 
         if (!failure.shouldReset) {
           log(
@@ -241,7 +265,7 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
 
         log(`Pooled remote backend for profile "${profile}" failed liveness probe; dropping stale descriptor.`)
 
-        for (const [siblingProfile] of siblings) {
+        for (const siblingProfile of group.profiles) {
           stopBackend(siblingProfile)
           dropped.push(siblingProfile)
         }

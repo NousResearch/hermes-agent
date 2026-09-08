@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from utils import is_truthy_value
 from hermes_constants import INDICATOR_STYLES
@@ -425,8 +426,27 @@ def _resolve_config_gates() -> set[str]:
         cfg = read_raw_config()
     except Exception:
         return set()
-    return {cmd.name for cmd in gated
-            if is_truthy_value(cfg_get(cfg, *cmd.gateway_config_gate.split(".")), default=False)}
+    result: set[str] = set()
+    for cmd in gated:
+        val: Any = cfg
+        for key in cmd.gateway_config_gate.split("."):
+            if isinstance(val, dict):
+                val = val.get(key)
+            else:
+                val = None
+                break
+        # Dict-shaped gates (e.g. `skills.write_approval = {enabled, only,
+        # exclude}`) are "open" only when an explicit `enabled` sub-key is
+        # truthy. A non-empty dict without `enabled` (e.g. `{}` after a
+        # partial migration) keeps the command closed by default — never
+        # assume "non-empty = on". A bare bool/string still uses the shared
+        # is_truthy_value() path.
+        if isinstance(val, dict):
+            if is_truthy_value(val.get("enabled", False), default=False):
+                result.add(cmd.name)
+        elif is_truthy_value(val, default=False):
+            result.add(cmd.name)
+    return result
 
 
 def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = None) -> bool:

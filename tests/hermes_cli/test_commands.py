@@ -3,7 +3,7 @@
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, SUBCOMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
+from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, SUBCOMMANDS, _resolve_config_gates, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
 from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
 
@@ -301,6 +301,98 @@ class TestGatewayConfigGate:
 
         mapping = slack_subcommand_map()
         assert "verbose" in mapping
+
+
+class TestSkillsConfigGateDict:
+    """`/skills` is gated by ``skills.write_approval``, which is a dict
+    ``{enabled, only, exclude}`` (config v33+). The dict must be evaluated
+    through the ``enabled`` sub-key, not by raw truthiness, otherwise a
+    non-empty dict with ``enabled: false`` (e.g. persisted with only/exclude
+    lists but gate off) would still expose the command in gateway help /
+    menus / mappings. (#58533)
+    """
+
+    def _write_cfg(self, tmp_path, body: str):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(body)
+        return cfg
+
+    def test_skills_dict_enabled_false_keeps_command_closed(
+        self, tmp_path, monkeypatch
+    ):
+        self._write_cfg(tmp_path,
+                        "skills:\n  write_approval:\n    enabled: false\n"
+                        "    only: [a, b]\n    exclude: []\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # The config-gate resolver must read .enabled, not treat the dict
+        # as truthy. With enabled: false, /skills stays out of the
+        # config-gated command set — even though only/exclude are populated.
+        gated = _resolve_config_gates()
+        assert "skills" not in gated
+
+    def test_skills_dict_enabled_true_opens_command(self, tmp_path, monkeypatch):
+        self._write_cfg(tmp_path,
+                        "skills:\n  write_approval:\n    enabled: true\n"
+                        "    only: [a]\n    exclude: []\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert "skills" in _resolve_config_gates()
+
+    def test_skills_bare_true_still_works_for_backcompat(
+        self, tmp_path, monkeypatch
+    ):
+        """A legacy bool `skills.write_approval: true` (pre-v33 config that
+        somehow survived migration) must still open the gate."""
+        self._write_cfg(tmp_path, "skills:\n  write_approval: true\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert "skills" in _resolve_config_gates()
+
+    def test_skills_bare_false_keeps_command_closed(self, tmp_path, monkeypatch):
+        self._write_cfg(tmp_path, "skills:\n  write_approval: false\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert "skills" not in _resolve_config_gates()
+
+    def test_skills_dict_without_enabled_stays_closed(
+        self, tmp_path, monkeypatch
+    ):
+        """A dict missing the `enabled` key must default to closed.
+        This guards against a partial migration that writes only the
+        lists without the toggle — never assume "non-empty = on"."""
+        self._write_cfg(tmp_path, "skills:\n  write_approval:\n    only: [a]\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert "skills" not in _resolve_config_gates()
+
+    def test_skills_dict_off_excluded_from_help(self, tmp_path, monkeypatch):
+        """End-to-end: with enabled: false, /skills must not appear in
+        gateway help even when only/exclude are populated."""
+        self._write_cfg(tmp_path,
+                        "skills:\n  write_approval:\n    enabled: false\n"
+                        "    only: [a, b]\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        joined = "\n".join(gateway_help_lines())
+        assert "`/skills" not in joined
+        # The Telegram menu and Slack map use the same gate resolution,
+        # so they should also hide /skills when enabled is false.
+        names = {n for n, _ in telegram_bot_commands()}
+        assert "skills" not in names
+        assert "skills" not in slack_subcommand_map()
+
+    def test_skills_dict_on_included_in_help(self, tmp_path, monkeypatch):
+        self._write_cfg(tmp_path,
+                        "skills:\n  write_approval:\n    enabled: true\n"
+                        "    only: [a]\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        joined = "\n".join(gateway_help_lines())
+        assert "`/skills" in joined
+        names = {n for n, _ in telegram_bot_commands()}
+        assert "skills" in names
+        assert "skills" in slack_subcommand_map()
 
 
 # ---------------------------------------------------------------------------

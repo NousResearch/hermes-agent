@@ -2962,7 +2962,10 @@ export const zh: Translations = {
     cronLink: '改为创建定时任务',
     cronExplain: '自动化仅在会话存活期间运行。需要跨会话的任务请使用 Cron 调度器。',
     duplicateError: '该类型已存在一个。请在上方的卡片中管理，或先清除它。',
-    submitError: '无法创建自动化，请重试。'
+    submitError: '无法创建自动化，请重试。',
+    pauseGoal: '暂停目标',
+    pauseLoop: '暂停循环',
+    pauseHeartbeat: '暂停心跳'
   },
 
   statusStack: {

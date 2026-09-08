@@ -2800,7 +2800,10 @@ export const en: Translations = {
     cronLink: 'Set up a scheduled job instead',
     cronExplain: 'Automation runs while this session is live. For jobs that outlive the session, use the Cron scheduler.',
     duplicateError: 'One of this type already exists. Manage it from its card above, or clear it first.',
-    submitError: 'Could not create the automation. Please try again.'
+    submitError: 'Could not create the automation. Please try again.',
+    pauseGoal: 'Pause goal',
+    pauseLoop: 'Pause loop',
+    pauseHeartbeat: 'Pause heartbeat'
   },
 
   statusStack: {

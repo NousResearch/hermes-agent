@@ -26,7 +26,7 @@ import {
   submitAutomation
 } from '@/store/automation-composer'
 import { $activeSessionId } from '@/store/session'
-import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
+import { $sessionControlBySession, refreshSessionControl, runSessionControlAction, type SessionControlAction } from '@/store/session-control'
 
 type SegmentedValue = 'goal' | 'loop' | 'heartbeat'
 
@@ -135,6 +135,7 @@ export function AutomationComposerDialog({
   const [interval, setInterval] = useState('')
   const [runLimit, setRunLimit] = useState('')
   const [stopCondition, setStopCondition] = useState('')
+  const [pausing, setPausing] = useState(false)
 
   const toggleType = useCallback(
     (next: SegmentedValue) => {
@@ -153,6 +154,25 @@ export function AutomationComposerDialog({
     setCriteria(current => [...current, value])
     setDraftCriterion('')
   }
+
+  const handlePause = useCallback(async () => {
+    if (!sessionId || pausing || submitting || unavailable) {
+      return
+    }
+
+    const pauseAction = `${type}.pause` as SessionControlAction
+
+    setPausing(true)
+
+    try {
+      await runSessionControlAction(sessionId, pauseAction)
+      void refreshSessionControl(sessionId)
+    } catch {
+      // The error is surfaced via the session-control store; the dialog stays open.
+    } finally {
+      setPausing(false)
+    }
+  }, [sessionId, pausing, submitting, unavailable, type])
 
   const handleSubmit = async () => {
     if (submitting || !sessionId || (!isEdit && existing) || unavailable) {
@@ -417,6 +437,17 @@ export function AutomationComposerDialog({
             <Button onClick={closeAutomationComposer} type="button" variant="ghost">
               {t.common.cancel}
             </Button>
+            {isEdit && (
+              <Button
+                aria-label={type === 'goal' ? copy.pauseGoal : type === 'loop' ? copy.pauseLoop : copy.pauseHeartbeat}
+                disabled={pausing || submitting || !sessionId || unavailable}
+                onClick={() => void handlePause()}
+                type="button"
+                variant="secondary"
+              >
+                {type === 'goal' ? copy.pauseGoal : type === 'loop' ? copy.pauseLoop : copy.pauseHeartbeat}
+              </Button>
+            )}
             <Button disabled={submitting || !sessionId || (!isEdit && !!existing) || unavailable || !prompt.trim()} type="submit">
               {submitLabel}
             </Button>

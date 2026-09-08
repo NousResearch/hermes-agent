@@ -499,7 +499,8 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
             pruned.append(msg)
             continue
         answered: set = set()
-        for follower in messages[i + 1:]:
+        for follower_idx in range(i + 1, len(messages)):
+            follower = messages[follower_idx]
             if not (isinstance(follower, dict) and follower.get("role") == "tool"):
                 break
             tid = (follower.get("tool_call_id") or "").strip()
@@ -2512,10 +2513,10 @@ def _classify_tool_call_orphans(messages: List[Dict[str, Any]]):
     ]
     result_call_ids: set[str] = set().union(*(v for _, v in result_entries))
     orphaned_results = [msg for msg, v in result_entries if v and not (v & surviving_call_ids)]
-    orphaned_ids = {id(msg) for msg in orphaned_results}
-    surviving_result_variants = [v for msg, v in result_entries if v and id(msg) not in orphaned_ids]
+    # Orphan result variants are disjoint from every declared call, so they
+    # cannot contribute a match. Reuse the union instead of scanning each result.
     missing_tool_calls = [
-        tc for tc, v in assistant_call_variants if not any(v & rv for rv in surviving_result_variants)
+        tc for tc, v in assistant_call_variants if not (v & result_call_ids)
     ]
     return surviving_call_ids, result_call_ids, orphaned_results, missing_tool_calls
 

@@ -22,8 +22,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, save_b64_image, success_response
 from plugins.image_gen._common import (
     GPT_IMAGE_2_API_MODEL as API_MODEL, GPT_IMAGE_2_DEFAULT as DEFAULT_MODEL, GPT_IMAGE_2_TIERS,
-    StaticImageGenProvider, collect_source_images, error_factory, prompt_required_error,
-    resolve_static_model, size_for)
+    StaticImageGenProvider, collect_source_images, error_factory, load_image_gen_config,
+    prompt_required_error, resolve_static_model, size_for)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,8 @@ logger = logging.getLogger(__name__)
 # so it stays diagnosable. See issues #19505, #49008 and #31335.
 _MAX_ERROR_BODY_CHARS = 500
 
-# Hosts the ``image_generation`` tool call; ``API_MODEL`` does the image work.
+# Default host model for the Codex Responses image lane; ``API_MODEL`` does the image work.
+# Retargetable without a release via ``_resolve_codex_chat_model`` (env / config) — see #105398.
 _CODEX_CHAT_MODEL = "gpt-5.5"
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _CODEX_INSTRUCTIONS = (
@@ -77,6 +78,34 @@ def _summarize_error_body(body: str) -> str:
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     return resolve_static_model(
         GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
+
+
+def _resolve_codex_chat_model() -> str:
+    """Host model for the Codex Responses image lane (the model that hosts the
+    ``image_generation`` tool call; ``API_MODEL`` does the actual image work).
+
+    Defaults to ``gpt-5.5`` but honours, in order:
+      1. ``OPENAI_CODEX_CHAT_MODEL`` env var,
+      2. ``image_gen.openai-codex.chat_model`` config,
+      3. top-level ``image_gen.codex_chat_model`` config.
+
+    The id is intentionally *not* constrained to a catalog — host model
+    availability is per-account (e.g. gpt-5.5 was removed from a cohort of
+    ChatGPT accounts on 2026-09-07), so operators must be able to retarget
+    the host without waiting for a release (#105398).
+    """
+    env_override = os.environ.get("OPENAI_CODEX_CHAT_MODEL")
+    if env_override and env_override.strip():
+        return env_override.strip()
+    cfg = load_image_gen_config()
+    scoped = cfg.get("openai-codex")
+    scoped_model = scoped.get("chat_model") if isinstance(scoped, dict) else None
+    if isinstance(scoped_model, str) and scoped_model.strip():
+        return scoped_model.strip()
+    top = cfg.get("codex_chat_model")
+    if isinstance(top, str) and top.strip():
+        return top.strip()
+    return _CODEX_CHAT_MODEL
 
 
 def _read_codex_access_token() -> Optional[str]:
@@ -181,7 +210,7 @@ def _build_responses_payload(
     nudged by ``instructions``."""
     content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}, *(input_images or [])]
     return {
-        "model": _CODEX_CHAT_MODEL,
+        "model": _resolve_codex_chat_model(),
         "store": False,
         "instructions": _CODEX_INSTRUCTIONS,
         "input": [{"type": "message", "role": "user", "content": content}],

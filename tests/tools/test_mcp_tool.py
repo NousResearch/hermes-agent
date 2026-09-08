@@ -2367,6 +2367,28 @@ class TestMalformedToolCallArgs:
         assert isinstance(tc, ToolUseContent)
         assert tc.input == {"_raw": "not valid json {{{"}
 
+
+class TestNonObjectToolCallArgs:
+    @pytest.mark.parametrize("raw", ["[]", "null", "42", "true"])
+    def test_non_object_json_wrapped_as_raw(self, raw):
+        """Valid non-object JSON arguments get wrapped in {"_raw": ...} too."""
+        handler = SamplingHandler("mf", {})
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = _make_llm_tool_response(
+            tool_calls_data=[("call_x", "some_tool", raw)]
+        )
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
+        ):
+            result = asyncio.run(handler(None, _make_sampling_params()))
+
+        assert isinstance(result, CreateMessageResultWithTools)
+        tc = result.content[0]
+        assert isinstance(tc, ToolUseContent)
+        assert tc.input == {"_raw": raw}
+
 # ---------------------------------------------------------------------------
 # 12. Metrics tracking
 # ---------------------------------------------------------------------------

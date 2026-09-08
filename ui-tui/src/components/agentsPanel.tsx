@@ -11,8 +11,17 @@ import { fmtDuration } from '../lib/subagentTree.js'
 import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 
-export function AgentsPanelView({ collapsed = false, cols, hidden, rows, running, t }: AgentRows & { collapsed?: boolean; cols: number; t: Theme }) {
-  if (!running) {return null}
+export function AgentsPanelView({
+  collapsed = false,
+  cols,
+  hidden,
+  rows,
+  running,
+  t
+}: AgentRows & { collapsed?: boolean; cols: number; t: Theme }) {
+  if (!running) {
+    return null
+  }
 
   const summary = `▸ ${running} live agents`
   const hints = ' · Ctrl+T expand · F7 restore'
@@ -27,18 +36,21 @@ export function AgentsPanelView({ collapsed = false, cols, hidden, rows, running
       width={cols}
     >
       <Text bold color={t.color.accent} wrap="truncate-end">
-        {collapsed ? summary + activity + hints : `▾ ${running} live agents${hidden ? ` · +${hidden} more` : ''} · Ctrl+T expand · F7 collapse`}
+        {collapsed
+          ? summary + activity + hints
+          : `▾ ${running} live agents${hidden ? ` · +${hidden} more` : ''} · Ctrl+T expand · F7 collapse`}
       </Text>
-      {!collapsed && rows.map(row => (
-        <Box flexDirection="column" key={row.key}>
-          <Text wrap="truncate-end">
-            <Text color={statusGlyph(row.status, t).color}>{statusGlyph(row.status, t).glyph} </Text>
-            <Text color={t.color.text}>{compactPreview(row.goal, Math.max(8, cols - 18))}</Text>
-            <Text color={t.color.muted}> {row.elapsedSeconds == null ? '' : fmtDuration(row.elapsedSeconds)}</Text>
-          </Text>
-          <Text color={t.color.muted} wrap="truncate-end">{`  ↳ ${compactPreview(row.detail, cols - 4)}`}</Text>
-        </Box>
-      ))}
+      {!collapsed &&
+        rows.map(row => (
+          <Box flexDirection="column" key={row.key}>
+            <Text wrap="truncate-end">
+              <Text color={statusGlyph(row.status, t).color}>{statusGlyph(row.status, t).glyph} </Text>
+              <Text color={t.color.text}>{compactPreview(row.goal, Math.max(8, cols - 18))}</Text>
+              <Text color={t.color.muted}> {row.elapsedSeconds == null ? '' : fmtDuration(row.elapsedSeconds)}</Text>
+            </Text>
+            <Text color={t.color.muted} wrap="truncate-end">{`  ↳ ${compactPreview(row.detail, cols - 4)}`}</Text>
+          </Box>
+        ))}
     </Box>
   )
 }
@@ -61,6 +73,11 @@ export function LiveAgentsPanel({ cols }: { cols: number }) {
   }, [live])
 
   return (
-    <AgentsPanelView collapsed={collapsed} cols={cols} {...buildAgentRows(subagents, [], now, dockRowLimit(stdout?.rows ?? 24))} t={theme} />
+    <AgentsPanelView
+      collapsed={collapsed}
+      cols={cols}
+      {...buildAgentRows(subagents, [], now, dockRowLimit(stdout?.rows ?? 24))}
+      t={theme}
+    />
   )
 }

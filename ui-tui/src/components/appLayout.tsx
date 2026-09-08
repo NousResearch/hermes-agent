@@ -277,7 +277,9 @@ const ComposerPane = memo(function ComposerPane({
   composer,
   cursorSnapshotRef,
   status
-}: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'> & { cursorSnapshotRef: MutableRefObject<InputCursorSnapshot | null> }) {
+}: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'> & {
+  cursorSnapshotRef: MutableRefObject<InputCursorSnapshot | null>
+}) {
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
@@ -534,7 +536,9 @@ export const AppLayout = memo(function AppLayout({
   const ui = useStore($uiState)
 
   const cursorSnapshotRef = useRef<InputCursorSnapshot | null>(null)
-  useEffect(() => { cursorSnapshotRef.current = null }, [ui.sid])
+  useEffect(() => {
+    cursorSnapshotRef.current = null
+  }, [ui.sid])
 
   // Inline mode skips AlternateScreen so the host terminal's native
   // scrollback captures rows scrolled off the top; composer + progress
@@ -577,7 +581,12 @@ export const AppLayout = memo(function AppLayout({
             </PerfPane>
 
             <PerfPane id="composer">
-              <ComposerPane actions={actions} composer={composer} cursorSnapshotRef={cursorSnapshotRef} status={status} />
+              <ComposerPane
+                actions={actions}
+                composer={composer}
+                cursorSnapshotRef={cursorSnapshotRef}
+                status={status}
+              />
             </PerfPane>
 
             {SHOW_FPS && (

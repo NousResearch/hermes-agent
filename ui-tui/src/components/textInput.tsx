@@ -790,7 +790,9 @@ export function TextInput({
   color,
   focus = true
 }: TextInputProps) {
-  const [cur, setCur] = useState(() => cursorSnapshotRef?.current?.value === value ? cursorSnapshotRef.current.cursor : value.length)
+  const [cur, setCur] = useState(() =>
+    cursorSnapshotRef?.current?.value === value ? cursorSnapshotRef.current.cursor : value.length
+  )
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
@@ -939,9 +941,14 @@ export function TextInput({
 
   // The composer unmounts while full-screen monitors own input. Keep its
   // insertion point with the shell, not with transient steer/secret inputs.
-  useEffect(() => () => {
-    if (cursorSnapshotRef) {cursorSnapshotRef.current = { cursor: curRef.current, value: vRef.current }}
-  }, [cursorSnapshotRef])
+  useEffect(
+    () => () => {
+      if (cursorSnapshotRef) {
+        cursorSnapshotRef.current = { cursor: curRef.current, value: vRef.current }
+      }
+    },
+    [cursorSnapshotRef]
+  )
 
   useEffect(() => {
     if (!focus) {

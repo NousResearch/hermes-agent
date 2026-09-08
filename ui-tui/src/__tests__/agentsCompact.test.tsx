@@ -27,34 +27,48 @@ it('keeps collapsed live chrome to one row without losing count or restore contr
     expect(text).toContain(`${rows.running} live agents`)
     expect(text).toContain('Ctrl+T expand')
     expect(text).toContain('F7 restore')
-    expect(renderToScreen(<AgentsPanelView cols={cols} {...rows} t={DEFAULT_THEME} />, cols).height).toBeGreaterThan(view.height)
+    expect(renderToScreen(<AgentsPanelView cols={cols} {...rows} t={DEFAULT_THEME} />, cols).height).toBeGreaterThan(
+      view.height
+    )
   }
 })
 
 it('opens the selected live transcript on Enter while details remain independently accessible', async () => {
   patchUiState({ sid: 'owner' })
-  applyAgentSnapshot('owner', { subagents: [{ subagent_id: 'child', goal: 'Inspect ownership', status: 'running' }], delegations: [] })
+  applyAgentSnapshot('owner', {
+    subagents: [{ subagent_id: 'child', goal: 'Inspect ownership', status: 'running' }],
+    delegations: []
+  })
 
-  const request = vi.fn(async (method: string) => method === 'subagent.tail'
-    ? { available: true, text: 'CHILD_TOOL_OUTPUT', truncated: false }
-    : {})
+  const request = vi.fn(async (method: string) =>
+    method === 'subagent.tail' ? { available: true, text: 'CHILD_TOOL_OUTPUT', truncated: false } : {}
+  )
 
   const stdout = Object.assign(new PassThrough(), { columns: 80, rows: 20, isTTY: false })
   const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => {}, ref: () => {}, unref: () => {} })
   let output = ''
-  stdout.on('data', chunk => { output += stripAnsi(chunk.toString()) })
-
-  const view = renderSync(<Box height={20}><AgentsOverlay gw={{ request } as unknown as GatewayClient} onClose={() => {}} t={DEFAULT_THEME} /></Box>, {
-    stdout: stdout as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
-    stderr: new PassThrough() as unknown as NodeJS.WriteStream,
-    patchConsole: false
+  stdout.on('data', chunk => {
+    output += stripAnsi(chunk.toString())
   })
+
+  const view = renderSync(
+    <Box height={20}>
+      <AgentsOverlay gw={{ request } as unknown as GatewayClient} onClose={() => {}} t={DEFAULT_THEME} />
+    </Box>,
+    {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stderr: new PassThrough() as unknown as NodeJS.WriteStream,
+      patchConsole: false
+    }
+  )
 
   try {
     await vi.waitFor(() => expect(output).toContain('Inspect ownership'))
     stdin.write('\r')
-    await vi.waitFor(() => expect(request).toHaveBeenCalledWith('subagent.tail', { session_id: 'owner', subagent_id: 'child' }))
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith('subagent.tail', { session_id: 'owner', subagent_id: 'child' })
+    )
     await vi.waitFor(() => expect(output).toContain('CHILD_TOOL_OUTPUT'))
     output = ''
     stdin.write('d')

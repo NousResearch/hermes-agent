@@ -772,9 +772,13 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       return setMode('steer')
     }
 
-    if (ch === 't' && !key.ctrl && selected) {return setMode('tail')}
+    if (ch === 't' && !key.ctrl && selected) {
+      return setMode('tail')
+    }
 
-    if (ch === 'd' && !key.ctrl && selected) {return setMode('detail')}
+    if (ch === 'd' && !key.ctrl && selected) {
+      return setMode('detail')
+    }
 
     if (ch === 'q') {
       return closeWithCleanup()
@@ -980,12 +984,19 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       )}
 
       <Box flexDirection="column" flexShrink={0} marginTop={1}>
-        <Text color={t.color.accent} wrap="truncate-end">{replayMode ? 'Enter/d detail' : 'Enter/t tail · d detail'} · e steer · x stop · Esc back</Text>
-        {flash ? <Text color={t.color.accent} wrap="truncate-end">{flash}</Text> : null}
+        <Text color={t.color.accent} wrap="truncate-end">
+          {replayMode ? 'Enter/d detail' : 'Enter/t tail · d detail'} · e steer · x stop · Esc back
+        </Text>
+        {flash ? (
+          <Text color={t.color.accent} wrap="truncate-end">
+            {flash}
+          </Text>
+        ) : null}
 
         {mode === 'list' ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            ↑↓/jk move · g/G top/bottom · {replayMode ? 'Enter/→ detail' : 'Enter tail · d/→ detail'}{controlsHint} · s sort:{SORT_LABEL[sort]} · f filter:
+            ↑↓/jk move · g/G top/bottom · {replayMode ? 'Enter/→ detail' : 'Enter tail · d/→ detail'}
+            {controlsHint} · s sort:{SORT_LABEL[sort]} · f filter:
             {FILTER_LABEL[filter]}
             {history.length > 0 ? ` · [ / ] history ${historyIndex}/${history.length}` : ''}
             {' · q close'}

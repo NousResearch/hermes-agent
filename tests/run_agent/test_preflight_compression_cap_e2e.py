@@ -68,9 +68,9 @@ def _make_agent(monkeypatch, tmp_path: Path, *, max_attempts) -> AIAgent:
     db = SessionDB(db_path=tmp_path / "state.db")
     with (
         contextlib.redirect_stdout(io.StringIO()),
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             base_url="https://openrouter.ai/api/v1",
@@ -102,6 +102,9 @@ def test_preflight_runs_fourth_compaction_pass_at_cap_six(monkeypatch, tmp_path)
     # makes material (~10% > the 5% progress floor) headway.
     compressor = agent.context_compressor
     compressor.threshold_tokens = 50_000
+    # This is the attempt-cap invariant, not first-request deferral: the provider
+    # is already known to omit usage, so its heuristic fallback may compact.
+    compressor.note_usage_less_response()
 
     estimate_state = {"tokens": 1_000_000.0, "calls": 0}
 

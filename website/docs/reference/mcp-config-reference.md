@@ -337,6 +337,38 @@ Behavior:
 - Token refresh is automatic; re-authorization only happens when refresh fails
 - Only applies to HTTP/StreamableHTTP transport (`url`-based servers)
 
+### Device-code login (RFC 8628)
+
+For an authorization server advertising `device_authorization_endpoint`, explicitly choose
+device authorization from a terminal on the machine running Hermes:
+
+```bash
+hermes mcp login protected_api --flow device
+```
+
+Open the printed verification URL on any device and enter the displayed user code.
+Hermes polls for approval, respects `authorization_pending` and `slow_down`, and stops
+on denial or expiry. No browser is launched and no callback listener is needed.
+`oauth.timeout` bounds the approval wait (default 300 seconds), also limited by the code's lifetime.
+
+Set `oauth.flow: device` on the server to make `hermes mcp login` and `hermes mcp reauth`
+(including `reauth --all`) use device authorization. `login --flow browser` overrides that
+setting for one login; browser PKCE remains the default. Unsupported metadata produces
+an actionable error rather than silently falling back to a different flow.
+
+Device login requests the device and refresh grants during dynamic registration, or uses
+your configured `oauth.client_id`, `oauth.client_secret`, and `oauth.token_endpoint_auth_method`.
+The registered client must permit device authorization. The browser CIMD document is not used.
+`oauth.scope` is sent on the device authorization request; `oauth.user_agent` also applies
+to token polling. Tokens, registration, and issuer metadata stay in the active profile's
+MCP token store and the existing runtime refresh path reuses them after a restart.
+Failed device grants do not replace previously saved credentials.
+
+Initial device login is terminal-only: dashboard/browser callbacks and background reconnects
+do not start device authorization. Run the login command against the **same profile and host**
+as the gateway. An expired/rejected device grant without a usable refresh token requires
+another explicit login.
+
 ### Client identification: CIMD and DCR
 
 Hermes identifies itself to authorization servers with a **Client ID Metadata Document** (CIMD), the mechanism the MCP `2026-07-28` spec adopted in place of Dynamic Client Registration. The document is published at

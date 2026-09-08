@@ -1424,8 +1424,24 @@ class GatewayShutdownMixin:
         return True
 
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
-        if self._restart_task_started:
+        if self._restart_task_started or (not self._running and self._shutdown_event.is_set()):
             return False
+        prior_restart_state = (
+            self._restart_requested,
+            self._restart_detached,
+            self._restart_via_service,
+            self._draining,
+        )
+
+        def _restore_restart_state() -> None:
+            (
+                self._restart_requested,
+                self._restart_detached,
+                self._restart_via_service,
+                self._draining,
+            ) = prior_restart_state
+            self._restart_task_started = False
+
         self._restart_requested = True
         self._restart_detached = detached
         self._restart_via_service = via_service
@@ -1450,7 +1466,46 @@ class GatewayShutdownMixin:
         # self._restart_task: a bare asyncio.create_task() keeps only a weak reference, so the event loop
         # may garbage-collect a still-pending task mid-flight. The cancel loop in _stop_impl explicitly
         # skips _restart_task for the same reason it skips _stop_task.
-        self._restart_task = asyncio.create_task(_run_restart())
+        restart_coro = _run_restart()
+        try:
+            self._restart_task = asyncio.create_task(restart_coro)
+        except Exception:
+            restart_coro.close()
+            self._restart_task = None
+            _restore_restart_state()
+            logger.exception("Failed to schedule gateway restart task")
+            return False
+
+        def _settle_restart_task(task: asyncio.Task) -> None:
+            if task.cancelled():
+                error = "cancelled"
+            else:
+                exc = task.exception()
+                if exc is None:
+                    return
+                error = str(exc) or type(exc).__name__
+            if self._restart_task is task:
+                self._restart_task = None
+            if self._stop_task is not None and self._stop_task.done():
+                self._stop_task = None
+            # ``_running`` is also false while startup is still connecting, so it cannot tell a
+            # pre-teardown failure from a one-way shutdown failure.  ``stop()`` resets this marker
+            # for each attempt and ``_stop_begin_teardown`` flips it at the actual phase boundary.
+            if getattr(self, "_stop_teardown_started", False):
+                # Teardown is one-way once _stop_begin_teardown clears _running.  Do not pretend
+                # the gateway is live or retry a partly completed stop; make the failed terminal
+                # state observable to wait_for_shutdown() and the process exit verdict instead.
+                self._restart_task_started = False
+                self._draining = False
+                self._exit_with_failure = True
+                self._exit_reason = self._exit_reason or f"Gateway restart teardown failed: {error}"
+                self._shutdown_event.set()
+            else:
+                # Startup may not have set ``_running`` yet, but no one-way teardown happened.
+                _restore_restart_state()
+            logger.error("Gateway restart task failed: %s", error)
+
+        self._restart_task.add_done_callback(_settle_restart_task)
         return True
 
     def _start_systemd_watchdog(self) -> bool:
@@ -1549,6 +1604,7 @@ class GatewayShutdownMixin:
         """Flag teardown, stop room worker/watchdog, notify sessions."""
         logger.info("Stopping gateway%s...", " for restart" if self._restart_requested else "")
         ctx.started_at = time.monotonic()
+        self._stop_teardown_started = True
         self._running = False
         self._clear_plugin_message_injector()
         self._draining = True
@@ -1907,6 +1963,8 @@ class GatewayShutdownMixin:
         _stop_guards = getattr(self, "_stop_loop_liveness_guards", None)
         if callable(_stop_guards):
             _stop_guards()
+        if not self._running and self._shutdown_event.is_set():
+            return
         if restart:
             self._restart_requested = True
             self._restart_detached = detached_restart
@@ -1914,6 +1972,7 @@ class GatewayShutdownMixin:
         if self._stop_task is not None:
             await self._stop_task
             return
+        self._stop_teardown_started = False
         self._stop_task = asyncio.create_task(GatewayRunner._stop_impl(self))
         await self._stop_task
 

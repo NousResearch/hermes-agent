@@ -316,9 +316,15 @@ class GatewayNotificationsMixin:
         self, response: str, source: SessionSource, adapter,
         metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
-    ) -> None:
+    ) -> "SendResult":
         """Deliver a queued response using the normal text+attachment split."""
         from gateway.run import _strip_response_attachments_for_direct_send
+        from gateway.platforms.base import SendResult
+        text_delivery_result = (
+            self._run_agent_stream_final_delivery_result(stream_consumer, response)
+            if text_already_delivered else
+            SendResult(success=False, error="queued final text delivery unknown")
+        )
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
             if text_content:
@@ -337,6 +343,7 @@ class GatewayNotificationsMixin:
                         )
                         if getattr(_edit_res, "success", False):
                             _reconciled = True
+                            text_delivery_result = _edit_res
                             logger.info(
                                 "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
                                 _sc_msg_id,
@@ -353,19 +360,21 @@ class GatewayNotificationsMixin:
                                     "connector's egress guard; not falling back "
                                     "to a send (the destination is not approved)."
                                 )
-                                return
+                                return _edit_res
                     except Exception as _qe:
                         logger.debug("Queued-lane reconcile edit failed (%s); falling back to send.", _qe)
                 if not _reconciled:
-                    await adapter.send(source.chat_id, text_content, metadata=metadata)
+                    text_delivery_result = await adapter.send(
+                        source.chat_id, text_content, metadata=metadata)
         # Failed turns deliver their (normalized failure) text but must not upload attachments as if
         # they succeeded — mirrors the ``not agent_result.get("failed")`` completed-turn guard.
         if not deliver_media:
-            return
+            return text_delivery_result
         await self._deliver_media_from_response(
             response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
             thread_metadata=metadata,
         )
+        return text_delivery_result
 
     def _schedule_update_notification_watch(self) -> None:
         """Ensure a background task is watching for update completion."""

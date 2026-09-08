@@ -160,6 +160,103 @@ async def test_request_restart_is_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_request_restart_rejection_restores_live_gateway_state(monkeypatch):
+    runner, _adapter = make_restart_runner()
+
+    def _reject(_coro):
+        raise RuntimeError("task factory rejected")
+
+    monkeypatch.setattr(asyncio, "create_task", _reject)
+
+    assert runner.request_restart(detached=False, via_service=True) is False
+    assert runner._restart_task is None
+    assert runner._restart_task_started is False
+    assert runner._restart_requested is False
+    assert runner._restart_via_service is False
+    assert runner._draining is False
+
+
+@pytest.mark.asyncio
+async def test_request_restart_task_failure_before_teardown_allows_retry():
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock(side_effect=RuntimeError("stop failed"))
+    runner._restart_after_turn_timeout = 0.0
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await runner._restart_task
+    await asyncio.sleep(0)
+
+    assert runner._restart_task_started is False
+    assert runner._restart_requested is False
+    assert runner._restart_via_service is False
+    assert runner._draining is False
+    runner.stop = AsyncMock()
+    assert runner.request_restart(detached=False, via_service=True) is True
+    await runner._restart_task
+
+
+@pytest.mark.asyncio
+async def test_request_restart_pre_teardown_startup_failure_allows_retry():
+    runner, _adapter = make_restart_runner()
+    runner._running = False
+    runner._shutdown_event.clear()
+    runner._exit_with_failure = False
+    runner.stop = AsyncMock(side_effect=RuntimeError("startup stop failed"))
+    runner._restart_after_turn_timeout = 0.0
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+    with pytest.raises(RuntimeError, match="startup stop failed"):
+        await runner._restart_task
+    await asyncio.sleep(0)
+
+    assert runner._shutdown_event.is_set() is False
+    assert runner.should_exit_with_failure is False
+    assert runner._restart_task_started is False
+    assert runner._restart_requested is False
+    assert runner._draining is False
+    runner.stop = AsyncMock()
+    assert runner.request_restart(detached=False, via_service=True) is True
+    await runner._restart_task
+
+
+@pytest.mark.asyncio
+async def test_request_restart_failure_after_teardown_is_terminal(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    runner._restart_after_turn_timeout = 0.0
+    runner._clear_plugin_message_injector = MagicMock()
+    runner._stop_hosted_room_worker = AsyncMock(return_value=True)
+    runner._stop_systemd_watchdog = AsyncMock()
+    runner._cancel_secondary_profile_reconnect_tasks = AsyncMock()
+    runner._notify_active_sessions_of_shutdown = AsyncMock()
+    runner._launch_detached_restart_command = AsyncMock()
+
+    async def _fail_after_begin_teardown(_self, _timeout, _ctx):
+        assert runner._running is False
+        raise RuntimeError("drain failed after teardown began")
+
+    monkeypatch.setattr(
+        gateway_run.GatewayRunner, "_stop_drain_active_work", _fail_after_begin_teardown)
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+    restart_task = runner._restart_task
+    with pytest.raises(RuntimeError, match="drain failed after teardown began"):
+        await restart_task
+    await asyncio.sleep(0)
+
+    assert runner._running is False
+    assert runner._restart_task_started is False
+    assert runner._restart_task is None
+    assert runner._stop_task is None
+    assert runner._draining is False
+    assert runner.should_exit_with_failure is True
+    assert "drain failed after teardown began" in runner.exit_reason
+    await asyncio.wait_for(runner.wait_for_shutdown(), timeout=0.1)
+    assert runner.request_restart(detached=False, via_service=True) is False
+    runner._launch_detached_restart_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_request_restart_defers_stop_until_active_turn_finishes():
     """Regression for #77184: requesting turn must not enter the drain set."""
     runner, _adapter = make_restart_runner()

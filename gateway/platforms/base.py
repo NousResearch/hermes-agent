@@ -2998,23 +2998,10 @@ class BasePlatformAdapter(ABC):
             # Same-or-newer generation: chain so both fire in registration order.
             if callable(existing_cb) and (
                 existing_gen is None or generation is None or int(existing_gen) == int(generation)):
-                callback = self._chain_callbacks(existing_cb, callback)
+                from gateway.post_delivery import chain_post_delivery_callbacks
+                callback = chain_post_delivery_callbacks(existing_cb, callback)
         self._post_delivery_callbacks[session_key] = (
             callback if generation is None else (int(generation), callback))
-
-    @staticmethod
-    def _chain_callbacks(*callbacks: Callable) -> Callable[[], Awaitable[None]]:
-        """Async wrapper running ``callbacks`` in order with per-callback exception isolation;
-        async so coroutines returned by async hooks are awaited, not dropped."""
-        async def _chained() -> None:
-            for _cb in callbacks:
-                try:
-                    _result = _cb()
-                    if inspect.isawaitable(_result):
-                        await _result
-                except Exception:
-                    logger.debug("Post-delivery callback failed", exc_info=True)
-        return _chained
 
     def pop_post_delivery_callback(
         self, session_key: str, *, generation: int | None = None) -> Callable | None:
@@ -3634,8 +3621,9 @@ class BasePlatformAdapter(ABC):
             caption = text_content
         tts_result = await self.play_tts(
             chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)
-        record_delivery(tts_result)
-        return bool(caption and getattr(tts_result, "success", False))
+        caption_delivered = bool(caption and getattr(tts_result, "success", False))
+        record_delivery(tts_result, final_text=caption_delivered)
+        return caption_delivered
 
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
@@ -3767,7 +3755,7 @@ class BasePlatformAdapter(ABC):
         result = await delivery_adapter._send_with_retry(
             chat_id=event.source.chat_id, content=text_content,
             reply_to=_reply_anchor_for_event(event), metadata=metadata)
-        record_delivery(result)
+        record_delivery(result, final_text=True)
         if _obligation_id is not None:
             await self._finalize_delivery_obligation(_obligation_id, result, event, delivery_adapter)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
@@ -3868,15 +3856,18 @@ class BasePlatformAdapter(ABC):
             text_content=text_content, images=images, media_files=media_files,
             local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract)
 
-    async def _fire_post_delivery_callback(self, session_key: str, interrupt_event: asyncio.Event) -> None:
+    async def _fire_post_delivery_callback(
+        self, session_key: str, interrupt_event: asyncio.Event, delivery_result: Optional[SendResult],
+    ) -> None:
         """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
         read HERE — stamped on the interrupt event DURING the handler await; an earlier snapshot
         would let stale runs fire a fresher run's callbacks."""
         _post_cb = self.pop_post_delivery_callback(
             session_key, generation=getattr(interrupt_event, "_hermes_run_generation", None))
         if callable(_post_cb):
+            from gateway.post_delivery import invoke_post_delivery_callback
             with contextlib.suppress(asyncio.TimeoutError, Exception):
-                _post_result = _post_cb()
+                _post_result = invoke_post_delivery_callback(_post_cb, delivery_result)
                 if inspect.isawaitable(_post_result):
                     await asyncio.wait_for(_post_result, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
 
@@ -3907,12 +3898,15 @@ class BasePlatformAdapter(ABC):
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
+        final_text_delivery = SendResult(success=False, error="final text delivery unknown")
 
-        def _record_delivery(result):
-            nonlocal delivery_attempted, delivery_succeeded
+        def _record_delivery(result, *, final_text: bool = False):
+            nonlocal delivery_attempted, delivery_succeeded, final_text_delivery
             if result is not None:
                 delivery_attempted = True
                 delivery_succeeded = delivery_succeeded or bool(getattr(result, "success", False))
+                if final_text:
+                    final_text_delivery = result
         # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
@@ -3996,7 +3990,12 @@ class BasePlatformAdapter(ABC):
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-            await self._fire_post_delivery_callback(session_key, interrupt_event)
+            if getattr(event, "_final_text_delivery_silenced", False):
+                final_text_delivery = None
+            else:
+                final_text_delivery = getattr(
+                    event, "_final_text_delivery_result", final_text_delivery)
+            await self._fire_post_delivery_callback(session_key, interrupt_event, final_text_delivery)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)

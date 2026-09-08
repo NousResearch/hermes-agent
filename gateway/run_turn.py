@@ -1716,6 +1716,7 @@ class GatewayTurnMixin:
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
             response = ""
+            event._final_text_delivery_silenced = True
 
         adapter = self._adapter_for_source(source)
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
@@ -1730,6 +1731,11 @@ class GatewayTurnMixin:
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.
         if agent_result.get("already_sent") and not agent_result.get("failed"):
+            from gateway.platforms.base import SendResult
+            event._final_text_delivery_result = agent_result.get("_final_text_delivery_result")
+            if not isinstance(event._final_text_delivery_result, SendResult):
+                event._final_text_delivery_result = SendResult(
+                    success=False, error="streamed final text delivery unknown")
             if response and adapter:
                 await self._deliver_media_from_response(response, event, adapter)
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
@@ -3056,6 +3062,36 @@ class GatewayTurnMixin:
                     return False
         return False
 
+    @staticmethod
+    def _run_agent_stream_final_delivery_result(consumer, final_text: str):
+        """Translate the stream ledger's exact-text verdict into a typed delivery result.
+
+        Suppression retains its historical ambiguity policy, but lifecycle callbacks fail closed:
+        only an affirmative ledger match is success; a missing verdict is typed as unknown.
+        """
+        from gateway.platforms.base import SendResult
+
+        if consumer is None:
+            return SendResult(success=False, error="streamed final text delivery unknown")
+        matcher = getattr(consumer, "delivered_final_matches", None)
+        if not callable(matcher):
+            return SendResult(success=False, error="streamed final text delivery unknown")
+        try:
+            verdict = matcher(final_text)
+        except Exception:
+            return SendResult(success=False, error="streamed final text delivery unknown")
+        if verdict is True:
+            message_id = getattr(consumer, "message_id", None)
+            return SendResult(
+                success=True,
+                message_id=None if message_id == "__no_edit__" else message_id,
+            )
+        return SendResult(
+            success=False,
+            error=("streamed final text delivery failed"
+                   if verdict is False else "streamed final text delivery unknown"),
+        )
+
     def _run_agent_start_turn_worker(self, turn_ctx: TurnContext, run_sync: Callable[[], Any]) -> "GatewayRunner._RunAgentWorker":
         """Schedule ``run_sync`` on the executor plus the inactivity watchdog thread.
 
@@ -3365,7 +3401,11 @@ class GatewayTurnMixin:
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
+        from gateway.platforms.base import SendResult
+        _callback_delivery_result = SendResult(
+            success=False, error="queued final text delivery unknown")
         if self._is_intentional_silence(_delivery_result, first_response):
+            _callback_delivery_result = None
             logger.info(
                 "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                 session_key or "?",
@@ -3378,7 +3418,7 @@ class GatewayTurnMixin:
                 session_key or "?",
             )
             try:
-                await self._deliver_queued_first_response(
+                _callback_delivery_result = await self._deliver_queued_first_response(
                     first_response, source=turn_ctx.source, adapter=adapter,
                     metadata=turn_ctx._status_thread_metadata, event_message_id=turn_ctx.event_message_id,
                     text_already_delivered=_already_streamed,
@@ -3386,11 +3426,14 @@ class GatewayTurnMixin:
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
+                _callback_delivery_result = SendResult(
+                    success=False, error="queued final text delivery failed")
         # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
         _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
         if callable(_bg_cb):
+            from gateway.post_delivery import invoke_post_delivery_callback
             with suppress(Exception):
-                _bg_result = _bg_cb()
+                _bg_result = invoke_post_delivery_callback(_bg_cb, _callback_delivery_result)
                 if inspect.isawaitable(_bg_result):
                     await _bg_result
 
@@ -3562,6 +3605,7 @@ class GatewayTurnMixin:
             logger.warning(fail_result, _sk, getattr(_res, "error", None))
             return
         response["already_sent"] = True
+        response["_final_text_delivery_result"] = _res
         logger.info(*ok)
 
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
@@ -3609,6 +3653,8 @@ class GatewayTurnMixin:
                 _sk, _streamed, _previewed, _content_delivered,
             )
             response["already_sent"] = True
+            response["_final_text_delivery_result"] = self._run_agent_stream_final_delivery_result(
+                _sc, _final)
         elif not _transformed and _stale_finalized and _sc is not None:
             # Stale finalize: edit the streamed message up to the complete response (on failure the
             # normal send delivers). Not for split delivery — message_id is only the LAST chunk.

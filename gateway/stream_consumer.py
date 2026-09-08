@@ -366,11 +366,31 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         with the authoritative full final on native turns (ledger-only, never re-sent as a
         frame), so prefer the ledger there too — otherwise a tool-bearing / rotated native turn
         records a tail-only payload, ``delivered_final_matches`` reports a mismatch, and the
-        gateway resends the tail as a fresh bubble (double bubble).  getattr defaults keep
-        __new__-constructed test consumers (which skip __init__) working."""
-        if (getattr(self, "_turn_split_delivery", False)
-                or getattr(self, "_use_native_streaming", False)) and getattr(self, "_stream_ledger", ""):
-            text = self._stream_ledger
+        gateway resends the tail as a fresh bubble (double bubble).
+
+        BUT the healed native ledger may also carry post-stream AUGMENTATION (verifier footer,
+        completion explainer) that ``finish()`` appended after streaming ended — content that
+        the native finalize frames NEVER put on the wire (it frames ``_accumulated``, not the
+        ledger).  Recording that as delivered is a lie: ``delivered_final_matches`` would confirm
+        the augmented payload and the gateway would suppress its corrective send, silently losing
+        the footer (#96942).  The distinction is a prefix test: native keeps ``_accumulated`` as
+        the framed body (cumulatively the whole thing reached the wire), so a ledger that STRICTLY
+        EXTENDS that body carries un-sent augmentation — record only the delivered body then, so
+        the match stays False until the corrective send delivers the rest.  A ledger that merely
+        re-expresses the delivered body (equal to it, or reconstructed when ``_accumulated`` is
+        empty on the finalize-tail path) is still substituted (no double bubble).  getattr
+        defaults keep __new__-constructed test consumers (which skip __init__) working."""
+        ledger = getattr(self, "_stream_ledger", "")
+        if getattr(self, "_use_native_streaming", False) and ledger:
+            delivered = self._display_payload(getattr(self, "_accumulated", ""))
+            ledger_display = self._display_payload(ledger)
+            if delivered and ledger_display != delivered and ledger_display.startswith(delivered):
+                # Ledger strictly extends the framed body → un-sent augmentation.
+                self._delivered_final_text = delivered
+                return
+            text = ledger
+        elif getattr(self, "_turn_split_delivery", False) and ledger:
+            text = ledger
         self._delivered_final_text = self._display_payload(text)
 
     def delivered_final_matches(self, final_text: str) -> Optional[bool]:

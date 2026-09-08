@@ -171,23 +171,31 @@ def test_interactive_shutdown_preserves_gateway_owned_session(
     from hermes_state import SessionDB
 
     session_id = "interactive-handoff"
-    monkeypatch.setattr(cli_mod, "_handed_off_session_ids", {session_id} if handed_off else set())
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(cli_mod, "_handed_off_session_ids", set())
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         db.create_session(session_id=session_id, source="cli")
         db.append_message(session_id, "user", "original request")
         if handed_off:
+            assert db.request_handoff(session_id, "telegram")
+            assert db.claim_handoff(session_id)
             db.record_gateway_session_peer(
                 session_id, source="telegram", session_key="agent:main:telegram:dm:test",
                 chat_id="test", chat_type="dm",
             )
             db.append_message(session_id, "assistant", "gateway now owns this session")
+            db.complete_handoff(session_id)
         before = db.get_messages(session_id)
         instance = MagicMock()
         instance.agent.session_id = session_id
+        instance.session_id = session_id
+        instance._session_db = db
+        instance._HANDOFF_PENDING_TIMEOUT = 1
+        if handed_off:
+            assert cli_mod.HermesCLI._handoff_wait(instance, "telegram", "Transferred chat") is False
         instance._agent_running = True
         instance._voice_recorder = None
-        instance._session_db = db
         instance._delete_session_on_exit = delete_on_exit
         instance._persist_active_session_before_close.side_effect = lambda: db.append_message(
             session_id, "user", "CLI close snapshot",
@@ -225,9 +233,16 @@ def test_cleanup_releases_memory_without_ending_transferred_session(monkeypatch,
     """Handoff releases local providers without extracting a stale session-end snapshot."""
     import cli as cli_mod
 
-    agent = MagicMock()
+    from agent.memory_manager import MemoryManager
+    from run_agent import AIAgent
+
+    agent = object.__new__(AIAgent)
     agent.session_id = "memory-handoff"
     agent._session_messages = [{"role": "user", "content": "CLI snapshot"}]
+    agent._memory_manager = MemoryManager()
+    provider = MagicMock()
+    agent._memory_manager._providers = [provider]
+    agent.context_compressor = MagicMock()
     monkeypatch.setattr(cli_mod, "_handed_off_session_ids", {agent.session_id} if handed_off else set())
     monkeypatch.setattr(cli_mod, "_active_agent_ref", agent)
     monkeypatch.setattr(cli_mod, "_cleanup_done", False)
@@ -243,9 +258,11 @@ def test_cleanup_releases_memory_without_ending_transferred_session(monkeypatch,
     resource_cleanup.assert_called_once_with()
     if handed_off:
         finalize.assert_not_called()
-        agent.shutdown_memory_provider.assert_not_called()
-        agent._memory_manager.shutdown_all.assert_called_once_with()
-        assert agent._memory_provider_shutdown is True
+        provider.on_session_end.assert_not_called()
+        agent.context_compressor.on_session_end.assert_not_called()
     else:
         finalize.assert_called_once()
-        agent.shutdown_memory_provider.assert_called_once_with(agent._session_messages)
+        provider.on_session_end.assert_called_once_with(agent._session_messages)
+        agent.context_compressor.on_session_end.assert_called_once_with(agent.session_id, agent._session_messages)
+    provider.shutdown.assert_called_once_with()
+    assert agent._memory_provider_shutdown is True

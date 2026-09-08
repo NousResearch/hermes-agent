@@ -45,6 +45,7 @@ def context(request, tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
     monkeypatch.setattr(server, "_workdir_row_model_config", lambda _session: ("test-model", {}))
     monkeypatch.setattr(server, "_persisted_session_cwd", lambda _session: None)
+    monkeypatch.setattr(server, "_sessions", {"runtime": record})
     monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (record, None))
     monkeypatch.setattr(server, "_typed_stop_phrase_response", lambda *_args: None)
     monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
@@ -60,7 +61,10 @@ def context(request, tmp_path, monkeypatch):
         def start(self):
             started.append(record["session_key"])
 
-    monkeypatch.setattr(server, "threading", SimpleNamespace(Thread=DeferredTurn))
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(server, "threading", SimpleNamespace(**{**vars(threading), "Thread": DeferredTurn}))
     rpc = HostedRoomServerRPC(server, db_path=turn.path)
     yield SimpleNamespace(profile=profile, db=db, record=record, turn=turn, rpc=rpc, started=started)
     db.close()

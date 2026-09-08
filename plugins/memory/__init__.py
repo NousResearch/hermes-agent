@@ -9,11 +9,13 @@ must never shadow a shipped provider. Changing this order is a breaking change.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
 import importlib.util
 import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from hermes_cli.config import cfg_get
@@ -67,7 +69,11 @@ def _is_bundled(provider_dir: Path) -> bool:
 
 def _module_name(provider_dir: Path, name: str) -> str:
     """``plugins.memory.<name>`` for bundled providers, else under the synthetic user namespace."""
-    return f"plugins.memory.{name}" if _is_bundled(provider_dir) else f"{_USER_NAMESPACE}.{name}"
+    if _is_bundled(provider_dir):
+        return f"plugins.memory.{name}"
+    # Separate package trees, including relative imports, across homes/sources.
+    digest = hashlib.sha256(str(provider_dir.resolve()).encode()).hexdigest()[:16]
+    return f"{_USER_NAMESPACE}.{name}__source_{digest}"
 
 
 def _external_source_dirs() -> List[Path]:
@@ -224,7 +230,7 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
             pass
     if hasattr(loaded, "register"):
         collector = _ProviderCollector(entry_point.name, register_skills=register_skills)
-        loaded.register(collector)
+        collector.collect(loaded.register, source=getattr(loaded, "__file__", None))
         if collector.provider:
             return collector.provider
     if callable(loaded):
@@ -235,7 +241,7 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
         except TypeError:
             pass
         collector = _ProviderCollector(entry_point.name, register_skills=register_skills)
-        loaded(collector)
+        collector.collect(loaded)
         return collector.provider
 
     provider = _instantiate_subclass(loaded)
@@ -259,7 +265,7 @@ def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True)
     if hasattr(mod, "register"):
         collector = _ProviderCollector(name, register_skills=register_skills)
         try:
-            mod.register(collector)
+            collector.collect(mod.register, source=mod.__file__)
         except Exception as e:
             # A raise AFTER register_memory_provider() must not cost us the provider:
             # falling through to the subclass scan would hand back a bare second
@@ -288,6 +294,24 @@ class _ProviderCollector:
         self.provider = None
         self._register_skills = register_skills
         self._context = None
+        self._hook_source = None
+
+    def collect(self, register, *, source=None):
+        """Run ``register`` with this collector; hooks it registers form the fallback group that
+        general discovery of the same source replaces (see ``PluginLedgerMixin``)."""
+        from hermes_cli.plugins_ledger import _hook_source_of
+
+        module = sys.modules.get(getattr(register, "__module__", ""))
+        self._hook_source = _hook_source_of(self.name, SimpleNamespace(__file__=source) if source else module)
+        manager = self._plugin_context()._manager
+        with manager._discovery_lock:
+            manager._drop_fallback_hooks(self._hook_source)
+            register(self)
+
+    def register_hook(self, hook_name, callback):
+        context = self._plugin_context()
+        with context._manager._discovery_lock:
+            return context._manager._register_fallback_hook(context, self._hook_source, hook_name, callback)
 
     def register_memory_provider(self, provider):
         self.provider = provider
@@ -386,7 +410,7 @@ def discover_plugin_cli_commands() -> List[dict]:
                 # resolve without executing the plugin's __init__.py (the shell has no
                 # __file__, so _load_provider_from_dir() still loads the real module).
                 _register_synthetic_package(_USER_NAMESPACE, [])
-                _register_synthetic_package(f"{_USER_NAMESPACE}.{active_provider}", [str(plugin_dir)])
+                _register_synthetic_package(_module_name(plugin_dir, active_provider), [str(plugin_dir)])
             spec = importlib.util.spec_from_file_location(module_name, str(plugin_dir / "cli.py"))
             if not spec or not spec.loader:
                 return []

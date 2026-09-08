@@ -12,7 +12,20 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.main import cmd_update
+
+
+@pytest.fixture(autouse=True)
+def _isolate_update(isolated_update_runtime, monkeypatch):
+    import shutil
+    from hermes_cli import managed_uv, update_cmd
+
+    monkeypatch.setattr(managed_uv, "resolve_uv", lambda **kw: shutil.which("uv"))
+    monkeypatch.setattr(managed_uv, "ensure_uv", lambda **kw: shutil.which("uv"))
+    monkeypatch.setattr(managed_uv, "update_managed_uv", lambda **kw: None)
+    monkeypatch.setattr(update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None))
 
 
 def _make_run_side_effect(

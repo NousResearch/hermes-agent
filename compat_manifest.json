@@ -2640,7 +2640,7 @@
    "facade": "gateway.slash_commands",
    "name": "MessageType",
    "kind": "moved-lazy",
-   "target": "gateway.platforms.base"
+   "target": "gateway.platforms.event"
   },
   {
    "facade": "gateway.slash_commands",
@@ -8256,7 +8256,7 @@
    "facade": "plugins.platforms.dingtalk.adapter",
    "name": "MessageType",
    "kind": "moved-lazy",
-   "target": "gateway.platforms.base"
+   "target": "gateway.platforms.event"
   },
   {
    "facade": "plugins.platforms.discord.adapter",
@@ -8334,7 +8334,7 @@
    "facade": "plugins.platforms.photon.adapter",
    "name": "ProcessingOutcome",
    "kind": "moved-lazy",
-   "target": "gateway.platforms.base"
+   "target": "gateway.platforms.event"
   },
   {
    "facade": "plugins.platforms.photon.adapter",

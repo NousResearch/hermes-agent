@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -239,7 +240,6 @@ _BASE_SECURITY_ARGS = [
     "--cap-add", "DAC_OVERRIDE",
     "--cap-add", "CHOWN",
     "--cap-add", "FOWNER",
-    "--security-opt", "no-new-privileges",
     "--tmpfs", "/tmp:rw,nosuid,size=512m",
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m"]
 
@@ -292,12 +292,23 @@ _RUN_TMPFS_EXEC = "--tmpfs", "/run:rw,exec,nosuid,size=64m"
 # back. Skipped when --user is passed: the container already starts unprivileged.
 _PRIVDROP_CAP_ARGS = ["--cap-add", "SETUID", "--cap-add", "SETGID"]
 
+# Every ``cleanup()`` worker, independent of terminal_tool's active-env registry (see
+# ``wait_for_all_teardowns``).
+_TEARDOWN_THREADS: set[threading.Thread] = set()
+_TEARDOWN_LOCK = threading.Lock()
+
 _S6_INIT_ENTRYPOINTS = ("/init", "/package/admin/s6-overlay/command/init")
 
 
-def _build_security_args(run_as_host_user: bool, run_exec: bool = False) -> list[str]:
-    """Security/cap/tmpfs args for the privilege mode; ``run_exec`` mounts /run exec for s6 images."""
-    args = list(_BASE_SECURITY_ARGS) + list(_RUN_TMPFS_EXEC if run_exec else _RUN_TMPFS_NOEXEC)
+_NO_NEW_PRIVILEGES_ARGS = ["--security-opt", "no-new-privileges"]
+
+
+def _build_security_args(run_as_host_user: bool, run_exec: bool = False, snap_compat: bool = False) -> list[str]:
+    """Security/cap/tmpfs args for the privilege mode; ``run_exec`` mounts /run exec for s6 images.
+    ``snap_compat`` drops no-new-privileges: snap-packaged Docker's AppArmor profile turns it into
+    "exec: operation not permitted" for every process in the container (#9730, LP#1908448)."""
+    args = list(_BASE_SECURITY_ARGS) + ([] if snap_compat else list(_NO_NEW_PRIVILEGES_ARGS))
+    args += list(_RUN_TMPFS_EXEC if run_exec else _RUN_TMPFS_NOEXEC)
     return args if run_as_host_user else args + list(_PRIVDROP_CAP_ARGS)
 
 
@@ -501,7 +512,8 @@ class DockerEnvironment(BaseEnvironment):
         extra_args: list = None,
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
-        shared_container_key: str = ""):
+        shared_container_key: str = "",
+        snap_compat: bool = False):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
@@ -547,7 +559,12 @@ class DockerEnvironment(BaseEnvironment):
                 "Docker: image %s uses /init (s6-overlay) as entrypoint — "
                 "skipping --init and mounting /run with exec.",
                 image)
-        security_args = _build_security_args(run_as_host_user and bool(user_args), run_exec=image_uses_s6_init)
+        security_args = _build_security_args(
+            run_as_host_user and bool(user_args), run_exec=image_uses_s6_init, snap_compat=snap_compat)
+        self._snap_compat = snap_compat
+        if snap_compat:
+            logger.warning(
+                "docker_snap_compat: running without --init and no-new-privileges (snap Docker under AppArmor)")
 
         logger.info("Docker volume_args: %s", volume_args)
         # docker_extra_args go last so they can override defaults.
@@ -751,7 +768,7 @@ class DockerEnvironment(BaseEnvironment):
             # own /init PID 1, so adding --init there creates two competing inits and breaks startup
             # (#34628).
             self._docker_exe, "run", "-d",
-            *([] if self._image_uses_s6_init else ["--init"]),
+            *([] if self._image_uses_s6_init or self._snap_compat else ["--init"]),
             "--name", name,
             *label_args,
             "-w", workdir,
@@ -1024,6 +1041,8 @@ class DockerEnvironment(BaseEnvironment):
                     logger.warning(fail_msg, log_id, e)
 
         t = threading.Thread(target=_do_cleanup, daemon=True, name=f"hermes-cleanup-{log_id}")
+        with _TEARDOWN_LOCK:
+            _TEARDOWN_THREADS.add(t)
         t.start()
         self._cleanup_thread = t
         self._container_id = None
@@ -1032,6 +1051,24 @@ class DockerEnvironment(BaseEnvironment):
         # once the container itself is removed.
         if not self._persistent:
             self._remove_bind_dirs()
+
+    @staticmethod
+    def wait_for_all_teardowns(timeout: float = 15.0) -> bool:
+        """Join every in-flight teardown worker, including those of envs the idle reaper already
+        popped out of the active registry (their handles are otherwise unreachable at exit, so
+        ``docker rm`` died with the interpreter and left a stopped container behind — #86317).
+        Re-snapshots each pass: the reaper may start a worker while the drain runs."""
+        deadline = time.monotonic() + timeout
+        while True:
+            with _TEARDOWN_LOCK:
+                _TEARDOWN_THREADS.difference_update({t for t in _TEARDOWN_THREADS if not t.is_alive()})
+                pending = list(_TEARDOWN_THREADS)
+            if not pending:
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            pending[0].join(timeout=remaining)
 
     def wait_for_cleanup(self, timeout: float = 30.0) -> bool:
         """Block up to *timeout* seconds for the cleanup thread (atexit hook). True if it

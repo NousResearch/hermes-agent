@@ -71,6 +71,11 @@ def _detect_supervisor_for_pid(pid: int, service_pids: set, windows_service_pids
 _RESTART_MECHANISMS = {
     "systemd": "systemd", "launchd": "launchd", "desktop": "desktop",
     "windows-service": "windows-service", "manual-serve": "respawn-argv",
+    # A gateway launched with ``--external-supervisor`` declares only "some supervisor outside
+    # Hermes owns my restart" — the update's manual-gateway phase hands it back to that supervisor
+    # (externally_supervised_profiles), so the mechanism id must NOT fall through to "manual",
+    # which claims no supervisor relaunch authority at all.
+    "external": "external-supervisor",
 }
 
 _MECHANISM_DESCRIPTIONS = {
@@ -79,6 +84,7 @@ _MECHANISM_DESCRIPTIONS = {
     "desktop": "Desktop app respawns its serve backend",
     "windows-service": "sc.exe stop before venv mutation, sc.exe start after update",
     "respawn-argv": "stop before code swap, relaunch with recorded launch args",
+    "external-supervisor": "external supervisor (launchd wrapper / process manager) relaunches it",
 }
 
 _SERVE_KINDS = ("serve", "dashboard")

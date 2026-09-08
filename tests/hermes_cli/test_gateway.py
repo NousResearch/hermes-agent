@@ -1277,3 +1277,81 @@ def test_find_profile_gateway_processes_strict_propagates_profile_listing_failur
 
     with pytest.raises(RuntimeError, match="profile listing failed"):
         gateway.find_profile_gateway_processes(strict=True)
+
+
+# ---------------------------------------------------------------------------
+# launchd-wrapped gateways: service PID is the stderr-timestamp wrapper, the
+# gateway itself is its child — the sweep must protect BOTH.
+# ---------------------------------------------------------------------------
+
+_WRAPPER_TREE_SCRIPT = (
+    "import subprocess, sys, time\n"
+    "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(25)'])\n"
+    "print(p.pid, flush=True)\n"
+    "time.sleep(25)\n"
+)
+
+
+def _spawn_wrapper_with_child():
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _WRAPPER_TREE_SCRIPT],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    child_pid = int(proc.stdout.readline().strip())
+    return proc, child_pid
+
+
+def _terminate_tree(proc):
+    import psutil
+
+    try:
+        for child in psutil.Process(proc.pid).children(recursive=True):
+            child.terminate()
+    except psutil.Error:
+        pass
+    proc.terminate()
+    proc.wait(timeout=10)
+
+
+def test_descendant_pids_walks_real_process_tree():
+    """_descendant_pids reaches grandchildren via psutil (best effort)."""
+    import time
+
+    proc, child_pid = _spawn_wrapper_with_child()
+    try:
+        deadline = time.time() + 10
+        while time.time() < deadline and child_pid not in gateway._descendant_pids({proc.pid}):
+            time.sleep(0.1)
+        assert child_pid in gateway._descendant_pids({proc.pid})
+    finally:
+        _terminate_tree(proc)
+
+
+def test_get_service_pids_protects_wrapped_gateway_descendant(monkeypatch):
+    """launchd's service PID is the wrapper; the wrapped gateway grandchild must be included.
+
+    Without descendant expansion, the update's manual-gateway sweep classifies the freshly
+    respawned gateway as a manual process and kills it right after the launchd restart.
+    """
+    import time
+
+    wrapper, gateway_pid = _spawn_wrapper_with_child()
+    try:
+        monkeypatch.setattr(gateway, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway, "launchd_gateway_labels_for_install", lambda: [])
+        monkeypatch.setattr(
+            gateway,
+            "_locate_launchd_gateway_service",
+            lambda label: ("gui/501", wrapper.pid),
+        )
+        pids = gateway._get_service_pids(all_profiles=True)
+        assert wrapper.pid in pids
+        deadline = time.time() + 10
+        while time.time() < deadline and gateway_pid not in pids:
+            time.sleep(0.2)
+            pids = gateway._get_service_pids(all_profiles=True)
+        assert gateway_pid in pids
+    finally:
+        _terminate_tree(wrapper)

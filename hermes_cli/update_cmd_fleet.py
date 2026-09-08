@@ -648,6 +648,13 @@ def _surviving_gateway_pids_after_failed_restart():
 _MANUAL_GATEWAY_SKIP_REASON = (
     "manual gateway has no supervisor relaunch authority; left running for explicit operator restart"
 )
+# A gateway declaring supervisor "external" launched with ``--external-supervisor``: some
+# supervisor outside Hermes owns its relaunch. The recovery pass must not restart it out from
+# under that supervisor; survivors are caught by the post-restart verification probe.
+_EXTERNAL_GATEWAY_SKIP_REASON = (
+    "external supervisor owns this gateway's relaunch; left for that supervisor (KeepAlive or"
+    " process manager) to revive"
+)
 _DESKTOP_SERVE_SKIP_REASON = (
     "desktop app owns and respawns this serve backend;"
     " the recovery pass must not restart it out from under its supervisor"
@@ -689,7 +696,7 @@ def _gateway_recovery_partition(plan, *, skip_profiles: set[str] | None = None) 
                 if supervisor in _FRESH_RESTART_SUPERVISORS:
                     candidates.setdefault(profile, str(supervisor))
                     continue
-                reason = _MANUAL_GATEWAY_SKIP_REASON
+                reason = _EXTERNAL_GATEWAY_SKIP_REASON if supervisor == "external" else _MANUAL_GATEWAY_SKIP_REASON
             elif kind in ("serve", "dashboard"):
                 reason = _DESKTOP_SERVE_SKIP_REASON if supervisor == "desktop" else _SERVE_SKIP_REASON
             else:

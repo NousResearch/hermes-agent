@@ -82,7 +82,7 @@ def test_enrollment_change_invalidates_snapshot(saved_v2, field, value):
     assert rows(saved_v2[1], "hosted_rooms") == []
 
 
-@pytest.mark.parametrize("seam", ["archive", "target_delete", "invalid_delete", "namespace"])
+@pytest.mark.parametrize("seam", ["archive", "target_delete", "second_target_delete", "invalid_delete", "namespace"])
 def test_each_transfer_seam_rolls_back_all_evidence(saved_v2, seam):
     from gateway.hosted_room_manual_promotion_schema import initialize
     from gateway.hosted_room_work_storage import INVALID_TABLE
@@ -94,9 +94,11 @@ def test_each_transfer_seam_rolls_back_all_evidence(saved_v2, seam):
     tables = (records.TARGET_TABLE, INVALID_TABLE, "hosted_room_replica_events", "hosted_room_replicas", "hosted_room_id_reservations")
     before = {t: rows(target, t) for t in tables}
     when, table = {"archive": ("INSERT", TABLE), "target_delete": ("DELETE", records.TARGET_TABLE),
+                   "second_target_delete": ("DELETE", records.TARGET_TABLE),
                    "invalid_delete": ("DELETE", INVALID_TABLE), "namespace": ("INSERT", "hosted_rooms")}[seam]
     with sqlite3.connect(target) as conn:
-        conn.execute(f"CREATE TRIGGER interrupt_transfer AFTER {when} ON {table} BEGIN SELECT RAISE(ABORT, 'seam interruption'); END")
+        condition = " WHEN OLD.producer_epoch=" + ("1" if seam == "target_delete" else "2") if "target_delete" in seam else ""
+        conn.execute(f"CREATE TRIGGER interrupt_transfer AFTER {when} ON {table}{condition} BEGIN SELECT RAISE(ABORT, 'seam interruption'); END")
     fresh = prepare_recovery(target, room_id="room", target_gateway_id=TARGET)
     with pytest.raises(sqlite3.IntegrityError, match="seam interruption"):
         stage(saved_v2, snapshot_id=fresh["snapshot_id"])
@@ -202,8 +204,9 @@ def rows(path, table):
 
 
 @pytest.mark.parametrize("opaque", ["{not JSON: PRIVATE_ARCHIVE", "null"])
-def test_all_original_target_scopes_and_archive_survive_staging(saved, opaque):
+def test_all_original_target_scopes_and_archive_survive_staging(saved_v2, opaque):
     from gateway.hosted_room_work_storage import INVALID_TABLE
+    saved = saved_v2
     target = saved[1]
     with sqlite3.connect(target) as conn:
         conn.execute(f"INSERT INTO {records.TARGET_TABLE} (room_id,revision,digest,record_json,producer_gateway_id,producer_epoch,disposition) VALUES('room',2,'opaque',?,'',0,'invalid')", (opaque,))

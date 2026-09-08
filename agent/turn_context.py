@@ -772,20 +772,30 @@ def _stamp_api_content_sidecar(
     #
     # Rotation mode needs nothing here: its compacted copies flush to
     # the child session after this stamp.
-    _row_id = _turn_user_msg.get("_row_id")
-    _has_valid_row_id = (
-        isinstance(_row_id, int)
-        and not isinstance(_row_id, bool)
-        and _row_id > 0
-    )
-    _in_place_compacted = preflight_compressed and bool(
-        getattr(agent, "_last_compaction_in_place", False)
-    )
-    if not (_has_valid_row_id or _in_place_compacted):
-        return
-
-    _db = getattr(agent, "_session_db", None)
-    if _db is not None:
+    #
+    # ``_row_id`` is read under ``_session_persist_lock`` — the lock a close/early
+    # flush holds while it copies this row out, commits it, and writes ``_row_id``
+    # back onto the dict (``sync_flushed_message_markers``). Read outside it, the
+    # stamp can land between the commit and the write-back: it sees no id and
+    # returns, the flush finishes with ``api_content = NULL`` and marks the message
+    # persisted, and turn-start persist skips it — nothing is left to correct the
+    # row. Under the lock either this runs first (no row yet, flush waits) or the
+    # flush already finished and ``_row_id`` is visible.
+    def _backfill_locked() -> None:
+        _row_id = _turn_user_msg.get("_row_id")
+        _has_valid_row_id = (
+            isinstance(_row_id, int)
+            and not isinstance(_row_id, bool)
+            and _row_id > 0
+        )
+        _in_place_compacted = preflight_compressed and bool(
+            getattr(agent, "_last_compaction_in_place", False)
+        )
+        if not (_has_valid_row_id or _in_place_compacted):
+            return
+        _db = getattr(agent, "_session_db", None)
+        if _db is None:
+            return
         try:
             if _has_valid_row_id:
                 if hasattr(_db, "set_message_api_content"):
@@ -806,6 +816,13 @@ def _stamp_api_content_sidecar(
                 agent.session_id or "none",
                 exc_info=True,
             )
+
+    _lock = getattr(agent, "_session_persist_lock", None)
+    if _lock is None:
+        _backfill_locked()
+    else:
+        with _lock:
+            _backfill_locked()
 
 
 def _persist_turn_start(

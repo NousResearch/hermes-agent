@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
+import time
 from typing import FrozenSet, Optional
 
-from agent.credential_pool import CredentialPool, PooledCredential, load_pool
+from agent.credential_pool import (
+    EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS,
+    STATUS_EXHAUSTED,
+    CredentialPool,
+    PooledCredential,
+    load_pool,
+)
 from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
-from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
+from hermes_cli.proxy.adapters.base import (
+    UpstreamAdapter,
+    UpstreamCredential,
+    UpstreamCredentialsCoolingDown,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +57,10 @@ class XAIGrokAdapter(UpstreamAdapter):
         pool = self._load_pool()
         return bool(pool and pool.has_available())
 
+    def is_configured(self) -> bool:
+        pool = self._load_pool()
+        return bool(pool and pool.has_credentials())
+
     def get_credential(self) -> UpstreamCredential:
         with self._lock:
             pool = self._load_pool()
@@ -54,9 +70,35 @@ class XAIGrokAdapter(UpstreamAdapter):
                 )
             entry = pool.select()
             if entry is None:
-                raise RuntimeError(
-                    "No available xAI OAuth credentials found. Run "
-                    "`hermes auth reset xai-oauth` or re-authenticate with `hermes auth add xai-oauth --type oauth`."
+                available_at = pool.next_available_at()
+                entries = pool.entries()
+                exhausted = [
+                    item for item in entries
+                    if item.last_status == STATUS_EXHAUSTED
+                ]
+                if not exhausted or not all(
+                    item.last_error_code in {429, 500, 502, 503, 504}
+                    or (
+                        item.last_error_code == 403
+                        and item.extra.get("failure_reason") == "rate_limit"
+                    )
+                    for item in exhausted
+                ):
+                    raise RuntimeError(
+                        "No available xAI OAuth credentials found. Run "
+                        "`hermes auth reset xai-oauth` or re-authenticate with "
+                        "`hermes auth add xai-oauth --type oauth`."
+                    )
+                retry_after = (
+                    math.ceil(available_at - time.time())
+                    if available_at is not None
+                    else EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS
+                )
+                retry_after = max(1, retry_after)
+                raise UpstreamCredentialsCoolingDown(
+                    "all xAI OAuth credentials are cooling down after transient "
+                    f"upstream failures; retry after {retry_after} s",
+                    retry_after,
                 )
             self._pool = pool
             return self._credential_from_entry(entry)

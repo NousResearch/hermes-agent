@@ -21,7 +21,11 @@ except ImportError:
     web = None  # type: ignore[assignment]
     AIOHTTP_AVAILABLE = False
 
-from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
+from hermes_cli.proxy.adapters.base import (
+    UpstreamAdapter,
+    UpstreamCredential,
+    UpstreamCredentialsCoolingDown,
+)
 from hermes_cli.proxy.sse_done import DONE_SSE_FRAME, SseDoneTracker, content_type_is_sse
 
 logger = logging.getLogger(__name__)
@@ -149,6 +153,17 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
             )
         try:
             cred = await asyncio.to_thread(adapter.get_credential)
+        except UpstreamCredentialsCoolingDown as exc:
+            retry_after = exc.retry_after_seconds
+            logger.warning(
+                "proxy: credential resolution failed: %s retry_after=%s",
+                exc, retry_after,
+            )
+            response = _json_error(
+                429, str(exc), code="upstream_rate_limited",
+            )
+            response.headers["Retry-After"] = str(retry_after)
+            return response
         except Exception as exc:
             logger.warning("proxy: credential resolution failed: %s", exc)
             return _json_error(401, str(exc), code="upstream_auth_failed")

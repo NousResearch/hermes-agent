@@ -290,7 +290,7 @@ def command_for_reply_intent(text: str, raw_surface: Any) -> Optional[str]:
 def command_for_callback_data(data: str) -> Optional[str]:
     """Decode a compact Telegram ``wa:*`` callback into a slash command."""
     match = re.fullmatch(
-        r"wa:(m|s):(a|r|p|d):(all|[0-9a-f]{8})",
+        r"wa:(m|s):(a|r|p|d|s):(all|[0-9a-f]{8})",
         str(data or ""),
         re.IGNORECASE,
     )
@@ -307,6 +307,8 @@ def command_for_callback_data(data: str) -> Optional[str]:
         return f"/skills diff {target}"
     if target == "all":
         return None
+    if action_code == "s":
+        return f"/{subsystem} approve-session {target}"
     action = "approve" if action_code == "a" else "reject"
     return f"/{subsystem} {action} {target}"
 

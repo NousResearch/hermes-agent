@@ -287,6 +287,48 @@ def test_memory_invalid_params_rejected_before_staging(hermes_home):
     assert wa.pending_count("memory") == 0
 
 
+def test_session_write_approval_allows_later_skill_writes_and_clears(hermes_home, monkeypatch):
+    """Telegram's Allow for session bypasses only this session's gate."""
+    from tools import write_approval as wa
+
+    _set_approval("skills", True)
+    session_key = "telegram:session-write-approval"
+    monkeypatch.setattr(wa, "_current_session_key", lambda: session_key)
+
+    assert wa.evaluate_gate("skills").stage is True
+    wa.allow_for_session(session_key, "skills")
+    assert wa.evaluate_gate("skills").allow is True
+
+    wa.clear_session(session_key)
+    assert wa.evaluate_gate("skills").stage is True
+
+
+def test_approve_session_applies_write_and_keeps_profile_gate_on(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+
+    _set_approval("memory", True)
+    store = MemoryStore(); store.load_from_disk()
+    pending_id = wa.stage_write(
+        "memory",
+        {"action": "add", "target": "memory", "content": "session fact"},
+        summary="session fact",
+        origin="foreground",
+    )["id"]
+
+    out = handle_pending_subcommand(
+        wa.MEMORY,
+        ["approve-session", pending_id],
+        memory_store=store,
+        session_key="session-1",
+    )
+    assert "Further memory writes are allowed for this session" in out
+    assert wa.is_allowed_for_session("session-1", "memory") is True
+    assert wa.write_approval_enabled("memory") is True
+    assert wa.pending_count("memory") == 0
+
+
 class TestSkillGist:
     """skill_gist builds a heuristic one-line summary for a pending skill write.
 

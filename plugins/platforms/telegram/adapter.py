@@ -1284,6 +1284,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         callback_data=f"wa:{code}:a:{pending_id}",
                     ),
                     InlineKeyboardButton(
+                        f"✅ Allow for session{suffix}",
+                        callback_data=f"wa:{code}:s:{pending_id}",
+                    ),
+                    InlineKeyboardButton(
                         f"❌ Reject{suffix}",
                         callback_data=f"wa:{code}:r:{pending_id}",
                     ),
@@ -7916,15 +7920,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
         response_text = str(response)
         resolved = (
-            (action_code == "a" and response_text.startswith("Approved "))
+            (action_code in {"a", "s"} and response_text.startswith("Approved "))
             or (action_code == "r" and response_text.startswith("Rejected "))
         )
         if resolved:
-            status = (
-                f"✅ Approved {pending_id}"
-                if action_code == "a"
-                else f"❌ Rejected {pending_id}"
-            )
+            if action_code == "s":
+                status = f"✅ Allowed for session {pending_id}"
+            elif action_code == "a":
+                status = f"✅ Approved {pending_id}"
+            else:
+                status = f"❌ Rejected {pending_id}"
             try:
                 refresh_event = MessageEvent(
                     text=f"/{subsystem} pending",
@@ -7984,7 +7989,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
-        if action_code in {"a", "r"}:
+        if action_code in {"a", "r", "s"}:
             compact_error = " ".join(response_text.split())
             if len(compact_error) > 180:
                 compact_error = compact_error[:177] + "…"

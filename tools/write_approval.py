@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -406,6 +407,38 @@ class GateDecision:
         self.message = message
 
 
+_session_allowed: dict[str, set[str]] = {}
+_session_lock = threading.RLock()
+
+
+def _current_session_key() -> str:
+    try:
+        from tools.approval import get_current_session_key
+        return str(get_current_session_key("") or "")
+    except Exception:
+        return ""
+
+
+def allow_for_session(session_key: str, subsystem: str) -> None:
+    """Allow gated writes for one subsystem in one live session only."""
+    if not session_key or subsystem not in {MEMORY, SKILLS}:
+        return
+    with _session_lock:
+        _session_allowed.setdefault(session_key, set()).add(subsystem)
+
+
+def is_allowed_for_session(session_key: str, subsystem: str) -> bool:
+    with _session_lock:
+        return subsystem in _session_allowed.get(session_key, set())
+
+
+def clear_session(session_key: str) -> None:
+    """Drop session-only write permissions at a conversation boundary."""
+    if session_key:
+        with _session_lock:
+            _session_allowed.pop(session_key, None)
+
+
 def evaluate_gate(subsystem: str, *, inline_summary: str = "",
                   inline_detail: str = "") -> GateDecision:
     """Decide what to do with a pending write for ``subsystem``.
@@ -427,7 +460,8 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
     delays a write for approval, never silently refuses it. ``blocked`` is
     still produced when the user *actively denies* an inline prompt.
     """
-    if not write_approval_enabled(subsystem):
+    session_key = _current_session_key()
+    if not write_approval_enabled(subsystem) or is_allowed_for_session(session_key, subsystem):
         return GateDecision(allow=True)
 
     background = is_background()

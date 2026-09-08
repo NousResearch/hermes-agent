@@ -57,6 +57,7 @@ def handle_pending_subcommand(
     *,
     memory_store=None,
     set_mode_fn=None,
+    session_key: str = "",
 ) -> Optional[str]:
     """Dispatch a /memory or /skills subcommand.
 
@@ -86,6 +87,9 @@ def handle_pending_subcommand(
 
     if sub in {"approve", "apply"}:
         return _approve(subsystem, rest, memory_store)
+
+    if sub in {"approve-session", "session"}:
+        return _approve_session(subsystem, rest, memory_store, session_key)
 
     if sub in {"reject", "deny", "drop"}:
         return _reject(subsystem, rest)
@@ -139,6 +143,17 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
         out.append("Failed:")
         out.extend(f"  {f}" for f in failed)
     return "\n".join(out)
+
+
+def _approve_session(subsystem: str, rest: List[str], memory_store, session_key: str) -> str:
+    """Approve one write and allow later writes in this session."""
+    if not session_key:
+        return "Cannot grant session approval without a session key."
+    out = _approve(subsystem, rest, memory_store)
+    if out.startswith("Approved "):
+        wa.allow_for_session(session_key, subsystem)
+        return out + f"\n✅ Further {subsystem} writes are allowed for this session."
+    return out
 
 
 def _apply_one(subsystem: str, rec, memory_store):

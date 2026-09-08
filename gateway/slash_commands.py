@@ -4054,6 +4054,7 @@ class GatewaySlashCommandsMixin:
 
         out = handle_pending_subcommand(
             wa.MEMORY, args, memory_store=store, set_mode_fn=_set_approval,
+            session_key=session_key,
         )
         if out is None:
             out = ("Unknown /memory subcommand. Use: pending, approve <id>, "
@@ -4103,7 +4104,7 @@ class GatewaySlashCommandsMixin:
             self._evict_cached_agent(session_key)
 
         out = handle_pending_subcommand(
-            wa.SKILLS, args, set_mode_fn=_set_approval,
+            wa.SKILLS, args, set_mode_fn=_set_approval, session_key=session_key,
         )
         if out is None:
             return ("Unknown /skills subcommand on this platform. Use: pending, "

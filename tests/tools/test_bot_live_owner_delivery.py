@@ -49,6 +49,20 @@ def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
             assert path.stat().st_mode & 0o077 == 0
 
 
+def test_existing_mailbox_lock_does_not_fsync_unchanged_parent_dirs(tmp_path, monkeypatch):
+    from tools import bot_live_delivery as mailbox
+
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    root.mkdir(parents=True)
+    calls = []
+    monkeypatch.setattr(mailbox, "_fsync_dir", lambda path: calls.append(path))
+
+    with mailbox._locked(tmp_path):
+        pass
+
+    assert calls == []
+
+
 def test_fifo_survives_clock_rollback(tmp_path, monkeypatch):
     from tools import bot_live_delivery as mailbox
 

@@ -87,11 +87,14 @@ def _fsync_dir(path: Path) -> None:
 @contextmanager
 def _locked(home: Path | str):
     root = _root(home)
+    created = not root.is_dir()
     root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir(mode=0o700, exist_ok=True)
-    root.chmod(0o700)
-    _fsync_dir(root.parent)
-    _fsync_dir(root.parent.parent)
+    if root.stat().st_mode & 0o077:
+        root.chmod(0o700)
+    if created:
+        _fsync_dir(root.parent)
+        _fsync_dir(root.parent.parent)
     lock = root / ".lock"
     fd = os.open(lock, os.O_CREAT | os.O_WRONLY, 0o600)
     os.close(fd)

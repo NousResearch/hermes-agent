@@ -797,6 +797,9 @@ class HostedRoomRuntime:
                         raise RuntimeError("hosted attachment ownership did not match the task manifest")
                     if file_refs:
                         prompt = f"{prompt}\n\nAttached files staged in your session workspace:\n" + "\n".join(file_refs)
+                # Profile contention, session resolution and file staging may
+                # outlive this worker's authority. Recheck before submission.
+                state.require_active_lease(self.db_path, attempt.lease, clock=self.clock)
                 # A submit should fail before admission or return after it; an unexpected
                 # exception at that boundary is ambiguous, never a proven failure.
                 submit_attempted = True

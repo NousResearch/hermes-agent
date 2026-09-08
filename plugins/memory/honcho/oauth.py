@@ -281,8 +281,7 @@ def _rotate_and_persist(
         rotated = _exchange_with_retry(cred, now=now)
     except Exception as exc:
         if isinstance(exc, OAuthRefreshError) and exc.permanent:
-            # The file lock is best-effort: a sibling may have rotated first, making our
-            # refresh token a replay. If disk moved on, adopt that grant instead of killing it.
+            # The file lock is best-effort: a sibling may have rotated first, so adopt what it wrote instead.
             disk = _load_cred(path, host)
             if disk is not None and disk.refresh_token != cred.refresh_token:
                 _dead_grants.pop(key, None)
@@ -357,14 +356,10 @@ def ensure_fresh_token(
             logger.info("Honcho OAuth token refreshed for host %s", host)
         return (rotated.access_token, True) if rotated is not None else (current.access_token, False)
 
-def force_refresh_token(
-    path: Path, host: str, *, failed_access_token: str | None = None
-) -> str | None:
-    """Rotate ``host``'s token now, ignoring local expiry (recovers a 401 on a
-    token the local clock still thinks is valid). ``failed_access_token`` is the
-    bearer the server rejected: when disk already holds a different one, a sibling
-    rotated the single-use refresh token first, so adopt its grant instead of
-    re-exchanging (a replay can revoke the whole grant)."""
+def force_refresh_token(path: Path, host: str, *, failed_access_token: str | None = None) -> str | None:
+    """Rotate ``host``'s token now, ignoring local expiry (recovers a 401 on a token the local clock
+    still thinks is valid). When disk no longer holds ``failed_access_token`` a sibling rotated first:
+    adopt its grant, since replaying the single-use refresh token can revoke the whole grant."""
     now = time.time()
     key = (str(path), host)
     with _refresh_lock, _config_refresh_lock(path):
@@ -375,8 +370,7 @@ def force_refresh_token(
         # Dead grant, or an exchange just failed transiently: callers fail open.
         if _grant_is_dead(key, cred) or _in_failure_cooldown(key):
             return None
-        # Disk moving off the rejected bearer is the authoritative signal: the expiry cache is
-        # empty in sibling processes and already equals disk after this process's first waiter.
+        # Disk, not the expiry cache, is the signal: the cache is empty in sibling processes.
         if failed_access_token and cred.access_token != failed_access_token and not cred.is_expired(now=now):
             _expiry_cache[key] = (cred.expires_at, cred.access_token)
             return cred.access_token
@@ -396,12 +390,11 @@ def install_grant(
 ) -> OAuthCredential:
     """Apply a fresh OAuth grant (an OAuthTokenResponse dict) to ``path`` for ``host``: deep-merge the
     grant's ``config`` into the file root (preserving other hosts and root keys), then write the host's
-    ``apiKey`` and ``oauth`` block. ``apply_config=False`` stores tokens only. Runs under the same locks
-    as a refresh so a login cannot interleave with a sibling's read-modify-write of the file."""
+    ``apiKey`` and ``oauth`` block. ``apply_config=False`` stores tokens only. Holds the refresh locks so a
+    login cannot interleave with a sibling's read-modify-write."""
     now = time.time() if now is None else now
     cred = OAuthCredential.from_token_response(grant, now=now, client_id=client_id, token_endpoint=token_endpoint)
     with _refresh_lock, _config_refresh_lock(path):
-        # Strict read: a login must not seed its root merge from a store it could not read.
         raw = _read_config_strict(path)
         granted_config = grant.get("config")
         if isinstance(granted_config, dict):

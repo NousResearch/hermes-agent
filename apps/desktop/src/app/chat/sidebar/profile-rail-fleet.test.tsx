@@ -123,8 +123,9 @@ const connectionsRegistry = connectionsStore.$connectionsRegistry as ReturnType<
   typeof atom<DesktopConnectionsRegistry | null>
 >
 
-const { $profiles, $profileScope } = await import('@/store/profile')
+const { $activeGatewayProfile, $profiles, $profileScope } = await import('@/store/profile')
 const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean; name: string }>>>
+const activeGatewayProfile = $activeGatewayProfile as ReturnType<typeof atom<string>>
 const profileScope = $profileScope as ReturnType<typeof atom<string>>
 const { _resetFleetRosterForTests } = await import('@/store/fleet-roster')
 
@@ -208,6 +209,7 @@ afterEach(() => {
   connectionsRegistry.set(null)
   activeConnectionId.set(null)
   profileScope.set('default')
+  activeGatewayProfile.set('default')
   profiles.set([{ is_default: true, name: 'default' }])
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
 })
@@ -352,5 +354,49 @@ describe('ProfileRail fleet mode', () => {
 
     expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
     expect(container.querySelector('[data-slot="profile-rail-rest-square"]')).toBeNull()
+  })
+
+  it('keeps the active gateway default reachable in the condensed dropdown from a named profile', async () => {
+    armFleet()
+    profiles.set([
+      { is_default: true, name: 'default' },
+      ...Array.from({ length: 11 }, (_, index) => ({ is_default: false, name: `p${index + 1}` }))
+    ])
+    // Switched away from default to a named profile on the active (remote) gateway.
+    activeGatewayProfile.set('p1')
+    profileScope.set('p1')
+    await renderFleet()
+
+    // Fleet condensed drops the default↔all home pill for the layers pill, so without
+    // surfacing default in the dropdown there is no way back to it (#106017).
+    const trigger = screen.getByRole('button', { name: 'Profiles' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    await screen.findByRole('menu')
+    // The active gateway's own rows are radio items; its default must be one of them.
+    const defaultRadio = screen.getByRole('menuitemradio', { name: 'default' })
+    expect(defaultRadio).toBeTruthy()
+
+    // Selecting it stays on the active gateway (selectProfile), never re-homes to
+    // another gateway's default (selectConnection).
+    fireEvent.click(defaultRadio)
+    expect(selectProfile).toHaveBeenCalledWith('default')
+    expect(selectConnection).not.toHaveBeenCalled()
+  })
+
+  it('identifies the active gateway default in the condensed trigger when it is active', async () => {
+    armFleet()
+    profiles.set([
+      { is_default: true, name: 'default' },
+      ...Array.from({ length: 11 }, (_, index) => ({ is_default: false, name: `p${index + 1}` }))
+    ])
+    // Default is the active profile: the trigger must name it, not fall back to
+    // the generic "Profiles" placeholder (#106017).
+    await renderFleet()
+
+    const trigger = screen.getByRole('button', { name: 'Profiles' })
+    expect(trigger.textContent).toContain('default')
   })
 })

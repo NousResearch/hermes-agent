@@ -455,7 +455,12 @@ export function ProfileRail() {
             onImport={() => void runImportProfileFlow()}
             onSelect={selectProfile}
             onSelectRest={switchToRest}
-            profiles={named}
+            // Fleet condensed swaps the default↔all home pill out for the layers pill, so the
+            // active gateway's default has no other control — surface it as a dropdown row like
+            // rest gateways do ([defaultAgent, ...named]) so it stays reachable and the trigger
+            // can identify it when active (#106017). Non-fleet keeps the home pill, so leave its
+            // dropdown byte-identical (named only).
+            profiles={fleet && defaultProfile ? [defaultProfile, ...named] : named}
             restGroups={restGroups}
           />
         </div>

@@ -263,3 +263,49 @@ def test_same_thread_fire_fence_reentrancy_preserves_ownership(temp_home):
     assert result == {"outer": True, "inner": True}
     thread.join(timeout=2)
     assert thread.is_alive() is False
+
+
+def test_manual_claim_does_not_stamp_a_future_occurrence(temp_home):
+    """An off-tick run-now must not consume the NEXT scheduled slot.
+
+    Outside a scheduler tick ``next_run_at`` is the occurrence that has NOT happened
+    yet, so stamping it as a completed occurrence makes ``_job_is_due`` skip that slot
+    when it arrives — silently, with no error and no dispatch record. ``manual=True``
+    is the caller's declaration that this is an off-tick fire.
+    """
+    from cron.jobs import create_job, claim_job_for_fire, get_job
+
+    job = create_job(prompt="x", schedule="every 5m", name="m")
+    pending = get_job(job["id"])["next_run_at"]
+
+    claimed = claim_job_for_fire(job["id"], manual=True, return_job=True)
+    assert isinstance(claimed, dict)
+    assert claimed["_scheduled_instant"] is None, (
+        f"manual fire stamped the future occurrence {pending}")
+
+
+def test_manual_claim_still_refuses_a_paused_job(temp_home):
+    """``manual=True`` suppresses only the occurrence stamp — unlike ``force=True`` it
+    must not resume a paused job, which the run-now tool relies on to refuse it."""
+    from cron.jobs import create_job, claim_job_for_fire, get_job, pause_job
+
+    job = create_job(prompt="x", schedule="every 5m", name="mp")
+    pause_job(job["id"])
+
+    assert claim_job_for_fire(job["id"], manual=True) is False
+    assert get_job(job["id"]).get("paused_at") is not None
+
+
+def test_scheduler_tick_claim_still_stamps_its_occurrence(temp_home):
+    """The dedupe path stays intact for ordinary (non-manual) claims: a tick fire still
+    records the occurrence it ran, so a re-delivery cannot double-fire it."""
+    from cron.jobs import create_job, claim_job_for_fire, get_job
+
+    job = create_job(prompt="x", schedule="every 5m", name="s")
+    pending = get_job(job["id"])["next_run_at"]
+
+    claimed = claim_job_for_fire(job["id"], return_job=True)
+    assert isinstance(claimed, dict)
+    assert claimed["_scheduled_instant"] is not None
+    from cron.occurrences import scheduled_instant
+    assert claimed["_scheduled_instant"] == scheduled_instant(pending)

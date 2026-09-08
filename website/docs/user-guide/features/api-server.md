@@ -700,8 +700,8 @@ hermes peer add nova --url https://nova.example/hermes-api --key <NOVA_API_SERVE
 ```
 
 The bridge bypasses browser OAuth because machine callers cannot complete an interactive login,
-but it does not bypass API authentication: the `Authorization: Bearer ***` header is
-passed to the loopback API listener, which remains the security boundary. Dashboard cookies and
+but it does not bypass API authentication: the bearer-token `Authorization` header is passed to
+the loopback API listener, which remains the security boundary. Dashboard cookies and
 the private dashboard session token are stripped. Enable the same route and register the opposite
 URL on both instances for bidirectional `hermes peer dm` delivery.
 

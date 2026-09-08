@@ -79,23 +79,27 @@ def _route_config(name: str, port: int) -> dict:
     }
 
 
+@pytest.mark.parametrize(
+    "path", ["/a2a", "/a2a/.well-known/agent-card.json", "/hermes-api"]
+)
 def test_disabled_service_route_returns_json_instead_of_oauth_redirect(
-    public_dashboard, monkeypatch
+    public_dashboard, monkeypatch, path
 ):
     monkeypatch.setattr(service_proxy, "load_config", lambda: {})
 
-    response = public_dashboard.get("/a2a/.well-known/agent-card.json", follow_redirects=False)
+    response = public_dashboard.get(path, follow_redirects=False)
 
     assert response.status_code == 404
     assert response.json() == {"error": "service route is not enabled"}
 
 
+@pytest.mark.parametrize("path", ["/a2attack", "/hermes-apix"])
 def test_service_route_prefix_does_not_open_similar_dashboard_path(
-    public_dashboard, monkeypatch
+    public_dashboard, monkeypatch, path
 ):
     monkeypatch.setattr(service_proxy, "load_config", lambda: {})
 
-    response = public_dashboard.get("/a2attack", follow_redirects=False)
+    response = public_dashboard.get(path, follow_redirects=False)
 
     assert response.status_code == 302
     assert "/login" in response.headers["location"]

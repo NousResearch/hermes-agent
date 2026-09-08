@@ -201,7 +201,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `TERMINAL_VERCEL_RUNTIME` | Vercel Sandbox 运行时（`node24`、`node22`、`python3.13`） |
 | `TERMINAL_TIMEOUT` | 命令超时（秒） |
 | `TERMINAL_LIFETIME_SECONDS` | 终端会话最大生命周期（秒） |
-| `TERMINAL_CWD` | 终端会话的工作目录（仅 gateway/cron；CLI 使用启动目录） |
+| `TERMINAL_CWD` | 已弃用的 gateway/cron 终端会话直接覆盖项。请优先使用 `config.yaml` 中的 `terminal.cwd`；CLI 仍使用启动目录。 |
 | `SUDO_PASSWORD` | 无需交互提示即可使用 sudo |
 
 对于云沙箱后端，持久化以文件系统为导向。`TERMINAL_LIFETIME_SECONDS` 控制 Hermes 何时清理空闲终端会话，后续恢复可能会重新创建沙箱而非保持相同的活跃进程。
@@ -611,8 +611,6 @@ export HERMES_WRITE_SAFE_ROOT=/path/to/project:/home/you/.hermes
 
 | 变量 | 描述 |
 |----------|-------------|
-| `SESSION_IDLE_MINUTES` | 不活动 N 分钟后重置会话（默认：1440） |
-| `SESSION_RESET_HOUR` | 24 小时制每日重置时间（默认：4 = 凌晨 4 点） |
 | `HERMES_SESSION_ID` | **自动导出到 Hermes 生成的每个工具子进程**（`terminal`、`execute_code`、持久 shell、Docker/Singularity 后端、委托子 agent 运行）。由 agent 设置为当前会话 ID；从工具调用的用户脚本可读取它，以将其输出、遥测或副作用与原始 Hermes 会话关联。**不应手动设置**——从父 shell 覆盖仅在 agent 运行外生效，且 agent 启动会话时会被覆盖。 |
 
 ## 上下文压缩（仅 config.yaml）

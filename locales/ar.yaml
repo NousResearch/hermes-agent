@@ -160,6 +160,8 @@ gateway:
     picker_title:          "⚡ **المعالجة ذات الأولوية**\n\nالوضع الحالي: `{mode}`\n\nاختر خيارًا:"
     choice_fast:           "fast — المعالجة ذات الأولوية مُفعّلة"
     choice_normal:         "normal — المعالجة القياسية"
+    choice_auto:           "auto — سريع في الثواني الأولى من كل دور"
+    choice_cold:           "cold — سريع في الدور الأول من الجلسة فقط"
 
   footer:
     status:                "📎 تذييل التشغيل: **{state}**\nالحقول: `{fields}`\nالمنصّة: `{platform}`"
@@ -289,6 +291,7 @@ gateway:
     matrix_cross_room_success: "⚠️ استئناف عبر الغرف: استُؤنفت **{title}** داخل غرفة Matrix ‏**{room}**.\nستستخدم الرسائل المستقبلية في هذه الغرفة ذلك النص حتى `/reset` أو `/resume` آخر.{msg_part}"
     blocked_not_owner:     "⚠️ حُجب /resume: '**{name}**' تخصّ مستخدمًا أو محادثة مختلفة. يمكنك فقط استئناف جلسات هذه المحادثة."
     no_named_sessions:     "لم يُعثر على جلسات مُسمّاة.\nاستخدم `/title My Session` لتسمية جلستك الحالية، ثم `/resume My Session` للعودة إليها لاحقًا."
+    all_requires_admin: "_ملاحظة: يتطلب `--all` (سرد عبر الدردشات) مسؤولاً مُهيأً؛ تُعرض جلسات هذه الدردشة فقط._"
     list_header:           "📋 **الجلسات المُسمّاة**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"

@@ -1,9 +1,7 @@
 """Tests for hermes_cli.gateway."""
 
-import argparse
 import json
 import os
-import signal
 import subprocess
 import sys
 import textwrap
@@ -473,7 +471,7 @@ class TestWaitForGatewayExit:
             return call_num * 2.0  # 2, 4, 6, 8, ...
 
         kills = []
-        def mock_terminate(pid, force=False):
+        def mock_terminate(pid, force=False, **kwargs):
             kills.append((pid, force))
 
         # get_running_pid returns the PID until kill is sent, then None
@@ -493,12 +491,42 @@ class TestWaitForGatewayExit:
         calls = []
 
         monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [11, 22])
-        monkeypatch.setattr(gateway, "terminate_pid", lambda pid, force=False: calls.append((pid, force)))
+        # Kill-time re-verification: force-kills only proceed when the LIVE
+        # cmdline still looks like a gateway.
+        monkeypatch.setattr(
+            gateway, "_capture_gateway_argv", lambda pid: ["python", "-m", "hermes_cli.main", "gateway", "run"]
+        )
+        monkeypatch.setattr(
+            gateway,
+            "terminate_pid",
+            lambda pid, force=False, **kwargs: calls.append((pid, force)),
+        )
 
         killed = gateway.kill_gateway_processes(force=True)
 
         assert killed == 2
         assert calls == [(11, True), (22, True)]
+
+    def test_kill_gateway_processes_force_refuses_recycled_pid(self, monkeypatch):
+        """A scanned PID whose live argv no longer looks like a gateway is skipped."""
+        calls = []
+
+        monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [11, 22])
+        monkeypatch.setattr(
+            gateway,
+            "_capture_gateway_argv",
+            lambda pid: None if pid == 11 else ["python", "-m", "hermes_cli.main", "gateway", "run"],
+        )
+        monkeypatch.setattr(
+            gateway,
+            "terminate_pid",
+            lambda pid, force=False, **kwargs: calls.append((pid, force)),
+        )
+
+        killed = gateway.kill_gateway_processes(force=True)
+
+        assert killed == 1
+        assert calls == [(22, True)]
 
 
 class TestStopProfileGateway:
@@ -1059,7 +1087,6 @@ class TestWindowsScheduledTaskSupervisorGuard:
             raise AssertionError("subprocess must not run off Windows")
 
         monkeypatch.setattr(gateway.subprocess, "run", _boom_run)
-        assert gateway._windows_scheduled_task_running("HermesGateway") is False
         assert gateway._windows_scheduled_task_supervises("HermesGateway") is False
         assert gateway._windows_scheduled_task_state("HermesGateway") is None
 
@@ -1070,7 +1097,6 @@ class TestWindowsScheduledTaskSupervisorGuard:
         for state, expected in states.items():
             monkeypatch.setattr(gateway, "_windows_scheduled_task_state", lambda name, s=state: s)
             assert gateway._windows_scheduled_task_supervises("Hermes_Gateway") is expected, state
-            assert gateway._windows_scheduled_task_running("Hermes_Gateway") is (state == "Running")
 
 
 def test_find_windows_gateway_services_maps_verified_pid_tree(monkeypatch):

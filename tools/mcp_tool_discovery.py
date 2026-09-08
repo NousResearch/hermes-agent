@@ -249,6 +249,19 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
         for srv_name in new_servers:
             _core._server_scope_keys[srv_name] = current_scope
             _core._server_connect_errors.pop(srv_name, None)
+        # A shared connection can already be owned by another profile. Record the current
+        # profile's visibility separately so its scoped reload sees the connection without
+        # moving teardown ownership away from the profile that opened it.
+        if current_scope is not None:
+            from tools.mcp_schema_cache import config_fingerprint
+            for srv_name, srv_cfg in servers.items():
+                if not _enabled(srv_cfg):
+                    continue
+                server = _core._servers.get(srv_name)
+                if (server is not None and getattr(server, "session", None) is not None
+                        and config_fingerprint(getattr(server, "_config", {}) or {})
+                        == config_fingerprint(srv_cfg)):
+                    _core._server_tool_scopes.setdefault(srv_name, set()).add(current_scope)
         # Track which servers opt-in to parallel tool calls (idempotent).
         for srv_name, srv_cfg in servers.items():
             if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
@@ -468,7 +481,7 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
             # Runtime state belongs to the profile that adopted it; under a multiplexer only that
             # profile's view may show it, and ``include_runtime=False`` hides the launch profile's
             # servers from a status read scoped to a different profile.
-            return include_runtime and _core._server_scope_keys.get(name, None) == current_scope
+            return include_runtime and _core._server_visible_in_scope(name, current_scope)
 
         active_servers = {n: s for n, s in _core._servers.items() if visible(n)}
         connecting = {n for n in _core._server_connecting if visible(n)}

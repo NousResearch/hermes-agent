@@ -141,3 +141,40 @@ class TestUnknownTopLevelKeys:
         assert any("base_url" in i.message for i in misplaced)
         assert any("api_key" in i.message for i in misplaced)
 
+
+class TestStringifiedContainers:
+    @staticmethod
+    def _quoted_string_issues(config):
+        return [
+            issue for issue in validate_config_structure(config)
+            if "quoted string" in issue.message
+        ]
+
+    def test_container_typed_values_stored_as_strings_are_reported(self):
+        cases = (
+            ({"model_catalog": {"excluded_providers": '["openai-api", "copilot"]'}},
+             "model_catalog.excluded_providers", "list"),
+            ({"plugins": {"enabled": "['state', 'status']"}},
+             "plugins.enabled", "list"),
+            ({"model_overrides": '{"custom": {"model": {"supports_tools": false}}}'},
+             "model_overrides", "mapping"),
+        )
+
+        for config, path, kind in cases:
+            issues = self._quoted_string_issues(config)
+            assert len(issues) == 1
+            assert issues[0].severity == "warning"
+            assert path in issues[0].message
+            assert kind in issues[0].message
+            assert f"hermes config set {path}" in issues[0].hint
+
+    def test_legitimate_strings_and_real_containers_are_not_reported(self):
+        config = {
+            "approvals": {"mode": "[off]"},
+            "model_catalog": {"excluded_providers": ["openai-api"]},
+            "plugins": {"enabled": ["state"]},
+            "custom_note": "[INST] not a list",
+        }
+
+        assert self._quoted_string_issues(config) == []
+

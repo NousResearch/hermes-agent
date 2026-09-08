@@ -1216,6 +1216,43 @@ def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) ->
                    "Run 'hermes tools' and pick a different Web Search & Extract provider")
 
 
+def _validate_stringified_containers(
+    config: Dict[str, Any], issues: List[ConfigIssue], prefix: str = "",
+) -> None:
+    """Flag list/mapping settings stored as one quoted string.
+
+    Readers that require a container silently ignore these strings. Schema-declared strings remain
+    valid even when their contents use brackets or braces.
+    """
+    for key, value in config.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            _validate_stringified_containers(value, issues, path)
+            continue
+        text = value.strip() if isinstance(value, str) else ""
+        if (
+            text[:1] not in ("[", "{")
+            or text[-1:] not in ("]", "}")
+            or isinstance(_default_value_for_key(path), str)
+        ):
+            continue
+        try:
+            parsed = yaml.safe_load(text)
+        except yaml.YAMLError:
+            continue
+        if not isinstance(parsed, (list, dict)):
+            continue
+        kind = "list" if isinstance(parsed, list) else "mapping"
+        _issue(
+            issues,
+            "warning",
+            f"{path} is a quoted string that looks like a {kind} — Hermes expects a real YAML "
+            f"{kind} here and ignores the string",
+            f"Re-run: hermes config set {path} '<value>' (stored as a real {kind}), or rewrite "
+            f"it in config.yaml using YAML {kind} syntax",
+        )
+
+
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
     """Validate config.yaml structure and return detected issues (accepts a pre-loaded dict).
     Catches common YAML mistakes that otherwise surface as confusing runtime errors."""
@@ -1253,6 +1290,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                    f"Move '{key}' under the appropriate section")
 
     _validate_web_backends(config, issues)
+    _validate_stringified_containers(config, issues)
     return issues
 
 

@@ -32,14 +32,16 @@ on:
   workflow_dispatch:
 
 permissions:
-  # Required to upload SARIF file to CodeQL. See: https://github.com/github/codeql-action/issues/2117
-  actions: read
   contents: read
-  security-events: write
 
 jobs:
   scan:
     name: Scan lockfiles
+    permissions:
+      # Required to upload SARIF file to CodeQL. See: https://github.com/github/codeql-action/issues/2117
+      actions: read
+      contents: read
+      security-events: write
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
     with:
       # Scan explicit lockfiles rather than recursing, so we only look at
@@ -57,6 +59,9 @@ jobs:
 
   emit-status:
     name: Emit review status
+    permissions:
+      actions: read
+      contents: read
     runs-on: ubuntu-latest
     needs: scan
     if: always()

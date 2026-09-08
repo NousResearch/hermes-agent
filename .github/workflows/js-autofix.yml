@@ -141,8 +141,10 @@ jobs:
     timeout-minutes: 15
     environment: trusted-automation
     permissions:
+      checks: read # gh pr checks reads CheckRun entries
       contents: write # needed to push to bot/js-autofix
       pull-requests: write # needed for PR creation + auto-merge
+      statuses: read # gh pr checks also reads commit StatusContext entries
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -152,6 +154,10 @@ jobs:
         with:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-checks: read
+          permission-contents: write
+          permission-pull-requests: write
+          permission-statuses: read
 
       - name: Download patch
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

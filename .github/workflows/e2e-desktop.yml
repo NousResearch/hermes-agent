@@ -107,8 +107,15 @@ jobs:
       # is always fresh — no separate build step needed.
       - name: Run Playwright E2E tests
         working-directory: apps/desktop
+        env:
+          GITHUB_REF_NAME_SAFE: ${{ github.ref_name }}
+          CI: 'true'
+          # Ensure no real API keys leak into the test env.
+          OPENROUTER_API_KEY: ''
+          OPENAI_API_KEY: ''
+          NOUS_API_KEY: ''
         run: |
-          if [ "${{ github.ref_name }}" = "main" ]; then
+          if [ "$GITHUB_REF_NAME_SAFE" = "main" ]; then
             echo "On main — generating/updating baseline screenshots"
             npm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
               npx playwright test --reporter=list --update-snapshots
@@ -117,12 +124,6 @@ jobs:
             npm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
               npx playwright test --reporter=list
           fi
-        env:
-          CI: 'true'
-          # Ensure no real API keys leak into the test env.
-          OPENROUTER_API_KEY: ''
-          OPENAI_API_KEY: ''
-          NOUS_API_KEY: ''
 
       # ── Save updated baselines to cache (main only) ───────────────────
       - name: Save updated baselines to cache

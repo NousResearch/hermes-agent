@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "tools": {
+    "zizmor": {
+      "version": "1.30.0",
+      "sha256": "sha256:98c426d9668ba03d7444acdb8a5f0eb44ba187ddffeba15833b605a384d50879"
+    },
+    "import-linter": {
+      "version": "2.14",
+      "sha256": "sha256:a6558ea7f4f0fea70cf21f63eac9d37018882f8ed529bb3313ba28e1a2bf279e",
+      "distribution_sha256": "sha256:de0858c9dc7eeca513b6daa31dec7099939addfb1f089536ec806a0b1611bddb"
+    },
+    "pip-audit": {
+      "version": "2.10.1",
+      "sha256": "sha256:ade9c86ba46074ca0224526121f061c67fadafabf00294c7d52d6436221604de",
+      "distribution_sha256": "sha256:5691c79b88f4c5c5b9f8f7642c9708d12275998fe7e523144b5c132807ac135c"
+    }
+  },
+  "uv": {
+    "version": "0.12.6",
+    "sha256": "sha256:e8929237934c8679686428f5a7736c7ae7a5fe7a33b0504d1b03446cdbc43c94"
+  }
+}

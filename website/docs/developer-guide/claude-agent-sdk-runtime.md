@@ -1,8 +1,8 @@
 # Claude Agent SDK Runtime
 
 > **Audience:** Gateway developers and maintainers
-> **Source files:** `agent/claude_sdk_runtime.py`, `agent/transports/claude_agent_sdk_session.py`, `agent/turn_runtime_handoff.py`, `tools/approval_sdk_gateway.py`, `gateway/run_background_results.py`, `gateway/run_turn_runner.py`, `gateway/run_turn.py`, `gateway/run_agent_cache.py`
-> **Last updated:** 2026-08-16
+> **Source files:** `agent/claude_sdk_runtime.py` + `agent/claude_sdk_runtime_*.py`, `agent/transports/claude_agent_sdk_session.py` + `agent/transports/claude_agent_sdk_session_*.py`, `agent/turn_runtime_handoff.py`, `tools/approval_sdk_gateway.py`, `gateway/run_background_results.py`, `gateway/run_turn_runner.py`, `gateway/run_turn.py`, `gateway/run_agent_cache.py`
+> **Last updated:** 2026-09-08
 
 ## Overview
 
@@ -15,13 +15,33 @@ controls.
 Every other provider is a stateless HTTP call. This one is a long-lived process
 tree.
 
-Two modules matter:
+Two facades matter, each with topic siblings (`<stem>_<topic>.py` beside it;
+find code by topic, not by facade):
 
-- `agent/claude_sdk_runtime.py` — `run_claude_agent_sdk_turn()`, the turn loop.
-  Owns prompt assembly, the compaction status edges, and budget enforcement.
+- `agent/claude_sdk_runtime.py` — `run_claude_agent_sdk_turn()`, the turn
+  orchestrator: it runs the phases in their load-bearing order over one
+  per-turn `_SdkTurnState` (`claude_sdk_runtime_state.py`). Siblings:
+  `_session` (session creation, per-turn visibility callbacks, the
+  resume/retire attempt loop, the budget cap), `_fallback`
+  (`ClaudeSdkTurnEffects`, the replay-safe provider hand-off and the
+  terminal/stop reconciliation), `_continuity` (persisted resume id, the
+  continuity digest, flush-then-persist), `_usage` (billing attribution and
+  post-turn accounting), `_context` (context-window sync from the CLI),
+  `_prompt` (system-prompt append), `_tools` (hybrid MCP bridge inputs),
+  `_compaction` (the compaction status edges).
 - `agent/transports/claude_agent_sdk_session.py` — `ClaudeAgentSdkSession`,
-  the process/option layer. Owns option construction, the environment handed to
-  the child, hooks, and teardown.
+  the process/option layer, composed from mixins: the facade owns option
+  construction, startup and teardown; `_turn` owns `run_turn`, the stream
+  consumer and the reader loop (they share one claim/release protocol, so
+  they stay together); `_permissions` the `can_use_tool` floors;
+  `_notify` the visibility relays; `_compaction` the PreCompact hook,
+  `compact_boundary` and `context_usage()`; `_billing` the billing
+  evidence; `_child` process reaping and the loop thread; `_config` the
+  provider config, the child environment and the MCP entries; `_watchdog`
+  `_TurnWatch`; `_availability` readiness and auth classification;
+  `_sanitize` the bounded canonical-JSON boundary; `_input` image/content
+  blocks. Patch seams follow the consumer's binding — e.g.
+  `ClaudeSdkEventProjector` is bound in `_turn`.
 
 ---
 
@@ -409,13 +429,30 @@ evidence.
 | `tests/agent/test_system_prompt_restore.py` | Effective SDK prompt snapshot survives continuing turns |
 | `tests/gateway/test_agent_cache_displacement.py` | Displaced-agent release, mid-turn protection |
 | `tests/gateway/test_sdk_background_result_delivery.py` | Direct outbound delivery of background results, transcript projection, orphan fallback |
-| `tests/agent/test_claude_sdk_runtime.py` | Runtime glue, streaming/turn lifetime, session identity, approval bridge, canonicalization hardening |
+| `tests/agent/test_claude_sdk_runtime_glue.py` | Turn contract, background-review routing, provider wiring, model attribution, phase-order invariants |
+| `tests/agent/test_claude_sdk_session_core.py` | Session lifecycle, options, hooks, billing guard |
+| `tests/agent/test_claude_sdk_streaming.py` | Stream ownership, delta relay, unsolicited delivery, dead-stream retire |
+| `tests/agent/test_claude_sdk_turn_lifetime.py` | Activity-aware turn budget, post-tool quiet watchdog, `_TurnWatch` semantics |
+| `tests/agent/test_claude_sdk_interrupt.py` | Interrupt routing, barge-in hand-off |
+| `tests/agent/test_claude_sdk_session_identity.py` | Hermes session-id plumbing, continuity/resume, agent close |
+| `tests/agent/test_claude_sdk_failover.py` | Fatal reasons, replay-safe provider failure outcomes |
+| `tests/agent/test_claude_sdk_system_prompt.py` | System-prompt append budget and blocks, aux-lane routing |
+| `tests/agent/test_claude_sdk_mcp_security.py` | Direct HTTP MCP security, hybrid registry diff, minimal MCP env, bounded MCP inspection |
+| `tests/agent/test_claude_sdk_auth.py` | Auth-failure classification, SDK availability gate, Anthropic token guard |
+| `tests/agent/test_claude_sdk_projection.py` | Fallback bridge, event projector |
+| `tests/agent/test_claude_sdk_background_delivery.py` | Background-result delivery wiring |
+| `tests/agent/test_claude_sdk_approval_bridge_floors.py` | Gateway approval bridge: Bash pre-filter, builder, option/floor matrix |
+| `tests/agent/test_claude_sdk_approval_bridge_notify.py` | Gateway approval bridge: session-scoped approver, notify lifecycle, operator cards |
+| `tests/agent/test_claude_sdk_approval_bridge_decisions.py` | Gateway approval bridge: choice mapping, session fallback, smart decisions, observer containment |
+| `tests/agent/test_claude_sdk_approval_canonicalization.py` | Canonical request boundary hardening |
+| `tests/agent/claude_sdk_fakes.py` | (not a test) SDK message stand-ins, fake clients and builders shared by the modules above; each module re-declares the `_isolate_provider_config` autouse fixture explicitly |
 | `tests/agent/test_hermes_hybrid_mcp.py` | Hybrid MCP bridge registration and tool exposure |
 | `tests/agent/transports/test_hermes_tools_mcp_server_shims.py` | Stateless memory / session_search shims |
 
-**Known gap:** the compaction *start* and *completion* closures both sit inside
-`run_claude_agent_sdk_turn()` and cannot be exercised without standing up a full
-turn. The transport-side halves they depend on (`_build_compaction_hooks`,
-`_handle_compact_boundary`) are covered directly; the closures themselves are
-left to production verification rather than covered by a source-text assertion,
-which would claim coverage without evidence the line ever runs.
+The compaction *start* and *completion* edges are module-level functions in
+`agent/claude_sdk_runtime_compaction.py` (`_on_compaction`,
+`_on_compact_boundary`, and the end-of-turn fallback
+`_emit_dangling_compaction_done`); the session receives the first two bound
+with `functools.partial`. `test_claude_sdk_compaction_status.py` exercises
+them directly, alongside the transport-side halves (`_build_compaction_hooks`,
+`_handle_compact_boundary` in `claude_agent_sdk_session_compaction.py`).

@@ -59,6 +59,37 @@ test('listen binds a loopback listener and wait resolves with the redirect param
   await assert.rejects(fetch(`${redirectUri}?code=again&state=st-1`))
 })
 
+test('wait relays the RFC 9207 iss parameter from the redirect', async () => {
+  // mcp 2.x rejects an authorization response omitting `iss` when the server
+  // advertised `authorization_response_iss_parameter_supported` (Cloudflare,
+  // Resend), so the listener must not drop it.
+  const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }
+
+  const waitPromise = invoke('hermes:mcp-oauth:wait', id, 5000) as Promise<{
+    code: null | string
+    iss: null | string
+    state: null | string
+  }>
+
+  await fetch(`${redirectUri}?code=abc123&state=st-1&iss=${encodeURIComponent('https://mcp.cloudflare.com')}`)
+
+  const result = await waitPromise
+
+  assert.equal(result.code, 'abc123')
+  assert.equal(result.iss, 'https://mcp.cloudflare.com')
+})
+
+test('a redirect without iss reports it as null rather than undefined', async () => {
+  // Providers that do not advertise RFC 9207 keep working unchanged.
+  const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }
+
+  const waitPromise = invoke('hermes:mcp-oauth:wait', id, 5000) as Promise<{ iss: null | string }>
+
+  await fetch(`${redirectUri}?code=abc123&state=st-1`)
+
+  assert.equal((await waitPromise).iss, null)
+})
+
 test('non-callback noise (favicon) does not settle the listener', async () => {
   const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }
   const origin = redirectUri.replace(/\/callback$/, '')

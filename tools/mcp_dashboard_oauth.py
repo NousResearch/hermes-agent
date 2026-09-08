@@ -43,7 +43,7 @@ class DashboardOAuthFlow:
     error: str | None = None
     tools: list[dict] = field(default_factory=list)
     expected_state: str | None = field(default=None, init=False)
-    _callback: tuple[str, str | None] | None = field(default=None, init=False, repr=False)
+    _callback: tuple[str, str | None, str | None] | None = field(default=None, init=False, repr=False)
     _callback_error: str | None = field(default=None, init=False, repr=False)
     _authorization_ready: threading.Event = _event_field()
     _callback_ready: threading.Event = _event_field()
@@ -70,8 +70,15 @@ class DashboardOAuthFlow:
             raise RuntimeError(self.error or "MCP OAuth flow ended before authorization")
         return self.authorization_url
 
-    def deliver_callback(self, *, code: str | None, state: str | None, error: str | None) -> None:
-        """Hand the browser redirect to the waiting flow; ``state`` must match exactly."""
+    def deliver_callback(
+        self, *, code: str | None, state: str | None, error: str | None, iss: str | None = None
+    ) -> None:
+        """Hand the browser redirect to the waiting flow; ``state`` must match exactly.
+
+        ``iss`` (RFC 9207) is carried through: mcp 2.x rejects an authorization response that omits
+        it when the server advertised ``authorization_response_iss_parameter_supported``, which
+        Cloudflare and Resend both do. Dropping it breaks login against those providers.
+        """
         with self._lock:
             if self._callback_ready.is_set():
                 raise ValueError("OAuth callback already received")
@@ -80,12 +87,12 @@ class DashboardOAuthFlow:
             if error:
                 self._callback_error = error
             elif code:
-                self._callback = (code, state)
+                self._callback = (code, state, iss)
             else:
                 self._callback_error = "OAuth callback did not include code or error"
             self._callback_ready.set()
 
-    async def wait_for_callback(self, timeout: float = 300.0) -> tuple[str, str | None]:
+    async def wait_for_callback(self, timeout: float = 300.0) -> tuple[str, str | None, str | None]:
         if not await asyncio.to_thread(self._callback_ready.wait, timeout):
             raise TimeoutError("Timed out waiting for MCP OAuth callback")
         if self._callback_error:

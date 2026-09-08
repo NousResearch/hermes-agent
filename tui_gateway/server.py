@@ -541,6 +541,27 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
     return None
 
 
+def _profile_terminal_backend(profile_home: Path | None) -> str | None:
+    """A non-launch profile's ``terminal.backend`` from ITS config.yaml (fail-open → None).
+
+    Same reason as :func:`_profile_configured_cwd`: at ``session.create`` the multiplex gateway has NOT yet
+    rebound HERMES_HOME to the target profile, so ``_effective_terminal_backend()`` reads the LAUNCH profile
+    (usually ``local``). A session bound to an ``ssh``/``docker`` profile then loses the non-local cwd
+    exemption and its remote workspace is dropped to the launch dir. Read the bound profile's own backend.
+    """
+    if profile_home is None:
+        return None
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import read_user_config_raw
+        p = Path(profile_home) / "config.yaml"
+        if p.exists():
+            cfg = _expand_cfg(_apply_managed(read_user_config_raw(p)))
+            terminal_cfg = cfg.get("terminal") if isinstance(cfg, dict) else None
+            if isinstance(terminal_cfg, dict):
+                return str(terminal_cfg.get("backend") or "").strip().lower() or None
+    return None
+
+
 def _launch_configured_cwd() -> str | None:
     """Launch profile's ``terminal.cwd`` from config.yaml: the dashboard's in-memory gateway gets no bridged
     ``TERMINAL_CWD`` env (only the Node PTY child does), so a fresh /chat would otherwise start in ``os.getcwd()``."""
@@ -2316,7 +2337,11 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
             if row and row.get("cwd"):
                 with _sessions_lock:
                     if sid in _sessions:
+                        # A persisted row cwd is the session's authoritative workspace (a project session, or a
+                        # settled dir), not a launch artifact: mark it explicit so the ssh/remote terminal uses it
+                        # instead of falling back to the profile's ~ (session_workdir._terminal_task_cwd_with_source).
                         _sessions[sid]["cwd"] = row["cwd"]
+                        _sessions[sid]["explicit_cwd"] = True
             elif hasattr(db, "update_session_cwd"):
                 try:
                     _persist_session_cwd_and_schedule_git_meta(_sessions[sid], _sessions[sid]["cwd"], db=db)

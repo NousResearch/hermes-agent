@@ -67,7 +67,11 @@ export function startWorkspaceSession({
         return
       }
 
-      const resolved = info.cwd || target
+      // An explicitly chosen project path is authoritative (like the backend's explicit_cwd): a remote/ssh
+      // project dir does not exist on the gateway host, so config.get's host-side normalization drops it to
+      // the launch cwd (/opt/hermes). Keep the user's path; only adopt the server cwd for the path-less
+      // fallback. Branch still comes from the probe.
+      const resolved = explicitTarget || info.cwd || target
 
       setCurrentCwd(resolved)
       setNewChatWorkspaceTarget(resolved)

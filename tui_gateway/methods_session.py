@@ -302,11 +302,21 @@ def _(rid, params: dict) -> dict:
     # Only an explicitly chosen existing workspace persists as cwd; the launch-dir fallback is "No workspace".
     explicit_cwd = False
     raw_cwd = _str_param(params, "cwd")  # unguarded, as on BASE: only the path check is best-effort
-    with contextlib.suppress(Exception):
-        explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
-    _enable_gateway_prompts()
-    # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
+    # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME. Resolved
+    # up here so the cwd/backend checks below can read the BOUND profile's config, not the launch profile's.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
+    # The BOUND profile's backend (multiplex hasn't rebound HERMES_HOME yet, so the process-global
+    # _effective_terminal_backend() would read the launch profile - usually local).
+    session_backend = _profile_terminal_backend(profile_home) or _effective_terminal_backend()
+    with contextlib.suppress(Exception):
+        # A non-local backend's cwd lives inside the target environment, so a LOCAL isdir gate would
+        # drop the remote project path and _terminal_task_cwd_with_source would fall to `~`. Mark it
+        # explicit whenever a cwd is provided; local backends keep the host isdir check.
+        if raw_cwd and session_backend != "local":
+            explicit_cwd = True
+        else:
+            explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
+    _enable_gateway_prompts()
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
     now = time.time()
     with _sessions_lock:
@@ -344,6 +354,13 @@ def _(rid, params: dict) -> dict:
     # message-preview name. Title mirrors the TUI /branch naming.
     if parent_session_id and history:
         _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
+    elif _sessions[sid].get("explicit_cwd"):
+        # A session opened INTO a project (explicit cwd) is explicit intent, not an abandoned draft, so the
+        # "no eager row" rule above does not apply: persist the row now with its project cwd. Otherwise the
+        # per-profile gateway process that runs the first turn mints the row itself (AIAgent INSERT-OR-IGNORE)
+        # with cwd=None -- the sidebar then drops the session to Home and the terminal falls back to the
+        # profile's ~ dir. Gated on explicit_cwd so plain launches still stay row-less (no "Untitled" litter).
+        _ensure_session_db_row(_sessions[sid])
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
@@ -847,14 +864,24 @@ def _(rid, params: dict) -> dict:
     if not (raw := _str_param(params, "cwd")):
         return _err(rid, 4016, "cwd required")
     from hermes_constants import translate_cwd_for_wsl_backend
-    resolved = os.path.abspath(os.path.expanduser(translate_cwd_for_wsl_backend(raw)))
-    if not os.path.isdir(resolved):
-        return _err(rid, 4017, f"working directory does not exist: {raw}")
+    translated = translate_cwd_for_wsl_backend(raw)
+    resolved = os.path.abspath(os.path.expanduser(translated))
+    # A non-local (ssh/docker) profile's workspace lives inside the target environment: the local isdir
+    # gate would reject a valid remote project dir. Read the BOUND profile's backend (not the launch
+    # process env) and, when non-local, trust the path raw - mirroring _completion_cwd / _set_session_cwd.
+    is_local = _profile_terminal_backend(_profile_home(params.get("profile"))) or _effective_terminal_backend()
+    is_local = is_local == "local"
+    if is_local:
+        if not os.path.isdir(resolved):
+            return _err(rid, 4017, f"working directory does not exist: {raw}")
+        target_cwd = resolved
+    else:
+        target_cwd = translated
     # Snapshot under the lock — concurrent RPCs mutate _sessions.
     with _sessions_lock:
         live_sid, live = next(
             ((sid, sess) for sid, sess in list(_sessions.items()) if sess.get("session_key") == target), ("", None))
-    branch, root = git_probe.branch(resolved), git_probe.common_repo_root(resolved)
+    branch, root = git_probe.branch(target_cwd), git_probe.common_repo_root(target_cwd)
     with _profile_db(params) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
@@ -864,16 +891,16 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4007, "session not found")
         else:
             try:
-                db.update_session_cwd(target, resolved, branch, root, replace_git_meta=True)
+                db.update_session_cwd(target, target_cwd, branch, root, replace_git_meta=True)
             except Exception as e:
                 return _err(rid, 5007, f"move failed: {e}")
     if live is not None:
         try:
-            _set_session_cwd(live, resolved)
+            _set_session_cwd(live, target_cwd)
         except ValueError as e:
             return _err(rid, 4017, str(e))
-        _emit("session.info", live_sid, _cwd_info(live, resolved, branch=branch))
-    return _ok(rid, {"cwd": resolved, "branch": branch, "git_repo_root": root})
+        _emit("session.info", live_sid, _cwd_info(live, target_cwd, branch=branch))
+    return _ok(rid, {"cwd": target_cwd, "branch": branch, "git_repo_root": root})
 
 
 @method("session.active_list")

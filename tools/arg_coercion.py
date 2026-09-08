@@ -76,8 +76,15 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 args[key] = [value]
                 logger.info("coerce_tool_args: wrapped bare string in list for %s.%s", tool_name, key)
                 continue
-            args[key] = [value]
-            logger.info("coerce_tool_args: wrapped bare %s in list for %s.%s", type(value).__name__, tool_name, key)
+            if not isinstance(expected, list):
+                # Plain array schemas keep the historical bare-scalar wrap.
+                # Unions must not: a non-string value that a scalar branch
+                # already accepts carries its own meaning. Wrapping terminal's
+                # notify=true into [true] silently flipped completion
+                # notification to watch-pattern mode (dispatch maps a list to
+                # watch_patterns and forces notify_on_complete=False).
+                args[key] = [value]
+                logger.info("coerce_tool_args: wrapped bare %s in list for %s.%s", type(value).__name__, tool_name, key)
             continue
 
         if not isinstance(value, str):

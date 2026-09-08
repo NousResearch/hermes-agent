@@ -427,3 +427,27 @@ class TestCoerceToolArgsUnions:
             "notify": '["PROBE-A"]',
         })
         assert result["notify"] == ["PROBE-A"]
+
+    def test_real_terminal_notify_native_bool_not_wrapped(self):
+        """A native bool for the notify union must stay a bool.
+
+        The union-driven array wrap is a repair for *string* arrays the model
+        emitted bare; a native ``notify=true`` already satisfies the boolean
+        branch. Wrapping it into ``[true]`` made dispatch map it onto
+        watch_patterns with notify_on_complete=False, so background completion
+        notifications were silently lost (CI regression caught by
+        tests/tools/test_completed_process_results.py).
+        """
+        result = coerce_tool_args("terminal", {
+            "command": "echo hi",
+            "background": True,
+            "notify": True,
+        })
+        assert result["notify"] is True
+
+        result = coerce_tool_args("terminal", {
+            "command": "echo hi",
+            "background": True,
+            "notify": False,
+        })
+        assert result["notify"] is False

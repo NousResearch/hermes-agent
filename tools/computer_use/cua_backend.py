@@ -37,11 +37,9 @@ _CUA_NATIVE_WAYLAND_ENV_VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
 
 
 def _computer_use_cfg() -> Dict[str, Any]:
-    """The ``computer_use`` config block, or ``{}`` when config is unreadable."""
-    with contextlib.suppress(Exception):
-        from hermes_cli.config import load_config
-        return (load_config() or {}).get("computer_use") or {}
-    return {}
+    """Current desktop config; unreadable or stale loader results fail closed."""
+    from tools.computer_use.cua_backend_config import computer_use_config
+    return computer_use_config()
 
 def _remote_cfg() -> Optional[Any]:
     """Active remote CUA transport config, or None when remote is absent / disabled.
@@ -68,7 +66,9 @@ def _cua_no_overlay() -> bool:
 
     Explicit ``True`` / ``False`` overrides auto-detection. See #28152, #47032.
     """
-    val = _computer_use_cfg().get("no_overlay")
+    val = None
+    with contextlib.suppress(RuntimeError):  # tuning fallback does not authorize a desktop
+        val = _computer_use_cfg().get("no_overlay")
     if val is not None or sys.platform != "linux":
         return bool(val) if val is not None else sys.platform == "darwin"
     wsl = False
@@ -86,7 +86,9 @@ def _cua_no_overlay() -> bool:
 
 def _cua_telemetry_disabled() -> bool:
     """True unless ``computer_use.cua_telemetry`` opts in (unreadable config fails SAFE toward disabling)."""
-    return not bool(_computer_use_cfg().get("cua_telemetry", False))
+    with contextlib.suppress(RuntimeError):  # retain the privacy-safe tuning default
+        return not bool(_computer_use_cfg().get("cua_telemetry", False))
+    return True
 
 def _cua_configured_permission_mode() -> str:
     """``computer_use.permission_mode``: ``standard`` (default) or ``bounded``; unknown values fall closed to

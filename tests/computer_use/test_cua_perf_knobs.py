@@ -7,7 +7,7 @@ from tools.computer_use import tool as cu_tool
 
 
 def test_max_image_dimension_default():
-    with patch("hermes_cli.config.load_config", return_value={}):
+    with patch.object(cua_backend, "_computer_use_cfg", return_value={}):
         assert cua_backend._computer_use_max_image_dimension() == 1456
 
 

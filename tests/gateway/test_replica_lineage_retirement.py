@@ -102,6 +102,47 @@ def test_stale_authority_obligations_are_blocked_without_rewriting_scope(pair):
         assert after[key] == before[key]
 
 
+@pytest.mark.parametrize("mode", ["age", "rooms", "bytes"])
+@pytest.mark.parametrize("state", ["valid", "quarantined", "wrong_lineage"])
+def test_retired_partial_v2_prefix_is_reclaimed_only_for_its_lineage(pair, mode, state):
+    from gateway import hosted_room_link_records as links
+    from gateway.hosted_room_safety import _prune_disbanded_replicas_locked
+
+    source, target = pair
+    old = enroll(pair)
+    copied_prefix(pair)
+    spans = [{"gateway_id": HOME, "epoch": 1, "from_seq": 0}, transfer(source)]
+    entry = setup_successor(source, target, spans, old_id=old["enrollment_id"])
+    links.begin_room_link_retirement(source, room_id="room", authority_gateway_id=SUCCESSOR, authority_epoch=2)
+    links.complete_room_link_retirement(source, room_id="room", authority_gateway_id=SUCCESSOR, authority_epoch=2)
+    rooms.disband_room(source, room_id="room", expected_gateway_id=SUCCESSOR, expected_epoch=2)
+    closing = retirement.materialize_notice(source, enrollment_id=entry["enrollment_id"],
+        local_gateway_id=SUCCESSOR, secret_loader=lambda: SECRET)
+    retired = retirement.retire_copy(target, payload=closing.payload(), value=closing.value, local_gateway_id=TARGET)
+    assert retired["lineage_status"] == "pending" and retired["stored_seq"] == 1
+    with retirement._transaction(target) as conn:
+        if state == "quarantined":
+            conn.execute("UPDATE hosted_room_replicas SET quarantine_reason='preserve',quarantined_at=1")
+        elif state == "wrong_lineage":
+            conn.execute(f"UPDATE {retirement.RETIREMENT_TABLE} SET lineage_sha256=?", ("0" * 64,))
+        retired_at = conn.execute(f"SELECT retired_at FROM {retirement.RETIREMENT_TABLE}").fetchone()[0]
+        if mode == "age":
+            count = _prune_disbanded_replicas_locked(conn, now=retired_at + rooms.DISBANDED_REPLICA_RETENTION_SECONDS + 1)
+        elif mode == "rooms":
+            count = _prune_disbanded_replicas_locked(conn, now=None, max_replica_rooms=0)
+        else:
+            count = _prune_disbanded_replicas_locked(conn, now=None, max_replica_event_bytes=0)
+        assert count == (1 if state == "valid" else 0)
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_replica_events").fetchone()[0] == (0 if state == "valid" else 1)
+        assert conn.execute("SELECT owner_kind FROM hosted_room_id_reservations WHERE room_id='room'").fetchone()[0] == "replica"
+    if state == "valid":
+        with pytest.raises(replicas.ReplicaHistoryExpiredError):
+            replicas.replica_state(target, room_id="room")
+        assert retirement.retire_copy(target, payload=closing.payload(), value=closing.value, local_gateway_id=TARGET) == retired
+        with pytest.raises(rooms.HostedRoomError):
+            ingest(target, page_v2(source, spans, include_disbanded=True))
+
+
 def test_concurrent_retirement_replacement_has_exactly_one_committed_winner(pair, tmp_path):
     import threading
     from concurrent.futures import ThreadPoolExecutor

@@ -140,6 +140,7 @@ def _run_and_exit_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: object = None,
+    resume: object = None,
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot
@@ -151,6 +152,7 @@ def _run_and_exit_oneshot(
             toolsets=toolsets,
             skills=skills,
             usage_file=usage_file,
+            resume=resume if isinstance(resume, str) and resume.strip() else None,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -2879,6 +2881,10 @@ def _run_oneshot_from_args(args) -> None:
     Bypasses cli.py entirely; _run_and_exit_oneshot never returns.
     """
     _confirm_startup_expensive_model_override(args)
+    # -z honors --resume/-c/--in exactly like chat (#105892): normalize BEFORE the
+    # oneshot exit path takes over, else the flags parse fine but silently do nothing
+    # and the turn starts a fresh session (every wire request loses all history).
+    _resolve_chat_session_args(args, use_tui=False)
     _run_and_exit_oneshot(
         args.oneshot,
         model=getattr(args, "model", None),
@@ -2886,6 +2892,7 @@ def _run_oneshot_from_args(args) -> None:
         toolsets=getattr(args, "toolsets", None),
         skills=getattr(args, "skills", None),
         usage_file=getattr(args, "usage_file", None),
+        resume=getattr(args, "resume", None),
     )
 
 

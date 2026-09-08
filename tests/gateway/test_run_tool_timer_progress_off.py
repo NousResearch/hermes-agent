@@ -11,6 +11,7 @@ from __future__ import annotations
 import queue
 from unittest.mock import MagicMock
 
+import gateway.run_turn_runner as rtr
 from gateway.run_turn_runner import TurnRunner
 from gateway.turn_context import TurnContext
 
@@ -103,3 +104,155 @@ class TestTimerLifecycleWhenProgressOff:
         )
 
         assert sc.thinking == ["claude (API call #2)"]
+
+
+class TestTimerCompletionWhenProgressOn:
+    """Issue #4 (unsupportedpastels review of 96942): with tool_progress ON and
+    the timer ON, a ``tool.completed`` event must still reach
+    ``on_tool_completed``. It previously did NOT: the onboarding-hint branch
+    (``event_type == "tool.completed" and not long_tool_hint_fired[0]``) returned
+    early on the DEFAULT ``long_tool_hint_fired == [False]``, before the timer
+    completion dispatch, so a finished tool kept rendering as active until a
+    later thinking/text event cleared it.
+    """
+
+    def test_tool_completed_dispatches_timer_with_progress_on(self):
+        sc = _FakeStreamConsumer(supports_tool_timer=True)
+        ctx = _make_ctx(
+            tool_progress_enabled=True, tool_timer_enabled=True, sc=sc
+        )
+        # Default gate state: the onboarding hint has not fired yet.
+        assert ctx.long_tool_hint_fired == [False]
+        runner = TurnRunner(None, ctx)
+
+        # A short tool (below the long-tool hint threshold) completes.
+        runner.progress_callback(
+            "tool.completed", "terminal", None, None,
+            tool_call_id="c1", duration=1.0,
+        )
+
+        # The completion MUST reach the timer so the tool stops rendering active.
+        assert sc.completed == [("terminal", 1.0, "c1")]
+
+
+class TestNativeTaskCardsSkipTimerDispatch:
+    """Native Slack task cards consume the ID-bearing start/complete callbacks
+    themselves, so the name-correlated timer dispatch must be skipped entirely
+    (it would duplicate cards and mispair concurrent same-tool calls).
+    """
+
+    def test_task_cards_skip_timer_dispatch(self):
+        sc = _FakeStreamConsumer(supports_tool_timer=True)
+        ctx = _make_ctx(
+            tool_progress_enabled=True, tool_timer_enabled=True, sc=sc
+        )
+        ctx._native_slack_task_cards = True
+        runner = TurnRunner(None, ctx)
+
+        runner.progress_callback("tool.started", "terminal", None, None, tool_call_id="c1")
+        runner.progress_callback(
+            "tool.completed", "terminal", None, None, tool_call_id="c1", duration=2.0
+        )
+
+        # The name-correlated timer path is bypassed; task cards handle these.
+        assert sc.started == []
+        assert sc.completed == []
+
+
+class TestStartedFallsThroughWhenProgressOn:
+    """With tool_progress ON, a ``tool.started`` event dispatches the timer AND
+    falls through to the ordinary progress-rendering path (only ``tool.completed``
+    returns early inside the timer block). The started line must be emitted.
+    """
+
+    def test_started_dispatches_timer_and_renders_progress(self):
+        sc = _FakeStreamConsumer(supports_tool_timer=True)
+        ctx = _make_ctx(
+            tool_progress_enabled=True, tool_timer_enabled=True, sc=sc
+        )
+        ctx.progress_mode = "all"
+        ctx._agent_interrupted = lambda: False
+        emitted = []
+        runner = TurnRunner(None, ctx)
+        # Capture the ordinary progress-path emit (post-timer fall-through).
+        runner._progress_emit = lambda msg, tool_call_id=None: emitted.append(msg)
+
+        runner.progress_callback(
+            "tool.started", "terminal", "python x.py", {}, tool_call_id="c1"
+        )
+
+        # Timer got the started event...
+        assert sc.started == [("terminal", "c1")]
+        # ...and the ordinary progress path still rendered the started line.
+        assert len(emitted) == 1
+
+
+class TestOnboardingHintStillFiresWithTimerOn:
+    """Q3 regression (#96942 review): the onboarding hint's only entry point is
+    the ``tool.completed`` branch. The unified timer block's early return
+    (``event_type == "tool.completed" or not tool_progress_enabled``) would have
+    swallowed the hint on every timer-enabled turn. The fix runs the hint before
+    that return, so a long tool with the /verbose gate open still fires it once.
+    """
+
+    def test_hint_fires_with_timer_and_progress_on(self, monkeypatch):
+        import agent.onboarding as onboarding
+        import gateway.run as grun
+
+        sc = _FakeStreamConsumer(supports_tool_timer=True)
+        ctx = _make_ctx(
+            tool_progress_enabled=True, tool_timer_enabled=True, sc=sc
+        )
+        ctx.progress_mode = "all"  # hint only fires in stream-all mode
+        assert ctx.long_tool_hint_fired == [False]
+        runner = TurnRunner(None, ctx)
+
+        # Open the /verbose gate and stub the onboarding side effects.
+        monkeypatch.setattr(grun, "_load_gateway_config",
+                            lambda: {"display": {"tool_progress_command": True}})
+        monkeypatch.setattr(rtr, "cfg_get", lambda cfg, *ks: True)
+        monkeypatch.setattr(rtr, "is_truthy_value", lambda v, default=False: bool(v))
+        monkeypatch.setattr(onboarding, "is_seen", lambda cfg, flag: False)
+        monkeypatch.setattr(onboarding, "mark_seen", lambda path, flag: True)
+        monkeypatch.setattr(onboarding, "tool_progress_hint_gateway", lambda: "HINT_TEXT")
+
+        # A LONG tool completes (>= threshold) — hint precondition met.
+        runner.progress_callback(
+            "tool.completed", "terminal", None, None, tool_call_id="c1", duration=99.0
+        )
+
+        # Timer completion still dispatched...
+        assert sc.completed == [("terminal", 99.0, "c1")]
+        # ...AND the one-time hint reached the progress queue (regression guard).
+        assert ctx.long_tool_hint_fired == [True]
+        drained = []
+        while not ctx.progress_queue.empty():
+            drained.append(ctx.progress_queue.get_nowait())
+        assert "HINT_TEXT" in drained
+
+    def test_hint_suppressed_when_gate_closed(self, monkeypatch):
+        """Counter-case: gate closed (default/our deployment) → no hint, but the
+        timer completion still dispatches. Proves the fix doesn't over-fire.
+        """
+        import agent.onboarding as onboarding
+        import gateway.run as grun
+
+        sc = _FakeStreamConsumer(supports_tool_timer=True)
+        ctx = _make_ctx(
+            tool_progress_enabled=True, tool_timer_enabled=True, sc=sc
+        )
+        ctx.progress_mode = "all"
+        runner = TurnRunner(None, ctx)
+
+        monkeypatch.setattr(grun, "_load_gateway_config",
+                            lambda: {"display": {"tool_progress_command": False}})
+        monkeypatch.setattr(onboarding, "is_seen", lambda cfg, flag: False)
+
+        runner.progress_callback(
+            "tool.completed", "terminal", None, None, tool_call_id="c1", duration=99.0
+        )
+
+        assert sc.completed == [("terminal", 99.0, "c1")]
+        assert ctx.long_tool_hint_fired == [False]
+        assert ctx.progress_queue.empty()
+

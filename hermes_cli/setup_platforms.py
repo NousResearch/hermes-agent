@@ -150,6 +150,8 @@ def _setup_telegram():
     if not token:
         return
     save_env_value("TELEGRAM_BOT_TOKEN", token)
+    from hermes_cli.telegram_managed_bot import acknowledge_saved_setup
+    acknowledge_saved_setup(setup_result)
     print_success("Telegram token saved")
     _info(None, "🔒 Security: Restrict who can use your bot",
           "   To find your Telegram user ID:",

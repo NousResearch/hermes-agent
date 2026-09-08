@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
@@ -16,10 +16,14 @@ import httpx
 DEFAULT_API_URL = "https://setup.hermes-agent.nousresearch.com"
 TELEGRAM_ONBOARDING_URL_ENV = "TELEGRAM_ONBOARDING_URL"
 DEFAULT_BOT_NAME = "Hermes Agent"
-DEFAULT_POLL_TIMEOUT = 180
+DEFAULT_POLL_TIMEOUT = 30 * 60
 POLL_INTERVAL = 2
 
 _TELEGRAM_BOT_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{30,}$")
+
+
+class TelegramPairingExpired(RuntimeError):
+    """The server has permanently retired this attempt."""
 
 
 @dataclass(frozen=True)
@@ -39,6 +43,8 @@ class TelegramBotSetupResult:
     token: str
     bot_username: str | None = None
     owner_user_id: int | None = None
+    pairing: TelegramPairing | None = field(default=None, repr=False, compare=False)
+    api_url: str | None = field(default=None, repr=False, compare=False)
 
 
 def _api_url(api_url: str | None = None) -> str:
@@ -109,6 +115,8 @@ def poll_pairing_result_once(
     """Poll the onboarding service once. Returns setup metadata when ready."""
     resp = httpx.get(f"{_api_url(api_url)}/v1/telegram/pairings/{pairing.pairing_id}",
                      headers={"Authorization": f"Bearer {pairing.poll_token}"}, timeout=timeout)
+    if resp.status_code in (404, 410):
+        raise TelegramPairingExpired("Start a new Telegram setup.")
     if resp.status_code != 200:
         return None
     data = resp.json()
@@ -118,7 +126,33 @@ def poll_pairing_result_once(
     bot_username = data.get("bot_username")
     return TelegramBotSetupResult(
         token, bot_username if isinstance(bot_username, str) and bot_username else None,
-        _parse_owner_user_id(data.get("owner_user_id")))
+        _parse_owner_user_id(data.get("owner_user_id")),
+        pairing if data.get("requires_ack") is True else None, _api_url(api_url))
+
+
+def finish_pairing(api_url: str | None, pairing: TelegramPairing, *, saved: bool) -> bool:
+    """Acknowledge durable storage, or cancel an abandoned attempt. Safe to retry."""
+    suffix = "/ack" if saved else ""
+    try:
+        response = httpx.request(
+            "POST" if saved else "DELETE",
+            f"{_api_url(api_url)}/v1/telegram/pairings/{pairing.pairing_id}{suffix}",
+            headers={"Authorization": f"Bearer {pairing.poll_token}"}, timeout=10.0)
+        return response.status_code in (200, 404, 410)
+    except httpx.HTTPError:
+        return False
+
+
+def acknowledge_saved_setup(
+    result: TelegramBotSetupResult | None, token_var: str = "TELEGRAM_BOT_TOKEN",
+) -> None:
+    """Called only after the caller has saved the token to the profile's .env."""
+    if result and result.pairing:
+        from hermes_cli.config import load_env
+        if load_env().get(token_var) != result.token:
+            return  # managed/read-only config writers may refuse without raising
+        if not finish_pairing(result.api_url, result.pairing, saved=True):
+            print("  Telegram is saved. Temporary setup credentials will expire automatically.")
 
 
 def poll_for_setup_result(
@@ -160,8 +194,8 @@ def auto_setup_telegram_bot_result(
     print("\n  Scan this QR code with your phone, or open the link below:\n")
     print_qr_code(pairing.qr_payload, include_link=False)
     print(f"\n  Link: {pairing.deep_link}\n"
-          "  When Telegram opens, tap 'Create Bot' to confirm.\n"
-          "  (You can edit the bot display name before confirming)\n")
+          "  In Telegram, tap Start, Create bot, then Connect this bot.\n"
+          "  You can edit both the bot name and username.\n")
 
     spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     ticks = iter(range(1 << 30))
@@ -172,7 +206,19 @@ def auto_setup_telegram_bot_result(
         sys.stdout.write(f"\r  {char} Waiting for bot creation... ({remaining}s remaining) ")
         sys.stdout.flush()
 
-    result = poll_for_setup_result(resolved_api_url, pairing, poll_timeout, POLL_INTERVAL, on_tick=spin)
+    result = None
+    try:
+        result = poll_for_setup_result(resolved_api_url, pairing, poll_timeout, POLL_INTERVAL, on_tick=spin)
+    except TelegramPairingExpired:
+        print("\r  ✗ This Telegram setup expired, was cancelled, or was replaced.\n"
+              "    Start a fresh QR setup, or connect an existing bot with its token.")
+        return None
+    finally:
+        if result is None:
+            try:
+                finish_pairing(resolved_api_url, pairing, saved=False)
+            except KeyboardInterrupt:
+                pass  # A second Ctrl-C must not interrupt cleanup with a traceback.
     if result:
         sys.stdout.write("\r  ✓ Bot created successfully!                              \n")
         sys.stdout.flush()
@@ -188,8 +234,6 @@ def auto_setup_telegram_bot_result(
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
-import secrets  # noqa: F401,E402
-import urllib.parse  # noqa: F401,E402
 import secrets  # noqa: F401,E402
 import urllib.parse  # noqa: F401,E402
 

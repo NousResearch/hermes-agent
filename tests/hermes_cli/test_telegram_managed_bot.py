@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pathlib import PureWindowsPath
 from unittest.mock import MagicMock, patch
 
 from hermes_cli.telegram_managed_bot import (
     TELEGRAM_ONBOARDING_URL_ENV,
     TelegramPairing,
+    TelegramPairingExpired,
+    auto_setup_telegram_bot_result,
+    TelegramBotSetupResult,
+    acknowledge_saved_setup,
     create_pairing,
     poll_for_setup_result,
     print_qr_code,
@@ -154,6 +160,28 @@ class TestPollForToken:
                 )
                 assert result is not None and result.token == SECOND_VALID_TOKEN
 
+    def test_terminal_response_stops_polling_without_waiting_for_timeout(self):
+        response = MagicMock(status_code=410)
+        with patch("hermes_cli.telegram_managed_bot.httpx.get", return_value=response) as get:
+            with patch("hermes_cli.telegram_managed_bot.time.sleep") as sleep:
+                with pytest.raises(TelegramPairingExpired):
+                    poll_for_setup_result("https://api.example.com", self.pairing())
+        get.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_ack_requires_token_on_disk_and_uses_pairing_bearer(self):
+        from hermes_cli import config as cfg
+
+        result = TelegramBotSetupResult(VALID_TOKEN, pairing=self.pairing(), api_url="https://api.example.com")
+        with patch("hermes_cli.telegram_managed_bot.httpx.request", return_value=MagicMock(status_code=200)) as request:
+            acknowledge_saved_setup(result)
+            request.assert_not_called()
+            cfg.save_env_value("TELEGRAM_BOT_TOKEN", VALID_TOKEN)
+            acknowledge_saved_setup(result)
+        request.assert_called_once_with(
+            "POST", "https://api.example.com/v1/telegram/pairings/abcdefghijklmnop/ack",
+            headers={"Authorization": "Bearer secret-token"}, timeout=10.0)
+
 
 class TestSetupTelegramAuto:
     def test_setup_result_passes_profile_name_for_profile_home(self, monkeypatch, tmp_path):
@@ -186,3 +214,20 @@ class TestSetupTelegramAuto:
             )
             == "oracle"
         )
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_cli_cleanup_can_be_interrupted_without_replacing_the_original_outcome(interrupted):
+    original_interrupt = KeyboardInterrupt("poll interrupted")
+    with patch("hermes_cli.telegram_managed_bot.create_pairing", return_value=TestPollForToken().pairing()), \
+         patch("hermes_cli.telegram_managed_bot.print_qr_code"), \
+         patch("hermes_cli.telegram_managed_bot.poll_for_setup_result", side_effect=original_interrupt if interrupted else None, return_value=None), \
+         patch("hermes_cli.telegram_managed_bot.finish_pairing", side_effect=KeyboardInterrupt("cleanup interrupted")):
+        try:
+            result = auto_setup_telegram_bot_result()
+        except KeyboardInterrupt as error:
+            assert interrupted, "Cleanup interrupted an ordinary timeout return"
+            assert error is original_interrupt
+        else:
+            assert not interrupted, "The original interrupt must reach the caller"
+            assert result is None

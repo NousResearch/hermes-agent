@@ -401,7 +401,6 @@ async function drainRelayOutboxes() {
             {
               profile: String(envelope?.target_profile || ''),
               message: String(envelope?.message || ''),
-              // The target gateway builds the delivery turn's HERMES_TURN_AUTHOR from these three.
               from_profile: String(envelope?.from_profile || ''),
               from_handle: String(envelope?.from_handle || ''),
               from_connection: String(sender.id)

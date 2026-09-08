@@ -26,6 +26,7 @@ import yaml
 from hermes_cli.cli_output import line_input
 from hermes_cli.colors import Colors, color
 from hermes_cli import managed_scope
+from hermes_cli.agent_types import validate_task_agents_config
 from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
 # Re-export from hermes_constants — canonical definition lives there.
@@ -1232,6 +1233,10 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                    f"Move '{key}' under the appropriate section")
 
     _validate_web_backends(config, issues)
+
+    for task_agent_issue in validate_task_agents_config(config):
+        _issue(issues, task_agent_issue.severity, task_agent_issue.message, task_agent_issue.hint)
+
     return issues
 
 

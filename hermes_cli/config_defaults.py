@@ -4,6 +4,8 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
+from hermes_cli.agent_types import default_task_agents_config
+
 
 def _aux(timeout, *, reasoning_effort=True, **extra):
     """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
@@ -2340,7 +2342,13 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 41,  # Config schema version - bump this when adding new required fields
+
+    # Predefined task-specific agents. The integration layer can invoke these stable ids from a
+    # main or orchestrator session while preserving a narrow, validated product surface. Runtime
+    # fields mirror the delegation and model-provider settings above.
+    "task_agents": default_task_agents_config(),
+
+    "_config_version": 42,  # Config schema version - bump this when adding new required fields
 }
 
 

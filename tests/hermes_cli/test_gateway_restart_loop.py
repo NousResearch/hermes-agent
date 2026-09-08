@@ -1915,6 +1915,36 @@ class TestNonShellBundleDoesNotBurnRemoteReadBudget:
         assert blocked is False
         assert remote_reads == []
 
+    def test_executable_no_shebang_second_hop_is_still_scanned(self, tmp_path):
+        """The content_derived gate must not key on shebang/suffix alone.
+
+        A real second-hop wrapper script is often invoked as ``./name`` with the executable bit
+        set and no shebang and no ``.sh``-family suffix — bash's ENOEXEC fallback still runs it as
+        a shell script. Gating solely on shebang/suffix (as ``_looks_like_shell_script`` did before
+        this test) reintroduces, one level down, exactly the bypass
+        ``test_nul_padded_script_without_shebang_is_scanned`` guards against at the top level: an
+        attacker who controls both files defeats the guard by simply omitting a shebang and an
+        .sh-family suffix on the referenced script.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        wrapper = tmp_path / "wrapper.sh"
+        wrapper.write_text("#!/bin/sh\n./payload\n")
+        wrapper.chmod(0o755)
+
+        payload = tmp_path / "payload"
+        payload.write_text("hermes gateway restart\n")
+        payload.chmod(0o755)
+
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                f"bash {wrapper}", cwd=str(tmp_path)
+            )
+            is True
+        )
+
 
 class TestCronCreateLifecycleBlockExtra:
     """Additional cron create lifecycle guard coverage."""

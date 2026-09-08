@@ -683,12 +683,17 @@ def _resolve_script_directory(script_path: str) -> Optional[str]:
 # --- referenced-script discovery --------------------------------------------------------------
 
 def _looks_like_shell_script(path: Path) -> bool:
-    """True when *path* is plausibly a shell script: a shell suffix, or any ``#!`` shebang line.
+    """True when *path* is plausibly a shell script: a shell suffix, a leading ``#!`` shebang line,
+    or the executable bit set on a regular file.
 
     Gates only the bare-path branch of ``_references_at`` when the token it is judging came from a
     referenced script's own content rather than a command that will actually run — see
     ``content_derived`` there. A non-shell interpreter (Node, Python, ...) never starts a real
-    script with ``#!``-less garbage, so this stays cheap: two bytes, no shlex.
+    script with ``#!``-less garbage, so shape checks stay cheap: two bytes, no shlex. The executable
+    bit is also required (not just suffix/shebang) because a POSIX shell's ENOEXEC fallback runs any
+    executable, shebang-less, non-.sh-suffixed file handed to it via ``./name`` — the same shape
+    that ``test_nul_padded_script_without_shebang_is_scanned`` already covers one level up, at the
+    directly-invoked (non content-derived) branch.
     """
     if path.suffix in _SHELL_SCRIPT_SUFFIXES:
         return True
@@ -701,6 +706,8 @@ def _looks_like_shell_script(path: Path) -> bool:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             return False
+        if metadata.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            return True
         return os.read(descriptor, 2) == b"#!"
     except OSError:
         return False

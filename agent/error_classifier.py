@@ -259,6 +259,13 @@ _AUTH_PATTERNS = (
     "forbidden", "invalid token", "token expired", "token revoked", "access denied",
 )
 
+# A credential pool with no live credential (xAI: "auth_unavailable: no auth available
+# (providers=xai, model=...)") arrives as HTTP 503. It reads like server overload but is a
+# credential problem — the identical request cannot succeed on this credential no matter how
+# many times it is retried, so it must rotate/fall back like a real auth failure instead of
+# burning the full retry budget as a false "overloaded" (#105717).
+_AUTH_UNAVAILABLE_PATTERNS = ("auth_unavailable", "no auth available")
+
 # Empty-response advisories (OpenRouter / nano-gpt). Checked before overflow
 # because the text often mentions "max_tokens" (caused compression spirals).
 _EMPTY_PROVIDER_RESPONSE_PATTERNS = (
@@ -725,6 +732,14 @@ def _classify_400(c: _Ctx) -> Verdict:
     return _V_FORMAT_ERROR
 
 
+def _status_503(c: _Ctx) -> Verdict:
+    # Credential-pool exhaustion (xAI "auth_unavailable: no auth available") before the
+    # generic overload/overflow checks: retrying the same credential can never succeed.
+    if any(p in c.msg for p in _AUTH_UNAVAILABLE_PATTERNS):
+        return _V_AUTH_ROTATE
+    return _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED
+
+
 # 401 not retryable on its own: rotation/refresh run before the retryability
 # check, then the client-error abort path (fallback first) is correct. 408 is
 # retry-safe (RFC 9110 §15.5.9; proxies emit it when generation outruns the
@@ -733,7 +748,7 @@ _STATUS_HANDLERS: Dict[int, Callable[[_Ctx], Verdict]] = {
     400: _classify_400, 401: lambda c: _V_AUTH_ROTATE, 402: lambda c: _classify_402(c.msg, dict),
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
-    503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
+    503: _status_503,
     529: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
 }
 

@@ -464,6 +464,22 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
 
+    def test_503_auth_unavailable_rotates_instead_of_overloaded(self):
+        """xAI's credential pool reports 'auth_unavailable: no auth available' as HTTP 503.
+        Classifying it as generic overload lets the retry loop burn the full retry budget
+        retrying the exact same uncredentialed call; it must instead rotate/fall back like a
+        real auth failure so a delegate leaf fails fast instead of exhausting its iteration
+        budget without ever executing its task. (#105717)"""
+        e = MockAPIError(
+            "API call failed after 10 retries: HTTP 503: auth_unavailable: no auth available "
+            "(providers=xai, model=grok-4.6)",
+            status_code=503,
+        )
+        result = classify_api_error(e, provider="xai", model="grok-4.6")
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
 
     def test_408_request_timeout_is_retryable_timeout(self):
         """HTTP 408 Request Timeout is a transient timing failure the server

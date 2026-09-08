@@ -1560,6 +1560,10 @@ export const ru = defineLocale({
     disableUnused: 'Отключить неиспользуемые',
     bulkUpdated: count => `Обновлено ${count} ${RU_NOUN(count, 'элемент', 'элемента', 'элементов')} для новых сеансов.`,
     bulkNoChange: 'Менять нечего.',
+    syncAll: 'Синхронизировать на все платформы',
+    syncAllUpdated: platforms => `Синхронизировано с ${platforms === 1 ? 'платформой' : 'платформами'} (${platforms}).`,
+    syncAllNoChange: 'Другие платформы уже соответствуют этому выбору.',
+    syncAllNeedsSetup: toolsets => `Всё ещё требуют настройки: ${toolsets}.`,
     usageCount: count => `использован ${count}×`,
     provenance: {
       agent: 'Научен',

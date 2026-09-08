@@ -459,6 +459,9 @@ class ToolsetToggle(BaseModel):
     enabled: bool
     profile: Optional[str] = None
 
+class ToolsetSync(BaseModel):
+    profile: Optional[str] = None
+
 class ToolsetProviderSelect(BaseModel):
     provider: str
     # Web-only scope 'search' | 'extract'; omitted → whole-provider (legacy web.backend path).

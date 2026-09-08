@@ -1655,6 +1655,10 @@ export const zh: Translations = {
     disableUnused: '禁用未使用',
     bulkUpdated: count => `已为新会话更新 ${count} 项。`,
     bulkNoChange: '没有需要更改的内容。',
+    syncAll: '同步到所有平台',
+    syncAllUpdated: platforms => `已同步到 ${platforms} 个平台。`,
+    syncAllNoChange: '其他平台已与此选择一致。',
+    syncAllNeedsSetup: toolsets => `仍需配置：${toolsets}。`,
     usageCount: count => `已使用 ${count} 次`,
     provenance: {
       agent: '习得',

@@ -4,7 +4,8 @@ import type {
   TerminalBackendsResponse,
   ToolsetConfig,
   ToolsetInfo,
-  ToolsetModelsResponse
+  ToolsetModelsResponse,
+  ToolsetSyncResponse
 } from '@/types/hermes'
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
@@ -31,6 +32,19 @@ export function setToolsetEnabled(
     path: `/api/tools/toolsets/${encodeURIComponent(name)}`,
     method: 'PUT',
     body: { enabled }
+  })
+}
+
+// Applies the desktop/CLI toolset selection to every other enabled platform —
+// the non-interactive sibling of the CLI's "Configure all platforms (global)"
+// menu entry. Toolsets still missing provider setup come back in
+// `needs_setup` for the caller to surface.
+export function syncToolsetsToPlatforms(profile?: ProfileScope): Promise<ToolsetSyncResponse> {
+  return window.hermesDesktop.api<ToolsetSyncResponse>({
+    ...capabilityScoped(profile),
+    path: '/api/tools/toolsets/sync-platforms',
+    method: 'POST',
+    body: {}
   })
 }
 

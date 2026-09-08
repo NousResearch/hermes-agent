@@ -1066,7 +1066,11 @@ export const ar = defineLocale({
     toolsetEnabled: 'تم تفعيل مجموعة الأدوات',
     toolsetDisabled: 'تم تعطيل مجموعة الأدوات',
     appliesToNewSessions: name => `ينطبق على الجلسات الجديدة في ${name}`,
-    failedToUpdate: name => `فشل تحديث ${name}`
+    failedToUpdate: name => `فشل تحديث ${name}`,
+    syncAll: 'مزامنة إلى جميع المنصات',
+    syncAllUpdated: platforms => `تمت المزامنة مع ${platforms} ${platforms === 1 ? 'منصة' : 'منصات'}.`,
+    syncAllNoChange: 'المنصات الأخرى تطابق هذا الاختيار بالفعل.',
+    syncAllNeedsSetup: toolsets => `لا تزال بحاجة إلى إعداد: ${toolsets}.`
   },
   agents: {
     close: 'إغلاق الوكلاء',

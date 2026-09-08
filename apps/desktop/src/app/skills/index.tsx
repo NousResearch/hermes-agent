@@ -25,7 +25,8 @@ import {
   type ProfileScope,
   profileScopeKey,
   setSkillEnabled,
-  setToolsetEnabled
+  setToolsetEnabled,
+  syncToolsetsToPlatforms
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
@@ -363,6 +364,7 @@ export function SkillsView({
   const skillsSortDesc = useStore($skillsSortDesc)
   const toolsetsSortDesc = useStore($toolsetsSortDesc)
   const [bulkBusy, setBulkBusy] = useState(false)
+  const [syncBusy, setSyncBusy] = useState(false)
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null)
   // Catalog selection is separate from installed-skill selection: identifiers
   // (official/<category>/<name>) vs names. Non-null wins the detail pane.
@@ -640,6 +642,42 @@ export function SkillsView({
 
   const allSkillsEnabled = bulkSkills.length > 0 && bulkSkills.every(s => s.enabled)
   const allToolsetsEnabled = bulkToolsets.length > 0 && bulkToolsets.every(ts => ts.enabled)
+
+  // Applies the desktop/CLI selection to every other enabled platform in one
+  // call — the sync the CLI's "Configure all platforms (global)" menu entry
+  // performs interactively. Toolsets left without provider setup are named in
+  // the completion toast instead of being prompted for (no TTY here).
+  async function syncToolsets() {
+    if (syncBusy) {
+      return
+    }
+
+    setSyncBusy(true)
+
+    try {
+      const res = await syncToolsetsToPlatforms(scopeProfile)
+      const changed = res.synced.filter(entry => entry.changed)
+
+      if (changed.length === 0) {
+        notify({ kind: 'info', title: t.skills.syncAllNoChange, message: '' })
+      } else if (res.needs_setup.length > 0) {
+        notify({
+          kind: 'info',
+          title: t.skills.syncAllUpdated(changed.length),
+          message: t.skills.syncAllNeedsSetup(res.needs_setup.join(', '))
+        })
+      } else {
+        notify({ kind: 'success', title: t.skills.syncAllUpdated(changed.length), message: '' })
+      }
+
+      refreshToolsets()
+    } catch (err) {
+      notifyError(err, t.skills.failedToUpdate(t.skills.tabToolsets))
+    } finally {
+      invalidateSlashCompletions()
+      setSyncBusy(false)
+    }
+  }
 
   const sortButton = (desc: boolean, flip: () => void) => (
     <ListStripButton onClick={flip}>{desc ? t.skills.sortMostUsedDesc : t.skills.sortLeastUsedAsc}</ListStripButton>
@@ -996,7 +1034,13 @@ export function SkillsView({
                   header={
                     <ListStrip
                       left={sortButton(toolsetsSortDesc, () => $toolsetsSortDesc.set(!$toolsetsSortDesc.get()))}
-                      right={<ListStripMenu label={t.skills.tabToolsets} toggle={bulkSwitch(allToolsetsEnabled)} />}
+                      right={
+                        <ListStripMenu
+                          items={[{ disabled: syncBusy || bulkBusy, label: t.skills.syncAll, onSelect: () => void syncToolsets() }]}
+                          label={t.skills.tabToolsets}
+                          toggle={bulkSwitch(allToolsetsEnabled)}
+                        />
+                      }
                     />
                   }
                 >

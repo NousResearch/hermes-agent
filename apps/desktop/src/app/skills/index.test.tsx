@@ -13,6 +13,7 @@ const getSkills = vi.fn()
 const getToolsets = vi.fn()
 const setSkillEnabled = vi.fn()
 const setToolsetEnabled = vi.fn()
+const syncToolsetsToPlatforms = vi.fn()
 const getToolsetConfig = vi.fn()
 const selectToolsetProvider = vi.fn()
 const getUsageAnalytics = vi.fn()
@@ -31,6 +32,7 @@ vi.mock('@/hermes', async importOriginal => ({
   setSkillEnabled: (name: string, enabled: boolean, profile?: null | string) => setSkillEnabled(name, enabled, profile),
   setToolsetEnabled: (name: string, enabled: boolean, profile?: null | string) =>
     setToolsetEnabled(name, enabled, profile),
+  syncToolsetsToPlatforms: (profile?: null | string) => syncToolsetsToPlatforms(profile),
   getToolsetConfig: (name: string, profile?: null | string) => getToolsetConfig(name, profile),
   selectToolsetProvider: (toolset: string, provider: string) => selectToolsetProvider(toolset, provider),
   getUsageAnalytics: (days: number, profile?: null | string) => getUsageAnalytics(days, profile),
@@ -96,6 +98,13 @@ beforeEach(() => {
   getSkills.mockResolvedValue([])
   getToolsets.mockResolvedValue([toolset()])
   setToolsetEnabled.mockResolvedValue({ ok: true, name: 'web', enabled: false })
+  syncToolsetsToPlatforms.mockResolvedValue({
+    ok: true,
+    source_platform: 'cli',
+    platforms: ['telegram'],
+    synced: [{ platform: 'telegram', changed: true, enabled: ['web'], added: ['web'], removed: [] }],
+    needs_setup: []
+  })
   getToolsetConfig.mockResolvedValue({ has_category: true, active_provider: null, providers: [] })
   getUsageAnalytics.mockResolvedValue({ tools: [] })
   getOfficialSkills.mockResolvedValue({ skills: [] })
@@ -196,6 +205,24 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
 
     // Toolsets refetch scoped to the picked profile.
     await waitFor(() => expect(getToolsets).toHaveBeenCalledWith('researcher'))
+  })
+
+  it('syncs the CLI toolset selection to all platforms from the kebab menu', async () => {
+    await renderSkills()
+
+    // The kebab opens with pointerDown (Radix), not click.
+    const menuButton = await screen.findByRole('button', { name: 'Tools' })
+    await act(async () => {
+      fireEvent.pointerDown(menuButton, { button: 0 })
+    })
+    const item = await screen.findByRole('menuitem', { name: 'Sync to all platforms' })
+    await act(async () => {
+      fireEvent.click(item)
+    })
+
+    await waitFor(() => expect(syncToolsetsToPlatforms).toHaveBeenCalled())
+    // A changed platform invalidates the toolsets query so rows reflect the sync.
+    await waitFor(() => expect(getToolsets).toHaveBeenCalledTimes(2))
   })
 
   it('scopes the Skills tab (and skill toggles) to the profile chosen in the selector', async () => {

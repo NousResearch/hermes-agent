@@ -1307,6 +1307,10 @@ export const zhHant = defineLocale({
     disableUnused: '停用未使用',
     bulkUpdated: count => `已為新工作階段更新 ${count} 項。`,
     bulkNoChange: '沒有需要變更的內容。',
+    syncAll: '同步到所有平台',
+    syncAllUpdated: platforms => `已同步到 ${platforms} 個平台。`,
+    syncAllNoChange: '其他平台已與此選擇一致。',
+    syncAllNeedsSetup: toolsets => `仍需設定：${toolsets}。`,
     usageCount: count => `已使用 ${count} 次`,
     provenance: {
       agent: '已學習',

@@ -1360,6 +1360,10 @@ export const ja = defineLocale({
     disableUnused: '未使用を無効化',
     bulkUpdated: count => `${count} 件を新しいセッション向けに更新しました。`,
     bulkNoChange: '変更するものはありません。',
+    syncAll: 'すべてのプラットフォームに同期',
+    syncAllUpdated: platforms => `${platforms} 個のプラットフォームに同期しました。`,
+    syncAllNoChange: '他のプラットフォームはすでにこの選択と一致しています。',
+    syncAllNeedsSetup: toolsets => `まだ設定が必要です: ${toolsets}。`,
     usageCount: count => `${count} 回使用`,
     provenance: {
       agent: '学習済み',

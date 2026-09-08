@@ -1076,6 +1076,25 @@ export interface ToolsetInfo {
   tools: string[]
 }
 
+/** Per-platform outcome of a sync: what the platform's list looked like after
+ *  the cli selection was applied (empty added/removed = already in sync). */
+export interface ToolsetSyncPlatform {
+  platform: string
+  changed: boolean
+  enabled: string[]
+  added: string[]
+  removed: string[]
+}
+
+/** Shape of `POST /api/tools/toolsets/sync-platforms`. */
+export interface ToolsetSyncResponse {
+  ok: boolean
+  source_platform: string
+  platforms: string[]
+  synced: ToolsetSyncPlatform[]
+  needs_setup: string[]
+}
+
 export interface ToolEnvVar {
   key: string
   prompt: string

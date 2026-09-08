@@ -1481,6 +1481,10 @@ export const en: Translations = {
     disableUnused: 'Disable unused',
     bulkUpdated: count => `Updated ${count} ${count === 1 ? 'item' : 'items'} for new sessions.`,
     bulkNoChange: 'Nothing to change.',
+    syncAll: 'Sync to all platforms',
+    syncAllUpdated: platforms => `Synced to ${platforms} ${platforms === 1 ? 'platform' : 'platforms'}.`,
+    syncAllNoChange: 'Other platforms already match this selection.',
+    syncAllNeedsSetup: toolsets => `Still needing setup: ${toolsets}.`,
     usageCount: count => `used ${count}×`,
     provenance: {
       agent: 'Learned',

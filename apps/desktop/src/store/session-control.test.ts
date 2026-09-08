@@ -142,6 +142,30 @@ describe('session-control store', () => {
     expect(parseSessionControlSnapshot(bad)).toBeNull()
   })
 
+  it('keeps an opted-in loop minimum through a legacy-shaped event and replaces it after a refreshed configuration change', () => {
+    applySessionControlSnapshot('s1', { ...FULL_SNAPSHOT, loop_min_interval_seconds: 30 })
+    applySessionControlUpdate('s1', FULL_SNAPSHOT)
+
+    expect($sessionControlBySession.get().s1!.snapshot!.loop_min_interval_seconds).toBe(30)
+
+    applySessionControlSnapshot('s1', { ...FULL_SNAPSHOT, loop_min_interval_seconds: 10 })
+
+    expect($sessionControlBySession.get().s1!.snapshot!.loop_min_interval_seconds).toBe(10)
+  })
+
+  it('opts into the live loop minimum on control reads without requiring it from an older backend', async () => {
+    const request = vi.fn(async () => ({ control: FULL_SNAPSHOT }))
+    useGateway(request)
+
+    await refreshSessionControl('s1')
+
+    expect(request).toHaveBeenCalledWith('session.control.read', {
+      include_loop_min_interval: true,
+      session_id: 's1'
+    })
+    expect($sessionControlBySession.get().s1!.snapshot!.loop_min_interval_seconds).toBeUndefined()
+  })
+
   it.each([
     ['unknown goal status', { ...FULL_SNAPSHOT, goal: { ...FULL_SNAPSHOT.goal!, status: 'waiting' } }],
     ['non-finite top-level timestamp', { ...FULL_SNAPSHOT, updated_at: Number.NaN }],
@@ -332,6 +356,7 @@ describe('session-control store', () => {
     expect(request).toHaveBeenCalledWith('session.control', {
       action: 'subgoal.add',
       args: { text: 'verify hydration' },
+      include_loop_min_interval: true,
       session_id: 's1'
     })
 

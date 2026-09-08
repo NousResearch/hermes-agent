@@ -71,8 +71,8 @@ def _call(server, method, *, rid=91, **params):
     return server._methods[method](rid, params)
 
 
-def _control(server, sid):
-    return _call(server, "session.control.read", session_id=sid)["result"]["control"]
+def _control(server, sid, **params):
+    return _call(server, "session.control.read", session_id=sid, **params)["result"]["control"]
 
 
 def _error(response):
@@ -497,19 +497,19 @@ class TestCreateInputPreserved:
 
 
 class TestLoopMinInterval:
-    def test_snapshot_exposes_loop_min_interval_seconds_default(self, server, session, monkeypatch):
+    def test_legacy_snapshot_omits_loop_min_interval_seconds(self, server, session, monkeypatch):
         sid, _, _ = session
         _forbid_dispatch(server, monkeypatch)
         control = _control(server, sid)
-        assert control["loop_min_interval_seconds"] == 30
+        assert "loop_min_interval_seconds" not in control
 
-    def test_snapshot_exposes_loop_min_interval_seconds_from_config(self, server, session, monkeypatch):
+    def test_opted_in_snapshot_exposes_loop_min_interval_seconds_from_config(self, server, session, monkeypatch):
         from hermes_cli import config
         sid, _, _ = session
         _forbid_dispatch(server, monkeypatch)
         monkeypatch.setattr(config, "load_config", lambda: {"loops": {"min_interval_seconds": 10}})
         server._cfg_cache = None
-        control = _control(server, sid)
+        control = _control(server, sid, include_loop_min_interval=True)
         assert control["loop_min_interval_seconds"] == 10
 
     def test_loop_create_rejects_interval_below_backend_minimum(self, server, session, monkeypatch):
@@ -541,3 +541,35 @@ class TestLoopMinInterval:
         }))
         assert err["code"] == 4004
         assert "10" in err["message"]
+
+    def test_loop_create_uses_target_session_profile_minimum(self, server, session, monkeypatch, tmp_path):
+        from hermes_cli import loops
+        from hermes_constants import get_hermes_home
+        sid, _, entry = session
+        profile_home = tmp_path / "sibling-profile"
+        profile_home.mkdir()
+        entry["profile_home"] = str(profile_home)
+        _forbid_dispatch(server, monkeypatch)
+        monkeypatch.setattr(loops, "min_interval_seconds", lambda: 60 if get_hermes_home() == profile_home else 30)
+
+        err = _error(_call(server, "session.control", session_id=sid, action="loop.create", args={
+            "prompt": "Check sibling profile", "interval_seconds": 40,
+        }))
+
+        assert err["code"] == 4004
+        assert "60" in err["message"]
+        assert _control(server, sid, include_loop_min_interval=True)["loop_min_interval_seconds"] == 60
+
+    def test_opted_in_action_returns_minimum_but_legacy_event_omits_it(self, server, session, monkeypatch):
+        sid, _, _ = session
+        _forbid_dispatch(server, monkeypatch)
+        emitted = []
+        monkeypatch.setattr(server, "_emit", lambda event, sid_, payload=None: emitted.append((event, sid_, payload)))
+
+        response = _call(server, "session.control", session_id=sid, action="loop.create", include_loop_min_interval=True, args={
+            "prompt": "Check deploy", "interval_seconds": 30,
+        })
+
+        assert response["result"]["control"]["loop_min_interval_seconds"] == 30
+        update = next(payload for event, _, payload in emitted if event == "session.control.update")
+        assert "loop_min_interval_seconds" not in update["control"]

@@ -76,34 +76,122 @@ def _append_evidence_to_judge_prompt(prompt: str, evidence: List[str]) -> str:
     return prompt + JUDGE_EVIDENCE_BLOCK_TEMPLATE.format(evidence_lines=lines)
 
 
+def _evidence_text(value: Any) -> str:
+    """Compact string form of a tool call argument or result for the judge."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+def _unquote_json_leaves(value: Any) -> Any:
+    """Recursively parse string leaves that are themselves JSON so nested content reads clearly.
+
+    write_file's ``content`` argument is JSON *as a string*; dumping the args dict escapes it into
+    noise (``{\\"count\\": 25}``) the strict judge can't easily verify. When a string value parses
+    as an object/array, embed the parsed value so the concrete content (e.g. ``{"count": 25}``)
+    reaches the judge readably. Non-JSON strings are left untouched.
+    """
+    if isinstance(value, str):
+        s = value.strip()
+        if s and s[0] in "[{":
+            try:
+                parsed = json.loads(s)
+            except Exception:
+                return value
+            if isinstance(parsed, (dict, list)):
+                return _unquote_json_leaves(parsed)
+            return value
+        return value
+    if isinstance(value, dict):
+        return {k: _unquote_json_leaves(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_unquote_json_leaves(v) for v in value]
+    return value
+
+
+def _coerce_args(raw: Any) -> str:
+    """Compact, readable display string for a tool call's ``arguments``."""
+    if raw is None:
+        return ""
+    if isinstance(raw, (dict, list)):
+        return _evidence_text(_unquote_json_leaves(raw))
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return ""
+        try:
+            return _evidence_text(_unquote_json_leaves(json.loads(s)))
+        except Exception:
+            return s
+    return _evidence_text(raw)
+
+
 def extract_turn_evidence(result: Any, *, max_items: int = _JUDGE_EVIDENCE_MAX_ITEMS) -> List[str]:
     """Pull the concrete work artifacts from a ``run_conversation`` result for the judge.
 
-    The judge needs the *evidence* a goal was completed — a file excerpt, an output line, a
-    command result — which lives in the turn's tool messages, not the final assistant prose. This
-    walks the assistant's ``messages`` list and collects the contents of the last tool-call
-    results (+ an optional assistant summary) most likely to prove completion. Returns a bounded
-    list, newest-first, non-empty only when proof exists.
+    The judge needs the *evidence* a goal was completed — a file's new content, an output line, a
+    command result — which lives in the turn's tool messages, not the final assistant prose. For
+    write_file the concrete proof is the tool CALL argument (path + content); the tool RESULT is
+    only a receipt (``bytes_written`` / ``verified``). This walks the assistant's ``messages``
+    newest-first and emits evidence from PAIRS — each tool call's name + arguments against its
+    result message — so the content, not the claim receipt, reaches the judge. Always bounded
+    (``max_items``, each truncated by ``_append_evidence_to_judge_prompt``), newest-first,
+    non-empty only when proof exists; user pings are never evidence.
     """
     if not isinstance(result, dict):
         return []
     messages = result.get("messages")
     if not isinstance(messages, list):
         return []
+
+    # Map tool_call_id -> (name, arguments) from assistant tool_calls so each tool result can be
+    # paired with the concrete call that produced it. Transports rarely emit id-less calls.
+    call_by_id: Dict[str, Tuple[str, str]] = {}
+    call_by_name: Dict[str, Tuple[str, str]] = {}
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tc in (msg.get("tool_calls") or []):
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+            name = str(fn.get("name") or tc.get("name") or "")
+            args = _coerce_args(fn.get("arguments") or tc.get("arguments"))
+            cid = str(tc.get("id") or "")
+            if cid:
+                call_by_id[cid] = (name, args)
+            elif name:
+                call_by_name.setdefault(name, (name, args))
+
     evidence: List[str] = []
     for msg in reversed(messages):
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
         content = msg.get("content")
-        if not isinstance(content, str) or not content.strip():
-            continue
         if role == "tool":
-            tag = msg.get("tool_name")
-            prefix = f"{tag}: " if tag else ""
-            evidence.append(f"{prefix}{content.strip()}")
-        elif role == "assistant" and "tool_calls" not in msg and msg.get("content"):
-            # Cap assistant additions so the final prose doesn't crowd out tool evidence.
+            tag = str(msg.get("tool_name") or msg.get("name") or "")
+            cid = str(msg.get("tool_call_id") or "")
+            name, args = call_by_id.get(cid) or call_by_name.get(tag) or (tag, "")
+            result_txt = _evidence_text(content)
+            if args:
+                block = f"{name or tag}: {args}"
+                # Append the result only when it adds beyond the call args (e.g. a receipt).
+                if result_txt and result_txt != "{}":
+                    block = f"{block}  ⇒  {result_txt}"
+            else:
+                block = f"{name or tag}: {result_txt}" if name or tag else result_txt
+            if block.strip():
+                evidence.append(block.strip())
+        elif role == "assistant" and not msg.get("tool_calls") and isinstance(content, str) and content.strip():
+            # Cap assistant additions so the final prose doesn't crowd out the tool proof.
             if len(evidence) == 0:
                 continue
             evidence.append(f"response: {content.strip()}")
@@ -1206,45 +1294,112 @@ class GoalManager:
         self._state.paused_reason = reason
         self._save()
 
-    def _persist_turn_state(self, state: GoalState) -> Optional[GoalState]:
-        """Atomically persist a turn's state mutation; never clobber a concurrent terminal state.
+    def _reconcile_turn_state(self, state: GoalState, *, transform) -> Tuple[Optional[GoalState], str]:
+        """Atomically apply a turn's state mutation against the FRESH persisted row, fail-closed.
 
-        The judge is a slow (10-40s) aux-LLM call. While it runs, the user can pause, clear, or
-        mark the goal done from the Desktop control surface. ``evaluate_after_turn`` holds an
-        in-memory snapshot whose ``status`` is still ``active`` when the judge returns, and a
-        naive whole-object ``_save`` would write that stale ``active`` back — resurrecting a
-        paused/done/cleared goal and re-dispatching continuations the user asked to stop.
+        The judge is a slow (10-40s) aux-LLM call. While it runs the user can pause/clear/done the
+        goal, edit it, replace it, or storage can fail. ``evaluate_after_turn`` holds only the
+        in-memory snapshot it mutated; a naive whole-object ``_save()`` would overwrite the fresh
+        row with stale bytes — resurrecting a stopped goal, clobbering an edit/replacement, or
+        re-inserting a deleted row.
 
-        This writes through ``mutate_meta`` (BEGIN IMMEDIATE read-compute-upsert): it re-reads
-        the FRESH persisted row inside the transaction and, if that row is no longer ``active``
-        (a concurrent user action already won), keeps the persisted row untouched instead of
-        overwriting it. Returns the state that actually ended up persisted, or None if the DB is
-        unavailable.
+        This writes through ``mutate_meta`` (BEGIN IMMEDIATE read-compute-upsert) which re-reads the
+        FRESH persisted row inside the transaction, then:
+
+        * ``gone`` — the row is missing (deleted mid-judge): refuse to re-insert it.
+        * ``stopped`` — the row is no longer ``active`` (concurrent pause/clear/done won): preserve it.
+        * ``replaced`` — the row is active but its goal/creation changed (concurrent edit/replacement):
+          preserve it, the judge's verdict is stale for the new goal.
+        * ``applied`` — row active and unchanged identity: apply ``transform(fresh)``.
+
+        ``transform(fresh)`` must touch ONLY this turn's own fields (turn accounting, status, wait
+        barrier) and never the goal / max_turns / subgoals / contract / created_at. Returns
+        ``(persisted_state, outcome)``; ``persisted_state`` is None only for ``gone`` /
+        ``storage_error``. Callers must NOT fall back to a whole-object ``_save`` on a non-applied
+        outcome.
         """
         db = _get_session_db()
         if db is None:
-            return None
-        new_json = state.to_json()
+            logger.debug("GoalManager: atomic turn reconcile skipped (session DB unavailable)")
+            return None, "storage_error"
+        outcome = ["gone"]
 
         def _mutate(current_json: Optional[str]) -> Optional[str]:
             if not current_json:
-                return new_json
+                # Row deleted mid-judge: fail-closed, never resurrect it.
+                return None
             current = GoalState.from_json(current_json)
-            # A concurrent user pause/clear/done already moved the persisted goal to a terminal
-            # status while the judge ran — that user action wins. Preserve it, never resurrect.
             if current.status != "active":
+                outcome[0] = "stopped"
                 return current_json
-            return new_json
+            # The judge evaluated state.goal; if the persisted row now describes a different goal
+            # (edited or replaced while the judge ran), the verdict is stale for it — preserve the
+            # fresh row and apply none of this turn's deltas.
+            if current.goal != state.goal or current.created_at != state.created_at:
+                outcome[0] = "replaced"
+                return current_json
+            transform(current)
+            outcome[0] = "applied"
+            return current.to_json()
 
         try:
             persisted = db.mutate_meta(_meta_key(self.session_id), _mutate)
         except Exception as exc:
-            logger.debug("GoalManager: atomic turn persist failed: %s", exc)
-            return None
+            logger.debug("GoalManager: atomic turn reconcile failed: %s", exc)
+            return None, "storage_error"
+        if outcome[0] == "gone":
+            return None, "gone"
         if persisted is None:
-            return None
+            # A missing row raced between the read and the write.
+            return None, "gone" if outcome[0] == "applied" else outcome[0]
         self._state = GoalState.from_json(persisted)
-        return self._state
+        return self._state, outcome[0]
+
+    def _stopped_turn_decision(self, outcome: str, fresh: Optional[GoalState], *, verdict: str, reason: str) -> Dict[str, Any]:
+        """Decision when a turn write could not be applied safely (concurrent user stop / DB failure).
+
+        ``fresh`` is the untouched persisted row for ``stopped``/``replaced``; None for ``gone`` /
+        ``storage_error``. Always stops the loop (no continuation) so a stopped or re-scoped goal is
+        never re-dispatched, and a storage failure never clobbers persisted state with stale bytes.
+        """
+        if outcome in ("gone", "storage_error"):
+            return _decision(
+                "error", False, None, verdict, reason,
+                f"⚠ Goal state could not be persisted ({outcome}) — nothing written, no continuation.",
+            )
+        status = fresh.status
+        if status == "done":
+            return _decision(
+                "done", False, None, "done", fresh.last_reason or reason,
+                "✓ Goal already done — no continuation dispatched.",
+            )
+        if status == "cleared":
+            return _decision(
+                "cleared", False, None, verdict, reason,
+                "🗑 Goal cleared during judge — no continuation dispatched.",
+            )
+        if status == "paused":
+            return _decision(
+                "paused", False, None, verdict, reason,
+                "⏸ Goal paused during judge — no continuation dispatched.",
+            )
+        # Active but re-scoped/replaced under the judge: verdict is stale for the new goal.
+        return _decision(
+            "active", False, None, verdict, reason,
+            "↩ Goal changed during judge — no continuation dispatched.",
+        )
+
+    def _turn_account_transform(self, state: GoalState):
+        """Return a transform that copies ONLY this turn's own accounting from the stale ``state``
+        snapshot onto the fresh persisted row (turns, timestamps, judge verdict/counters)."""
+        def _account(fresh: GoalState) -> None:
+            fresh.turns_used = state.turns_used
+            fresh.last_turn_at = state.last_turn_at
+            fresh.last_verdict = state.last_verdict
+            fresh.last_reason = state.last_reason
+            fresh.consecutive_parse_failures = state.consecutive_parse_failures
+            fresh.consecutive_transport_failures = state.consecutive_transport_failures
+        return _account
 
     def _pause_decision(self, paused_reason: str, verdict: str, reason: str, message: str) -> Dict[str, Any]:
         self._pause_state(paused_reason)
@@ -1565,18 +1720,6 @@ class GoalManager:
         reason = state.waiting_reason or tgt
         return _decision("active", False, None, "waiting", reason, f"⏳ Goal parked — waiting on {tgt}: {reason}")
 
-    def _apply_wait_directive(self, wait_directive: Dict[str, Any], reason: str, *, active_delegations: int = 0) -> Dict[str, Any]:
-        """Judge said WAIT: set the barrier and park. The counted turn stands (the judge ran) but no
-        continuation fires; the loop resumes once the barrier clears."""
-        if wait_directive.get("session_id"):
-            tgt = f"session {self.wait_on_session(str(wait_directive['session_id']), reason=reason).waiting_on_session}"
-        elif wait_directive.get("pid"):
-            tgt = f"pid {self.wait_on(int(wait_directive['pid']), reason=reason).waiting_on_pid}"
-        else:
-            self.wait_for_seconds(int(wait_directive["seconds"]), reason=reason, on_delegations=active_delegations)
-            tgt = f"{wait_directive['seconds']}s"
-        return _decision("active", False, None, "wait", reason, f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}")
-
     def _budget_pause(self, state: GoalState, verdict: str, reason: str, note: str = "") -> Dict[str, Any]:
         return self._pause_decision(
             f"turn budget exhausted ({state.turns_used}/{state.max_turns})", verdict, reason,
@@ -1595,7 +1738,9 @@ class GoalManager:
         own continuations increment ``turns_used`` — both consume model budget. ``evidence`` is the
         turn's concrete work artifacts, forwarded to the judge so it can verify a genuinely-complete
         goal (the strict judge won't accept bare prose). The final state write is atomic against a
-        concurrent user pause/clear/done (see ``_persist_turn_state``)."""
+        concurrent user pause/clear/done/edit/replace and storage failure (see
+        ``_reconcile_turn_state``); a write that cannot be applied safely fails closed without a
+        continuation."""
         state = self._state
         if state is None or state.status != "active":
             return _decision(state.status if state else None, False, None, "inactive", "no active goal", "")
@@ -1629,66 +1774,123 @@ class GoalManager:
         state.consecutive_parse_failures = state.consecutive_parse_failures + 1 if parse_failed else 0
         state.consecutive_transport_failures = state.consecutive_transport_failures + 1 if transport_failed else 0
 
+        _account = self._turn_account_transform(state)
+
         if verdict == "wait" and wait_directive:
-            return self._apply_wait_directive(wait_directive, reason, active_delegations=active_delegations)
+            if wait_directive.get("session_id"):
+                tgt = f"session {wait_directive['session_id']}"
+            elif wait_directive.get("pid"):
+                tgt = f"pid {wait_directive['pid']}"
+            else:
+                tgt = f"{wait_directive['seconds']}s"
+
+            def _waitbar(fresh: GoalState) -> None:
+                _account(fresh)
+                fresh.clear_wait()
+                if wait_directive.get("session_id"):
+                    fresh.waiting_on_session = str(wait_directive["session_id"])
+                elif wait_directive.get("pid"):
+                    fresh.waiting_on_pid = int(wait_directive["pid"])
+                else:
+                    fresh.waiting_until = time.time() + int(wait_directive["seconds"])
+                    fresh.waiting_on_delegations = max(0, int(active_delegations))
+                fresh.waiting_reason = reason or tgt
+                fresh.waiting_since = time.time()
+
+            fresh, outcome = self._reconcile_turn_state(state, transform=_waitbar)
+            if outcome != "applied":
+                return self._stopped_turn_decision(outcome, fresh, verdict="wait", reason=reason)
+            return _decision(
+                "active", False, None, "wait", reason,
+                f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}",
+            )
 
         # BLOCKED is NOT done: pause so the user sees the judge's reason and can re-scope or override,
         # instead of burning turns on an unachievable goal or waving it through as complete.
         # BLOCKED verdict: the judge ruled the goal genuinely cannot be satisfied as stated (impossible, out
         # of scope, needs user input). See #100954.
         if verdict == "blocked":
-            return self._pause_decision(
-                f"judged unachievable: {reason}", "blocked", reason,
+            def _block(fresh: GoalState) -> None:
+                _account(fresh)
+                fresh.status = "paused"
+                fresh.paused_reason = f"judged unachievable: {reason}"
+
+            fresh, outcome = self._reconcile_turn_state(state, transform=_block)
+            if outcome != "applied":
+                return self._stopped_turn_decision(outcome, fresh, verdict="blocked", reason=reason)
+            return _decision(
+                "paused", False, None, "blocked", reason,
                 f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal set, or override with /goal resume.",
             )
 
         if verdict == "done":
-            state.status = "done"
-            persisted = self._persist_turn_state(state)
-            if persisted is None:
-                self._save()
-                return _decision("done", False, None, "done", reason, f"✓ Goal achieved: {reason}")
-            if persisted.status != "done":
-                # A concurrent user pause/clear/done won while the judge ran — it must not be
-                # overwritten by our done (the user asked to stop).
-                return _decision(
-                    persisted.status, False, None, "done", reason,
-                    f"✓ Goal achieved: {reason} (goal stopped by user before it could be marked done)",
-                )
+            def _done(fresh: GoalState) -> None:
+                _account(fresh)
+                fresh.status = "done"
+
+            fresh, outcome = self._reconcile_turn_state(state, transform=_done)
+            if outcome != "applied":
+                # A concurrent user stop / storage failure won while the judge ran; do not force our
+                # done onto it.
+                return self._stopped_turn_decision(outcome, fresh, verdict="done", reason=reason)
             return _decision("done", False, None, "done", reason, f"✓ Goal achieved: {reason}")
 
         # Persistent judge failures (API unreachable / unparseable output) auto-pause and point at the
         # goal_judge config so a broken judge can't burn the whole turn budget.
         n_tx, n_parse = state.consecutive_transport_failures, state.consecutive_parse_failures
         if n_tx >= DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES:
-            return self._pause_decision(
-                f"judge API unreachable {n_tx} turns in a row (check auxiliary.goal_judge provider/key in config.yaml)",
-                "continue", reason,
+            def _tx_pause(fresh: GoalState) -> None:
+                _account(fresh)
+                fresh.status = "paused"
+                fresh.paused_reason = (
+                    f"judge API unreachable {n_tx} turns in a row "
+                    "(check auxiliary.goal_judge provider/key in config.yaml)"
+                )
+
+            fresh, outcome = self._reconcile_turn_state(state, transform=_tx_pause)
+            if outcome != "applied":
+                return self._stopped_turn_decision(outcome, fresh, verdict="continue", reason=reason)
+            return _decision(
+                "paused", False, None, "continue", reason,
                 f"⏸ Goal paused — judge API returned errors ({n_tx} turns). Check the goal_judge provider/key in "
                 + _JUDGE_CONFIG_HINT.format(provider="deepseek", model="deepseek-v4-flash"),
             )
         if n_parse >= DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES:
-            return self._pause_decision(
-                f"judge model returned unparseable output {n_parse} turns in a row", "continue", reason,
+            def _parse_pause(fresh: GoalState) -> None:
+                _account(fresh)
+                fresh.status = "paused"
+                fresh.paused_reason = f"judge model returned unparseable output {n_parse} turns in a row"
+
+            fresh, outcome = self._reconcile_turn_state(state, transform=_parse_pause)
+            if outcome != "applied":
+                return self._stopped_turn_decision(outcome, fresh, verdict="continue", reason=reason)
+            return _decision(
+                "paused", False, None, "continue", reason,
                 f"⏸ Goal paused — the judge model ({n_parse} turns) isn't returning the required JSON verdict. "
                 "Route the judge to a stricter model in "
                 + _JUDGE_CONFIG_HINT.format(provider="openrouter", model="google/gemini-3-flash-preview"),
             )
 
         if state.turns_used >= state.max_turns:
-            return self._budget_pause(state, "continue", reason)
+            def _budget_pause_fresh(fresh: GoalState) -> None:
+                _account(fresh)
+                fresh.status = "paused"
+                fresh.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
 
-        persisted = self._persist_turn_state(state)
-        if persisted is None:
-            self._save()
-            persisted = self._state
-        if persisted.status != "active":
-            # A concurrent user pause/clear/done landed during the judge; preserve it and do NOT
-            # dispatch another continuation onto a stopped goal.
+            fresh, outcome = self._reconcile_turn_state(state, transform=_budget_pause_fresh)
+            if outcome != "applied":
+                return self._stopped_turn_decision(outcome, fresh, verdict="continue", reason=reason)
             return _decision(
-                persisted.status, False, None, "continue", reason,
-                f"⏸ Goal {persisted.status} during judge — no continuation dispatched.",
+                "paused", False, None, "continue", reason,
+                f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used. "
+                "Use /goal resume to keep going, or /goal clear to stop.",
             )
+
+        fresh, outcome = self._reconcile_turn_state(state, transform=_account)
+        if outcome != "applied":
+            # A concurrent user pause/clear/done/edit/replacement (or storage failure) won while the
+            # judge ran — do NOT dispatch another continuation onto the stopped/re-scoped goal.
+            return self._stopped_turn_decision(outcome, fresh, verdict="continue", reason=reason)
         return _decision(
             "active", True, self.next_continuation_prompt(), "continue", reason,
             f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}",

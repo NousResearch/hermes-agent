@@ -219,3 +219,264 @@ def test_extract_turn_evidence_handles_non_dict_results_and_empty():
     assert extract_turn_evidence(None) == []
     assert extract_turn_evidence({"messages": []}) == []
     assert extract_turn_evidence({"messages": [{"role": "user", "content": "hi"}]}) == []
+
+
+def test_extract_turn_evidence_pairs_tool_call_args_with_result():
+    """The judge needs the write_file CONTENT (count reached 25), not the claim receipt.
+
+    For write_file the concrete proof lives in the tool CALL arguments (path + content), while
+    the tool result is only a receipt (``bytes_written`` / ``verified``). The extractor must pair
+    each tool call with its result and surface the args, or a complete goal is re-judged CONTINUE
+    forever because the "25 is reached" evidence never reaches the judge.
+    """
+    from hermes_cli.goals import extract_turn_evidence
+
+    result = {
+        "messages": [
+            {"role": "user", "content": "[Continuing toward your standing goal]"},
+            {
+                "role": "assistant",
+                "content": "Writing count_state.json.",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": json.dumps(
+                                {"path": "count_state.json", "content": '{"count": 25}'}
+                            ),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "tool_name": "write_file",
+                "content": '{"bytes_written": 14, "verified": true, "resolved_path": "count_state.json"}',
+            },
+            {"role": "assistant", "content": "Done — goal complete."},
+        ],
+    }
+    ev = extract_turn_evidence(result)
+    joined = "\n".join(ev)
+    # The claim-receipt alone is "bytes_written": 14 — it does NOT contain the count. The proof
+    # is the write_file ARGUMENT. Assert both the path and the concrete content surface.
+    assert '"count": 25' in joined, (
+        "judge must see the write_file CONTENT proving count=25, not just the receipt"
+    )
+    assert "count_state.json" in joined
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Defect 3 — fail-closed turn persistence.
+#
+# The atomic write protecting done/continue explicitly resurrects a *deleted* goal, falls back to
+# a whole-object _save on storage failure, and wholly overwrites the active row so a concurrent
+# edit/replacement is clobbered. The blocked / wait / parse / transport / budget branches bypass
+# the atomic write entirely and still write the stale in-memory snapshot whole-object — so a user
+# pause/clear/done landing during the judge is overwritten (resurrected) by those branches too.
+#
+# Every branch that mutates state after a turn must re-read the FRESH persisted row inside the
+# transaction, refuse to write when the row is gone / stopped / re-scoped, never fall back to a
+# whole-object save on storage failure, and skip the continuation.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _delete_goal_row(session_id: str) -> None:
+    """Physically remove the goal row (as a cleanup/migration would) while a judge is in flight."""
+    from hermes_cli import goals
+
+    db = goals._get_session_db()
+    assert db is not None, "session DB unavailable in test"
+    key = goals._meta_key(session_id)
+    db._execute_write(lambda conn: conn.execute("DELETE FROM state_meta WHERE key = ?", (key,)))
+
+
+def _concurrent_action(session_id: str, which: str) -> None:
+    mgr = GoalManager(session_id)
+    if which == "pause":
+        mgr.pause(reason="user-paused")
+    elif which == "clear":
+        mgr.clear()
+    elif which == "done":
+        mgr.mark_done("user done")
+    else:  # pragma: no cover
+        raise AssertionError(which)
+
+
+def test_delete_mid_judge_is_not_resurrected():
+    """A goal whose row is deleted mid-judge must not be re-inserted by the turn write."""
+    sid = "runaway-delete-1"
+    mgr = GoalManager(sid)
+    mgr.set("do the thing", max_turns=10)
+
+    def _judge_deletes(goal, last_response, **kwargs):
+        _delete_goal_row(sid)
+        return ("continue", "keep going", False, None, False)
+
+    with patch("hermes_cli.goals.judge_goal", side_effect=_judge_deletes):
+        decision = mgr.evaluate_after_turn("worked")
+
+    assert load_goal(sid) is None, "a goal deleted mid-judge must not be resurrected"
+    assert decision["should_continue"] is False
+
+
+def test_concurrent_replacement_mid_judge_is_preserved():
+    """A goal replaced while the judge runs must not be clobbered by the stale turn write."""
+    sid = "runaway-replace-1"
+    mgr = GoalManager(sid)
+    mgr.set("count to 25", max_turns=20)
+
+    def _judge_replaces(goal, last_response, **kwargs):
+        GoalManager(sid).set("pivot to 50", max_turns=20)
+        return ("continue", "keep going", False, None, False)
+
+    with patch("hermes_cli.goals.judge_goal", side_effect=_judge_replaces):
+        decision = mgr.evaluate_after_turn("did 25")
+
+    persisted = load_goal(sid)
+    assert persisted.goal == "pivot to 50", "a concurrent replacement must survive the turn write"
+    assert persisted.last_verdict is None, "a stale judge verdict must not be written onto the new goal"
+    assert decision["should_continue"] is False, "a stale continue judge must not outrank a fresh replacement"
+
+
+def test_concurrent_edit_mid_judge_is_preserved():
+    """A goal edited while the judge runs must keep its edited text, not the stale snapshot."""
+    sid = "runaway-edit-1"
+    mgr = GoalManager(sid)
+    mgr.set("count to 25", max_turns=20)
+
+    def _judge_edits(goal, last_response, **kwargs):
+        GoalManager(sid).update("count to 100")
+        return ("continue", "keep going", False, None, False)
+
+    with patch("hermes_cli.goals.judge_goal", side_effect=_judge_edits):
+        decision = mgr.evaluate_after_turn("did 25")
+
+    persisted = load_goal(sid)
+    assert persisted.goal == "count to 100", "a concurrent edit must survive the turn write"
+    assert decision["should_continue"] is False
+
+
+def test_storage_error_fails_closed_no_unsafe_fallback():
+    """On a storage error the turn must fail closed: no whole-object _save fallback (which would
+    clobber concurrent user state), no continuation, and no stale turn accounting persisted."""
+    from hermes_cli import goals
+
+    sid = "runaway-storage-1"
+    mgr = GoalManager(sid)
+    mgr.set("do it", max_turns=10)
+    db = goals._get_session_db()
+    calls = {"save": 0}
+    orig_save_goal = goals.save_goal
+
+    def _spy_save(*a, **k):
+        calls["save"] += 1
+        return orig_save_goal(*a, **k)
+
+    def _boom(*a, **k):
+        raise RuntimeError("disk full")
+
+    with (
+        patch("hermes_cli.goals.save_goal", side_effect=_spy_save),
+        patch.object(db, "mutate_meta", side_effect=_boom),
+        patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("continue", "keep going", False, None, False),
+        ),
+    ):
+        calls["save"] = 0
+        decision = mgr.evaluate_after_turn("worked")
+
+    assert calls["save"] == 0, "a storage failure must not fall back to a whole-object save"
+    assert decision["should_continue"] is False
+    persisted = load_goal(sid)
+    assert persisted.status == "active"
+    assert persisted.turns_used == 0, "stale turn accounting must not be written on storage failure"
+
+
+@pytest.mark.parametrize(
+    "judge_return",
+    [
+        ("blocked", "impossible", False, None, False),
+        ("wait", "needs server", False, {"seconds": 30}, False),
+        ("continue", "keep going", False, None, False),
+        ("done", "verified", False, None, False),
+    ],
+    ids=["blocked", "wait", "continue", "done"],
+)
+@pytest.mark.parametrize("concurrent", ["pause", "clear", "done"], ids=["pause", "clear", "done"])
+def test_judge_outcome_preserves_concurrent_user_stop(judge_return, concurrent):
+    """Every judge outcome must preserve a concurrent user pause/clear/done that lands while the
+    judge is in flight — none may resurrect the user stop or dispatch a continuation."""
+    sid = f"runaway-{judge_return[0]}-{concurrent}-1"
+    mgr = GoalManager(sid)
+    mgr.set("do the thing", max_turns=8)
+
+    def _judge_stops(goal, last_response, **kwargs):
+        _concurrent_action(sid, concurrent)
+        return judge_return
+
+    with patch("hermes_cli.goals.judge_goal", side_effect=_judge_stops):
+        decision = mgr.evaluate_after_turn("worked")
+
+    persisted = load_goal(sid)
+    if concurrent == "pause":
+        assert persisted.status == "paused"
+        assert persisted.paused_reason == "user-paused", (
+            "the branch's own pause must not overwrite the user's concurrent pause reason"
+        )
+    elif concurrent == "clear":
+        assert persisted.status == "cleared", "concurrent clear must survive every judge outcome"
+    else:
+        assert persisted.status == "done", "concurrent done must survive every judge outcome"
+    assert decision["should_continue"] is False, (
+        f"{judge_return[0]} verdict must not dispatch a continuation onto a stopped goal"
+    )
+
+
+@pytest.mark.parametrize(
+    "kind,seed_field,pre,judge_return",
+    [
+        ("parse", "consecutive_parse_failures", 2, ("continue", "bad output", True, None, False)),
+        ("transport", "consecutive_transport_failures", 4, ("continue", "api down", False, None, True)),
+    ],
+    ids=["parse-budget", "transport-budget"],
+)
+def test_budget_pause_preserves_concurrent_done(kind, seed_field, pre, judge_return):
+    """The parse/transport auto-pause branches must not resurrect a concurrent done either."""
+    sid = f"runaway-budget-{kind}-1"
+    mgr = GoalManager(sid)
+    mgr.set("do it", max_turns=8)
+    setattr(mgr._state, seed_field, pre)
+
+    def _judge(goal, last_response, **kwargs):
+        _concurrent_action(sid, "done")
+        return judge_return
+
+    with patch("hermes_cli.goals.judge_goal", side_effect=_judge):
+        decision = mgr.evaluate_after_turn("worked")
+
+    persisted = load_goal(sid)
+    assert persisted.status == "done", f"{kind}-budget pause must not resurrect concurrent done"
+    assert decision["should_continue"] is False
+
+
+def test_max_turns_budget_pause_preserves_concurrent_done():
+    """The turn-budget auto-pause branch must not resurrect a concurrent done either."""
+    sid = "runaway-budget-maxturns-1"
+    mgr = GoalManager(sid)
+    mgr.set("do it", max_turns=1)  # turns_used 0 -> 1 after the increment == budget
+
+    def _judge(goal, last_response, **kwargs):
+        _concurrent_action(sid, "done")
+        return ("continue", "keep going", False, None, False)
+
+    with patch("hermes_cli.goals.judge_goal", side_effect=_judge):
+        decision = mgr.evaluate_after_turn("worked")
+
+    persisted = load_goal(sid)
+    assert persisted.status == "done", "turn-budget pause must not resurrect concurrent done"
+    assert decision["should_continue"] is False

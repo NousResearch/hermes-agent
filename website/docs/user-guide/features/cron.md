@@ -264,6 +264,28 @@ What they do:
 
 **Name-based lookup.** All four mutating verbs (`pause`, `resume`, `run`, `remove`, `edit`) plus the agent's `cronjob` tool now accept a job **name** (case-insensitive) in place of the hex ID. The agent and CLI both prefer an exact ID match if one exists; ambiguous name matches (multiple jobs sharing the same name) are refused with the full list of candidate IDs so you can pick one explicitly. Names are not unique, so this guard is load-bearing — it prevents silently mutating the wrong job when two share a name.
 
+### Creating a job paused (safe canary)
+
+Create a canary without a create-then-pause scheduling race:
+
+```bash
+hermes cron create "every 1h" "Post the digest" --paused --paused-reason "Awaiting review"
+hermes cron resume <job_id>
+```
+
+`--paused` stores `enabled: false`, `state: paused`, `next_run_at: null`, a pause
+timestamp and an auditable reason in the first locked write, without registering a
+trigger. Omit the reason to store "Created paused; awaiting operator approval."
+Omit `--paused` to retain normal enabled creation. `--paused-reason` requires
+`--paused`; invalid values are rejected before persistence.
+
+The same `paused` boolean and optional `paused_reason` string are accepted by
+`cron.jobs.create_job`, the cron management tool's `create` action, the gateway
+`POST /api/jobs`, and the dashboard `POST /api/cron/jobs`. Resume schedules the next
+future run. Pausing prevents automatic fires, not operator overrides: existing
+explicit **Run now** / force-run behavior remains available and can resume and run
+the job. It is not a security boundary against an operator who can run jobs.
+
 ## Agent-managed scheduling (cron jobs that manage cron jobs)
 
 By default, agents launched *by* the scheduler cannot use the `cronjob` tool —
@@ -474,6 +496,9 @@ error. A delivery failure does not count toward the job's `failure_streak`
 - `bot-chat:<profile>` targets another profile **on the same machine**. Names are validated against `hermes profile list` when the job is created; profiles on other gateways or machines can never be targeted, so same-named profiles across machines are unambiguous.
 - Each delivery costs the target bot one full agent turn — mind the schedule frequency.
 - Composes with other targets (`bot-chat,telegram`) but is never included in `all`.
+- If the canonical chat is open in a mailbox-capable Desktop/TUI backend, delivery is **durably queued immediately**, whether the bot is idle or busy. Only that live owner runs the incoming turn; cron does not start a competing CLI writer. Without a live mailbox owner, the existing `hermes chat -c "Bot Chat" --create-if-missing` lane remains available (normal session ownership checks still apply).
+- **Queued is not completed.** Cron records receipt IDs and `queued`/`claimed` statuses in `last_delivery_queued`, with delivery outcome `queued` (neither delivered nor failed). A successful job shows `delivery_queued`; genuine errors on other targets still take precedence as delivery failures. The bot may complete later. The durable receipt in the target profile's `runtime/bot_live_delivery/<receipt-id>.json` is authoritative; cron's historical status is not automatically refreshed.
+- Rechecking the same execution inspects its existing receipt, even if the owner has disappeared. It never falls back to another writer after acceptance. `failed`, `cancelled`, or `ambiguous` receipts are not automatically replayed; inspect the chat and receipt before intentionally starting new work. Each new cron execution has a distinct delivery ID.
 
 ### Routing intent (`all`)
 
@@ -817,7 +842,7 @@ cronjob(
 )
 ```
 
-The first run has no previous output, so the prompt runs as-is. On later runs the previous output is prepended with continuity framing ("avoid repeating what was already reported"). It combines freely with upstream jobs (`context_from=["<other_job_id>"]` plus `continuity=true`), and `continuity=false` on update turns it off while preserving other `context_from` entries. Internally the flag is stored as the reserved `self` entry in `context_from`.
+The first run has no previous output, so the prompt runs as-is. Silent monitor ticks (`no_change`), empty output, and `wakeAgent=false` audit records are skipped when selecting context, so a quiet period preserves the latest substantive output. Audit files remain on disk. Error documents remain eligible to give the next run recovery context; this is not a success-only history filter. On later runs the previous output is prepended with continuity framing ("avoid repeating what was already reported"). It combines freely with upstream jobs (`context_from=["<other_job_id>"]` plus `continuity=true`), and `continuity=false` on update turns it off while preserving other `context_from` entries. Internally the flag is stored as the reserved `self` entry in `context_from`.
 
 From the CLI: `hermes cron create "every 6h" "Scan for news" --continuity`, and `hermes cron edit <job_id> --continuity` / `--no-continuity` to toggle it on an existing job. The same toggle appears in the dashboard's cron editor and the desktop Bot Mode routine dialog.
 
@@ -836,6 +861,20 @@ Cron jobs inherit your configured fallback providers and credential pool rotatio
 - **Rotate to the next credential** in your [credential pool](/user-guide/configuration#credential-pool-strategies) for the same provider
 
 This means cron jobs that run at high frequency or during peak hours are more resilient — a single rate-limited key won't fail the entire run.
+
+## Run failures (`last_error`)
+
+A failed agent run records a concise `last_error`, visible in job listings and `/cron list`
+with credential patterns and URL credentials redacted (including previously stored errors).
+This is separate from `last_fire_error` (scheduler handoff) and `last_delivery_error` (delivery).
+Those fields can correctly be empty when the agent itself failed.
+
+For a connection failure, inspect the run document under `cron/output/<job_id>/` in the active
+Hermes home. Its `## Error` section includes the chained traceback, with credential patterns
+and URL credentials redacted. The file uses the existing private output-file permissions;
+traceback locals are not captured. Delivery notices and `last_error` retain the concise error,
+not the full traceback. Review diagnostics before sharing: redaction is not a guarantee that
+arbitrary application data is non-sensitive.
 
 ## Missed scheduled fires (`last_fire_error`)
 

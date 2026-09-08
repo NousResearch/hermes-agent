@@ -11,16 +11,20 @@ afterEach(cleanup)
 it('ignores departed drill-ins and clears failure on retry', async () => {
   let failOld!: (error: Error) => void
   vi.mocked(fetchProjectSessions)
-    .mockImplementationOnce(() => new Promise((_, reject) => { failOld = reject }))
+    .mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          failOld = reject
+        })
+    )
     .mockResolvedValueOnce(null)
     .mockRejectedValueOnce(new Error('failed'))
     .mockResolvedValueOnce(null)
   const tree: never[] = []
 
-  const { result, rerender } = renderHook(
-    ({ id }) => useEnteredProjectSessions(id, true, tree, 'default'),
-    { initialProps: { id: 'old' } }
-  )
+  const { result, rerender } = renderHook(({ id }) => useEnteredProjectSessions(id, true, tree, 'default'), {
+    initialProps: { id: 'old' }
+  })
 
   rerender({ id: 'current' })
   await waitFor(() => expect(result.current.loading).toBe(false))

@@ -97,13 +97,19 @@ describe('which bots are working right now', () => {
     row({ name: 'analyst' })
   ]
 
-  it('includes the gateway-busy profile before its first response lands', () => {
-    // analyst has no session at all — a busy turn must still show it.
-    expect(activeBots(roster, 'analyst', 'busy', NOW).map(bot => bot.name)).toContain('analyst')
+  it('counts the focused live turn only for its connection-qualified owner', () => {
+    const local = row({ name: 'analyst', connectionId: 'local' })
+    const remote = row({ name: 'analyst', connectionId: 'remote', remoteSource: true })
+    const owner = { name: 'analyst', connectionId: 'remote', authoritative: true }
+    expect(activeBots([local, remote], owner, true, NOW)).toEqual([remote])
+    expect(activeBots([local, remote], owner, false, NOW)).toEqual([])
+    expect(activeBots([local, remote], null, true, NOW)).toEqual([])
+    expect(activeBots([local, remote], { ...owner, authoritative: false }, true, NOW)).toEqual([])
+    expect(activeBots([row({ name: 'analyst', remoteSource: true })], { ...owner, connectionId: '' }, true, NOW)).toEqual([])
   })
 
   it('includes activity inside the liveness window and excludes activity outside it', () => {
-    const names = activeBots(roster, 'default', 'open', NOW).map(bot => bot.name)
+    const names = activeBots(roster, null, false, NOW).map(bot => bot.name)
 
     expect(names).toContain('researcher')
     expect(names).not.toContain('scribe')
@@ -113,9 +119,9 @@ describe('which bots are working right now', () => {
   })
 
   it('returns an empty list when nothing is active, and tolerates no roster', () => {
-    expect(activeBots(roster.slice(1), 'default', 'open', NOW)).toEqual([])
-    expect(activeBots(null, 'default', 'open', NOW)).toEqual([])
-    expect(activeBots([], 'default', 'open', NOW)).toEqual([])
+    expect(activeBots(roster.slice(1), null, false, NOW)).toEqual([])
+    expect(activeBots(null, null, false, NOW)).toEqual([])
+    expect(activeBots([], null, false, NOW)).toEqual([])
   })
 
   it('counts Bot Chat activity that last_session cannot see', () => {
@@ -127,7 +133,7 @@ describe('which bots are working right now', () => {
       })
     ]
 
-    expect(activeBots(bots, 'other', 'open', NOW).map(bot => bot.name)).toContain('default')
+    expect(activeBots(bots, null, false, NOW).map(bot => bot.name)).toContain('default')
   })
 
   it('counts a live kanban/tool worker heartbeat (#90268)', () => {
@@ -138,7 +144,7 @@ describe('which bots are working right now', () => {
       worker_session: { id: 'w1', last_active: secondsAgo(30), source: 'kanban' }
     })
 
-    expect(activeBots([working], 'other', 'open', NOW).map(bot => bot.name)).toContain('coding')
+    expect(activeBots([working], null, false, NOW).map(bot => bot.name)).toContain('coding')
     expect(workerActiveAt(working, NOW)).toBe(true)
   })
 
@@ -149,7 +155,7 @@ describe('which bots are working right now', () => {
       worker_session: { id: 'w1', last_active: secondsAgo(3600), source: 'kanban' }
     })
 
-    expect(activeBots([finished], 'other', 'open', NOW)).toEqual([])
+    expect(activeBots([finished], null, false, NOW)).toEqual([])
     // Workers get a wider window than chat activity to bridge one missed
     // heartbeat — but not an hour's worth.
     expect(workerActiveAt(finished, NOW)).toBe(false)

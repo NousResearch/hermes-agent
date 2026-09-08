@@ -216,11 +216,18 @@ function persistPositions(storageKey: string, positions: Record<string, ThreadSc
   writeKey(storageKey, keys.length === 0 ? null : JSON.stringify(positions))
 }
 
-export function getThreadScrollPosition(sessionKey: string, storageKey = threadScrollStorageKey()): ThreadScrollState | undefined {
+export function getThreadScrollPosition(
+  sessionKey: string,
+  storageKey = threadScrollStorageKey()
+): ThreadScrollState | undefined {
   return loadPositions(storageKey)[sessionKey]
 }
 
-export function saveThreadScrollPosition(sessionKey: string, state: ThreadScrollState, storageKey = threadScrollStorageKey()) {
+export function saveThreadScrollPosition(
+  sessionKey: string,
+  state: ThreadScrollState,
+  storageKey = threadScrollStorageKey()
+) {
   const positions = loadPositions(storageKey)
 
   // Delete then re-add to track recency (insertion order = LRU anchor).

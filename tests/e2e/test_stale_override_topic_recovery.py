@@ -1,6 +1,7 @@
 """Real-ingress regression for stale notices in Telegram DM topic mode."""
 
 import dataclasses
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -8,7 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, SendResult
+from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import (
     AsyncSessionStore,
@@ -236,7 +238,14 @@ async def test_topic_recovered_busy_ingress_preserves_original_active_agent(
 
     assert result is None
     assert event.source.thread_id == "42"
-    assert active_agent.steered == ["steer the active topic turn"]
+    assert len(active_agent.steered) == 1
+    steering_text = active_agent.steered[0]
+    assert steering_text.endswith("\n\n" + event.text)
+    origin = json.loads(steering_text.splitlines()[1])
+    assert origin["chat_id"] == canonical_source.chat_id
+    assert origin["thread_id"] == canonical_source.thread_id
+    assert origin["user_id"] == canonical_source.user_id
+    assert origin["message_id"] == event.message_id
     runner._claim_active_session_slot.assert_not_called()
     runner._handle_message_with_agent.assert_not_awaited()
     assert runner._peek_session_state(canonical_key).turn.agent is active_agent

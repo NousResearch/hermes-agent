@@ -145,6 +145,13 @@ If you'd rather not track per-provider plan semantics at all, [Nous Portal](#nou
 
 Use Claude models directly through the Anthropic API — no OpenRouter proxy needed. Supports three auth methods:
 
+When no explicit environment credential is selected, Hermes-owned OAuth grants
+in the credential pool take precedence over a borrowed Claude Code login. The
+borrowed login remains the fallback when no owned OAuth grant is available.
+Auxiliary authentication recovery refreshes the credential used by the failed
+request, not an unrelated ambient login; rotating a borrowed login can otherwise
+invalidate its owner's refresh token.
+
 :::caution Requires Claude Max "extra usage" credits
 When you authenticate via `hermes model` → Anthropic OAuth (or via `hermes auth add anthropic --type oauth`), Hermes routes as Claude Code against your Anthropic account. **It only works if you're on a Claude Max plan and have purchased extra usage credits.** The base Max plan allowance (the usage included in Claude Code by default) is not consumed by Hermes — only the extra/overage credits you've added on top are. Claude Pro subscribers cannot use this path.
 
@@ -1316,6 +1323,15 @@ Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accept
 
 #### Command-minted credentials (`key_cmd`)
 
+Vision, thinking, and native local-model capability probes materialize the same
+callable credential used by chat before building authentication headers. They
+reuse the command token cache without replacing the chat client's callable.
+If a command cannot mint a string token, these best-effort probes send no bearer
+rather than an object representation or a lower-priority configured credential.
+Native local-model probes remove inherited Authorization on a failed explicit
+callable while retaining unrelated configured headers. Chat retains its normal
+error handling.
+
 Enterprise gateways often issue short-lived bearer tokens (SSO/OIDC brokers, cloud IAM, internal auth proxies) rather than static API keys, so a token copied into `.env` goes stale mid-session and requests start returning 401. `key_cmd` names a command that *prints* a token; Hermes runs it and caches the result until shortly before expiry, so long sessions keep working with no restart:
 
 ```yaml
@@ -1331,6 +1347,15 @@ Works with any helper that prints a token — `databricks auth token`, `gcloud a
 The command must print **only** the token on stdout: either bare, or as JSON with an `access_token` field (`expires_in` is honored; absolute `expiry`/`expiresOn` ISO timestamps too). Multi-line output is rejected rather than guessed at. If no expiry is advertised, the token is re-minted on a bounded window.
 
 Precedence: an explicit `--api-key` flag still wins; otherwise `key_cmd` beats a static `api_key`/`key_env` on the same entry. The minted credential applies to the main agent turn and to auxiliary tasks (title generation, compression, vision, embedding) alike.
+
+Model discovery also honors `key_cmd` for both `providers:` and legacy
+`custom_providers:` entries, including `hermes model` setup. Helpers run only when
+an authenticated live catalog probe is needed: disabled discovery and warm catalog
+cache reads do not mint tokens. Catalogs are scoped to the command identity, so
+rotating a bearer does not invalidate the catalog. Probe helpers use their own
+short-lived token source, not the inference client's token cache; minted bearers
+are never saved to `config.yaml`. If a helper fails, discovery falls back to the
+configured model without exposing the helper's output.
 
 Not to be confused with `secrets.command`, which runs a helper **once at startup** to populate env vars process-wide. Use that for a vault/keychain helper handing back many secrets; use `key_cmd` when one provider's credential must be re-minted *during* a session.
 

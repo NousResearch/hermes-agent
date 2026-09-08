@@ -168,10 +168,13 @@ def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, t
     encoding. ``network=True`` (ls-remote/fetch) detaches stdin and disables git/GCM prompts so a
     passive update check can never hang on a ``Username for 'https://github.com':`` prompt.
     """
-    kwargs: dict = {}
+    from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
+
+    # The banner/update probes run from GUI-hosted backends too (desktop-spawned
+    # ``hermes serve``), where a bare git child flashes a console window.
+    kwargs: dict = {"creationflags": windows_hide_flags()}
     if network:
-        from hermes_cli._subprocess_compat import noninteractive_git_env
-        kwargs = {"stdin": subprocess.DEVNULL, "env": noninteractive_git_env()}
+        kwargs.update({"stdin": subprocess.DEVNULL, "env": noninteractive_git_env()})
     try:
         return subprocess.run(
             ["git", *args], capture_output=True, timeout=timeout, cwd=str(cwd) if cwd is not None else None,
@@ -180,8 +183,8 @@ def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, t
         return None
 
 
-def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
-    result = _git_run(args, cwd=cwd, timeout=timeout)
+def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5, network: bool = False) -> Optional[str]:
+    result = _git_run(args, cwd=cwd, timeout=timeout, network=network)
     if result is None or result.returncode != 0:
         return None
     return (result.stdout or "").strip()
@@ -262,7 +265,12 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
-    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
+    # Probe the origin URL under the same config-isolated env as the fetch below. A plain
+    # get-url applies a global url.<https>.insteadOf rewrite, so an SSH origin masquerades as
+    # HTTPS, the SSH-avoiding fast path is skipped — and the fetch, whose env drops global
+    # config (GIT_CONFIG_GLOBAL=/dev/null), dials the raw SSH origin; its host-key prompt opens
+    # /dev/tty directly and steals the CLI's keystrokes (#104591).
+    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir, network=True)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         if not head_rev:

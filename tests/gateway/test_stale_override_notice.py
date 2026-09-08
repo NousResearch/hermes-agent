@@ -194,7 +194,7 @@ def _runner(mode="info_only", *, picker_success=True):
 
 
 def _event(text="hello", *, internal=False):
-    from gateway.platforms.base import MessageEvent
+    from gateway.platforms.event import MessageEvent
 
     return MessageEvent(text=text, source=_source(), internal=internal)
 

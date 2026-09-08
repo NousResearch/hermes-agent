@@ -1703,6 +1703,8 @@ def create_job(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str] = None,
+    paused: bool = False,
+    paused_reason: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1712,6 +1714,12 @@ def create_job(
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    if not isinstance(paused, bool):
+        raise ValueError("paused must be a boolean.")
+    if paused_reason is not None and not isinstance(paused_reason, str):
+        raise ValueError("paused_reason must be a string.")
+    if paused_reason is not None and not paused:
+        raise ValueError("paused_reason requires paused=True.")
     parsed_schedule = parse_schedule(schedule)
     # Normalize repeat: treat 0 or negative values as None (infinite). String forms
     # ('forever'/'once'/numeric) coerce via normalize_repeat_value — the shared chokepoint with update paths
@@ -1769,12 +1777,12 @@ def create_job(
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {"times": repeat, "completed": 0},  # times None = forever
-        "enabled": True,
-        "state": "scheduled",
-        "paused_at": None,
-        "paused_reason": None,
+        "enabled": not paused,
+        "state": "paused" if paused else "scheduled",
+        "paused_at": now if paused else None,
+        "paused_reason": ((paused_reason or "").strip() or "Created paused; awaiting operator approval.") if paused else None,
         "created_at": now,
-        "next_run_at": next_run_at,
+        "next_run_at": None if paused else next_run_at,
         "last_run_at": None,
         "last_status": None,
         "last_error": None,

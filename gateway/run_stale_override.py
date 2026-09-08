@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 from typing import Optional
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 logger = logging.getLogger("gateway.run")

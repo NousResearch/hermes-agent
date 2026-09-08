@@ -280,7 +280,6 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
         finally:
             _clear_session_context(tokens)
         new_agent._session_title_hint = "Bot Chat"
-        session.update(agent=new_agent, config_model_seen=_config_model_target())
         _emit("notice", sid, {"message": "Capabilities updated — this bot's tools and prompt were refreshed."})
     except Exception as e:
         logger.warning("Bot capability sync failed for %s: %s", sid, e)

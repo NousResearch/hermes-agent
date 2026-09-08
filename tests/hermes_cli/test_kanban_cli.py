@@ -118,6 +118,41 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
     assert beta_titles == ["beta-task"]
 
 
+@pytest.mark.parametrize(
+    ("tokens", "expected"),
+    [
+        (
+            ["kanban", "workflow", "create", "wf_cli", "--name", "release",
+             "--tenant", "tenant-a", "--acceptance-task", "t_accept",
+             "--root-task", "t_root", "--mutation-id", "create-1", "--json"],
+            {"workflow_action": "create", "workflow_id": "wf_cli", "name": "release",
+             "tenant": "tenant-a", "acceptance_task": "t_accept", "root_task": "t_root",
+             "mutation_id": "create-1", "json": True},
+        ),
+        (
+            ["kanban", "workflow", "show", "wf_cli", "--tenant", "tenant-a", "--json"],
+            {"workflow_action": "show", "workflow_id": "wf_cli", "tenant": "tenant-a",
+             "json": True},
+        ),
+    ],
+)
+def test_workflow_parser_wires_each_supported_workflow_operation(
+    kanban_home, monkeypatch, tokens, expected,
+):
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    kc.build_parser(parser.add_subparsers(dest="command"))
+
+    args = parser.parse_args(tokens)
+
+    for field, value in expected.items():
+        assert getattr(args, field) == value
+    dispatched = []
+    monkeypatch.setitem(kc._HANDLERS, "workflow", lambda parsed: dispatched.append(parsed) or 0)
+
+    assert kc.kanban_command(args) == 0
+    assert dispatched == [args]
+
+
 # ---------------------------------------------------------------------------
 # Integration with the COMMAND_REGISTRY
 # ---------------------------------------------------------------------------
@@ -180,5 +215,3 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
-

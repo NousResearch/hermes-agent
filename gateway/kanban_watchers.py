@@ -66,6 +66,70 @@ def _format_workflow_notification(board: str, snapshot: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _collect_workflow_notifications(kb, *, notifier_profile: str) -> list[dict[str, Any]]:
+    """Claim one due aggregate transition per workflow subscription."""
+    from hermes_cli import kanban_db_connect as kbc
+    try:
+        boards = kb.list_boards(include_archived=False)
+    except Exception:
+        boards = [kb.read_board_metadata(kb.DEFAULT_BOARD)]
+    deliveries: list[dict[str, Any]] = []
+    seen_db_paths: set[str] = set()
+    for board_meta in boards:
+        board = board_meta.get("slug") or kb.DEFAULT_BOARD
+        try:
+            db_path = str(kb.kanban_db_path(board).resolve())
+        except Exception:
+            db_path = f"board:{board}"
+        if db_path in seen_db_paths:
+            continue
+        seen_db_paths.add(db_path)
+        try:
+            conn = kbc.connect(board=board)
+        except Exception as exc:
+            logger.debug("kanban workflow notifier: cannot open board %s: %s", board, exc)
+            continue
+        try:
+            subscriptions = conn.execute(
+                "SELECT * FROM kanban_workflow_subscriptions "
+                "WHERE notifier_profile=?", (notifier_profile,),
+            ).fetchall()
+            for row in subscriptions:
+                sub = dict(row)
+                try:
+                    old_cursor, cursor, events = kb.claim_workflow_events_for_subscription(
+                        conn, workflow_id=sub["workflow_id"], role=sub.get("role") or "origin",
+                    )
+                    if not events:
+                        continue
+                    snapshot = kb._workflow_response(
+                        conn, sub["workflow_id"], include_outcomes=True,
+                    )
+                    statuses = {
+                        row["task_id"]: row["status"]
+                        for row in conn.execute(
+                            "SELECT id AS task_id,status FROM tasks WHERE id IN ("
+                            "SELECT task_id FROM kanban_workflow_members "
+                            "WHERE workflow_id=? AND generation=? AND removed_event_id IS NULL)",
+                            (sub["workflow_id"], snapshot["workflow"]["active_generation"]),
+                        )
+                    }
+                    for member in snapshot["members"]:
+                        member["task_status"] = statuses.get(member["task_id"])
+                    deliveries.append({
+                        "sub": sub, "old_cursor": old_cursor, "cursor": cursor,
+                        "snapshot": snapshot, "board": board,
+                    })
+                except Exception as exc:
+                    logger.warning("kanban workflow notifier: subscription for %s on board %s failed: %s",
+                                   sub.get("workflow_id"), board, exc)
+        except Exception as exc:
+            logger.debug("kanban workflow notifier: cannot collect board %s: %s", board, exc)
+        finally:
+            conn.close()
+    return deliveries
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -125,14 +189,23 @@ class GatewayKanbanWatchersMixin:
                     _gc_next_at = time.monotonic() + _GC_INTERVAL_SECONDS
                     _retention = _gc_retention_days()
 
-                deliveries = await asyncio.to_thread(
-                    _notifier_collect, self, _kb,
-                    notifier_profile=notifier_profile, gc_due=_gc_due, gc_retention_days=_retention,
-                )
+                def collect_deliveries():
+                    task_deliveries = _notifier_collect(
+                        self, _kb, notifier_profile=notifier_profile,
+                        gc_due=_gc_due, gc_retention_days=_retention,
+                    )
+                    workflow_deliveries = _collect_workflow_notifications(
+                        _kb, notifier_profile=notifier_profile,
+                    ) if self.adapters else []
+                    return task_deliveries, workflow_deliveries
+
+                deliveries, workflow_deliveries = await asyncio.to_thread(collect_deliveries)
                 for d in deliveries:
                     await _KanbanNotification(
                         self, d, platform_cls=_Platform, sub_fail_counts=sub_fail_counts,
                     ).deliver()
+                for delivery in workflow_deliveries:
+                    await self._deliver_workflow_notification(delivery, _Platform, _kb)
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
             await self._sleep_between_ticks(interval)
@@ -155,14 +228,18 @@ class GatewayKanbanWatchersMixin:
             if getattr(result, "success", True) is False:
                 raise RuntimeError(getattr(result, "error", None) or "adapter rejected workflow notification")
             def complete():
-                conn = kb.connect(board=board)
+                from hermes_cli import kanban_db_connect as kbc
+
+                conn = kbc.connect(board=board)
                 try: return kb.complete_workflow_delivery(conn, workflow_id=sub["workflow_id"], role=sub.get("role") or "origin")
                 finally: conn.close()
             await asyncio.to_thread(complete)
             return True
         except Exception as exc:
             def fail():
-                conn = kb.connect(board=board)
+                from hermes_cli import kanban_db_connect as kbc
+
+                conn = kbc.connect(board=board)
                 try: return kb.fail_workflow_delivery(conn, workflow_id=sub["workflow_id"], role=sub.get("role") or "origin", claimed_cursor=delivery["cursor"], old_cursor=delivery.get("old_cursor", 0), error_class=type(exc).__name__)
                 finally: conn.close()
             try: await asyncio.to_thread(fail)

@@ -762,3 +762,128 @@ def test_workflow_notification_uses_aggregate_state_not_member_routing_fields():
     assert "acceptance: task_1 (done) — PASS: approved" in text
     assert "wrong-destination" not in text
     assert text.endswith("Final acceptance is recorded for this workflow generation.")
+
+
+def test_notifier_delivers_claimed_workflow_transition_and_completes_cursor(
+    tmp_path, monkeypatch,
+):
+    """Aggregate transitions use the durable workflow subscription route."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "workflow-notify.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        acceptance = kb.create_task(conn, title="accept", tenant="tenant-a")
+        actor = kb.KanbanActorContext(
+            principal_id="svc:test", profile_name="default",
+            board_identity=str(kb.kanban_db_path().resolve()), tenant="tenant-a",
+            capabilities=frozenset({"workflow.manage", "workflow.admin"}),
+            source_kind="test",
+        )
+        created = kb.create_workflow(
+            conn, workflow_id="wf_notify", name="release", tenant="tenant-a",
+            designated_acceptance_task_id=acceptance, actor=actor,
+            mutation_id="create",
+        )
+        created_event_id = conn.execute(
+            "SELECT last_event_id FROM kanban_workflows WHERE id=?", ("wf_notify",),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO kanban_workflow_subscriptions "
+            "(workflow_id,role,platform,chat_id,notifier_profile,target_states,tenant,created_at,last_event_id) "
+            "VALUES (?,'origin','telegram','workflow-chat','default','[\"CANCELLED\"]','tenant-a',0,?)",
+            ("wf_notify", created_event_id),
+        )
+        kb.cancel_workflow(
+            conn, workflow_id="wf_notify", actor=actor, mutation_id="cancel",
+            expected_version=created["workflow"]["version"], reason="superseded",
+        )
+        event_id = conn.execute(
+            "SELECT id FROM kanban_workflow_events WHERE workflow_id=? "
+            "AND kind='aggregate_changed'", ("wf_notify",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["chat_id"] == "workflow-chat"
+    assert "Aggregate workflow wf_notify" in adapter.sent[0]["text"]
+    assert adapter.sent[0]["metadata"]["idempotency_key"] == (
+        f"workflow:wf_notify:event:{event_id}"
+    )
+    with kbc.connect_closing() as conn:
+        sub = conn.execute(
+            "SELECT last_event_id,retry_count,next_attempt_at,dead_lettered_at "
+            "FROM kanban_workflow_subscriptions WHERE workflow_id='wf_notify'"
+        ).fetchone()
+    assert tuple(sub) == (event_id, 0, None, None)
+
+
+def test_workflow_notifier_rewinds_and_dead_letters_failed_delivery(
+    tmp_path, monkeypatch,
+):
+    """A failed aggregate send keeps its generation-pinned cursor retryable."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "workflow-retry.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        acceptance = kb.create_task(conn, title="accept", tenant="tenant-a")
+        actor = kb.KanbanActorContext(
+            principal_id="svc:test", profile_name="default",
+            board_identity=str(kb.kanban_db_path().resolve()), tenant="tenant-a",
+            capabilities=frozenset({"workflow.manage", "workflow.admin"}),
+            source_kind="test",
+        )
+        created = kb.create_workflow(
+            conn, workflow_id="wf_retry", name="release", tenant="tenant-a",
+            designated_acceptance_task_id=acceptance, actor=actor,
+            mutation_id="create",
+        )
+        created_event_id = conn.execute(
+            "SELECT last_event_id FROM kanban_workflows WHERE id=?", ("wf_retry",),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO kanban_workflow_subscriptions "
+            "(workflow_id,role,platform,chat_id,notifier_profile,target_states,tenant,created_at,last_event_id) "
+            "VALUES (?,'origin','telegram','workflow-chat','default','[\"CANCELLED\"]','tenant-a',0,?)",
+            ("wf_retry", created_event_id),
+        )
+        kb.cancel_workflow(
+            conn, workflow_id="wf_retry", actor=actor, mutation_id="cancel",
+            expected_version=created["workflow"]["version"], reason="superseded",
+        )
+        event_id = conn.execute(
+            "SELECT id FROM kanban_workflow_events WHERE workflow_id=? "
+            "AND kind='aggregate_changed'", ("wf_retry",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    adapter = FailingAdapter()
+    sub = None
+    for attempt in range(5):
+        asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+        with kbc.connect_closing() as conn:
+            sub = conn.execute(
+                "SELECT last_event_id,retry_count,next_attempt_at,dead_lettered_at,last_error_class "
+                "FROM kanban_workflow_subscriptions WHERE workflow_id='wf_retry'"
+            ).fetchone()
+            if attempt < 4:
+                assert sub["last_event_id"] < event_id
+                assert sub["retry_count"] == attempt + 1
+                assert sub["next_attempt_at"] is not None
+                conn.execute(
+                    "UPDATE kanban_workflow_subscriptions SET next_attempt_at=0 "
+                    "WHERE workflow_id='wf_retry'"
+                )
+                conn.commit()
+
+    assert sub is not None
+    assert adapter.attempts == 5
+    assert sub["last_event_id"] < event_id
+    assert sub["retry_count"] == 5
+    assert sub["next_attempt_at"] is None
+    assert sub["dead_lettered_at"] is not None
+    assert sub["last_error_class"] == "RuntimeError"

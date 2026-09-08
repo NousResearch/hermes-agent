@@ -408,6 +408,22 @@ _SPECS = [
               "routed to specialist profiles by description. Falls back "
               "to specify-style single-task promotion when the task "
               "doesn't benefit from fan-out. Uses auxiliary.kanban_decomposer."),
+    _cmd("workflow", children=("workflow_action", [
+        _cmd("create", [
+            _arg("workflow_id", help="Stable workflow identifier"),
+            _arg("--name", required=True, help="Human-readable workflow name"),
+            _TENANT,
+            _arg("--acceptance-task", required=True, help="Designated acceptance task id"),
+            _arg("--root-task", help="Optional root task id"),
+            _arg("--mutation-id", help="Idempotency key for this workflow mutation"),
+            _json_flag(),
+        ], help="Create an aggregate workflow"),
+        _cmd("show", [
+            _arg("workflow_id", help="Workflow identifier"),
+            _TENANT,
+            _json_flag(),
+        ], help="Show an aggregate workflow"),
+    ]), help="Manage native aggregate workflows"),
     _cmd("gc", [
         _arg("--event-retention-days", type=int, default=30,
              help="Delete task_events older than N days for terminal tasks (default: 30)"),

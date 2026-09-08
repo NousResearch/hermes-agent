@@ -56,9 +56,10 @@ import {
   useRoster
 } from './data'
 import { EditProfileDialog } from './edit-profile-dialog'
-import { $groupChats, $groupChatWorkspace, $groupNeedsYou } from './group-chat'
+import { $groupChats, $groupChatWorkspace, $groupNeedsYou, updateGroupChat } from './group-chat'
 import { disbandGroupChat, GroupChatWorkspace, openGroupChat } from './group-chat-view'
 import { groupChatMemberBots, groupChatNames, groupLastActivity } from './group-membership'
+import { reorderGroupRows, sortGroupRosterRows } from './group-order'
 import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
 import { $showHiddenBots, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
@@ -414,20 +415,32 @@ export function BotsPane() {
           active: activeRosterKeys.has(botRosterKey(bot))
         }))
 
-  const sortRosterRows = <T extends { activity: number; pinned: boolean }>(rows: T[]): T[] =>
-    rows.slice().sort((a, b) => {
-      const pa = a.pinned ? 1 : 0
-      const pb = b.pinned ? 1 : 0
+  const rosterRows = sortGroupRosterRows([...botRows, ...groupRows], groupRooms)
+  const sortedGroupRows = sortGroupRosterRows(groupRows, groupRooms)
 
-      if (pa !== pb) {
-        return pb - pa
-      }
+  const moveRoom = (name: string, delta: -1 | 1) => {
+    // Read at the gesture, not the last render: a sync or disband may have
+    // replaced this room in the meantime. Ordering never writes bot metadata.
+    const current = $groupChats.get()
 
-      return b.activity - a.activity
+    if (current[name]?.roomId !== groupRooms[name]?.roomId || current[name]?.tombstone) {
+      return
+    }
+
+    const rows = groupChatNames($botMeta.get(), current).map(name => ({
+      kind: 'group' as const,
+      name,
+      pinned: Boolean(current[name]?.pinned),
+      activity: groupLastActivity(current[name])
+    }))
+
+    const order = reorderGroupRows(sortGroupRosterRows(rows, current), name, delta, sortedGroupRows.map(row => row.name))
+
+    order?.forEach((name, rosterOrder) => {
+      updateGroupChat(name, room => ({ ...room, rosterOrder }), { sync: false })
     })
+  }
 
-  const rosterRows = sortRosterRows([...botRows, ...groupRows])
-  const sortedGroupRows = sortRosterRows(groupRows)
   const gatewaySections = rosterGatewaySections(botRows, gatewayOptions, gatewayFilter)
   const showGatewaySections = gatewaySections.sectioned && botRows.length > 0
 
@@ -567,15 +580,31 @@ export function BotsPane() {
   )
 
   const renderGroupRow = (row: { members: GroupMember[]; name: string }) => (
-    <GroupRow
-      active={groupChatName === row.name}
-      group={row.name}
-      key={`group:${row.name}`}
-      members={row.members}
-      needsYou={Boolean(groupNeedsYou[row.name])}
-      onDisband={setDeletingGroup}
-      onOpen={openGroupChat}
-    />
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center" key={`group:${row.name}`}>
+      <GroupRow
+        active={groupChatName === row.name}
+        group={row.name}
+        members={row.members}
+        needsYou={Boolean(groupNeedsYou[row.name])}
+        onDisband={setDeletingGroup}
+        onOpen={openGroupChat}
+      />
+      <div className="flex flex-col">
+        {([-1, 1] as const).map(delta => (
+          <Tip key={delta} label={delta === -1 ? b.sections.moveUp : b.sections.moveDown}>
+            <Button
+              aria-label={`${row.name}: ${delta === -1 ? b.sections.moveUp : b.sections.moveDown}`}
+              disabled={!reorderGroupRows(sortedGroupRows, row.name, delta)}
+              onClick={() => moveRoom(row.name, delta)}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Codicon name={delta === -1 ? 'chevron-up' : 'chevron-down'} />
+            </Button>
+          </Tip>
+        ))}
+      </div>
+    </div>
   )
 
   const removeSection = (id: string) => {

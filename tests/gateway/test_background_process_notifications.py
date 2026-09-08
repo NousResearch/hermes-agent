@@ -520,6 +520,34 @@ def test_parse_session_key_with_extra_parts():
     assert result == {"platform": "discord", "chat_type": "group", "chat_id": "chan123"}
 
 
+def test_parse_session_key_named_profile_namespace():
+    """Named-profile keys (agent:<profile>:...) must parse like agent:main keys.
+
+    Regression: the helper previously asserted parts[1] == "main", so every
+    named-profile key returned None and approval/routing metadata was lost.
+    """
+    result = _parse_session_key("agent:coder:discord:group:chan123")
+    assert result == {"platform": "discord", "chat_type": "group", "chat_id": "chan123"}
+
+
+def test_parse_session_key_named_profile_with_thread_extra():
+    """dm/thread keys under a named profile still recover thread_id."""
+    result = _parse_session_key("agent:coder:telegram:dm:u-1:t-9")
+    assert result == {
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "u-1",
+        "thread_id": "t-9",
+    }
+
+
+def test_parse_session_key_rejects_malformed():
+    """Empty/malformed keys must still return None (namespace must be non-empty)."""
+    assert _parse_session_key("") is None
+    assert _parse_session_key("agent::discord:group:chan1") is None
+    assert _parse_session_key("other:main:discord:group:chan1") is None
+
+
 # ---------------------------------------------------------------------------
 # api_server (stateless) wake routing — gateway/wake.py self-post path
 # ---------------------------------------------------------------------------

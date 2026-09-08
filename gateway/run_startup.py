@@ -100,6 +100,12 @@ class GatewayStartupMixin:
         self._startup_warmup_task = asyncio.ensure_future(self._warm_turn_prerequisites())
 
     async def _warm_turn_prerequisites(self) -> None:
+        """Overlap independent startup checks without constructing session-owned prompts."""
+        from gateway.run_startup_environment import warm_environment_probe
+
+        await asyncio.gather(self._warm_turn_tooling(), warm_environment_probe())
+
+    async def _warm_turn_tooling(self) -> None:
         """Initialize turn machinery on an executor thread before the gate opens. Never raises: a
         failed warm-up degrades to lazy init and must not block startup."""
         from gateway.run import _warm_turn_machinery_sync

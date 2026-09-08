@@ -413,3 +413,84 @@ def test_setup_rejects_custom_database_and_read_only_requires_existing_schema(bo
         with kbc.connect_closing(custom, read_only=True):
             pytest.fail("missing board was opened")
     assert not custom.exists()
+
+
+@pytest.mark.parametrize("action", ["list", "show"])
+@pytest.mark.parametrize("database", ["missing", "uninitialized"])
+def test_observational_cli_reports_unavailable_schema_without_traceback(tmp_path, monkeypatch, action, database):
+    home = tmp_path / "fresh-home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    path = home / "kanban.db"
+    if database == "uninitialized":
+        home.mkdir()
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE unrelated (id INTEGER)")
+        conn.close()
+    before = path.read_bytes() if path.exists() else None
+    args = ["list", "--no-promote"] if action == "list" else ["show", "t_missing", "--read-only"]
+    result = cli("--board", "default", *args, "--json")
+    assert result.returncode == 1
+    assert not result.stdout
+    assert result.stderr.startswith("kanban:")
+    assert "Traceback" not in result.stderr
+    assert (path.read_bytes() if path.exists() else None) == before
+
+
+@pytest.mark.parametrize("delegated", [False, True])
+def test_read_only_connection_uses_native_tracking_and_timeout(tmp_path, monkeypatch, delegated):
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+    from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
+
+    path = tmp_path / "observed.db"
+    with kbc.connect_closing(path):
+        pass
+    assert not has_live_connection(path)
+    monkeypatch.setenv("HERMES_KANBAN_BUSY_TIMEOUT_MS", "1234")
+    if delegated:
+        monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, "1")
+    with kbc.connect_closing(path, read_only=not delegated) as observer:
+        assert has_live_connection(path)
+        assert read_header_bytes_preopen(path) is None
+        assert observer.execute("PRAGMA busy_timeout").fetchone()[0] == 1234
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            observer.execute("UPDATE tasks SET status='ready'")
+    assert not has_live_connection(path)
+    assert read_header_bytes_preopen(path).startswith(b"SQLite format 3")
+
+
+def test_read_only_missing_schema_releases_native_tracking(tmp_path):
+    from hermes_cli.sqlite_safe_read import has_live_connection
+
+    path = tmp_path / "uninitialized.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE unrelated (id INTEGER)")
+    conn.close()
+    with pytest.raises(PermissionError, match="initialized board"):
+        with kbc.connect_closing(path, read_only=True):
+            pytest.fail("uninitialized board was opened")
+    assert not has_live_connection(path)
+
+
+@pytest.mark.parametrize("error", [PermissionError, sqlite3.OperationalError])
+def test_observational_error_mapping_does_not_change_ordinary_handlers(board, monkeypatch, capsys, error):
+    import argparse
+
+    from hermes_cli import kanban
+
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "policy")
+
+    def unavailable(*args, **kwargs):
+        raise error("fixture ordinary handler failure")
+
+    monkeypatch.setattr(kb, "list_tasks", unavailable)
+    parser = kanban.build_parser(argparse.ArgumentParser().add_subparsers())
+    args = parser.parse_args(["list", "--json"])
+    if error is PermissionError:
+        assert kanban.kanban_command(args) == 1
+        assert "kanban: fixture ordinary handler failure" in capsys.readouterr().err
+    else:
+        with pytest.raises(error, match="fixture ordinary handler failure"):
+            kanban.kanban_command(args)

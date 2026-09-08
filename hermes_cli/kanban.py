@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import shlex
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -195,7 +196,9 @@ def kanban_command(args: argparse.Namespace) -> int:
             return _err(f"kanban: unknown action {action!r}", 2)
         try:
             return int(handler(args) or 0)
-        except (ValueError, RuntimeError, PermissionError) as exc:
+        except (ValueError, RuntimeError, PermissionError, sqlite3.OperationalError) as exc:
+            if isinstance(exc, sqlite3.OperationalError) and not observational:
+                raise
             return _err(f"kanban: {exc}")
 
 

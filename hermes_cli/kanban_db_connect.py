@@ -697,7 +697,12 @@ def connect(
     if read_only or is_delegated_child_process_context():
         # Observational policy reads, like descendants, must not initialize or
         # migrate. The owner establishes the schema before these reads are possible.
-        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, isolation_level=None)
+        from hermes_cli.sqlite_safe_read import connect_tracked
+
+        conn = connect_tracked(
+            path.resolve().as_uri() + "?mode=ro", connect_fn=sqlite3.connect,
+            uri=True, isolation_level=None, timeout=_resolve_busy_timeout_ms() / 1000.0,
+        )
         conn.row_factory = sqlite3.Row
         if not _schema_is_present(conn):
             conn.close()

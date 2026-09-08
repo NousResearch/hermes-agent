@@ -112,7 +112,8 @@ OAUTH_OVER_SSH_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/guides/oau
 DEFAULT_SPOTIFY_SCOPE = " ".join((
     "user-modify-playback-state", "user-read-playback-state", "user-read-currently-playing",
     "user-read-recently-played", "playlist-read-private", "playlist-read-collaborative",
-    "playlist-modify-public", "playlist-modify-private", "user-library-read", "user-library-modify",
+    "playlist-modify-public", "playlist-modify-private", "ugc-image-upload",
+    "user-library-read", "user-library-modify",
 ))
 SERVICE_PROVIDER_NAMES: Dict[str, str] = {"spotify": "Spotify"}
 

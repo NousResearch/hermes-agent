@@ -7,6 +7,8 @@ API call through ``client.request`` (auth refresh + error mapping live there).
 
 from __future__ import annotations
 
+import base64
+from io import BytesIO
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli.auth import get_auth_status
@@ -70,7 +72,7 @@ def _limit(args: dict, default: int = 20) -> int:
     """Clamp ``limit`` to Spotify's 1..50 window; non-numeric input falls back to *default*."""
     raw: Any = args.get("limit")
     try:
-        value = int(raw)
+        value = int(raw) if raw is not None else default
     except Exception:
         value = default
     return max(1, min(50, value))
@@ -221,6 +223,84 @@ def _handle_spotify_search(args: dict, **kw) -> str:
 
 _playlist_path = lambda args, suffix="": f"/playlists/{normalize_spotify_id(str(args.get('playlist_id') or ''), 'playlist')}{suffix}"  # noqa: E731
 
+_SPOTIFY_COVER_MAX_PAYLOAD_BYTES = 256 * 1024
+_SPOTIFY_COVER_MAX_PIXELS = 100_000_000
+
+
+def _encode_playlist_cover(data: bytes) -> str:
+    """Return a Spotify-compliant Base64 JPEG at or below the 256 KB body limit."""
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(BytesIO(data)) as source:
+            if source.width * source.height > _SPOTIFY_COVER_MAX_PIXELS:
+                raise SpotifyError(
+                    f"Playlist cover has too many pixels ({source.width}x{source.height}); "
+                    "use an image no larger than 100 megapixels."
+                )
+            source.load()
+            image = ImageOps.exif_transpose(source)
+            if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
+                rgba = image.convert("RGBA")
+                background = Image.new("RGB", rgba.size, "white")
+                background.paste(rgba, mask=rgba.getchannel("A"))
+                image = background
+            elif image.mode not in {"RGB", "L"}:
+                image = image.convert("RGB")
+            else:
+                image = image.copy()
+    except SpotifyError:
+        raise
+    except Exception as exc:
+        raise SpotifyError(f"Playlist cover is not a decodable image: {exc}") from exc
+
+    # Spotify's documented cap applies to the Base64 request payload, not merely
+    # the decoded JPEG. Walk quality first, then dimensions, without cropping.
+    for resize_round in range(9):
+        for quality in (90, 82, 74, 66, 58, 50, 42, 35):
+            output = BytesIO()
+            image.save(output, format="JPEG", quality=quality, optimize=True, progressive=True)
+            encoded = base64.b64encode(output.getvalue()).decode("ascii")
+            if len(encoded.encode("ascii")) <= _SPOTIFY_COVER_MAX_PAYLOAD_BYTES:
+                return encoded
+        if min(image.size) <= 64:
+            break
+        next_size = (
+            max(64, int(image.width * 0.8)),
+            max(64, int(image.height * 0.8)),
+        )
+        if next_size == image.size:
+            break
+        image = image.resize(next_size, Image.Resampling.LANCZOS)
+    raise SpotifyError(
+        "Playlist cover could not be compressed below Spotify's 256 KB Base64 payload limit. "
+        "Use a smaller or simpler image."
+    )
+
+
+def _prepare_playlist_cover(image_url: Any) -> str:
+    """Resolve a network/data image without granting the tool arbitrary filesystem reads."""
+    source = _nonblank(image_url, "image_url is required for action='upload_cover'")
+    if not source.startswith(("http://", "https://", "data:")):
+        raise SpotifyError(
+            "image_url must be an HTTP(S) URL or base64 data URL; local file paths are not accepted."
+        )
+    from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
+    try:
+        from model_tools import _run_async
+        resolved = _run_async(resolve_image_source(source, ResolveContext()))
+    except ImageResolutionError as exc:
+        raise SpotifyError(f"Could not load playlist cover: {exc}") from exc
+    return _encode_playlist_cover(resolved.data)
+
+
+def _playlist_upload_cover(client: SpotifyClient, args: dict, action: str) -> str:
+    image_body = _prepare_playlist_cover(args.get("image_url"))
+    result = client.request(
+        "PUT", _playlist_path(args, "/images"),
+        raw_body=image_body, content_type="image/jpeg",
+    )
+    return _ok(action, result)
+
 
 _handle_spotify_playlists = _dispatcher("spotify_playlists", "list", {
     "list": lambda c, a, act: tool_result(c.request("GET", "/me/playlists", params={"limit": _limit(a), "offset": _offset(a)})),
@@ -234,6 +314,7 @@ _handle_spotify_playlists = _dispatcher("spotify_playlists", "list", {
         "items": [{"uri": u} for u in normalize_spotify_uris(_as_list(a.get("uris")))], "snapshot_id": a.get("snapshot_id")})),
     "update_details": lambda c, a, act: tool_result(c.request("PUT", _playlist_path(a), json_body={
         "name": a.get("name"), "public": a.get("public"), "collaborative": a.get("collaborative"), "description": a.get("description")})),
+    "upload_cover": _playlist_upload_cover,
 })
 
 
@@ -304,9 +385,10 @@ SPOTIFY_SEARCH_SCHEMA = _schema(
     {"query": COMMON_STRING, "types": _STR_ARRAY, "type": COMMON_STRING, "limit": _INT, "offset": _INT, **_strs("market", "include_external")}, ("query",),
 )
 SPOTIFY_PLAYLISTS_SCHEMA = _schema("spotify_playlists", "List, inspect, create, update, and modify Spotify playlists.", {
-    "action": _enum("list", "get", "create", "add_items", "remove_items", "update_details"),
+    "action": _enum("list", "get", "create", "add_items", "remove_items", "update_details", "upload_cover"),
     **_strs("playlist_id", "market"), "limit": _INT, "offset": _INT, **_strs("name", "description"),
-    "public": _BOOL, "collaborative": _BOOL, "uris": _STR_ARRAY, "position": _INT, "snapshot_id": COMMON_STRING})
+    "public": _BOOL, "collaborative": _BOOL, "uris": _STR_ARRAY, "position": _INT, "snapshot_id": COMMON_STRING,
+    "image_url": {"type": "string", "description": "For upload_cover: an HTTP(S) URL or base64 data URL for the exact approved image. It is converted to JPEG and compressed to Spotify's 256 KB Base64 payload limit. Local file paths are rejected. Use a square image to avoid display cropping."}})
 SPOTIFY_ALBUMS_SCHEMA = _schema("spotify_albums", "Fetch Spotify album metadata or album tracks.",
                                 {"action": _enum("get", "tracks"), **_strs("album_id", "id", "market"), "limit": _INT, "offset": _INT})
 SPOTIFY_LIBRARY_SCHEMA = _schema("spotify_library", "List, save, or remove the user's saved Spotify tracks or albums. Use `kind` to select which.", {

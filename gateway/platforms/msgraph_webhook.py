@@ -22,7 +22,9 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, SendResult, is_network_accessible)
+    BasePlatformAdapter, SendResult, is_network_accessible,
+)
+from gateway.platforms.event import MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
 

@@ -818,7 +818,7 @@ class TestSignalInboundMessageTypeClassification:
     @pytest.mark.asyncio
     async def test_pdf_attachment_sets_document_type(self, monkeypatch):
         """A PDF attachment (application/pdf) must produce MessageType.DOCUMENT, not TEXT."""
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         event = await self._dispatch_single_attachment(
             monkeypatch,
@@ -837,7 +837,7 @@ class TestSignalInboundMessageTypeClassification:
     @pytest.mark.asyncio
     async def test_text_plain_attachment_sets_document_type(self, monkeypatch):
         """A text/plain attachment must produce MessageType.DOCUMENT, not TEXT."""
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         event = await self._dispatch_single_attachment(
             monkeypatch,
@@ -1362,7 +1362,8 @@ class TestSignalAutomaticQuoteRouting:
 
     @pytest.mark.asyncio
     async def test_debounce_keeps_latest_signal_native_reply_anchor(self, monkeypatch):
-        from gateway.platforms.base import MessageEvent, _reply_anchor_for_event
+        from gateway.platforms.base import _reply_anchor_for_event
+        from gateway.platforms.event import MessageEvent
         from gateway.session import SessionSource
 
         adapter = _make_signal_adapter(monkeypatch)
@@ -1398,7 +1399,8 @@ class TestSignalAutomaticQuoteRouting:
     async def test_separate_busy_bursts_keep_latest_signal_reply_anchor(
         self, monkeypatch
     ):
-        from gateway.platforms.base import MessageEvent, _reply_anchor_for_event
+        from gateway.platforms.base import _reply_anchor_for_event
+        from gateway.platforms.event import MessageEvent
         from gateway.session import SessionSource
 
         adapter = _make_signal_adapter(monkeypatch)

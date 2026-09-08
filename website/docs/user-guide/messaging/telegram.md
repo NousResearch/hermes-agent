@@ -578,6 +578,8 @@ telegram:
 
 With this setup, a group message like `@research_bot @ops_bot summarize this` is processed by `research_bot` and `ops_bot` only. Other Hermes bots in the group stay silent, even if the message is a reply to one of their earlier messages or would otherwise match a shared wake word.
 
+Group conversation text and media captions keep every mention when the message names other participants too (`@research_bot , @ops_bot are you both listening?` reaches `research_bot` verbatim); when this bot is the only one addressed, its own handle is still stripped so short answers such as `@hermes_bot 2` keep working. Group turns also carry the bot's own Telegram username in the per-channel context so the model can tell which retained mentions are for it. Slash commands still use the normal command-trigger cleanup.
+
 Set `exclusive_bot_mentions: false` only for legacy groups where explicit mentions should not override reply and wake-word triggers.
 
 To operate several profiles, run the gateway command once per profile. For example:
@@ -734,7 +736,7 @@ unaffected.
 
 Topics with a `skill` field automatically load that skill when a new session starts in the topic. This works exactly like typing `/skill-name` at the start of a conversation — the skill content is injected into the first message, and subsequent messages see it in the conversation history.
 
-For example, a topic with `skill: arxiv` will have the arxiv skill pre-loaded whenever its session resets (due to idle timeout, daily reset, or manual `/reset`).
+For example, a topic with `skill: arxiv` will have the arxiv skill pre-loaded whenever its session resets (after an explicit `/new` or `/reset`).
 
 :::tip
 Topics created outside of the config (e.g., by manually calling the Telegram API) are discovered automatically when a `forum_topic_created` service message arrives. You can also add topics to the config while the gateway is running — they'll be picked up on the next cache miss.

@@ -79,8 +79,13 @@ class PublishingClient(FakeClient):
 
 
 @pytest.fixture
-def sharing(staged, monkeypatch):
+def sharing(staged, monkeypatch, request):
     service, package, source, _ = staged
+    if getattr(request, "param", None) == "portal":
+        from hermes_wisdom.service import _source_fingerprint
+
+        (source / "references").rename(source / "refs")
+        package = package.model_copy(update={"source_content_hash": _source_fingerprint(source)})
     service._client = PublishingClient()
     monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "agent")
     service.store.activate_installation_identity("installation", "org")
@@ -144,6 +149,71 @@ def register(mediation, actor, *, available=True):
         user_activity=True,
         address=actor.address,
     )
+
+
+@pytest.mark.parametrize("sharing", ["portal"], indirect=True)
+def test_native_review_uploads_private_draft_and_preserves_link(sharing, monkeypatch):
+    from hermes_wisdom.mediation_view import resolve_surface_action
+
+    service, mediation, actor, shown, model, source, _ = sharing
+    monkeypatch.setattr("hermes_wisdom.mediation_view.WisdomConsent", lambda _: mediation.consent)
+    def click(action):
+        return resolve_surface_action(
+            service, f"wi:agent:{action}:{shown['id']}", platform=actor.platform,
+            actor_id=actor.actor_id, **actor.address,
+        )
+
+    # Existing cards still carry inspect; only the native handler treats it as review.
+    view = click("inspect")
+    assert service.client.uploaded == 1
+    assert service.client.publications == 0
+    assert any(a.label == "View Skill" and "/wisdom/review/draft-1" in a.url for a in view.actions)
+    assert view.actions[-1].label == "Yes, share"
+    assert "private draft is ready" in view.to_text()
+    current = mediation.consent.resolve("org", shown["id"], actor, "inspect")
+    assert current["operation"] == "publish" and current["state"] == "pending"
+    assert current["facts"]["hashes"]
+    for action in ("review", "checks.show", "checks.hide"):
+        toggled = click(action)
+        actions = toggled.actions + [a for item in toggled.items for a in item.actions]
+        assert any(a.label == "View Skill" and a.url for a in actions)
+    assert service.client.uploaded == 1
+    assert service.client.publications == 0
+    assert "ORIGINAL_PRIVATE_SETUP" in (source / "SKILL.md").read_text()
+    confirmed = mediation.consent.resolve("org", shown["id"], actor, "confirm")
+    assert confirmed["state"] == "completed"
+    assert service.client.publications == 1
+
+
+@pytest.mark.parametrize("failure", ["actor", "expired", "source", "org"])
+def test_portal_review_rejects_invalid_control_before_upload(sharing, failure):
+    service, mediation, actor, shown, _, source, now = sharing
+    if failure == "actor":
+        actor = ConsentActor(**{**actor.__dict__, "actor_id": "stranger"})
+    elif failure == "expired":
+        now[0] = shown["expires_at"] + 1
+    elif failure == "source":
+        (source / "SKILL.md").write_text("Changed since qualification")
+    else:
+        service.store.activate_installation_identity("installation", "other-org")
+    with pytest.raises((WisdomConflict, WisdomNotFound, ValueError)):
+        mediation.consent.resolve("org", shown["id"], actor, "review")
+    assert service.client.uploaded == service.client.publications == 0
+
+
+@pytest.mark.parametrize("sharing", ["portal"], indirect=True)
+def test_private_review_failure_keeps_card_retryable(sharing, monkeypatch):
+    service, mediation, actor, shown, _, _, _ = sharing
+    submit = service.client.submit_draft
+    monkeypatch.setattr(service.client, "submit_draft", Mock(side_effect=RuntimeError("offline")))
+    with pytest.raises(RuntimeError, match="offline"):
+        mediation.consent.resolve("org", shown["id"], actor, "review")
+    current = mediation.consent._resolve("org", shown["id"], actor, "inspect")
+    assert current["state"] == "pending" and current["result"] is None
+    monkeypatch.setattr(service.client, "submit_draft", submit)
+    current = mediation.consent.resolve("org", shown["id"], actor, "review")
+    assert current["result"]["portal_url"]
+    assert service.client.publications == 0
 
 
 def test_share_is_native_local_preparation_then_separate_exact_publication(sharing):

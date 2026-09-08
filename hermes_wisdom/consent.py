@@ -337,6 +337,8 @@ class WisdomConsent:
     def resolve(
         self, org: str, interaction_id: str, actor: ConsentActor, action: str
     ) -> dict[str, Any]:
+        if action == "review":
+            return self._review_in_portal(org, interaction_id, actor)
         if action == "recheck":
             result = self._resolve(org, interaction_id, actor, "inspect")
             if result["state"] in {"stale", "expired"} or (
@@ -366,6 +368,68 @@ class WisdomConsent:
         if page and result["operation"] == "publish" and result["state"] == "pending":
             return self._inspect_package(org, interaction_id, result, int(page[1] or 0))
         return result
+
+    def _review_in_portal(self, org, interaction_id, actor):
+        result = self._resolve(org, interaction_id, actor, "inspect")
+        if result["operation"] not in {"share", "publish"} or result["state"] != "pending":
+            return result
+        entity = "portal-review:" + interaction_id
+        token = self.service.store.acquire_operation_lock(entity, ttl_seconds=300)
+        if not token:
+            raise WisdomConflict(
+                "the private draft is already being prepared; try again shortly"
+            )
+        try:
+            def guard():
+                current = self._resolve(org, interaction_id, actor, "inspect")
+                if current["state"] != "pending" or current["expires_at"] <= self.queue.clock():
+                    raise WisdomConflict("this review control is no longer current")
+                with self.service.store.transaction() as db:
+                    lease = db.execute(
+                        "SELECT owner FROM operation_lock WHERE entity_id=?", (entity,)
+                    ).fetchone()
+                    if lease is None or lease[0] != token:
+                        raise WisdomConflict("private review ownership changed")
+                return current
+
+            guard()
+            with self.service.store.transaction() as db:
+                plan_json = db.execute(
+                    "SELECT plan_json FROM wisdom_consent WHERE id=? AND organization_id=?",
+                    (interaction_id, org),
+                ).fetchone()[0]
+            plan = json.loads(plan_json)
+            reference = {
+                "kind": "candidate", "event_id": plan["event_id"],
+                "content_hash": plan["source_hash"],
+            }
+            # Validate the qualified source before authorizing any private upload.
+            self._plan(reference)
+            draft = self.service.draft_candidate(
+                plan["event_id"], expected_hashes=plan.get("hashes"),
+                _pre_upload_guard=guard,
+            )
+            operation, refreshed = self._plan(reference)
+            refreshed["origin_address"] = plan.get("origin_address")
+            outcome = {
+                "draft_id": draft["draft_id"], "portal_url": draft["portal_url"],
+                "publication_state": draft["state"],
+                "owner_user_id": self.service.client.identity.get("owner"),
+            }
+            guard()
+            with self.service.store.transaction() as db:
+                self.queue._check_org(db, org)
+                changed = db.execute(
+                    "UPDATE wisdom_consent SET operation=?,plan_json=?,result_json=?,updated_at=? "
+                    "WHERE id=? AND organization_id=? AND state='pending' AND plan_json=?",
+                    (operation, json.dumps(refreshed), json.dumps(outcome), self.queue.clock(),
+                     interaction_id, org, plan_json),
+                ).rowcount
+                if not changed:
+                    raise WisdomConflict("the interaction changed while preparing review")
+            return self._resolve(org, interaction_id, actor, "inspect")
+        finally:
+            self.service.store.release_operation_lock(entity, token)
 
     def _inspect_package(self, org, interaction_id, result, page):
         from .contract import author_description_hash, sha256_address

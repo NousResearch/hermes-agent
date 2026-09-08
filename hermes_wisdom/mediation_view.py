@@ -167,12 +167,16 @@ def advice_view(
             for action in interaction["actions"]:
                 if unavailable and action == "confirm":
                     continue
+                if action == "inspect" and (interaction.get("result") or {}).get("portal_url"):
+                    actions.append(WisdomAction("View Skill", url=interaction["result"]["portal_url"]))
+                    continue
+                native_action = "review" if action == "inspect" and interaction["operation"] in {"share", "publish"} else action
                 actions.append(
                     WisdomAction(
                         label="Review skill"
                         if unavailable and action == "inspect"
                         else labels[action],
-                        callback_data=f"wi:agent:{action}:{interaction['id']}",
+                        callback_data=f"wi:agent:{native_action}:{interaction['id']}",
                         primary=action == ("inspect" if unavailable else "confirm"),
                     )
                 )
@@ -339,6 +343,8 @@ def interaction_view(
     )
     if result["operation"] == "share":
         detail += "\nYou can review the skill before publishing. Nothing is shared without your approval."
+    if (result.get("result") or {}).get("portal_url") and result["state"] == "pending":
+        detail += "\nYour private draft is ready in the Portal. You can review and edit it before publishing."
     if (result.get("result") or {}).get("packaging_state") == "queued":
         detail += "\nPackaging is queued in this conversation. Nothing has been uploaded or published."
     if facts.get("file_names"):
@@ -354,6 +360,10 @@ def interaction_view(
         ))
     if result["state"] == "pending" and not result.get("deferred"):
         for action in result["actions"]:
+            if action == "inspect" and (result.get("result") or {}).get("portal_url"):
+                actions.append(WisdomAction("View Skill", url=result["result"]["portal_url"]))
+                continue
+            native_action = "review" if action == "inspect" and result["operation"] in {"share", "publish"} else action
             actions.append(
                 WisdomAction(
                     label=(
@@ -368,7 +378,7 @@ def interaction_view(
                             "update": "Update",
                         }[result["operation"]]
                     ),
-                    callback_data=f"wi:agent:{action}:{result['id']}",
+                    callback_data=f"wi:agent:{native_action}:{result['id']}",
                     primary=action == "confirm",
                 )
             )
@@ -414,6 +424,11 @@ def resolve_surface_action(
     if row is None:
         raise WisdomNotFound("Wisdom interaction not found")
     actor = ConsentActor(row[0], platform, actor_id, chat_id, thread_id, scope_id)
+    if action == "inspect":
+        current = WisdomConsent(service)._resolve(org, identity, actor, "inspect")
+        if current["operation"] in {"share", "publish"} and current["state"] == "pending":
+            # Older native Review first buttons used inspect. Keep CLI/tool reads read-only.
+            action = "review"
     if action in {"checks.show", "checks.hide", "assessment.show", "assessment.hide"}:
         # Reuse read-only authorization, without preparing a package or applying consent.
         result = WisdomConsent(service)._resolve(org, identity, actor, "inspect")

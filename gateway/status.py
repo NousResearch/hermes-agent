@@ -1126,6 +1126,9 @@ _TAKEOVER_MARKER_FILENAME = ".gateway-takeover.json"
 _TAKEOVER_MARKER_TTL_S = 60  # Marker older than this is treated as stale
 _PLANNED_STOP_MARKER_FILENAME = ".gateway-planned-stop.json"
 _PLANNED_STOP_MARKER_TTL_S = 60
+# Marker paths already reported as unreadable, so the planned-stop watcher (polls twice a second)
+# logs the diagnostic once per path per process instead of flooding gateway.log.
+_unreadable_marker_paths_warned: set[str] = set()
 
 
 def _get_takeover_marker_path(hermes_home: Optional[Path] = None) -> Path:
@@ -1146,11 +1149,50 @@ def _marker_is_stale(written_at: str, ttl_s: int) -> bool:
         return True
 
 
+def _path_owner(path: Path) -> Optional[tuple[int, int]]:
+    """Owning ``(uid, gid)`` of *path* on POSIX; None on Windows or when the path cannot be
+    stat'ed. Single seam so ownership decisions stay testable without patching ``os.stat``."""
+    if os.name != "posix":
+        return None
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_uid, st.st_gid)
+
+
+def _warn_once_unreadable_marker(path: Path) -> None:
+    """Warn (once per path per process) that a marker exists but this uid cannot read it.
+
+    ``_read_json_file`` swallows the EACCES, so a marker written by a privileged stopper into an
+    unprivileged gateway's home is silently invisible: the stop is never matched and the gateway
+    reports an unexpected exit instead. Only reachable for an unprivileged reader -- root reads
+    anything. See #91212."""
+    try:
+        if not path.exists() or os.access(path, os.R_OK):
+            return
+    except OSError:
+        return
+    key = os.path.normcase(str(path))
+    if key in _unreadable_marker_paths_warned:
+        return
+    _unreadable_marker_paths_warned.add(key)
+    geteuid = getattr(os, "geteuid", None)
+    owner = _path_owner(path)
+    logger.warning(
+        "Gateway marker %s exists but is not readable by uid %s (file owner uid %s) — it was "
+        "written by a more privileged process (e.g. `sudo hermes gateway stop`, or an s6/docker "
+        "supervisor running as root), so a planned stop cannot be matched and this shutdown will "
+        "be reported as unexpected. Delete the file or chown it to the owner of %s (issue #91212).",
+        path, geteuid() if geteuid else "?", owner[0] if owner else "?", path.parent)
+
+
 def _read_live_pid_marker(path: Path, ttl_s: int) -> Optional[tuple[dict[str, Any], int, Any]]:
     """``(record, target_pid, target_start_time)`` for a usable marker, else None. Malformed/expired
     markers can never match anyone, so they are unlinked here (must not wedge a new instance)."""
     record = _read_json_file(path)
     if not record:
+        _warn_once_unreadable_marker(path)
         return None
     target_pid = _pid_from_record(record, "target_pid")
     if target_pid is None or _marker_is_stale(record.get("written_at") or "", ttl_s):
@@ -1215,13 +1257,48 @@ def write_takeover_marker(
         return False
 
 
+def _hand_marker_to_home_owner(path: Path) -> None:
+    """Hand a marker root just wrote to the owner of the HERMES_HOME directory it lives in.
+
+    Markers are written by whoever STOPS or REPLACES a gateway, and that process is routinely more
+    privileged than the gateway itself: ``sudo hermes gateway stop`` for a system-scope unit whose
+    ``User=`` is a login account, and ``docker exec`` into the container, where s6 runs as root
+    while the gateway runs under ``s6-setuidgid hermes``. ``atomic_json_write`` creates a NEW file
+    as its writer, so the marker lands root:root 0600 in a home the gateway user owns; the gateway
+    then reads EACCES, never matches the marker, and reports the deliberate SIGTERM as an
+    unexpected exit (non-zero status, shutdown forensics, failure alerts) — while the unreadable
+    file stays in ``~/.hermes``
+    forever, because the stale/malformed cleanup path cannot parse it either (issue #91212).
+
+    Same remedy as ``cron.jobs._preserve_file_ownership`` for #68483, keyed on the home directory
+    rather than the file's previous owner because a marker is normally created fresh. Best-effort:
+    a failed chown is logged, never raised — the marker itself was written."""
+    geteuid = getattr(os, "geteuid", None)
+    chown = getattr(os, "chown", None)
+    if os.name != "posix" or geteuid is None or chown is None or geteuid() != 0:
+        return  # Windows, or an unprivileged writer whose marker already suits the home
+    home_owner = _path_owner(path.parent)
+    if home_owner is None or home_owner[0] == 0 or _path_owner(path) == home_owner:
+        return  # root's own home has nobody to hand it to; equal ownership needs no chown
+    try:
+        chown(path, home_owner[0], home_owner[1])
+    except OSError as e:
+        logger.warning(
+            "Could not hand %s to uid=%s gid=%s (owner of %s): %s — a gateway running as that "
+            "user cannot read the marker, so its planned stop will be reported as an unexpected "
+            "exit instead of a clean shutdown (see issue #91212).",
+            path, home_owner[0], home_owner[1], path.parent, e)
+
+
 def _write_marker(path: Path, record: dict[str, Any]) -> bool:
-    """Atomically write a marker record; False (never raise) on OS failure."""
+    """Atomically write a marker record; False (never raise) on OS failure. A root writer hands
+    the marker to the HERMES_HOME owner so an unprivileged gateway can still read it (#91212)."""
     try:
         _write_json_file(path, record)
-        return True
     except OSError:
         return False
+    _hand_marker_to_home_owner(path)
+    return True
 
 
 def consume_takeover_marker_for_self() -> bool:

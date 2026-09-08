@@ -2583,8 +2583,13 @@ def complete_task(
             conn, task_id, outcome="completed", status="done", summary=handoff_summary,
             metadata=metadata,
         )
-        # Never-claimed task: synthesize a run so the handoff fields survive.
-        if run_id is None and (summary or metadata or result or prior_status == "review"):
+        # Only a never-claimed task needs a synthetic completion run. A prior
+        # execution already has its own task_runs row; administrative completion
+        # must not manufacture a second execution attempt.
+        had_prior_run = run_id is None and conn.execute(
+            "SELECT 1 FROM task_runs WHERE task_id = ? LIMIT 1", (task_id,),
+        ).fetchone()
+        if run_id is None and not had_prior_run and (summary or metadata or result or prior_status == "review"):
             synth_summary, synth_metadata = handoff_summary, metadata
             if prior_status == "review" and not synth_summary and not synth_metadata:
                 synth_summary = _REVIEW_APPROVED_NOTE

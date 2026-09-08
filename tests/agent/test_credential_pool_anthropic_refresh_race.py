@@ -309,3 +309,115 @@ def test_concurrent_claude_code_refresh_recovers_via_credentials_file(monkeypatc
     # its own refresh, the loser via the credentials-file sync-and-retry.
     assert results["a"] is not None, "claude_code process A should recover"
     assert results["b"] is not None, "claude_code process B should recover"
+
+
+def test_claude_code_refresh_waits_for_external_rotation(monkeypatch):
+    """A rejected borrowed refresh waits for Claude Code's replacement pair.
+
+    Claude Code can revoke the shared access and refresh tokens before its
+    atomic credentials-file update becomes visible.  The old access token can
+    still have a future expiry, so expiry alone cannot prove that an unchanged
+    file read recovered the request that just received a 401.
+    """
+    stale = {
+        "accessToken": "stale-access",
+        "refreshToken": "stale-refresh",
+        "expiresAt": int(time.time() * 1000) + 3_600_000,
+    }
+    fresh = {
+        "accessToken": "fresh-access",
+        "refreshToken": "fresh-refresh",
+        "expiresAt": int(time.time() * 1000) + 3_600_000,
+    }
+    credential_reads = 0
+    refresh_calls: list[str] = []
+
+    def _read_credentials():
+        nonlocal credential_reads
+        credential_reads += 1
+        return stale if credential_reads <= 2 else fresh
+
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.read_claude_code_credentials",
+        _read_credentials,
+    )
+
+    def _rejected_refresh(refresh_token, *, use_json=False):
+        refresh_calls.append(refresh_token)
+        raise ValueError("invalid_grant: refresh token already used")
+
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+        _rejected_refresh,
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool._CLAUDE_CODE_ROTATION_WAIT_SECONDS", 0.01
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool._CLAUDE_CODE_ROTATION_POLL_SECONDS", 0.001
+    )
+
+    pool = CredentialPool(
+        "anthropic",
+        [
+            PooledCredential(
+                provider="anthropic",
+                id="pool-entry",
+                label="Claude Code",
+                auth_type=AUTH_TYPE_OAUTH,
+                priority=0,
+                source="claude_code",
+                access_token=stale["accessToken"],
+                refresh_token=stale["refreshToken"],
+                expires_at_ms=stale["expiresAt"],
+            )
+        ],
+    )
+
+    recovered = pool.try_refresh_matching(credential_id="pool-entry")
+
+    assert recovered is not None
+    assert recovered.access_token == "fresh-access"
+    assert recovered.refresh_token == "fresh-refresh"
+    assert refresh_calls == ["stale-refresh"]
+
+
+def test_claude_code_refresh_rejects_unchanged_revoked_token(monkeypatch):
+    """An unchanged file cannot recover the access token that just failed."""
+    stale = {
+        "accessToken": "stale-access",
+        "refreshToken": "stale-refresh",
+        "expiresAt": int(time.time() * 1000) + 3_600_000,
+    }
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.read_claude_code_credentials",
+        lambda: stale,
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            ValueError("invalid_grant: refresh token already used")
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool._CLAUDE_CODE_ROTATION_WAIT_SECONDS", 0.01
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool._CLAUDE_CODE_ROTATION_POLL_SECONDS", 0.001
+    )
+
+    entry = PooledCredential(
+        provider="anthropic",
+        id="pool-entry",
+        label="Claude Code",
+        auth_type=AUTH_TYPE_OAUTH,
+        priority=0,
+        source="claude_code",
+        access_token=stale["accessToken"],
+        refresh_token=stale["refreshToken"],
+        expires_at_ms=stale["expiresAt"],
+    )
+    pool = CredentialPool("anthropic", [entry])
+
+    assert pool.try_refresh_matching(credential_id=entry.id) is None
+    assert pool.entries()[0].last_status == STATUS_EXHAUSTED

@@ -16,7 +16,7 @@ import logging
 import subprocess
 import threading
 import time
-from typing import Callable, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,11 @@ class CommandTokenSource:
         self._token = ""
         self._expires_at: float = 0.0
 
+    @property
+    def cache_identity(self) -> str:
+        """Stable catalog identity; token rotation must not mint on cache reads."""
+        return f"cmd:{self._command}"
+
     def __call__(self) -> str:
         with self._lock:
             if self._token and time.monotonic() < self._expires_at:
@@ -132,33 +137,7 @@ class CommandTokenSource:
             return token
 
 
-def build_command_token_provider(key_cmd: str, provider_label: str = "custom") -> Optional[Callable[[], str]]:
+def build_command_token_provider(key_cmd: str, provider_label: str = "custom") -> Optional[CommandTokenSource]:
     """A per-request token provider for *key_cmd*, or ``None`` when unset."""
     command = str(key_cmd or "").strip()
     return CommandTokenSource(command, provider_label) if command else None
-
-
-def resolve_probe_token(entry: dict) -> str:
-    """Mint a one-shot credential from a provider entry's ``key_cmd``, or "".
-
-    For callers needing a CONCRETE token rather than the per-request callable
-    ``build_command_token_provider`` returns — the ``/models`` catalog probes,
-    which build their request by hand instead of going through a wire client.
-    Shares the ``CommandTokenSource`` cache with the request path, so this is
-    a cache read rather than a fresh sign-in.
-
-    Fail-closed: any error yields "". A helper that needs an interactive
-    sign-in (or is simply broken) must not take down a whole picker — the
-    caller degrades to the pre-existing empty-key behaviour and every other
-    provider still renders.
-    """
-    if not isinstance(entry, dict):
-        return ""
-    command = str(entry.get("key_cmd", "") or "").strip()
-    if not command:
-        return ""
-    try:
-        provider = build_command_token_provider(command, str(entry.get("name", "") or "custom"))
-        return (provider() or "").strip() if provider is not None else ""
-    except Exception:
-        return ""

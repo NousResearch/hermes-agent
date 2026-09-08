@@ -10,22 +10,33 @@ const ARCHIVED_FETCH_LIMIT = 200
 
 export const $archivedSessions = atom<SessionInfo[]>([])
 export const $archivedSessionsLoading = atom(false)
+let loadGeneration = 0
+let loadingScope: boolean | null = null
 
-export async function loadArchivedSessions(): Promise<void> {
-  if ($archivedSessionsLoading.get()) {
+export async function loadArchivedSessions(allConnections = false): Promise<void> {
+  if ($archivedSessionsLoading.get() && loadingScope === allConnections) {
     return
   }
 
+  const generation = ++loadGeneration
+  loadingScope = allConnections
   $archivedSessionsLoading.set(true)
 
   try {
-    const result = await listAllProfileSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
+    const result = await listAllProfileSessions(ARCHIVED_FETCH_LIMIT, 0, 'only', 'recent', 'all', {}, allConnections)
 
-    $archivedSessions.set(result.sessions)
+    if (generation === loadGeneration) {
+      $archivedSessions.set(result.sessions)
+    }
   } catch {
-    $archivedSessions.set([])
+    if (generation === loadGeneration) {
+      $archivedSessions.set([])
+    }
   } finally {
-    $archivedSessionsLoading.set(false)
+    if (generation === loadGeneration) {
+      loadingScope = null
+      $archivedSessionsLoading.set(false)
+    }
   }
 }
 

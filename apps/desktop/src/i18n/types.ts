@@ -1739,6 +1739,7 @@ export interface Translations {
     manageProfiles: string
     connectGateway: string
     fleet: {
+      allOnAllGateways: string
       allOnGateway: string
       gateway: (gateway: string) => string
       gatewayUnreachable: (gateway: string) => string

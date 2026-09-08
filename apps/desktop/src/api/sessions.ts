@@ -52,6 +52,21 @@ function stampActiveConnectionOwner(sessions: SessionInfo[]): SessionInfo[] {
   return stampRowsWithOwningConnection(sessions, getApiRequestConnection())
 }
 
+async function stampResponseOwner(sessions: SessionInfo[], allConnections: boolean): Promise<SessionInfo[]> {
+  if (!allConnections) {
+    return stampActiveConnectionOwner(sessions)
+  }
+
+  const { $connectionsRegistry } = await import('@/store/connection-registry-state')
+  const primaryConnectionId = $connectionsRegistry.get()?.primary
+
+  if (primaryConnectionId) {
+    maybeBackfillLegacySessionOwners(primaryConnectionId)
+  }
+
+  return stampRowsWithOwningConnection(sessions, primaryConnectionId)
+}
+
 /**
  * Trim a page to its window WITHOUT discarding pinned rows.
  *
@@ -112,7 +127,8 @@ export async function listAllProfileSessions(
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent',
   profile: 'all' | (string & {}) = 'all',
-  filter: SessionSourceFilter = {}
+  filter: SessionSourceFilter = {},
+  allConnections = false
 ): Promise<PaginatedSessions> {
   const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
 
@@ -122,6 +138,9 @@ export async function listAllProfileSessions(
 
   const result = await hermesApi<PaginatedSessions>({
     ...profileScoped(),
+    // ponytail: an empty explicit id cancels the ambient source and reaches
+    // Electron's existing fleet aggregator; no second session-fetch stack.
+    ...(allConnections ? { connectionId: '' } : {}),
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
@@ -130,7 +149,7 @@ export async function listAllProfileSessions(
 
   return {
     ...result,
-    sessions: pageWindow(stampActiveConnectionOwner(result.sessions), limit),
+    sessions: pageWindow(await stampResponseOwner(result.sessions, allConnections), limit),
     offset: 0
   }
 }
@@ -180,6 +199,8 @@ export interface SidebarSessionsResponse {
 }
 
 export interface SidebarSessionsRequest {
+  /** Bypass the active registry source so Electron can aggregate every connected gateway. */
+  allConnections?: boolean
   recentsProfile: 'all' | (string & {})
   recentsLimit: number
   recentsExclude: string[]
@@ -212,13 +233,33 @@ export function resetSidebarBatchCapability() {
 // interception as the pre-batching desktop, so remote profiles stay correct.
 async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<SidebarSessionsResponse> {
   const [recents, cron, messaging] = await Promise.all([
-    listAllProfileSessions(req.recentsLimit, 1, 'exclude', 'recent', req.recentsProfile, {
-      excludeSources: req.recentsExclude
-    }),
-    listAllProfileSessions(req.cronLimit, 1, 'exclude', 'recent', req.recentsProfile, { source: 'cron' }),
-    listAllProfileSessions(req.messagingLimit, 1, 'exclude', 'recent', req.recentsProfile, {
-      excludeSources: req.messagingExclude
-    })
+    listAllProfileSessions(
+      req.recentsLimit,
+      1,
+      'exclude',
+      'recent',
+      req.recentsProfile,
+      { excludeSources: req.recentsExclude },
+      req.allConnections
+    ),
+    listAllProfileSessions(
+      req.cronLimit,
+      1,
+      'exclude',
+      'recent',
+      req.recentsProfile,
+      { source: 'cron' },
+      req.allConnections
+    ),
+    listAllProfileSessions(
+      req.messagingLimit,
+      1,
+      'exclude',
+      'recent',
+      req.recentsProfile,
+      { excludeSources: req.messagingExclude },
+      req.allConnections
+    )
   ])
 
   const recentsErrors = recents.errors ?? []
@@ -284,6 +325,9 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
   try {
     result = await hermesApi<SidebarSessionsResponse>({
       ...profileScoped(),
+      // Empty overrides hermesApi's ambient connection tag, selecting the
+      // existing Electron fleet aggregator rather than the foreground gateway.
+      ...(req.allConnections ? { connectionId: '' } : {}),
       path: `/api/profiles/sessions/sidebar?${params.toString()}`,
       timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
     })
@@ -303,17 +347,17 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
   return {
     recents: {
       ...result.recents,
-      sessions: stampActiveConnectionOwner(result.recents?.sessions ?? []),
+      sessions: await stampResponseOwner(result.recents?.sessions ?? [], Boolean(req.allConnections)),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
     cron: {
       ...result.cron,
-      sessions: stampActiveConnectionOwner(result.cron?.sessions ?? []),
+      sessions: await stampResponseOwner(result.cron?.sessions ?? [], Boolean(req.allConnections)),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
     messaging: {
       ...result.messaging,
-      sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []),
+      sessions: await stampResponseOwner(result.messaging?.sessions ?? [], Boolean(req.allConnections)),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
     errors: result.errors

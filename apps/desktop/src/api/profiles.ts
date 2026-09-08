@@ -15,8 +15,20 @@ export function getProfiles(): Promise<ProfilesResponse> {
   })
 }
 
-export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string }> {
+export function getProfilesForScope(scope: ProfileScope): Promise<ProfilesResponse> {
+  return hermesApi<ProfilesResponse>({
+    ...capabilityScoped(scope),
+    path: '/api/profiles',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+  })
+}
+
+export function createProfile(
+  body: ProfileCreatePayload,
+  scope?: ProfileScope
+): Promise<{ name: string; ok: boolean; path: string }> {
   return hermesApi<{ name: string; ok: boolean; path: string }>({
+    ...(scope === undefined ? {} : capabilityScoped(scope)),
     path: '/api/profiles',
     method: 'POST',
     body

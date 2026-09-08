@@ -2,7 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type * as Nanostores from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { deleteProfile } from '@/hermes'
+import { deleteProfile, getProfilesForScope } from '@/hermes'
+import { $connectionsRegistry } from '@/store/connections'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { refreshProfiles, selectProfile, setActiveProfile } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
@@ -16,8 +17,6 @@ import { ProfilesView } from './index'
 // stranding it on a dead backend. The drift that motivated the fix got in
 // precisely because nothing rendered this view.
 
-afterEach(cleanup)
-
 // Real i18n (useI18n falls back to English with no provider), so labels are the
 // actual strings — no brittle key snapshot to maintain here.
 
@@ -30,6 +29,7 @@ vi.mock('@/components/chat/code-editor', () => ({
 vi.mock('@/hermes', () => ({
   createProfile: vi.fn(async () => ({ name: 'x', ok: true, path: '/x' })),
   deleteProfile: vi.fn(async () => ({ ok: true, path: '/x' })),
+  getProfilesForScope: vi.fn(async () => ({ profiles: [] })),
   getProfileSoul: vi.fn(async () => ({ content: '', exists: true })),
   renameProfile: vi.fn(async () => ({ name: 'x', ok: true, path: '/x' })),
   updateProfileSoul: vi.fn(async () => ({ ok: true }))
@@ -41,6 +41,8 @@ vi.mock('@/store/notifications', () => ({
 }))
 
 vi.mock('@/store/gateway', () => ({
+  activeGatewayConnectionId: vi.fn(() => null),
+  retireAgentGateways: vi.fn(),
   retireLocalProfileGateways: vi.fn()
 }))
 
@@ -53,6 +55,22 @@ const { $activeGatewayProfile: activeGateway, $profileColors } = vi.hoisted(() =
   }
 })
 
+const connectionStores = vi.hoisted(() => {
+  const { atom } = require('nanostores') as typeof Nanostores
+
+  return {
+    active: atom<null | string>(null),
+    multiple: atom(false),
+    registry: atom(null)
+  }
+})
+
+vi.mock('@/store/connections', () => ({
+  $activeConnectionId: connectionStores.active,
+  $connectionsRegistry: connectionStores.registry,
+  $hasMultipleConnections: connectionStores.multiple
+}))
+
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile: activeGateway,
   $profileColors,
@@ -63,6 +81,14 @@ vi.mock('@/store/profile', () => ({
   selectProfile: vi.fn(),
   setActiveProfile: vi.fn()
 }))
+
+afterEach(() => {
+  cleanup()
+  $connectionsRegistry.set(null)
+  connectionStores.active.set(null)
+  connectionStores.multiple.set(false)
+  vi.clearAllMocks()
+})
 
 // The one non-default profile these tests act on. Its name doubles as the row's
 // accessible name, so the delete helper queries by it rather than a literal.
@@ -78,6 +104,18 @@ function makeProfile(name: string, isDefault = false): ProfileInfo {
     provider: null,
     skill_count: 0
   }
+}
+
+function deferred<T>() {
+  let reject!: (error: unknown) => void
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+
+  return { promise, reject, resolve }
 }
 
 // Radix's trigger opens on the pointerdown/up pair, not the synthetic click
@@ -119,6 +157,80 @@ async function deleteTheNamedProfile() {
 }
 
 describe('ProfilesView', () => {
+  it('loads and groups profiles from every registered gateway', async () => {
+    connectionStores.multiple.set(true)
+    $connectionsRegistry.set({
+      connections: [
+        { id: 'local', kind: 'local', label: 'This device' },
+        { id: 'cloud', kind: 'cloud', label: 'Cloud' }
+      ],
+      launchMode: 'primary',
+      lastUsed: 'local',
+      primary: 'local',
+      version: 2
+    } as never)
+    vi.mocked(getProfilesForScope).mockImplementation(async scope => ({
+      profiles:
+        typeof scope === 'object' && scope?.connectionId === 'cloud'
+          ? [makeProfile('cloud-work')]
+          : [makeProfile('local-work')]
+    }))
+
+    await renderProfilesView()
+
+    expect((await screen.findAllByRole('button', { name: 'local-work' })).length).toBeGreaterThan(0)
+    expect((await screen.findAllByRole('button', { name: 'cloud-work' })).length).toBeGreaterThan(0)
+    expect(screen.getAllByText('This device').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Cloud').length).toBeGreaterThan(0)
+    expect(getProfilesForScope).toHaveBeenCalledWith({ connectionId: 'local' })
+    expect(getProfilesForScope).toHaveBeenCalledWith({ connectionId: 'cloud' })
+  })
+
+  it('ignores an older fleet refresh after a newer refresh finishes', async () => {
+    connectionStores.multiple.set(true)
+    connectionStores.active.set('local')
+
+    const registry = {
+      connections: [
+        { id: 'local', kind: 'local', label: 'This device' },
+        { id: 'cloud', kind: 'cloud', label: 'Cloud' }
+      ],
+      launchMode: 'primary',
+      lastUsed: 'local',
+      primary: 'local',
+      version: 2
+    } as never
+
+    $connectionsRegistry.set(registry)
+    const oldLocal = deferred<{ profiles: ProfileInfo[] }>()
+    const oldCloud = deferred<{ profiles: ProfileInfo[] }>()
+    let request = 0
+    vi.mocked(getProfilesForScope).mockImplementation(async scope => {
+      const connectionId = typeof scope === 'object' ? scope?.connectionId : undefined
+      request += 1
+
+      if (request <= 2) {
+        return connectionId === 'local' ? oldLocal.promise : oldCloud.promise
+      }
+
+      return { profiles: [makeProfile(`new-${connectionId}`, connectionId === 'cloud')] }
+    })
+
+    await renderProfilesView()
+    await act(async () => connectionStores.active.set('cloud'))
+    expect(await screen.findByRole('heading', { name: 'new-cloud' })).toBeTruthy()
+
+    await act(async () => {
+      oldLocal.resolve({ profiles: [makeProfile('stale-local', true)] })
+      oldCloud.reject(new Error('offline'))
+      await Promise.allSettled([oldLocal.promise, oldCloud.promise])
+    })
+
+    expect(screen.queryByText('stale-local')).toBeNull()
+    expect(screen.queryByText('Cloud · unreachable')).toBeNull()
+    expect(screen.getByRole('heading', { name: 'new-cloud' })).toBeTruthy()
+  })
+
   it('opens the shared create dialog with the SOUL.md field (parity with the rail)', async () => {
     vi.mocked(refreshProfiles).mockResolvedValue([])
 

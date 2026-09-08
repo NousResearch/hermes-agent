@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import type { ProfileScope } from '@/api/client'
 import { ActionStatus } from '@/components/ui/action-status'
 import { Button } from '@/components/ui/button'
 import {
@@ -33,12 +34,14 @@ export function CreateProfileDialog({
   onClose,
   onCreated,
   open,
-  profiles = []
+  profiles = [],
+  scope
 }: {
   onClose: () => void
   onCreated?: (name: string) => Promise<void> | void
   open: boolean
   profiles?: ProfileInfo[]
+  scope?: ProfileScope
 }) {
   const { t } = useI18n()
   const p = t.profiles
@@ -77,10 +80,12 @@ export function CreateProfileDialog({
     setError(null)
 
     try {
-      await createProfile({ name: trimmed, clone_from: cloneFrom })
+      await (scope == null
+        ? createProfile({ name: trimmed, clone_from: cloneFrom })
+        : createProfile({ name: trimmed, clone_from: cloneFrom }, scope))
 
       if (soul.trim()) {
-        await updateProfileSoul(trimmed, soul)
+        await (scope == null ? updateProfileSoul(trimmed, soul) : updateProfileSoul(trimmed, soul, scope))
       }
 
       await onCreated?.(trimmed)

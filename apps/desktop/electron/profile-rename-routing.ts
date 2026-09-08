@@ -2,8 +2,10 @@ import { profileNameFromPath } from './profile-delete-routing'
 
 export interface ProfileRenameRequest {
   body?: unknown
+  connectionId?: unknown
   method?: unknown
   path?: unknown
+  profile?: unknown
 }
 
 export interface ProfileRename {
@@ -27,6 +29,15 @@ export interface ProfileRenameLifecycle {
   rename: ProfileRename
   rollback: () => Promise<void>
   routeProfile: null
+}
+
+export interface ConnectionScopedProfileRenameDeps<T> {
+  acquire: (profile: string) => () => void
+  connectionKind: (connectionId: string) => string
+  dispatch: (routeProfile: null) => Promise<T>
+  isValidProfileName: (profile: string) => boolean
+  prepareLocal: (request: ProfileRenameRequest) => Promise<ProfileRenameLifecycle | null>
+  teardownConnection: (connectionId: string, profile: string) => Promise<void>
 }
 
 function parseJsonBody(body: unknown): Record<string, unknown> {
@@ -69,6 +80,53 @@ export function profileRenameFromRequest(request: ProfileRenameRequest | null | 
   }
 
   return { newName, oldName }
+}
+
+export async function dispatchConnectionScopedProfileRename<T>(
+  request: ProfileRenameRequest,
+  deps: ConnectionScopedProfileRenameDeps<T>
+): Promise<T> {
+  const rename = profileRenameFromRequest(request)
+  const connectionId = String(request.connectionId ?? '').trim()
+  const logicalProfile = String(request.profile ?? '').trim() || rename?.oldName || ''
+
+  if (!connectionId || !rename) {
+    throw new Error('Connection-scoped profile rename requires a connection and old/new profile names.')
+  }
+
+  if (!deps.isValidProfileName(rename.oldName) || !deps.isValidProfileName(rename.newName)) {
+    throw new Error('Invalid profile rename.')
+  }
+
+  const connectionKind = deps.connectionKind(connectionId)
+  const release = deps.acquire(rename.oldName)
+
+  try {
+    const lifecycle = connectionKind === 'local' ? await deps.prepareLocal(request) : null
+
+    if (connectionKind === 'local' && !lifecycle) {
+      throw new Error('Unable to prepare local profile rename.')
+    }
+
+    if (connectionKind !== 'local') {
+      await deps.teardownConnection(connectionId, logicalProfile)
+    }
+
+    let response: T
+
+    try {
+      response = await deps.dispatch(lifecycle?.routeProfile ?? null)
+    } catch (error) {
+      await lifecycle?.rollback()
+      throw error
+    }
+
+    await lifecycle?.complete()
+
+    return response
+  } finally {
+    release()
+  }
 }
 
 export async function prepareProfileRenameLifecycle(

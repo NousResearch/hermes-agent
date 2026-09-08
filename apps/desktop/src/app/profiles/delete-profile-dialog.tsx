@@ -2,7 +2,11 @@ import type { ProfileScope } from '@/api/client'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { deleteProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { retireLocalProfileGateways } from '@/store/gateway'
+import {
+  activeGatewayConnectionId,
+  retireAgentGateways,
+  retireLocalProfileGateways
+} from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey, selectProfile, setActiveProfile } from '@/store/profile'
 import { dropTilesForProfile } from '@/store/session-states'
 
@@ -59,22 +63,31 @@ export function DeleteProfileDialog({
         // backend. Capture that before the delete; reset *after* the host's
         // onDeleted refresh so our reset is the last write — a refreshActiveProfile
         // racing the (still-dying) backend can't clobber the pill back to it.
-        const remote = scope !== undefined && scope !== null
+        const scopedConnection = scope && typeof scope === 'object' ? String(scope.connectionId ?? '').trim() : ''
+        const scoped = scope !== undefined && scope !== null
+        const sameProfile = normalizeProfileKey(profile.name) === normalizeProfileKey($activeGatewayProfile.get())
 
         const wasActive =
-          !remote && normalizeProfileKey(profile.name) === normalizeProfileKey($activeGatewayProfile.get())
+          sameProfile && (!scopedConnection || scopedConnection === String(activeGatewayConnectionId() ?? '').trim())
 
-        if (!remote) {
+        if (scope == null) {
           retireLocalProfileGateways(profile.name)
+        } else if (typeof scope === 'object') {
+          retireAgentGateways(scope.connectionId ?? null, profile.name)
         }
 
         // Legacy arity when unscoped: callers and tests pin the one-arg call.
-        await (remote ? deleteProfile(profile.name, scope) : deleteProfile(profile.name))
+        await (scoped ? deleteProfile(profile.name, scope) : deleteProfile(profile.name))
         // The profile is gone. Drop its persisted tiles now — a leftover
         // session/Bot tile restores on relaunch and dials the deleted
         // profile's backend, whose ensure_hermes_home() re-creates the
         // directory the delete just removed (hermes-agent#94235).
-        dropTilesForProfile(profile.name)
+        dropTilesForProfile(
+          profile.name,
+          scope && typeof scope === 'object'
+            ? { connectionId: scope.connectionId ?? undefined, profile: profile.name }
+            : undefined
+        )
         await onDeleted?.()
 
         if (wasActive) {

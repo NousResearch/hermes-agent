@@ -37,6 +37,7 @@ import {
   $lastRoster,
   botHandle,
   botMentionTag,
+  botSelectionKey,
   cachedUnionRoster,
   isActiveRosterBot,
   migrateBotMeta,
@@ -665,7 +666,7 @@ export default {
             // server-side by name), matching either the durable row id or
             // the compression-lineage tip currently on screen.
             const roster = $lastRoster.get()
-            const row = Array.isArray(roster) ? roster.find(bot => bot?.name === activeBot) : null
+            const row = Array.isArray(roster) ? roster.find(bot => botSelectionKey(bot) === activeBot) : null
 
             // The STORED id, which is the id space canonical_session is keyed
             // in. `host.state.activeSessionId` is the runtime id and could

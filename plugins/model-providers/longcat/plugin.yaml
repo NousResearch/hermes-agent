@@ -1,0 +1,5 @@
+name: longcat-provider
+kind: model-provider
+version: 1.0.0
+description: LongCat direct API with thinking and tool calling
+author: yuzehui02 (ffyuuu)

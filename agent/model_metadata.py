@@ -343,6 +343,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     # https://api-docs.deepseek.com/zh-cn/quick_start/pricing
     "deepseek-v4-pro": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-chat": 1_000_000,
     "deepseek-reasoner": 1_000_000, "deepseek": 128000,
+    # Offline fallback; provider-aware catalog metadata takes precedence.
+    # https://longcat.chat/platform/docs/zh/api/model
+    "longcat-2.0": 1_048_576,
     # Meta; Muse Spark family (1.1/1.2/1.3, -contributor(-free), meta/ prefixed) is 1M per OpenRouter,
     # models.dev and api.commandcode.ai /models — keep the "muse-spark" prefix (bare "muse" would match
     # muse-image/muse-voice). Thinking Machines inkling (covers inkling-small and :free/:batch variants)

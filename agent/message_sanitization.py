@@ -457,7 +457,10 @@ def reasoning_echo_family(provider: Any, model: Any, base_url: Any) -> "str | No
 
 def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
     """True when the endpoint requires reasoning_content echo-back."""
-    return reasoning_echo_family(provider, model, base_url) is not None
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(provider)
+    return bool(profile and profile.requires_reasoning_echo) or reasoning_echo_family(provider, model, base_url) is not None
 
 
 def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_url: Any) -> bool:

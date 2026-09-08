@@ -50,6 +50,27 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 The `hermes config set` command automatically routes values to the right file — API keys are saved to `.env`, everything else to `config.yaml`.
 :::
 
+## LongCat
+
+Run `hermes model`, select **LongCat**, and enter a key from the
+[LongCat API keys page](https://longcat.chat/platform/api_keys). Hermes saves
+the key as `LONGCAT_API_KEY` in your profile's `.env` and offers `LongCat-2.0`.
+You can also select it for a single request:
+
+```bash
+hermes chat --provider longcat --model LongCat-2.0 -q "Hello"
+```
+
+LongCat uses `https://api.longcat.chat/openai/v1`. To use a proxy, set
+`model.base_url` in `config.yaml`. LongCat-2.0 supports text input and tool
+calling. Thinking is enabled by default; `/reasoning none` disables it.
+Other reasoning levels enable thinking, since LongCat's API has a binary
+switch. Hermes preserves reasoning content when replaying tool calls.
+
+Context and pricing follow the models.dev catalog. If catalog metadata is
+unavailable, Hermes uses the model's documented 1,048,576-token context
+window. See the [LongCat model details](https://longcat.chat/platform/docs/zh/api/model).
+
 ## Configuration Precedence
 
 Settings are resolved in this order (highest priority first):

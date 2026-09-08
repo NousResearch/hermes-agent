@@ -122,7 +122,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "huggingface": "huggingface", "gemini": "google", "google": "google",
     "xai": "xai",
     "xai-oauth": "xai",  # OAuth is a transport path for the same xAI catalog
-    "xiaomi": "xiaomi", "nvidia": "nvidia",
+    "xiaomi": "xiaomi", "nvidia": "nvidia", "longcat": "longcat",
     # Meta Model API (Muse Spark, api.meta.ai): models.dev keys it "meta", the
     # Hermes provider is "meta-ai"; both aliases are needed or muse-spark-*
     # falls back to the generic 256K default instead of its true 1M window.

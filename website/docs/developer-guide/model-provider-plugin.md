@@ -105,6 +105,7 @@ Full definition in `providers/base.py`. The most useful ones:
 | `fixed_temperature` | Any | `None` = use caller's value; `OMIT_TEMPERATURE` sentinel = don't send temperature at all (Kimi) |
 | `default_max_tokens` | `int \| None` | Provider-level max_tokens cap (Nvidia: 16384) |
 | `default_aux_model` | str | Cheap model for auxiliary tasks (compression, vision, summarization) |
+| `requires_reasoning_echo` | bool | Preserve `reasoning_content` when replaying assistant tool calls; also accounts for that reasoning in context budgets. Defaults to `False` for endpoints that reject this field. |
 
 ## Overridable hooks
 

@@ -713,6 +713,51 @@ def _grant(
     return token
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expired,age,ttl,status_ttl", [
+    (False, 1, 3600, 3600), (False, 60, 1, 3600), (True, 7200, 1, 1),
+], ids=["live", "status-only", "expired"])
+async def test_revocation_cleanup_requires_a_live_status_horizon(
+    attachment_api, monkeypatch, expired, age, ttl, status_ttl,
+):
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
+    adapter, app = attachment_api
+    app.router.add_post("/v1/room-members/grants/revoke", adapter._handle_room_member_grant_revoke)
+    manifest = _manifest()
+    dispatch = _dispatch(manifest)
+    current = _grant(adapter)
+    current_claims = decode_room_grant(adapter._room_grant_secret(), current, permission="status")
+    spool = room_attachments._default_spool()
+    spool.prepare(dispatch, manifest)
+    spool.put(claims=current_claims, task_id=dispatch.task_id,
+              execution_generation=dispatch.execution_generation,
+              attachment_id=str(manifest[0]["attachment_id"]), data=b"hello")
+    old = issue_room_grant(
+        adapter._room_grant_secret(), grant_id="older-grant", room_id=dispatch.room_id,
+        home_install_id=dispatch.home_install_id, authority_gateway_id=dispatch.authority_gateway_id,
+        authority_epoch=dispatch.authority_epoch, member_id=dispatch.member_id,
+        target_install_id=dispatch.target_install_id, target_profile=dispatch.target_profile,
+        execution_policy_digest=dispatch.execution_policy_digest, permissions=("status",),
+        issued_at=time.time() - age, ttl_seconds=ttl, status_ttl_seconds=status_ttl,
+    )
+    async with TestClient(TestServer(app)) as client:
+        for _ in range(2):
+            response = await client.post("/v1/room-members/grants/revoke", json={},
+                                         headers={"Authorization": f"HermesRoom {old}"})
+            assert response.status == 200
+            assert (await response.json())["revoked"] is True
+    if expired:
+        with pytest.raises(ValueError, match="expired"):
+            decode_room_grant(adapter._room_grant_secret(), old, permission="status")
+        assert not hosted_rooms.room_grant_is_revoked(hosted_rooms.default_db_path(), claims=current_claims)
+        assert spool.require_complete(dispatch) == manifest
+        assert Path(spool.materialize(dispatch)[0]["path"]).read_bytes() == b"hello"
+    else:
+        assert hosted_rooms.room_grant_is_revoked(hosted_rooms.default_db_path(), claims=current_claims)
+        with pytest.raises(room_attachments.RoomAttachmentSpoolIncomplete):
+            spool.require_complete(dispatch)
+
+
 def test_api_server_registers_scoped_attachment_routes(attachment_api):
     adapter, _app = attachment_api
     routes = {(method, path) for method, path, _handler in adapter._http_route_table()}

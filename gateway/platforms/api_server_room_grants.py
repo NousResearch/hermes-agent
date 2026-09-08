@@ -256,14 +256,17 @@ async def _handle_room_member_grant_revoke(
         # even after expiry; this does not restore operational authority.
         claims = _decode_request_grant(self, request, permission="status", allow_expired_for_revocation=True)
         _local_target(claims, _api_request_profile)
-        hosted_rooms.revoke_room_grant_scope(
-            hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
-        try:
-            from gateway.platforms.api_server_room_attachments import _default_spool
-            await asyncio.to_thread(_default_spool().discard_scope, claims)
-        except Exception:
-            # Authorization is already revoked; bounded expiry backs up failed cleanup.
-            pass
+        expiry, now = _hard_expiry(claims), time.time()
+        # Expired capabilities may acknowledge revocation, not delete a newer grant's files.
+        if expiry > now:
+            hosted_rooms.revoke_room_grant_scope(
+                hosted_rooms.default_db_path(), claims=claims, expires_at=expiry, now=now)
+            try:
+                from gateway.platforms.api_server_room_attachments import _default_spool
+                await asyncio.to_thread(_default_spool().discard_scope, claims)
+            except Exception:
+                # Authorization is already revoked; bounded expiry backs up failed cleanup.
+                pass
     except Exception:
         return _room_grant_error_response(_openai_error=_openai_error)
     return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True})

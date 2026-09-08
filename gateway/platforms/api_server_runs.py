@@ -378,10 +378,13 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     idempotency_scope = idempotency_fingerprint = ""
     if idempotency_key:
         idempotency_scope = self._run_idempotency_scope(request)
-        idempotency_fingerprint = hashlib.sha256(json.dumps(
+        # Room images can expand to tens of MB; keep serialization and hashing
+        # off the request thread without changing persisted fingerprint semantics.
+        # JSON encoding still contends for the GIL; this is not a latency bound.
+        idempotency_fingerprint = await asyncio.to_thread(lambda: hashlib.sha256(json.dumps(
             {"body": body, "gateway_session_key": gateway_session_key or ""},
             sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        ).encode()).hexdigest()
+        ).encode()).hexdigest())
     raw_input = body.get("input")
     if not raw_input:
         return _json_error(_openai_error, "Missing 'input' field", status=400)

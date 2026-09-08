@@ -401,11 +401,18 @@ def _mentioned_handles(
     for the person in the room and never resolves to a Bot, as in ``parseGroupChatMentions``.
     """
     canonical, alias = _mention_index(members)
+    qualified = sorted((handle for handle in canonical if ":" in handle), key=len, reverse=True)
     mentioned: set[str] = set()
     everyone = False
     for text in texts:
         for match in _MENTION_RE.finditer(str(text or "")):
             token = match.group(1).lower()
+            # Desktop treats ':' as punctuation. Hosted handles may also use it as a
+            # namespace delimiter: keep the longest exact roster prefix, never collapse
+            # ':stop' into a different member's alias (e.g. implstop).
+            token = next((handle for handle in qualified if (
+                token == handle or token.startswith(handle + ":")
+                or token.rstrip("._-") == handle)), token.split(":", 1)[0])
             if token in {"all", "everyone"}:
                 everyone = True
                 continue

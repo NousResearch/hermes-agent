@@ -295,10 +295,25 @@ class RoomAttachmentSpool:
                 os.fsync(handle.fileno())
             os.replace(temp, target)
             os.chmod(target, 0o600)
+            self._sync_directory()
         finally:
             if descriptor is not None:
                 os.close(descriptor)
             temp.unlink(missing_ok=True)
+
+    def _sync_directory(self) -> None:
+        # Match install_identity's native Windows guard: stdlib cannot fsync a
+        # Windows directory. File fsync + atomic replace still apply, but the
+        # renamed entry is not guaranteed to survive power loss there.
+        if os.name == "nt":
+            return
+        # Unlike best-effort cache writes, staging must fail before stored=1
+        # if the renamed directory entry cannot be made durable.
+        directory = os.open(self.root, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
     @staticmethod
     def _count_rows(
@@ -605,6 +620,9 @@ class RoomAttachmentSpool:
                     # batch until expiry.
                     self._write_atomic(path, data)
                     repaired = True
+                else:
+                    # A prior repair can also leave a rename awaiting durable sync.
+                    self._sync_directory()
                 complete = self._mark_complete_if_ready(
                     conn, str(batch["batch_key"])
                 )
@@ -645,6 +663,8 @@ class RoomAttachmentSpool:
                 raise RoomAttachmentSpoolError("RoomLink member attachment quota is full")
             if path.exists():
                 self._read_verified(path, size=len(data), digest=digest)
+                # A previous rename may have succeeded while directory sync failed.
+                self._sync_directory()
             else:
                 self._write_atomic(path, data)
             conn.execute(
@@ -1208,8 +1228,7 @@ async def _validate_dispatch_attachments(
         dispatch = HostedMemberDispatch.from_mapping(raw_dispatch)
         if dispatch.attachment_manifest_digest is not None:
             attachments = await asyncio.to_thread(
-                _default_spool().materialize,
-                dispatch,
+                lambda: _default_spool().materialize(dispatch),
             )
             image_paths = [
                 item["path"] for item in attachments if item["kind"] == "image"

@@ -12,7 +12,7 @@ import re
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Literal, Optional, Set
 from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
@@ -142,7 +142,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult, classify_send_error,
+    BasePlatformAdapter, CachedMedia, MessageEvent, MessageType, ProcessingOutcome, SendResult, classify_send_error,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len)
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
@@ -5460,19 +5460,43 @@ class TelegramAdapter(BasePlatformAdapter):
 
     _CACHED_KIND_TO_MESSAGE_TYPE = {"image": MessageType.PHOTO, "video": MessageType.VIDEO, "audio": MessageType.AUDIO}
 
-    async def _download_observed_media(self, msg: Any, what: str):
-        """Download ``msg``'s attachment into the media cache (bounded by ``_max_doc_bytes``). Returns ``(status, cached)``:
+    async def _download_observed_media(
+        self, msg: Any, what: str, *, max_bytes: int | None = None,
+    ) -> tuple[Literal["ok"], CachedMedia] | tuple[Literal["oversized"], Any] | tuple[Literal["none", "failed", "unreadable"], None]:
+        """Download into the cache under the adapter limit and optional tighter caller cap. Returns ``(status, cached)``:
         ``"none"``, ``"oversized"`` (cached = raw file_size), ``"failed"``, ``"unreadable"`` or ``"ok"``."""
+        from pathlib import Path
+
         from gateway.platforms.base import cache_media_bytes_async
         source, filename, mime, kind = self._observed_media_source(msg)
         if source is None:
             return "none", None
+        limit = getattr(self, "_max_doc_bytes", 20 * 1024 * 1024)
+        if max_bytes is not None:
+            limit = min(limit, max_bytes)
         file_size = getattr(source, "file_size", None)
-        if not (0 < self._int_or_zero(file_size) <= getattr(self, "_max_doc_bytes", 20 * 1024 * 1024)):
+        if not (0 < self._int_or_zero(file_size) <= limit):
             return "oversized", file_size
         try:
             file_obj = await source.get_file()
-            data = bytes(await file_obj.download_as_bytearray())
+            if self.config.extra.get("local_mode") and Path(file_obj.file_path or "").is_absolute():
+                # PTB's local-mode download reads the whole file synchronously, trusting
+                # Telegram's size metadata. Bound the actual file before caching instead.
+                def read_local():
+                    path = Path(file_obj.file_path)
+                    if not path.is_file():
+                        raise OSError("Telegram media is not a regular file")
+                    with path.open("rb") as handle:
+                        if not 0 < os.fstat(handle.fileno()).st_size <= limit:
+                            return b""
+                        return handle.read(limit + 1)
+
+                data = await asyncio.to_thread(read_local)
+            else:
+                data = await file_obj.download_as_bytearray()
+            if not 0 < len(data) <= limit:
+                return "oversized", len(data)
+            data = bytes(data)
             if not filename:
                 filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
             cached = await cache_media_bytes_async(data, filename=filename, mime_type=mime, default_kind=kind)

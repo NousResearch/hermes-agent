@@ -1,6 +1,7 @@
 import { atom, host } from '@hermes/plugin-sdk'
 
 import { prepareHostedMessageAttachments, readHostedMessageAttachment, stageHostedMessageAttachments } from './hosted-room-attachments-client'
+import { readPendingInput, writePendingInput } from './hosted-room-pending-storage'
 import {
   applyHostedPage, hostedRecord, hostedRoomKey, parseHostedCapabilities, parseHostedRoom, parseHostedTelegramStatus
 } from './hosted-room-protocol'
@@ -10,7 +11,7 @@ import type {
 import { getPluginCtx } from './shared'
 import type { Attachment, ProfileRoute } from './types'
 
-interface PendingInput {
+export interface PendingInput {
   eventId: string
   text: string
   threadId: string
@@ -73,20 +74,7 @@ function storage() {
   return value
 }
 
-const pendingKey = (key: string) => `hosted-input:${key}`
 const directoryKey = (connectionId: string) => `hosted-rooms:${connectionId}`
-
-async function persistPendingInput(key: string, pending: PendingInput): Promise<void> {
-  const store = storage()
-  await store.set(pendingKey(key), pending)
-  // Native plugin storage is best-effort and swallows localStorage quota errors.
-  // Only an exact read-back establishes that retry identities AND bytes survived.
-  const saved = await store.get<PendingInput | null>(pendingKey(key), null)
-
-  if (JSON.stringify(saved) !== JSON.stringify(pending)) {
-    throw new Error('Desktop could not verify the saved input. Check available storage and retry.')
-  }
-}
 
 async function routeFor(connectionId: string): Promise<ProfileRoute> {
   if (typeof host.profileRoutes !== 'function' || typeof host.requestProfile !== 'function') {
@@ -218,7 +206,10 @@ export async function refreshHostedRoom(key: string): Promise<void> {
   patchRoom(key, { loading: true })
 
   try {
-    const pending = await storage().get<PendingInput | null>(pendingKey(key), null)
+    const pending = await readPendingInput(key, storage())
+
+    if (!current()) {return}
+    patchRoom(key, { pending: pending || undefined })
     const route = await routeFor(cache.identity.connectionId)
     const capabilities = await negotiate(route, cache.identity)
     const state = hostedRecord(await host.requestProfile(route, 'groups.state', { room_id: cache.identity.roomId }))
@@ -292,7 +283,7 @@ export async function sendHostedInput(
   let sent = false
 
   try {
-    let pending = await storage().get<PendingInput | null>(pendingKey(key), null)
+    let pending = await readPendingInput(key, storage())
 
     if (pending && text !== undefined && (pending.text !== text.trim() || pending.threadId !== threadId ||
         (attachments !== undefined && !sameAttachments(pending.attachments || [], attachments)))) {
@@ -313,7 +304,7 @@ export async function sendHostedInput(
         } : {})
       }
       // Failure to persist is fatal: never risk minting a second id on reload.
-      await persistPendingInput(key, pending)
+      await writePendingInput(key, pending)
     }
 
     patchRoom(key, { pending })
@@ -348,7 +339,7 @@ export async function sendHostedInput(
       }
 
       pending = { ...pending, attachments: staged, manifest }
-      await persistPendingInput(key, pending)
+      await writePendingInput(key, pending)
       patchRoom(key, { pending })
     }
 
@@ -390,7 +381,7 @@ export async function sendHostedInput(
       throw new Error('Hosted input acknowledgement was not found in the committed log')
     }
 
-    await storage().set(pendingKey(key), null)
+    await writePendingInput(key, null)
     patchRoom(key, { pending: undefined })
     sent = true
   } catch (error) {
@@ -416,18 +407,13 @@ export async function discardHostedInput(key: string, eventId: string): Promise<
   patchRoom(key, { busy: true })
 
   try {
-    const store = storage()
-    const pending = await store.get<PendingInput | null>(pendingKey(key), null)
+    const pending = await readPendingInput(key, storage())
 
     if (!eventId || pending?.eventId !== eventId) {
       throw new Error('The saved input changed. Refresh the room before discarding it.')
     }
 
-    await store.remove(pendingKey(key))
-
-    if (await store.get<PendingInput | null>(pendingKey(key), null) !== null) {
-      throw new Error('Desktop could not verify removal of the saved input. Retry the discard.')
-    }
+    await writePendingInput(key, null)
 
     patchRoom(key, { pending: undefined, error: undefined })
   } catch (error) {

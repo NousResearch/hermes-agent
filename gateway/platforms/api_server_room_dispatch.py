@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import hmac
+import logging
 import time
 from typing import Any
 
@@ -12,6 +13,13 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.platforms.api_server_room_grants import _json_error
+
+
+logger = logging.getLogger(__name__)
+
+
+class RoomSessionTitleConflict(RuntimeError):
+    """A legacy group must be renamed or migrated before room admission."""
 
 
 async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
@@ -37,9 +45,7 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
         conflict = conn.execute(
             "SELECT id FROM sessions WHERE title=? AND id!=?", (clean_title, session_id)).fetchone()
         if conflict:
-            raise RuntimeError(
-                "Another group already uses this room title on the target gateway. "
-                "Rename or migrate that group before retrying.")
+            raise RoomSessionTitleConflict()
         conn.execute(
             "INSERT INTO sessions(id, source, title, hidden, started_at) VALUES(?, 'bot_room', ?, 1, ?)",
             (session_id, clean_title, time.time()))
@@ -50,6 +56,15 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
 
 def _room_dispatch_error(exc: Exception, *, _openai_error) -> "web.Response":
     message, code = _public_dispatch_error(exc)
+    # Log code provenance, never exception text, source lines, locals or grants.
+    origin = exc.__traceback__
+    while origin is not None and origin.tb_next is not None:
+        origin = origin.tb_next
+    logger.warning(
+        "Room dispatch rejected: code=%s error_type=%s origin=%s:%s; %s",
+        code, type(exc).__name__,
+        origin.tb_frame.f_code.co_name if origin is not None else "unknown",
+        origin.tb_lineno if origin is not None else 0, message)
     return _json_error(_openai_error, message, code=code, status=403)
 
 
@@ -102,6 +117,12 @@ async def _normalize_room_dispatch(
 def _public_dispatch_error(exc: Exception) -> tuple[str, str]:
     """Map untrusted dispatch failures to a bounded public contract."""
 
+    if isinstance(exc, RoomSessionTitleConflict):
+        return (
+            "Another group already uses this room title on the target gateway. "
+            "Rename or migrate that group before retrying.",
+            "room_session_title_conflict",
+        )
     lowered = str(exc).lower()
     if "execution policy" in lowered or "remote room execution requires" in lowered:
         return (

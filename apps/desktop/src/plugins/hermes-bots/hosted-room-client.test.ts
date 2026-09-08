@@ -12,6 +12,14 @@ vi.mock('@hermes/plugin-sdk', async () => {
 
   return pluginSdkMock(host)
 })
+vi.mock('./hosted-room-pending-storage', () => ({
+  readPendingInput: async (roomKey: string, store: ReturnType<typeof scriptedStorage>['storage']) =>
+    store.get(`hosted-input:${roomKey}`, null),
+  writePendingInput: async (roomKey: string, value: unknown) => {
+    const { getPluginCtx } = await import('./shared')
+    await getPluginCtx()!.storage.set(`hosted-input:${roomKey}`, value)
+  }
+}))
 
 // All transport and persistence here are explicitly in-memory mocks. No live
 // gateway, Electron, profile credentials, or agent generation is exercised.
@@ -314,6 +322,63 @@ describe('ownership and capabilities', () => {
 })
 
 describe('durable send and acknowledgements', () => {
+  it('restores an expired staged input during an offline refresh, then retries the same upload, event and reply IDs', async () => {
+    caps.methods = [...baseCapabilities.methods, 'groups.attachment.put', 'groups.attachment.read']
+    caps.features = [...baseCapabilities.features, 'attachment_ids']
+    let expired = true
+    rpc.mockImplementation(async (...args) => {
+      if (args[1] === 'groups.attachment.put') {
+        if (expired) {throw new Error('Upload expired; retry the saved input')}
+
+        return { attachment: { attachment_id: `att_${'a'.repeat(32)}`, kind: 'file', mime: 'text/plain', name: 'old.txt', size: 4 } }
+      }
+
+      return respond(...args)
+    })
+    expect(await client.sendHostedInput(key, 'reply', 'original-thread', [
+      { kind: 'file', name: 'old.txt', data: 'data:text/plain;base64,dGVzdA==' }
+    ])).toBe(false)
+    const saved = structuredClone(cache().pending!)
+    const firstUpload = rpc.mock.calls.find(([, method]) => method === 'groups.attachment.put')![2]
+    expect(sentCalls()).toHaveLength(0)
+    vi.resetModules()
+    client = await import('./hosted-room-client')
+    ;(await import('./shared')).setPluginCtx(ctx)
+    seed()
+    rpc.mockRejectedValueOnce(new Error('Gateway offline'))
+    await client.refreshHostedRoom(key)
+    expect(cache().pending).toEqual(saved)
+    expect(cache().error).toBe('Gateway offline')
+    expect(cache().loading).toBe(false)
+    expired = false
+    expect(await client.sendHostedInput(key)).toBe(true)
+    expect(rpc.mock.calls.filter(([, method]) => method === 'groups.attachment.put')[1][2]).toEqual(firstUpload)
+    expect(sentCalls()[0][2]).toMatchObject({ event_id: saved.eventId, payload: { text: 'reply', thread_id: 'original-thread' } })
+    expect(cache().pending).toBeUndefined()
+  })
+
+  it('keeps the admitted input if manifest persistence fails, without calling groups.send', async () => {
+    caps.methods = [...baseCapabilities.methods, 'groups.attachment.put', 'groups.attachment.read']
+    caps.features = [...baseCapabilities.features, 'attachment_ids']
+    rpc.mockImplementation(async (...args) => args[1] === 'groups.attachment.put'
+      ? { attachment: { attachment_id: `att_${'a'.repeat(32)}`, kind: 'file', mime: 'text/plain', name: 'file.txt', size: 4 } }
+      : respond(...args))
+    const original = ctx.storage.set.bind(ctx.storage)
+    vi.spyOn(ctx.storage, 'set').mockImplementation(async (storageKey, value) => {
+      if ((value as { manifest?: unknown })?.manifest) {throw new Error('Manifest commit aborted')}
+
+      return original(storageKey, value)
+    })
+    const onQueued = vi.fn()
+    expect(await client.sendHostedInput(key, '', 'thread', [
+      { kind: 'file', name: 'file.txt', data: 'data:text/plain;base64,dGVzdA==' }
+    ], onQueued)).toBe(false)
+    expect(onQueued).toHaveBeenCalledOnce()
+    expect(sentCalls()).toHaveLength(0)
+    expect(disk.get(pendingKey)).toMatchObject({ eventId: cache().pending!.eventId, threadId: 'thread' })
+    expect(cache().error).toBe('Manifest commit aborted')
+  })
+
   it('does not consume a fresh main draft as a saved reply retry before pending hydration', async () => {
     const pending = { eventId: 'saved-event', text: 'continue', threadId: 'saved-reply' }
     disk.set(pendingKey, pending)
@@ -384,16 +449,9 @@ describe('durable send and acknowledgements', () => {
     expect(cache().cursor).toBe(1)
     expect(disk.get(pendingKey)).toBeNull()
   })
-  it('fails closed when the real plugin storage silently swallows a quota error', async () => {
-    const { createPluginContext } = await import('../../contrib/plugin')
-
-    const nativeContext = createPluginContext('hosted-room-quota-proof')
-
-    ;(await import('./shared')).setPluginCtx(nativeContext)
-    // Node 26's test setup supplies a plain-object Storage, not Storage.prototype.
-    vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
-      throw new DOMException('Quota exceeded', 'QuotaExceededError')
-    })
+  it('fails closed when asynchronous pending storage is unavailable', async () => {
+    const store = await import('./hosted-room-pending-storage')
+    vi.spyOn(store, 'readPendingInput').mockRejectedValue(new Error('Hosted input storage unavailable'))
     expect(await client.sendHostedInput(key, 'Mock input', null, [
       { kind: 'file', name: 'mock.txt', data: 'data:text/plain;base64,dGVzdA==' }
     ])).toBe(false)
@@ -401,10 +459,8 @@ describe('durable send and acknowledgements', () => {
     expect(cache().pending).toBeUndefined()
     expect(cache().error).toMatch(/save|persist|storage/i)
   })
-  it('does not send a payload when read-back differs from the saved input', async () => {
-    vi.spyOn(ctx.storage, 'set').mockImplementation(async (storageKey, value) => {
-      disk.set(storageKey, { ...value as Record<string, unknown>, text: 'Unexpected persisted text' })
-    })
+  it('does not send a payload when the durable transaction aborts', async () => {
+    vi.spyOn(ctx.storage, 'set').mockRejectedValue(new Error('Hosted input persistence aborted'))
     expect(await client.sendHostedInput(key, 'Mock input')).toBe(false)
     expect(rpc).not.toHaveBeenCalled()
     expect(cache().error).toMatch(/save|persist|storage/i)
@@ -554,10 +610,10 @@ describe('local saved-input discard', () => {
     rpc.mockClear()
     const removing = deferred<void>()
     const release = deferred<void>()
-    ctx.storage.remove = vi.fn(async storageKey => {
+    ctx.storage.set = vi.fn(async (storageKey, value) => {
       removing.resolve()
       await release.promise
-      disk.delete(storageKey)
+      disk.set(storageKey, value)
     })
     const discarding = client.discardHostedInput(key, pending.eventId)
     await removing.promise
@@ -567,7 +623,7 @@ describe('local saved-input discard', () => {
     expect(rpc).not.toHaveBeenCalled()
     release.resolve()
     await discarding
-    expect(disk.has(pendingKey)).toBe(false)
+    expect(disk.get(pendingKey)).toBeNull()
     expect(cache()).toMatchObject({ busy: false, loading: false, pending: undefined, error: undefined })
     expect(rpc).not.toHaveBeenCalled()
     expect(await client.sendHostedInput(key, 'new saved input')).toBe(false)
@@ -583,13 +639,13 @@ describe('local saved-input discard', () => {
     caps.driver = false
     await client.sendHostedInput(key, 'saved')
     const pending = cache().pending!
-    ctx.storage.remove = vi.fn(async () => {})
-    await expect(client.discardHostedInput(key, pending.eventId)).rejects.toThrow(/verify/)
+    ctx.storage.set = vi.fn(async () => { throw new Error('Persistence aborted') })
+    await expect(client.discardHostedInput(key, pending.eventId)).rejects.toThrow(/aborted/)
     expect(cache().pending).toEqual(pending)
     expect(disk.get(pendingKey)).toEqual(pending)
-    ctx.storage.remove = vi.fn(async storageKey => { disk.delete(storageKey) })
+    ctx.storage.set = vi.fn(async (storageKey, value) => { disk.set(storageKey, value) })
     await expect(client.discardHostedInput(key, 'stale-id')).rejects.toThrow(/changed/)
-    expect(ctx.storage.remove).not.toHaveBeenCalled()
+    expect(ctx.storage.set).not.toHaveBeenCalled()
     expect(disk.get(pendingKey)).toEqual(pending)
     const entered = deferred<void>()
     const release = deferred<unknown>()
@@ -601,7 +657,7 @@ describe('local saved-input discard', () => {
     const sending = client.sendHostedInput(key)
     await entered.promise
     await expect(client.discardHostedInput(key, pending.eventId)).rejects.toThrow(/operation/)
-    expect(ctx.storage.remove).not.toHaveBeenCalled()
+    expect(ctx.storage.set).not.toHaveBeenCalled()
     release.reject(new Error('mock timeout'))
     await sending
     expect(disk.get(pendingKey)).toEqual(pending)

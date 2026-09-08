@@ -1,7 +1,9 @@
 """Reserve a configured Group Chat on the existing Telegram polling connection."""
+import asyncio
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 import time
 from contextlib import closing
@@ -35,37 +37,43 @@ async def capture_media(adapter, message):
     arrived. No second downloader, cache, size policy or schema; the byte cap is the room's own,
     and the upload id comes from the Telegram identity so a retry stages the same upload.
     """
+    from gateway.hosted_room_attachments import MAX_ATTACHMENT_BYTES
     from tools.credential_files import from_agent_visible_cache_path
 
-    # Bound capture with the native adapter limit; Files enforces its own cap at admission.
-    max_bytes = int(getattr(adapter, '_max_doc_bytes', 20 * 1024 * 1024) or 0) or 20 * 1024 * 1024
+    max_bytes = min(MAX_ATTACHMENT_BYTES, getattr(adapter, '_max_doc_bytes', 20 * 1024 * 1024))
     download = getattr(adapter, '_download_observed_media', None)
     if download is None:
         # The message may well carry media this build cannot even look at; say so.
         return [], {'reason': 'downloader_unavailable'}
-    status, cached = await download(message, 'hosted room media')
+    status, cached = await download(message, 'hosted room media', max_bytes=max_bytes)
     if status == 'none':
         return [], None
     if status != 'ok' or cached is None:
         return [], {'reason': str(status)}
-    # `CachedMedia.path` is the AGENT-visible path and may be container-translated.
-    host_path = Path(from_agent_visible_cache_path(str(cached.path)))
-    try:
-        with host_path.open('rb') as handle:
-            data = handle.read(max_bytes + 1)
-    except OSError:
-        return [], {'reason': 'unreadable'}
-    if not 0 < len(data) <= max_bytes:
-        return [], {'reason': 'oversized'}
-    return [{
-        'kind': _attachment_kind(cached),
-        'mime': (getattr(cached, 'media_type', '') or 'application/octet-stream').lower(),
-        'name': getattr(cached, 'display_name', '') or host_path.name,
-        'path': str(host_path),
-        'size': len(data),
-        'sha256': hashlib.sha256(data).hexdigest(),
-        'upload_id': f'telegram:{message.chat_id}:{message.message_id}:0',
-    }], None
+
+    def receipt():
+        # Path translation, open/stat/read and hashing must not stall native polling.
+        host_path = Path(from_agent_visible_cache_path(str(cached.path)))
+        try:
+            with host_path.open('rb') as handle:
+                if not 0 < os.fstat(handle.fileno()).st_size <= max_bytes:
+                    return [], {'reason': 'oversized'}
+                data = handle.read(max_bytes + 1)  # Still bounded if the cache grows after stat.
+        except OSError:
+            return [], {'reason': 'unreadable'}
+        if not 0 < len(data) <= max_bytes:
+            return [], {'reason': 'oversized'}
+        return [{
+            'kind': _attachment_kind(cached),
+            'mime': (getattr(cached, 'media_type', '') or 'application/octet-stream').lower(),
+            'name': getattr(cached, 'display_name', '') or host_path.name,
+            'path': str(host_path),
+            'size': len(data),
+            'sha256': hashlib.sha256(data).hexdigest(),
+            'upload_id': f'telegram:{message.chat_id}:{message.message_id}:0',
+        }], None
+
+    return await asyncio.to_thread(receipt)
 
 
 def wire(application, adapter) -> bool:

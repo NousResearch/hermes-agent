@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import os
 import sqlite3
+import stat
 import threading
 import time
 from pathlib import Path
@@ -136,6 +139,120 @@ def test_spool_is_idempotent_and_survives_restart(tmp_path: Path):
     materialized = restarted.materialize(dispatch)
     assert [item["name"] for item in materialized] == ["brief.txt"]
     assert Path(materialized[0]["path"]).read_bytes() == b"hello"
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize("fail_sync", [False, True])
+def test_spool_directory_is_durable_before_stored_commit(tmp_path, monkeypatch, fail_sync):
+    spool = room_attachments.RoomAttachmentSpool(tmp_path / "state.db", root=tmp_path / "spool")
+    manifest = _manifest()
+    dispatch = _dispatch(manifest)
+    key = spool.prepare(dispatch, manifest)["batch_key"]
+    path = spool._file_path(key, str(manifest[0]["attachment_id"]))
+    fsync = os.fsync
+    synced = []
+    expected_syncs = 2 if fail_sync else 1
+
+    def checked_fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            assert path.read_bytes() == b"hello"
+            with sqlite3.connect(spool.db_path) as conn:
+                assert conn.execute("SELECT stored FROM roomlink_attachment_files").fetchone() == (0,)
+                assert conn.execute("SELECT complete FROM roomlink_attachment_batches").fetchone() == (0,)
+            synced.append(True)
+            if fail_sync:
+                raise OSError("injected directory sync failure")
+        return fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", checked_fsync)
+    kwargs = dict(claims=_claims(dispatch), task_id=dispatch.task_id,
+                  execution_generation=dispatch.execution_generation,
+                  attachment_id=str(manifest[0]["attachment_id"]), data=b"hello")
+    if fail_sync:
+        with pytest.raises(OSError, match="directory sync failure"):
+            spool.put(**kwargs)
+        with pytest.raises(room_attachments.RoomAttachmentSpoolIncomplete):
+            spool.require_complete(dispatch)
+        # A rename can survive a failed sync. A retry must not simply trust its existence.
+        assert path.exists()
+        fail_sync = False
+    assert spool.put(**kwargs)["complete"] is True
+    assert len(synced) == expected_syncs
+    assert spool.require_complete(dispatch) == manifest
+    assert not list(spool.root.glob(".tmp-*"))
+
+
+@pytest.mark.windows_only
+def test_windows_spool_preserves_file_sync_and_restart_recovery(tmp_path, monkeypatch):
+    spool = room_attachments.RoomAttachmentSpool(tmp_path / "state.db", root=tmp_path / "spool")
+    manifest = _manifest()
+    dispatch = _dispatch(manifest)
+    spool.prepare(dispatch, manifest)
+    fsync = os.fsync
+    synced_files = []
+    fail_sync = True
+
+    def checked_fsync(fd):
+        assert stat.S_ISREG(os.fstat(fd).st_mode)
+        if fail_sync:
+            raise OSError("injected file sync failure")
+        fsync(fd)
+        synced_files.append(fd)
+
+    monkeypatch.setattr(os, "fsync", checked_fsync)
+    kwargs = dict(claims=_claims(dispatch), task_id=dispatch.task_id,
+                  execution_generation=dispatch.execution_generation,
+                  attachment_id=str(manifest[0]["attachment_id"]), data=b"hello")
+    with pytest.raises(OSError, match="file sync failure"):
+        spool.put(**kwargs)
+    with pytest.raises(room_attachments.RoomAttachmentSpoolIncomplete):
+        spool.require_complete(dispatch)
+    fail_sync = False
+    assert spool.put(**kwargs)["complete"] is True
+    assert synced_files
+    restarted = room_attachments.RoomAttachmentSpool(spool.db_path, root=spool.root)
+    assert restarted.require_complete(dispatch) == manifest
+    assert restarted.put(**kwargs)["idempotent"] is True
+
+
+@pytest.mark.asyncio
+async def test_dispatch_spool_open_and_image_encoding_leave_loop_responsive(tmp_path, monkeypatch):
+    from agent import image_routing
+
+    data = b"\x89PNG\r\n\x1a\nimage"
+    manifest = _manifest(data)
+    manifest[0].update(kind="image", name="diagram.png", mime="image/png")
+    dispatch = _dispatch(manifest)
+    spool = room_attachments.RoomAttachmentSpool(tmp_path / "state.db", root=tmp_path / "spool")
+    spool.prepare(dispatch, manifest)
+    spool.put(claims=_claims(dispatch), task_id=dispatch.task_id,
+              execution_generation=dispatch.execution_generation,
+              attachment_id=str(manifest[0]["attachment_id"]), data=data)
+    loop = asyncio.get_running_loop()
+    responsive = []
+    build = image_routing.build_native_content_parts
+
+    def check_loop():
+        released = threading.Event()
+        loop.call_soon_threadsafe(released.set)
+        responsive.append(released.wait(2))
+
+    def open_spool():
+        check_loop()
+        return spool
+
+    def encode(*args, **kwargs):
+        check_loop()
+        return build(*args, **kwargs)
+
+    monkeypatch.setattr(room_attachments, "_default_spool", open_spool)
+    monkeypatch.setattr(image_routing, "build_native_content_parts", encode)
+    normalized, error = await room_attachments._validate_dispatch_attachments(
+        {"input": dispatch.prompt, "hosted_room_dispatch": dispatch.as_mapping()},
+        _openai_error=lambda message, **kwargs: {"error": {"message": message, **kwargs}})
+    assert error is None
+    assert any(part["type"] == "image_url" for part in normalized["input"][0]["content"])
+    assert responsive == [True, True]
 
 
 def test_prepare_reclaims_superseded_generation_for_the_same_scoped_task(

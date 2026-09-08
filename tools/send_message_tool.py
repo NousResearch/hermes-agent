@@ -253,6 +253,7 @@ def _handle_send(args):
         return tool_error(_relay_denial)
 
     from gateway.notification_replies import capture_origin, prepare_send, record_sent
+    origin = None
     try:
         origin = capture_origin(platform_name)
         prepare_send(origin, chat_id, cleaned_message, media_files, _platform_max_length(platform))
@@ -273,6 +274,8 @@ def _handle_send(args):
             result["error"] = _sanitize_error_text(result["error"])
         return json.dumps(result)
     except Exception as e:
+        if origin:
+            record_sent(origin, chat_id, {"error": str(e)})
         return json.dumps(_error(f"Send failed: {e}"))
 
 
@@ -499,17 +502,27 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
                       f"expected a dict with 'success' or 'error' keys, got {type(result).__name__}")}
 
 
-async def _send_chunks(chunks, send_one):
-    """``send_one(chunk, is_last)`` in order; stop at the first error dict, else last result."""
+async def _send_chunks(chunks, send_one, *, collect_message_ids=False):
+    """Send in order; WhatsApp may retain all IDs before partial failure."""
     result = None
+    message_ids = []
     # --- Matrix: route ALL sends through the native adapter so text is encrypted in E2EE rooms too (issue:
     # text-only sends arrived with a red padlock because they took the raw-HTTP standalone path). The
     # adapter reuses the live gateway's E2EE session when available (#46310) and falls back to an
     # encryption-aware ephemeral adapter for standalone/cron. ---
     for i, chunk in enumerate(chunks):
         result = await send_one(chunk, i == len(chunks) - 1)
+        if collect_message_ids and isinstance(result, dict):
+            ids = result.get("message_ids") or []
+            if isinstance(ids, str):
+                ids = [ids]
+            message_ids.extend(str(message_id) for message_id in ids if message_id)
+            if result.get("message_id"):
+                message_ids.append(str(result["message_id"]))
         if isinstance(result, dict) and result.get("error"):
             break
+    if collect_message_ids and isinstance(result, dict) and message_ids:
+        result["message_ids"] = list(dict.fromkeys(message_ids))
     return result
 
 
@@ -554,8 +567,13 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
         if caption is not None:
             return await sender(pconfig, chat_id, "", thread_id=thread_id, media_files=media_files,
                                 caption=caption, **extra)
-    return await _send_chunks(chunks, lambda chunk, is_last: sender(
-        pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files if is_last else empty_media, **extra))
+    return await _send_chunks(
+        chunks,
+        lambda chunk, is_last: sender(
+            pconfig, chat_id, chunk, thread_id=thread_id,
+            media_files=media_files if is_last else empty_media, **extra),
+        collect_message_ids=platform_name == "whatsapp",
+    )
 
 
 def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):
@@ -641,7 +659,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         # Plugin platform: live gateway adapter if available, else standalone_sender_fn.
         send_one = lambda chunk, is_last: _via_adapter_route(  # noqa: E731
             platform, pconfig, chat_id, chunk, media_files if is_last else [], thread_id, force_document)
-    last_result = await _send_chunks(chunks, send_one)
+    last_result = await _send_chunks(chunks, send_one, collect_message_ids=platform_name == "whatsapp")
     if (warning and isinstance(last_result, dict) and last_result.get("success")
             and not last_result.get("media_delivered")):
         last_result["warnings"] = [*last_result.get("warnings", []), warning]

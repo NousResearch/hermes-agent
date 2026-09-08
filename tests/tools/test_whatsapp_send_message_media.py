@@ -122,6 +122,7 @@ def test_text_plus_mixed_media_routes_native_types():
                 )
             )
         assert res["success"] is True
+        assert res["message_ids"] == ["t1", "m1", "m2", "m3"]
         # text first, then three media uploads in order
         assert calls[0][0].endswith("/send")
         assert calls[0][1]["message"] == "hello"
@@ -155,3 +156,23 @@ def test_missing_captioned_file_falls_back_to_text():
     assert len(calls) == 1
     assert calls[0][0].endswith("/send")
     assert calls[0][1]["message"] == "floor plan"
+    assert res["message_ids"] == ["t1"]
+
+
+def test_partial_media_failure_returns_every_confirmed_id():
+    first = _tmpfile(".pdf")
+    second = _tmpfile(".pdf")
+    try:
+        session_ctx, _ = _session_with([
+            _resp(200, {"messageId": "text-id"}),
+            _resp(200, {"messageId": "first-pdf-id"}),
+            _resp(500, text_data="upload failed"),
+        ])
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            res = asyncio.run(_standalone_send(
+                _pconfig(), "12345", "report", media_files=[(first, False), (second, False)]))
+        assert "error" in res
+        assert res["message_ids"] == ["text-id", "first-pdf-id"]
+    finally:
+        os.unlink(first)
+        os.unlink(second)

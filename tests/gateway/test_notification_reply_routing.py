@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import json
 import sqlite3
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -18,7 +19,8 @@ CHAT = '15551234567@s.whatsapp.net'
 ORIGIN = '20260907_171053_a1fb73'
 
 
-def send_notification(home, monkeypatch, *, wire_result=None, message='Publication needs approval', expected_exit=0):
+def send_notification(home, monkeypatch, *, wire_result=None, message='Publication needs approval',
+                      expected_exit=0, patch_route=False, wire_exception=None):
     from tools import send_message_tool as send
     from hermes_cli.send_cmd import cmd_send
     from gateway.session_context import set_session_vars
@@ -28,13 +30,19 @@ def send_notification(home, monkeypatch, *, wire_result=None, message='Publicati
     set_session_vars(session_id=ORIGIN, source='desktop', profile='default')
     monkeypatch.setattr('gateway.config.load_gateway_config', lambda: GatewayConfig(
         platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)}))
-    wire = AsyncMock(return_value=wire_result if wire_result is not None else {'success': True, 'message_id': 'notice-1'})
-    monkeypatch.setitem(send._TEXT_SENDERS, 'whatsapp', wire)
+    wire = AsyncMock(
+        return_value=wire_result if wire_result is not None else {'success': True, 'message_id': 'notice-1'},
+        side_effect=wire_exception,
+    )
+    if patch_route:
+        monkeypatch.setattr(send, '_send_to_platform', wire)
+    else:
+        monkeypatch.setitem(send._TEXT_SENDERS, 'whatsapp', wire)
     with pytest.raises(SystemExit) as exit_info:
         cmd_send(argparse.Namespace(to='whatsapp:' + CHAT, message=message,
                                    json=True, file=None, subject=None, quiet=False))
     assert exit_info.value.code == expected_exit
-    if wire_result is not None or expected_exit == 0:
+    if patch_route or wire_result is not None or expected_exit == 0:
         wire.assert_awaited_once()
     else:
         wire.assert_not_awaited()
@@ -48,7 +56,7 @@ def test_cli_notification_retains_origin_across_connections(tmp_path, monkeypatc
     with sqlite3.connect(path) as db:
         row = db.execute('SELECT session_id, chat_id FROM notification_routes WHERE message_id=?',
                          ('notice-1',)).fetchone()
-    assert row == (ORIGIN, CHAT)
+    assert row == (ORIGIN, '15551234567')
 
 
 def test_terminal_subprocess_send_captures_origin_without_contextvars(tmp_path, monkeypatch):
@@ -111,6 +119,64 @@ def test_same_native_reply_id_cannot_authorize_two_notifications(tmp_path, monke
         assert db.execute("SELECT count(*) FROM notification_routes WHERE status='queued'").fetchone()[0] == 1
 
 
+def test_distinct_followups_to_one_notification_are_each_queued(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    path = send_notification(tmp_path, monkeypatch)
+    runner = inbound_runner(monkeypatch)
+
+    first = asyncio.run(runner._handle_message(event(text='First answer')))
+    followup = event(text='Additional detail')
+    followup.message_id = 'reply-2'
+    second = asyncio.run(runner._handle_message(followup))
+
+    assert 'queued' in first.lower()
+    assert 'queued' in second.lower()
+    with sqlite3.connect(path) as db:
+        assert db.execute('SELECT reply_id, reply_text FROM notification_reply_queue ORDER BY created').fetchall() == [
+            ('reply-1', 'First answer'), ('reply-2', 'Additional detail')]
+
+
+@pytest.mark.parametrize('rotate_before_reply', [True, False])
+def test_compression_rotated_owner_receives_reply_at_live_tip(tmp_path, monkeypatch, rotate_before_reply):
+    import threading
+    from tui_gateway.session_notification_replies import poll_replies
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    path = send_notification(tmp_path, monkeypatch)
+    runner = inbound_runner(monkeypatch)
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    if not rotate_before_reply:
+        asyncio.run(runner._handle_message(event()))
+    db.end_session(ORIGIN, 'compression')
+    db.create_session('compressed-tip', source='desktop', parent_session_id=ORIGIN)
+    db.close()
+    if rotate_before_reply:
+        asyncio.run(runner._handle_message(event()))
+    session = {'session_key': 'compressed-tip', 'source': 'desktop', 'agent': object(),
+               'history_lock': threading.Lock(), 'running': False}
+    calls = []
+
+    poll_replies('tip-tab', session, tmp_path,
+                 lambda rid, sid, owner, text, **kwargs: calls.append((sid, owner, text)) or True)
+
+    assert calls == [('tip-tab', session, 'Go ahead')]
+    with sqlite3.connect(path) as route_db:
+        assert route_db.execute('SELECT status FROM notification_reply_queue').fetchone()[0] == 'dispatched'
+
+
+def test_explicitly_closed_owner_keeps_reply_queued_for_manual_resume(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    path = send_notification(tmp_path, monkeypatch)
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    db.end_session(ORIGIN, 'user_exit')
+    db.close()
+
+    result = asyncio.run(inbound_runner(monkeypatch)._handle_message(event()))
+
+    assert 'open or resume' in result.lower()
+    with sqlite3.connect(path) as route_db:
+        assert route_db.execute('SELECT session_id, status FROM notification_reply_queue').fetchone() == (ORIGIN, 'queued')
+
+
 def test_corrupt_routing_store_fails_closed(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     path = send_notification(tmp_path, monkeypatch)
@@ -120,11 +186,64 @@ def test_corrupt_routing_store_fails_closed(tmp_path, monkeypatch):
     assert 'unavailable' in result.lower()
     runner._hm_pending_reply_intercepts.assert_not_awaited()
 
+    ordinary = event(text='How is the weather?', quote=None)
+    result = asyncio.run(runner._handle_message(ordinary))
+    assert result == 'ordinary chat'
+    runner._hm_pending_reply_intercepts.assert_awaited_once()
+
 
 @pytest.mark.parametrize('message', ['X' * 8000, 'MEDIA:/tmp/test-notification.png'])
-def test_unsupported_notification_payload_fails_before_send(tmp_path, monkeypatch, message):
+def test_notification_payload_is_not_rejected_by_reply_routing(tmp_path, monkeypatch, message):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    send_notification(tmp_path, monkeypatch, message=message, expected_exit=1)
+    media = tmp_path / 'test-notification.png'
+    media.write_bytes(b'image')
+    message = message.replace('/tmp/test-notification.png', str(media))
+    path = send_notification(tmp_path, monkeypatch, message=message, patch_route=True,
+                             wire_result={'success': True, 'message_id': 'notice-last',
+                                          'message_ids': ['notice-first', 'notice-last']})
+    with sqlite3.connect(path) as db:
+        rows = db.execute("SELECT message_id, status FROM notification_routes "
+                          "WHERE message_id NOT LIKE 'sending:%' ORDER BY message_id").fetchall()
+    assert rows == [('notice-first', 'pending'), ('notice-last', 'pending')]
+
+
+def test_partial_multipart_failure_correlates_delivered_ids_without_resend(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    pdf = tmp_path / 'report.pdf'
+    pdf.write_bytes(b'%PDF-1.4')
+    path = send_notification(
+        tmp_path, monkeypatch, message=f'Report attached\nMEDIA:{pdf}', expected_exit=1, patch_route=True,
+        wire_result={'error': 'second attachment failed', 'message_ids': ['text-id', 'pdf-id']})
+    with sqlite3.connect(path) as db:
+        rows = db.execute("SELECT message_id, status FROM notification_routes "
+                          "WHERE message_id NOT LIKE 'sending:%' ORDER BY message_id").fetchall()
+    assert rows == [('pdf-id', 'pending'), ('text-id', 'pending')]
+
+
+def test_dispatch_exception_leaves_durable_uncertain_intent(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    path = send_notification(tmp_path, monkeypatch, expected_exit=1, patch_route=True,
+                             wire_exception=RuntimeError('connection dropped after write'))
+    with sqlite3.connect(path) as db:
+        assert db.execute('SELECT status FROM notification_routes').fetchone()[0] == 'uncertain'
+
+
+def test_chunk_sender_retains_ids_before_partial_failure():
+    from tools.send_message_tool import _send_chunks
+    results = iter([
+        {'success': True, 'message_id': 'chunk-1'},
+        {'error': 'chunk 2 failed', 'message_ids': ['chunk-2-partial']},
+    ])
+
+    result = asyncio.run(_send_chunks(
+        ['one', 'two'], lambda *_: _async_next(results), collect_message_ids=True))
+
+    assert result['error'] == 'chunk 2 failed'
+    assert result['message_ids'] == ['chunk-1', 'chunk-2-partial']
+
+
+async def _async_next(iterator):
+    return next(iterator)
 
 
 def inbound_runner(monkeypatch):
@@ -143,6 +262,58 @@ def event(text='Go ahead', quote='notice-1', sender=CHAT, chat=CHAT):
     return MessageEvent(text=text, message_type=MessageType.TEXT,
         source=SessionSource(platform=Platform.WHATSAPP, user_id=sender, chat_id=chat, chat_type='dm'),
         message_id='reply-1', reply_to_message_id=quote, reply_to_is_own_message=bool(quote))
+
+
+def install_lid_alias(home, lid='243993266942172', phone='15551234567'):
+    mapping_dir = home / 'whatsapp' / 'session'
+    mapping_dir.mkdir(parents=True, exist_ok=True)
+    (mapping_dir / f'lid-mapping-{lid}.json').write_text(json.dumps(phone), encoding='utf-8')
+    (mapping_dir / f'lid-mapping-{phone}_reverse.json').write_text(json.dumps(lid), encoding='utf-8')
+
+
+def test_phone_target_accepts_authenticated_lid_alias(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    install_lid_alias(tmp_path)
+    path = send_notification(tmp_path, monkeypatch)
+    lid = '243993266942172@lid'
+    incoming = event(sender=lid, chat=lid)
+    runner = inbound_runner(monkeypatch)
+    monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
+
+    result = asyncio.run(runner._handle_message(incoming))
+
+    assert 'queued' in result.lower()
+    with sqlite3.connect(path) as db:
+        assert db.execute('SELECT reply_id FROM notification_routes WHERE message_id=?',
+                          ('notice-1',)).fetchone()[0] == 'reply-1'
+
+
+def test_expired_routes_do_not_intercept_unquoted_approval(tmp_path, monkeypatch):
+    from gateway.notification_replies import is_reply_candidate
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    path = send_notification(tmp_path, monkeypatch)
+    with sqlite3.connect(path) as db:
+        db.execute('UPDATE notification_routes SET created=?', (time.time() - 8 * 24 * 60 * 60,))
+    incoming = event(quote=None)
+    runner = inbound_runner(monkeypatch)
+
+    assert is_reply_candidate(incoming) is False
+    result = asyncio.run(runner._handle_message(incoming))
+
+    assert result == 'ordinary chat'
+    runner._hm_pending_reply_intercepts.assert_awaited_once()
+
+
+def test_unknown_historical_approval_quote_is_not_current_chat_authority(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    send_notification(tmp_path, monkeypatch)
+    runner = inbound_runner(monkeypatch)
+
+    result = asyncio.run(runner._handle_message(event(quote='historical-message')))
+
+    assert 'cannot correlate' in result.lower()
+    assert 'approval' in result.lower()
+    runner._hm_pending_reply_intercepts.assert_not_awaited()
 
 
 @pytest.mark.parametrize('case, expected', [
@@ -267,6 +438,8 @@ def test_owner_mailbox_fences_stale_foreign_and_replayed_work(tmp_path, monkeypa
         assert status == 'dispatching'
     if case == 'refused':
         assert status == 'queued' and session['running'] is False
+    if case in ('deleted', 'expired'):
+        assert status == 'expired'
 
 
 def test_desktop_owner_poller_continues_existing_surface_once(tmp_path, monkeypatch):

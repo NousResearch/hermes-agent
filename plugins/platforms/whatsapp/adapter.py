@@ -856,6 +856,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         import aiohttp
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    message_ids: list[str] = []
     try:
         bridge_port = (getattr(pconfig, "extra", {}) or {}).get("bridge_port", 3000)
         normalized_chat_id = to_whatsapp_jid(chat_id)
@@ -875,27 +876,36 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             if (message or "").strip() and not media_caption:
                 last_message_id, err = await _post("send", {"chatId": normalized_chat_id, "message": message}, 30, "bridge")
                 if err:
-                    return err
+                    return {**err, "message_ids": message_ids}
+                if last_message_id:
+                    message_ids.append(str(last_message_id))
             # 2) Each media file as a native attachment (mediaType picks the WhatsApp kind).
             for media_path, is_voice in media:
                 if not os.path.exists(media_path):
                     # In caption mode the words would vanish with the missing file — deliver the caption as a plain message.
                     if media_caption:
                         try:
-                            await _post("send", {"chatId": normalized_chat_id, "message": media_caption}, 30)
+                            fallback_id, _ = await _post(
+                                "send", {"chatId": normalized_chat_id, "message": media_caption}, 30
+                            )
+                            if fallback_id:
+                                message_ids.append(str(fallback_id))
                         except Exception:
                             logger.warning("WhatsApp caption-fallback send failed for missing media")
-                    return {"error": f"WhatsApp media file not found: {media_path}"}
+                    return {"error": f"WhatsApp media file not found: {media_path}", "message_ids": message_ids}
                 media_type = _bridge_media_type(media_path, is_voice, force_document)
                 payload: Dict[str, Any] = {"chatId": normalized_chat_id, "filePath": media_path, "mediaType": media_type}
                 payload.update({k: v for k, v in (("fileName", os.path.basename(media_path) if media_type == "document" else None), ("caption", media_caption)) if v})
                 mid, err = await _post("send-media", payload, 120, "media")
                 if err:
-                    return err
+                    return {**err, "message_ids": message_ids}
                 last_message_id = mid or last_message_id
-        return {"success": True, "platform": "whatsapp", "chat_id": normalized_chat_id, "message_id": last_message_id}
+                if mid:
+                    message_ids.append(str(mid))
+        return {"success": True, "platform": "whatsapp", "chat_id": normalized_chat_id,
+                "message_id": last_message_id, "message_ids": message_ids}
     except Exception as e:
-        return {"error": f"WhatsApp send failed: {e}"}
+        return {"error": f"WhatsApp send failed: {e}", "message_ids": message_ids}
 
 
 def interactive_setup() -> None:

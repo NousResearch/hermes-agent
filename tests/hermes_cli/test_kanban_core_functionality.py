@@ -1502,3 +1502,64 @@ def test_supervisor_restart_boot_ts_unavailable_stays_crashed(kanban_home, monke
     finally:
         conn.close()
 
+
+
+# ---------------------------------------------------------------------------
+# P2 review follow-up: neutral supervisor_restart releases must preserve the
+# protocol-violation streak (neither consume nor replenish the budget).
+# ---------------------------------------------------------------------------
+
+
+def test_protocol_violation_streak_survives_interleaved_supervisor_restart(kanban_home, monkeypatch):
+    """violation, violation, supervisor_restart, violation -> streak 3.
+
+    Regression for the review finding: ``_protocol_violation_streak`` skipped
+    only ``rate_limited`` among neutral outcomes, so a gateway-restart
+    collateral release interleaved between violations reset the trailing
+    streak to the runs after it — silently replenishing the violation budget
+    on every restart. A neutral release must be skipped exactly like a quota
+    wall: the streak crosses it.
+    """
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="streak across neutral", assignee="worker")
+
+        # Two violations: streak 2.
+        _drive_protocol_violation(conn, tid, 992001)
+        _drive_protocol_violation(conn, tid, 992002)
+        assert kbd._protocol_violation_streak(conn, tid) == 2
+
+        # Neutral release interleaved: a supervisor-restart collateral pass.
+        # Pre-boot claim + dead pid + no reaped exit -> supervisor_restart.
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        kbd._set_worker_pid(conn, tid, 992003)
+        monkeypatch.setattr(kb, "_pid_alive", lambda p: False)
+        monkeypatch.setattr(kbd, "_supervisor_restart_boot_ts", lambda: time.time() + 3600.0)
+        kbd.detect_crashed_workers(conn)
+        latest = kb.latest_run(conn, tid)
+        assert latest.outcome == "supervisor_restart", (
+            f"expected neutral supervisor_restart, got {latest.outcome}"
+        )
+
+        # Third violation after the neutral release: streak must be 3, not 1.
+        _drive_protocol_violation(conn, tid, 992004)
+        assert kbd._protocol_violation_streak(conn, tid) == 3
+    finally:
+        monkeypatch.undo()
+        conn.close()
+
+
+def test_protocol_violation_streak_completed_run_breaks(kanban_home):
+    """Control: a completed run between violations still breaks the streak."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="streak vs completed", assignee="worker")
+        _drive_protocol_violation(conn, tid, 993001)
+        kb._synthesize_ended_run(conn, tid, outcome="completed", summary="done")
+        _drive_protocol_violation(conn, tid, 993002)
+        # completed is a genuine success boundary: streak restarts at 1
+        assert kbd._protocol_violation_streak(conn, tid) == 1
+    finally:
+        conn.close()
+

@@ -710,7 +710,12 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     ).fetchall()
     for row in rows:
         outcome = row["outcome"] or ""
-        if outcome == "rate_limited":
+        if outcome in ("rate_limited", "supervisor_restart"):
+            # Neutral outcomes say nothing about the task: a quota wall, and a
+            # release that died with the previous gateway life. A neutral run
+            # neither consumes nor replenishes this budget — skipping it keeps
+            # the streak intact across an interleaved neutral release
+            # (violation, violation, supervisor_restart, violation -> 3).
             continue
         if outcome == "crashed" and (
             _kb._json_dict(row["metadata"]).get("protocol_violation")

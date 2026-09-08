@@ -4132,6 +4132,7 @@ def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
             "base_url": "https://custom.example/v1",
             "api_mode": "chat_completions",
             "reasoning_config": {"enabled": True, "effort": "high"},
+            "reasoning_user_override": False,
             "service_tier": "priority",
         },
         "gpt-5.4",
@@ -9999,6 +10000,7 @@ def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
                     "base_url": profile_url,
                     "api_mode": "chat_completions",
                     "reasoning_config": reasoning,
+                    "reasoning_user_override": False,
                 },
             }
         ]

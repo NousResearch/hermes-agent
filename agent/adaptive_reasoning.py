@@ -252,6 +252,15 @@ _SIMPLE_FACTUAL_RE = re.compile(
 )
 _SIMPLE_FACTUAL_MAX_WORDS = 12
 
+# Clause joins, sequencing, conditionals and judgment questions are not
+# positive evidence of a single simple fact or retrieval. Reject before every
+# simplicity branch; false negatives are safer than lowering ambiguous work.
+_NOT_SIMPLE_RE = re.compile(
+    r"\b(?:and|or|then|plus|also|before|after|while|but|if|unless|until"
+    r"|should|could|would|best|better|optimal)\b|[,;\n&]|\s/\s",
+    re.IGNORECASE,
+)
+
 # Single mechanical retrieval steps: read-only imperatives with one clause.
 # State-changing verbs (restart/delete/deploy/...) are deliberately excluded.
 _MECHANICAL_RE = re.compile(
@@ -329,6 +338,8 @@ def _positively_simple_reason(stripped: str, norm: str) -> str:
     Caller guarantees the turn carries no category or structural signals —
     this only checks for affirmative evidence of simplicity.
     """
+    if _NOT_SIMPLE_RE.search(stripped):
+        return ""
     if _CASUAL_RE.fullmatch(norm):
         return "casual message"
     words = len(stripped.split())
@@ -336,8 +347,6 @@ def _positively_simple_reason(stripped: str, norm: str) -> str:
         return "simple factual request"
     if (
         words <= _MECHANICAL_MAX_WORDS
-        and " and " not in norm
-        and " then " not in norm
         and _MECHANICAL_RE.fullmatch(norm)
     ):
         return "single mechanical step"

@@ -913,6 +913,11 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
         kw.update({k: v for k, v in (("reasoning_config_override", current.get("create_reasoning_override")),
                                      ("service_tier_override", current.get("create_service_tier_override")))
                    if v is not None})
+    # A pick made after a lazy resume wins over the row's older snapshot.
+    if current.get("reasoning_user_override") is not None:
+        kw["reasoning_user_override"] = current["reasoning_user_override"]
+        if current.get("create_reasoning_override") is not None:
+            kw["reasoning_config_override"] = current["create_reasoning_override"]
     return kw
 
 
@@ -920,6 +925,11 @@ def _wire_session_agent(sid: str, key: str, agent) -> bool:
     """Post-build wiring; returns whether the approval notify got registered. Approval prompts route to the
     client; the self-improvement "💾 …" summary is emitted as review.summary (no print surface), honoring
     display.memory_notifications."""
+    if getattr(agent, "reasoning_user_override", False):
+        session = _sessions.get(sid)
+        if session is not None:
+            session["create_reasoning_override"] = agent.reasoning_config
+            session["reasoning_user_override"] = True
     notify_registered = False
     with contextlib.suppress(Exception):
         from tools.approval import load_permanent_allowlist, register_gateway_notify
@@ -1524,6 +1534,8 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         overrides["provider_override"] = provider
     if isinstance(reasoning_config, dict):
         overrides["reasoning_config_override"] = reasoning_config
+        # Old rows are runtime snapshots, not proof of a deliberate user pick.
+        overrides["reasoning_user_override"] = model_config.get("reasoning_user_override", False) is True
     if service_tier:  # None = "inherit the profile" at _make_agent; "" = real override "no priority tier"
         overrides["service_tier_override"] = "" if service_tier.lower() == "normal" else service_tier
     return overrides
@@ -1556,6 +1568,7 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
             config[key] = value
         else:
             config.pop(key, None)
+    config["reasoning_user_override"] = bool(getattr(agent, "reasoning_user_override", False))
     return config
 
 
@@ -2265,7 +2278,7 @@ def _explicit_reasoning_override(
 
     The Desktop composer seeds its effort selector from the profile default and (before the
     omit-inherited fix, or from older clients) ships it on every ``session.create``. An override that
-    merely mirrors the profile-resolved config is inherited state, not a user choice — treating it as
+    merely mirrors the global composer default is inherited state, not a user choice — treating it as
     explicit would silently disable adaptive reasoning escalation for every ordinary new Desktop
     session. Only a *distinct* value counts. An absent profile value compares as the backend fallback
     (medium).
@@ -2280,7 +2293,8 @@ def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
-    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None):
+    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
+    reasoning_user_override: bool | None = None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -2325,11 +2339,15 @@ def _make_agent(
         with _sessions_lock:
             context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(_sessions.get(sid))
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
-    # A distinct per-session effort pick (Desktop model menu / session.create reasoning_effort) is a
-    # user choice — suppress adaptive escalation. An override equal to the profile default is
-    # composer-seeded inheritance.
-    agent.reasoning_user_override = _explicit_reasoning_override(
-        reasoning_config_override, _load_reasoning_config(str(model or "")))
+    # Preserve provenance across deferred/compute/resume builds. Only legacy
+    # session.create seeds need inference, against the composer's GLOBAL default,
+    # not the per-model effort used to resolve the agent's baseline.
+    from hermes_constants import parse_reasoning_effort
+    agent.reasoning_user_override = (
+        reasoning_user_override if reasoning_user_override is not None else
+        _explicit_reasoning_override(
+            reasoning_config_override,
+            parse_reasoning_effort((cfg.get("agent") or {}).get("reasoning_effort"))))
     return agent
 
 

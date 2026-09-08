@@ -1830,7 +1830,12 @@ work around. (The desktop composer pre-fills your profile default for new
 chats; leaving it there counts as inherited, so adaptive stays active —
 picking the default level on purpose is indistinguishable from that pre-fill.
 Use `/reasoning <level>` in the chat when you want to pin the effort
-explicitly.) Adaptive never re-enables thinking you disabled
+explicitly, even before the first prompt.) Desktop comparisons use the global
+composer default, not a per-model override. TUI/Desktop session pins retain
+that explicit intent across deferred builds and subsequent resumes; older
+saved sessions without intent metadata retain their effort snapshot but need
+a fresh `/reasoning <level>` command to establish a pin. `/new` clears the pin.
+Adaptive never re-enables thinking you disabled
 (`reasoning_effort: none`), and provider/model-specific effort clamps (e.g.
 models without `xhigh`) still apply to the wire request as usual.
 

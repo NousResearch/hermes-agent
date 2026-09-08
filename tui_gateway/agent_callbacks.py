@@ -375,6 +375,9 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         config_model_seen = _config_model_target()
         if opened:
             session_db = _open_profile_session_db(profile_home)
+        if session.get("reasoning_user_override"):
+            kwargs.setdefault("reasoning_user_override", True)
+            kwargs.setdefault("reasoning_config_override", session.get("create_reasoning_override"))
         agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
     except BaseException:
         if opened and session_db is not None:
@@ -409,8 +412,13 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         # /new is a full conversation boundary: session-scoped runtime overrides (/model,
         # /reasoning, /fast) do NOT carry forward and the pins are cleared so a rebuild can't
         # resurrect them. Global process state is never touched (see _apply_model_switch).
-        for k in ("model_override", "create_reasoning_override", "create_service_tier_override", "one_turn_model_restore"):
+        for k in ("model_override", "create_reasoning_override", "reasoning_user_override",
+                  "create_service_tier_override", "one_turn_model_restore"):
             session.pop(k, None)
+        resumed = session.get("resume_runtime_overrides")
+        if isinstance(resumed, dict):
+            resumed.pop("reasoning_config_override", None)
+            resumed.pop("reasoning_user_override", None)
         new_agent = _rebuild_session_agent(
             sid, session, session_id=session["session_key"],
             platform_override=_session_source(session),

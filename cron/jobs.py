@@ -2546,6 +2546,17 @@ def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
 
 
+def live_fire_claim_owner(job_id: str) -> str | None:
+    """Return the current unexpired fire owner under the durable claim fence."""
+    def apply(_jobs, _i, job):
+        claim = job.get("fire_claim")
+        if not _claim_is_live(claim, _hermes_now(), FIRE_CLAIM_TTL_SECONDS):
+            return None
+        return str(claim.get("by") or "") or None
+
+    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, None))
+
+
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by
 # _sweep_completed_oneshots once they age out.
 COMPLETED_ONESHOT_RETENTION_DAYS = 7

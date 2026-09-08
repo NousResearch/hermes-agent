@@ -835,6 +835,13 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
             ):
                 reason = "ledger-terminal"
             elif age >= allowance:
+                # A restart-safe external worker intentionally outlives this
+                # process's Future. Its durable fire claim is heartbeated in
+                # the worker process; do not let the local in-flight sweeper
+                # steal that live claim and discard a legitimate long result.
+                from cron.jobs import live_fire_claim_owner
+                if live_fire_claim_owner(job_id) is not None:
+                    continue
                 reason = "age"
             else:
                 continue

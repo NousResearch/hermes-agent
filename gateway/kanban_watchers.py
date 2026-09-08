@@ -97,9 +97,10 @@ def _collect_workflow_notifications(kb, *, notifier_profile: str) -> list[dict[s
         except Exception as exc:
             logger.debug(
                 "kanban workflow notifier: read-only subscription probe failed for board %s (%s); "
-                "falling back to writable open",
+                "skipping board",
                 board, exc,
             )
+            continue
         try:
             conn = kbc.connect(board=board)
         except Exception as exc:

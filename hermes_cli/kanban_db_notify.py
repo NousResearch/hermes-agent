@@ -251,7 +251,7 @@ def count_workflow_subs(
     This is the workflow collector's zero-work gate: it neither creates a DB
     nor runs schema initialization. Missing boards and pre-workflow schemas
     have no eligible subscriptions; unreadable existing databases propagate so
-    the collector can retain its writable-open fallback.
+    the collector can fail closed for that board without a writable open.
     """
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
     if not path.exists():

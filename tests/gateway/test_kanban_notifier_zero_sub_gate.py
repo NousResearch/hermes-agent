@@ -17,6 +17,7 @@ win without that risk.)
 """
 
 import asyncio
+import sqlite3
 
 from unittest.mock import patch
 
@@ -121,6 +122,25 @@ def test_foreign_workflow_only_board_is_never_opened_writable(tmp_path, monkeypa
     assert adapter.sent == []
 
 
+def test_workflow_probe_error_skips_board_without_writable_open(tmp_path, monkeypatch):
+    """An unreadable workflow-subscription probe must fail closed for the tick."""
+    db_path = tmp_path / "workflow-probe-error.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+
+    with (
+        patch.object(kbn, "count_workflow_subs", side_effect=sqlite3.DatabaseError("broken")),
+        patch.object(kbc, "connect", wraps=kbc.connect) as spy_connect,
+    ):
+        asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    spy_connect.assert_not_called()
+    assert adapter.sent == []
+
+
 def test_workflow_only_board_opens_once_and_delivers(tmp_path, monkeypatch):
     """An eligible workflow sub must bypass only the task-subscription gate."""
     db_path = tmp_path / "workflow-only.db"
@@ -177,4 +197,3 @@ def test_task_only_board_opens_once_for_task_collection(tmp_path, monkeypatch):
 
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
     assert [item["chat_id"] for item in adapter.sent] == ["chat-1"]
-

@@ -2970,6 +2970,27 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         except Exception as exc:
             logger.warning("Failed to claim active session slot: %s", exc)
             return True
+        if message and getattr(message, "reason", None) == "SESSION_NOT_OWNED":
+            # Shared-brain deployments (gateway.per_session_exclusive: false) queue
+            # behind the live owner instead of being refused (#101279).
+            try:
+                from hermes_cli.active_sessions import per_session_exclusive, wait_for_session_ownership
+
+                if not per_session_exclusive(self.config) and wait_for_session_ownership(
+                    session_id=self.session_id,
+                    on_wait=lambda _e: self._console_print(
+                        "[yellow]\N{HOURGLASS} Another Hermes process is using this session; "
+                        "waiting for it to finish before starting your turn...[/yellow]"
+                    ),
+                ):
+                    lease, message = try_acquire_active_session(
+                        session_id=self.session_id,
+                        surface=surface,
+                        config=self.config,
+                        metadata={"live_session_id": str(self.session_id)},
+                    )
+            except Exception:
+                logger.debug("Session ownership queueing unavailable; keeping refusal", exc_info=True)
         if message:
             print(format_refusal_stderr(message), file=sys.stderr) if stderr else self._console_print(f"[bold red]{message}[/]")
             return False

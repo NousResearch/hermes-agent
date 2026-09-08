@@ -436,7 +436,15 @@ def _(rid, params: dict) -> dict:
     """What THIS BUILD enforces (a client withholds unless advertised), sourced from the enforcing
     module, never config: a believed-but-absent capability is worse."""
     from hermes_cli.active_sessions import PER_SESSION_EXCLUSIVE_SUBMIT
-    return _ok(rid, {"per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT)})
+    capabilities = {"per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT)}
+    # Config-dependent behavior, advertised separately: with
+    # gateway.per_session_exclusive: false a SESSION_NOT_OWNED refusal becomes a bounded
+    # queue behind the live owner (#101279). Clients may surface "queued" instead of
+    # "refused" only when this is advertised.
+    with contextlib.suppress(Exception):
+        from hermes_cli.active_sessions import per_session_exclusive
+        capabilities["per_session_exclusive_queue_mode"] = not per_session_exclusive(_load_cfg())
+    return _ok(rid, capabilities)
 
 
 @method("ping")

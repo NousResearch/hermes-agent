@@ -61,6 +61,40 @@ def resolve_max_concurrent_sessions(config: Any) -> Optional[int]:
     return coerce_max_concurrent_sessions(raw, key=key)
 
 
+def per_session_exclusive(config: Any) -> bool:
+    """Resolve ``gateway.per_session_exclusive`` (default True) with top-level fallback.
+
+    True (default): a second live owner is REFUSED (``SESSION_NOT_OWNED``) — the solo-deployment
+    correctness default. False: shared-brain deployments may opt out, and a surfaced
+    ``SESSION_NOT_OWNED`` refusal becomes a bounded WAIT for the current owner to finish (the
+    same serialization the messaging gateway already gives Telegram: the queued turn starts only
+    after the running one, with the full transcript). Invalid values warn once and keep the
+    safe default. See #101279.
+    """
+    raw: Any = None
+    key = "gateway.per_session_exclusive"
+    if isinstance(config, dict):
+        gateway_cfg = config.get("gateway")
+        if isinstance(gateway_cfg, dict) and "per_session_exclusive" in gateway_cfg:
+            raw = gateway_cfg.get("per_session_exclusive")
+        elif "per_session_exclusive" in config:
+            raw = config.get("per_session_exclusive")
+            key = "per_session_exclusive"
+    else:
+        raw = getattr(config, "per_session_exclusive", None)
+        if raw is None:
+            gateway_cfg = getattr(config, "gateway", None)
+            raw = getattr(gateway_cfg, "per_session_exclusive", None)
+    if raw is None:
+        return True
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str) and raw.strip().lower() in ("true", "false"):
+        return raw.strip().lower() == "true"
+    logger.warning("Ignoring invalid %s=%r (expected true/false); keeping exclusivity", key, raw)
+    return True
+
+
 def format_age(seconds: float) -> str:
     minutes = max(0, int(seconds // 60))
     if minutes < 60:
@@ -530,6 +564,64 @@ def try_acquire_active_session(
         _write_entries(state_path, entries)
 
     return lease, None
+
+
+def wait_for_session_ownership(
+    *, session_id: str, registry_home: str | Path | None = None,
+    wait_seconds: float = 1800.0, poll_seconds: float = 1.0,
+    should_abort=None, on_wait=None,
+) -> bool:
+    """Block until no OTHER live lease holds *session_id* (or the wait bounds expire).
+
+    The queueing half of ``gateway.per_session_exclusive: false`` (#101279): after a
+    ``SESSION_NOT_OWNED`` refusal, the caller waits for the current owner to finish and
+    re-acquires — the serialization the messaging gateway already gives Telegram, instead
+    of pushing a refusal onto the second user. Returns True when the session is free (or
+    was free all along); False when the wait timed out or was aborted. Never raises: a
+    registry that cannot be read mid-wait returns False so the caller falls back to the
+    refusal path.
+
+    *should_abort* (optional): called each poll; a truthy return cancels the wait.
+    *on_wait* (optional): called once with the elapsed seconds when the wait proves
+    non-trivial (>0 polls), for a status line like the gateway's
+    "Another Hermes process is using this session; waiting...".
+    """
+    key = str(session_id or "")
+    deadline = time.monotonic() + max(0.0, float(wait_seconds))
+    poll = max(0.05, float(poll_seconds))
+    notified = False
+    state_path = _state_path(registry_home)
+    lock_path = _lock_path(registry_home)
+    while True:
+        try:
+            with _FileLock(lock_path):
+                loaded = _read_live_entries(
+                    state_path, track_liveness=False,
+                    warn="Active-session registry is unavailable while waiting for ownership",
+                )
+                if loaded is None:
+                    return False
+                _, entries = loaded
+                if not any(
+                    str(existing.get("session_id") or "") == key for existing in entries
+                ):
+                    return True
+        except Exception:
+            logger.warning("Ownership wait registry check failed", exc_info=True)
+            return False
+        if should_abort is not None:
+            try:
+                if should_abort():
+                    return False
+            except Exception:
+                logger.debug("Ownership wait abort probe failed", exc_info=True)
+        if time.monotonic() >= deadline:
+            return False
+        if on_wait is not None and not notified:
+            notified = True
+            with suppress(Exception):
+                on_wait(0.0)
+        time.sleep(poll)
 
 
 def release_active_session(lease: ActiveSessionLease) -> None:

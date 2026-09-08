@@ -43,6 +43,54 @@ def _claim_active_session_slot(
         return (None, _SESSION_OWNERSHIP_UNAVAILABLE)
 
 
+def _maybe_queue_for_session_ownership(
+    session_key: str, *, live_session_id: str, surface: str, profile_home: str | Path | None
+) -> tuple[Any, str | None]:
+    """Queue-instead-of-refuse for shared-brain deployments (#101279).
+
+    After a SESSION_NOT_OWNED refusal, when the operator set
+    ``gateway.per_session_exclusive: false`` we wait (bounded) for the current
+    owner to finish, then re-acquire — the serialization the messaging gateway
+    already gives Telegram. Any other refusal reason (registry unavailable,
+    capacity) is returned untouched, and so is the default-refuse behavior when
+    the operator did not opt out.
+    """
+    try:
+        from hermes_cli.active_sessions import (
+            SESSION_NOT_OWNED,
+            per_session_exclusive,
+            wait_for_session_ownership,
+        )
+        if per_session_exclusive(_load_cfg()):
+            return (None, None)  # exclusivity stays: the refusal was correct
+    except Exception as exc:
+        logger.debug("Exclusivity opt-out probe failed; keeping refusal: %s", exc)
+        return (None, None)
+    waited = {"value": False}
+
+    def _on_wait(_elapsed: float) -> None:
+        waited["value"] = True
+
+    if not wait_for_session_ownership(
+        session_id=session_key, registry_home=profile_home,
+        should_abort=None, on_wait=_on_wait,
+    ):
+        return (None, None)  # timed out / registry unreadable -> caller keeps the original refusal
+    if waited["value"]:
+        logger.info("Session %s ownership wait satisfied; re-acquiring", session_key)
+    lease, limit_message = _claim_active_session_slot(
+        session_key, live_session_id=live_session_id, surface=surface, profile_home=profile_home)
+    if lease is None and limit_message is not None:
+        # A second-window refusal (owner came back or a capacity cap hit) keeps its own message.
+        try:
+            from hermes_cli.active_sessions import SESSION_NOT_OWNED as _REASON
+            if getattr(limit_message, "reason", None) != _REASON:
+                return (None, None)
+        except Exception:
+            return (None, None)
+    return (lease, limit_message)
+
+
 def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
@@ -52,6 +100,14 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     lease, limit_message = _claim_active_session_slot(
         str(session.get("session_key") or ""), live_session_id=sid,
         surface=_session_source(session), profile_home=session.get("profile_home"))
+    if limit_message is not None and getattr(limit_message, "reason", None) == "SESSION_NOT_OWNED":
+        # Shared-brain deployments (gateway.per_session_exclusive: false) queue behind the
+        # live owner instead of being refused (#101279). Default deployments keep the refusal.
+        queued_lease, queued_message = _maybe_queue_for_session_ownership(
+            str(session.get("session_key") or ""), live_session_id=sid,
+            surface=_session_source(session), profile_home=session.get("profile_home"))
+        if queued_lease is not None:
+            lease, limit_message = queued_lease, queued_message
     if limit_message is None:
         session["active_session_lease"] = lease
     return limit_message

@@ -59,10 +59,12 @@ _lock_file = _path_resolver("LOCK_FILE", "HUB_DIR", "lock.json")
 _quarantine_dir = _path_resolver("QUARANTINE_DIR", "HUB_DIR", "quarantine")
 _audit_log = _path_resolver("AUDIT_LOG", "HUB_DIR", "audit.log")
 _taps_file = _path_resolver("TAPS_FILE", "HUB_DIR", "taps.json")
+_local_dirs_file = _path_resolver("LOCAL_DIRS_FILE", "HUB_DIR", "local_dirs.json")
 _index_cache_dir = _path_resolver("INDEX_CACHE_DIR", "HUB_DIR", "index-cache")
 _DYNAMIC_PATH_RESOLVERS = {"HERMES_HOME": _hermes_home, **{
     r.__name__[1:].upper(): r
-    for r in (_skills_dir, _hub_dir, _lock_file, _quarantine_dir, _audit_log, _taps_file, _index_cache_dir)
+    for r in (_skills_dir, _hub_dir, _lock_file, _quarantine_dir, _audit_log, _taps_file, _local_dirs_file,
+              _index_cache_dir)
 }}
 
 
@@ -283,6 +285,48 @@ class TapsManager(_JsonStateFile):
     list_taps = load
 
 
+class LocalDirsManager(_JsonStateFile):
+    """skills/.hub/local_dirs.json — local filesystem directories of already-installed skills
+    (e.g. another agent tool's skills folder) that the "local" Skills Hub source browses/installs
+    from. Stores absolute, machine-specific paths in per-user state, never in the repo or
+    ``config.yaml``, so nothing here is vendored or hardcoded."""
+
+    EMPTY = {"dirs": []}
+    DEFAULT_PATH = staticmethod(_local_dirs_file)
+
+    @staticmethod
+    def _normalize(path: str) -> str:
+        return str(Path(path).expanduser().resolve())
+
+    def load(self) -> List[str]:
+        return self._read().get("dirs", [])
+
+    def save(self, dirs: List[str]) -> None:
+        self._write({"dirs": dirs})
+
+    def add(self, path: str) -> bool:
+        """Add a local skills directory. Returns False if already configured."""
+        resolved = self._normalize(path)
+        dirs = self.load()
+        if resolved in dirs:
+            return False
+        dirs.append(resolved)
+        self.save(dirs)
+        return True
+
+    def remove(self, path: str) -> bool:
+        """Remove a local skills directory by path. Returns False if not found."""
+        resolved = self._normalize(path)
+        dirs = self.load()
+        new_dirs = [d for d in dirs if d not in (resolved, path)]
+        if len(new_dirs) == len(dirs):
+            return False
+        self.save(new_dirs)
+        return True
+
+    list_dirs = load
+
+
 def append_audit_log(action: str, skill_name: str, source: str,
                      trust_level: str, verdict: str, extra: str = "") -> None:
     """Append one space-separated line to the audit log (best-effort)."""
@@ -312,6 +356,7 @@ def ensure_hub_dirs() -> None:
         (_lock_file(), '{"version": 1, "installed": {}}\n'),
         (_audit_log(), ""),
         (_taps_file(), '{"taps": []}\n'),
+        (_local_dirs_file(), '{"dirs": []}\n'),
     ):
         if not path.exists():
             path.write_text(initial, encoding="utf-8")

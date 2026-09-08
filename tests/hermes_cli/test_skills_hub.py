@@ -28,6 +28,7 @@ def hub_env(monkeypatch, tmp_path):
     monkeypatch.setattr(hub, "QUARANTINE_DIR", hub_dir / "quarantine")
     monkeypatch.setattr(hub, "AUDIT_LOG", hub_dir / "audit.log")
     monkeypatch.setattr(hub, "TAPS_FILE", hub_dir / "taps.json")
+    monkeypatch.setattr(hub, "LOCAL_DIRS_FILE", hub_dir / "local_dirs.json")
     monkeypatch.setattr(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache")
 
     return hub_dir
@@ -496,3 +497,119 @@ def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
 
     assert installs == ["someone/hub-skill"]
     assert "Updated 1 skill(s)" in sink.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# `hermes skills local` — manage local skill-folder directories
+# ---------------------------------------------------------------------------
+
+
+def _capture_local(action: str, path: str = "") -> str:
+    from hermes_cli.skills_hub import do_local
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
+    do_local(action, path=path, console=console)
+    return sink.getvalue()
+
+
+def test_do_local_add_list_remove_round_trip(hub_env, tmp_path):
+    target = tmp_path / "other-agent-skills"
+    target.mkdir()
+
+    assert "No local skill directories configured" in _capture_local("list")
+
+    out = _capture_local("add", str(target))
+    assert "Added local skills directory" in out
+
+    out = _capture_local("add", str(target))
+    assert "already configured" in out
+
+    out = _capture_local("list")
+    assert str(target.resolve()) in out
+
+    out = _capture_local("remove", str(target))
+    assert "Removed local skills directory" in out
+
+    assert "No local skill directories configured" in _capture_local("list")
+
+
+def test_do_local_requires_path_for_add_remove(hub_env):
+    out = _capture_local("add")
+    assert "Path required" in out
+    out = _capture_local("remove")
+    assert "Path required" in out
+
+
+def test_do_local_unknown_action(hub_env):
+    out = _capture_local("bogus")
+    assert "Unknown local action" in out
+
+
+# ---------------------------------------------------------------------------
+# `hermes skills import-all` — bulk install every skill a source can enumerate
+# ---------------------------------------------------------------------------
+
+
+def test_do_import_all_unknown_source(hub_env):
+    from hermes_cli.skills_hub import do_import_all
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_import_all("nonsense", console=console)
+    assert "cannot be bulk-imported" in sink.getvalue()
+
+
+def test_do_import_all_no_skills_found(hub_env, monkeypatch):
+    from hermes_cli.skills_hub import do_import_all
+
+    class _EmptySource:
+        def list_all(self):
+            return []
+
+    monkeypatch.setattr(
+        "hermes_cli.skills_hub._import_all_source", lambda source_id: (_EmptySource(), "list_all"))
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_import_all("local-dir", console=console)
+    assert "No skills found" in sink.getvalue()
+
+
+def test_do_import_all_installs_every_enumerated_skill(hub_env, monkeypatch):
+    """Drives do_install once per skill the source enumerates."""
+    import hermes_cli.skills_hub as cli_hub
+    from tools.skills_hub_models import SkillMeta
+
+    metas = [
+        SkillMeta(name="a", description="", source="local-dir", identifier="local-dir:/x/a",
+                 trust_level="community"),
+        SkillMeta(name="b", description="", source="local-dir", identifier="local-dir:/x/b",
+                 trust_level="community"),
+    ]
+
+    class _FakeSource:
+        def list_all(self):
+            return metas
+
+    monkeypatch.setattr(cli_hub, "_import_all_source", lambda source_id: (_FakeSource(), "list_all"))
+
+    installed_names: set = set()
+
+    def _fake_install(identifier, category="", force=False, skip_confirm=False,
+                      invalidate_cache=True, console=None):
+        name = identifier.rsplit("/", 1)[-1]
+        installed_names.add(name)
+
+    monkeypatch.setattr(cli_hub, "do_install", _fake_install)
+    # HubLockFile.get_installed reflects installed_names so the before/after diff counts them.
+    monkeypatch.setattr("tools.skills_hub.HubLockFile", lambda: type("L", (), {
+        "get_installed": lambda self, name: ({"name": name} if name in installed_names else None),
+    })())
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    cli_hub.do_import_all("local-dir", console=console)
+
+    assert installed_names == {"a", "b"}
+    assert "2 installed, 0 skipped" in sink.getvalue()

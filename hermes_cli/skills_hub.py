@@ -1104,6 +1104,83 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
         c.print(f"[bold red]Unknown tap action:[/] {action}. Use: list, add, remove\n")
 
 
+# action -> (LocalDirsManager method, success line, failure line)
+_LOCAL_OPS = {
+    "add": ("add", "[bold green]Added local skills directory:[/] {path}\n",
+            "[yellow]Directory already configured:[/] {path}\n"),
+    "remove": ("remove", "[bold green]Removed local skills directory:[/] {path}\n",
+               "[bold red]Error:[/] Directory not configured: {path}\n"),
+}
+
+
+def do_local(action: str, path: str = "", console: Optional[Console] = None) -> None:
+    """Manage local skill folders (directories of ``<name>/SKILL.md`` subfolders)."""
+    from tools.skills_hub import LocalDirsManager
+    c = console or _console
+    mgr = LocalDirsManager()
+    if action == "list":
+        dirs = mgr.list_dirs()
+        if not dirs:
+            c.print("[dim]No local skill directories configured.[/]\n")
+            return
+        table = _table(("Directory", {"style": "bold cyan"}), title="Configured Local Skill Directories")
+        for d in dirs:
+            table.add_row(d)
+        c.print(table)
+        c.print()
+    elif action in _LOCAL_OPS:
+        method, ok_line, fail_line = _LOCAL_OPS[action]
+        if not path:
+            _print_error(c, f"Path required. Usage: hermes skills local {action} <path>")
+            return
+        c.print((ok_line if getattr(mgr, method)(path) else fail_line).format(path=path))
+    else:
+        c.print(f"[bold red]Unknown local action:[/] {action}. Use: list, add, remove\n")
+
+
+# Sources that can enumerate every skill they hold, for `import-all`. Maps source id ->
+# (source-instance factory, method name that returns List[SkillMeta]).
+def _import_all_source(source_id: str):
+    if source_id == "local-dir":
+        from tools.skills_hub_local import LocalFolderSource
+        return LocalFolderSource(), "list_all"
+    if source_id == "official":
+        from tools.skills_hub_official import OptionalSkillSource
+        return OptionalSkillSource(), "list_local"
+    return None, None
+
+
+def do_import_all(source_id: str, category: str = "", force: bool = False,
+                  skip_confirm: bool = False, console: Optional[Console] = None) -> None:
+    """Bulk-install every skill a source can enumerate — e.g. every skill folder under the
+    directories added with ``hermes skills local add``. Each install still goes through the
+    normal fetch/quarantine/scan pipeline; this just drives ``do_install`` once per skill."""
+    from tools.skills_hub import HubLockFile
+    c = console or _console
+    source, method_name = _import_all_source(source_id)
+    if source is None:
+        _print_error(c, f"'{source_id}' cannot be bulk-imported. Use: local-dir, official")
+        return
+    metas = getattr(source, method_name)()
+    if not metas:
+        c.print(f"[dim]No skills found for source '{source_id}'.[/]\n")
+        return
+    c.print(f"[bold]Importing {len(metas)} skill(s) from '{source_id}'...[/]\n")
+    installed, skipped = 0, 0
+    for meta in metas:
+        c.print(f"[bold]--- {meta.name} ---[/]")
+        before = HubLockFile().get_installed(meta.name)
+        do_install(meta.identifier, category=category, force=force, skip_confirm=skip_confirm,
+                  invalidate_cache=False, console=c)
+        after = HubLockFile().get_installed(meta.name)
+        if after and after != before:
+            installed += 1
+        else:
+            skipped += 1
+    c.print(f"[bold green]Import complete:[/] {installed} installed, {skipped} skipped/failed.")
+    _finish_change(c, True, "Imported skills will be available", "activate")
+
+
 def _read_frontmatter(skill_md: str) -> dict:
     """YAML frontmatter of a SKILL.md body ({} when absent/invalid)."""
     import yaml
@@ -1306,6 +1383,14 @@ def _tap_cli(args) -> None:
     do_tap(tap_action, repo=getattr(args, "repo", "") or getattr(args, "name", ""))
 
 
+def _local_cli(args) -> None:
+    local_action = getattr(args, "local_action", None)
+    if not local_action:
+        _console.print("Usage: hermes skills local [list|add|remove]\n")
+        return
+    do_local(local_action, path=getattr(args, "path", ""))
+
+
 # `hermes skills <action>` -> handler(args). Lambdas late-bind the do_* names so
 # tests that patch("hermes_cli.skills_hub.do_install") still intercept.
 _CLI_ACTIONS = {
@@ -1333,14 +1418,17 @@ _CLI_ACTIONS = {
                                                     skip_confirm=getattr(a, "yes", False)),
     "publish": lambda a: do_publish(a.skill_path, target=getattr(a, "to", "github"),
                                     repo=getattr(a, "repo", "")),
-    "snapshot": _snapshot_cli, "tap": _tap_cli}
+    "snapshot": _snapshot_cli, "tap": _tap_cli, "local": _local_cli,
+    "import-all": lambda a: do_import_all(a.source, category=getattr(a, "category", ""),
+                                          force=getattr(a, "force", False),
+                                          skip_confirm=getattr(a, "yes", False))}
 
 
 def skills_command(args) -> None:
     """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
     handler = _CLI_ACTIONS.get(getattr(args, "skills_action", None))
     if handler is None:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap|local|import-all]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
         return
     handler(args)
@@ -1434,6 +1522,12 @@ _SLASH_ACTIONS = {
     "snapshot": _slash_snapshot,
     "tap": lambda args, c: (do_tap(args[0], repo=args[1] if len(args) > 1 else "", console=c)
                             if args else do_tap("list", console=c)),
+    "local": lambda args, c: (do_local(args[0], path=args[1] if len(args) > 1 else "", console=c)
+                              if args else do_local("list", console=c)),
+    "import-all": lambda args, c: do_import_all(
+        args[0], category=_opt_value(args, "--category", "", last=True), force="--force" in args,
+        skip_confirm=True, console=c) if args else c.print(
+        "[bold red]Usage:[/] /skills import-all <local-dir|official> [--category <cat>] [--force]\n"),
     **dict.fromkeys(("help", "--help", "-h"), lambda args, c: _print_skills_help(c))}
 
 # Actions that need at least one argument -> usage lines printed when called bare.
@@ -1492,5 +1586,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
         "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"
-        "  [cyan]tap[/] list|add|remove         Manage skill sources\n",
+        "  [cyan]tap[/] list|add|remove         Manage GitHub repo skill sources\n"
+        "  [cyan]local[/] list|add|remove       Manage local skill-folder directories\n"
+        "  [cyan]import-all[/] local-dir|official   Bulk-install every skill a source can enumerate\n",
         title="/skills"))

@@ -3065,7 +3065,9 @@ class TestInboundMediaAuthorizationGate:
         parent = tmp_path
         private_parts = []
         for index in range(6):
-            part = f"private-{index}-" + ("x" * 150)
+            # Keep each component/path under macOS limits while still proving
+            # that long private path material is redacted before message bounding.
+            part = f"private-{index}-" + ("x" * 80)
             private_parts.append(part)
             parent = parent / part
             parent.mkdir()

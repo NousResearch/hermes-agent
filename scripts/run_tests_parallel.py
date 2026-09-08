@@ -380,8 +380,6 @@ def _run_one_file_once(
     file_timeout: float,
 ) -> Tuple[Path, int, str, dict[str, int], float]:
     """Single attempt of a per-file pytest subprocess (see _run_one_file)."""
-    cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
-
     # Give this subprocess its own pytest temp root.
     #
     # pytest builds its tmp_path root as <temproot>/pytest-of-<user>/. At the
@@ -401,6 +399,7 @@ def _run_one_file_once(
     env = os.environ.copy()
     temproot = tempfile.mkdtemp(prefix="hermes-pytest-tmproot-")
     env["PYTEST_DEBUG_TEMPROOT"] = temproot
+    cmd = [sys.executable, "-m", "pytest", str(file), "--basetemp", temproot, *pytest_args]
 
     subproc_start = time.monotonic()
     # launch the pytest process

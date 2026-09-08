@@ -2805,6 +2805,27 @@ class MatrixAdapter(BasePlatformAdapter):
         i = 0
         while i < len(lines):
             line = lines[i]
+            if i + 1 < len(lines):
+                header_cells = MatrixAdapter._markdown_table_cells(line)
+                separator_cells = MatrixAdapter._markdown_table_cells(lines[i + 1])
+                if header_cells and separator_cells and len(header_cells) == len(separator_cells) and all(
+                    re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in separator_cells
+                ):
+                    rows: list[list[str]] = []
+                    i += 2
+                    while i < len(lines):
+                        row_cells = MatrixAdapter._markdown_table_cells(lines[i])
+                        if not row_cells:
+                            break
+                        rows.append(row_cells)
+                        i += 1
+                    header_html = "".join(f"<th>{cell.strip()}</th>" for cell in header_cells)
+                    body_html = "".join(
+                        "<tr>" + "".join(f"<td>{cell.strip()}</td>" for cell in row) + "</tr>"
+                        for row in rows
+                    )
+                    out_lines.append(f"<table><thead><tr>{header_html}</tr></thead><tbody>{body_html}</tbody></table>")
+                    continue
             if re.match(r"^[\s]*([-*_])\s*\1\s*\1[\s\-*_]*$", line):
                 out_lines.append("<hr>")
                 i += 1
@@ -2846,6 +2867,14 @@ class MatrixAdapter(BasePlatformAdapter):
         for idx, original in enumerate(placeholders):
             result = result.replace(f"\x00PROTECTED{idx}\x00", original)
         return result
+
+    @staticmethod
+    def _markdown_table_cells(line: str) -> list[str] | None:
+        stripped = line.strip()
+        if not stripped.startswith("|") or not stripped.endswith("|"):
+            return None
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        return cells if cells and all(cell for cell in cells) else None
 
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):

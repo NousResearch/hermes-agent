@@ -124,7 +124,13 @@ _FLY_ENV = {FLY_APP_NAME_ENV: "hermes-agent-stg-test", FLY_MACHINE_ID_ENV: "d891
 
 def _fake_flaps(tmp_path, status_line, capture):
     """One-shot unix-socket HTTP server standing in for flaps."""
-    sock_path = str(tmp_path / "fly-api.sock")
+    # Keep AF_UNIX paths under macOS' shorter sockaddr_un limit even when
+    # pytest's tmp_path root is deeply nested.
+    sock_path = f"/tmp/hermes-flaps-{os.getpid()}-{id(capture)}.sock"
+    try:
+        os.unlink(sock_path)
+    except FileNotFoundError:
+        pass
     server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     server.bind(sock_path)
     server.listen(1)

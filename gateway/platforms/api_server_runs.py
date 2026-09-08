@@ -13,10 +13,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 try:
     from aiohttp import web
-    from aiohttp.web_request import RequestKey
 except ImportError:
     web = None  # type: ignore[assignment]
-    RequestKey = None  # type: ignore[assignment,misc]
+
+RequestKey = getattr(web, "AppKey", None) if web is not None else None
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES

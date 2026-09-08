@@ -315,6 +315,15 @@ class TestResumePendingSystemNote:
         # But still guards against re-running already-recorded tool calls.
         assert "already appear in the history" in note
 
+    def test_empty_message_interactive_note_continues_task(self):
+        """Interactive recovery should resume work rather than abandon it behind
+        a restore acknowledgement and a needless 'what next?' round trip."""
+        note = build_resume_recovery_note("restart_timeout", "", interactive=True)
+        assert "CONTINUE the interrupted task" in note
+        assert "ask what they would like to do next" not in note
+        assert "skip any unfinished work" not in note
+        assert "first step that has no recorded result" in note
+
 
     def test_resume_note_is_persisted_instead_of_original_empty_message(self):
         """The auto-resume note must not leave an empty row in state.db."""
@@ -350,6 +359,8 @@ class TestResumePendingSystemNote:
         assert message != persisted
         assert "what were we doing?" in message
         assert "[System note:" in message
+        assert "continue that task from where it stopped" in message
+        assert "skip any unfinished work" not in message
 
 
     def test_resume_pending_fires_without_tool_tail(self):

@@ -646,7 +646,11 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        // DM allowlists authorize private senders. Group authorization belongs
+        // to the Python adapter's group_policy, including passive observation:
+        // applying the DM allowlist here would drop group participants before
+        // the observer can store their messages.
+        if (!isGroup && WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',

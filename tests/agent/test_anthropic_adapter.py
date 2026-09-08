@@ -1927,7 +1927,9 @@ class TestApiKeyConstructionClearsEnvBearerToken:
         # auth_token attribute, but the request headers (what reaches the wire) never
         # contain Authorization — on the original client and on any with_options() copy.
         for wire_client in (client, client.with_options(timeout=30)):
-            headers = dict(wire_client._build_headers(_final_request_options(anthropic_sdk)))
+            headers = dict(
+                wire_client._build_headers(_final_request_options(anthropic_sdk))
+            )
             assert headers.get("x-api-key") == "provider-key"
             assert "authorization" not in headers
 

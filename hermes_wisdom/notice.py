@@ -15,7 +15,7 @@ def qualification_notice(event: dict[str, Any]) -> str:
         )
         return (
             f"{organization} has enabled Collective Wisdom, a feature designed to "
-            "automatically detect useful skills across all team members.\n\n"
-            "Congratulations! Hermes detected a skill that could be useful to your team."
+            "automatically detect and share useful skills across all team members.\n\n"
+            "Congratulations! Hermes detected a skill you created that could be useful to your team!"
         )
-    return "Hermes detected another skill that could be useful to your team."
+    return "Hermes detected another skill you created that could be useful to your team!"

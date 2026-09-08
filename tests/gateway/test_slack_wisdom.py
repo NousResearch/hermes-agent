@@ -68,7 +68,7 @@ def test_candidate_card_uses_returning_copy_and_requested_action_order():
         skill_description="Transfer incident context between responders.",
         qualification="high_usage",
         status=(
-            "Hermes detected another skill that could be useful to your team.\n\n"
+            "Hermes detected another skill you created that could be useful to your team!\n\n"
             "Nothing is shared without your approval.\n\n"
             "Would you like to share?"
         ),

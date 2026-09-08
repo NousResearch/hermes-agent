@@ -830,7 +830,7 @@ def test_candidate_notice_projection_is_stable_across_surfaces_and_uses_verified
         "Your organisation (Nous Research) has enabled Collective Wisdom"
     )
     assert qualification_notice(events[1]) == (
-        "Hermes detected another skill that could be useful to your team."
+        "Hermes detected another skill you created that could be useful to your team!"
     )
 
 

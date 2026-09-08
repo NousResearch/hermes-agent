@@ -8,6 +8,10 @@ continuation/reset behavior for follow-up turns.
 import unittest
 from types import SimpleNamespace
 
+import pytest
+
+from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+
 from agent.adaptive_reasoning import (
     NOTICE_KEY,
     adaptive_reasoning_turn,
@@ -145,14 +149,14 @@ class TestClassifyBoundaries(unittest.TestCase):
                         self.assertIn("lowered to Low", agent._notices[0].text)
                     self.assertIs(agent.reasoning_config, original)
 
-    def test_signal_bearing_action_stays_medium_not_low(self):
+    def test_signal_bearing_action_keeps_baseline(self):
         # nginx is an infrastructure signal: a complexity signal always
         # overrides low, even for a short imperative.
         self.assertEqual(
-            classify_reasoning_effort("restart the nginx service")[0], "medium"
+            classify_reasoning_effort("restart the nginx service")[0], None
         )
 
-    def test_realistic_near_misses_stay_medium(self):
+    def test_realistic_near_misses_keep_baseline(self):
         for msg in (
             "go ahead",  # continuation without a prior escalated turn
             "how do I center a div?",  # a real (small) task, not a fact lookup
@@ -160,7 +164,7 @@ class TestClassifyBoundaries(unittest.TestCase):
             "summarize this file",  # unbounded content, unknown weight
             "list the open PRs and summarize the risky ones",  # compound request
         ):
-            self.assertEqual(classify_reasoning_effort(msg)[0], "medium", msg)
+            self.assertEqual(classify_reasoning_effort(msg)[0], None, msg)
 
     def test_complexity_signals_override_low(self):
         for msg in (
@@ -168,32 +172,32 @@ class TestClassifyBoundaries(unittest.TestCase):
             "show me the segfault",  # mechanical verb + error signal
             "why error: ENOENT?",  # error evidence
         ):
-            self.assertEqual(classify_reasoning_effort(msg)[0], "medium", msg)
+            self.assertEqual(classify_reasoning_effort(msg)[0], None, msg)
         # A factual-shaped question carrying a real signal keeps its
         # escalation classification — signals override the simple shape.
         self.assertEqual(
             classify_reasoning_effort("What is a race condition?")[0], "high"
         )
 
-    def test_multiple_questions_stay_medium(self):
+    def test_multiple_questions_keep_baseline(self):
         self.assertEqual(
             classify_reasoning_effort(
                 "What is the gateway port? And where is the config file?"
             )[0],
-            "medium",
+            None,
         )
 
-    def test_code_snippet_stays_medium(self):
+    def test_code_snippet_keeps_baseline(self):
         self.assertEqual(
             classify_reasoning_effort("what is this?\n```\nx = 1\n```")[0],
-            "medium",
+            None,
         )
 
-    def test_empty_and_whitespace_stay_medium(self):
+    def test_empty_and_whitespace_keep_baseline(self):
         # No positive simplicity evidence (e.g. an image-only message whose
         # text extraction is empty) — never downshift on absence of signal.
-        self.assertEqual(classify_reasoning_effort("")[0], "medium")
-        self.assertEqual(classify_reasoning_effort("   \n ")[0], "medium")
+        self.assertEqual(classify_reasoning_effort("")[0], None)
+        self.assertEqual(classify_reasoning_effort("   \n ")[0], None)
 
     def test_debugging_with_error_evidence_is_high(self):
         level, reason = classify_reasoning_effort(DEBUG_MSG)
@@ -214,7 +218,7 @@ class TestClassifyBoundaries(unittest.TestCase):
         # Infrastructure keyword without corroboration stays at baseline.
         self.assertEqual(
             classify_reasoning_effort("show me the kubernetes pod list")[0],
-            "medium",
+            None,
         )
 
     def test_architecture_cross_component_is_xhigh(self):
@@ -240,8 +244,8 @@ class TestClassifyBoundaries(unittest.TestCase):
         self.assertEqual(level, "high")
         self.assertIn("continuing", reason)
 
-    def test_continuation_without_prior_effort_is_medium(self):
-        self.assertEqual(classify_reasoning_effort("go ahead")[0], "medium")
+    def test_continuation_without_prior_effort_keeps_baseline(self):
+        self.assertEqual(classify_reasoning_effort("go ahead")[0], None)
 
     def test_unrelated_trivial_turn_after_escalation_drops(self):
         # A non-continuation message re-classifies from scratch even with a
@@ -448,6 +452,57 @@ class TestBeginEndTurn(unittest.TestCase):
     def test_never_raises_on_broken_agent(self):
         broken = SimpleNamespace(adaptive_reasoning={"enabled": True})
         self.assertIsNone(begin_adaptive_reasoning_turn(broken, object()))
+
+
+@pytest.mark.parametrize("baseline", ("none", *VALID_REASONING_EFFORTS))
+@pytest.mark.parametrize("pinned", (False, True))
+@pytest.mark.parametrize("policy,simple_target,complex_target", [
+    ({}, None, "xhigh"),
+    ({"min_effort": "minimal"}, "low", "xhigh"),
+    ({"min_effort": "low"}, "low", "xhigh"),
+    ({"min_effort": "medium"}, "medium", "xhigh"),
+    ({"min_effort": "high", "max_effort": "high"}, "high", "high"),
+    ({"min_effort": "low", "max_effort": "minimal"}, None, "minimal"),
+    ({"min_effort": "none", "max_effort": "medium"}, None, "medium"),
+    ({"min_effort": "minimal", "max_effort": "minimal"}, "minimal", "minimal"),
+])
+def test_adjustment_respects_baseline_direction(baseline, pinned, policy, simple_target, complex_target):
+    """Bounds constrain adjustments, not the baseline; simple never raises it."""
+    original = parse_reasoning_effort(baseline)
+    agent = _make_agent(reasoning_config=original, user_override=pinned)
+    agent.adaptive_reasoning = parse_adaptive_reasoning_config({"enabled": True, **policy})
+    for message, direction, target in (
+        ("summarize this file", "keep", None),
+        ("go ahead", "keep", None),
+        ("", "keep", None),
+        ("Which tests failed fix them?", "keep", None),
+        ("Which tests failed — fix them?", "keep", None),
+        ("restart the nginx service", "keep", None),
+        ("hello", "lower", simple_target),
+        ("What is the capital of France?", "lower", simple_target),
+        ("show me the readme", "lower", simple_target),
+        (DEBUG_MSG, "raise", min("high", complex_target, key=VALID_REASONING_EFFORTS.index)),
+        (XHIGH_MSG, "raise", complex_target),
+    ):
+        expected = original
+        if not pinned and baseline != "none" and target is not None:
+            levels = (baseline, target)
+            selected = (min if direction == "lower" else max)(
+                levels, key=VALID_REASONING_EFFORTS.index
+            )
+            expected = parse_reasoning_effort(selected)
+        agent._notices.clear()
+        # Each row starts a new task, not a continuation of the previous row.
+        agent._adaptive_prev_effort = None
+        agent._adaptive_last_notified_effort = None
+        with adaptive_reasoning_turn(agent, message):
+            assert agent.reasoning_config == expected, message
+            assert bool(agent._notices) == (expected != original), message
+            if expected == original:
+                assert agent.reasoning_config is original
+                assert agent._adaptive_prev_effort is None
+                assert agent._adaptive_last_notified_effort is None
+        assert agent.reasoning_config is original
 
 
 # ---------------------------------------------------------------------------
@@ -867,7 +922,12 @@ class TestAdaptiveReasoningTurnScope(unittest.TestCase):
         self.assertIs(agent.reasoning_config, baseline)
 
 
-def test_real_child_construction_preserves_adaptive_and_upstream_policies(tmp_path, monkeypatch):
+@pytest.mark.parametrize("baseline", ("none", *VALID_REASONING_EFFORTS))
+@pytest.mark.parametrize("ceiling", ("low", "medium", "xhigh"))
+@pytest.mark.parametrize("pinned", (False, True))
+def test_real_child_construction_preserves_adaptive_and_upstream_policies(
+    tmp_path, monkeypatch, baseline, ceiling, pinned,
+):
     """Real profile loader -> child resolver -> AIAgent -> admitted turn; no model request."""
     from unittest.mock import patch
 
@@ -882,6 +942,7 @@ def test_real_child_construction_preserves_adaptive_and_upstream_policies(tmp_pa
         "delegation": {
             "compression_threshold_tokens": 32000,
             "fallback_providers": [{"provider": "custom", "model": "worker-fallback"}],
+            **({"reasoning_effort": baseline} if pinned else {}),
         },
     }))
     scope = set_hermes_home_override(tmp_path)
@@ -891,8 +952,8 @@ def test_real_child_construction_preserves_adaptive_and_upstream_policies(tmp_pa
             model="test-model", provider="custom", api_key="test-only",
             base_url="http://127.0.0.1:1/v1", api_mode="chat_completions",
             enabled_toolsets=[], quiet_mode=True, skip_memory=True, skip_context_files=True,
-            reasoning_config={"enabled": True, "effort": "high"},
-            adaptive_reasoning={"enabled": True, "min_effort": "low"},
+            reasoning_config=parse_reasoning_effort(baseline),
+            adaptive_reasoning={"enabled": True, "min_effort": "low", "max_effort": ceiling},
         )
         parent._cache_ttl = "1h"
         child = _build_child_agent(
@@ -902,20 +963,32 @@ def test_real_child_construction_preserves_adaptive_and_upstream_policies(tmp_pa
         )
         assert child.adaptive_reasoning == parent.adaptive_reasoning
         assert child.adaptive_reasoning is not parent.adaptive_reasoning
-        assert child.reasoning_user_override is False
+        assert child.reasoning_user_override is pinned
         assert child._cache_ttl == "5m"
         assert child.context_compressor.threshold_tokens_cap == 32000
         assert child._fallback_chain[0]["model"] == "review-fallback"
         saved = child.reasoning_config
+        assert saved == parent.reasoning_config == parse_reasoning_effort(baseline)
+        escalated = simple = saved
+        if baseline != "none" and not pinned:
+            escalated = parse_reasoning_effort(max(baseline, ceiling, key=VALID_REASONING_EFFORTS.index))
+            simple = parse_reasoning_effort(min(baseline, "low", key=VALID_REASONING_EFFORTS.index))
 
-        def loop(agent, *args, **kwargs):
-            assert agent.reasoning_config["effort"] == "xhigh"
-            assert parent.reasoning_config["effort"] == "high"
-            return {"final_response": "ok"}
+        # Exercise the real delegate resolver and admitted-turn forwarder.
+        # A low/medium ceiling still permits a concrete continuation from minimal.
+        for message, expected in (
+            (XHIGH_MSG, escalated), ("go ahead", escalated), ("  YES\n please!", escalated),
+            ("summarize this file", saved), ("go ahead", saved),
+            ("hello", simple), ("go ahead", saved),
+        ):
+            def loop(agent, *args, **kwargs):
+                assert agent.reasoning_config == expected, message
+                assert parent.reasoning_config == saved
+                return {"final_response": "ok"}
 
-        with patch("agent.conversation_loop.run_conversation", loop):
-            assert child.run_conversation(XHIGH_MSG)["final_response"] == "ok"
-        assert child.reasoning_config is saved
+            with patch("agent.conversation_loop.run_conversation", loop):
+                assert child.run_conversation(message)["final_response"] == "ok"
+            assert child.reasoning_config is saved
     finally:
         if child is not None:
             child.close()

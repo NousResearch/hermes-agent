@@ -86,6 +86,24 @@ test('malformed marker => no live update and pruned', () => {
   assert.ok(!fs.existsSync(markerPath(home)))
 })
 
+test('numeric prefixes and future timestamps are stale, not live updater claims', () => {
+  const now = 1_000_000_000_000
+
+  const malformed = [
+    ['pid-prefix', `4242junk\n${Math.floor(now / 1000)}`],
+    ['started-prefix', `4242\n${Math.floor(now / 1000)}junk`],
+    ['future-start', `4242\n${Math.floor(now / 1000) + 60}`]
+  ]
+
+  for (const [name, raw] of malformed) {
+    const home = tmpHome(name)
+
+    fs.writeFileSync(markerPath(home), raw)
+    assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now }), null)
+    assert.ok(!fs.existsSync(markerPath(home)), `${name} marker should be pruned`)
+  }
+})
+
 test('isPidAlive: own pid is alive, impossible pid is dead', () => {
   assert.equal(isPidAlive(process.pid), true)
   assert.equal(isPidAlive(-1), false)

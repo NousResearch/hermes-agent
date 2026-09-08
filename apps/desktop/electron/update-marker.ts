@@ -51,6 +51,18 @@ export function isPidAlive(pid, kill: typeof process.kill = process.kill.bind(pr
   }
 }
 
+function parseMarkerInteger(line: unknown): number | null {
+  const value = String(line ?? '').trim()
+
+  if (!/^\d+$/.test(value)) {
+    return null
+  }
+
+  const parsed = Number(value)
+
+  return Number.isSafeInteger(parsed) ? parsed : null
+}
+
 /**
  * Read + interpret the marker.
  *
@@ -85,12 +97,11 @@ export function readLiveUpdateMarker(
   }
 
   const [pidLine, startedLine] = String(raw).split('\n')
-  const pid = Number.parseInt((pidLine || '').trim(), 10)
-  const startedAt = Number.parseInt((startedLine || '').trim(), 10)
-  const ageMs = Number.isFinite(startedAt) ? now() - startedAt * 1000 : Infinity
-  const alive = Number.isInteger(pid) && isPidAlive(pid, kill)
+  const pid = parseMarkerInteger(pidLine)
+  const startedAt = parseMarkerInteger(startedLine)
+  const ageMs = startedAt === null ? Infinity : now() - startedAt * 1000
 
-  if (!alive || ageMs > maxAgeMs) {
+  if (pid === null || !isPidAlive(pid, kill) || ageMs < 0 || ageMs > maxAgeMs) {
     try {
       fs.unlinkSync(file)
     } catch {

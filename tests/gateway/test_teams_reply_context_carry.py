@@ -4,6 +4,21 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from tests.gateway.test_teams import TeamsAdapter, _make_config
 
+@pytest.mark.anyio
+async def test_send_records_only_confirmed_exact_outbound_context(monkeypatch):
+    record = MagicMock()
+    monkeypatch.setattr(_teams_mod, "_record_outbound_reply_context", record)
+    adapter = TeamsAdapter(_make_config())
+    adapter._app = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id="root-message-1")))
+    result = await adapter.send("19:channel@thread.tacv2", "Daily brief part 2: decisions")
+    assert result.success is True
+    record.assert_called_once_with("19:channel@thread.tacv2", "root-message-1", "Daily brief part 2: decisions")
+    record.reset_mock()
+    adapter._app.send.return_value = SimpleNamespace(id=None)
+    await adapter.send("19:channel@thread.tacv2", "Unconfirmed delivery")
+    record.assert_not_called()
+
+
 class TestTeamsMessageHandling:
     def _make_activity(
         self,

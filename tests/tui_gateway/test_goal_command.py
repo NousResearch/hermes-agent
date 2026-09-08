@@ -379,6 +379,66 @@ def test_real_queued_prompt_preempts_goal_compression_retry(
     assert server._GOAL_COMPRESSION_RECOVERY_ATTEMPTS not in session
 
 
+def test_desktop_followup_does_not_dispatch_after_done_verdict(server, turn_env):
+    """The real Desktop backend follow-up path must stop after a done judge verdict."""
+    from hermes_cli.goals import GoalManager
+
+    session_key = "desktop-goal-done-no-followup"
+    GoalManager(session_key).set("finish the current task")
+    seen_prompts = []
+
+    def run_conversation(message, **_kwargs):
+        seen_prompts.append(message)
+        return {"final_response": "Done — goal complete."}
+
+    agent = types.SimpleNamespace(
+        session_id=session_key,
+        run_conversation=run_conversation,
+        clear_interrupt=lambda: None,
+    )
+    desktop_session = _turn_session(agent, session_key)
+    desktop_session["surface"] = "desktop"
+
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("done", "verified completion", False, None, False),
+    ):
+        server._run_prompt_submit("rid", "desktop-sid", desktop_session, "initial work")
+
+    assert seen_prompts == ["initial work"]
+
+
+def test_desktop_followup_does_not_dispatch_after_pause_during_judge(server, turn_env):
+    """A Desktop pause arriving during judging must prevent the real chained follow-up."""
+    from hermes_cli.goals import GoalManager
+
+    session_key = "desktop-goal-pause-no-followup"
+    GoalManager(session_key).set("finish the current task")
+    seen_prompts = []
+
+    def run_conversation(message, **_kwargs):
+        seen_prompts.append(message)
+        return {"final_response": "Worked toward it."}
+
+    def judge_pauses(*_args, **_kwargs):
+        GoalManager(session_key).pause(reason="user-paused")
+        return "continue", "keep going", False, None, False
+
+    agent = types.SimpleNamespace(
+        session_id=session_key,
+        run_conversation=run_conversation,
+        clear_interrupt=lambda: None,
+    )
+    desktop_session = _turn_session(agent, session_key)
+    desktop_session["surface"] = "desktop"
+
+    with patch("hermes_cli.goals.judge_goal", side_effect=judge_pauses):
+        server._run_prompt_submit("rid", "desktop-sid", desktop_session, "initial work")
+
+    assert seen_prompts == ["initial work"]
+    assert GoalManager(session_key).state.status == "paused"
+
+
 def test_compression_deferred_is_not_treated_as_exhaustion(server):
     from hermes_cli.goals import GoalManager
 

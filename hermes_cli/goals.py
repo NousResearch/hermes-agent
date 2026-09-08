@@ -72,7 +72,13 @@ def _append_evidence_to_judge_prompt(prompt: str, evidence: List[str]) -> str:
             break
     if not cleaned:
         return prompt
-    lines = "\n".join(f"- {_truncate(line, _JUDGE_EVIDENCE_MAX_CHARS)}" for line in cleaned)
+    suffix = "… [truncated]"
+    def _bounded_line(line: str) -> str:
+        if len(line) <= _JUDGE_EVIDENCE_MAX_CHARS:
+            return line
+        return line[:_JUDGE_EVIDENCE_MAX_CHARS - len(suffix)] + suffix
+
+    lines = "\n".join(f"- {_bounded_line(line)}" for line in cleaned)
     return prompt + JUDGE_EVIDENCE_BLOCK_TEMPLATE.format(evidence_lines=lines)
 
 
@@ -1289,11 +1295,6 @@ class GoalManager:
             raise RuntimeError("no active goal to park")
         return self._state
 
-    def _pause_state(self, reason: str) -> None:
-        self._state.status = "paused"
-        self._state.paused_reason = reason
-        self._save()
-
     def _reconcile_turn_state(self, state: GoalState, *, transform) -> Tuple[Optional[GoalState], str]:
         """Atomically apply a turn's state mutation against the FRESH persisted row, fail-closed.
 
@@ -1335,7 +1336,12 @@ class GoalManager:
             # The judge evaluated state.goal; if the persisted row now describes a different goal
             # (edited or replaced while the judge ran), the verdict is stale for it — preserve the
             # fresh row and apply none of this turn's deltas.
-            if current.goal != state.goal or current.created_at != state.created_at:
+            if (
+                current.goal != state.goal
+                or current.created_at != state.created_at
+                or current.subgoals != state.subgoals
+                or current.max_turns != state.max_turns
+            ):
                 outcome[0] = "replaced"
                 return current_json
             transform(current)
@@ -1401,9 +1407,23 @@ class GoalManager:
             fresh.consecutive_transport_failures = state.consecutive_transport_failures
         return _account
 
-    def _pause_decision(self, paused_reason: str, verdict: str, reason: str, message: str) -> Dict[str, Any]:
-        self._pause_state(paused_reason)
-        return _decision("paused", False, None, verdict, reason, message)
+    def _gate_turn_transform(self, state: GoalState):
+        """Copy this turn's gate runtime fields without replacing user-managed gate config."""
+        def _apply(fresh: GoalState) -> None:
+            fresh.turns_used = state.turns_used
+            fresh.last_turn_at = state.last_turn_at
+            # A concurrent gate edit/removal must win.  Runtime bookkeeping can only be copied to
+            # the same gate in the same position; never replace the fresh gate list wholesale.
+            for fresh_gate, stale_gate in zip(fresh.gates, state.gates):
+                if fresh_gate.command != stale_gate.command:
+                    continue
+                fresh_gate.timeout_seconds = stale_gate.timeout_seconds
+                fresh_gate.max_retries = stale_gate.max_retries
+                fresh_gate.attempts = stale_gate.attempts
+                fresh_gate.last_exit_code = stale_gate.last_exit_code
+                fresh_gate.last_output_tail = stale_gate.last_output_tail
+                fresh_gate.last_failed_fingerprint = stale_gate.last_failed_fingerprint
+        return _apply
 
     def set(self, goal: str, *, max_turns: Optional[int] = None, contract: Optional[GoalContract] = None) -> GoalState:
         goal = (goal or "").strip()
@@ -1604,16 +1624,29 @@ class GoalManager:
             skipped_note = " (workspace unchanged since last failure — not re-run)" if unchanged else ""
 
             if gate.attempts > gate.max_retries:
-                return self._pause_decision(
-                    f"quality gate exhausted {gate.attempts - 1} retries: $ {gate.command}",
-                    "gate_failed", f"gate exhausted retries: $ {gate.command}",
+                def _gate_pause(fresh: GoalState) -> None:
+                    self._gate_turn_transform(state)(fresh)
+                    fresh.status = "paused"
+                    fresh.paused_reason = (
+                        f"quality gate exhausted {gate.attempts - 1} retries: $ {gate.command}"
+                    )
+
+                fresh, outcome = self._reconcile_turn_state(state, transform=_gate_pause)
+                if outcome != "applied":
+                    return self._stopped_turn_decision(
+                        outcome, fresh, verdict="gate_failed", reason=f"gate exhausted retries: $ {gate.command}")
+                return _decision(
+                    "paused", False, None, "gate_failed", f"gate exhausted retries: $ {gate.command}",
                     f"⏸ Goal paused — quality gate still failing after "
                     f"{gate.max_retries} retries: $ {gate.command} "
-                    f"(exit {exit_code}). Fix it manually or /goal gate remove it, "
-                    f"then /goal resume.",
+                    f"(exit {exit_code}). Fix it manually or /goal gate remove it, then /goal resume.",
                 )
 
-            self._save()
+            fresh, outcome = self._reconcile_turn_state(
+                state, transform=self._gate_turn_transform(state))
+            if outcome != "applied":
+                return self._stopped_turn_decision(
+                    outcome, fresh, verdict="gate_failed", reason=f"gate failed: $ {gate.command}")
             prompt = CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE.format(
                 goal=state.goal, command=gate.command, exit_code=exit_code, attempt=gate.attempts,
                 max_retries=gate.max_retries, output=tail or "(no output)",
@@ -1625,7 +1658,9 @@ class GoalManager:
                 f"attempt {gate.attempts}/{gate.max_retries}){skipped_note}: $ {gate.command}",
             )
 
-        self._save()
+        fresh, outcome = self._reconcile_turn_state(state, transform=self._gate_turn_transform(state))
+        if outcome != "applied":
+            return self._stopped_turn_decision(outcome, fresh, verdict="gate_passed", reason="quality gates changed")
         return None
 
     # --- /goal wait barrier -------------------------------------------
@@ -1721,8 +1756,17 @@ class GoalManager:
         return _decision("active", False, None, "waiting", reason, f"⏳ Goal parked — waiting on {tgt}: {reason}")
 
     def _budget_pause(self, state: GoalState, verdict: str, reason: str, note: str = "") -> Dict[str, Any]:
-        return self._pause_decision(
-            f"turn budget exhausted ({state.turns_used}/{state.max_turns})", verdict, reason,
+        def _pause(fresh: GoalState) -> None:
+            fresh.turns_used = state.turns_used
+            fresh.last_turn_at = state.last_turn_at
+            fresh.status = "paused"
+            fresh.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
+
+        fresh, outcome = self._reconcile_turn_state(state, transform=_pause)
+        if outcome != "applied":
+            return self._stopped_turn_decision(outcome, fresh, verdict=verdict, reason=reason)
+        return _decision(
+            "paused", False, None, verdict, reason,
             f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used{note}. "
             "Use /goal resume to keep going, or /goal clear to stop.",
         )
@@ -1756,6 +1800,7 @@ class GoalManager:
         # so the judge is skipped and the gate's output drives the next turn (same turn budget).
         gate_decision = self._check_gates()
         if gate_decision is not None:
+            state = self._state or state
             if gate_decision.get("should_continue") and state.turns_used >= state.max_turns:
                 return self._budget_pause(state, "gate_failed", gate_decision.get("reason", ""), note=" (a quality gate is still failing)")
             return gate_decision

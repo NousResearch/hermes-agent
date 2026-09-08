@@ -47,6 +47,28 @@ def _isolate_goal_db(monkeypatch):
 # ──────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("field,value", [
+    ("subgoals", ["new unmet criterion"]),
+    ("max_turns", 40),
+])
+def test_stale_judge_cannot_complete_a_rescoped_goal(field, value):
+    sid = "rescoped-during-judge"
+    mgr = GoalManager(sid)
+    mgr.set("original objective", max_turns=20)
+
+    def judge_changes_scope(*args, **kwargs):
+        fresh = load_goal(sid)
+        setattr(fresh, field, value)
+        save_goal(sid, fresh)
+        return "done", "old scope complete", False, None, False
+
+    with patch("hermes_cli.goals.judge_goal", side_effect=judge_changes_scope):
+        decision = mgr.evaluate_after_turn("old work complete")
+    assert load_goal(sid).status == "active"
+    assert getattr(load_goal(sid), field) == value
+    assert decision["should_continue"] is False
+
+
 def test_evaluate_after_turn_preserves_concurrent_user_pause():
     """A user pause that lands while the (slow) judge runs must survive the turn's state write.
 
@@ -267,6 +289,19 @@ def test_extract_turn_evidence_pairs_tool_call_args_with_result():
         "judge must see the write_file CONTENT proving count=25, not just the receipt"
     )
     assert "count_state.json" in joined
+    assert '"bytes_written": 14' in joined, "the paired tool result must accompany its call args"
+
+
+def test_evidence_prompt_is_bounded_after_pairing_tool_args_and_results():
+    """Paired evidence cannot consume an unbounded judge context on a tool-heavy turn."""
+    from hermes_cli.goals import _JUDGE_EVIDENCE_MAX_CHARS, _JUDGE_EVIDENCE_MAX_ITEMS, _append_evidence_to_judge_prompt
+
+    evidence = [f"tool {i}: {'x' * (_JUDGE_EVIDENCE_MAX_CHARS + 50)}" for i in range(10)]
+    prompt = _append_evidence_to_judge_prompt("base\n", evidence)
+
+    lines = [line for line in prompt.splitlines() if line.startswith("- tool")]
+    assert len(lines) == _JUDGE_EVIDENCE_MAX_ITEMS
+    assert all(len(line.removeprefix("- ")) <= _JUDGE_EVIDENCE_MAX_CHARS for line in lines)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -479,4 +514,28 @@ def test_max_turns_budget_pause_preserves_concurrent_done():
 
     persisted = load_goal(sid)
     assert persisted.status == "done", "turn-budget pause must not resurrect concurrent done"
+    assert decision["should_continue"] is False
+
+
+def test_gate_failure_preserves_concurrent_pause_and_never_continues(monkeypatch):
+    """Gate bookkeeping is also turn persistence: a pause during a slow gate must win.
+
+    This is deliberately outside the judge matrix.  Gates run before the judge, but used the
+    same stale in-memory state and a whole-object save, so they could revive a Desktop pause.
+    """
+    sid = "runaway-gate-pause-1"
+    mgr = GoalManager(sid)
+    mgr.set("do the thing", max_turns=8)
+    mgr.add_gate("false")
+
+    def _gate_pauses(_gate):
+        GoalManager(sid).pause(reason="user-paused")
+        return False, 1, "still failing"
+
+    monkeypatch.setattr("hermes_cli.goals.run_gate", _gate_pauses)
+    decision = mgr.evaluate_after_turn("worked")
+
+    persisted = load_goal(sid)
+    assert persisted.status == "paused"
+    assert persisted.paused_reason == "user-paused"
     assert decision["should_continue"] is False

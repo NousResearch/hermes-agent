@@ -458,11 +458,8 @@ def _is_timeout_error(error: BaseException) -> bool:
     """True for httpx/socket timeouts raised anywhere in the recall path."""
     if isinstance(error, TimeoutError):
         return True
-    try:
-        import httpx
-        return isinstance(error, httpx.TimeoutException)
-    except Exception:
-        return False
+    httpx = _get_httpx()
+    return httpx is not None and isinstance(error, httpx.TimeoutException)
 
 
 def _resolve_user_space(client, *, timeout: Optional[float] = None) -> Optional[str]:
@@ -1624,12 +1621,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 deadline=deadline, request_timeout=cfg["request_timeout_seconds"], full_read_limit=cfg["full_read_limit"],
             ))
         except Exception as e:
-            # A recall timeout is a silent capability loss (no memories injected, no user-visible
-            # error), so it is logged at WARNING while other failures stay at debug.
+            # Recall contributes no query context after a timeout. Report the configured
+            # budgets without private exception text or another request to resolve identity.
             if _is_timeout_error(e):
-                logger.warning("OpenViking recall timed out user=%s budget_s=%s request_s=%s: %s",
-                               self._user_space(client), cfg["timeout_seconds"],
-                               cfg["request_timeout_seconds"], e)
+                logger.warning("OpenViking recall timed out (%s; budget_s=%s request_s=%s); no query context injected",
+                               type(e).__name__, cfg["timeout_seconds"], cfg["request_timeout_seconds"])
             else:
                 logger.debug("OpenViking context search failed: %s", e)
             return ""

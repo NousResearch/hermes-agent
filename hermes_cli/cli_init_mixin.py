@@ -249,6 +249,9 @@ class CLIInitMixin:
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         self._explicit_reasoning_config = None
         # --reasoning wins for this run only (never persisted); unparseable -> warn and ignore.
+        # Explicit user reasoning choices (--reasoning flag, /reasoning <level>) take precedence
+        # over adaptive escalation; the flag is forwarded as reasoning_user_override at build time.
+        self._session_reasoning_override = False
         if reasoning is not None and str(reasoning).strip():
             _cli_reasoning = _parse_reasoning_config(reasoning)
             if _cli_reasoning is None:
@@ -256,6 +259,7 @@ class CLIInitMixin:
             else:
                 self.reasoning_config = _cli_reasoning
                 self._explicit_reasoning_config = _cli_reasoning
+                self._session_reasoning_override = True
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
 
         pr = CLI_CONFIG.get("provider_routing", {}) or {}

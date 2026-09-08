@@ -181,12 +181,12 @@ function MetaRow({ children, label }: { children: ReactNode; label: string }) {
 /** The dashboard's diagnostics panel: severity-toned, plain-English, with the
  *  backend's structured recovery actions as buttons. `reassign` is skipped —
  *  the Assignee control in the meta table IS that action, inline. */
-function Diagnostics({ items, onReclaim }: { items: Diagnostic[]; onReclaim: () => void }) {
+export function Diagnostics({ items, onReclaim }: { items: Diagnostic[]; onReclaim?: () => void }) {
   const k = useKanban()
 
   const act = (action: DiagnosticAction) => {
     if (action.kind === 'reclaim') {
-      onReclaim()
+      onReclaim?.()
     } else if (action.kind === 'cli_hint') {
       void navigator.clipboard.writeText(String(action.payload?.command ?? action.label))
       host.notify({ kind: 'info', message: k.commandCopied })
@@ -197,7 +197,9 @@ function Diagnostics({ items, onReclaim }: { items: Diagnostic[]; onReclaim: () 
     <div className="flex flex-col gap-2">
       {items.map(diag => {
         const tone = SEVERITY_TONE[diag.severity]
-        const actions = diag.actions.filter(action => action.kind === 'reclaim' || action.kind === 'cli_hint')
+        const actions = onReclaim
+          ? diag.actions.filter(action => action.kind === 'reclaim' || action.kind === 'cli_hint')
+          : []
 
         return (
           <Callout
@@ -355,7 +357,13 @@ function CommentComposer({
   )
 }
 
-function DescriptionSection({ body, onSave }: { body: null | string | undefined; onSave: (body: string) => void }) {
+export function DescriptionSection({
+  body,
+  onSave
+}: {
+  body: null | string | undefined
+  onSave?: (body: string) => void
+}) {
   const k = useKanban()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -363,21 +371,23 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
   return (
     <Section
       action={
-        <Button
-          aria-label={editing ? k.cancelEdit : k.editDescription}
-          onClick={() => {
-            setDraft(body ?? '')
-            setEditing(!editing)
-          }}
-          size="icon-xs"
-          variant="ghost"
-        >
-          <Codicon name={editing ? 'close' : 'edit'} size="0.75rem" />
-        </Button>
+        onSave && (
+          <Button
+            aria-label={editing ? k.cancelEdit : k.editDescription}
+            onClick={() => {
+              setDraft(body ?? '')
+              setEditing(!editing)
+            }}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <Codicon name={editing ? 'close' : 'edit'} size="0.75rem" />
+          </Button>
+        )
       }
       label={k.description}
     >
-      {editing ? (
+      {editing && onSave ? (
         <div className="flex flex-col gap-1.5">
           <Textarea
             className="min-h-24 text-[0.75rem]"

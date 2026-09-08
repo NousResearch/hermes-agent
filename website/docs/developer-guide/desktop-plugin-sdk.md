@@ -803,9 +803,31 @@ register(ctx) {
 
 `ctx.rest` is profile-aware and rejects path traversal (`..`) so you can never
 address another plugin's API or a core route through it. `PluginRestOptions` is
-`{ method?, body?, upload?: { filename, contentType?, bytes }, timeoutMs? }`.
+`{ method?, body?, upload?: { filename, contentType?, bytes }, timeoutMs?, source?: { connectionId, profile } }`.
 
-`ctx.socket` auto-reconnects with backoff until disposed. **It resolves to a no-op
+An explicit `source` pins the request to a registered connection and backend
+profile without activating that gateway or changing the current chat. Both
+fields must be non-empty; `connectionId: 'local'` explicitly selects this device
+even when the foreground is remote. Omit `source` to retain the active-profile
+behavior. This selector is not authentication: Electron resolves the registry
+and attaches its existing credentials. Removed connections and authentication
+failures reject, never fall back to another source. The calling plugin's
+namespace restriction is unchanged.
+
+Cross-host readers must key caches and selections by connection, backend profile,
+board, and task as applicable, and stop polling on page exit. The bundled Kanban
+plugin's **Browse hosts** view uses this read-only path; boards remain separate,
+with source-qualified labels rather than guessing physical-board identity. Its
+successful visible queries refresh every 30 seconds; transient failures retry
+twice with backoff, then require manual retry. No-source editing stays unchanged.
+
+The example below exercises the actual browser components with synthetic IPC
+responses only. It does not demonstrate live host connectivity or authentication.
+
+![Read-only host board browser with synthetic sources and task details](/img/desktop-board-browser-synthetic.png)
+
+`ctx.socket` remains active-backend scoped (it has no `source` option); do not use
+it for another host's cache. It auto-reconnects with backoff until disposed. **It resolves to a no-op
 on OAuth remotes** (single-use WS tickets are core-managed) — treat the socket as
 an accelerator over polling, never a replacement. Every consumer needs a polling
 fallback anyway, since any socket can drop.

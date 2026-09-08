@@ -32,6 +32,8 @@ import {
 
 import { $boardSlug, bindApi, boardKey, fetchBoard } from './api'
 import { KanbanBoardPage } from './board'
+import { BoardBrowser } from './browser'
+import { createBoardBrowserReads } from './browser-api'
 import { KANBAN_LOCALES } from './i18n'
 import { $newTaskLane, useKanban } from './ui'
 
@@ -85,6 +87,7 @@ const plugin: HermesPlugin = {
   register(ctx) {
     ctx.i18n.register(KANBAN_LOCALES)
     ctx.onDispose(bindApi(ctx.rest, ctx.storage, ctx.socket, { os: ctx.os, t: ctx.i18n.t }))
+    const browserReads = createBoardBrowserReads(ctx.rest)
 
     // The plugin command pattern: ONE action id (`kanban.newTask`) wired into
     // two areas — a keybind (dispatch + rebindable panel row) and a palette row
@@ -104,6 +107,22 @@ const plugin: HermesPlugin = {
     }
 
     ctx.registerMany([
+      {
+        id: 'host-boards',
+        area: ROUTES_AREA,
+        data: { path: '/kanban/hosts' } satisfies RouteContribution,
+        render: () => <BoardBrowser reads={browserReads} />
+      },
+      {
+        id: 'browse-hosts',
+        area: PALETTE_AREA,
+        data: {
+          id: 'kanban.browseHosts',
+          label: ctx.i18n.t('browser.title'),
+          keywords: ['kanban', 'boards', 'hosts'],
+          run: () => host.navigate('/kanban/hosts')
+        } satisfies PaletteContribution
+      },
       {
         id: 'page',
         area: ROUTES_AREA,

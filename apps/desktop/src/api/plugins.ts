@@ -41,6 +41,9 @@ export async function activeConnection(): Promise<HermesConnection> {
 /** Options for a plugin REST call — mirrors the app's own `hermesDesktop.api`
  *  shape, minus the path (which is namespace-derived). */
 export interface PluginRestOptions {
+  /** Pin a registered source without changing the foreground gateway. This
+   *  selects routing only; Electron retains registry and credential ownership. */
+  source?: Readonly<{ connectionId: string; profile: string }>
   method?: string
   body?: unknown
   /** Single-file multipart upload (see HermesApiRequest.upload). */
@@ -55,7 +58,15 @@ export interface PluginRestOptions {
 function pluginPathSuffix(caller: string, path: string): string {
   const suffix = path.startsWith('/') ? path : `/${path}`
 
-  if (suffix.split(/[?#]/, 1)[0].split('/').includes('..')) {
+  const pathname = suffix.split(/[?#]/, 1)[0]
+  const decoded = decodeURIComponent(pathname)
+
+  if (
+    decoded.split(/[/\\]/).includes('..') ||
+    decoded.includes('\\') ||
+    [...decoded].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) ||
+    /%(?:2e|2f|5c|25)/i.test(decoded)
+  ) {
     throw new Error(`${caller}: illegal path traversal in "${path}"`)
   }
 
@@ -74,6 +85,17 @@ export async function pluginRest<T>(pluginId: string, path: string, opts: Plugin
   }
 
   const suffix = pluginPathSuffix('pluginRest', path)
+  const source = opts.source
+
+  if (
+    source &&
+    (!source.connectionId ||
+      source.connectionId !== source.connectionId.trim() ||
+      !source.profile ||
+      source.profile !== source.profile.trim())
+  ) {
+    throw new Error('pluginRest: source requires an explicit connectionId and backend profile')
+  }
 
   return hermesApi<T>({
     path: `/api/plugins/${pluginId}${suffix}`,
@@ -81,7 +103,7 @@ export async function pluginRest<T>(pluginId: string, path: string, opts: Plugin
     body: opts.body,
     upload: opts.upload,
     timeoutMs: opts.timeoutMs,
-    ...profileScoped()
+    ...(source ? { connectionId: source.connectionId, profile: source.profile } : profileScoped())
   })
 }
 

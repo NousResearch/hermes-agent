@@ -2307,6 +2307,21 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     for c in cands:
         if c and c in agent.valid_tool_names:
             return c
+    # Fast Tool Resolver / One-Shot Hydration:
+    # If the model directly invokes a deferred tool name known in the session's deferred catalog,
+    # resolve it directly so execution proceeds without a failed cycle.
+    try:
+        from agent.tool_executor import _tool_search_scoped_names
+        deferred_names = _tool_search_scoped_names(agent)
+        if deferred_names:
+            for c in cands:
+                if c and c in deferred_names:
+                    return c
+            deferred_matches = get_close_matches(lowered, deferred_names, n=1, cutoff=0.7)
+            if deferred_matches:
+                return deferred_matches[0]
+    except Exception:
+        pass
     matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)
     return matches[0] if matches else None
 

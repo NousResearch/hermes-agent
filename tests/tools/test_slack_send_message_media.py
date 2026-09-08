@@ -133,6 +133,33 @@ def test_media_only_skips_text_post():
         os.unlink(pdf)
 
 
+def test_keyless_media_uses_api_edge_without_file_edge():
+    """Outbound files_upload_v2 needs the API edge, not keyless file downloads.
+
+    The Slack SDK obtains a signed upload URL and sends the bytes directly to it;
+    the configured file edge is only for inbound private-file downloads.
+    """
+    pdf = _tmpfile(".pdf")
+    client = _mock_client()
+    pconfig = _pconfig()
+    pconfig.extra = {"keyless_api_base_url": "https://edge.example/api/"}
+    try:
+        with _fake_slack_sdk(client):
+            result = asyncio.run(
+                _standalone_send(
+                    pconfig,
+                    "C012AB3CD",
+                    "",
+                    media_files=[(pdf, False)],
+                )
+            )
+        assert result["success"] is True
+        assert client.base_url == "https://edge.example/api/"
+        client.files_upload_v2.assert_awaited_once()
+    finally:
+        os.unlink(pdf)
+
+
 def test_send_to_platform_routes_slack_media():
     """_send_to_platform must call Slack standalone_sender with media_files."""
     import httpx

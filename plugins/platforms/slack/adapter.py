@@ -48,9 +48,9 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
 
 try:  # sibling module; support both package and flat plugin-dir import
-    from .api_transport import keyless_api_base_url, has_keyless_credentials
+    from .api_transport import keyless_api_base_url, has_keyless_credentials, keyless_file_url, KeylessFileError
 except ImportError:  # pragma: no cover - plugin loaded outside package context
-    from api_transport import keyless_api_base_url, has_keyless_credentials  # type: ignore
+    from api_transport import keyless_api_base_url, has_keyless_credentials, keyless_file_url, KeylessFileError  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -1494,6 +1494,8 @@ class SlackAdapter(BasePlatformAdapter):
         self, exc: Exception, *, file_obj: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Translate Slack download exceptions into user-facing attachment diagnostics."""
         file_label = _attachment_label(file_obj)
+        if isinstance(exc, KeylessFileError):
+            return f"Slack attachment unavailable for {file_label}: {exc}"
         response = getattr(exc, "response", None)
         api_detail = self._describe_slack_api_error(response, file_obj=file_obj)
         if api_detail:
@@ -6217,8 +6219,15 @@ class SlackAdapter(BasePlatformAdapter):
         an HTML body (sign-in page) is rejected so bogus bytes are never cached."""
         import httpx
 
-        client_cm = self._open_slack_file_client(url)
-        bot_token = self._resolve_download_token(url, team_id)
+        if keyless_api_base_url(self.config.extra):
+            url = keyless_file_url(self.config.extra, url)
+            # The file edge must return bytes itself; never follow a redirect into
+            # another API method, the CDN, or a different credential boundary.
+            client_cm = httpx.AsyncClient(timeout=30.0, follow_redirects=False)
+            bot_token = "xoxb-keyless"
+        else:
+            client_cm = self._open_slack_file_client(url)
+            bot_token = self._resolve_download_token(url, team_id)
         async with client_cm as client:
             for attempt in range(3):
                 try:

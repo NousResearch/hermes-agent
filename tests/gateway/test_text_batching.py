@@ -287,7 +287,9 @@ class TestWhatsAppTextBatching:
         adapter._enqueue_text_event(event)
 
         adapter.handle_message.assert_not_called()
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(
+            asyncio.gather(*adapter._pending_text_batch_tasks.values()), timeout=2,
+        )
 
         adapter.handle_message.assert_called_once()
         assert adapter.handle_message.call_args[0][0].text == "hello world"
@@ -301,18 +303,18 @@ class TestWhatsAppTextBatching:
         adapter._enqueue_text_event(
             _make_event("first part", Platform.WHATSAPP, msg_id="wamid.A")
         )
-        await asyncio.sleep(0.02)
         adapter._enqueue_text_event(
             _make_event("second part", Platform.WHATSAPP, msg_id="wamid.B")
         )
 
         adapter.handle_message.assert_not_called()
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(
+            asyncio.gather(*adapter._pending_text_batch_tasks.values()), timeout=2,
+        )
 
         adapter.handle_message.assert_called_once()
         dispatched = adapter.handle_message.call_args[0][0]
-        assert "first part" in dispatched.text
-        assert "second part" in dispatched.text
+        assert dispatched.text == "first part\nsecond part"
         assert dispatched.message_id == "wamid.B"
         assert dispatched.reply_to_message_id == "wamid.B"
 

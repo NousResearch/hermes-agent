@@ -143,6 +143,36 @@ async def test_busy_path_counts_a_bot_message_once_before_steering(monkeypatch, 
     assert (await runner._hm_admit_event(events[0]))[0] is events[0]
 
 
+@pytest.mark.asyncio
+async def test_routed_bot_traffic_is_metered_by_the_transport_profiles_policy(tmp_path, monkeypatch, runner, clock):
+    """The verdict runs under the transport profile; the count must read the same ``bot_loop_guard`` block, not
+    the routed profile's, or the two disagree about the budget."""
+    from gateway.platforms.base import MessageEvent
+    from gateway.run import _profile_runtime_scope
+
+    transport, routed = tmp_path / "transport", tmp_path / "routed"
+    for home, block in ((transport, "enabled: false"), (routed, "enabled: true\n    max_events: 1")):
+        home.mkdir()
+        (home / "config.yaml").write_text(f"gateway:\n  bot_loop_guard:\n    {block}\n")
+    monkeypatch.setenv("HERMES_HOME", str(transport))
+    runner._bot_loop_guard = BotLoopGuard(clock=clock.now)
+    runner._principal_authorized = lambda *a, **kw: True
+    runner._adapter_profile_for_source = lambda source: "transport"
+    runner._scale_to_zero_note_real_inbound = lambda: None
+    runner._hm_pre_gateway_dispatch_hook = lambda event, source: event
+
+    def _routed_bot(i: int) -> MessageEvent:
+        source = _bot(BOT_A)
+        source.profile = "routed"
+        source._authorization_profile_home = transport
+        return MessageEvent(text="ping", message_id=str(i), source=source)
+
+    with _profile_runtime_scope(routed):
+        admitted = [await runner._hm_admit_event(_routed_bot(i)) is not None for i in range(3)]
+
+    assert admitted == [True, True, True]
+
+
 @pytest.mark.parametrize("senders, chat_id, chat_type, group_allowlist", [
     ([BOT_A, BOT_B], GROUP_CHAT, "group", True),
     ([BOT_A, BOT_B, BOT_C], GROUP_CHAT, "group", True),

@@ -23,7 +23,7 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
         "execute": ("terminal", "process", "execute_code", "browser_click", "browser_type", "browser_scroll",
                     "browser_press", "browser_back", "delegate_task", "image_generate", "text_to_speech"),
         "fetch": ("web_search", "web_extract", "browser_navigate"),
-        "other": ("todo",),
+        "other": ("todo", "todo_list"),
         "think": ("_thinking",),
     }.items()
     for name in names
@@ -237,6 +237,7 @@ _TITLE_BUILDERS: Dict[str, Callable[[Args], str]] = {
     "memory": lambda a: f"memory {_arg(a, 'action', default='manage')}: {_arg(a, 'target', default='memory')}",
     "execute_code": _title_execute_code,
     "todo": lambda a: f"todo ({_plural(len(a['todos']), 'item')})" if isinstance(a.get("todos"), list) else "todo",
+    "todo_list": lambda a: f"todo_list ({_plural(len(a['todos']), 'item')})" if isinstance(a.get("todos"), list) else "todo_list",
     "skill_view": lambda a: f"skill view ({_arg(a, 'name', default='?')}{_fmt(_arg(a, 'file_path'), '/{}', '')})",
     "skills_list": lambda a: _fmt(_arg(a, "category"), "skills list ({})", "skills list"),
     "skill_manage": _title_skill_manage,
@@ -679,6 +680,7 @@ def _format_generic_structured_result(tool_name: str, result: Optional[str], *, 
 
 _COMPLETION_FORMATTERS: Dict[str, _Formatter] = {
     "todo": _format_todo_result,
+    "todo_list": _format_todo_result,
     "read_file": _format_read_file_result,
     "write_file": _format_edit_result,
     "patch": _format_edit_result,
@@ -823,6 +825,7 @@ _START_CONTENT_BUILDERS: Dict[str, Optional[Callable[[Args], Any]]] = {
         f"Searching for '{a.get('pattern', '')}' ({a.get('target', 'content')})" + _fmt(a.get("path"), " in {}", "")
     ),
     "todo": _start_todo,
+    "todo_list": _start_todo,
     "skill_view": lambda a: f"Loading skill '{_arg(a, 'name', default='?')}' ({_arg(a, 'file_path', default='SKILL.md')})",
     "skill_manage": _start_skill_manage,
     "execute_code": _start_execute_code,

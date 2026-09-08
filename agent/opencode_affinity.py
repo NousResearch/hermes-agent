@@ -72,6 +72,16 @@ def opencode_session_headers(
         )
     except Exception:
         key = str(session_id or "")
+    if not key:
+        # Stateless one-shot calls (commit-message generation via ``hermes -z``, standalone
+        # cron jobs) run outside any conversation turn, so affinity scope and the ambient
+        # conversation contextvar are both unavailable. OpenCode requires the header to
+        # route and 400s with ``MissingSessionID`` when it is absent; there is no prompt
+        # cache to keep warm across a single stateless request, so synthesize a per-call
+        # opaque key. See #105841.
+        from uuid import uuid4
+
+        key = uuid4().hex
     return {OPENCODE_SESSION_HEADER: key} if key else {}
 
 

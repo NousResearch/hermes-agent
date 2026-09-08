@@ -134,6 +134,29 @@ class TestProviderShutdown:
         self._shutdown_blocks_until(provider, release)
         assert not provider._prefetch_thread.is_alive()
 
+    def test_recall_sync_worker_is_registered_under_the_provider(self, async_manager):
+        from plugins.memory.honcho.recall_sync import prefetch_sync
+
+        provider = self._provider(async_manager, cfg=HonchoClientConfig(api_key="test-key", enabled=True, timeout=0.05))
+        entered, release = threading.Event(), threading.Event()
+
+        def blocked(session_key, query, **kwargs):
+            entered.set()
+            release.wait(timeout=2)
+            return {}
+
+        async_manager.get_prefetch_context = blocked
+        provider.on_turn_start(1, "what did we decide about the schema?")
+        try:
+            assert prefetch_sync(provider, "what did we decide about the schema?") == ""
+            assert entered.wait(timeout=1)
+            assert join_plugin_threads((provider,), timeout=0.01) == ["honcho-recall-sync"]
+            release.set()
+            assert join_plugin_threads((provider,), timeout=2) == []
+        finally:
+            release.set()
+            provider._recall_sync_thread.join(timeout=2)
+
     def test_shutdown_does_not_close_the_shared_client(self, async_manager):
         provider = self._provider(async_manager)
         provider.shutdown()

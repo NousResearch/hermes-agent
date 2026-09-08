@@ -92,7 +92,7 @@ def prefetch_sync(provider, query: str) -> str:
             except Exception as exc:
                 logger.debug("Honcho synchronous recall failed: %s", exc)
 
-        worker = spawn_context_thread(retrieve, name="honcho-recall-sync")
+        worker = spawn_context_thread(retrieve, name="honcho-recall-sync", owner=provider)
         provider._recall_sync_thread = worker
         worker.start()
         worker.join(timeout=max(0.0, deadline - time.monotonic()))

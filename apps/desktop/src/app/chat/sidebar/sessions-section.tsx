@@ -30,6 +30,7 @@ import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
+import { GatewayProfileGroups } from './gateway-groups'
 import { mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from './order'
 import {
   EnteredProjectContent,
@@ -524,8 +525,9 @@ export function SidebarSessionsSection({
         )}
       </>
     )
+  } else if (groups?.length && groups.every(group => group.mode === 'profile' && group.profile)) {
+    inner = <GatewayProfileGroups groups={groups} onNewSessionSplit={onNewSessionSplit} renderRows={renderRows} sensors={dndSensors} />
   } else if (groups?.length) {
-    // Profile/source groups never reorder; render them flat with static rows.
     inner = groups.map(group => (
       <SidebarWorkspaceGroup
         group={group}

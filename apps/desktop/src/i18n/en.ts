@@ -2367,6 +2367,17 @@ export const en: Translations = {
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: 'Gateway & profile',
+      rename: 'Rename group',
+      aliasLabel: 'Display name',
+      aliasHint: 'Display name only; gateway and profile names stay unchanged.',
+      resetName: 'Reset name',
+      moveUp: 'Move up',
+      moveDown: 'Move down',
+      reorder: 'Reorder group',
+      actions: 'Group actions'
+    },
     nav: {
       'new-session': 'New session',
       skills: 'Capabilities',

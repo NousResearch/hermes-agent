@@ -1970,6 +1970,17 @@ export const zhHant = defineLocale({
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: '閘道與設定檔',
+      rename: '重新命名群組',
+      aliasLabel: '顯示名稱',
+      aliasHint: '僅變更顯示名稱；閘道和設定檔名稱維持不變。',
+      resetName: '重設名稱',
+      moveUp: '上移',
+      moveDown: '下移',
+      reorder: '調整群組順序',
+      actions: '群組動作'
+    },
     nav: {
       'new-session': '新工作階段',
       skills: '技能與工具',

@@ -2533,6 +2533,17 @@ export const zh: Translations = {
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: '网关与配置',
+      rename: '重命名分组',
+      aliasLabel: '显示名称',
+      aliasHint: '仅更改显示名称；网关和配置档名称保持不变。',
+      resetName: '重置名称',
+      moveUp: '上移',
+      moveDown: '下移',
+      reorder: '调整分组顺序',
+      actions: '分组操作'
+    },
     nav: {
       'new-session': '新建会话',
       skills: '技能与工具',

@@ -2019,6 +2019,17 @@ export interface Translations {
   }
 
   sidebar: {
+    gatewayGroups: {
+      grouping: string
+      rename: string
+      aliasLabel: string
+      aliasHint: string
+      resetName: string
+      moveUp: string
+      moveDown: string
+      reorder: string
+      actions: string
+    }
     nav: Record<string, string>
     searchAria: string
     searchPlaceholder: string

@@ -63,6 +63,22 @@ def test_npm_install_restores_lockfile_rewritten_by_npm(tmp_path):
     assert lockfile.read_bytes() == original
 
 
+def test_npm_install_restores_lockfile_removed_by_npm(tmp_path):
+    lockfile = tmp_path / "package-lock.json"
+    original = b'{"lockfileVersion":3}\n'
+    lockfile.write_bytes(original)
+
+    def npm_ci(*_args, **_kwargs):
+        lockfile.unlink()
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    with patch("hermes_cli.main_web_build._run_npm_watching_for_engine_failure", side_effect=npm_ci):
+        result = _run_npm_install_deterministic("npm", tmp_path)
+
+    assert result.returncode == 0
+    assert lockfile.read_bytes() == original
+
+
 def test_npm_install_does_not_rewrite_unchanged_lockfile(tmp_path):
     lockfile = tmp_path / "package-lock.json"
     lockfile.write_bytes(b'{"lockfileVersion":3}\n')

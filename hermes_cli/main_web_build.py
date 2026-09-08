@@ -363,8 +363,13 @@ def _run_npm_install_deterministic(
     finally:
         if original_lockfile is None:
             lockfile.unlink(missing_ok=True)
-        elif lockfile.read_bytes() != original_lockfile:
-            lockfile.write_bytes(original_lockfile)
+        else:
+            try:
+                current_lockfile = lockfile.read_bytes()
+            except FileNotFoundError:
+                current_lockfile = None
+            if current_lockfile != original_lockfile:
+                lockfile.write_bytes(original_lockfile)
 
 
 def _run_npm_watching_for_engine_failure(

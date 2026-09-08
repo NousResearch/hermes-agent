@@ -162,7 +162,41 @@ async def test_fresh_ancient_turn_remains_controllable(monkeypatch):
     result = await runner._handle_message(_make_event("/verbose"))
 
     runner._handle_verbose_command.assert_awaited_once()
+    agent.interrupt.assert_not_called()
     assert runner._running_agents[sk] is agent
     assert result == "tool progress: new"
+
+
+def test_stale_turn_is_interrupted_before_its_slot_is_released(monkeypatch):
+    """A replacement turn must not overlap the evicted worker for the same chat."""
+    import time
+    from gateway.run import _INTERRUPT_REASON_TIMEOUT
+
+    runner = _make_runner()
+    sk = build_session_key(_make_source())
+    agent = runner._running_agents[sk]
+    agent.get_activity_summary.return_value = {
+        "seconds_since_activity": 6.0,
+        "last_activity_desc": "waiting on model response",
+        "api_call_count": 1,
+        "max_iterations": 60,
+    }
+    runner._running_agents_ts[sk] = time.time() - 6.0
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "5")
+
+    operations = []
+    agent.interrupt.side_effect = lambda reason: operations.append(("interrupt", reason))
+    runner._invalidate_session_run_generation = (
+        lambda _key, *, reason: operations.append("invalidate")
+    )
+    runner._release_running_agent_state = lambda _key: operations.append("release")
+
+    runner._hm_evict_idle_stale_agent(sk)
+
+    assert operations == [
+        ("interrupt", _INTERRUPT_REASON_TIMEOUT),
+        "invalidate",
+        "release",
+    ]
 
 

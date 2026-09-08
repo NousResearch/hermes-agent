@@ -171,6 +171,23 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashCommand('/pets')).toBe(false)
   })
 
+  it('lets /skills approval verbs through to the gateway but keeps the hub sidebar-only', () => {
+    // Bare /skills (and its hub subcommands) still point at the sidebar — the
+    // desktop has no search/install UI to run them against.
+    expect(resolveDesktopCommand('/skills')?.surface).toEqual({ kind: 'unavailable', reason: 'settings' })
+    expect(isDesktopSlashCommand('skills')).toBe(false)
+    expect(resolveDesktopCommand('/skills', 'search foo')?.surface).toEqual({ kind: 'unavailable', reason: 'settings' })
+    expect(isDesktopSlashCommand('skills', 'search foo')).toBe(false)
+
+    // pending/approve/reject/diff/approval are the only way to unstick a
+    // staged skill write with skills.write_approval on — the gateway already
+    // handles them (_handle_skills_command), so they must reach it.
+    for (const arg of ['pending', 'approve abc123', 'reject abc123', 'diff abc123', 'approval on']) {
+      expect(resolveDesktopCommand('/skills', arg)?.surface).toEqual({ kind: 'exec' })
+      expect(isDesktopSlashCommand('skills', arg)).toBe(true)
+    }
+  })
+
   it('routes /wake through the desktop wake action instead of the slash worker', () => {
     expect(resolveDesktopCommand('/wake')?.surface).toEqual({ kind: 'action', action: 'wake' })
     expect(desktopSlashCommandArgumentMode('/wake')).toBe('options')

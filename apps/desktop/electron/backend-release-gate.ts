@@ -73,22 +73,22 @@ export async function waitForBackendRelease(
   const deadline = deps.now() + deadlineMs
 
   while (deps.now() < deadline) {
+    // A supervised backend can respawn between kill and check (grandchildren,
+    // pool entries registered mid-teardown). Re-collect before the success
+    // check so an initially clear gate cannot miss a just-published straggler.
+    for (const pid of deps.collectStragglerPids()) {
+      if (Number.isInteger(pid) && pid > 0) {
+        killedPids.add(pid)
+        deps.killProcessTree(pid)
+      }
+    }
+
     const lingering = [...killedPids].filter(pid => deps.isPidAlive(pid))
 
     if (!deps.isShimLocked() && lingering.length === 0) {
       deps.log(`[${tag}] venv shim unlocked and ${killedPids.size} signalled backend PID(s) exited; safe to proceed`)
 
       return { unlocked: true, lingeringPids: [] }
-    }
-
-    // A supervised backend can respawn between kill and check (grandchildren,
-    // pool entries registered mid-teardown). Re-collect and re-kill each pass
-    // instead of trusting the initial sweep.
-    for (const pid of deps.collectStragglerPids()) {
-      if (Number.isInteger(pid) && pid > 0) {
-        killedPids.add(pid)
-        deps.killProcessTree(pid)
-      }
     }
 
     await deps.sleep(RELEASE_GATE_POLL_MS)

@@ -552,8 +552,9 @@ class GatewayInboundMixin:
     def _hm_text_only(event: "MessageEvent") -> bool:
         return event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
 
-    def _hm_busy_steer(self, event: "MessageEvent", running_agent: Any, _quick_key: str) -> None:
-        """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics."""
+    def _hm_busy_steer(self, event: "MessageEvent", running_agent: Any, _quick_key: str) -> bool:
+        """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics.
+        Returns True when the text landed in the running turn (the caller fires ``on_message_merged``)."""
         steer_text = (event.text or "").strip()
         steered = False
         if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
@@ -563,9 +564,10 @@ class GatewayInboundMixin:
                 logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
         if steered:
             logger.debug("PRIORITY steer for session %s", _quick_key)
-            return
+            return True
         logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
         self._queue_or_replace_pending_event(_quick_key, event)
+        return False
 
     async def _hm_busy_interrupt(
         self, event: "MessageEvent", source: SessionSource, running_agent: Any, _quick_key: str
@@ -581,6 +583,7 @@ class GatewayInboundMixin:
                     self._steer_text_with_origin((event.text or "").strip(), event)
                 ):
                     logger.debug("PRIORITY redirect for session %s", _quick_key)
+                    await self._notify_message_merged(event)
                     return
             except Exception as exc:
                 logger.warning("PRIORITY redirect failed for session %s: %s", _quick_key, exc)
@@ -634,7 +637,8 @@ class GatewayInboundMixin:
             self._queue_or_replace_pending_event(_quick_key, event)
             return None
         if effective_busy_input_mode == "steer":
-            self._hm_busy_steer(event, running_agent, _quick_key)
+            if self._hm_busy_steer(event, running_agent, _quick_key):
+                await self._notify_message_merged(event)
             return None
         # Subagent protection: an interrupt cascades through ``_active_children`` and aborts
         # in-flight delegate_task work (/stop reached its handler above — still an escape hatch).

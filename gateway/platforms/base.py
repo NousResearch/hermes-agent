@@ -3059,6 +3059,13 @@ class BasePlatformAdapter(ABC):
         if emoji:
             await add(chat_id, message_id, emoji)
 
+    async def on_message_merged(self, event: MessageEvent) -> None:
+        """Hook called when the gateway folds ``event`` into the turn already running for its session
+        (``busy_input_mode`` steer, or interrupt with a live-turn redirect) instead of starting a turn
+        for it. ``on_processing_start``/``on_processing_complete`` never fire for such an event — it is
+        consumed by the active turn. A queued follow-up is not merged: it gets its own turn and the
+        normal hooks. Default: no-op."""
+
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
         hook = getattr(self, hook_name, None)

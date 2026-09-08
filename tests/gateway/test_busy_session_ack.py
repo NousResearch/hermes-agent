@@ -82,6 +82,7 @@ def _make_adapter(platform_val="telegram"):
     adapter = MagicMock()
     adapter._pending_messages = {}
     adapter._send_with_retry = AsyncMock()
+    adapter._run_processing_hook = AsyncMock()
     adapter.config = MagicMock()
     adapter.config.extra = {}
     adapter.platform = MagicMock(value=platform_val)

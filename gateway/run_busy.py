@@ -519,6 +519,8 @@ class GatewayBusySessionMixin:
             redirected = self._try_agent_verb(
                 running_agent, "redirect", (event.text or "").strip(), session_key, event=event
             )
+        if steered or redirected:
+            await self._notify_message_merged(event)
         return self._BusySteerOutcome(
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
             demoted_for_compression=demoted_for_compression, steered=steered, redirected=redirected,
@@ -539,6 +541,14 @@ class GatewayBusySessionMixin:
         except Exception as exc:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
             return False
+
+    async def _notify_message_merged(self, event: MessageEvent) -> None:
+        """Tell the adapter ``event`` was folded into the running turn (steer/redirect): its text is
+        already inside the run, so ``on_processing_start``/``on_processing_complete`` never fire for it."""
+        adapter = self._adapter_for_source(event.source)
+        run_hook = getattr(adapter, "_run_processing_hook", None)
+        if callable(run_hook):
+            await run_hook("on_message_merged", event)
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point."""

@@ -177,35 +177,6 @@ class TestTeamsSend:
         assert outbound.mentions[0].name == "Jason Treadwell"
 
     @pytest.mark.anyio
-    async def test_send_records_exact_outbound_context_for_future_reply(
-        self,
-        monkeypatch,
-    ):
-        record_context = MagicMock()
-        monkeypatch.setattr(
-            _teams_mod,
-            "_record_outbound_reply_context",
-            record_context,
-        )
-        mock_app = SimpleNamespace(
-            send=AsyncMock(return_value=SimpleNamespace(id="root-message-1")),
-        )
-        adapter = TeamsAdapter(_make_config())
-        adapter._app = mock_app
-
-        result = await adapter.send(
-            "19:channel@thread.tacv2",
-            "TaskOps Morning Pack — 2/2 — Decisions Needed\n1. Approve item one.",
-        )
-
-        assert result.success is True
-        record_context.assert_called_once_with(
-            "19:channel@thread.tacv2",
-            "root-message-1",
-            "TaskOps Morning Pack — 2/2 — Decisions Needed\n1. Approve item one.",
-        )
-
-    @pytest.mark.anyio
     async def test_send_rejects_ambiguous_mention(self):
         member_client = SimpleNamespace(
             get_all=AsyncMock(

@@ -150,10 +150,6 @@ def _rewind_or_err(rid, session, keep: int, value_err: tuple, fail_prefix: str, 
         return None, _err(rid, 5008, f"{fail_prefix}{exc}")
 
 
-def _clip(text: str, n: int = 120) -> str:
-    return text[:n] + ("…" if len(text) > n else "")
-
-
 def _exec_out(rid, output: str) -> dict:
     """command.dispatch display-only result."""
     return _ok(rid, {"type": "exec", "output": output})
@@ -376,7 +372,7 @@ def _catalog_quick_commands(cat: _Catalog) -> None:
         qtype = qc.get("type", "")
         default_desc = {"exec": f"exec: {qc.get('command', '')}", "alias": f"alias → {qc.get('target', '')}"}
         desc = str(qc.get("description") or default_desc.get(qtype, qtype or "quick command"))
-        cat.add(f"/{qname}", _clip(desc), "User commands")
+        cat.add(f"/{qname}", desc, "User commands")
 
 
 def _catalog_plugin_commands(cat: _Catalog) -> None:
@@ -387,7 +383,7 @@ def _catalog_plugin_commands(cat: _Catalog) -> None:
         key = f"/{pname}"
         if not isinstance(info, dict) or key.lower() in cat.canon:
             continue
-        cat.add(key, _clip(str(info.get("description") or "Plugin command")), "Plugin commands")
+        cat.add(key, str(info.get("description") or "Plugin command"), "Plugin commands")
         mode = info.get("argument_mode")
         if mode not in {"options", "text", "mixed"}:
             mode = "text" if str(info.get("args_hint") or "").strip() else None
@@ -398,7 +394,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> None:
     """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them)."""
     usage, origin_of = _skill_usage_lookup()
     for k, info in sorted(_tools_mod("agent.skill_commands").scan_skill_commands().items()):
-        cat.pairs.append([k, _clip(str(info.get("description", "Skill")))])
+        cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
 
@@ -984,6 +980,23 @@ def _(rid, params: dict) -> dict:
 
 @_rpc("tools.configure", 5035)
 def _(rid, params: dict) -> dict:
+    sid = params.get("session_id", "")
+    session = None
+    if sid:
+        session, err = _sess_nowait(params, rid)
+        if err:
+            return err
+    # The client sends session_id, not profile; the live session is authoritative.
+    home = (session or {}).get("profile_home")
+    scopes = _bind_build_profile_scopes(home) if home else None
+    try:
+        return _configure_session_tools(rid, params, sid, session)
+    finally:
+        if scopes is not None:
+            _release_build_profile_scopes(scopes)
+
+
+def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
     action = str(params.get("action", "") or "").strip().lower()
     targets = [str(name).strip() for name in params.get("names", []) or [] if str(name).strip()]
     if action not in {"disable", "enable"}:
@@ -1000,8 +1013,6 @@ def _(rid, params: dict) -> dict:
         tc._apply_toolset_change(cfg, "cli", toolset_targets, action)
     missing_servers = tc._apply_mcp_change(cfg, mcp_targets, action) if mcp_targets else set()
     hc.save_config(cfg)
-    sid = params.get("session_id", "")
-    session = _sessions.get(sid)
     info = _reset_session_agent(sid, session) if session else None
     enabled = sorted(tc._get_platform_tools(hc.load_config(), "cli", include_default_mcp_servers=False))
     changed = [
@@ -1295,6 +1306,14 @@ def _(rid, params: dict) -> dict:
     """Poll a flow → ``{ok, status: pending|approved|error, ...}``; ``approved`` persists tokens per profile."""
     poll = _tools_mod("tui_gateway.mcp_oauth_sessions").poll_flow
     return _ok(rid, {"ok": True, **poll(_str_arg(params, "session_id"), _str_arg(params, "name"))})
+
+
+@_mcp_rpc("oauth.cancel", _NAME_SESSION)
+def _(rid, params: dict) -> dict:
+    """Cancel a flow owned by the resolved profile, waking its callback worker."""
+    home = str(_tools_mod("hermes_constants").get_hermes_home().expanduser().resolve(strict=False))
+    cancel = _tools_mod("tui_gateway.mcp_oauth_sessions").cancel_flow
+    return _ok(rid, cancel(_str_arg(params, "session_id"), _str_arg(params, "name"), home))
 
 
 @_mcp_rpc("oauth.callback", _NAME_SESSION)

@@ -21,6 +21,7 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
+import { capabilityScoped } from '@/api/client'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import type { ClientSessionState } from '@/app/types'
@@ -43,6 +44,7 @@ import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
+import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -636,6 +638,27 @@ export const host = {
 
   /** Tail an app log file (`agent` / `errors` / `gateway` / `gui` / …). */
   logs: async (...args: Parameters<typeof getLogs>) => getLogs(...args),
+
+  /** Complete client-local MCP sign-in for a pinned bot profile, optionally
+   *  installing its catalog entry first. Uses the same OAuth flow as Settings. */
+  completeMcpOAuth: async (options: Parameters<typeof completeMcpDesktopOAuth>[0] & { catalogPreset?: string }) => {
+    const profile = capabilityScoped(options.profile)
+
+    if (options.catalogPreset) {
+      const added = await requestGatewayForAgent<{ ok?: boolean; error?: string }>(
+        profile.connectionId ?? null,
+        profile.profile || 'default',
+        'mcp.servers.add',
+        { name: options.serverName, preset: options.catalogPreset }
+      )
+
+      if (!added.ok) {
+        throw new Error(added.error || 'Could not add server')
+      }
+    }
+
+    return completeMcpDesktopOAuth({ ...options, profile })
+  },
 
   /** Navigate the app router (hash routes, e.g. '/command-center?section=system'). */
   navigate: (path: string) => {

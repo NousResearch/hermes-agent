@@ -173,6 +173,11 @@ def _resolve_concurrent_tool_timeout() -> float | None:
 def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) -> bool:
     """Flush tool-call progress to the session DB before projecting it to any UI: tool side
     effects can kill/restart the process before turn-end persistence runs."""
+    from agent.turn_iteration_prep import _maybe_inject_iteration_budget_warning
+
+    # Persist exactly the checkpoint text the next model call will see, before stamping
+    # this tool result as durable. Already-written rows must never be rewritten later.
+    _maybe_inject_iteration_budget_warning(agent, messages)
     try:
         persisted = agent._flush_messages_to_session_db(messages) is not False
         if not persisted:

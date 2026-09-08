@@ -12,7 +12,6 @@ gets stripped from the durable transcript. This test file verifies:
   - The JSON log drops only the nudge, keeping the assistant candidate.
 """
 
-import json
 import sys
 from unittest.mock import MagicMock
 
@@ -85,7 +84,7 @@ def _make_agent(ra, session_id, tmp_path):
     )
     agent._session_db = MagicMock()
     agent._session_db_created = True
-    agent._session_json_enabled = True
+
     agent.logs_dir = tmp_path / "logs"
     agent.logs_dir.mkdir(parents=True, exist_ok=True)
     return agent
@@ -120,34 +119,3 @@ def test_db_flush_drops_only_nudge_keeps_candidate(tmp_path, monkeypatch):
     assert "premature done" in persisted
     # Only the nudge is dropped.
     assert "[System: run tests]" not in persisted
-
-
-def test_json_log_drops_only_nudge_keeps_candidate(tmp_path, monkeypatch):
-    """The assistant candidate is NOT flagged synthetic, so it persists in the
-    JSON log. Only the nudge (flagged synthetic) is dropped."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    ra = _fresh_run_agent(tmp_path)
-    agent = _make_agent(ra, "sess_json", tmp_path)
-
-    messages = [
-        {"role": "user", "content": "hi"},
-        # Assistant candidate — NOT flagged synthetic, persists.
-        {"role": "assistant", "content": "premature done"},
-        # Nudge — flagged synthetic, gets dropped.
-        {"role": "user", "content": "[System: run tests]", "_pre_verify_synthetic": True},
-        {"role": "assistant", "content": "verified and clean"},
-    ]
-
-    agent._save_session_log(messages)
-
-    log_file = agent.logs_dir / "session_sess_json.json"
-    assert log_file.exists()
-    data = json.loads(log_file.read_text(encoding="utf-8"))
-    contents = [m.get("content") for m in data["messages"]]
-    # The assistant candidate persists — it is real content.
-    assert "premature done" in contents
-    assert "verified and clean" in contents
-    assert "hi" in contents
-    # Only the nudge is dropped.
-    assert "[System: run tests]" not in contents
-    assert all(not m.get("_pre_verify_synthetic") for m in data["messages"])

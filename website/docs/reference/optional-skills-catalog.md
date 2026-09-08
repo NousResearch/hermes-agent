@@ -228,6 +228,7 @@ hermes skills uninstall <skill-name>
 | [**pinecone-research**](/docs/user-guide/skills/optional/research/research-pinecone-research) | Agent RAG and long-term memory with Pinecone. |
 | [**qmd**](/docs/user-guide/skills/optional/research/research-qmd) | Hybrid local search over notes, docs, and transcripts. |
 | [**research-paper-writing**](/docs/user-guide/skills/optional/research/research-research-paper-writing) | Write ML papers for NeurIPS/ICML/ICLR: design→submit. |
+| [**rss-feeds**](/docs/user-guide/skills/optional/research/research-rss-feeds) | Read RSS, Atom, JSON feeds; discover feeds behind a page. |
 | [**scrapling**](/docs/user-guide/skills/optional/research/research-scrapling) | Scrape sites with stealth browsing and Cloudflare bypass. |
 | [**searxng-search**](/docs/user-guide/skills/optional/research/research-searxng-search) | Free keyless meta-search aggregating 70+ engines. |
 
@@ -247,6 +248,12 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**openhue**](/docs/user-guide/skills/optional/smart-home/smart-home-openhue) | Control Philips Hue lights, scenes, rooms via OpenHue CLI. |
+
+## social-media
+
+| Skill | Description |
+|-------|-------------|
+| [**reddit-reading**](/docs/user-guide/skills/optional/social-media/social-media-reddit-reading) | Read Reddit: subreddits, search, threads, users. No browser. |
 
 ## software-development
 

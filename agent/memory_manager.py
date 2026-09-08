@@ -759,7 +759,7 @@ class MemoryManager:
                 old_text = op.get("old_text")
                 if old_text:
                     metadata["old_text"] = str(old_text)
-                self.on_memory_write(action, target, str(op.get("content") or ""), metadata=metadata)
+                self.on_memory_write(action, target, str(op.get("content") or op.get("new_text") or ""), metadata=metadata)
             except Exception as e:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
 

@@ -34,6 +34,8 @@ import { PreviewStatusRow } from './preview-row'
 import { SessionControlSections } from './session-control'
 import { useSessionValue } from './session-control-utils'
 import { StatusItemRow } from './status-row'
+import { SubagentSection } from './subagent-section'
+import { useSubagentSnapshot } from './use-subagent-snapshot'
 
 // Slow safety-net poll for silent exits (processes without notify_on_complete
 // emit no event when they die). Only armed while a running row is on screen.
@@ -92,6 +94,7 @@ interface ComposerStatusStackProps {
 export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
+  useSubagentSnapshot(sessionId)
   // Subscribe to THIS session's slice only. Both maps churn on other
   // sessions' activity (subagent ticks, background polls, preview updates in
   // any tile); a whole-map `useStore` re-rendered every mounted stack — one
@@ -192,6 +195,12 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   }
 
   for (const group of groups) {
+    if (group.type === 'subagent' && sessionId) {
+      sections.push({ key: group.type, node: <SubagentSection key={sessionId} sessionId={sessionId} /> })
+
+      continue
+    }
+
     sections.push({
       key: group.type,
       node: (
@@ -292,14 +301,19 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
             composerDockCard('top'),
             // Inset (mx-2) so the stack reads slightly narrower than the composer
             // surface below it — the original look.
-            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5',
-            'transition-opacity duration-200 ease-out',
-            scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5'
           )}
         >
-          {sections.map(section => (
-            <div key={section.key}>{section.node}</div>
-          ))}
+          <div
+            className={cn(
+              'transition-opacity duration-200 ease-out',
+              scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+            )}
+          >
+            {sections.map(section => (
+              <div key={section.key}>{section.node}</div>
+            ))}
+          </div>
         </div>
       )}
     </div>

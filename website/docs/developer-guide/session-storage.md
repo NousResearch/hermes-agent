@@ -13,6 +13,14 @@ including when one `hermes serve` process serves several profiles. In-session
 agent rebuilds (Bot Chat capability refresh and `tools.configure`) must retain
 that session's database handle and bind its profile home during construction.
 Releasing the outgoing agent must not close the handle inherited by its replacement.
+`tools.configure` resolves configuration from the live session's `profile_home`,
+even when the client supplies only `session_id`. Rebuilds prepare model configuration
+before allocating a replacement, then install the agent and transfer ownership
+together; preparation failure leaves the existing agent responsible for teardown.
+Explicit profiles that cannot be resolved or whose directory has disappeared fail
+before accessing launch configuration or history. A stale `tools.configure`
+session ID likewise returns `session not found` without changing configuration;
+omitting the session ID still supports the global settings operation.
 
 In-place compaction archives old rows with `active=0` and inserts the retained
 context as `active=1` rows. A protected message can therefore legitimately appear
@@ -22,6 +30,40 @@ and check the database's profile as well as the session ID when investigating
 history that appears to revert.
 
 
+
+## Codex app-server input ownership
+
+The agent persists an accepted user input before starting its Codex turn. Codex
+then projects that input as a leading `userMessage` notification. At the runtime
+splice boundary, Hermes excludes only that leading item when it exactly matches
+the text serialized into `turn/start`, including rich-input coercion. Later or
+nonmatching user events remain intact, as do separately accepted identical turns.
+This also applies to synthetic/keyless input; it does not depend on a platform
+message ID. Existing historical duplicates are not rewritten. The gateway skips
+its transcript write when the agent reports that it owns persistence.
+
+## Gateway exception-path input ownership
+
+A gateway exception can occur before agent construction or after its input reaches
+SQLite. The gateway gives the accepted input an owner marker in the existing
+`display_metadata` sidecar and passes it through the agent's normal persistence
+path. Provider messages never contain this metadata. Platform markers namespace
+the inbound message ID by platform, profile, scope, chat, and thread; the original
+`platform_message_id` remains unchanged for quote/reply resolution. Keyless turns
+receive a fresh marker, even for identical text and timestamps.
+
+The exception writer probes only for that marker, following the published reroute
+and canonical live compression successor, then compression ancestors. Active rows
+and compaction archives count; undone rows, observed input, and unrelated writers
+do not. An unrelated process writing the same session cannot suppress this turn.
+No whole-history baseline or archived message-body allocation is needed. Failed
+ownership reads do not authorize a speculative append; ordinary history-read
+failures retain the existing history-unavailable response.
+
+Normal agent-owned persistence is unchanged. This is failure-writer arbitration,
+not universal exactly-once delivery, content deduplication, or a schema migration.
+Historical rows are not rewritten; unmarked historical inputs cannot establish
+ownership for a redelivered event.
 
 ## Architecture Overview
 

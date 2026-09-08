@@ -1686,6 +1686,8 @@ class CLICommandsMixin:
                 # in last_delivery_error (last_error is None).
                 if status == "delivery_failed" and job.get("last_delivery_error"):
                     status = f"delivery_failed: {job['last_delivery_error']}"
+                elif status == "error" and job.get("last_error"):
+                    status = f"error: {job['last_error']}"
                 print(f"  Last run: {job['last_run_at']} ({status})")
             print()
 

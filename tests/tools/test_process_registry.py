@@ -1885,6 +1885,27 @@ class TestSystemdCgroupIsolation:
     ENTIRE gateway cgroup, taking down the messaging control plane.
     """
 
+    def test_scope_probe_resolves_true_from_path(self, monkeypatch):
+        """The probe must work on NixOS, where /bin/true does not exist."""
+        import tools.process_registry as process_registry
+
+        monkeypatch.setattr(process_registry, "_IS_LINUX", True)
+        process_registry._SYSTEMD_SCOPE_AVAILABLE = None
+        process_registry._SYSTEMD_SCOPE_PROBED_AT = 0.0
+
+        binaries = {
+            "systemd-run": "/nix/systemd-run",
+            "true": "/nix/true",
+        }
+        monkeypatch.setattr("shutil.which", binaries.get)
+        completed = MagicMock(return_value=MagicMock(returncode=0, stderr=b""))
+        monkeypatch.setattr(process_registry.subprocess, "run", completed)
+
+        assert process_registry._systemd_run_user_scope_available() is True
+        argv = completed.call_args.args[0]
+        assert argv[-1] == "/nix/true"
+        assert "/bin/true" not in argv
+
     @pytest.fixture()
     def _gateway_identity(self, monkeypatch):
         """Opt-in: mark this test as running AS the live gateway process."""

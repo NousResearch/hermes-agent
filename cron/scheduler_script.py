@@ -339,15 +339,14 @@ def _run_job_script(
         from tools.environments.local import build_subprocess_env
         popen_kwargs: dict[str, Any] = {"start_new_session": True}
         if sys.platform == "win32":
-            popen_kwargs = {
+            popen_kwargs |= {
                 "creationflags": windows_hide_flags()
-                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-                # Lossy UTF-8 decode — locale-mismatched bytes from the STT command must not raise in the
-                # reader threads on non-UTF-8 Windows (#45099).
-                # Lossy UTF-8 decode — locale-mismatched bytes from the TTS command must not raise in the
-                # reader threads on non-UTF-8 Windows (#45099).
-                "encoding": "utf-8",
-                "errors": "replace"}
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+        # Lossy UTF-8 decode on all platforms — locale-mismatched bytes (STT/TTS commands,
+        # binary probes, SQLite WAL reads under concurrency) must not raise UnicodeDecodeError
+        # and kill the whole cron tick (#105582, #45099).
+        popen_kwargs["encoding"] = "utf-8"
+        popen_kwargs["errors"] = "replace"
         env = build_subprocess_env()
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.

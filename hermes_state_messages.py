@@ -3,6 +3,7 @@ replayed-user dedupe. Mixin bound via the MRO, built on SessionDB's _read_ctx/_e
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -21,8 +22,9 @@ logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module
 _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
+                   display_metadata, display_identity)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 _BUMP_GENERATION_SQL = """
             INSERT INTO conversation_generations (source, session_key, generation)
             VALUES (?, ?, 1)
@@ -56,7 +58,11 @@ def _coerce_timestamp(value: Any, default: float) -> float:
     if value is None:
         return default
     try:
-        return float(value.timestamp()) if hasattr(value, "timestamp") else float(value)
+        result = float(value.timestamp()) if hasattr(value, "timestamp") else float(value)
+        # SQLite reads both signed zero spellings back as 0.0. Hash the value
+        # in that stored form so -0.0 and 0.0 retain the historical SQL/Python
+        # identity equality.
+        return 0.0 if result == 0.0 else result
     except (TypeError, ValueError):
         logger.debug("Ignoring invalid explicit message timestamp: %r", value)
         return default
@@ -238,8 +244,18 @@ class SessionMessagesMixin:
         ``message_id`` (yuanbao's message-dict convention)."""
         _str_or_none = lambda v: _scrub_surrogates(v) if isinstance(v, str) else None  # noqa: E731
         _reasoning = lambda key: msg.get(key) if keep_reasoning else None  # noqa: E731
-        return (session_id, role, self._encode_content(msg.get("content")), msg.get("tool_call_id"),
-            json.dumps(tool_calls) if tool_calls else None, _scrub_surrogates(msg.get("tool_name")),
+        encoded_content = self._encode_content(msg.get("content"))
+        encoded_tool_calls = json.dumps(tool_calls) if tool_calls else None
+        encoded_tool_name = _scrub_surrogates(msg.get("tool_name"))
+        display_metadata = self._encode_display_metadata(msg.get("display_metadata"))
+        identity_row = {
+            "role": role, "content": encoded_content, "timestamp": message_timestamp,
+            "tool_call_id": msg.get("tool_call_id"), "tool_calls": encoded_tool_calls,
+            "tool_name": encoded_tool_name, "display_kind": msg.get("display_kind"),
+            "display_metadata": display_metadata,
+        }
+        return (session_id, role, encoded_content, msg.get("tool_call_id"),
+            encoded_tool_calls, encoded_tool_name,
             msg.get("effect_disposition"), message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
             _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
             *(self._reasoning_json_text(_reasoning(k))
@@ -247,24 +263,7 @@ class SessionMessagesMixin:
             msg.get("platform_message_id") or msg.get("message_id"),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
-            self._encode_display_metadata(msg.get("display_metadata")))
-
-    def _inherit_composite_display_order(self, conn, row_id: int, session_id: str, msg: Dict[str, Any],
-                                         message_timestamp: float, tool_calls: Any) -> None:
-        handoff, live_view = split_user_originated_turn(msg)
-        if handoff is None or live_view is None:
-            return
-        encoded_content = self._encode_content(live_view.get("content"))
-        encoded_tool_calls = json.dumps(tool_calls) if tool_calls else None
-        row = conn.execute(
-            "SELECT MIN(COALESCE(display_order, id)) FROM messages "
-            "WHERE session_id = ? AND id <> ? AND (active = 1 OR compacted = 1) "
-            "AND role = 'user' AND content IS ? AND timestamp IS ? AND tool_call_id IS ? "
-            "AND tool_calls IS ? AND tool_name IS ?",
-            (session_id, row_id, encoded_content, message_timestamp, msg.get("tool_call_id"),
-             encoded_tool_calls, msg.get("tool_name"))).fetchone()
-        if row is not None and row[0] is not None:
-            conn.execute("UPDATE messages SET display_order = ? WHERE id = ?", (row[0], row_id))
+            display_metadata, self._display_identity(self._display_dedupe_key(identity_row)))
 
     @staticmethod
     def _bump_session_counters(conn, session_id: str, inserted: int, tool_calls: int, *, unit: bool) -> None:
@@ -302,9 +301,6 @@ class SessionMessagesMixin:
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
-            if msg_id is not None:
-                self._inherit_composite_display_order(
-                    conn, int(msg_id), session_id, msg, message_timestamp, tool_calls)
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
@@ -452,8 +448,6 @@ class SessionMessagesMixin:
                 session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant"))
             if cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
-                self._inherit_composite_display_order(
-                    conn, int(cur.lastrowid), session_id, msg, message_timestamp, tool_calls)
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6
@@ -517,10 +511,13 @@ class SessionMessagesMixin:
         return [int(r["id"]) for r in rows], sum(_tool_calls_len(r["tool_calls"]) for r in rows)
 
     def _clone_message_rows(self, conn, tail_ids: List[int], *, session_id: Optional[str] = None) -> None:
-        """Pure-SQL clone of *tail_ids* as fresh live rows (new id, active=1, compacted=0, all else byte-exact;
-        FTS triggers index the clones), into *session_id* when given."""
+        """Pure-SQL clone of *tail_ids* as fresh live rows (new id/display order, active=1, compacted=0;
+        message payload columns stay byte-exact and FTS triggers index the clones), into *session_id* when given."""
         retarget = session_id is not None
-        skip = ("id", "active", "compacted") + (("session_id",) if retarget else ())
+        # A clone is a newly positioned display generation. Copy its indexed
+        # identity, but let the insert trigger assign order from rows that are
+        # still display-visible (the source may just have become rewind-only).
+        skip = ("id", "active", "compacted", "display_order") + (("session_id",) if retarget else ())
         col_list = ", ".join(c for c in self._message_column_names(conn) if c not in skip)
         conn.execute(
             f"INSERT INTO messages ({col_list}, {'session_id, ' if retarget else ''}active, compacted) "
@@ -619,6 +616,11 @@ class SessionMessagesMixin:
         return (row["role"], dedupe_content, row["timestamp"],
                 row["tool_call_id"], row["tool_calls"], row["tool_name"])
 
+    @staticmethod
+    def _display_identity(key: Tuple[Any, ...]) -> bytes:
+        """Fixed-width durable identity for indexed display-generation lookup."""
+        return hashlib.sha256(repr(key).encode("utf-8", "surrogatepass")).digest()
+
     def _dedupe_display_generations(self, rows):
         """Collapse compaction generations so each logical message appears once (the protected tail is copied
         into each generation: same role/content/timestamp, different ``active``/id); prefer the live row, then
@@ -637,9 +639,13 @@ class SessionMessagesMixin:
 
     def _ensure_display_order(self, session_id: str) -> bool:
         """Backfill one legacy session once, preserving the pre-index display identity exactly."""
+        with self._read_ctx() as conn:
+            columns = set(self._message_column_names(conn))
+        if not {"display_order", "display_identity"} <= columns:
+            return False
         missing_sql = (
             "SELECT 1 FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) "
-            "AND display_order IS NULL LIMIT 1")
+            "AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1")
         if self._read_one(missing_sql, (session_id,)) is None:
             return True
         if getattr(self, "read_only", False):
@@ -659,8 +665,8 @@ class SessionMessagesMixin:
                 first_id[key] = min(first_id.get(key, row["id"]), row["id"])
                 keyed_rows.append((row["id"], key))
             conn.executemany(
-                "UPDATE messages SET display_order = ? WHERE id = ?",
-                [(first_id[key], row_id) for row_id, key in keyed_rows])
+                "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?",
+                [(first_id[key], self._display_identity(key), row_id) for row_id, key in keyed_rows])
             return True
 
         return bool(self._execute_write(_do))
@@ -669,6 +675,8 @@ class SessionMessagesMixin:
         """``dict(row)`` with content/tool_calls/display_metadata decoded; *summary_flag* keeps
         ``_compressed_summary`` only as ``True``."""
         msg = dict(row)
+        msg.pop("display_identity", None)
+        msg.pop("display_order", None)
         if summary_flag and msg.pop("_compressed_summary", 0):
             msg["_compressed_summary"] = True
         msg["content"] = self._decode_content(msg["content"])

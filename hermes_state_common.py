@@ -364,6 +364,7 @@ CREATE TABLE IF NOT EXISTS messages (
     api_content TEXT,
     display_kind TEXT,
     display_metadata TEXT,
+    display_identity BLOB,
     display_order INTEGER
 );
 
@@ -518,17 +519,69 @@ CREATE INDEX IF NOT EXISTS idx_messages_display_page
     ON messages(session_id, display_order, active DESC, id DESC)
     WHERE active = 1 OR compacted = 1;
 CREATE INDEX IF NOT EXISTS idx_messages_display_backfill
-    ON messages(session_id) WHERE display_order IS NULL AND (active = 1 OR compacted = 1);
+    ON messages(session_id) WHERE (display_order IS NULL OR display_identity IS NULL)
+    AND (active = 1 OR compacted = 1);
+CREATE INDEX IF NOT EXISTS idx_messages_display_identity
+    ON messages(session_id, display_identity, display_order)
+    WHERE display_identity IS NOT NULL AND (active = 1 OR compacted = 1);
+DROP TRIGGER IF EXISTS messages_display_order_insert;
 CREATE TRIGGER IF NOT EXISTS messages_display_order_insert
 AFTER INSERT ON messages WHEN new.display_order IS NULL
 BEGIN
     UPDATE messages SET display_order = COALESCE((
-        SELECT MIN(COALESCE(display_order, id)) FROM messages
+        SELECT display_order FROM messages
         WHERE session_id = new.session_id AND id <> new.id
           AND (active = 1 OR compacted = 1)
-          AND role IS new.role AND content IS new.content AND timestamp IS new.timestamp
-          AND tool_call_id IS new.tool_call_id AND tool_calls IS new.tool_calls AND tool_name IS new.tool_name
+          AND display_identity = new.display_identity AND display_order IS NOT NULL
+        ORDER BY display_order LIMIT 1
     ), new.id) WHERE id = new.id;
+END;
+DROP TRIGGER IF EXISTS messages_display_visibility_update;
+CREATE TRIGGER IF NOT EXISTS messages_display_visibility_update
+AFTER UPDATE OF active, compacted ON messages
+WHEN (new.active = 1 OR new.compacted = 1) <> (old.active = 1 OR old.compacted = 1)
+BEGIN
+    UPDATE messages SET display_order = MIN(new.id, COALESCE((
+        SELECT display_order FROM messages
+        WHERE session_id = new.session_id AND id <> new.id
+          AND (active = 1 OR compacted = 1)
+          AND display_identity = new.display_identity AND display_order IS NOT NULL
+        ORDER BY display_order LIMIT 1
+    ), new.id)) WHERE id = new.id
+      AND (new.active = 1 OR new.compacted = 1);
+    UPDATE messages SET display_order = (SELECT display_order FROM messages WHERE id = new.id)
+    WHERE session_id = new.session_id AND id <> new.id AND (active = 1 OR compacted = 1)
+      AND display_identity = new.display_identity
+      AND (new.active = 1 OR new.compacted = 1);
+    UPDATE messages SET display_order = (
+        SELECT MIN(peer.id) FROM messages AS peer
+        WHERE peer.session_id = old.session_id AND (peer.active = 1 OR peer.compacted = 1)
+          AND peer.display_identity = old.display_identity
+    ) WHERE session_id = old.session_id AND (active = 1 OR compacted = 1)
+      AND display_identity = old.display_identity
+      AND NOT (new.active = 1 OR new.compacted = 1);
+END;
+DROP TRIGGER IF EXISTS messages_display_identity_update;
+CREATE TRIGGER IF NOT EXISTS messages_display_identity_update
+AFTER UPDATE OF role, content, timestamp, tool_call_id, tool_calls, tool_name,
+                display_kind, display_metadata ON messages
+BEGIN
+    UPDATE messages SET display_identity = NULL, display_order = NULL
+    WHERE id = new.id OR (
+        session_id = old.session_id AND display_identity = old.display_identity
+        AND (active = 1 OR compacted = 1)
+    );
+END;
+DROP TRIGGER IF EXISTS messages_display_identity_delete;
+CREATE TRIGGER IF NOT EXISTS messages_display_identity_delete
+AFTER DELETE ON messages WHEN old.active = 1 OR old.compacted = 1
+BEGIN
+    UPDATE messages SET display_order = (
+        SELECT MIN(peer.id) FROM messages AS peer
+        WHERE peer.session_id = old.session_id AND (peer.active = 1 OR peer.compacted = 1)
+          AND peer.display_identity = old.display_identity
+    ) WHERE session_id = old.session_id AND (active = 1 OR compacted = 1)
+      AND display_identity = old.display_identity;
 END;
 CREATE INDEX IF NOT EXISTS idx_messages_active_null
     ON messages(active) WHERE active IS NULL;

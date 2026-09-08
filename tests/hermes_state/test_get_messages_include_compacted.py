@@ -12,6 +12,9 @@ soft-deleted Undo/Rewind rows (``active=0, compacted=0``) — that remains the
 job of ``include_inactive`` (audit / debug reads).
 """
 
+import json
+import sqlite3
+
 import pytest
 
 from agent.context_compressor import (
@@ -179,6 +182,61 @@ class TestDisplayDedupe:
         large_steps = progress_steps("large")
         assert large_steps < small_steps * 3
 
+    def test_append_display_identity_work_is_bounded_by_an_index(self, db):
+        def seed(sid, count):
+            db.create_session(sid, source="desktop")
+            db._execute_write(lambda conn: conn.executemany(
+                "INSERT INTO messages (session_id, role, content, timestamp, display_order) "
+                "VALUES (?, 'assistant', ?, ?, ?)",
+                [(sid, f"row-{index}", 100_000.0, index + 1) for index in range(count)],
+            ))
+
+        seed("write-small", 2_000)
+        seed("write-large", 20_000)
+        db._wal_active = False
+
+        def append_steps(sid):
+            callbacks = 0
+
+            def progress():
+                nonlocal callbacks
+                callbacks += 1
+                return 0
+
+            db._conn.set_progress_handler(progress, 10)
+            try:
+                db.append_message(sid, role="user", content="fresh", timestamp=100_000.0)
+            finally:
+                db._conn.set_progress_handler(None, 0)
+            return callbacks
+
+        small_steps = append_steps("write-small")
+        large_steps = append_steps("write-large")
+        assert large_steps < small_steps * 3
+
+    def test_display_identity_normalizes_sql_values_and_stays_internal(self, db, tmp_path):
+        sid = "stored-values"
+        db.create_session(sid, source="desktop")
+        db.append_message(sid, role="assistant", content="same", timestamp=-0.0)
+        newest_id = db.append_message(sid, role="assistant", content="same", timestamp=0.0)
+
+        messages = db.get_messages(sid, include_compacted=True)
+        assert [message["id"] for message in messages] == [newest_id]
+        assert "display_identity" not in messages[0]
+        assert "display_order" not in messages[0]
+        json.dumps(messages)
+
+        path = tmp_path / "current-read-only.db"
+        current = SessionDB(path)
+        current.create_session("current", source="desktop")
+        current.append_message("current", role="user", content="serializable")
+        current.close()
+        reader = SessionDB(path, read_only=True)
+        try:
+            json.dumps(reader.get_messages("current", include_compacted=True))
+        finally:
+            reader.close()
+
     def test_composite_handoff_keeps_live_turn_identity_and_first_position(self, db):
         sid = "composite"
         db.create_session(sid, source="desktop")
@@ -205,6 +263,101 @@ class TestDisplayDedupe:
         assert [message["id"] for message in messages] == [carrier_id, later_id]
         assert messages[0]["content"] == carrier
         assert original_id not in [message["id"] for message in messages]
+
+    @pytest.mark.parametrize("carrier_first", [False, True])
+    def test_composite_identity_is_symmetric_and_tracks_identity_updates(self, db, carrier_first):
+        sid = f"composite-{'carrier' if carrier_first else 'raw'}-first"
+        db.create_session(sid, source="desktop")
+        carrier = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            "live ask\n\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n\n"
+            f"{SUMMARY_PREFIX}\n\n"
+            f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        )
+        contents = [carrier, "live ask"] if carrier_first else ["live ask", carrier]
+        first_id = db.append_message(sid, role="user", content=contents[0], timestamp=100.0)
+        middle_id = db.append_message(sid, role="assistant", content="middle", timestamp=200.0)
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?", (first_id,)))
+        second_id = db.append_message(sid, role="user", content=contents[1], timestamp=100.0)
+        assert [message["id"] for message in db.get_messages(
+            sid, include_compacted=True)] == [middle_id, second_id]
+
+        # Making the first generation display-visible later must not split the
+        # identity that was assigned while it was hidden.
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET compacted = 1 WHERE id = ?", (first_id,)))
+        assert [message["id"] for message in db.get_messages(
+            sid, include_compacted=True)] == [second_id, middle_id]
+
+        # Hiding the earliest generation again must advance the group's order
+        # to its first still-visible row.
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET compacted = 0 WHERE id = ?", (first_id,)))
+        assert [message["id"] for message in db.get_messages(
+            sid, include_compacted=True)] == [middle_id, second_id]
+
+        # Identity-field updates invalidate the durable grouping; the next
+        # display read rebuilds it from the canonical key before paging.
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET role = 'assistant', content = 'middle', timestamp = 200.0 "
+            "WHERE id = ?", (second_id,)))
+        assert [message["id"] for message in db.get_messages(
+            sid, include_compacted=True)] == [second_id]
+        db._execute_write(lambda conn: conn.execute(
+            "DELETE FROM messages WHERE id = ?", (second_id,)))
+        assert [message["id"] for message in db.get_messages(
+            sid, include_compacted=True)] == [middle_id]
+
+    def test_legacy_store_is_readable_then_lazily_migrated(self, tmp_path):
+        path = tmp_path / "legacy.db"
+        writer = SessionDB(path)
+        writer.create_session("legacy", source="desktop")
+        writer.append_message("legacy", role="assistant", content="same", timestamp=1.0)
+        writer.append_message("legacy", role="assistant", content="same", timestamp=1.0)
+        new_store_missing = writer._read_one(
+            "SELECT COUNT(*) FROM messages "
+            "WHERE display_order IS NULL OR display_identity IS NULL")
+        assert new_store_missing is not None and new_store_missing[0] == 0
+        writer.close()
+
+        conn = sqlite3.connect(path)
+        conn.execute("DROP TRIGGER IF EXISTS messages_display_order_insert")
+        conn.execute("DROP TRIGGER IF EXISTS messages_display_visibility_update")
+        conn.execute("DROP TRIGGER IF EXISTS messages_display_identity_update")
+        conn.execute("DROP TRIGGER IF EXISTS messages_display_identity_delete")
+        conn.execute("DROP INDEX IF EXISTS idx_messages_display_page")
+        conn.execute("DROP INDEX IF EXISTS idx_messages_display_backfill")
+        conn.execute("DROP INDEX IF EXISTS idx_messages_display_identity")
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+        for column in ("display_order", "display_identity"):
+            if column in columns:
+                conn.execute(f"ALTER TABLE messages DROP COLUMN {column}")
+        conn.commit()
+        conn.close()
+
+        reader = SessionDB(path, read_only=True)
+        try:
+            legacy_messages = reader.get_messages("legacy", include_compacted=True)
+            assert len(legacy_messages) == 1
+            json.dumps(legacy_messages)
+            assert "display_order" not in {
+                row[1] for row in reader._conn.execute("PRAGMA table_info(messages)")}
+        finally:
+            reader.close()
+
+        migrated = SessionDB(path)
+        try:
+            assert len(migrated.get_messages("legacy", include_compacted=True)) == 1
+            columns = {row[1] for row in migrated._conn.execute("PRAGMA table_info(messages)")}
+            assert {"display_order", "display_identity"} <= columns
+            assert migrated._conn.execute(
+                "SELECT COUNT(*) FROM messages "
+                "WHERE display_order IS NULL OR display_identity IS NULL").fetchone()[0] == 0
+        finally:
+            migrated.close()
 
     def test_copied_protected_tail_is_surfaced_once(self, db):
         """A message copied across compaction epochs appears exactly once."""

@@ -1,0 +1,72 @@
+name: Hermes PR bridge
+
+# This workflow is defined on the default branch and only runs after the
+# trusted CI workflow or an explicit maintainer dispatch.  It never checks out
+# or executes the PR head.  The bridge downloads a bounded snapshot and puts it
+# in a blocked, report-only Hermes Kanban card.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number
+        required: true
+        type: string
+      head_sha:
+        description: Exact 40-character PR head SHA
+        required: true
+        type: string
+      mode:
+        description: Hermes mode (must match the PR label when labels are present)
+        required: true
+        type: choice
+        options: [review, fix, test, deep-audit, architecture, benchmark]
+      board:
+        description: Existing Hermes Kanban board
+        required: false
+        default: repairs
+        type: string
+      assignee:
+        description: Existing Hermes worker profile
+        required: false
+        default: task-orchestrator
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: hermes-pr-${{ github.event_name }}-${{ github.event.workflow_run.id || inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  enqueue:
+    name: Enqueue Hermes PR case
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.event == 'pull_request' &&
+       github.event.workflow_run.conclusion != 'cancelled' &&
+       github.event.workflow_run.head_repository.full_name == github.repository) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, hermes, luna-ci, arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted bridge code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Enqueue blocked report-only case
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRIDGE_BOARD: ${{ inputs.board || 'repairs' }}
+          BRIDGE_ASSIGNEE: ${{ inputs.assignee || 'task-orchestrator' }}
+        run: >-
+          python3 scripts/ci/hermes_pr_bridge.py
+          --board "$BRIDGE_BOARD"
+          --assignee "$BRIDGE_ASSIGNEE"

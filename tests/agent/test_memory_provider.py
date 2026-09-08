@@ -177,6 +177,22 @@ class TestMemoryManager:
         assert mgr.get_provider("test1") is p
         assert mgr.get_provider("nonexistent") is None
 
+    def test_on_turn_start_passes_each_provider_only_the_kwargs_it_accepts(self):
+        """A provider with the two-positional ``on_turn_start`` still runs; one declaring the author kwargs gets them."""
+        class AuthorAwareProvider(FakeMemoryProvider):
+            def on_turn_start(self, turn_number, message, *, author_id=None, **kwargs):
+                self.turn_starts.append((turn_number, message, author_id))
+
+        mgr = MemoryManager()
+        legacy, aware = FakeMemoryProvider("builtin"), AuthorAwareProvider("aware")
+        mgr.add_provider(legacy)
+        mgr.add_provider(aware)
+
+        mgr.on_turn_start(1, "hello", author_id="bot:scout", author_name="scout", author_is_bot=True)
+
+        assert legacy.turn_starts == [(1, "hello")]
+        assert aware.turn_starts == [(1, "hello", "bot:scout")]
+
 
 
 

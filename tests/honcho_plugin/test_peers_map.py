@@ -186,10 +186,7 @@ class TestCmdPeersMap:
         )
         monkeypatch.setattr(
             honcho_cli, "_api_workspace_peers",
-            lambda client: (
-                [{"id": p, "created": "2026-01-01"} for p in ws_peers]
-                if client is not None and ws_peers is not None else None
-            ),
+            lambda client: list(ws_peers) if client is not None and ws_peers is not None else None,
         )
         monkeypatch.setattr(
             honcho_cli, "_api_workspaces",

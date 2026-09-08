@@ -1,0 +1,692 @@
+diff --git a/gateway/run_notifications.py b/gateway/run_notifications.py
+index fc356f608c..c5ce3cb4b2 100644
+--- a/gateway/run_notifications.py
++++ b/gateway/run_notifications.py
+@@ -950,7 +950,14 @@ class GatewayNotificationsMixin:
+         evt_type = str(evt.get("type") or "")
+         if evt_type == "async_delegation":
+             producer_id = str(evt.get("delegation_id") or "")
+-            return (evt_type, producer_id, "") if producer_id else None
++            if not producer_id:
++                return None
++            if evt.get("task_failure_notice"):
++                # An interim per-task notice is its own producer event: it must not mark the
++                # batch's final result as already delivered, nor a sibling's notice.
++                task_idx = ((evt.get("results") or [{}])[0] or {}).get("task_index", "")
++                return (evt_type, producer_id, f"task_failure:{task_idx}")
++            return (evt_type, producer_id, "")
+         if evt_type == "completion":
+             producer_id = str(evt.get("session_id") or "")
+             started_at = evt.get("started_at")
+@@ -1035,7 +1042,9 @@ class GatewayNotificationsMixin:
+         """
+         claim = self._CompletionClaim()
+         evt_type = evt.get("type")
+-        if evt_type == "async_delegation":
++        # An interim per-task notice shares the batch's delegation_id but is not the durable
++        # completion; claiming that row here would acknowledge the FINAL result before it exists.
++        if evt_type == "async_delegation" and not evt.get("task_failure_notice"):
+             claim.delegation_id = str(evt.get("delegation_id") or "")
+             if claim.delegation_id:
+                 try:
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index fc5c561d4b..5bbb154e65 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1404,6 +1404,9 @@ DEFAULT_CONFIG = {
+         # Max parallel children per batch AND max concurrent background delegation units; async
+         # dispatches beyond it run synchronously. Floor 1, no ceiling.
+         "max_concurrent_children": 10,
++        # Background fan-outs return as ONE message when the whole call finishes. true = each task
++        # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
++        "independent_completions": False,
+         # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
+         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
+         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
+diff --git a/tools/async_delegation.py b/tools/async_delegation.py
+index 49fb9dcfe7..83cb3c77b8 100644
+--- a/tools/async_delegation.py
++++ b/tools/async_delegation.py
+@@ -118,15 +118,13 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
+             task_json TEXT,
+             delivery_claim TEXT,
+             delivery_claimed_at REAL,
+-            origin_session_id TEXT NOT NULL DEFAULT '',
+-            child_results_json TEXT
++            origin_session_id TEXT NOT NULL DEFAULT ''
+         )""")
+     columns = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
+     # origin_session_id: raw api_server session id of the ORIGINATING request
+     # (wake target); without it restart-recovered completions are unroutable there.
+     for name, sql_type in (("owner_pid", "INTEGER"), ("owner_started_at", "INTEGER"), ("task_json", "TEXT"),
+-                           ("delivery_claim", "TEXT"), ("delivery_claimed_at", "REAL"), ("origin_session_id", "TEXT"),
+-                           ("child_results_json", "TEXT")):
++                           ("delivery_claim", "TEXT"), ("delivery_claimed_at", "REAL"), ("origin_session_id", "TEXT")):
+         if name not in columns:
+             conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
+ 
+@@ -185,62 +183,59 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
+     _prune_durable_records()
+ 
+ 
+-def record_unit_child(delegation_id: Optional[str], task_index: int, child_result: Dict[str, Any]) -> bool:
+-    """Persist one child result idempotently before unit finalisation.
+-
+-    The map is deliberately additive: a duplicate task index does not create a second
+-    event, and values are redacted before crossing the durable boundary.
+-    """
+-    if not delegation_id or not isinstance(task_index, int):
+-        return False
+-    redacted = _redact_durable_value(child_result)
+-    now = time.time()
++def record_unit_child(delegation_id: str, entry: Dict[str, Any]) -> None:
++    """Durably record ONE finished child of a still-running multi-child unit on the unit's own row, so a crash before
++    the unit joins loses only the children that had not finished. Stored in ``result_json`` (overwritten by the real
++    result at finalize); ``recover_abandoned_delegations`` replays it. Best-effort: a failed write costs recovery
++    fidelity, never the live result."""
++    try:
++        with _DB_LOCK, _transaction() as conn:
++            row = conn.execute("SELECT result_json FROM async_delegations WHERE delegation_id=? AND state='running'",
++                               (delegation_id,)).fetchone()
++            if row is None:
++                return
++            partial = json.loads(row[0] or "{}") or {}
++            results = [r for r in partial.get("results") or [] if r.get("task_index") != entry.get("task_index")]
++            results.append(entry)
++            conn.execute("UPDATE async_delegations SET result_json=?, updated_at=? WHERE delegation_id=? AND state='running'",
++                         (json.dumps({"results": results, "partial": True}), time.time(), delegation_id))
++    except Exception:  # noqa: BLE001 — recovery bookkeeping must never fail a live child
++        logger.warning("Async delegation %s: could not record finished child %s", delegation_id, entry.get("task_index"), exc_info=True)
++
++
++def push_task_failure_notice(delegation_id: str, entry: Dict[str, Any], *, n_tasks: int) -> None:
++    """Surface ONE failed child of a still-running detached batch to the parent now, instead of
++    when the slowest sibling finishes. In a 1,393-agent run every wave-1 child died in a 401 storm
++    at 08:29 and the parent learned of it at 09:36, when the batch's "unknown outcome" block finally
++    arrived: 66 minutes of a dead wave with nothing running. The notice rides the same
++    ``type="async_delegation"`` event shape as the batch result (so every drain/route/format path
++    treats it identically) with ``task_failure_notice=True`` and a single-entry ``results`` list; the
++    batch record is NOT finalized and its consolidated result still arrives as before."""
+     with _records_lock:
+         record = _records.get(delegation_id)
+-        if record is not None:
+-            children = record.setdefault("child_results", {})
+-            children.setdefault(str(task_index), redacted)
+-    with _DB_LOCK, _transaction() as conn:
+-        row = conn.execute(
+-            "SELECT child_results_json FROM async_delegations WHERE delegation_id=?",
+-            (delegation_id,),
+-        ).fetchone()
+-        if row is None:
+-            return False
+-        try:
+-            children = json.loads(row[0] or "{}")
+-        except (TypeError, ValueError):
+-            children = {}
+-        if not isinstance(children, dict):
+-            children = {}
+-        key = str(task_index)
+-        if key not in children:
+-            children[key] = redacted
+-        conn.execute(
+-            "UPDATE async_delegations SET child_results_json=?, updated_at=? WHERE delegation_id=?",
+-            (json.dumps(children), now, delegation_id),
+-        )
+-    return True
+-
+-
+-def push_task_failure_notice(
+-    delegation_id: Optional[str], task_index: int, error: str, group: Optional[str] = None,
+-) -> Dict[str, Any]:
+-    """Return a durable-shaped per-child failure notice without dropping the raw error."""
+-    notice = {
+-        "type": "async_delegation_child_failure",
+-        "delegation_id": delegation_id,
+-        "task_index": task_index,
+-        "group": group,
+-        "status": "failed",
+-        "error": _redact_durable_value(error),
+-        "created_at": time.time(),
+-    }
+-    logger.warning(
+-        "Async delegation child failed: delegation=%s task_index=%s group=%s",
+-        delegation_id, task_index, group,
+-    )
+-    return notice
++        if record is None or record.get("status") not in _ACTIVE_STATES:
++            return
++        snapshot = dict(record)
++    try:
++        from tools.process_registry import process_registry
++    except Exception as exc:  # pragma: no cover
++        logger.error("Async delegation batch %s: task failure notice dropped (process_registry import): %s", delegation_id, exc)
++        return
++    evt = {
++        "type": "async_delegation", "task_failure_notice": True, "is_batch": True, "n_tasks": n_tasks,
++        "delegation_id": delegation_id, "results": [entry],
++        "session_key": snapshot.get("session_key", ""),
++        "origin_ui_session_id": snapshot.get("origin_ui_session_id", ""),
++        "origin_session_id": snapshot.get("origin_session_id", ""),
++        "parent_session_id": snapshot.get("parent_session_id"),
++        "goal": snapshot.get("goal", ""), "goals": snapshot.get("goals"), "context": snapshot.get("context"),
++        "toolsets": snapshot.get("toolsets"), "role": snapshot.get("role"), "model": snapshot.get("model"),
++        "status": "running", "dispatched_at": snapshot.get("dispatched_at") or time.time(), "completed_at": time.time(),
++        **{k: snapshot[k] for k in _ROUTING_KEYS if snapshot.get(k)}}
++    try:
++        process_registry.completion_queue.put(evt)
++    except Exception as exc:  # pragma: no cover
++        logger.error("Async delegation batch %s: failed to enqueue task failure notice: %s", delegation_id, exc)
+ 
+ 
+ # Stable name used by the delegation completion contract.
+@@ -334,8 +329,19 @@ def _delete_durable_delegation(delegation_id: str) -> None:
+ # ── END KENSEI CUSTOM ──
+ 
+ 
++def _recovered_results(task: Dict[str, Any], result_json: Optional[str], error: str) -> Optional[List[Dict[str, Any]]]:
++    """Per-task results for an abandoned unit: recorded children as they finished, the rest ``unknown``."""
++    partial = json.loads(result_json or "{}") or {}
++    if not (task.get("is_batch") and partial.get("partial") and partial.get("results")):
++        return None
++    recorded = {r["task_index"]: r for r in partial["results"] if isinstance(r.get("task_index"), int)}
++    indexes = task.get("task_indexes") or list(range(len(task.get("goals") or [])))
++    return [recorded.get(i) or {"task_index": i, "status": "unknown", "summary": None, "error": error} for i in indexes]
++
++
+ def recover_abandoned_delegations() -> int:
+-    """Classify records whose owning process disappeared as outcome unknown."""
++    """Classify records whose owning process disappeared as outcome unknown; children a multi-child unit had already
++    recorded (``record_unit_child``) are replayed with their real results."""
+     try:
+         from gateway.status import _pid_exists, get_process_start_time
+     except Exception:
+@@ -344,31 +350,31 @@ def recover_abandoned_delegations() -> int:
+     with _DB_LOCK, _transaction() as conn:
+         rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
+                       parent_session_id, dispatched_at, owner_pid,
+-                      owner_started_at, task_json, origin_session_id, child_results_json
++                      owner_started_at, task_json, origin_session_id, result_json
+                FROM async_delegations WHERE state IN ('running','finalizing')""").fetchall()
+         for row in rows:
+-            delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, child_results_json = row
++            delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, result_json = row
+             if pid and _pid_exists(int(pid)) and (started is None or get_process_start_time(int(pid)) == int(started)):
+                 continue
+             task = json.loads(task_json or "{}")
+-            try:
+-                child_results = json.loads(child_results_json or "{}")
+-            except (TypeError, ValueError):
+-                child_results = {}
+-            if not isinstance(child_results, dict):
+-                child_results = {}
++            error = "Delegation owner exited before recording a terminal result; outcome unknown."
++            recovered_results = _recovered_results(task, result_json, error)
++            if recovered_results:
++                done = sum(1 for r in recovered_results if r.get("status") != "unknown")
++                error = (f"Delegation owner exited before the unit finished; {done}/{len(recovered_results)} child "
++                         "results were recorded and are included below, the rest are unknown.")
+             event = {
+                 "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
+                 "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",
+                 "parent_session_id": parent_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
+                 "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
+                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
+-                "status": "unknown", "summary": None,
+-                "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
++                "status": "unknown", "summary": None, "error": error,
++                **({"results": recovered_results} if recovered_results else {}),
+                 "dispatched_at": dispatched_at, "completed_at": now,
+-                "child_results": child_results,
+                 **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
+-            result = {"status": "unknown", "summary": None, "error": event["error"]}
++            result = {"status": "unknown", "summary": None, "error": event["error"],
++                      **({"results": recovered_results} if recovered_results else {})}
+             conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
+                    updated_at=?, event_json=?, result_json=?, delivery_state='pending'
+                    WHERE delegation_id=?""", (now, now, json.dumps(event), json.dumps(result), delegation_id))
+@@ -446,8 +452,17 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
+         return cur.rowcount == 1
+ 
+ 
++def is_interim_delegation_event(evt: Dict[str, Any]) -> bool:
++    """An early per-task notice for a batch that is still running. It shares the batch's
++    ``delegation_id`` but is NOT the durable completion: it must never claim, acknowledge or
++    dedup against the final result's row."""
++    return evt.get("type") == "async_delegation" and bool(evt.get("task_failure_notice"))
++
++
+ def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
+-    """Claim a durable delegation event; non-durable events need no token."""
++    """Claim a durable delegation event; non-durable events (and interim notices) need no token."""
++    if is_interim_delegation_event(evt):
++        return ""
+     delegation_id = str(evt.get("delegation_id") or "") if evt.get("type") == "async_delegation" else ""
+     if not delegation_id:
+         return ""
+@@ -478,6 +493,15 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
+         return cur.rowcount == 1
+ 
+ 
++def defer_completion_delivery(delegation_id: str, claim_id: str) -> bool:
++    """Return an unadmitted completion to pending without spending a delivery attempt."""
++    return _update_delivery("""UPDATE async_delegations SET delivery_claim=NULL,
++                  delivery_claimed_at=NULL, delivery_attempts=MAX(0, delivery_attempts-1),
++                  updated_at=?
++           WHERE delegation_id=? AND delivery_state='pending' AND delivery_claim=?""",
++        (time.time(), delegation_id, claim_id))
++
++
+ def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
+     """Terminally drop a claimed completion whose target is permanently gone (the
+     spawning session ended at an explicit user boundary such as /new or reset).
+@@ -527,13 +551,16 @@ def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
+ 
+ # ── In-memory registry queries ──────────────────────────────────────────────
+ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
+-    """Lazily create (or grow, never shrink) the shared daemon executor; in-flight
+-    futures keep running on a replaced pool until it is collected."""
++    """Lazily create (or grow in place, never shrink) the shared daemon executor. Raising
++    ``_max_workers`` is enough: the next ``submit`` spawns threads up to the new cap."""
+     global _executor, _executor_max_workers
+     with _executor_lock:
+-        if _executor is None or max_workers > _executor_max_workers:
++        if _executor is None:
+             _executor = DaemonThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="async-delegate")
+             _executor_max_workers = max_workers
++        elif max_workers > _executor_max_workers:
++            _executor._max_workers = max_workers
++            _executor_max_workers = max_workers
+         return _executor
+ 
+ 
+@@ -652,12 +679,20 @@ def _dispatch(
+         if record["slot_key"] not in active_slots and len(active_slots) >= max_async_children:
+             return {"status": "rejected", "error": capacity_error}
+         _records[delegation_id] = record
++        live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
+     _persist_dispatch(record)
+-    executor = _get_executor(max_async_children)
++    # Units of one call share a slot, so live units can exceed slots: size the pool by units or a
++    # unit queues behind a full pool and the stale monitor kills it before its child ever starts.
++    executor = _get_executor(max(max_async_children, live_units))
+ 
+     def _worker() -> None:
+         result: Dict[str, Any] = {}
+         status = "error"
++        with _records_lock:
++            rec = _records.get(delegation_id)
++            if rec is not None:
++                # The stall clock starts when the runner starts; a unit queued behind a full pool is not stalled.
++                rec.update(_started=True, _progress_ts=time.time())
+         try:
+             result = runner() or {}
+             status = classify(result)
+@@ -845,6 +880,8 @@ def _sweep_stale_locked(now: float):
+         if status != "running" or progress_fn is None:
+             continue
+         any_monitorable = True
++        if not record.get("_started"):
++            continue  # queued behind a full pool: not stalled, but keep the monitor alive for when it starts
+         try:
+             token, in_tool = progress_fn()
+         except Exception:
+diff --git a/tools/delegate_tool.py b/tools/delegate_tool.py
+index d8e6f530f7..16e60b75ec 100644
+--- a/tools/delegate_tool.py
++++ b/tools/delegate_tool.py
+@@ -108,7 +108,23 @@ def _open_child_session_db(parent_agent) -> Any:
+         return None
+     with _quiet("subagent: failed to open dedicated SessionDB; child persistence disabled", exc_info=True):
+         from hermes_state_registry import acquire
++        from pathlib import Path as _Path
+         _parent_db_path = getattr(parent_session_db, "db_path", None)
++        # Test doubles (MagicMock parent without a real SessionDB) expose a
++        # truthy Mock for db_path: Path() of it would be a ``MagicMock/...``
++        # relative path and acquire() would scaffold profile dirs under the
++        # repo. Only real filesystem paths open a handle.
++        try:
++            _as_path = _Path(str(_parent_db_path)) if _parent_db_path is not None else None
++        except Exception:
++            return None
++        if _as_path is None:
++            return acquire()
++        try:
++            if not _as_path.is_absolute() or not _as_path.parent.is_dir():
++                return None
++        except Exception:
++            return None
+         return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
+     return None
+ 
+@@ -141,12 +157,25 @@ def _profile_scope_or_null(profile: Optional[str], profile_content: Optional[Dic
+ 
+ 
+ def _child_profile_scope(child):
+-    """Re-enter a child's target scope for its complete run, including cleanup."""
++    """Re-enter a child's target scope for its complete run, including cleanup.
++
++    Test doubles (MagicMock/SimpleNamespace without a real profile home) fall
++    through to a no-op: a MagicMock attribute is truthy but ``Path()`` of it
++    would point at a ``MagicMock/...`` relative path and ``ensure_hermes_home``
++    would scaffold profile dirs under the repo. Only real directory homes
++    enter the scope.
++    """
+     from contextlib import nullcontext
++    from pathlib import Path
+ 
+     home = getattr(child, "_delegate_profile_home", None)
+     if not home:
+         return nullcontext()
++    try:
++        if not Path(home).is_dir():
++            return nullcontext()
++    except Exception:
++        return nullcontext()
+     from agent.profile_runtime_scope import profile_runtime_scope
+     return profile_runtime_scope(home)
+ 
+diff --git a/tools/delegate_tool_config.py b/tools/delegate_tool_config.py
+index a0293a959d..e8477572ad 100644
+--- a/tools/delegate_tool_config.py
++++ b/tools/delegate_tool_config.py
+@@ -99,6 +99,11 @@ def _get_max_concurrent_children() -> int:
+         )
+     return result
+ 
++def _get_independent_completions() -> bool:
++    """delegation.independent_completions (bool, default False): split a background call into per-task / per-group
++    completion messages that land as each finishes. Off = one consolidated message when the whole call is done."""
++    return is_truthy_value(_cfg().get("independent_completions", False))
++
+ def _get_worktree_isolation() -> bool:
+     """delegation.worktree_isolation (bool, default False): each child gets its own
+     git worktree off the parent's HEAD so parallel children never contend for one
+diff --git a/tools/delegate_tool_dispatch.py b/tools/delegate_tool_dispatch.py
+index a712fd22d7..210059b286 100644
+--- a/tools/delegate_tool_dispatch.py
++++ b/tools/delegate_tool_dispatch.py
+@@ -53,6 +53,10 @@ class _Batch:
+     max_iterations: Optional[int] = None
+     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
+     group: Optional[str] = None
++    # The async registry row this unit runs under (``<call_id>-k`` for split
++    # calls). Carried so detached per-child persistence and failure notices
++    # land on the unit's own durable row for crash recovery.
++    unit_id: Optional[str] = None
+ 
+     def owner_kwargs(self) -> Dict[str, Any]:
+         """Steer/stop authority of the originating session, passed to every child run."""
+@@ -69,7 +73,7 @@ class _Batch:
+ def _announce_batch(parent_agent, n_tasks: int, live_deleg_id: Optional[str]) -> None:
+     """Announce the batch tag once so interleaved ``[tag n/N]`` lines are attributable."""
+     if n_tasks > 1 and live_deleg_id:
+-        _hdr = f"  🔀 [{format_batch_tag(live_deleg_id)}] delegating {n_tasks} tasks"
++        _hdr = f"  🔀 [{format_batch_tag(live_deleg_id, parent_agent)}] delegating {n_tasks} tasks"
+         _print_completion_line(parent_agent, getattr(parent_agent, "_delegate_spinner", None), _hdr, console_line=_hdr)
+ 
+ def _capture_origin() -> tuple[str, str, Any, Any]:
+@@ -102,20 +106,45 @@ def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tas
+ 
+ 
+ def _record_child_completion(batch: _Batch, entry: Dict[str, Any]) -> None:
+-    """Persist child completion and surface a per-unit failure notice."""
+-    if not batch.live_deleg_id:
++    """Persist one finished child on the unit's own durable row.
++
++    Split calls persist one async row per unit (``<call_id>-k``); the unit id
++    is fixed on the carved-out ``_Batch`` before its runner can start, so a
++    crash before the join loses only children that had not finished. The sync
++    path has no unit row: ``unit_id`` is None and this is a no-op (nothing
++    durable to recover until the unit is dispatched).
++    """
++    unit_id = batch.unit_id or batch.live_deleg_id
++    if not unit_id:
+         return
+     with _quiet("Child partial persistence failed", exc_info=True):
+-        from tools.async_delegation import record_unit_child, push_task_failure_notice
+-        task_index = entry.get("task_index", -1)
+-        record_unit_child(batch.live_deleg_id, task_index, entry)
+-        if entry.get("status") in {"error", "failed", "timeout", "interrupted"}:
+-            push_task_failure_notice(
+-                batch.live_deleg_id,
+-                task_index,
+-                entry.get("error") or "child failed",
+-                batch.group,
+-            )
++        from tools.async_delegation import record_unit_child
++        record_unit_child(unit_id, dict(entry))
++
++
++def _maybe_emit_failure_notice(batch: _Batch, entry: Dict[str, Any], remaining: int) -> None:
++    """Emit one interim notice for a failed child of a still-running detached unit.
++
++    Separate from the unit's final durable result (which still arrives once):
++    a sibling still running means the parent would otherwise learn of the
++    failure only when the slowest sibling finishes. Sync runs and the final
++    child of a unit emit nothing here.
++    """
++    if batch.unit_id is None:
++        return
++    if remaining <= 0:
++        return
++    if entry.get("status") not in SUBAGENT_FAILURE_STATUSES:
++        return
++    with _quiet("task failure notice failed", exc_info=True):
++        from tools.async_delegation import push_task_failure_notice
++        _i = entry.get("task_index", -1)
++        _live = batch.live_paths[_i] if isinstance(_i, int) and 0 <= _i < len(batch.live_paths) else None
++        push_task_failure_notice(
++            batch.unit_id, {**entry, **({"live_transcript": _live} if _live else {})},
++            n_tasks=len(batch.task_list),
++        )
++
+ 
+ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interrupt: bool) -> None:
+     """Run the batch's children in parallel, appending entries to ``results`` (sorted by task_index on return, one
+@@ -128,7 +157,7 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
+     parent_agent, n_tasks = batch.parent_agent, len(batch.task_list)
+     task_labels = [t["goal"][:40] for t in batch.task_list]
+     spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
+-    _tag = format_batch_tag(batch.live_deleg_id)
++    _tag = format_batch_tag(batch.live_deleg_id, parent_agent)
+     # Fabricated entries for still-pending / raised futures carry the correct _delegate_role.
+     _child_by_index = {i: child for (i, _, child) in batch.children}
+     n_here = len(batch.children)  # a per-group unit runs a subset; ``n_tasks`` keeps the call-wide ``i/N`` slot
+@@ -154,8 +183,16 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
+             for future in done:
+                 entry = _entry_of(future, futures[future])
+                 results.append(entry)
+-                _record_child_completion(batch, entry)
+-                _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_here - len(results))
++                remaining = n_here - len(results)
++                # Detached unit: a crash before the join must not lose children
++                # that already finished; a still-running sibling means a failed
++                # child is surfaced NOW via an interim notice, not when the
++                # slowest sibling finishes. Sync runs record nothing here
++                # (no durable unit row) and emit no notices.
++                if not honor_parent_interrupt and batch.unit_id:
++                    _record_child_completion(batch, entry)
++                    _maybe_emit_failure_notice(batch, entry, remaining)
++                _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, remaining)
+     results.sort(key=lambda r: r["task_index"])  # match input order
+ 
+ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True) -> dict:
+@@ -168,7 +205,10 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
+     if len(batch.children) == 1:
+         entry = batch.run_child(*batch.children[0])
+         results.append(entry)
+-        _record_child_completion(batch, entry)
++        # Single-child detached unit: the same crash window applies as in
++        # the parallel path. Sync runs carry no unit id (no durable row).
++        if not honor_parent_interrupt and batch.unit_id:
++            _record_child_completion(batch, entry)
+     else:
+         _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
+ 
+@@ -315,14 +355,15 @@ def _batch_progress_token(child_agents: List[Any]) -> tuple:
+ 
+ _BACKGROUND_NOTES = {
+     "one": (
+-        "Subagent is running in the background. You and the user can keep working; its full result re-enters the "
+-        "conversation as a new message when it finishes. Do not wait or poll — just continue."
++        "Subagent is running in the background; its full result re-enters the conversation as a new message when it "
++        "finishes. Results are delivered only after you END YOUR TURN: do anything that does not depend on it, then "
++        "stop with a one-line status. Do not poll its transcript or artifacts to wait for it."
+     ),
+     "many": (
+-        "{n} subagents are running in parallel in the background as {k} independent unit(s). You and the user can keep "
+-        "working; each unit's results re-enter the conversation as their own message as soon as THAT unit finishes "
+-        "(tasks sharing a `group` finish together; ungrouped tasks report individually), so act on each as it lands. "
+-        "Do not wait or poll — just continue."
++        "{n} subagents are running in parallel in the background as {k} completion unit(s); each unit's results "
++        "re-enter the conversation as their own new message when THAT unit finishes. Results are delivered only "
++        "after you END YOUR TURN: do anything that does not depend on them, then stop with a one-line status. Do not "
++        "poll transcripts or artifacts to wait for them."
+     ),
+     "control_hint": (
+         "While a child runs you can orchestrate it live with this same tool: delegate_task(action='list') to see live "
+@@ -361,7 +402,13 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
+ def _units_of(batch: _Batch) -> List[_Batch]:
+     """Partition the call's children into async units: one per distinct task ``group`` (first-appearance order) and
+     one per ungrouped task. Each unit is a ``_Batch`` sharing the call's task_list/transcripts but owning a subset of
+-    ``children``, so a unit joins only on itself and its completion re-enters the conversation on its own."""
++    ``children``, so a unit joins only on itself and its completion re-enters the conversation on its own.
++
++    Off by default (``delegation.independent_completions``): the whole call is ONE unit and returns as one message.
++    A per-task flurry of completions (one new turn each) fragmented orchestrators that had no plan for it."""
++    from tools.delegate_tool_config import _get_independent_completions
++    if not _get_independent_completions():
++        return [batch]
+     members: Dict[Any, List[tuple]] = {}
+     for i, t, c in batch.children:
+         g = t.get("group")
+@@ -419,6 +466,8 @@ def _dispatch_background(batch: _Batch) -> str:
+         # One unit keeps the live-transcript directory's id so the returned delegation_id matches
+         # cache/delegation/live/<id>/; several units suffix it (-1, -2, ...) and the call keeps the bare id.
+         unit_id = batch.live_deleg_id if len(units) == 1 else (f"{batch.live_deleg_id}-{k + 1}" if batch.live_deleg_id else None)
++        from tools.async_delegation import _new_delegation_id
++        unit.unit_id = unit_id = unit_id or _new_delegation_id()  # fixed before the runner can start
+         dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
+         if dispatch.get("status") == "dispatched":
+             slot_key = slot_key or dispatch["delegation_id"]
+diff --git a/tools/delegate_tool_progress.py b/tools/delegate_tool_progress.py
+index f76f572522..6b90b48163 100644
+--- a/tools/delegate_tool_progress.py
++++ b/tools/delegate_tool_progress.py
+@@ -198,25 +198,29 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
+                 return text
+     return None
+ 
+-_BATCH_ORDINALS: Dict[str, int] = {}
++_BATCH_ORDINALS: Dict[str, Dict[str, int]] = {}
+ _BATCH_ORDINALS_LOCK = threading.Lock()
+ 
+-def format_batch_tag(delegation_id: Optional[str]) -> str:
+-    """Short human tag for a delegation batch: ``deleg_6a664903`` → ``set 1`` (first batch seen in this process), the
+-    next distinct id → ``set 2``. Several batches (a parent's fan-out plus a child's nested fan-out, or two
++def format_batch_tag(delegation_id: Optional[str], parent_agent: Any = None) -> str:
++    """Short human tag for a delegation batch: the parent's first fan-out is ``set 1``, its next distinct
++    delegation id ``set 2``. Several batches (a parent's fan-out plus a child's nested fan-out, or two
+     concurrent tools) print interleaved ``[n/N]`` lines to one console; without a tag ``✓ [3/3]`` and ``✓ [3/9]``
+-    are indistinguishable, and a raw hex slice is unreadable. Empty string when no id is known so callers can
++    are indistinguishable, and a raw hex slice is unreadable. Ordinals are scoped per parent conversation
++    (``parent_agent.session_id``): one process hosts many conversations and every child's own fan-out, so a
++    process-wide counter showed a user's second wave as ``set 20``. Empty string when no id is known so callers
+     concatenate unconditionally."""
+     if not isinstance(delegation_id, str) or not delegation_id:
+         return ""
++    scope = str(getattr(parent_agent, "session_id", None) or "")
+     with _BATCH_ORDINALS_LOCK:
+-        n = _BATCH_ORDINALS.setdefault(delegation_id, len(_BATCH_ORDINALS) + 1)
++        ordinals = _BATCH_ORDINALS.setdefault(scope, {})
++        n = ordinals.setdefault(delegation_id, len(ordinals) + 1)
+     return f"set {n}"
+ 
+-def _batch_prefix(delegation_id: Optional[str], task_index: int, task_count: int) -> str:
++def _batch_prefix(delegation_id: Optional[str], task_index: int, task_count: int, parent_agent: Any = None) -> str:
+     """``[set 2 · 3/9] `` for batch children, ``[set 2] `` for a lone child,
+     ``[3/9] `` / ``""`` when the batch id is unknown."""
+-    tag = format_batch_tag(delegation_id)
++    tag = format_batch_tag(delegation_id, parent_agent)
+     if task_count > 1:
+         inner = f"{tag} · {task_index + 1}/{task_count}" if tag else f"{task_index + 1}/{task_count}"
+         return f"[{inner}] "
+@@ -268,8 +272,12 @@ class _ChildProgressRelay:
+ 
+     def _prefix(self) -> str:
+         # The batch tag is resolved lazily from session_ref: the relay is built
+-        # before delegate_task stamps ``_delegation_id`` on the child.
+-        return _batch_prefix(self.session_ref.get("delegation_id"), self.task_index, self.task_count)
++        # before delegate_task stamps ``_delegation_id`` on the child. The parent
++        # scope rides in the same ref so ordinals match the parent's own lines.
++        return _batch_prefix(
++            self.session_ref.get("delegation_id"), self.task_index, self.task_count,
++            parent_agent=self.session_ref.get("_parent_scope"),
++        )
+ 
+     def _identity_kwargs(self) -> Dict[str, Any]:
+         kw: Dict[str, Any] = {"task_index": self.task_index, "task_count": self.task_count, "goal": self.goal_label}
+@@ -375,6 +383,9 @@ def _build_child_progress_callback(
+     parent_cb = getattr(parent_agent, "tool_progress_callback", None)
+     if not spinner and not parent_cb:
+         return None
++    if session_ref is not None:
++        # Not an identity kwarg (underscore-prefixed, never relayed); only scopes the batch ordinal.
++        session_ref["_parent_scope"] = parent_agent
+     return _ChildProgressRelay(
+         task_index, goal, spinner, parent_cb, task_count, subagent_id, parent_id, depth, model, toolsets, session_ref,
+     )
+diff --git a/tools/process_registry_notifications.py b/tools/process_registry_notifications.py
+index 12944f0160..5546f956ab 100644
+--- a/tools/process_registry_notifications.py
++++ b/tools/process_registry_notifications.py
+@@ -113,6 +113,25 @@ def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_go
+     return lines
+ 
+ 
++def _format_task_failure_notice(evt: dict, deleg_id: str) -> str:
++    """One child of a still-running fan-out failed: say which, why, and that the batch goes on."""
++    (r,) = (evt.get("results") or [{}])[:1] or [{}]
++    goals, idx, n = evt.get("goals") or [], r.get("task_index", 0), evt.get("n_tasks") or len(evt.get("goals") or [])
++    goal = goals[idx] if idx < len(goals) else r.get("goal", "")
++    err = str(r.get("error") or "").strip().replace("\n", " ")[:400]
++    lines = [
++        f"[ASYNC DELEGATION TASK FAILED — {deleg_id}, task {idx + 1}/{n}]",
++        "One subagent in a background fan-out you dispatched has failed while its siblings are still running. "
++        "The batch's consolidated results will still arrive when the last sibling finishes; this is an early "
++        "warning so you can re-dispatch or investigate now instead of then.",
++        f"Task: {goal}" if goal else "",
++        f"Status: {r.get('status', '?')}   Duration: {r.get('duration_seconds', '?')}s" + (f"\nError: {err}" if err else ""),
++    ]
++    if r.get("live_transcript"):
++        lines.append(f"Live transcript: {r['live_transcript']}")
++    return "\n".join(line for line in lines if line)
++
++
+ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> str:
+     """Consolidated block for a delegate_task fan-out that finished as one unit."""
+     results, goals = evt.get("results") or [], evt.get("goals") or []
+@@ -165,6 +184,8 @@ def _format_async_delegation(evt: dict) -> str:
+     and result, so an agent deep in unrelated context can act on it or re-dispatch."""
+     deleg_id = evt.get("delegation_id", "unknown")
+     completed_at = evt.get("completed_at") or time.time()
++    if evt.get("task_failure_notice"):
++        return _format_task_failure_notice(evt, deleg_id)
+     if evt.get("is_batch") or isinstance(evt.get("results"), list):
+         return _format_batch_delegation(evt, deleg_id, completed_at)
+     status, summary, error = evt.get("status") or "completed", evt.get("summary"), evt.get("error")
+diff --git a/tui_gateway/session_notifications.py b/tui_gateway/session_notifications.py
+index 3457bfa7ed..e7f6887d42 100644
+--- a/tui_gateway/session_notifications.py
++++ b/tui_gateway/session_notifications.py
+@@ -104,6 +104,10 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
+     evt_type = evt.get("type", "completion")
+     if evt_type == "async_delegation":
+         # No process session_id: else every completion keys as ("", "async_delegation") and the second is suppressed forever.
++        # An early per-task failure notice must not collapse with the batch's final result (nor with a sibling's notice).
++        if evt.get("task_failure_notice"):
++            task_idx = ((evt.get("results") or [{}])[0] or {}).get("task_index", "")
++            return (evt.get("delegation_id", ""), evt_type, "task_failure", task_idx)
+         return (evt.get("delegation_id", ""), evt_type)
+     extra = _DEDUP_EXTRA_FIELDS.get("watch_overflow_" if evt_type.startswith("watch_overflow_") else evt_type, ())
+     return (evt.get("session_id", ""), evt_type, *(evt.get(f, 0 if f == "suppressed" else "") for f in extra))

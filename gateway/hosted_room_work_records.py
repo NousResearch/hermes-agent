@@ -340,6 +340,14 @@ def _ingest_audited_locked(conn, *, checked, row, token, secret, target_install_
         token=token, secret=secret, target_install_id=target_install_id, target_profile=target_profile,
         room_id=room_id, members=members, authority=checked["authority"], permission=PERMISSION,
     )(conn)
+    from gateway.hosted_room_passive_lineage import current_locked
+    enrolled = current_locked(conn, room_id)
+    # The retained prefix may still say epoch 1 after owner enrollment advances.
+    # V1 has no producer-scoped storage: never overwrite it for a later sender.
+    if enrolled is not None and checked["authority"] != {
+        "gateway_id": enrolled["authority_gateway_id"], "epoch": enrolled["authority_epoch"],
+    }:
+        raise WorkRecordError("unsupported work record lineage: current enrollment requires work-record v2")
     if checked["authority"] != {"gateway_id": row["authority_gateway_id"], "epoch": row["authority_epoch"]}:
         raise WorkRecordError("work record lineage conflicts")
     _validate_roster(checked, members)

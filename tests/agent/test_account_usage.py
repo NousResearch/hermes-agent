@@ -169,7 +169,7 @@ def test_anthropic_usage_keeps_provider_percent_points(monkeypatch):
         "seven_day": {"utilization": 20.0, "resets_at": "2026-09-10T21:00:00Z"},
     }
     calls = []
-    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "sk-ant-oat-test-token")
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "synthetic-oauth-token")
     monkeypatch.setattr(account_usage, "_is_oauth_token", lambda token: True)
     monkeypatch.setattr(
         account_usage.httpx,

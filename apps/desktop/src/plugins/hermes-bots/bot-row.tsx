@@ -49,7 +49,6 @@ import {
   botRosterKey,
   botSelectionKey,
   botSourceStatus,
-  isActiveRosterBot,
   isDefaultBot,
   newBotChat,
   ROSTER_KEY,
@@ -63,7 +62,7 @@ import { displayName, stripPreviewMarkdown } from './labels'
 import { duplicateBot } from './profile-ops'
 import { openRosterBot } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
-import { A2A_PREFIX_RE, botCanonicalSessionId, botRowOwnsWorkspace, previewKind, workerActiveAt } from './row-helpers'
+import { A2A_PREFIX_RE, botCanonicalSessionId, botRowOwnsWorkspace, botWorkingMood, previewKind, useTurnBusy, workerActiveAt } from './row-helpers'
 import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
 import { $botSections, $draggingBot, BOT_DRAG_MIME, botSectionId, moveBotsToSection } from './user-sections'
 
@@ -93,7 +92,6 @@ interface BotRowProps {
 export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandle }: BotRowProps) {
   const { t } = useI18n()
   const b = useBots()
-  const activeProfile = useValue(host.state.profile)
   const focusedOwner = focusedRosterOwner(useValue($focusedBotOwner))
   const selectedRosterKey = useValue($selectedRosterKey)
   const botChatFocused = useValue($botChatFocused)
@@ -118,19 +116,10 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   // can highlight a remote row, which has no focusable local chat.
   const isActive = botRowOwnsWorkspace(bot, activeGroup, botChatFocused, focusedOwner, selectedRosterKey)
 
-  // Turn-busy is a SOCKET fact: only the gateway-home profile can be mid-turn.
-  const isGatewayHome =
-    !bot.remoteSource &&
-    bot.name === activeProfile &&
-    isActiveRosterBot(bot, {
-      name: activeProfile,
-      connectionId: activeConnectionId
-    })
-
   const { shape, color, image } = botAppearance(bot.name, meta)
   // Keep user photos/pets. Drop the 160px SVG backfill so the math face can move.
   const photo = Boolean(image && !isBackfilledFacePng(image))
-  const gatewayState = useValue(host.state.gateway)
+  const turnBusy = useTurnBusy()
   // Preview identity must match click identity (#88200): when the backend
   // resolved the pinned canonical chat, preview THAT session — not the
   // profile's most recent (but unrelated) activity. Activity signals
@@ -147,7 +136,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
     ? Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
     : activitySession?.last_active || 0
 
-  const botMood = workerActive || (isGatewayHome && gatewayState === 'busy') ? 'work' : 'idle'
+  const botMood = botWorkingMood(bot, focusedOwner, turnBusy, activeConnectionId)
   // Status keys off the canonical Bot Chat — the very session this row opens,
   // so the dot and the click can never describe different conversations.
   const canonicalSessionId = botCanonicalSessionId(bot)

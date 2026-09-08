@@ -397,20 +397,39 @@ def _copy_auth_file(src_file: str, dst_file: str) -> bool:
     under a Windows write lock), falling through to a raw copy; failure only if BOTH fail."""
     os.makedirs(os.path.dirname(dst_file), exist_ok=True)
     if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
-        # With a live Chrome on macOS, mode=ro WITHOUT immutable=1 can hang connect/backup
-        # forever (blocked inside lock negotiation, so the busy-timeout never fires).
-        # immutable=1 reads instantly and is correct: we want a committed snapshot, not
-        # coordinated writes. A torn read raises → next mode, then the plain-copy fallback.
-        for uri in (f"file:{src_file}?mode=ro&immutable=1", f"file:{src_file}?mode=ro"):
-            try:
-                # Short busy timeout so a truly wedged DB fails fast rather than hanging.
-                with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=5)) as source:
-                    with contextlib.closing(sqlite3.connect(dst_file)) as out, out:
-                        source.backup(out)
-                return True
-            except Exception as e:
-                logger.debug("real-profile: sqlite-backup of %s failed (%s); trying next mode",
-                             src_file, e)
+        # With a live Chrome on macOS, mode=ro WITHOUT immutable=1 blocks inside lock
+        # negotiation and NEVER returns: sqlite's busy timeout does not cover lock
+        # negotiation, so `timeout=5` cannot rescue it. immutable=1 reads instantly and
+        # is what we want anyway — a committed snapshot of a file another process owns,
+        # not coordinated writes. So immutable=1 is the ONLY source mode we attempt.
+        #
+        # The DESTINATION is the other half, and the one that actually bit (#hang):
+        # backup() retries a busy destination internally FOREVER and ignores the
+        # connection's busy timeout, so a dst left locked by an earlier hung mirror
+        # parks the thread in sqlite3_sleep permanently, holding the agent's turn open.
+        # The tool-level timeout abandons that thread but cannot interrupt a C-level
+        # lock wait, so the lock is never released and every later launch re-hangs —
+        # the failure is self-perpetuating.
+        #
+        # Fix: never back up into the live destination. Write a FRESH temp file (no
+        # other process can hold it, so there is nothing to contend on) and move it
+        # into place atomically. Measured against a live Chrome with a deliberately
+        # locked destination: 0.01s here vs an indefinite hang writing in place.
+        tmp_dst = f"{dst_file}.new"
+        try:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_dst)
+            with contextlib.closing(
+                    sqlite3.connect(f"file:{src_file}?mode=ro&immutable=1", uri=True, timeout=5)) as source:
+                with contextlib.closing(sqlite3.connect(tmp_dst, timeout=5)) as out, out:
+                    source.backup(out)
+            os.replace(tmp_dst, dst_file)
+            return True
+        except Exception as e:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_dst)
+            logger.debug("real-profile: sqlite-backup of %s failed (%s); trying plain copy",
+                         src_file, e)
     try:
         shutil.copy2(src_file, dst_file)
         return True

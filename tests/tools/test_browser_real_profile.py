@@ -1056,6 +1056,117 @@ class TestWindowsLockedProfileCopy:
         assert bc._copy_auth_file(src, dst) is True
         assert sqlite3.connect(dst).execute("select count(*) from cookies").fetchone()[0] == 1
 
+    def test_copy_auth_file_never_opens_the_unbounded_ro_mode(self, tmp_path, monkeypatch):
+        """`mode=ro` without immutable=1 must NEVER be attempted.
+
+        On macOS with a live Chrome that URI blocks inside lock negotiation and never
+        returns — sqlite's busy timeout does not cover lock negotiation, so the
+        `timeout=5` argument cannot rescue it. The thread parks in sqlite3_sleep
+        holding the agent's turn open forever.
+
+        Guard the URI SET rather than the hang itself: reproducing a real indefinite
+        block needs a live Chrome, but "we never ask for the mode that can hang" is
+        exactly the invariant and is deterministic.
+        """
+        import hermes_cli.browser_connect as bc
+        import sqlite3
+
+        src = str(tmp_path / "Cookies")
+        con = sqlite3.connect(src)
+        con.execute("create table cookies(x)")
+        con.commit()
+        con.close()
+        # Make the immutable attempt fail so any surviving fallback is exercised.
+        dst = str(tmp_path / "out" / "Cookies")
+        seen: list[str] = []
+        real_connect = sqlite3.connect
+
+        def spy(target, *a, **kw):
+            if isinstance(target, str):
+                seen.append(target)
+                if "immutable=1" in target:
+                    raise sqlite3.OperationalError("database is locked")
+            return real_connect(target, *a, **kw)
+
+        monkeypatch.setattr(bc.sqlite3, "connect", spy)
+        bc._copy_auth_file(src, dst)
+
+        unbounded = [u for u in seen if "mode=ro" in u and "immutable=1" not in u]
+        assert not unbounded, f"attempted the mode that can hang forever: {unbounded}"
+
+    def test_copy_auth_file_never_backs_up_into_the_live_destination(self, tmp_path, monkeypatch):
+        """backup() must target a FRESH temp file, never the destination in place.
+
+        ``backup()`` retries a busy destination internally forever and ignores the
+        connection's busy timeout, so writing straight into a destination that an
+        earlier hung mirror still holds parks the thread in sqlite3_sleep permanently.
+        Verified against a live Chrome with a deliberately locked destination: writing
+        in place hung indefinitely, temp-file + os.replace completed in 0.01s.
+        """
+        import hermes_cli.browser_connect as bc
+        import sqlite3
+
+        src = str(tmp_path / "Cookies")
+        con = sqlite3.connect(src)
+        con.execute("create table cookies(x)")
+        con.execute("insert into cookies values(7)")
+        con.commit()
+        con.close()
+
+        dst = str(tmp_path / "out" / "Cookies")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        # Hold the destination exclusively, exactly like a previous hung mirror.
+        holder = sqlite3.connect(dst)
+        holder.execute("create table t(x)")
+        holder.execute("begin exclusive")
+        # Run in a worker with a join deadline: on the unfixed code backup() retries the
+        # busy destination forever, so an unbounded assertion would hang the SUITE rather
+        # than fail it. The deadline turns that hang into a clean, fast failure.
+        import threading
+
+        outcome: dict[str, object] = {}
+
+        def _copy() -> None:
+            try:
+                outcome["ok"] = bc._copy_auth_file(src, dst)
+            except BaseException as exc:  # noqa: BLE001 — surfaced via the assert below
+                outcome["exc"] = exc
+
+        worker = threading.Thread(target=_copy, daemon=True)
+        worker.start()
+        worker.join(20)
+        try:
+            assert not worker.is_alive(), (
+                "backup() blocked on a locked destination — it must write a temp file instead")
+            assert outcome.get("exc") is None, outcome.get("exc")
+            assert outcome.get("ok") is True
+        finally:
+            holder.rollback()
+            holder.close()
+        assert sqlite3.connect(dst).execute("select count(*) from cookies").fetchone()[0] == 1
+        assert not os.path.exists(f"{dst}.new"), "temp file left behind"
+
+    def test_copy_auth_file_cleans_up_temp_on_failure(self, tmp_path):
+        """A failed backup must not strand the .new temp beside the real file."""
+        import hermes_cli.browser_connect as bc
+
+        src = str(tmp_path / "Cookies")
+        open(src, "wb").write(b"not-a-sqlite-db")
+        dst = str(tmp_path / "out" / "Cookies")
+        assert bc._copy_auth_file(src, dst) is True  # plain-copy fallback
+        assert not os.path.exists(f"{dst}.new")
+
+    def test_copy_auth_file_falls_back_to_plain_copy_when_backup_fails(self, tmp_path, monkeypatch):
+        """Dropping the mode=ro fallback must not cost the plain-copy fallback."""
+        import hermes_cli.browser_connect as bc
+        import sqlite3
+
+        src = str(tmp_path / "Cookies")
+        open(src, "wb").write(b"not-a-sqlite-db")
+        dst = str(tmp_path / "out" / "Cookies")
+        assert bc._copy_auth_file(src, dst) is True
+        assert open(dst, "rb").read() == b"not-a-sqlite-db"
+
     def test_copy_auth_file_plain_for_non_db(self, tmp_path):
         import hermes_cli.browser_connect as bc
         src = str(tmp_path / "Preferences"); open(src, "w").write('{"k":1}')

@@ -85,9 +85,12 @@ import {
   $draggingBot,
   createBotSection,
   deleteBotSection,
+  groupDragKey,
+  GROUP_DRAG_PREFIX,
   groupRowsBySection,
   moveBotSection,
   moveBotsToSection,
+  moveGroupChatsToSection,
   renameBotSection,
   UNASSIGNED_SECTION_KEY
 } from './user-sections'
@@ -269,9 +272,9 @@ export function BotsPane() {
   useEscapeCancelsBotDrag()
 
   // The one name dialog serves both New section (optionally filing the bot
-  // whose menu opened it) and Rename.
+  // or group whose menu opened it) and Rename.
   const [sectionDialog, setSectionDialog] = useState<
-    null | { bot?: RosterRow; mode: 'create' } | { id: string; mode: 'rename'; name: string }
+    null | { bot?: RosterRow; group?: string; mode: 'create' } | { id: string; mode: 'rename'; name: string }
   >(null)
 
   const [grouping, setGrouping] = useState<null | RosterRow>(null)
@@ -574,6 +577,7 @@ export function BotsPane() {
       members={row.members}
       needsYou={Boolean(groupNeedsYou[row.name])}
       onDisband={setDeletingGroup}
+      onNewSection={target => setSectionDialog({ group: target, mode: 'create' })}
       onOpen={openGroupChat}
     />
   )
@@ -608,7 +612,7 @@ export function BotsPane() {
     }
 
     const nested = Boolean(keyPrefix)
-    const blocks = groupRowsBySection(rows, userSections, allMeta)
+    const blocks = groupRowsBySection(rows, userSections, allMeta, groupRooms)
 
     return (
       blocks
@@ -627,15 +631,23 @@ export function BotsPane() {
           return (
             <SectionDropZone
               isSource={
-                Boolean(dragging) && block.rows.some(row => row.kind !== 'group' && botRosterKey(row.bot) === dragging)
+                Boolean(dragging) &&
+                block.rows.some(row =>
+                  row.kind === 'group' ? groupDragKey(row.name) === dragging : botRosterKey(row.bot) === dragging
+                )
               }
               key={key}
               nested={nested}
               onDropBot={rosterKey => {
+                // `block.id` is null for Unassigned, which is exactly the
+                // value both movers want for "clear the assignment".
+                if (rosterKey.startsWith(GROUP_DRAG_PREFIX)) {
+                  moveGroupChatsToSection([rosterKey.slice(GROUP_DRAG_PREFIX.length)], block.id)
+                  return
+                }
+
                 const bot = roster.find(row => botRosterKey(row) === rosterKey)
 
-                // `block.id` is null for Unassigned, which is exactly the value
-                // moveBotsToSection wants for "clear the assignment".
                 if (bot) {
                   void moveBotsToSection([bot], block.id)
                 }
@@ -705,7 +717,9 @@ export function BotsPane() {
           onToggle={() => toggleRosterSection(sectionId)}
           tip={`${sortedGroupRows.length} global group chat${sortedGroupRows.length === 1 ? '' : 's'}`}
         />
-        {collapsed ? null : <div className="grid min-w-0 gap-0.5">{sortedGroupRows.map(renderGroupRow)}</div>}
+        {collapsed ? null : (
+          <div className="grid min-w-0 gap-0.5">{renderUserSections(sortedGroupRows, 'groups:')}</div>
+        )}
       </div>
     )
   }
@@ -1010,7 +1024,11 @@ export function BotsPane() {
           if (sectionDialog?.mode === 'rename') {
             renameBotSection(sectionDialog.id, name)
           } else {
-            createBotSection(name, sectionDialog?.bot ? [sectionDialog.bot] : [])
+            const section = createBotSection(name, sectionDialog?.bot ? [sectionDialog.bot] : [])
+
+            if (section && sectionDialog?.group) {
+              moveGroupChatsToSection([sectionDialog.group], section.id)
+            }
           }
         }}
         open={Boolean(sectionDialog)}

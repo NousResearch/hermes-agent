@@ -168,6 +168,7 @@
     "@types/node": "22.20.1",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
+    "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "6.0.3",
     "babel-plugin-react-compiler": "1.0.0",
     "bippy": "0.5.43",
@@ -183,7 +184,8 @@
     "typescript": "6.0.3",
     "vite": "8.2.0",
     "vitest": "4.1.10",
-    "wait-on": "9.0.10"
+    "wait-on": "9.0.10",
+    "ws": "8.21.1"
   },
   "build": {
     "electronVersion": "40.10.2",

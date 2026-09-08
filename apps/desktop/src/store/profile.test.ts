@@ -14,6 +14,7 @@ const $gateway = atom<unknown>({ id: 'live-socket', connectionState: 'open' })
 const resetStarmapGraph = vi.fn()
 
 vi.mock('@/store/gateway', () => ({
+  openGatewayConnection: vi.fn(() => null),
   $gateway,
   ensureGatewayForAgent,
   ensureGatewayForProfile,

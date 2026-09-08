@@ -20,6 +20,7 @@ import {
   activeGatewayConnectionId,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  openGatewayConnection,
   openGatewayForAgent,
   openGatewayForProfile,
   openSecondaryCount
@@ -465,6 +466,12 @@ const DESCRIPTOR_LOOKUP_TIMEOUT_MS = 20_000
 // clicks (#89622) — reverted in #89785. Do not reintroduce fail-closed
 // switching at this seam.
 async function resolveConnectionForProfile(profile: string): Promise<HermesConnection | null> {
+  const open = openGatewayConnection(null, profile)
+
+  if (open) {
+    return open
+  }
+
   const getConnection = window.hermesDesktop?.getConnection
 
   if (!getConnection) {
@@ -565,6 +572,12 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 // resolveConnectionForProfile: a failed lookup resolves null and keeps the
 // previous descriptor.
 async function resolveConnectionForAgent(connectionId: string, profile: string): Promise<HermesConnection | null> {
+  const open = openGatewayConnection(connectionId, profile)
+
+  if (open) {
+    return open
+  }
+
   const getConnectionFor = window.hermesDesktop?.getConnectionFor
 
   if (!getConnectionFor) {

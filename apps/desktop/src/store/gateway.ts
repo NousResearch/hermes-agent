@@ -112,6 +112,9 @@ interface Secondary {
    * foregroundSessionScopes in store/session-states (#93892).
    */
   retained: boolean
+  /** An explicitly opened HTTP remote stays ready independently of navigation.
+   * Hover-only dials and app-managed local/SSH processes remain reclaimable. */
+  keepWarm: boolean
   /**
    * Bot-relay retainers pinning this socket open across drain ticks (#93594).
    * The relay's drain loop RPCs every registered connection on an interval;
@@ -343,6 +346,10 @@ async function isAttachedSharedRemote(
     return false
   }
 
+  if (openGatewayConnection(id, key)) {
+    return false
+  }
+
   const desktop = window.hermesDesktop
 
   if (!desktop?.getConnectionFor) {
@@ -439,6 +446,20 @@ export function liveSecondaryConnectionIds(): Set<string> {
   }
 
   return live
+}
+
+/** Reuse the descriptor belonging to an open socket, not a new health-probe
+ * IPC. Edited, closed, and removed routes must resolve through Electron again. */
+export function openGatewayConnection(connectionId: null | string, profile: string): HermesConnection | null {
+  const entry = g.secondaries.get(registryBackendScopeKey(connectionId, normKey(profile)))
+
+  return entry?.wantOpen && !entry.pendingConnectionRedial && isOpen(entry.gateway) ? entry.connection : null
+}
+
+function retainExplicitRemote(entry: Secondary, priority: SpawnPriority = 'foreground') {
+  if (priority === 'foreground' && entry.connection?.mode === 'remote' && entry.connection.remoteKind !== 'ssh') {
+    entry.keepWarm = true
+  }
 }
 
 // Mirror a backend's connection state into the global composer state, but only
@@ -756,6 +777,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     reconnecting: false,
     pendingConnectionRedial: false,
     retained: false,
+    keepWarm: false,
     relayRetainCount: 0,
     wantOpen: true,
     activationLeaseUntil: 0
@@ -804,6 +826,10 @@ function createSecondary(profile: string, connectionId: null | string = null): S
 // poisons the active gateway with "not connected" even though the primary is
 // open right next to it.
 async function sharedPrimaryRoute(profile: string, spawnPriority: SpawnPriority = 'background'): Promise<boolean> {
+  if (openGatewayConnection(null, profile)) {
+    return false
+  }
+
   const desktop = window.hermesDesktop
 
   if (!desktop) {
@@ -897,6 +923,8 @@ async function gatewayForProfile(
     if (!isOpen(entry.gateway)) {
       await openSecondary(entry, spawnPriority)
     }
+
+    retainExplicitRemote(entry, spawnPriority)
   } catch (error) {
     release()
     throw error
@@ -1075,7 +1103,9 @@ function drainPendingConnectionRedial(entry: Secondary): boolean {
 
   const reopen = wasActive
     ? ensureGatewayForAgent(entry.connectionId, entry.profile)
-    : openGatewayForAgent(entry.connectionId, entry.profile)
+    : openGatewayForAgent(entry.connectionId, entry.profile, {
+        spawnPriority: entry.keepWarm ? 'foreground' : 'background'
+      })
 
   void reopen.catch(() => undefined)
 
@@ -1413,11 +1443,14 @@ export async function openGatewayForAgent(
   }
 
   if (isOpen(entry.gateway)) {
+    retainExplicitRemote(entry, spawnPriority)
+
     return
   }
 
   try {
     await openSecondary(entry, spawnPriority)
+    retainExplicitRemote(entry, spawnPriority)
   } catch (error) {
     if (activationLease) {
       entry.activationLeaseUntil = 0
@@ -1503,6 +1536,7 @@ export async function ensureGatewayForAgent(
     applyActive(scope, activationEpoch)
 
   if (activated && entry.connection) {
+    retainExplicitRemote(entry)
     publishActiveConnection(entry.connection)
   }
 
@@ -1578,6 +1612,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     applyActive(key, activationEpoch) &&
     entry.connection
   ) {
+    retainExplicitRemote(entry)
     publishActiveConnection(entry.connection)
   }
 }
@@ -1725,6 +1760,7 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
 
     if (
       key === g.activeKey ||
+      entry.keepWarm ||
       keep.has(key) ||
       (!entry.connectionId && keep.has(entry.profile)) ||
       // Bot-relay retention (#93594): the relay pins its remote routes for

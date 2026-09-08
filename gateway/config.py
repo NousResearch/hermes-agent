@@ -214,6 +214,7 @@ class Platform(Enum):
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
     MSGRAPH_WEBHOOK = "msgraph_webhook"
+    ACTIVEPIECES = "activepieces"
     FEISHU = "feishu"
     WECOM = "wecom"
     WECOM_CALLBACK = "wecom_callback"
@@ -520,6 +521,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.API_SERVER: lambda cfg: _has_usable_api_server_key(cfg.extra.get("key") if cfg else None),
     Platform.WEBHOOK: lambda cfg: True,
     Platform.MSGRAPH_WEBHOOK: lambda cfg: bool(str(cfg.extra.get("client_state") or "").strip()),
+    Platform.ACTIVEPIECES: lambda cfg: True,
     Platform.BLUEBUBBLES: _needs_extra("server_url", "password"),
     Platform.QQBOT: _needs_extra("app_id", "client_secret"),
     Platform.YUANBAO: _needs_extra("app_id", "app_secret"),

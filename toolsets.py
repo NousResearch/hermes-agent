@@ -223,6 +223,9 @@ TOOLSETS = {
     },
     "hermes-sms": _bundle("SMS bot toolset - interact with Hermes via SMS (Twilio)"),
     "hermes-webhook": _ts("Webhook toolset - receive and process external webhook events", _HERMES_WEBHOOK_SAFE_TOOLS),
+    "hermes-activepieces": _ts(
+        "ActivePieces toolset - react to ActivePieces automation trigger events",
+        _HERMES_WEBHOOK_SAFE_TOOLS),
     "hermes-gateway": _ts(
         "Gateway toolset - union of all messaging platform tools",
         [],
@@ -231,7 +234,7 @@ TOOLSETS = {
             "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email",
             "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk",
             "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin",
-            "hermes-qqbot", "hermes-webhook", "hermes-yuanbao",
+            "hermes-qqbot", "hermes-webhook", "hermes-activepieces", "hermes-yuanbao",
         ],
     ),
 }

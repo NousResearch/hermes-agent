@@ -355,7 +355,7 @@ def _gateway_compression_progress_notices_enabled() -> bool:
     return False
 
 # Surfaces consuming gateway text programmatically must keep RAW status/error text; unknown/empty -> chat.
-_GATEWAY_RAW_TEXT_PLATFORMS = frozenset({"local", "api_server", "webhook", "msgraph_webhook"})
+_GATEWAY_RAW_TEXT_PLATFORMS = frozenset({"local", "api_server", "webhook", "msgraph_webhook", "activepieces"})
 
 
 def _gateway_surface_passes_raw_text(platform: Any) -> bool:
@@ -3191,6 +3191,8 @@ _BUILTIN_ADAPTERS: dict[Platform, tuple[str, str, str, str]] = {
                        "Webhook: aiohttp not installed"),
     Platform.MSGRAPH_WEBHOOK: ("msgraph_webhook", "MSGraphWebhookAdapter", "check_msgraph_webhook_requirements",
                                "MSGraph webhook: aiohttp not installed"),
+    Platform.ACTIVEPIECES: ("activepieces", "ActivePiecesAdapter", "check_activepieces_requirements",
+                            "ActivePieces: aiohttp not installed"),
     Platform.BLUEBUBBLES: ("bluebubbles", "BlueBubblesAdapter", "check_bluebubbles_requirements",
                            "BlueBubbles: aiohttp/httpx missing or BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD not configured"),
     Platform.QQBOT: ("qqbot", "QQAdapter", "check_qq_requirements",

@@ -581,6 +581,12 @@ _LOCAL_CRON_DELIVERY_NOTE = (
 )
 
 PLATFORM_HINTS = {
+    "activepieces": (
+        "You are reacting to an ActivePieces automation event (a trigger such as a new email or "
+        "webhook fired a flow). No human is waiting synchronously: finish the task autonomously, "
+        "be concise, and remember your reply is delivered back to the automation that woke you "
+        "(or read aloud at the next conversation). Plain text; no interactive formatting."
+    ),
     "whatsapp": (
         "You are on WhatsApp. Standard markdown auto-converts to WhatsApp syntax (*bold*, _italic_, ~strike~, "
         "monospace) \u2014 write markdown freely, bullets included. No tables \u2014 use bullets or labeled lines. "

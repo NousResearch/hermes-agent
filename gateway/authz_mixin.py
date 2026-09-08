@@ -478,7 +478,8 @@ class GatewayAuthorizationMixin:
         ``GATEWAY_ALLOW_ALL_USERS``, default deny.
         """
         # HA events are system-generated (HASS_TOKEN); webhook events are HMAC-verified.
-        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
+        # AP flow events are secret-verified at intake (bearer/HMAC), same trust as webhook HMAC.
+        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.ACTIVEPIECES}:
             return True
 
         adapter_profile = self._adapter_profile_for_source(source)

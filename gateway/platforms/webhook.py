@@ -154,8 +154,14 @@ class WebhookAdapter(BasePlatformAdapter):
     # emitting an interactive acknowledgement that abandons the task (#57056).
     interactive_resume: bool = False
 
-    def __init__(self, config: PlatformConfig):
-        super().__init__(config, Platform.WEBHOOK)
+    # Session/source identity label. Subclass platforms that reuse this
+    # transport (ActivePieces) override BOTH so sessions, logs and
+    # toolset routing carry their own platform value instead of "webhook".
+    _session_id_prefix: str = "webhook"
+    _source_label: str = "webhook"
+
+    def __init__(self, config: PlatformConfig, platform: Platform = Platform.WEBHOOK):
+        super().__init__(config, platform)
         extra = config.extra
         # Empty string / null host normalises to None ("bind all families").
         self._host: Optional[str] = extra.get("host", DEFAULT_HOST) or None
@@ -316,7 +322,7 @@ class WebhookAdapter(BasePlatformAdapter):
         deliberately NOT settable via `hermes webhook subscribe`, so an agent-created subscription
         cannot self-grant tools)."""
         parts = str(getattr(source, "chat_id", "") or "").split(":", 2)
-        if len(parts) < 2 or parts[0] != "webhook":
+        if len(parts) < 2 or parts[0] != self._session_id_prefix:
             return None
         route_config = self._routes.get(parts[1])
         toolsets = route_config.get("toolsets") if isinstance(route_config, dict) else None
@@ -452,7 +458,8 @@ class WebhookAdapter(BasePlatformAdapter):
         """deliver_only: the rendered prompt IS the message — skip the agent, reuse the same
         auth/rate-limit/idempotency/template pipeline."""
         delivery = {"deliver": route_config.get("deliver", "log"), "payload": payload,
-                    "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
+                    "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+                    "delivery_id": delivery_id}
         logger.info("[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s", event_type,
                     route_name, delivery["deliver"], len(prompt), delivery_id)
         failed = {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id}
@@ -564,15 +571,17 @@ class WebhookAdapter(BasePlatformAdapter):
                             event_type: str, delivery_id: str, now: float) -> "web.Response":
         """Record delivery info, spawn the agent run, and return 202 immediately."""
         # delivery_id in the session key → concurrent webhooks on one route get independent runs.
-        session_chat_id = f"webhook:{route_name}:{delivery_id}"
+        session_chat_id = f"{self._session_id_prefix}:{route_name}:{delivery_id}"
         self._delivery_info[session_chat_id] = {
             "deliver": route_config.get("deliver", "log"),
-            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
+            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+            "route": route_name}
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
-        source = self.build_source(chat_id=session_chat_id, chat_name=f"webhook/{route_name}", chat_type="webhook",
-                                   user_id=f"webhook:{route_name}", user_name=route_name)
+        source = self.build_source(chat_id=session_chat_id, chat_name=f"{self._source_label}/{route_name}",
+                                   chat_type=self._source_label,
+                                   user_id=f"{self._source_label}:{route_name}", user_name=route_name)
         if profile and isinstance(profile, str):
             source.profile = profile
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,

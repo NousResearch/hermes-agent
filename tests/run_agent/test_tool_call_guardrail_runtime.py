@@ -94,6 +94,11 @@ def _hard_stop_config(**overrides) -> dict:
     return cfg
 
 
+def _direct_mcp_config() -> dict:
+    """Keep direct-call E2E cases independent of process-global registry size."""
+    return {"tools": {"tool_search": {"enabled": "off"}}}
+
+
 def test_gateway_platform_uses_hard_stop_default_without_cli_opt_in():
     agent = _make_agent("web_search", platform="telegram")
     args = {"query": "same"}
@@ -103,6 +108,230 @@ def test_gateway_platform_uses_hard_stop_default_without_cli_opt_in():
     decision = getattr(agent, "_tool_guardrails").before_call("web_search", args)
     assert decision.action == "block"
     assert decision.code == "repeated_exact_failure_block"
+
+
+def test_mcp_reuse_contract_prevents_second_runtime_dispatch():
+    tool = "mcp_example__read_finding"
+    args = {"finding_id": "native-7"}
+    agent = _make_agent(tool)
+    agent._tool_guardrails.after_call(
+        tool,
+        args,
+        json.dumps({
+            "result": "grounded summary",
+            "structuredContent": {"reuseResult": True, "findingId": "native-7"},
+        }),
+        failed=False,
+    )
+    msg = SimpleNamespace(
+        content="",
+        tool_calls=[_mock_tool_call(tool, json.dumps(args), "c-reuse")],
+    )
+    messages = []
+
+    with patch("model_tools.handle_function_call") as dispatch:
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    dispatch.assert_not_called()
+    assert '"reused": true' in messages[0]["content"]
+    assert agent._force_toolless_final is True
+
+
+def test_capability_only_policy_blocks_investigation_without_forcing_final():
+    tool = "mcp_example__list_findings"
+    agent = _make_agent(tool)
+    agent._tool_guardrails.set_capability_only(True)
+    msg = SimpleNamespace(
+        content="",
+        tool_calls=[_mock_tool_call(tool, '{"count": 10}', "c-cap-scope")],
+    )
+    messages = []
+
+    with patch("model_tools.handle_function_call") as dispatch:
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    dispatch.assert_not_called()
+    assert '"blockedByTurnPolicy": true' in messages[0]["content"]
+    assert agent._force_toolless_final is False
+
+
+def test_capability_only_recovery_dispatches_read_then_uses_toolless_synthesis():
+    investigation = "mcp_example__list_findings"
+    capability = "mcp_example__get_capabilities"
+    guide = "mcp_example__get_agent_guide"
+    agent = _make_agent(
+        investigation, capability, guide, config=_direct_mcp_config(),
+    )
+    agent._disable_streaming = True
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(investigation, '{"count":10}', "c-denied")],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(capability, "{}", "c-capability")],
+        ),
+        _mock_response(content="Capability summary", finish_reason="stop"),
+    ]
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=_direct_mcp_config()),
+        patch("hermes_cli.config.load_config_readonly", return_value=_direct_mcp_config()),
+        patch(
+            "model_tools.get_tool_definitions",
+            return_value=_make_tool_defs(investigation, capability, guide),
+        ),
+        patch("model_tools.handle_function_call", return_value='{"available":true}') as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation(
+            "Explain the investigation capabilities without investigating findings."
+        )
+
+    assert dispatch.call_count == 1
+    assert dispatch.call_args.args[:2] == (capability, {})
+    request_tools = [
+        call.kwargs.get("tools", [])
+        for call in agent.client.chat.completions.create.call_args_list
+    ]
+    assert request_tools[0]
+    assert request_tools[1]  # restrict did not hide the still-authorized capability tools
+    assert request_tools[2] == []
+    assert result["final_response"] == "Capability summary"
+
+
+def test_capability_only_policy_allows_capability_read_then_forces_synthesis():
+    tool = "mcp_example__get_capabilities"
+    agent = _make_agent(tool)
+    agent._tool_guardrails.set_capability_only(True)
+    msg = SimpleNamespace(
+        content="",
+        tool_calls=[_mock_tool_call(tool, "{}", "c-cap-read")],
+    )
+    messages = []
+
+    with patch("model_tools.handle_function_call", return_value='{"available": true}') as dispatch:
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    dispatch.assert_called_once()
+    assert agent._force_toolless_final is True
+
+
+def test_capability_only_policy_unwraps_tool_search_bridge_target():
+    from agent.tool_guardrails import ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController()
+    controller.set_capability_only(True)
+    decision = controller.before_call(
+        "tool_call",
+        {"name": "mcp_example__investigate_finding", "arguments": {"finding_id": "native-1"}},
+    )
+    assert decision.action == "restrict"
+
+
+def test_vague_recent_bounds_are_applied_before_mcp_dispatch():
+    tool = "mcp_example__list_findings"
+    agent = _make_agent(tool)
+    agent._tool_guardrails.set_vague_recent(True)
+    msg = SimpleNamespace(
+        content="",
+        tool_calls=[_mock_tool_call(tool, json.dumps({
+            "count": 25,
+            "start": "2026-09-06T15:00:00Z",
+            "end": "2026-09-08T15:00:00Z",
+        }), "c-recent-bounds")],
+    )
+
+    with patch("model_tools.handle_function_call", return_value='{"items": []}') as dispatch:
+        agent._execute_tool_calls_sequential(msg, [], "task-1")
+
+    sent = dispatch.call_args.args[1]
+    assert sent["count"] == 10
+    assert sent["start"] == "2026-09-07T15:00:00Z"
+    assert sent["end"] == "2026-09-08T15:00:00Z"
+    assert json.loads(msg.tool_calls[0].function.arguments) == sent
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "show the 50 most recent findings",
+        "list the latest 50 findings",
+        "return 50 recent findings",
+    ],
+)
+def test_explicit_recent_quantity_survives_request_to_dispatch(request_text):
+    tool = "mcp_example__list_findings"
+    agent = _make_agent(tool, config=_direct_mcp_config())
+    agent._disable_streaming = True
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(tool, '{"count":50}', "c-explicit-count")],
+        ),
+        _mock_response(content="done", finish_reason="stop"),
+    ]
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=_direct_mcp_config()),
+        patch("hermes_cli.config.load_config_readonly", return_value=_direct_mcp_config()),
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs(tool)),
+        patch("model_tools.handle_function_call", return_value='{"items":[]}') as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation(request_text, task_id="task-1")
+
+    assert dispatch.call_args.args[1]["count"] == 50
+    assert result["final_response"] == "done"
+
+
+@pytest.mark.parametrize(
+    ("request_text", "expected_start"),
+    [
+        ("show recent findings", "2026-09-07T15:00:00Z"),
+        ("show recent findings from the last 48 hours", "2026-09-06T15:00:00Z"),
+    ],
+)
+def test_recent_default_bounds_respect_explicit_range_provenance(request_text, expected_start):
+    tool = "mcp_example__list_findings"
+    agent = _make_agent(tool, config=_direct_mcp_config())
+    agent._disable_streaming = True
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(tool, json.dumps({
+                "count": 50,
+                "start": "2026-09-06T15:00:00Z",
+                "end": "2026-09-08T15:00:00Z",
+            }), "c-recent-provenance")],
+        ),
+        _mock_response(content="done", finish_reason="stop"),
+    ]
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=_direct_mcp_config()),
+        patch("hermes_cli.config.load_config_readonly", return_value=_direct_mcp_config()),
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs(tool)),
+        patch("model_tools.handle_function_call", return_value='{"items":[]}') as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        agent.run_conversation(request_text, task_id="task-1")
+
+    sent = dispatch.call_args.args[1]
+    assert sent["count"] == 10  # quantity remained model/default-derived
+    assert sent["start"] == expected_start
+    assert sent["end"] == "2026-09-08T15:00:00Z"
 
 
 @pytest.mark.parametrize("platform", ["desktop", "acp"])

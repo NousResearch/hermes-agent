@@ -461,9 +461,9 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
     except Exception as e:  # pragma: no cover — defensive
         logger.warning("Schema sanitization skipped: %s", e)
 
-    # Tool Search (progressive disclosure): replace MCP/plugin tools with the
-    # tool_search/describe/call bridge when the deferrable surface exceeds the
-    # configured share of the context window. Core tools are never deferred.
+    # Tool Search (progressive disclosure): in auto mode replace MCP/plugin tools
+    # with the tool_search/describe/call bridge when the deferrable surface exceeds
+    # the configured share of the context window. Core tools are never deferred.
     # Must be the LAST step (after sanitization); idempotent if called twice.
     try:
         from tools.tool_search import assemble_tool_defs, load_config as _load_ts_config

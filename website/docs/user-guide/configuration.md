@@ -1161,7 +1161,9 @@ hermes chat --run-budget 850 -q "..."
 When a budget is set, two things happen:
 
 1. **Wrap-up notice at 80%.** When 80% of the budget has elapsed, Hermes injects a **one-time** notice (delivered cache-safely, appended to the newest tool result like `/steer` messages) telling the model to stop new discovery/verification work and produce the final deliverable from the state it already has. It fires at most once per run and mirrors the existing iteration-budget wrap-up mechanism — there are no repeated pressure warnings.
-2. **Deadline-scaled stale timeouts.** Implicit non-streaming stale timeouts (the 90s default and the reasoning-model floors, e.g. 600s for DeepSeek reasoning models) are capped at `max(60, remaining_budget × 0.5)` so a single silently-hung provider call can never consume the rest of the run. The cap only ever *tightens* the timeout — it never raises it — and an explicitly configured `stale_timeout_seconds` (provider/model config or `HERMES_API_CALL_STALE_TIMEOUT`) always wins untouched.
+2. **A real provider deadline.** Streaming and non-streaming provider waits are capped at the exact remaining wall-clock budget, so a single silently-hung request cannot outlive the run. An explicitly configured `stale_timeout_seconds` still wins over reasoning-model and large-context floors, but the absolute run deadline always wins over it. In a budgeted run, hitting the configured stale timeout is terminal for that turn instead of silently opening another identical internal stream retry.
+
+A finite iteration cap also reserves its final permitted model request for synthesis: Hermes sends that request without tools so a last-round tool result cannot consume the budget without giving the model a chance to answer.
 
 The budget is per `run_conversation` turn (it resets on each user message) and the feature is completely dormant when unset — no clock reads, no injection, no timeout changes.
 
@@ -1855,6 +1857,7 @@ The platform-aware default can be disabled for an unattended deployment, or hard
 tool_loop_guardrails:
   warnings_enabled: true       # inject warnings into tool results (default: true)
   hard_stop_enabled: false     # also BLOCK the call past the hard-stop threshold (default: false)
+  finalize_on_complete_composite: true  # tool-free answer after a complete MCP composite
   non_interactive_hard_stop_enabled: true  # default hard stops for gateway/cron
   warn_after:
     exact_failure: 2           # identical failing call repeated N times
@@ -1870,6 +1873,8 @@ tool_loop_guardrails:
 ```
 
 `hard_stop_enabled` explicitly enables hard stops on every platform. When it remains `false`, `non_interactive_hard_stop_enabled` still enables them for unattended gateway/cron-style platforms while preserving warning-only behavior for CLI, TUI, Desktop, ACP, subagents, and `api_server` runs (supervised task loops with a live parent or client). Set `non_interactive_hard_stop_enabled: false` to opt an unattended deployment out. See also [Docker / unattended deployments](docker.md).
+
+`finalize_on_complete_composite` normally moves directly to a tool-free synthesis turn when an MCP result declares itself assembled with no component follow-up needed. Set it to `false` for long multi-finding orchestrations that must continue to other independent findings or sources. The result's component-coverage and exact-reuse contracts remain active, so disabling the transition does not permit redundant component reads.
 
 Hard stops are designed to catch **replays** — the same call, unchanged, with nothing happening in between — not legitimate iteration:
 

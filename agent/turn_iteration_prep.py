@@ -27,6 +27,49 @@ ITERATION_BUDGET_WARNING_TEMPLATE = (
     "solely because of this warning."
 )
 
+FINAL_SYNTHESIS_NOTICE = (
+    "[SYSTEM NOTICE — final synthesis] Tool access is closed for this request. "
+    "Answer the user now from the evidence already collected; do not request another tool call."
+)
+
+
+def _maybe_inject_final_synthesis_notice(agent: Any, messages: Any) -> bool:
+    """Append the one-shot synthesis directive to the current tool-result tail."""
+    if (not getattr(agent, "_force_toolless_final", False)
+            or getattr(agent, "_final_synthesis_notice_injected", False)):
+        return False
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    if (not messages or messages[-1].get("role") != "tool"
+            or messages[-1].get(_DB_PERSISTED_MARKER)):
+        return False
+    content = messages[-1].get("content", "")
+    if isinstance(content, str):
+        messages[-1]["content"] = content + f"\n\n{FINAL_SYNTHESIS_NOTICE}"
+    elif isinstance(content, list) or content is None:
+        messages[-1]["content"] = [*(content or []), {"type": "text", "text": FINAL_SYNTHESIS_NOTICE}]
+    else:
+        return False
+    agent._final_synthesis_notice_injected = True
+    return True
+
+
+def _prepare_forced_final_request(agent: Any) -> None:
+    """Make a forced synthesis cheap and bounded without changing session defaults."""
+    if not getattr(agent, "_force_toolless_final", False):
+        return
+    from agent.run_budget import arm_final_synthesis_deadline
+
+    arm_final_synthesis_deadline(agent)
+    # Deep reasoning already happened while choosing and gathering evidence. A
+    # request-local reasoning-off hint and modest output cap keep the final answer
+    # from consuming the entire run budget. Providers that reject reasoning-off
+    # already have a compatibility retry path; no persistent setting is changed.
+    agent._ephemeral_reasoning_off = True
+    configured = getattr(agent, "max_tokens", None)
+    agent._ephemeral_max_output_tokens = min(configured, 2048) if (
+        isinstance(configured, int) and configured > 0
+    ) else 2048
+
 
 def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
     """Append the opt-in one-shot warning to the newest tool result."""
@@ -135,6 +178,9 @@ def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> Itera
     # same cache-safe channel as /steer (newest tool result); off with no budget.
     if getattr(agent, "run_budget_seconds", None):
         _maybe_inject_run_budget_wrapup(agent, messages)
+
+    _prepare_forced_final_request(agent)
+    _maybe_inject_final_synthesis_notice(agent, messages)
 
     # Use the same cache-safe channel as /steer; never add a synthetic user/system row.
     _maybe_inject_iteration_budget_warning(agent, messages)
@@ -344,6 +390,12 @@ def begin_iteration(
             )
         return _verdict("break")
 
+    from agent.run_budget import remaining_run_budget_seconds
+    _run_remaining = remaining_run_budget_seconds(agent)
+    if _run_remaining is not None and _run_remaining <= 0:
+        _turn_exit_reason = "run_budget_exhausted"
+        return _verdict("break")
+
     api_call_count += 1
     agent._api_call_count = api_call_count
     agent._touch_activity(f"starting API call #{api_call_count}")
@@ -359,6 +411,12 @@ def begin_iteration(
         if not agent.quiet_mode:
             agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
         return _verdict("break")
+    # Reserve the final allowed model round for synthesis. Without this, a
+    # tool call on the last round consumes the budget and the loop exits before
+    # the model ever sees its result or can produce an answer.
+    if agent.iteration_budget.remaining == 0:
+        from agent.run_budget import enter_final_synthesis
+        enter_final_synthesis(agent)
     return _verdict("fallthrough")
 
 

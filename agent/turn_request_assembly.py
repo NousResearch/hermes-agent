@@ -21,6 +21,11 @@ from agent.turn_context import build_api_messages
 logger = logging.getLogger("agent.conversation_loop")
 
 
+def _select_tools_for_api(agent: Any) -> Any:
+    """Return a request-local empty registry for a forced synthesis round."""
+    return [] if getattr(agent, "_force_toolless_final", False) else agent.tools
+
+
 @dataclass
 class AssembledRequest:
     """Always ``action == "fallthrough"``; the fields are the iteration locals the assembly
@@ -188,7 +193,7 @@ def assemble_api_request(
     # Build the request-local cache sections LAST, after every transcript mutation;
     # the canonical tool registry stays undecorated. Marked ``content`` becomes text
     # blocks the whitespace pass skips, so the same row's bytes vary across turns.
-    tools_for_api = agent.tools
+    tools_for_api = _select_tools_for_api(agent)
     if agent._use_prompt_caching and agent.provider != "moa":
         from agent.prompt_caching import envelope_tool_part_cache_markers_supported
 

@@ -71,10 +71,14 @@ class StreamingWaitMonitor:
                 self._mon.last_heartbeat = _hb_now
                 self._heartbeat(int(_hb_now - self.last_chunk_time["t"]))
             _stale_elapsed = time.time() - self.last_chunk_time["t"]
+            deadline_reason = self._wait_lifecycle.expired_deadline(now=_hb_now)
+            if deadline_reason is not None:
+                self._abort_for_wait_deadline(deadline_reason)
+                return
             if _stale_elapsed > self._stream_stale_timeout:
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
-                self._kill_stale_stream(_stale_elapsed)
+                if self._kill_stale_stream(_stale_elapsed):
+                    return
             if self.agent._interrupt_requested:
                 self._abort_for_interrupt(_stale_elapsed)
                 return
-

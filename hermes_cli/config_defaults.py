@@ -54,7 +54,7 @@ DEFAULT_CONFIG = {
         # null = off; set a ratio strictly between 0 and 1 (for example, 0.75).
         "budget_warning_ratio": None,
         # Wall-clock budget (seconds) per run. null = off. When set: one-time wrap-up notice at 80%
-        # elapsed; implicit provider stale timeouts capped to remaining budget. CLI equivalent:
+        # elapsed; every provider wait is capped to the remaining budget. CLI equivalent:
         # `hermes chat --run-budget N`.
         "run_budget_seconds": None,
         # Gateway inactivity timeout (seconds). Only fires when the agent is completely idle — not
@@ -505,6 +505,10 @@ DEFAULT_CONFIG = {
     "tool_loop_guardrails": {
         "warnings_enabled": True,
         "hard_stop_enabled": False,
+        # Complete MCP composites normally move directly to a tool-free answer.
+        # Disable for long multi-finding orchestrations; composite component
+        # coverage and exact-result reuse remain enforced.
+        "finalize_on_complete_composite": True,
         # Unattended gateway/cron platforms hard-stop by default (nobody can /stop a model that
         # ignores warnings); interactive cli/tui/desktop/acp stay warning-only.
         "non_interactive_hard_stop_enabled": True,
@@ -1794,13 +1798,13 @@ DEFAULT_CONFIG = {
             # Tiered: tier 0 (no deferrable tools) = everything eager; tier 1 = bridge + a
             # name+description manifest when it fits the budget (degrades to names-only); tier 2
             # (over budget even names-only, e.g. ~3,300-tool APIs) = bare bridge + a
-            # one-line-per-server summary (name + tool count). "auto"|"on" = activate when at least
-            # one deferrable tool exists ("auto" is an alias of "on" today, reserved for a future
-            # budget-gated mode; keep it the default so explicit "on"/"off" pins are unaffected).
+            # one-line-per-server summary (name + tool count). "on" activates whenever a
+            # deferrable tool exists; "auto" keeps small catalogs eager and activates when their
+            # schemas exceed threshold_pct of the active context window.
             # "off" = pass-through, no bridge.
             "enabled": "auto",
-            # Listing budget as % of the model's context length; effective budget = min(this % of
-            # context, listing_max_tokens). Range 0..100.
+            # Auto-activation threshold and listing budget as % of the model's context length;
+            # effective listing budget = min(this % of context, listing_max_tokens). Range 0..100.
             "threshold_pct": 5,
             # Hits per query when the model omits `limit`. Range 1..max_search_limit.
             "search_default_limit": 5,

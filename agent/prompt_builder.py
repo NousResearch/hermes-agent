@@ -400,10 +400,19 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"
     "- Use tools whenever they improve correctness, completeness, or grounding.\n"
+    "- Before the first call, honor bounds and defaults in the active skill and tool schema; request a small/default "
+    "result set rather than the maximum unless the task requires more.\n"
     "- Do not stop early when another tool call would materially improve the result.\n"
     "- If a tool returns empty, partial, or suspiciously narrow results, retry with a broader or different query or "
     "strategy before concluding.\n"
-    "- Keep calling tools until: (1) the task is complete, AND (2) you have verified the result.\n"
+    "- A successful read result is evidence. Never repeat the same read with identical arguments as 'verification' "
+    "unless its result explicitly says it is retryable; otherwise change the scope for a concrete evidence gap.\n"
+    "- Honor structured result contracts: when a composite says it is assembled and no component follow-up is "
+    "needed, use its included evidence instead of re-reading those components.\n"
+    "- For a capability-only question that explicitly forbids operations, use only capability/schema introspection; "
+    "do not perform domain investigation reads.\n"
+    "- Keep calling tools until the task is complete and materially unverified gaps are closed; once evidence is "
+    "sufficient, stop calling tools and produce the answer.\n"
     "</tool_persistence>\n\n"
     "<mandatory_tool_use>\n"
     "NEVER answer these from memory or mental computation — ALWAYS use a tool:\n"
@@ -469,9 +478,24 @@ def execution_guidance_text(valid_tool_names=None) -> str:
     Without web tools (e.g. Blank Slate) the ``web_search`` mentions would dangle, so they are dropped/adjusted.
     """
     text = OPENAI_MODEL_EXECUTION_GUIDANCE
-    if valid_tool_names is not None and "web_search" not in valid_tool_names:
+    if valid_tool_names is None:
+        return text
+    names = set(valid_tool_names)
+    if "web_search" not in names:
         text = text.replace("- Current facts (weather, news, versions) → use web_search\n", "")
         text = text.replace("(search_files, web_search, read_file, etc.)", "(search_files, read_file, etc.)")
+    if not names.intersection({"terminal", "execute_code"}):
+        for line in (
+            "- Arithmetic, math, calculations → use terminal or execute_code\n",
+            "- Hashes, encodings, checksums → use terminal (e.g. sha256sum, base64)\n",
+            "- Current time, date, timezone → use terminal (e.g. date)\n",
+            "- System state: OS, CPU, memory, disk, ports, processes → use terminal\n",
+            "- Git history, branches, diffs → use terminal\n",
+        ):
+            text = text.replace(line, "")
+    if not names.intersection({"read_file", "search_files", "terminal"}):
+        text = text.replace("- File contents, sizes, line counts → use read_file, search_files, or terminal\n", "")
+        text = text.replace("(search_files, read_file, etc.)", "(an available connected lookup tool)")
     return text
 
 

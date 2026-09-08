@@ -444,6 +444,8 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     ("_tool_guardrail_halt_decision", None), ("_vision_supported", True),
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
+    ("_capability_only_turn", False),
+    ("_vague_recent_turn", False),
     ("_pre_verify_nudges", 0),
 )
 
@@ -452,6 +454,8 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     """Reset retry counters, guardrails, iteration and run budgets at turn start."""
     for name, value in _PER_TURN_RESET_STATE:
         setattr(agent, name, value)
+    from agent.run_budget import reset_final_synthesis
+    reset_final_synthesis(agent)
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
     agent._tool_guardrails.reset_for_turn()
@@ -851,6 +855,22 @@ def build_turn_context(
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
+    from agent.tool_guardrails import is_capability_only_request, recent_request_provenance
+    agent._capability_only_turn = is_capability_only_request(original_user_message)
+    recent_provenance = recent_request_provenance(original_user_message)
+    agent._vague_recent_turn = recent_provenance.is_vague
+    set_capability_only = getattr(agent._tool_guardrails, "set_capability_only", None)
+    if callable(set_capability_only):
+        set_capability_only(agent._capability_only_turn)
+    set_recent_provenance = getattr(
+        agent._tool_guardrails, "set_recent_request_provenance", None,
+    )
+    if callable(set_recent_provenance):
+        set_recent_provenance(recent_provenance)
+    else:
+        set_vague_recent = getattr(agent._tool_guardrails, "set_vague_recent", None)
+        if callable(set_vague_recent):
+            set_vague_recent(agent._vague_recent_turn)
     should_review_memory = _tick_memory_nudge(agent)
     _emit_reaction(agent, original_user_message)
 

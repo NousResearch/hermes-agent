@@ -15,6 +15,7 @@ The harness mirrors tests/run_agent/test_28161_anthropic_stream_pool_cleanup.py.
 """
 
 import threading
+import time
 
 import httpx
 import pytest
@@ -61,6 +62,29 @@ def _good_stream_cm():
 
 
 class TestStreamStaleCircuitBreaker:
+    def test_forced_final_deadline_is_absolute_despite_live_chunks(self, monkeypatch):
+        """Reasoning chunks may refresh stale liveness, but not the final deadline."""
+        import agent.chat_completion_helpers as helpers
+
+        agent = _make_anthropic_agent(run_budget_seconds=5)
+        agent._run_budget_started_at = time.time()
+        agent._force_toolless_final = True
+        agent._final_synthesis_deadline = time.time() + 0.05
+        call = helpers._StreamingCall(agent, {}, None)
+        call._stream_stale_timeout = 60.0
+        call._call_done = threading.Event()
+        call._monitor_interrupted = {"yes": False}
+        call.worker = None
+        fired = []
+
+        def abort():
+            fired.append(True)
+            call._call_done.set()
+
+        monkeypatch.setattr(call, "_abort_for_wait_deadline", lambda _reason: abort())
+        call._monitor_loop()
+        assert fired == [True]
+
     def test_interrupted_pre_response_wait_advances_streak(self, monkeypatch):
         """Qualified pre-response interrupts advance the breaker, while early
         and mid-stream user cancellations remain neutral."""
@@ -152,3 +176,35 @@ class TestStreamStaleCircuitBreaker:
 
         # At least one stale kill happened; the streak must have advanced.
         assert agent._consecutive_stale_streams >= 1
+
+    @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+    def test_budgeted_stale_stream_is_terminal_without_internal_retry(self, monkeypatch):
+        """A bounded run spends one stale window, not retries times that window."""
+        from agent.run_budget import ProviderStaleTimeout
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.1")
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "2")
+        agent = _make_anthropic_agent(run_budget_seconds=5)
+        agent._run_budget_started_at = time.time()
+        unblock = threading.Event()
+
+        def _blocking_gen():
+            unblock.wait(timeout=2.0)
+            raise httpx.ConnectError("connection dropped after close()")
+            yield
+
+        def _stream_side_effect(*args, **kwargs):
+            cm = MagicMock()
+            stream = MagicMock()
+            stream.__iter__ = MagicMock(return_value=_blocking_gen())
+            cm.__enter__ = MagicMock(return_value=stream)
+            cm.__exit__ = MagicMock(return_value=False)
+            return cm
+
+        agent._anthropic_client.messages.stream.side_effect = _stream_side_effect
+        agent._abort_request_anthropic_client = lambda *a, **k: unblock.set()
+
+        with pytest.raises(ProviderStaleTimeout):
+            agent._interruptible_streaming_api_call({})
+
+        assert agent._anthropic_client.messages.stream.call_count == 1

@@ -563,19 +563,16 @@ class AIAgent(
 
         from agent.chat_completion_helpers import estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
-        timeout = max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base
-        # Run-budget cap: an implicit stale timeout is capped at half the remaining budget (>= 60s) so one
-        # hung call cannot eat the run. Never raises the timeout; explicit user config still wins.
-        run_budget = getattr(self, "run_budget_seconds", None)
-        started = getattr(self, "_run_budget_started_at", None)
-        if run_budget and started and not self._stale_timeout_is_explicit():
-            remaining = float(run_budget) - (time.time() - started)
-            timeout = min(timeout, max(60.0, remaining * 0.5))
-        return timeout
+        timeout = stale_base if self._stale_timeout_is_explicit() else (
+            max(stale_base, 240.0) if est_tokens > 100_000
+            else max(stale_base, 150.0) if est_tokens > 50_000
+            else stale_base
+        )
+        from agent.run_budget import cap_timeout_to_run_budget
+        return cap_timeout_to_run_budget(self, timeout)
 
     def _stale_timeout_is_explicit(self) -> bool:
-        """True when the user explicitly configured the stale timeout (config or env var); implicit values
-        (reasoning floors, the 90s default) yield to the run-budget cap, explicit ones never do."""
+        """True when the user explicitly configured the stale timeout (config or env var)."""
         return (get_provider_stale_timeout(self.provider, self.model) is not None
                 or os.getenv("HERMES_API_CALL_STALE_TIMEOUT") is not None)
 
@@ -1238,6 +1235,12 @@ class AIAgent(
             function_result = result_stub
         if decision.action in {"warn", "halt"}:
             function_result = append_toolguard_guidance(function_result, decision)
+        elif decision.action == "finalize":
+            from agent.run_budget import enter_final_synthesis
+            enter_final_synthesis(self)
+            function_result = (function_result or "") + (
+                "\n\n[Hermes final-synthesis guard: " + decision.message + "]"
+            )
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
         else:
@@ -1256,6 +1259,9 @@ class AIAgent(
 
     def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:
         self._set_tool_guardrail_halt(decision)
+        if decision.action == "reuse":
+            from agent.run_budget import enter_final_synthesis
+            enter_final_synthesis(self)
         return toolguard_synthetic_result(decision)
 
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from datetime import datetime, timedelta
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
@@ -55,7 +57,12 @@ PROGRESS_RESET_TOOL_NAMES = frozenset({
     "cronjob_manage", "todo", "todo_list", "memory", "skill_manage",
 })
 
-_BOOL_FIELDS = ("warnings_enabled", "hard_stop_enabled", "non_interactive_hard_stop_enabled")
+_BOOL_FIELDS = (
+    "warnings_enabled",
+    "hard_stop_enabled",
+    "non_interactive_hard_stop_enabled",
+    "finalize_on_complete_composite",
+)
 # Threshold field -> (nested section, nested key). The flat legacy key is the field name itself.
 _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
     "exact_failure_warn_after": ("warn_after", "exact_failure"),
@@ -111,6 +118,10 @@ class ToolCallGuardrailConfig:
     warnings_enabled: bool = True
     hard_stop_enabled: bool = False
     non_interactive_hard_stop_enabled: bool = True
+    # Single-scope investigations benefit from an immediate tool-free synthesis
+    # after a complete composite.  Longer orchestrations can disable only that
+    # transition while retaining component coverage and exact-result reuse.
+    finalize_on_complete_composite: bool = True
     exact_failure_warn_after: int = 2
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3
@@ -170,7 +181,7 @@ class ToolCallSignature:
 class ToolGuardrailDecision:
     """Decision returned by the tool-call guardrail controller."""
 
-    action: str = "allow"  # allow | warn | block | halt
+    action: str = "allow"  # allow | warn | finalize | restrict | reuse | block | halt
     code: str = "allow"
     message: str = ""
     tool_name: str = ""
@@ -190,6 +201,28 @@ class ToolGuardrailDecision:
         if data["signature"] is None:
             del data["signature"]
         return data
+
+
+@dataclass(frozen=True)
+class RecentRequestProvenance:
+    """Origin of recent-request bounds carried from user text to dispatch.
+
+    Tool arguments alone cannot distinguish a number copied from the request
+    from one invented by the model.  Preserve that authority boundary before
+    the model call and consult it when normalizing emitted MCP arguments.
+    """
+
+    is_recent: bool = False
+    quantity_source: str = "model_or_default"
+    range_source: str = "model_or_default"
+
+    @property
+    def is_vague(self) -> bool:
+        return (
+            self.is_recent
+            and self.quantity_source != "user"
+            and self.range_source != "user"
+        )
 
 
 def _canonical_json(value: Any) -> str:
@@ -300,8 +333,57 @@ class ToolCallGuardrailController:
         self._identical_streak_first_call_id: str = ""
         # tool_call_id -> spillover path, so a stub referencing a persisted-output preview can't dangle.
         self._persisted_result_paths: dict[str, str] = {}
+        # MCP servers can explicitly declare that an unchanged successful result
+        # is reusable. Composite results can also declare which component reads
+        # they already assembled. Both caches are per turn and store only hashed
+        # call signatures or in-memory native identifiers.
+        self._reusable_mcp_calls: set[ToolCallSignature] = set()
+        self._mcp_composite_coverage: list[_CompositeCoverage] = []
+        self._capability_only = False
+        self._recent_request = RecentRequestProvenance()
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+
+    def set_capability_only(self, enabled: bool) -> None:
+        """Restrict this turn to MCP capability/schema reads when explicitly requested."""
+        self._capability_only = bool(enabled)
+
+    def set_vague_recent(self, enabled: bool) -> None:
+        """Compatibility shim for callers without request-bound provenance."""
+        self._recent_request = RecentRequestProvenance(is_recent=bool(enabled))
+
+    def set_recent_request_provenance(self, provenance: RecentRequestProvenance) -> None:
+        """Carry user/default ownership of recent-request bounds into dispatch."""
+        self._recent_request = (
+            provenance if isinstance(provenance, RecentRequestProvenance)
+            else RecentRequestProvenance()
+        )
+
+    def normalize_args(self, tool_name: str, args: Mapping[str, Any] | None) -> Mapping[str, Any]:
+        """Bound vague-recent MCP reads before dispatch; explicit user ranges are excluded."""
+        original = _coerce_args(args)
+        server, _component = _mcp_tool_parts(tool_name)
+        provenance = self._recent_request
+        if not provenance.is_recent or server is None:
+            return original
+        normalized = dict(original)
+        count = normalized.get("count")
+        if (provenance.quantity_source != "user" and (
+                (isinstance(count, (int, float)) and not isinstance(count, bool) and count > 10)
+                or (isinstance(count, str) and count.strip().isdigit() and int(count) > 10))):
+            normalized["count"] = 10
+        start, end = normalized.get("start"), normalized.get("end")
+        parsed_start, parsed_end = _parse_timestamp(start), _parse_timestamp(end)
+        try:
+            oversized_window = (
+                parsed_start is not None and parsed_end is not None
+                and parsed_end - parsed_start > timedelta(hours=24)
+            )
+        except TypeError:  # mixed naive/aware timestamps: leave untouched for schema validation
+            oversized_window = False
+        if oversized_window and provenance.range_source != "user":
+            normalized["start"] = _format_timestamp_like(parsed_end - timedelta(hours=24), start)
+        return normalized
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -323,6 +405,38 @@ class ToolCallGuardrailController:
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
         allow = ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+
+        restricted_name = _underlying_tool_name(tool_name, args)
+        restricted_server, restricted_component = _mcp_tool_parts(restricted_name)
+        if (self._capability_only and restricted_server is not None
+                and restricted_component not in {"get_capabilities", "get_agent_guide"}):
+            return self._decide(
+                "restrict", "capability_only_scope", tool_name, 1, signature,
+                message=(
+                    f"Skipped {restricted_name}: this turn explicitly requested capability "
+                    "introspection without domain investigation. Synthesize the answer from "
+                    "get_capabilities and, if already present, get_agent_guide."
+                ),
+            )
+
+        if signature in self._reusable_mcp_calls:
+            return self._decide(
+                "reuse", "reusable_result_already_available", tool_name, 1, signature,
+                message=(
+                    f"Skipped {tool_name}: an identical successful MCP result is already "
+                    "available earlier in this turn. Use that result and finish the answer."
+                ),
+            )
+        covered = self._covered_by_composite(tool_name, args)
+        if covered:
+            return self._decide(
+                "reuse", "covered_by_composite_result", tool_name, 1, signature,
+                message=(
+                    f"Skipped {tool_name}: the same native entity and scope are already "
+                    "covered by an assembled MCP result that requires no component follow-up. "
+                    "Use the existing composite evidence and finish the answer."
+                ),
+            )
 
         # Loop caps apply regardless of hard_stop_enabled (which only governs the detector).
         cap_block = self._check_loop_cap(tool_name, args, signature)
@@ -378,6 +492,11 @@ class ToolCallGuardrailController:
                 )
             return ToolGuardrailDecision(tool_name=tool_name, count=exact_count, signature=signature)
 
+        assembled_complete = self._record_mcp_result_contract(tool_name, args, result, signature)
+        _server, component = _mcp_tool_parts(_underlying_tool_name(tool_name, args))
+        capability_complete = self._capability_only and component in {
+            "get_capabilities", "get_agent_guide",
+        }
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
         # A successful mutation is progress for every failing signature still counted
@@ -387,6 +506,20 @@ class ToolCallGuardrailController:
             self._same_tool_failure_counts.clear()
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
+            if (
+                assembled_complete and self.config.finalize_on_complete_composite
+            ) or capability_complete:
+                return self._decide(
+                    "finalize",
+                    "capability_evidence_collected" if capability_complete else "composite_evidence_assembled",
+                    tool_name, 1, signature,
+                    message=(
+                        "The requested capability evidence is available. Synthesize the capability-only answer now."
+                        if capability_complete else
+                        "The MCP result is assembled and explicitly requires no component follow-up. "
+                        "Synthesize the answer now from its included evidence."
+                    ),
+                )
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
         result_hash = _result_hash(result)
@@ -399,6 +532,68 @@ class ToolCallGuardrailController:
 
     def _is_idempotent(self, tool_name: str) -> bool:
         return tool_name not in self.config.mutating_tools and tool_name in self.config.idempotent_tools
+
+    def _record_mcp_result_contract(
+        self, tool_name: str, args: Mapping[str, Any], result: str | None,
+        signature: ToolCallSignature,
+    ) -> bool:
+        """Remember only explicit structured MCP reuse/completeness contracts."""
+        server, _ = _mcp_tool_parts(tool_name)
+        structured = _mcp_structured_content(result)
+        if server is None or structured is None:
+            return False
+        mappings = list(_iter_mappings(structured))
+        if any(mapping.get("reuseResult") is True for mapping in mappings):
+            self._reusable_mcp_calls.add(signature)
+        for mapping in mappings:
+            state = mapping.get("resultState")
+            assembled = mapping.get("assembled") is True or (
+                isinstance(state, str) and state.strip().lower() == "assembled"
+            )
+            includes = mapping.get("includes")
+            if not assembled or mapping.get("componentFollowupNeeded") is not False or not isinstance(includes, Mapping):
+                continue
+            components = frozenset(
+                _normalize_component_name(str(name))
+                for name, included in includes.items()
+                if included is True and _normalize_component_name(str(name))
+            )
+            if not components:
+                continue
+            # Associate component coverage only with IDs on the exact contract
+            # object (plus the composite call's IDs). Recursing through every
+            # evidence row would falsely treat a secondary device as the primary
+            # entity whose detail the composite says it included.
+            native_identities = frozenset({
+                *_native_identities(mapping, recursive=False),
+                *_native_identities(args, recursive=False),
+            })
+            scope_values = frozenset(_scope_values(args))
+            self._mcp_composite_coverage.append(
+                _CompositeCoverage(server, components, native_identities, scope_values)
+            )
+            return True
+        return False
+
+    def _covered_by_composite(self, tool_name: str, args: Mapping[str, Any]) -> bool:
+        server, component = _mcp_tool_parts(tool_name)
+        if server is None or component is None:
+            return False
+        normalized = _normalize_component_name(component)
+        call_identities = set(_native_identities(args))
+        if not call_identities:
+            return False
+        call_scope = set(_scope_values(args))
+        for coverage in self._mcp_composite_coverage:
+            if coverage.server != server or normalized not in coverage.components:
+                continue
+            if not call_identities.intersection(coverage.native_identities):
+                continue
+            # An explicitly changed time bound is a changed scope and remains allowed.
+            if call_scope and not call_scope.issubset(coverage.scope_values):
+                continue
+            return True
+        return False
 
     def observe_call(
         self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,
@@ -480,6 +675,13 @@ class ToolCallGuardrailController:
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
     """Build a synthetic role=tool content string for a blocked tool call."""
+    if decision.action in {"reuse", "restrict"}:
+        return json.dumps({
+            "result": decision.message,
+            "reused": decision.action == "reuse",
+            "blockedByTurnPolicy": decision.action == "restrict",
+            "guardrail": decision.to_metadata(),
+        }, ensure_ascii=False)
     return json.dumps({"error": decision.message, "guardrail": decision.to_metadata()}, ensure_ascii=False)
 
 
@@ -522,6 +724,191 @@ def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:
 def _result_hash(result: str | None) -> str:
     parsed = safe_json_loads(result or "")
     return _sha256(_canonical_json(parsed) if parsed is not None else (result or ""))
+
+
+@dataclass(frozen=True)
+class _CompositeCoverage:
+    server: str
+    components: frozenset[str]
+    native_identities: frozenset[tuple[str, str]]
+    scope_values: frozenset[str]
+
+
+def _mcp_tool_parts(tool_name: str) -> tuple[str | None, str | None]:
+    """Return the generated MCP server/tool components without guessing names."""
+    if not isinstance(tool_name, str) or not tool_name.startswith("mcp_"):
+        return None, None
+    server, separator, component = tool_name[4:].partition("__")
+    return (server, component) if separator and server and component else (None, None)
+
+
+def _underlying_tool_name(tool_name: str, args: Mapping[str, Any]) -> str:
+    """Return a bridge target when present, otherwise the directly emitted tool name."""
+    if tool_name == "tool_call":
+        target = args.get("name")
+        if isinstance(target, str) and target.strip():
+            return target.strip()
+    return tool_name
+
+
+def is_capability_only_request(value: Any) -> bool:
+    """Detect an explicit capability ask that also forbids operational investigation.
+
+    This intentionally requires both halves. A general question about what a system can
+    do is not restricted unless the user also says not to investigate findings.
+    """
+    text = _request_text(value)
+    if not text:
+        return False
+    normalized = " ".join(text.casefold().split())
+    capability_markers = (
+        "capability", "capabilities", "capability-only", "available tools",
+        "investigation capabilities", "untersuchungsmöglich", "welche untersuch",
+    )
+    no_investigation_markers = (
+        "do not investigate", "without investigating", "no investigation",
+        "keine untersuchung", "keine findings", "keine investigation",
+        "führe keine untersuchung", "fuehre keine untersuchung",
+    )
+    return any(marker in normalized for marker in capability_markers) and any(
+        marker in normalized for marker in no_investigation_markers
+    )
+
+
+def is_vague_recent_request(value: Any) -> bool:
+    """True for a recent-time ask only when the user supplied no concrete bound."""
+    return recent_request_provenance(value).is_vague
+
+
+def recent_request_provenance(value: Any) -> RecentRequestProvenance:
+    """Classify recent bounds while retaining whether the user supplied them."""
+    text = _request_text(value)
+    if not text:
+        return RecentRequestProvenance()
+    normalized = " ".join(text.casefold().split())
+    recent_markers = (
+        "recent", "lately", "latest", "newest", "in letzter zeit", "kürzlich",
+        "kuerzlich", "aktuell", "neuest", "letzten",
+    )
+    if not any(marker in normalized for marker in recent_markers):
+        return RecentRequestProvenance()
+    explicit_quantity = re.search(
+        r"\bcount\s*[=:]?\s*\d+\b|"
+        r"\b(?:show|list|display|return|get|fetch)\s+(?:me\s+)?(?:the\s+)?\d+\b|"
+        r"\bgive\s+me\s+(?:the\s+)?\d+\b|"
+        r"\b(?:top|latest|newest|recent|most\s+recent)\s+\d+\b|"
+        r"\b\d+\s+(?:most\s+recent|recent|latest|newest|neuest\w*|aktuell\w*|letzte\w*)\b|"
+        r"\b\d+\s+(?:findings?|items?|results?|events?|records?|alerts?|devices?)\b",
+        normalized,
+    )
+    explicit_range = re.search(
+        r"\b\d{4}-\d{2}-\d{2}\b|"
+        r"\b\d+(?:[.,]\d+)?\s*(?:h|hours?|stunden?|d|days?|tage?n?|weeks?|wochen?|months?|monate?n?)\b|"
+        r"\b(?:today|yesterday|heute|gestern)\b|"
+        r"\b(?:since|until|from|between|seit|bis|zwischen)\b",
+        normalized,
+    )
+    return RecentRequestProvenance(
+        is_recent=True,
+        quantity_source="user" if explicit_quantity else "model_or_default",
+        range_source="user" if explicit_range else "model_or_default",
+    )
+
+
+def _request_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return " ".join(
+            str(part.get("text") or "") for part in value if isinstance(part, Mapping)
+        )
+    return ""
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _format_timestamp_like(value: datetime, original: Any) -> str:
+    rendered = value.isoformat()
+    if isinstance(original, str) and original.strip().endswith("Z"):
+        rendered = rendered.replace("+00:00", "Z")
+    return rendered
+
+
+def _mcp_structured_content(result: str | None) -> Any | None:
+    parsed = safe_json_loads(result or "")
+    if not isinstance(parsed, Mapping):
+        return None
+    structured = parsed.get("structuredContent")
+    if isinstance(structured, (Mapping, list)):
+        return structured
+    # MCP results with no usable text put structuredContent directly in `result`.
+    nested = parsed.get("result")
+    return nested if isinstance(nested, (Mapping, list)) else None
+
+
+def _iter_mappings(value: Any):
+    if isinstance(value, Mapping):
+        yield value
+        for child in value.values():
+            yield from _iter_mappings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_mappings(child)
+
+
+def _normalize_component_name(value: str) -> str:
+    normalized = "".join(ch for ch in value.lower() if ch.isalnum())
+    for prefix in ("get", "read", "fetch", "list"):
+        if normalized.startswith(prefix) and len(normalized) > len(prefix):
+            return normalized[len(prefix):]
+    return normalized
+
+
+def _native_identities(value: Any, *, recursive: bool = True):
+    """Yield normalized ``(field namespace, value)`` native identities."""
+    if not isinstance(value, Mapping):
+        return
+    for key, child in value.items():
+        raw_key = str(key)
+        lowered = raw_key.casefold()
+        normalized = "".join(ch for ch in lowered if ch.isalnum())
+        is_id_key = (
+            normalized in {"id", "pbid", "did", "pid", "uuid"}
+            or lowered.endswith(("_id", "-id"))
+            or (len(raw_key) > 2 and raw_key.endswith(("Id", "ID")))
+        )
+        if is_id_key and isinstance(child, (str, int)) and not isinstance(child, bool):
+            yield normalized, str(child)
+        if recursive and isinstance(child, Mapping):
+            yield from _native_identities(child, recursive=True)
+        elif recursive and isinstance(child, list):
+            for item in child:
+                if isinstance(item, Mapping):
+                    yield from _native_identities(item, recursive=True)
+
+
+def _scope_values(args: Mapping[str, Any]):
+    """Return time-bound argument values used to distinguish a changed read scope."""
+    exact_names = {
+        "start", "end", "from", "to", "since", "until",
+        "starttime", "endtime", "fromtime", "totime",
+        "starttimestamp", "endtimestamp",
+    }
+    for key, value in args.items():
+        normalized = "".join(ch for ch in str(key).lower() if ch.isalnum())
+        is_bound = normalized in exact_names or normalized.endswith(
+            ("starttime", "endtime", "starttimestamp", "endtimestamp", "since", "until")
+        )
+        if is_bound:
+            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                yield str(value)
 
 
 _BOOL_WORDS = {w: True for w in ("1", "true", "yes", "on", "enabled")} | {w: False for w in ("0", "false", "no", "off", "disabled")}

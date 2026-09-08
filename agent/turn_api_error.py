@@ -77,6 +77,32 @@ def handle_api_error(
     if agent.thinking_callback:
         agent.thinking_callback("")
 
+    from agent.run_budget import FinalSynthesisTimeout, ProviderStaleTimeout, RunBudgetExceeded
+    if isinstance(api_error, (FinalSynthesisTimeout, ProviderStaleTimeout, RunBudgetExceeded)):
+        reason = (
+            "final_synthesis_timeout" if isinstance(api_error, FinalSynthesisTimeout)
+            else "provider_stale_timeout" if isinstance(api_error, ProviderStaleTimeout)
+            else "run_budget_exhausted"
+        )
+        final = (
+            "The provider did not finish the tool-free final response within the configured deadline; "
+            "the request was stopped without issuing more tool calls."
+            if reason == "final_synthesis_timeout"
+            else "The provider produced no response within the configured stale timeout; "
+            "the request was stopped without retrying the same silent path."
+            if reason == "provider_stale_timeout"
+            else "The conversation run budget expired while waiting for the provider; the request was stopped."
+        )
+        from agent.message_metadata import append_message
+        append_message(messages, {"role": "assistant", "content": final})
+        agent._persist_session(messages, conversation_history)
+        return _verdict("return", {
+            "final_response": final, "messages": messages, "api_calls": api_call_count,
+            "completed": False, "failed": True, "error": final,
+            "turn_exit_reason": reason, "failure_reason": reason,
+            "failure_retryable": False,
+        })
+
     _recovered, active_system_prompt = recover_before_classification(
         agent, api_error, messages=messages, api_messages=api_messages, api_kwargs=api_kwargs,
         active_system_prompt=active_system_prompt,

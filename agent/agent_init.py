@@ -544,6 +544,11 @@ _TURN_STATE: Dict[str, Any] = {
     "_budget_grace_call": False,
     "_run_budget_started_at": None,  # set by turn_context.prepare_turn when a budget is active
     "_run_budget_wrapup_injected": False,  # one-shot latch for the 80% wrap-up notice
+    "_force_toolless_final": False,  # request-local final synthesis after evidence/last iteration
+    "_final_synthesis_notice_injected": False,
+    "_final_synthesis_deadline": None,
+    "_capability_only_turn": False,
+    "_vague_recent_turn": False,
     # Activity tracking (API call / tool / stream chunk) for the gateway timeout handler and
     # "still working" notifications. Named provenances are stamped only by compression writers.
     "_last_activity_ts": lambda: time.time(),

@@ -234,6 +234,15 @@ class TestThresholdGate:
         cfg = ToolSearchConfig.from_raw({"enabled": "off"})
         assert not should_activate(cfg, deferrable_tokens=1_000_000, context_length=200_000)
 
+    def test_auto_keeps_small_catalog_eager_but_on_forces_bridge(self):
+        from tools.tool_search import ToolSearchConfig, should_activate
+
+        auto = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 5})
+        assert not should_activate(auto, deferrable_tokens=9_000, context_length=200_000)
+        assert should_activate(auto, deferrable_tokens=11_000, context_length=200_000)
+        forced = ToolSearchConfig.from_raw({"enabled": "on", "threshold_pct": 5})
+        assert should_activate(forced, deferrable_tokens=1, context_length=200_000)
+
 
     def test_token_estimate_proportional_to_schema_size(self):
         from tools.tool_search import estimate_tokens_from_schemas
@@ -633,7 +642,7 @@ class TestCatalogListing:
             defs.append(_td(name, "Perform a deliberately verbose connected service action."))
 
         cfg = ToolSearchConfig.from_raw(None)
-        result = assemble_tool_defs(defs, context_length=1_000_000, config=cfg)
+        result = assemble_tool_defs(defs, context_length=200_000, config=cfg)
         search = next(
             td for td in result.tool_defs
             if td["function"]["name"] == "tool_search"

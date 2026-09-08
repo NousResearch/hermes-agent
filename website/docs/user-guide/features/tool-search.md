@@ -10,8 +10,9 @@ session, their JSON schemas can consume a substantial fraction of the
 context window on every turn — even when only a few of them are relevant
 to what the user actually asked for.
 
-**Tool Search** is Hermes' opt-in progressive-disclosure layer for that
-problem. When activated, MCP and plugin tools are replaced in the
+**Tool Search** is Hermes' progressive-disclosure layer for that problem.
+In the default `auto` mode it activates only when eligible schemas exceed
+the configured share of the context window. When activated, MCP and plugin tools are replaced in the
 model-visible tools array by three bridge tools, and the model loads each
 specific tool's schema on demand.
 
@@ -72,13 +73,14 @@ see the underlying tool, not the bridge.
 
 ## When does it activate?
 
-Tool Search uses **tiered disclosure**: the presence of *any* deferrable
-(MCP/plugin) tool activates the bridge; what scales with catalog size is
-how much of the catalog stays visible, not whether schemas defer.
+Tool Search uses **tiered disclosure**. In `auto` mode, a deferrable
+(MCP/plugin) catalog stays eager while its schemas fit within
+`threshold_pct` of the active context; larger catalogs activate the bridge.
+Explicit `on` always activates when a deferrable tool exists.
 
 | Tier | Condition | What the model sees |
 | --- | --- | --- |
-| **0** | No MCP/plugin tools | Every tool eager, no bridge. Pass-through. |
+| **0** | No MCP/plugin tools, or schemas fit the `auto` threshold | Every tool eager, no bridge. Pass-through. |
 | **1** | Deferred catalog's listing fits the budget | Bridge + a skills-style manifest of every deferred tool (name + short description, degrading to names-only when over budget). Degradation is **per server**: when one oversized server (Cloudflare) is attached alongside small ones (Linear), the small servers keep their per-tool listings and only the oversized server collapses to a summary line. |
 | **2** | Per-tool listing exceeds the budget even names-only for every server (e.g. Cloudflare's flat API surface alone: ~3,300 tools whose names are ~32K tokens) | Bare bridge + a one-line-per-server summary (server name + tool count), so the model knows which domains are reachable; individual tools are discoverable only through `tool_search`. |
 
@@ -102,8 +104,8 @@ tools:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `auto` | `auto`/`on` activate whenever at least one deferrable tool exists; `off` disables entirely (everything stays eager). `auto` is currently an alias of `on` — it is reserved for a future mode that inlines schemas when they fit the context and defers only when they don't. Pin `on` or `off` if you want today's behavior guaranteed across upgrades. |
-| `threshold_pct` | `5` | Listing budget as a percentage of the active model's context length. Range 0–100. |
+| `enabled` | `auto` | `auto` keeps eligible schemas eager while they fit the threshold; `on` always activates when at least one deferrable tool exists; `off` disables the bridge entirely. |
+| `threshold_pct` | `5` | Auto-activation threshold and listing budget as a percentage of the active model's context length. Range 0–100. |
 | `search_default_limit` | `5` | Hits returned per query when the model calls `tool_search` without a `limit`. |
 | `max_search_limit` | `25` | Hard upper bound the model can request via `limit` (per query). Range 1–50. |
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
@@ -140,8 +142,8 @@ round trip usually disappears — the model goes straight to
 `tool_describe`. Live benchmarking showed the listing mode matching
 eager loading's task success while costing less than the bare bridge.
 
-If you want the old always-eager behavior for a small toolset, set
-`enabled: off`.
+If you want always-eager behavior regardless of catalog size, set
+`enabled: off`; use `enabled: on` to force the bridge even for a small toolset.
 
 ## Trade-offs that don't go away
 

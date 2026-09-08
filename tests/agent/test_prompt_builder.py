@@ -29,6 +29,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    execution_guidance_text,
     PARALLEL_TOOL_CALL_GUIDANCE,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     MEMORY_GUIDANCE,
@@ -1120,6 +1121,19 @@ class TestOpenAIModelExecutionGuidance:
     def test_guidance_gates_completion_on_verification(self):
         text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
         assert "plausible subset" in text
+
+    def test_guidance_distinguishes_evidence_reuse_from_verification(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "identical arguments" in text
+        assert "component follow-up" in text
+        assert "capability-only" in text
+        assert "once evidence is sufficient" in text
+
+    def test_scoped_guidance_never_names_absent_shell_or_file_tools(self):
+        text = execution_guidance_text({"mcp_example__get_capabilities"}).lower()
+        assert "use terminal" not in text
+        assert "read_file" not in text
+        assert "search_files" not in text
 
 
 class TestExecutionGuidanceModels:

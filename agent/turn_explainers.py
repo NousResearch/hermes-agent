@@ -45,6 +45,14 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
         "the per-turn iteration/cost budget was exhausted before a "
         "final answer. Send `continue` to keep going."
     ),
+    "run_budget_exhausted": (
+        "the configured wall-clock run budget expired before a final answer. "
+        "The in-flight provider request was stopped."
+    ),
+    "final_synthesis_timeout": (
+        "the provider kept the final synthesis request alive but did not finish an answer "
+        "within its configured deadline. The request was stopped without running more tools."
+    ),
     "ollama_runtime_context_too_small": (
         "the local model's context window was too small to finish. "
         "Increase the context size or use a larger model."

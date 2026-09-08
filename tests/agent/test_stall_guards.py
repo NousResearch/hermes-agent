@@ -12,17 +12,204 @@ Two guards, both notice/re-prompt-only:
    short reply that ENDS on an announced next action, feeding the existing
    bounded intent-ack continuation path (no new recovery machinery).
 
-These assert behavior contracts, not message snapshots.
+MCP tools can additionally opt successful results into per-turn reuse and
+declare assembled component coverage. These assert behavior contracts, not
+message snapshots.
 """
+
+import json
 
 from agent.agent_runtime_helpers import trailing_continue_intent
 from agent.tool_guardrails import (
     IDENTICAL_RESULT_STUB_MIN_CHARS,
     STALL_GUARD_IDENTICAL_CALL_THRESHOLD,
     STALL_GUARD_REPEATABLE_TOOLS,
+    ToolCallGuardrailConfig,
     ToolCallGuardrailController,
+    toolguard_synthetic_result,
     is_stall_guard_repeatable,
 )
+
+
+def test_explicit_mcp_reuse_contract_skips_identical_successful_call():
+    c = ToolCallGuardrailController()
+    tool = "mcp_example__read_finding"
+    args = {"finding_id": "native-7", "count": 10}
+    result = '{"result":"summary","structuredContent":{"reuseResult":true,"findingId":"native-7"}}'
+
+    c.after_call(tool, args, result, failed=False)
+    repeated = c.before_call(tool, args)
+    assert repeated.action == "reuse"
+    assert repeated.allows_execution is False
+    assert json.loads(toolguard_synthetic_result(repeated))["reused"] is True
+    assert c.before_call(tool, {**args, "count": 9}).allows_execution is True
+
+
+def test_assembled_mcp_result_blocks_only_covered_native_scope():
+    c = ToolCallGuardrailController()
+    composite = "mcp_example__investigate_finding"
+    args = {"finding_id": "native-7", "start": "s1", "end": "e1"}
+    result = json.dumps({
+        "result": "summary",
+        "structuredContent": {
+            "resultState": "assembled",
+            "componentFollowupNeeded": False,
+            "includes": {"findingDetail": True, "networkEvidence": True},
+            "findingId": "native-7",
+            "deviceId": "device-2",
+        },
+    })
+    decision = c.after_call(composite, args, result, failed=False)
+    assert decision.action == "finalize"
+
+    assert c.before_call(
+        "mcp_example__get_finding_detail", {"finding_id": "native-7"}
+    ).code == "covered_by_composite_result"
+    assert c.before_call(
+        "mcp_example__get_network_evidence", {"device_id": "device-2", "start": "s1", "end": "e1"}
+    ).action == "reuse"
+    assert c.before_call(
+        "mcp_example__get_network_evidence", {"device_id": "device-2", "start": "s2", "end": "e2"}
+    ).allows_execution is True
+    assert c.before_call(
+        "mcp_example__get_network_evidence", {"device_id": "guessed-id"}
+    ).allows_execution is True
+
+
+def test_composite_coverage_does_not_promote_nested_secondary_ids():
+    c = ToolCallGuardrailController()
+    c.after_call(
+        "mcp_example__investigate_finding",
+        {"finding_id": "native-7", "start": "s1", "end": "e1"},
+        json.dumps({
+            "structuredContent": {
+                "resultState": "assembled",
+                "componentFollowupNeeded": False,
+                "includes": {"deviceDetail": True},
+                "findingId": "native-7",
+                "deviceId": "primary-device",
+                "networkEvidence": [{"deviceId": "secondary-device"}],
+            },
+        }),
+        failed=False,
+    )
+
+    assert c.before_call(
+        "mcp_example__get_device_detail", {"device_id": "primary-device"}
+    ).action == "reuse"
+    assert c.before_call(
+        "mcp_example__get_device_detail", {"device_id": "secondary-device"}
+    ).allows_execution is True
+
+
+def test_composite_coverage_preserves_typed_id_namespaces_and_aliases():
+    c = ToolCallGuardrailController()
+    c.after_call(
+        "mcp_example__investigate_finding",
+        {"finding_id": "7"},
+        json.dumps({
+            "structuredContent": {
+                "resultState": "assembled",
+                "componentFollowupNeeded": False,
+                "includes": {"device-detail": True, "finding_detail": True},
+                "findingId": "7",
+                "deviceID": "2",
+            },
+        }),
+        failed=False,
+    )
+
+    assert c.before_call(
+        "mcp_example__get_device_detail", {"device_id": "7"}
+    ).allows_execution is True
+    assert c.before_call(
+        "mcp_example__get_device_detail", {"device-id": "2"}
+    ).action == "reuse"
+    assert c.before_call(
+        "mcp_example__get_finding_detail", {"finding-id": "7"}
+    ).action == "reuse"
+
+
+def test_assembled_mcp_result_arms_toolless_final_synthesis():
+    agent = _fake_agent()
+    result = json.dumps({
+        "result": "summary",
+        "structuredContent": {
+            "resultState": "assembled",
+            "componentFollowupNeeded": False,
+            "includes": {"findingDetail": True},
+            "findingId": "native-7",
+        },
+    })
+
+    output = agent._append(
+        "mcp_example__investigate_finding", {"finding_id": "native-7"}, result
+    )
+
+    assert agent._force_toolless_final is True
+    assert "final-synthesis guard" in output
+
+
+def test_long_orchestration_can_retain_composite_coverage_without_finalizing():
+    config = ToolCallGuardrailConfig.from_mapping({
+        "finalize_on_complete_composite": False,
+    })
+    assert config.finalize_on_complete_composite is False
+    c = ToolCallGuardrailController(config)
+    result = json.dumps({
+        "structuredContent": {
+            "resultState": "assembled",
+            "componentFollowupNeeded": False,
+            "includes": {"findingDetail": True},
+            "findingId": "native-7",
+        },
+    })
+
+    decision = c.after_call(
+        "mcp_example__investigate_finding", {"finding_id": "native-7"}, result,
+        failed=False,
+    )
+
+    assert decision.allows_execution is True
+    assert c.before_call(
+        "mcp_example__get_finding_detail", {"finding_id": "native-7"}
+    ).action == "reuse"
+
+
+def test_capability_only_intent_requires_capability_and_no_investigation():
+    from agent.tool_guardrails import is_capability_only_request
+
+    assert is_capability_only_request(
+        "Erkläre die Untersuchungsmöglichkeiten; führe keine Untersuchung von Findings durch."
+    ) is True
+    assert is_capability_only_request("Welche Untersuchungsmöglichkeiten gibt es?") is False
+    assert is_capability_only_request("Do not investigate this finding yet.") is False
+
+
+def test_vague_recent_mcp_args_are_bounded_but_explicit_ranges_are_not():
+    from agent.tool_guardrails import is_vague_recent_request, recent_request_provenance
+
+    assert is_vague_recent_request("Untersuche ungewöhnliche Aktivität in letzter Zeit") is True
+    assert is_vague_recent_request("Investigate recent activity from the last 48 hours") is False
+    explicit_count = recent_request_provenance("show the 50 most recent findings")
+    assert explicit_count.quantity_source == "user"
+    assert explicit_count.range_source == "model_or_default"
+
+    c = ToolCallGuardrailController()
+    c.set_vague_recent(True)
+    bounded = c.normalize_args(
+        "mcp_example__list_findings",
+        {"count": 25, "start": "2026-09-06T15:00:00Z", "end": "2026-09-08T15:00:00Z"},
+    )
+    assert bounded == {
+        "count": 10,
+        "start": "2026-09-07T15:00:00Z",
+        "end": "2026-09-08T15:00:00Z",
+    }
+
+    c.set_vague_recent(False)
+    explicit = {"count": 25, "start": "2026-09-06T15:00:00Z", "end": "2026-09-08T15:00:00Z"}
+    assert c.normalize_args("mcp_example__list_findings", explicit) is explicit
 
 
 def _observe_n(controller, n, tool="web_search", args=None, result="same result"):

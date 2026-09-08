@@ -425,10 +425,23 @@ class _ParsedCall:
 
 def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _ParsedCall:
     name = _canonical_tool_name(tool_call.function.name)
+    emitted_name = name
     args, parse_error = _parse_tool_arguments(tool_call.function.arguments)
     scope_block = None
     if parse_error is None:
         name, args, scope_block = _unwrap_tool_search_call(agent, name, args, flatten_probe=flatten_probe)
+    if parse_error is None and scope_block is None:
+        normalize = getattr(agent._tool_guardrails, "normalize_args", None)
+        normalized_args = normalize(name, args) if callable(normalize) else args
+        if normalized_args != args:
+            args = dict(normalized_args)
+            # Keep a directly emitted call's transcript aligned with what is
+            # actually dispatched. A tool_search bridge call retains its outer
+            # wire shape; its resolved args are tracked in _ManagedToolResult.
+            if emitted_name == name:
+                tool_call.function.arguments = json.dumps(
+                    args, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
     return _ParsedCall(tool_call, name, args, [], parse_error, scope_block)
 
 
@@ -607,6 +620,9 @@ def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_message: Optional[st
         result, error_type, error_message = json.dumps({"error": block_message}, ensure_ascii=False), block_error_type, block_message
     else:
         result = agent._guardrail_block_result(guardrail_decision)
+        if getattr(guardrail_decision, "action", None) == "reuse":
+            ref.emit_post(agent, result, status="reused")
+            return result
         error_type = "guardrail_block"
         error_message = getattr(guardrail_decision, "message", None) or "Tool blocked by guardrail policy"
     ref.emit_post(agent, result, status="blocked", error_type=error_type, error_message=error_message)

@@ -2,7 +2,8 @@
 event-triggered core tools are replaced in the model-visible array by three bridge tools —
 tool_search / tool_describe / tool_call. Invariants: core tools (``toolsets._HERMES_CORE_TOOLS``)
 and session-gated GUI toolsets never defer unless named in ``defer``; ANY deferrable tool
-activates the bridge (the listing scales with budget, not activation); the catalog is
+activates the bridge when their schemas exceed the configured context share (or when
+explicitly enabled); the catalog is
 stateless — rebuilt from the live tool-defs every assembly (a session-keyed one drifts and
 silently drops tools); bridge calls route through ``model_tools.handle_function_call``."""
 
@@ -30,9 +31,8 @@ _MAX_QUERIES_PER_CALL = _MAX_DESCRIBE_NAMES_PER_CALL = 10  # bound the work one 
 @dataclass(frozen=True)
 class ToolSearchConfig:
     """Resolved, validated tool-search configuration for a single assembly."""
-    enabled: str  # "auto" | "on" | "off" — "auto" is an alias of "on" today
-    # Listing budget as % of context; does NOT gate activation, only bounds how much
-    # the embedded manifest may consume before it degrades (full -> names -> bare).
+    enabled: str  # "auto" | "on" | "off"
+    # Auto-activation threshold and listing budget as % of context.
     threshold_pct: float  # 0..100
     search_default_limit: int
     max_search_limit: int
@@ -181,10 +181,15 @@ def estimate_tokens_from_schemas(tool_defs: Iterable[Dict[str, Any]]) -> int:
 
 def should_activate(config: ToolSearchConfig, deferrable_tokens: int,
                     context_length: Optional[int]) -> bool:
-    """``"off"`` never activates; ``"on"``/``"auto"`` activate whenever any deferrable tool
-    exists ("auto" is reserved for a future budget-gated mode — do not distinguish them
-    without that design). ``context_length`` is kept for caller compatibility."""
-    return config.enabled != "off" and deferrable_tokens > 0
+    """Resolve off/on directly; auto defers only when schemas exceed its context share."""
+    if config.enabled == "off" or deferrable_tokens <= 0:
+        return False
+    if config.enabled == "on":
+        return True
+    if not context_length or context_length <= 0:
+        return True  # unknown capacity: preserve the conservative bridge behavior
+    threshold = int(context_length * (config.threshold_pct / 100.0))
+    return deferrable_tokens > threshold
 
 
 def listing_token_budget(config: ToolSearchConfig, context_length: Optional[int]) -> int:

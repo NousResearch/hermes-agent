@@ -252,7 +252,7 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     add("--run-budget", type=float, default=None, metavar="SECONDS", dest="run_budget", help=(
         "Optional wall-clock budget in seconds for each conversation run. "
         "At 80%% elapsed the agent gets a one-time wrap-up notice, and "
-        "implicit provider stale timeouts are capped to the remaining "
+        "all provider waits are capped to the remaining "
         "budget so one hung call can't consume the run. Unset = off. "
         "Also configurable as agent.run_budget_seconds in config.yaml. "
         "Intended for one-shot/eval invocations with a hard ceiling."))

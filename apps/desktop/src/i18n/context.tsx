@@ -66,6 +66,23 @@ function applyDocumentLocale(locale: Locale) {
   document.documentElement.dir = RTL_LOCALES.has(locale) ? 'rtl' : 'ltr'
 }
 
+// The renderer mounts right after the backend announces readiness, but on an
+// update relaunch the connection is still settling and the one-shot config GET
+// can fail — pinning the locale to English for the whole session even though
+// display.language is intact on disk (#105465). Retry the fetch a bounded
+// number of times with linear backoff (same shape as refreshProfiles, #70679)
+// so a backend that comes up a moment late still gets its language applied.
+const CONFIG_FETCH_MAX_RETRIES = 3
+const CONFIG_FETCH_RETRY_DELAY_MS = 500
+
+function configFetchRetryDelayMs(attempt: number): number {
+  return CONFIG_FETCH_RETRY_DELAY_MS * (attempt + 1)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 export interface I18nContextValue {
   configLoadError: Error | null
   isLoadingConfig: boolean
@@ -114,27 +131,45 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
 
     let cancelled = false
 
-    setIsLoadingConfig(true)
-    setConfigLoadError(null)
+    const loadLocale = async () => {
+      setIsLoadingConfig(true)
+      setConfigLoadError(null)
 
-    configClient
-      .getConfig()
-      .then(config => {
-        if (!cancelled) {
-          setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
+      let lastError: unknown
+
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const config = await configClient.getConfig()
+
+          if (!cancelled) {
+            setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
+            setIsLoadingConfig(false)
+          }
+
+          return
+        } catch (error) {
+          lastError = error
+
+          if (cancelled || attempt >= CONFIG_FETCH_MAX_RETRIES) {
+            break
+          }
+
+          await sleep(configFetchRetryDelayMs(attempt))
+
+          if (cancelled) {
+            return
+          }
         }
-      })
-      .catch(error => {
-        if (!cancelled) {
-          setConfigLoadError(toError(error))
-          setLocaleState(DEFAULT_LOCALE)
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsLoadingConfig(false)
-        }
-      })
+      }
+
+      if (!cancelled) {
+        setConfigLoadError(toError(lastError))
+        setLocaleState(DEFAULT_LOCALE)
+        setIsLoadingConfig(false)
+      }
+    }
+
+    void loadLocale()
 
     return () => {
       cancelled = true

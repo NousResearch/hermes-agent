@@ -77,6 +77,8 @@ describe('I18nProvider', () => {
   })
 
   it('keeps English usable when config loading fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockRejectedValue(new Error('config unavailable')),
       saveConfig: vi.fn()
@@ -88,11 +90,76 @@ describe('I18nProvider', () => {
       </I18nProvider>
     )
 
+    // The startup fetch retries three times (500ms, 1000ms, 1500ms) before
+    // giving up — a backend that is merely slow must not read as "English".
+    await vi.advanceTimersByTimeAsync(500)
+    await vi.advanceTimersByTimeAsync(1000)
+    await vi.advanceTimersByTimeAsync(1500)
     await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
 
     expect(screen.getByTestId('locale').textContent).toBe('en')
     expect(screen.getByTestId('label').textContent).toBe('Language')
+    expect(configClient.getConfig).toHaveBeenCalledTimes(4)
     expect(configClient.saveConfig).not.toHaveBeenCalled()
+
+    vi.useRealTimers()
+  })
+
+  it('recovers the persisted locale when the config fetch fails transiently (#105465)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    // Update-relaunch race: the renderer's first config GETs hit a backend
+    // connection that is still settling; a later attempt succeeds and must
+    // apply the persisted display.language instead of pinning English.
+    const configClient: I18nConfigClient = {
+      getConfig: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('backend starting'))
+        .mockRejectedValueOnce(new Error('backend starting'))
+        .mockResolvedValueOnce({ display: { language: 'zh' } }),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await vi.advanceTimersByTimeAsync(500)
+    await vi.advanceTimersByTimeAsync(1000)
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('zh')
+    expect(screen.getByTestId('label').textContent).toBe('语言')
+    expect(configClient.getConfig).toHaveBeenCalledTimes(3)
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+
+    vi.useRealTimers()
+  })
+
+  it('stops retrying once the provider unmounts', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockRejectedValue(new Error('backend starting')),
+      saveConfig: vi.fn()
+    }
+
+    const { unmount } = render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await vi.advanceTimersByTimeAsync(500)
+
+    unmount()
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(configClient.getConfig).toHaveBeenCalledTimes(2)
+
+    vi.useRealTimers()
   })
 
   it('loads zh-hant from display.language config', async () => {

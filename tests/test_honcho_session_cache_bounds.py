@@ -161,6 +161,8 @@ def test_get_or_create_triggers_sweep_without_blocking_on_lock_reentrancy():
 # hard caps, unsynced buffers, peers, and read activity (follows #71463)
 # ---------------------------------------------------------------------------
 
+import pytest  # noqa: E402
+
 from plugins.memory.honcho.session import (  # noqa: E402
     _PEERS_CACHE_MAX_SIZE,
     _SESSION_CACHE_MAX_SIZE,
@@ -320,27 +322,17 @@ def test_cached_sdk_session_returns_the_flags_stored_for_it():
     assert mgr._get_or_create_honcho_session("hs-x", None, None) == (sdk, [], flags)
 
 
-def test_deferred_save_puts_an_evicted_session_back_in_the_cache():
+@pytest.mark.parametrize("synced, kept", [(False, True), (True, False)])
+def test_deferred_save_keeps_an_evicted_session_only_while_it_holds_unsynced_messages(synced, kept):
     """write_frequency "session" defers to flush_all(), which only sees cached sessions."""
     mgr = _manager()
     mgr._write_frequency = "session"
     session = _session(key="evicted")
-    session.add_message("user", "unsynced", _synced=False)
+    session.add_message("user", "pending", _synced=synced)
 
     mgr.save(session)
 
-    assert mgr._cache["evicted"] is session
-
-
-def test_deferred_save_of_a_fully_synced_evicted_session_stays_out_of_the_cache():
-    mgr = _manager()
-    mgr._write_frequency = "session"
-    session = _session(key="done")
-    session.add_message("user", "old", _synced=True)
-
-    mgr.save(session)
-
-    assert "done" not in mgr._cache
+    assert (mgr._cache.get("evicted") is session) is kept
 
 
 def test_deferred_save_flushes_inline_when_a_newer_object_owns_the_key():

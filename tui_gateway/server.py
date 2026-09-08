@@ -2246,10 +2246,9 @@ def _startup_system_prompt(cfg: dict, task_id: str) -> str:
 
 
 def _session_auth_user_id(session: dict | None) -> str | None:
-    """``<provider>:<user id>`` the WS-upgrade credential authenticated for ``session``'s transport.
-
-    None for the legacy token, stdio, and the server-internal credential the PTY child connects with.
-    The provider prefix keeps a basic-auth ``alice`` and an OIDC ``alice`` apart."""
+    """``<provider>:<user id>`` the WS-upgrade credential authenticated for ``session``'s transport, or None for
+    the legacy token, stdio and the PTY child's server-internal credential. The prefix keeps a basic-auth ``alice``
+    and an OIDC ``alice`` apart."""
     identity = getattr((session or {}).get("transport"), "auth_identity", None)
     if _methods_browser_control._is_authenticated_identity(identity):
         return f"{str(identity['provider']).strip()}:{str(identity['user_id']).strip()}"

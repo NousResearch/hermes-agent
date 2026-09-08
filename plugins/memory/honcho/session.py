@@ -236,12 +236,9 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             logger.warning("Honcho session '%s' loaded (failed to fetch context: %s)", session_id, e)
         return []
 
-    def _get_or_create_honcho_session(
-        self, session_id: str, user_peer: Any, assistant_peer: Any,
-    ) -> tuple[Any, list, dict[str, bool] | None]:
-        """(honcho_session, existing_messages, observation flags) with peers configured.
-
-        A cached session yields no messages and the flags stored when it was configured."""
+    def _get_or_create_honcho_session(self, session_id: str, user_peer: Any, assistant_peer: Any) -> tuple[Any, list, dict[str, bool] | None]:
+        """(honcho_session, existing_messages, observation flags) with peers configured; a cached session
+        yields no messages and the flags stored when it was configured."""
         with self._cache_lock:
             if session_id in self._sessions_cache:
                 logger.debug("Honcho session '%s' retrieved from cache", session_id)
@@ -366,9 +363,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             excess -= 1
 
     def _flush_session(self, session: HonchoSession) -> bool:
-        """Write unsynced messages to Honcho synchronously.
-
-        The session's lock keeps the async writer and an exit-time flush_all() from posting the same batch."""
+        """Write unsynced messages to Honcho synchronously. The session's lock keeps the async writer and an
+        exit-time flush_all() from posting the same batch."""
         with session._flush_lock:
             return self._flush_session_locked(session)
 
@@ -432,9 +428,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                 logger.error("Honcho async writer error: %s", e)
 
     def _keep_until_flushed(self, session: HonchoSession) -> None:
-        """Put an evicted session that still holds unsynced messages back where flush_all() looks.
-
-        When a newer object already owns the key, this one's batch is written now instead."""
+        """Put an evicted session that still holds unsynced messages back where flush_all() looks. When a
+        newer object already owns the key, this one's batch is written now instead."""
         with self._cache_lock:
             current = self._cache.get(session.key)
             if current is session or not self._has_unsynced(session):
@@ -497,9 +492,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             self._async_thread.start()
 
     def stop_async_writer(self, timeout: float = 10.0) -> None:
-        """Join the async writer, then drain whatever was queued before the join.
-
-        saveMessages: false never enqueues, so the drain is a no-op there and the exit stays clean."""
+        """Join the async writer, then drain whatever was queued before the join. saveMessages: false never
+        enqueues, so the drain is a no-op there and the exit stays clean."""
         with self._async_thread_lock:
             self._shutting_down = True
         if self._async_queue is not None and self._async_thread is not None and self._async_thread.is_alive():

@@ -81,20 +81,15 @@ _PROMPT_HEADERS = {
 _LOCAL_PLATFORMS = frozenset({"cli", "tui", "desktop", ""})
 
 
+_FLAG_WORDS = {"1": True, "true": True, "yes": True, "on": True,
+               "0": False, "false": False, "no": False, "off": False, "": False}
+
+
 def _as_flag(raw: Any, default: Optional[bool]) -> Optional[bool]:
     """A config or env value read as a boolean. Unrecognized strings keep ``default``."""
-    if isinstance(raw, bool):
-        return raw
-    if raw is None:
-        return default
     if isinstance(raw, str):
-        text = raw.strip().lower()
-        if text in {"1", "true", "yes", "on"}:
-            return True
-        if text in {"0", "false", "no", "off", ""}:
-            return False
-        return default
-    return bool(raw)
+        return _FLAG_WORDS.get(raw.strip().lower(), default)
+    return default if raw is None else bool(raw)
 
 
 # (injection.sessionStart name, context key, heading). Render order is fixed here, not by config order.
@@ -452,7 +447,6 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     @staticmethod
     def _resolve_injection_log_path(look: _HostLookup) -> Optional[str]:
         """Where to append the injection audit, or None to keep it off.
-
         The ``logging`` key or HONCHO_LOGGING switches it on. HONCHO_INJECTION_LOG overrides the destination."""
         explicit = os.environ.get("HONCHO_INJECTION_LOG")
         if explicit:
@@ -466,8 +460,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def _log_injection(self, reason: str, payload: str = "") -> str:
         """Append one record of what this turn injected and why, then return ``payload`` unchanged. Never raises.
-
-        The reason is recorded because prefetch has several ways to return nothing and each needs a different fix."""
+        The reason matters because prefetch has several ways to return nothing and each needs a different fix."""
         path = self._injection_log_path
         if not path:
             return payload
@@ -613,10 +606,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
                 "to re-authenticate will restore it.")
 
     def _peer_failure_text(self) -> str:
-        """The stored peer failure plus the fix that fits the session's platform.
-
-        On a gateway platform the fix is a user id from the transport, never peerName: a shared
-        peerName would merge every user of that gateway onto one peer."""
+        """The stored peer failure plus the fix that fits the session's platform. On a gateway the fix is a
+        user id from the transport, never peerName: a shared peerName would merge every user onto one peer."""
         text = self._init_peer_failure or ""
         if self._init_peer_platform in _LOCAL_PLATFORMS:
             return f"{text} Set one with 'hermes honcho peer --user <name>'."
@@ -944,8 +935,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     _SHUTDOWN_JOIN_FLOOR = 5.0
 
     def _shutdown_join_budget(self) -> float:
-        """One join window for every plugin thread: the floor, or the configured HTTP timeout when
-        that is longer, so a thread blocked in a Honcho call can finish before the interpreter finalizes."""
+        """The floor, or the configured HTTP timeout when longer, so a thread blocked in a Honcho call can finish."""
         try:
             from plugins.memory.honcho.client_cache import _resolve_timeout_from_sources
             return max(self._SHUTDOWN_JOIN_FLOOR, _resolve_timeout_from_sources(self._config))
@@ -953,9 +943,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             return self._SHUTDOWN_JOIN_FLOOR
 
     def shutdown(self) -> None:
-        """Join the write threads, flush and stop the manager, then join every other thread this
-        provider or its manager spawned, all within one budget. A daemon thread still blocked in
-        httpx I/O when the interpreter finalizes aborts the process."""
+        """Join the write threads, flush and stop the manager, then join every other thread this provider or its
+        manager spawned, all within one budget. A daemon thread still blocked in httpx I/O at exit aborts the process."""
         self._recall_generation = object()
         budget = self._shutdown_join_budget()
         deadline = time.monotonic() + budget

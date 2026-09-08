@@ -59,5 +59,5 @@ class NoopCuaProvider(ComputerUseProvider):
         return _NoopBackend()
 
 
-register_provider(HostCuaProvider())
-register_provider(NoopCuaProvider())
+register_provider(HostCuaProvider(), builtin=True)
+register_provider(NoopCuaProvider(), builtin=True)

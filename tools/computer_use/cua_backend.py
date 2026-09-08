@@ -28,7 +28,7 @@ from tools.computer_use.cua_backend_driver import (
 from tools.computer_use.cua_backend_input import _InputMixin
 from tools.computer_use.cua_backend_parse import _action_result_from
 from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
-from tools.computer_use.remote import RemoteCuaConfig, resolve_remote_cua_config
+from tools.computer_use.remote import RemoteCuaConfig
 
 logger = logging.getLogger(__name__)
 # cua-driver's anonymous PostHog telemetry gate ("0" disables; absent => ON upstream).
@@ -42,23 +42,6 @@ def _computer_use_cfg() -> Dict[str, Any]:
         from hermes_cli.config import load_config
         return (load_config() or {}).get("computer_use") or {}
     return {}
-
-def _remote_cfg() -> Optional[Any]:
-    """Active remote CUA transport config, or None when remote is absent / disabled.
-
-    ``resolve_remote_cua_config`` raises ``RuntimeError`` for every misconfiguration
-    (bad token, invalid URL, non-HTTPS non-loopback, wrong permission mode …) — that
-    is the legitimate 'not configured / misconfigured' signal and is suppressed so the
-    caller falls back to local mode (``check_computer_use_requirements`` fail-closes
-    separately at the registry layer).  Any *other* exception (``ImportError``,
-    ``KeyError``, ``TypeError`` …) is a config-loading bug, not a 'not configured'
-    signal; it propagates so the error surfaces instead of silently selecting the
-    local desktop.
-    """
-    try:
-        return resolve_remote_cua_config(_computer_use_cfg(), permission_mode="standard")
-    except RuntimeError:
-        return None
 
 def _cua_no_overlay() -> bool:
     """Pass ``--no-overlay``? ``computer_use.no_overlay`` overrides; else off on macOS (cursor-overlay redraw
@@ -178,10 +161,10 @@ def _linux_session_locked() -> Optional[bool]:
     except Exception:
         return None
 
-def _empty_discovery_reason() -> str:
+def _empty_discovery_reason(remote: bool = False) -> str:
     """One-line diagnosis for 'window discovery found nothing'."""
     # Remote transport: the local session is irrelevant — windows come from the bridge host.
-    if getattr(_remote_cfg(), "url", None):
+    if remote:
         return ("remote desktop returned no windows — check the host bridge connection and the "
                 "remote desktop session state")
     if _linux_session_locked() is True:
@@ -330,7 +313,7 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
 
     def is_available(self) -> bool:
         # Remote transport: the bridge host owns the driver, so the local binary is irrelevant.
-        if _remote_cfg() is not None:
+        if self._remote_config is not None:
             return True
         return sys.platform in ("darwin", "win32", "linux") and cua_driver_binary_available()  # other Unix-likes untested E2E
 

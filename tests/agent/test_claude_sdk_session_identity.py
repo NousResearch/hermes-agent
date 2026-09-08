@@ -334,7 +334,7 @@ class TestContinuity:
         # background-result lane are the agent's OWN delivered answers —
         # the digest re-presenting them is double-presentation, the exact
         # pathology the lane fixes. Marked rows never enter the digest.
-        from agent.claude_sdk_runtime import _render_continuity_digest
+        from agent.claude_sdk_runtime_continuity import _render_continuity_digest
 
         digest = _render_continuity_digest([
             {"role": "user", "content": "run the research"},

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent import claude_sdk_runtime as R
+from agent import claude_sdk_runtime_context as R
 
 
 class _Compressor:

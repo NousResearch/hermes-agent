@@ -379,7 +379,7 @@ class TestModelAttribution:
         assert turn.model_last == "claude-opus-4-8-20260115"
 
     def test_usage_row_backfills_model_from_turn(self):
-        from agent.claude_sdk_runtime import _record_claude_sdk_usage
+        from agent.claude_sdk_runtime_usage import _record_claude_sdk_usage
 
         agent = _make_agent()
         agent.model = ""
@@ -393,7 +393,7 @@ class TestModelAttribution:
         assert kwargs["model"] == "claude-opus-4-8-20260115"
 
     def test_explicit_agent_model_still_wins(self):
-        from agent.claude_sdk_runtime import _record_claude_sdk_usage
+        from agent.claude_sdk_runtime_usage import _record_claude_sdk_usage
 
         agent = _make_agent()
         agent.model = "claude-sonnet-5"
@@ -407,7 +407,7 @@ class TestModelAttribution:
         assert kwargs["model"] == "claude-sonnet-5"
 
     def test_explicit_metered_turn_is_not_recorded_as_subscription_included(self):
-        from agent.claude_sdk_runtime import _record_claude_sdk_usage
+        from agent.claude_sdk_runtime_usage import _record_claude_sdk_usage
 
         agent = _make_agent()
         db = MagicMock()
@@ -427,7 +427,7 @@ class TestModelAttribution:
         assert result["actual_cost_usd"] == 0.25
 
     def test_missing_billing_evidence_is_not_recorded_as_included(self):
-        from agent.claude_sdk_runtime import _record_claude_sdk_usage
+        from agent.claude_sdk_runtime_usage import _record_claude_sdk_usage
 
         agent = _make_agent()
         db = MagicMock()

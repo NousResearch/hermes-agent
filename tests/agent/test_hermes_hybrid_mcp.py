@@ -413,7 +413,7 @@ class TestHybridBridgeEnabledGate:
     default-off contract."""
 
     def test_default_disabled(self, monkeypatch):
-        from agent import claude_sdk_runtime as runtime
+        from agent import claude_sdk_runtime_tools as runtime
         from agent.transports import claude_agent_sdk_session_config as sess
 
         monkeypatch.setattr(sess, "_provider_config", lambda: {})
@@ -483,7 +483,7 @@ class TestHybridBridgeEnabledGate:
         }
 
     def test_enabled_when_flag_true(self, monkeypatch):
-        from agent import claude_sdk_runtime as runtime
+        from agent import claude_sdk_runtime_tools as runtime
         from agent.transports import claude_agent_sdk_session_config as sess
 
         monkeypatch.setattr(
@@ -495,7 +495,7 @@ class TestHybridBridgeEnabledGate:
         """``_provider_flag`` accepts ``"true"``/``"1"``/``"yes"`` so YAML
         strings don't silently degrade to ``bool("true") = True`` semantics
         the operator didn't intend — pin the behaviour."""
-        from agent import claude_sdk_runtime as runtime
+        from agent import claude_sdk_runtime_tools as runtime
         from agent.transports import claude_agent_sdk_session_config as sess
 
         monkeypatch.setattr(

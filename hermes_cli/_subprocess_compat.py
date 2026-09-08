@@ -473,41 +473,21 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     return (result.stdout or "").strip()
 
 
-_FILTER_OVERRIDE_CACHE: dict[tuple[str, float], list[str]] = {}
-
-
 def _repo_filter_overrides(cwd: str | Path | None = None) -> list[str]:
-    """Enumerate repo-level filter.<driver>.clean/smudge/process overrides.
+    """Enumerate effective filter.<driver>.clean/smudge/process overrides.
 
     Attribute-scoped filters execute during `git diff` against dirty working-tree files.
     Because the driver name is chosen by the repository author in .gitattributes, static
-    GIT_CONFIG_KEY overrides cannot predict it in advance. Querying the repository's
-    configuration and injecting `-c filter.<name>.clean=` neutralizes the execution sink
-    during diff generation.
+    GIT_CONFIG_KEY overrides cannot predict it in advance. Query the target worktree's effective
+    repository configuration so ``config.worktree`` and conditional/external includes are covered,
+    then inject empty values that neutralize every discovered execution sink. This security decision
+    is deliberately uncached because included configuration can change independently of the common
+    repository config.
     """
-    rev_cmd = ["git", "-c", "core.fsmonitor=false", "-c", f"core.hooksPath={os.devnull}"]
+    cmd = ["git"]
     if cwd:
-        rev_cmd.extend(["-C", str(cwd)])
-    rev_cmd.extend(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-    rev_res = bounded_probe_run(rev_cmd, timeout=1.5, env=noninteractive_git_env())
-    if not rev_res or rev_res.returncode != 0:
-        return []
-    common_dir = (rev_res.stdout or "").strip()
-    if not common_dir or not os.path.isdir(common_dir):
-        return []
-    config_file = os.path.join(common_dir, "config")
-    if not os.path.isfile(config_file):
-        return []
-
-    try:
-        mtime = os.path.getmtime(config_file)
-        cache_key = (config_file, mtime)
-        if cache_key in _FILTER_OVERRIDE_CACHE:
-            return _FILTER_OVERRIDE_CACHE[cache_key]
-    except OSError:
-        cache_key = None
-
-    cmd = ["git", "config", "--file", config_file, "--includes", "--list", "--name-only", "-z"]
+        cmd.extend(["-C", str(cwd)])
+    cmd.extend(["config", "--includes", "--list", "--name-only", "-z"])
     res = bounded_probe_run(cmd, timeout=1.5, env=noninteractive_git_env())
     if not res or res.returncode not in (0, 1):
         return []
@@ -519,9 +499,6 @@ def _repo_filter_overrides(cwd: str | Path | None = None) -> list[str]:
             continue
         if k.startswith("filter.") and k.rsplit(".", 1)[-1] in ("clean", "smudge", "process"):
             overrides.extend(["-c", f"{key}="])
-
-    if cache_key:
-        _FILTER_OVERRIDE_CACHE[cache_key] = overrides
     return overrides
 
 

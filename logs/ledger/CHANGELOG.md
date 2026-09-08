@@ -12,7 +12,9 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 **`RUN-2026-09-08-003` (reconcile + push):** the block was investigated
 uncommitted (contra the earlier "committed to local `main`" claim), then
-committed here per-CHG and rebased onto `origin/main`. Between the analysis and
+committed per-CHG, rebased onto `origin/main` (clean, 0 conflicts), and
+**pushed** — `origin/main` `0333d48214..b22d5bc33d` (9 commits: the 2 `NF-v0.6.1`
+ledger commits + `CHG-2026-09-08-001..007`). content-scan pre-push hook clean. Between the analysis and
 the push `origin/main` advanced `85518051ed`-base **+16 → +237** (a large
 `Merge branch 'NousResearch:main'` sync landed, tip `0333d48214`); re-checked —
 **none** of the 237 origin-only commits touch any file in `CHG-2026-09-08-001..007`

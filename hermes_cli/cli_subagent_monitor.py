@@ -29,6 +29,7 @@ class SubagentMonitor:
         self._last_poll = 0
         self.app = None
         self.opening = False
+        self.collapsed = False
 
     @property
     def selected(self):
@@ -78,10 +79,26 @@ class SubagentMonitor:
     def dock_text(self, *, columns, rows):
         if not self.entries:
             return ''
+        if self.collapsed:
+            count = f'{len(self.entries)} live'
+            # Keep both controls before spending scarce cells on activity.
+            headings = (
+                f'Subagents · {count} · F6 expand · F7 restore',
+                f'{count} · F6 expand · F7 restore',
+                f'{count} · F6 · F7',
+                count,
+            )
+            width = max(0, columns - 1)
+            heading = next((text for text in headings if get_cwidth(text) <= width), count)
+            row = self.entries[0]
+            activity = f"last: {row['last_tool']}" if row.get('last_tool') else row.get('status') or 'starting'
+            if get_cwidth(heading + ' · ' + activity) <= width:
+                heading += ' · ' + activity
+            return _clip(' ' + heading, max(0, columns))
         columns = max(0, columns - 2)
         count = min(len(self.entries), max(1, min(4, (rows - 10) // 3)))
         hidden = len(self.entries) - count
-        heading = f' Subagents · {len(self.entries)} live · F6 expand'
+        heading = f' Subagents · {len(self.entries)} live · F6 expand · F7 collapse'
         lines = [_clip(heading, columns)]
         for row in self.entries[:count]:
             activity = f"{row['elapsed']}s · " + (f"last: {row['last_tool']}" if row['last_tool'] else row.get('status') or 'starting')
@@ -282,6 +299,13 @@ def open_monitor(cli):
             cli._invalidate()
 
     asyncio.get_running_loop().create_task(run())
+
+
+def toggle_dock(cli):
+    monitor = getattr(cli, '_subagent_monitor', None)
+    if monitor is not None:
+        monitor.collapsed = not monitor.collapsed
+        cli._invalidate()
 
 
 def install_dock(cli):

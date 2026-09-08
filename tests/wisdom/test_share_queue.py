@@ -171,7 +171,9 @@ def test_share_is_native_local_preparation_then_separate_exact_publication(shari
     assert receipt.summary == "Preparing to share"
     assert "Security check" not in receipt.to_text()
     assert "Professionalism" not in receipt.to_text()
-    assert not receipt.actions
+    assert receipt.actions[0].label == "View"
+    assert receipt.actions[0].callback_data == f"wi:agent:inspect:{shown['id']}"
+    assert mediation.consent.resolve("org", shown["id"], actor, "inspect")["result"]["packaging_state"] == "queued"
     assert len(mediation.queue.assessments("org")) == 2
     model.assert_not_called()
     assert service.client.uploaded == 0
@@ -188,6 +190,12 @@ def test_share_is_native_local_preparation_then_separate_exact_publication(shari
     assert final["operation"] == "publish" and final["id"] != shown["id"]
     assert "refs/wisdom-setup.md" in final["facts"]["file_names"]
     assert service.client.uploaded == 0 and model.call_count == 1
+    reopened = mediation.consent.resolve("org", shown["id"], actor, "inspect")
+    assert reopened["id"] == final["id"] and "inspection" in reopened
+    assert service.client.uploaded == service.client.publications == 0
+    wrong = ConsentActor(**{**actor.__dict__, "actor_id": "stranger"})
+    with pytest.raises(WisdomNotFound):
+        mediation.consent.resolve("org", shown["id"], wrong, "inspect")
     assert "ORIGINAL_PRIVATE_SETUP" in (source / "SKILL.md").read_text()
     assert "package" not in mediation.activity().get("assessments", [{}])[-1].get(
         "reference", {}
@@ -198,6 +206,9 @@ def test_share_is_native_local_preparation_then_separate_exact_publication(shari
     assert service.client.publications == 1
     receipt = interaction_view(result)
     assert receipt.summary == "Published"
+    reopened = mediation.consent.resolve("org", shown["id"], actor, "inspect")
+    assert reopened["id"] == final["id"] and reopened["state"] == "completed"
+    assert interaction_view(reopened).actions[0].url
     assert result["result"]["draft_id"] == "draft-1"
     assert result["result"]["owner_user_id"] == service.client.identity["owner"]
     assert "confirmation control" not in receipt.to_text()

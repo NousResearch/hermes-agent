@@ -223,6 +223,10 @@ def interaction_view(result: dict) -> WisdomView:
         actions = []
         if outcome.get("portal_url"):
             actions.append(WisdomAction("View in Portal", url=outcome["portal_url"]))
+        elif result["operation"] == "share":
+            actions.append(WisdomAction(
+                "View", callback_data=f"wi:agent:inspect:{result['id']}"
+            ))
         facts = result["facts"]
         return WisdomView(
             title="Collective Wisdom",

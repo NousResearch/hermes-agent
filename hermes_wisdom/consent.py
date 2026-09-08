@@ -338,6 +338,20 @@ class WisdomConsent:
         result = self._resolve(
             org, interaction_id, actor, "inspect" if page else action
         )
+        if page and result["operation"] == "share" and result["state"] == "completed":
+            next_assessment = (result.get("result") or {}).get("assessment_id")
+            if next_assessment:
+                with self.service.store.transaction() as db:
+                    self.queue._check_org(db, org)
+                    child = db.execute(
+                        "SELECT id FROM wisdom_consent WHERE organization_id=? "
+                        "AND assessment_id=? AND operation='publish' "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        (org, next_assessment),
+                    ).fetchone()
+                if child:
+                    # Re-authorize the linked interaction; inspecting never approves it.
+                    return self.resolve(org, child["id"], actor, action)
         if page and result["operation"] == "publish" and result["state"] == "pending":
             return self._inspect_package(org, interaction_id, result, int(page[1] or 0))
         return result

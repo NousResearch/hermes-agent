@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import sys
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -340,6 +340,30 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
     return choice
 
 
+def _resolve_max_tokens(cfg: dict, runtime: dict) -> Optional[int]:
+    """Output cap for the one-shot AIAgent: ``HERMES_MAX_TOKENS`` > ``model.max_tokens`` >
+    the provider entry's ``max_output_tokens`` — the same precedence the interactive CLI
+    (``self.max_tokens``) and the gateway (``gateway/run.py``) already resolve. Without this,
+    a one-shot request carries no cap at all and the endpoint's own default applies. See #104485.
+    A non-positive value at any level is treated as unset (a ``0`` cap would request an empty
+    or erroring completion) and resolution falls through to the next level."""
+    max_tokens = None
+    env_mt = os.environ.get("HERMES_MAX_TOKENS")
+    if env_mt:
+        with suppress(ValueError, TypeError):
+            parsed = int(env_mt)
+            max_tokens = parsed if parsed > 0 else None
+    else:
+        model_cfg = cfg.get("model")
+        config_mt = model_cfg.get("max_tokens") if isinstance(model_cfg, dict) else None
+        max_tokens = config_mt if isinstance(config_mt, int) and config_mt > 0 else None
+    if max_tokens is None:
+        runtime_mt = runtime.get("max_output_tokens")
+        if isinstance(runtime_mt, int) and runtime_mt > 0:
+            max_tokens = runtime_mt
+    return max_tokens
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -400,6 +424,7 @@ def _run_agent(
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
             ephemeral_system_prompt=skills_prompt,
+            max_tokens=_resolve_max_tokens(cfg, runtime),
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
             # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
             # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.

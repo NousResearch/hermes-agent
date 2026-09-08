@@ -233,6 +233,51 @@ class TestSummarizeToolResultClarify:
 
             assert summary == "[clarify] asked user a question", sentinel
 
+    def test_preserves_batch_user_response_from_responses_list(self):
+        """Batch clarify (``questions=[...]``) nests answers inside ``responses[].user_response``;
+        the summarizer must surface them, not just 'asked user a question' (#106077)."""
+        content = json.dumps({
+            "responses": [
+                {
+                    "question": "May the fields be removed?",
+                    "choices_offered": None,
+                    "user_response": "Keep the fields until ratification.",
+                }
+            ]
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == '[clarify] user responded: ["Keep the fields until ratification."]'
+
+    def test_preserves_batch_multi_select_and_skips_empties(self):
+        """A partially-answered batch (multi_select + a skipped question) still surfaces every real decision."""
+        content = json.dumps({
+            "responses": [
+                {"question": "Q1?", "user_response": "Answer one"},
+                {"question": "Q2?", "user_response": ["Choice A", "Choice B"]},
+                {"question": "Q3?", "user_response": ""},
+            ]
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert "Answer one" in summary
+        assert "Choice A" in summary
+        assert "Choice B" in summary
+
+    def test_batch_with_only_sentinel_falls_back_to_generic(self):
+        """A batch where every response is a timeout sentinel must not be quoted as a user answer."""
+        content = json.dumps({
+            "responses": [
+                {"question": "Q?", "user_response": "[user did not respond within 15m]"},
+            ]
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+
 
 class TestShouldCompress:
     def test_below_threshold(self, compressor):

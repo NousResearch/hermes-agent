@@ -791,10 +791,20 @@ class SessionDB(
         ioerr_begin_retried = False
         while True:
             self._raise_if_db_corrupt()
-            self._raise_if_db_replaced()
+            # NOTE: the replaced/generation live probe runs INSIDE the lock below,
+            # not here. close() mutates _conn and _db_sidecar_identity under that
+            # same lock, ending the WAL generation (SQLite unlinks the -wal/-shm
+            # sidecars on a clean close). A lock-free probe that races close() can
+            # observe the mid-teardown state — sidecars already unlinked while
+            # _db_sidecar_identity is not yet cleared — and misclassify this
+            # process's OWN clean close as an externally deleted generation,
+            # raising a sticky DeletedWalGenerationError that permanently refuses
+            # later writes (#105567). Inside the lock the probe only ever sees the
+            # stable post-close state (identity cleared → adopt / reopen path).
             fn_started = False
             try:
                 with self._lock:
+                    self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
                     self._conn.execute("BEGIN IMMEDIATE")

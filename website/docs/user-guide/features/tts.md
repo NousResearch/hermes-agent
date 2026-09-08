@@ -614,7 +614,7 @@ For `format: json` / `srt` / `vtt`, Hermes returns the raw file content as the `
 |-----------------|---------|------------------------------------------------------------------------------------------------------|
 | `timeout`       | `300`   | Seconds; the process tree is killed on expiry (Unix `start_new_session`, Windows `taskkill /T`).     |
 | `format`        | `txt`   | One of `txt` / `json` / `srt` / `vtt`. Sets the extension of `{output_path}`.                       |
-| `language`      | `en`    | Forwarded to `{language}`. Defaults to `stt.language` then `en`.                                     |
+| `language`      | `en`    | Forwarded to `{language}`; follows [STT language resolution](../configuration.md#speech-to-text-stt), with a final `en` fallback. |
 | `model`         | empty   | Forwarded to `{model}`. The `model=` argument to `transcribe_audio()` overrides this.                |
 
 #### STT command-provider behavior notes
@@ -647,7 +647,7 @@ For STT engines that aren't built-in AND can't be expressed as a shell command (
 2. **`stt.provider` matches `stt.providers.<name>` with `command:` set** → command-provider runner (see [STT custom command providers](#stt-custom-command-providers)). Wins over a same-name plugin.
 3. **`stt.provider` matches a plugin-registered `TranscriptionProvider`** → plugin dispatch:
    - if the plugin's `is_available()` returns `False` (missing creds or SDK), the call surfaces an unavailability error envelope identifying the plugin — **not** the generic "No STT provider available" message.
-   - otherwise the plugin's `transcribe()` is called with `model` (from the public `model=` arg, falling back to `stt.<provider>.model`) and `language` (from `stt.<provider>.language`).
+   - otherwise the plugin's `transcribe()` is called with `model` (from the public `model=` arg, falling back to `stt.<provider>.model`) and the resolved `language` hint (see [STT language resolution](../configuration.md#speech-to-text-stt)).
 4. **No match** → "No STT provider available" error.
 
 #### Per-provider config namespace
@@ -664,7 +664,7 @@ stt:
     # own config.yaml access in __init__/is_available/transcribe
 ```
 
-The dispatcher forwards `model` and `language` from this section; everything else, the plugin can read itself.
+Other plugin-specific keys are read by the plugin itself.
 
 #### Minimal plugin
 

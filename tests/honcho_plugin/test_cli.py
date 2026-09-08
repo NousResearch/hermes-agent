@@ -275,6 +275,22 @@ class TestCloneHonchoForProfile:
         new_block = written["cfg"]["hosts"]["hermes_coder"]
         assert new_block["runtimePeerPrefix"] == "telegram_"
 
+    def test_session_ai_peer_prefix_carries_into_cloned_profile(self, monkeypatch, tmp_path):
+        cfg = {
+            "apiKey": "***",
+            "hosts": {
+                "hermes": {
+                    "sessionAiPeerPrefix": True,
+                    "peerName": "eri",
+                },
+            },
+        }
+        honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
+        ok = honcho_cli.clone_honcho_for_profile("coder")
+        assert ok is True
+        new_block = written["cfg"]["hosts"]["hermes_coder"]
+        assert new_block["sessionAiPeerPrefix"] is True
+
     def test_legacy_pin_peer_name_migrates_to_canonical_on_clone(self, monkeypatch, tmp_path):
         cfg = {
             "apiKey": "***",

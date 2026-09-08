@@ -22,7 +22,7 @@ _INHERITED_KEYS = (
     "messageMaxChars", "dialecticMaxInputChars", "saveMessages", "observation",
 )
 # clone_honcho_for_profile also carries the operator's runtime-to-peer routing intent.
-_CLONE_KEYS = _INHERITED_KEYS[:3] + ("sessionPeerPrefix",) + _INHERITED_KEYS[3:] + (
+_CLONE_KEYS = _INHERITED_KEYS[:3] + ("sessionPeerPrefix", "sessionAiPeerPrefix") + _INHERITED_KEYS[3:] + (
     "pinUserPeer", "userPeerAliases", "runtimePeerPrefix",
 )
 _IDENTITY_MAPPING_KEYS = ("pinPeerName", "pinUserPeer", "userPeerAliases", "runtimePeerPrefix")

@@ -35,8 +35,9 @@ export function mergeAgentRoster(events: SubagentProgress[], data: SubagentListR
       delegationId: s.delegation_id ?? previous?.delegationId,
       model: s.model ?? previous?.model,
       startedAt: s.started_at != null ? s.started_at * 1000 : previous?.startedAt,
-      status: s.status === 'queued' ? 'queued' : 'running',
-      toolCount: s.tool_count ?? previous?.toolCount ?? 0,
+      // Snapshot replies may predate progress/completion events already rendered.
+      status: previous && previous.status !== 'queued' ? previous.status : s.status === 'queued' ? 'queued' : 'running',
+      toolCount: Math.max(s.tool_count ?? 0, previous?.toolCount ?? 0),
       tools: previous?.tools.length ? previous.tools : s.current_tool ? [s.current_tool] : []
     })
   }

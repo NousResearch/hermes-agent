@@ -121,6 +121,7 @@ def _read_for_scan(path: Path) -> dict[str, Any] | None:
         sequence = record.get("sequence", created_at)
         if (path.name != f"{delivery_id}.json"
                 or record.get("id") != delivery_id
+                or not isinstance(record.get("status"), str)
                 or record.get("status") not in ({"queued", "claimed"} | _TERMINAL)
                 or not isinstance(created_at, int) or isinstance(created_at, bool)
                 or not isinstance(sequence, int) or isinstance(sequence, bool)

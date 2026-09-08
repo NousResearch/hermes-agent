@@ -55,6 +55,17 @@ def handle_outer_loop_error(
     # terminate even with an unlimited turn budget.
     _outer_error_count += 1
 
+    from agent.redact import has_volatile_sensitive_text
+
+    private_context = has_volatile_sensitive_text()
+    if private_context:
+        try:
+            safe_detail = agent._summarize_api_error(e)
+        except Exception:
+            safe_detail = f"{type(e).__name__} (details withheld for private-context turn)"
+    else:
+        safe_detail = str(e)
+
     # Interpreter shutdown makes every executor op raise: break.
     # Phase-aware error classification. The huge outer try/except spans both the actual API request and all
     # local post-processing of the returned assistant message. Deterministic local bugs (e.g. passing a
@@ -68,7 +79,10 @@ def handle_outer_loop_error(
     # good — and each retry just spams another traceback. Break immediately so the turn exits cleanly.
     # (#93217)
     if sys.is_finalizing() or _is_interpreter_shutdown_error(e):
-        error_msg = f"Interpreter is shutting down — cannot continue (API call #{api_call_count}): {e}"
+        error_msg = (
+            "Interpreter is shutting down — cannot continue "
+            f"(API call #{api_call_count}): {safe_detail}"
+        )
         try:
             agent._safe_print(f"❌ {error_msg}")
         except (OSError, ValueError):
@@ -95,16 +109,6 @@ def handle_outer_loop_error(
         tb_module_names & _API_CALL_MODULES
     )
 
-    from agent.redact import has_volatile_sensitive_text
-
-    private_context = has_volatile_sensitive_text()
-    if private_context:
-        try:
-            safe_detail = agent._summarize_api_error(e)
-        except Exception:
-            safe_detail = f"{type(e).__name__} (details withheld for private-context turn)"
-    else:
-        safe_detail = str(e)
     if _is_local_processing_error:
         error_msg = (
             "Error during local message processing after OpenAI-compatible API call "

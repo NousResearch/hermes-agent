@@ -656,6 +656,7 @@ class TestWireInvariant:
         # A provider may truncate through the middle of a scalar, so exact literal
         # replacement is insufficient for any provider-controlled error detail.
         error = RuntimeError("x" * 498 + "37.77")
+        error.status_code = 377
 
         with bind_volatile_user_context(agent, snapshot, "tg-private"):
             summary = AIAgent._summarize_api_error(error)
@@ -664,6 +665,69 @@ class TestWireInvariant:
         expected = "Provider error details withheld for private-context turn"
         assert summary == expected
         assert cleaned == expected
+
+    def test_private_overflow_does_not_learn_provider_numeric_metadata(self):
+        from agent.turn_overflow import _adopt_provider_context_limit
+
+        agent = types.SimpleNamespace(
+            context_compressor=MagicMock(),
+            _buffer_vprint=MagicMock(),
+        )
+        recovery = types.SimpleNamespace(agent=agent)
+        snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+
+        with (
+            bind_volatile_user_context(agent, snapshot, "tg-private"),
+            patch("agent.model_metadata.save_context_length") as save_context_length,
+            patch(
+                "agent.turn_overflow.get_context_length_from_provider_error"
+            ) as parse_context_length,
+        ):
+            learned = _adopt_provider_context_limit(
+                recovery,
+                "maximum context length is 377749 tokens",
+                1_000_000,
+            )
+
+        assert learned is None
+        parse_context_length.assert_not_called()
+        save_context_length.assert_not_called()
+        agent.context_compressor.update_model.assert_not_called()
+        assert "377749" not in str(agent._buffer_vprint.call_args_list)
+
+    def test_private_shutdown_path_withholds_escaped_error_detail(self):
+        from agent.turn_loop_errors import handle_outer_loop_error
+
+        generic = "Provider error details withheld for private-context turn"
+        agent = types.SimpleNamespace(
+            _safe_print=MagicMock(),
+            _persist_session=MagicMock(),
+            _summarize_api_error=MagicMock(return_value=generic),
+        )
+        error = RuntimeError("shutdown provider fragment 37.77 / -122.41")
+        snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+
+        with (
+            bind_volatile_user_context(agent, snapshot, "tg-private"),
+            patch("agent.turn_loop_errors.sys.is_finalizing", return_value=True),
+            patch("agent.turn_loop_errors.logger.warning") as warning,
+        ):
+            verdict = handle_outer_loop_error(
+                agent,
+                e=error,
+                _outer_error_count=0,
+                api_call_count=2,
+                messages=[],
+                conversation_history=[],
+                _turn_exit_reason="unknown",
+                failed=False,
+                final_response=None,
+            )
+
+        assert verdict.action == "break"
+        assert generic in str(warning.call_args)
+        assert "37.77" not in str(warning.call_args)
+        assert "-122.41" not in str(agent._safe_print.call_args)
 
     def test_provider_retry_and_invalid_response_paths_withhold_remote_text(
         self, wire_env, caplog,
@@ -682,7 +746,7 @@ class TestWireInvariant:
         )
         response = types.SimpleNamespace(
             status="failed",
-            error={"code": 400, "message": "provider slice 37.77 / -122.41"},
+            error={"code": 377749, "message": "provider slice 37.77 / -122.41"},
             model="remote-37.77",
         )
         error = RuntimeError("retry fragment 37.77 / -122.41")
@@ -696,7 +760,7 @@ class TestWireInvariant:
             caplog.at_level(logging.WARNING),
         ):
             invalid, details = validate_response_shape(agent, response)
-            error_msg, provider_name, _ = describe_invalid_response(
+            error_msg, provider_name, failure_hint = describe_invalid_response(
                 agent, response, 0.1
             )
             wait = compute_error_backoff(
@@ -715,6 +779,7 @@ class TestWireInvariant:
         assert details == [f"response.status=failed: {expected}"]
         assert error_msg == expected
         assert provider_name == agent.provider
+        assert "377749" not in failure_hint
         assert wait == 0.25
         assert expected in caplog.text
         assert "37.77" not in caplog.text

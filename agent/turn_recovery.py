@@ -1148,7 +1148,7 @@ def describe_invalid_response(agent: Any, response: Any, api_duration: float) ->
             logging.debug(f"Response attributes for invalid response: {resp_attrs}")
 
     _resp_error_code = None
-    if _has_error:
+    if _has_error and not private_context:
         _code_raw = getattr(response.error, 'code', None)
         if _code_raw is None and isinstance(response.error, dict):
             _code_raw = response.error.get('code')
@@ -1303,7 +1303,9 @@ def route_classified_error(
     from agent.conversation_compression import conversation_history_after_compression
     from agent.conversation_loop import _arm_fallback_restart, _ra
     from agent.model_metadata import estimate_request_tokens_rough
+    from agent.redact import has_volatile_sensitive_text
 
+    private_context = has_volatile_sensitive_text()
     _provider_overflow_recovery_pending = False
     is_rate_limited = False
     _wrapped_output_cap_budget = None
@@ -1331,7 +1333,11 @@ def route_classified_error(
     # ``compression.enabled: false`` forbids every automatic trigger, incl. these
     # overflow recovery paths; error out. Output-cap errors exempt.
     _is_output_cap_error = (
-        is_output_cap_error(error_msg) or parse_available_output_tokens_from_error(error_msg) is not None
+        is_output_cap_error(error_msg)
+        or (
+            not private_context
+            and parse_available_output_tokens_from_error(error_msg) is not None
+        )
     )
     if (
         classified.reason in _OVERFLOW_REASONS
@@ -1406,7 +1412,8 @@ def route_classified_error(
     # as available_out inside the handler.
     _wrapped_output_cap_budget = (
         parse_available_output_tokens_from_error(error_msg)
-        if classified.reason == FailoverReason.rate_limit else None
+        if classified.reason == FailoverReason.rate_limit and not private_context
+        else None
     )
     _is_transport_failure = classified.reason in _TRANSPORT_FAILURE_REASONS
     # Z.AI overload 429s classify `overloaded`, which `is_rate_limited` excludes. Detect

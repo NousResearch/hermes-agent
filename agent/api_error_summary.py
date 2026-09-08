@@ -156,9 +156,8 @@ class ApiErrorSummaryMixin:
         if has_volatile_sensitive_text():
             # Provider-controlled strings can echo arbitrary, even boundary-sliced,
             # request fragments. No literal redactor can prove those safe after
-            # truncation, so expose only the provider-independent HTTP class.
-            prefix = _http_prefix(error)
-            return f"{prefix}Provider error details withheld for private-context turn"
+            # truncation, so expose only a provider-independent generic result.
+            return "Provider error details withheld for private-context turn"
 
         if isinstance(error, ValueError) and "expected ident at line" in raw.lower():
             return redact_sensitive_text(f"Malformed provider streaming response: {raw[:300]}")

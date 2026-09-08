@@ -1304,6 +1304,33 @@ class TestOpenRouterUpstreamRateLimit:
         assert result.should_fallback is True
         assert result.error_context.get("upstream_provider") == "DeepSeek"
 
+    def test_private_upstream_429_omits_remote_provider_name(self):
+        from agent.redact import bind_volatile_sensitive_text
+
+        e = MockAPIError(
+            "Provider returned error",
+            status_code=429,
+            body={
+                "error": {
+                    "message": "Provider returned error",
+                    "code": 429,
+                    "metadata": {
+                        "provider_name": "remote-37.77",
+                        "raw": '{"error":{"message":"Rate limit exceeded"}}',
+                    },
+                }
+            },
+        )
+        snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+
+        with bind_volatile_sensitive_text(snapshot):
+            result = classify_api_error(
+                e, provider="openrouter", model="deepseek/deepseek-v4-flash"
+            )
+
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert "upstream_provider" not in result.error_context
+
 
     def test_account_level_429_still_rotates_credential(self):
         """A real account-level 429 (no upstream wrapper) → rate_limit, rotates."""
@@ -1660,4 +1687,3 @@ class TestServerInjectedParameterRejection:
         result = classify_api_error(e, provider="custom", model="m")
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
-

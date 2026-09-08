@@ -955,6 +955,12 @@ def _is_openrouter_upstream_error(body: Any, provider: str) -> bool:
 
 def _extract_upstream_provider_name(body: Any) -> Optional[str]:
     """Pull the upstream provider name out of OpenRouter's error metadata."""
+    from agent.redact import has_volatile_sensitive_text
+
+    if has_volatile_sensitive_text():
+        # Provider-owned metadata can contain a transformed or boundary-sliced
+        # request echo. The static upstream-rate-limit classification is sufficient.
+        return None
     metadata = _error_obj(body).get("metadata")
     name = metadata.get("provider_name") if isinstance(metadata, dict) else None
     return name.strip() if isinstance(name, str) and name.strip() else None

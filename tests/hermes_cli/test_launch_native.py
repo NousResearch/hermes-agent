@@ -87,7 +87,7 @@ def test_parser_accepts_native():
 
 
 def test_launch_tui_uses_native_after_resume_env(monkeypatch, tmp_path):
-    import hermes_cli.main as main_mod
+    import hermes_cli.main_tui_launch as main_mod
 
     captured = {}
     bin_path = _exe(tmp_path)
@@ -119,7 +119,7 @@ def test_launch_tui_uses_native_after_resume_env(monkeypatch, tmp_path):
 
 
 def test_launch_tui_falls_back_to_ink_without_binary(monkeypatch):
-    import hermes_cli.main as main_mod
+    import hermes_cli.main_tui_launch as main_mod
 
     captured = {}
     monkeypatch.setenv("HERMES_TUI_NATIVE", "1")
@@ -143,7 +143,7 @@ def test_launch_tui_falls_back_to_ink_without_binary(monkeypatch):
 
 
 def test_launch_tui_dev_stays_on_ink(monkeypatch, tmp_path):
-    import hermes_cli.main as main_mod
+    import hermes_cli.main_tui_launch as main_mod
 
     captured = {}
     bin_path = _exe(tmp_path)

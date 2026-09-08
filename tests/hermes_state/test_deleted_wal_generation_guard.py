@@ -54,6 +54,19 @@ def _unlink_sidecars(db_path: Path) -> None:
             os.unlink(sidecar)
 
 
+class _RecordingConn:
+    def __init__(self, real_conn):
+        self._real = real_conn
+        self.recorded = []
+
+    def execute(self, sql, *args, **kwargs):
+        self.recorded.append(str(sql))
+        return self._real.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 def test_classify_deleted_wal_is_replaced_not_disk():
     err = DeletedWalGenerationError(
         "FATAL: a live process holds a deleted state.db-wal or state.db-shm "
@@ -167,6 +180,23 @@ def test_writer_halts_after_own_wal_unlinked(tmp_path, force_wal):
     with pytest.raises(DeletedWalGenerationError):
         db.append_message("s", role="user", content="second-after-halt")
     db.close()
+
+
+def test_close_quarantines_a_lost_wal_generation_before_checkpoint(
+    tmp_path, force_wal, monkeypatch, caplog
+):
+    db = _make_db(tmp_path / "state.db", "s", "before-close")
+    real_conn = db._conn
+    recorder = _RecordingConn(real_conn)
+    db._conn = recorder
+    monkeypatch.setattr(db, "_wal_generation_was_lost", lambda: True)
+
+    with caplog.at_level("WARNING", logger="hermes_state"):
+        db.close()
+
+    assert db._db_wal_generation_lost is True
+    assert not any("wal_checkpoint" in sql for sql in recorder.recorded)
+    assert "Skipping the close-time WAL checkpoint" in caplog.text
 
 
 @pytest.mark.skipif(

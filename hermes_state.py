@@ -1002,7 +1002,7 @@ class SessionDB(
             logger.error(_STATE_DB_REPLACED_MSG)
             raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
         if self._db_wal_generation_lost or self._wal_generation_was_lost():
-            self._db_wal_generation_lost = True
+            self._quarantine_lost_wal_generation()
             logger.error(_DELETED_WAL_GENERATION_MSG)
             raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
 
@@ -1047,12 +1047,16 @@ class SessionDB(
                 setattr(err, attr, getattr(exc, attr))
         raise err from exc
 
+    def _quarantine_lost_wal_generation(self) -> None:
+        """Make the split-WAL refusal sticky and suppress SQLite close checkpointing."""
+        self._db_wal_generation_lost = True
+        self._disable_close_time_checkpoint()
+
     def _disable_close_time_checkpoint(self) -> None:
         """Best-effort SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE (Python 3.12+): sqlite3's
-        close() otherwise runs the internal last-connection checkpoint that wrote
-        the incident's pages under wrong page numbers (see StateDbCorruptError).
-        <3.12 has no setconfig; the residual checkpoint only carries
-        pre-quarantine committed frames, which is tolerable."""
+        close() otherwise runs an internal last-connection checkpoint. It is unsafe
+        after structural corruption or when the connection holds a stale WAL generation.
+        <3.12 has no setconfig; skipping our explicit checkpoint is the available guard."""
         flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
         conn = self._conn
         setconfig = getattr(conn, "setconfig", None)
@@ -1062,7 +1066,7 @@ class SessionDB(
             setconfig(flag, True)
         except Exception:
             logger.debug(
-                "Could not disable SQLite's close-time checkpoint on the quarantined handle for %s",
+                "Could not disable SQLite's close-time checkpoint on the unsafe handle for %s",
                 self.db_path, exc_info=True,
             )
 
@@ -1157,6 +1161,16 @@ class SessionDB(
                         "snapshot of state.db, -wal and -shm before restarting, "
                         "then run `hermes sessions recover --source %s --inspect-only`.", self.db_path,
                         self._db_corrupt_reason, self.db_path,
+                    )
+                elif not self.read_only and (
+                    self._db_wal_generation_lost or self._wal_generation_was_lost()
+                ):
+                    self._quarantine_lost_wal_generation()
+                    logger.warning(
+                        "Skipping the close-time WAL checkpoint for %s: this handle's "
+                        "state.db-wal or state.db-shm generation was deleted or replaced. "
+                        "Stop all writers and reopen without deleting either sidecar.",
+                        self.db_path,
                     )
                 elif not self.read_only:  # PASSIVE, not TRUNCATE (see docstring)
                     try:

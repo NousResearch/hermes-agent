@@ -377,9 +377,14 @@ def _dispatch_background(batch: _Batch) -> str:
     # interrupt-propagation list (_build_child_agent attached them, which is correct for sync runs).
     for (_, _, c) in batch.children:
         _detach_child(parent_agent, c)
+    from tools.async_delegation import build_parent_invocation_context
+    _parent_ctx = build_parent_invocation_context(
+        parent_agent, session_key=session_key, origin_ui_session_id=origin_ui_session_id,
+    )
     routing = dict(
-        session_key=session_key, origin_ui_session_id=origin_ui_session_id, origin_session_id=wake_sid,
-        parent_session_id=getattr(parent_agent, "session_id", None), max_async_children=_get_max_async_children(),
+        session_key=_parent_ctx["session_key"], origin_ui_session_id=_parent_ctx["origin_ui_session_id"],
+        origin_session_id=wake_sid, parent_session_id=_parent_ctx["parent_session_id"],
+        max_async_children=_get_max_async_children(),
     )
 
     units = _units_of(batch)

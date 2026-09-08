@@ -513,6 +513,63 @@ def _new_delegation_id() -> str:
     return f"deleg_{uuid.uuid4().hex[:8]}"
 
 
+def resolve_parent_session_id(
+    parent_session_id: Optional[str],
+    *,
+    session_db: Any = None,
+) -> Optional[str]:
+    """Return a safe durable parent session id for a spawned invocation.
+
+    The association must never turn an otherwise valid child spawn into a
+    broken agent.  When a session DB is available we only keep ids that resolve
+    to an existing row, avoiding session-store foreign-key failures and stale
+    routing pins.  Missing/invalid ids degrade to ``None`` while the caller's
+    ordinary session_key/origin_ui routing remains intact.
+    """
+    sid = str(parent_session_id or "").strip()
+    if not sid:
+        return None
+    if session_db is None:
+        return sid
+    getter = getattr(session_db, "get_session", None)
+    if not callable(getter):
+        return sid
+    try:
+        row = getter(sid)
+    except Exception:
+        logger.debug("Could not validate parent_session_id=%s", sid, exc_info=True)
+        return None
+    return sid if row else None
+
+
+def build_parent_invocation_context(
+    parent_agent: Any,
+    *,
+    session_key: str = "",
+    origin_ui_session_id: str = "",
+) -> Dict[str, Any]:
+    """Public integration API for associating a spawn with its parent session.
+
+    Invocation integrations should call this on the parent thread before they
+    detach work.  The returned dict is intentionally serializable and contains
+    the three routing identifiers consumed by async-delegation dispatch and
+    completion delivery:
+
+    - ``session_key``: platform/durable routing key for the parent conversation.
+    - ``origin_ui_session_id``: live TUI/desktop tab that commissioned the work.
+    - ``parent_session_id``: validated durable state-db id of the spawning
+      main/orchestrator agent, or ``None`` when unavailable/invalid.
+    """
+    return {
+        "session_key": str(session_key or ""),
+        "origin_ui_session_id": str(origin_ui_session_id or ""),
+        "parent_session_id": resolve_parent_session_id(
+            getattr(parent_agent, "session_id", None),
+            session_db=getattr(parent_agent, "_session_db", None),
+        ),
+    }
+
+
 def _prune_completed_locked() -> None:
     """Drop the oldest completed records beyond the cap. Caller holds ``_records_lock``."""
     completed = [(rid, r) for rid, r in _records.items() if r.get("status") != "running"]

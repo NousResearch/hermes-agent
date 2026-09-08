@@ -227,7 +227,10 @@ def _build_child_agent(
         request_overrides = dict(override_request_overrides)
     else:
         request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
-    parent_sid = getattr(parent_agent, "session_id", None)
+    from tools.async_delegation import resolve_parent_session_id
+    parent_sid = resolve_parent_session_id(
+        getattr(parent_agent, "session_id", None), session_db=getattr(parent_agent, "_session_db", None),
+    )
     child_session_db = _open_child_session_db(parent_agent)
     with delegated_child_context():
         try:

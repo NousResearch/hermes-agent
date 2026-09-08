@@ -106,17 +106,16 @@ class SessionPeersMixin:
     def _peer_id_for_runtime_id(self, runtime_id: str) -> str:
         """Honcho peer ID for one runtime identity: alias first, then prefix, as at session init.
 
-        A ``bot:<profile>`` author maps onto the bare profile name because a cloned profile's aiPeer
-        defaults to that name."""
-        aliases = getattr(self._config, "user_peer_aliases", {}) if self._config else {}
-        if isinstance(aliases, dict):
-            alias = aliases.get(runtime_id)
-            if isinstance(alias, str) and alias.strip():
-                return self._sanitize_id(alias.strip())
+        A ``bot:`` author is keyed by its full id (``bot:<profile>`` or ``bot:<connection>/<profile>``) and,
+        without an alias, its peer is derived from everything after ``bot:`` with the same digest suffix
+        rule as prefixed runtime users, so it never lands on ``peerName`` or an alias target."""
+        alias = self._peer_aliases().get(runtime_id)
+        if isinstance(alias, str) and alias.strip():
+            return self._sanitize_id(alias.strip())
         if runtime_id.startswith(BOT_AUTHOR_PREFIX):
-            profile = runtime_id[len(BOT_AUTHOR_PREFIX):].strip()
-            return self._sanitize_id(profile or runtime_id)
-        prefix = getattr(self._config, "runtime_peer_prefix", "") if self._config else ""
+            ident = runtime_id[len(BOT_AUTHOR_PREFIX):].strip()
+            return self._generated_runtime_peer_id("", ident or runtime_id)
+        prefix = self._cfg("runtime_peer_prefix", "")
         prefix = prefix.strip() if isinstance(prefix, str) else ""
         return self._generated_runtime_peer_id(prefix, runtime_id) if prefix else self._sanitize_id(runtime_id)
 

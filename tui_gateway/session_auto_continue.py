@@ -137,8 +137,9 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[
     # See #84417.
     _drop_queued_duplicates_of_inflight_user(session)
     text_only = not image_paths and isinstance(text, str)
-    # Never queue a text-only self-copy of the live prompt: draining it would restart it.
-    if text_only and text.strip() == _ac_inflight_original(session) != "":
+    # Never queue a text-only self-copy of the live prompt: draining it would restart it. Another sender's
+    # identical text is their message, not a copy.
+    if text_only and not turn_author and text.strip() == _ac_inflight_original(session) != "":
         return
     queued = {"text": text, "transport": transport, **({"image_paths": image_paths} if image_paths else {}),
               **({"turn_author": turn_author} if turn_author else {})}
@@ -157,7 +158,7 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[
 def _sanitize_queued_entry_vs_inflight_user(entry: Any, original: str) -> dict | None:
     """Drop (``None``) a text-only self-duplicate of the live user text, or rewrite a merged slot
     ``"{original}\\n\\n{later}"`` to ``later`` so the correction survives without re-firing the original. Image-bearing
-    envelopes are left alone (chronology is load-bearing).
+    and authored envelopes are left alone: chronology and the sender's own words are kept.
 
     Returns ``None`` to drop the envelope, or a (possibly rewritten) dict to keep. A merged slot
     ``"{original}\\n\\n{later}"`` (from ``_enqueue_prompt``'s consecutive text merge) is rewritten to just
@@ -166,7 +167,7 @@ def _sanitize_queued_entry_vs_inflight_user(entry: Any, original: str) -> dict |
     if not isinstance(entry, dict):
         return None
     text = entry.get("text")
-    if not original or entry.get("image_paths") or not isinstance(text, str):
+    if not original or entry.get("image_paths") or entry.get("turn_author") or not isinstance(text, str):
         return entry
     # A lossless text-merge may have glued the live original onto a later follow-up: keep the remainder.
     rest = next((text[len(original + sep):] for sep in ("\n\n", "\n") if text.startswith(original + sep)), text).strip()

@@ -37,7 +37,7 @@ def _build_agent(config):
         )
 
 
-@patch("run_agent.OpenAI")
+@patch("agent.process_bootstrap.OpenAI")
 def test_streaming_false_seeds_disable_streaming(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = _build_agent({"model": {**_BASE["model"], "streaming": False}})
@@ -45,7 +45,7 @@ def test_streaming_false_seeds_disable_streaming(mock_openai):
     assert agent._disable_streaming is True
 
 
-@patch("run_agent.OpenAI")
+@patch("agent.process_bootstrap.OpenAI")
 def test_streaming_absent_keeps_streaming_enabled(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = _build_agent(_BASE)
@@ -53,7 +53,7 @@ def test_streaming_absent_keeps_streaming_enabled(mock_openai):
     assert agent._disable_streaming is False
 
 
-@patch("run_agent.OpenAI")
+@patch("agent.process_bootstrap.OpenAI")
 def test_streaming_true_keeps_streaming_enabled(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = _build_agent({"model": {**_BASE["model"], "streaming": True}})
@@ -61,7 +61,7 @@ def test_streaming_true_keeps_streaming_enabled(mock_openai):
     assert agent._disable_streaming is False
 
 
-@patch("run_agent.OpenAI")
+@patch("agent.process_bootstrap.OpenAI")
 def test_streaming_string_false_seeds_disable_streaming(mock_openai):
     """String falsy values ('false', '0') must also disable streaming —
     YAML users commonly quote booleans."""
@@ -71,7 +71,7 @@ def test_streaming_string_false_seeds_disable_streaming(mock_openai):
     assert agent._disable_streaming is True
 
 
-@patch("run_agent.OpenAI")
+@patch("agent.process_bootstrap.OpenAI")
 def test_streaming_zero_seeds_disable_streaming(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = _build_agent({"model": {**_BASE["model"], "streaming": 0}})
@@ -79,7 +79,7 @@ def test_streaming_zero_seeds_disable_streaming(mock_openai):
     assert agent._disable_streaming is True
 
 
-@patch("run_agent.OpenAI")
+@patch("agent.process_bootstrap.OpenAI")
 def test_streaming_invalid_value_keeps_streaming_enabled(mock_openai):
     """Unrecognized values warn and keep the safe default (streaming on),
     rather than silently disabling or crashing init."""
@@ -89,7 +89,7 @@ def test_streaming_invalid_value_keeps_streaming_enabled(mock_openai):
     assert agent._disable_streaming is False
 
 
-@patch("run_agent.OpenAI")
+@patch("agent.process_bootstrap.OpenAI")
 def test_missing_model_section_keeps_streaming_enabled(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = _build_agent({})
@@ -97,7 +97,7 @@ def test_missing_model_section_keeps_streaming_enabled(mock_openai):
     assert agent._disable_streaming is False
 
 
-@patch("run_agent.OpenAI")
+@patch("agent.process_bootstrap.OpenAI")
 def test_legacy_string_model_section_does_not_crash(mock_openai):
     """The top-level ``model`` key is a legacy string; init must not crash."""
     mock_openai.return_value = MagicMock()
@@ -106,7 +106,7 @@ def test_legacy_string_model_section_does_not_crash(mock_openai):
     assert agent._disable_streaming is False
 
 
-@patch("run_agent.OpenAI")
+@patch("agent.process_bootstrap.OpenAI")
 def test_streaming_false_applies_to_every_agent_built_from_config(mock_openai):
     """Delegate children are constructed through the same init, so any agent
     (parent or subagent) built under this config gets the escape hatch —
@@ -121,7 +121,7 @@ def test_streaming_false_applies_to_every_agent_built_from_config(mock_openai):
     assert second._disable_streaming is True
 
 
-@patch("run_agent.OpenAI")
+@patch("agent.process_bootstrap.OpenAI")
 def test_streaming_false_read_from_real_config_file(mock_openai):
     """End-to-end: a real config.yaml in HERMES_HOME (sandboxed per-test by
     conftest) with ``model.streaming: false`` must seed the flag through the

@@ -47,9 +47,9 @@ def _captured_context_cwd(agent):
         return ""
 
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", side_effect=fake_context_files),
     ):
         build_system_prompt_parts(agent)
     return captured["cwd"]
@@ -80,8 +80,8 @@ class TestContextFileCwd:
             _context_cwd_is_launch_artifact=True,
         )
         with (
-            patch("run_agent.load_soul_md", return_value=""),
-            patch("run_agent.build_environment_hints", return_value=""),
+            patch("agent.prompt_builder.load_soul_md", return_value=""),
+            patch("agent.prompt_builder.build_environment_hints", return_value=""),
             patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
         ):
             context = build_system_prompt_parts(agent)["context"]
@@ -102,8 +102,8 @@ class TestContextFileCwd:
             _context_cwd_is_launch_artifact=False,
         )
         with (
-            patch("run_agent.load_soul_md", return_value=""),
-            patch("run_agent.build_environment_hints", return_value=""),
+            patch("agent.prompt_builder.load_soul_md", return_value=""),
+            patch("agent.prompt_builder.build_environment_hints", return_value=""),
             patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
         ):
             context = build_system_prompt_parts(agent)["context"]
@@ -113,18 +113,18 @@ class TestContextFileCwd:
 
 def _stable_prompt(agent):
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)["stable"]
 
 
 def _prompt_parts(agent):
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)
 
@@ -161,6 +161,54 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+def test_shared_project_context_precedes_worktree_bytes(monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    prompts = []
+    for name in ("worktree-a", "worktree-b"):
+        cwd = tmp_path / name
+        cwd.mkdir()
+        (cwd / "AGENTS.md").write_text("Shared project instructions.")
+        monkeypatch.setenv("TERMINAL_CWD", str(cwd))
+        agent = _make_agent(platform="cli")
+        parts = build_system_prompt_parts(agent)
+        full = "\n\n".join(parts.values())
+        assert full.index("Shared project instructions.") < full.index("Current working directory:")
+        assert str(cwd) not in parts["stable"]
+        assert full == "\n\n".join(build_system_prompt_parts(agent).values())
+        prompts.append(full)
+    common = os.path.commonprefix(prompts)
+    assert "Shared project instructions." in common
+
+
+def test_stored_prompt_cwd_ignores_project_host_decoys(monkeypatch, tmp_path):
+    from agent.conversation_loop import _stored_prompt_matches_runtime
+
+    cwd = tmp_path / "worktree"
+    cwd.mkdir()
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(cwd))
+    decoy = "# Hermes runtime environment\n\nHost: Example\nUser home directory: /example\nCurrent working directory: /example\n"
+    (cwd / "AGENTS.md").write_text(decoy)
+    monkeypatch.setenv("HERMES_ENVIRONMENT_HINT", decoy + "\nModel: decoy\nProvider: decoy\nPlatform: decoy")
+    agent = _make_agent(
+        platform="cli", model="test-model", provider="test-provider",
+        _memory_enabled=True, _user_profile_enabled=False,
+        _memory_store=SimpleNamespace(format_for_system_prompt=lambda _: decoy),
+    )
+    parts = build_system_prompt_parts(agent)
+    full = "\n\n".join(parts.values())
+    assert _stored_prompt_matches_runtime(agent, full)
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    assert not _stored_prompt_matches_runtime(agent, full)
+    # Previously persisted host-before-context prompts keep their original anchor.
+    legacy = f"Host: Example\nUser home directory: {tmp_path}\nCurrent working directory: {cwd}\n\n# Project Context\n\n{decoy}\nModel: test-model\nProvider: test-provider\nPlatform: cli"
+    assert not _stored_prompt_matches_runtime(agent, legacy)
+    monkeypatch.setenv("TERMINAL_CWD", str(cwd))
+    assert _stored_prompt_matches_runtime(agent, legacy)
 
 
 class TestExecutionGuidanceInjection:
@@ -311,9 +359,9 @@ class TestNamedProfileHintIntegration:
 def test_build_system_prompt_records_stable_prefix():
     agent = _make_agent()
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value="context"),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value="context"),
     ):
         prompt = build_system_prompt(agent)
 
@@ -321,8 +369,8 @@ def test_build_system_prompt_records_stable_prefix():
     assert prompt[len(agent._cached_system_prompt_static):].startswith("\n\ncontext")
 
 
-def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
-    """The cache split must not reorder the stored coding prompt."""
+def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
+    """Keep workspace guidance intact after the shared context."""
     import agent.system_prompt as system_prompt
 
     agent = _make_agent(
@@ -351,18 +399,18 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
         "HELP",
         "STEER",
         "CODING_STABLE",
+        "SYSTEM_MESSAGE",
+        "CONTEXT_FILES",
         "WORKSPACE",
         "Operator instructions (from config):\nOPERATOR",
         expected_profile,
-        "SYSTEM_MESSAGE",
-        "CONTEXT_FILES",
         "Conversation started: Friday, January 02, 2026",
     ))
 
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value="CONTEXT_FILES"),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value="CONTEXT_FILES"),
         patch(
             "agent.coding_context.coding_system_prompt_parts",
             return_value=(
@@ -504,11 +552,11 @@ def _build(builder, **overrides):
     """Run a build_* function with skills + context files present."""
     agent = _make_agent(valid_tool_names=["skills_list"], **overrides)
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=_CONTEXT),
-        patch("run_agent.get_toolset_for_tool", return_value=None),
-        patch("run_agent.build_skills_system_prompt", return_value=_SKILLS),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=_CONTEXT),
+        patch("model_tools.get_toolset_for_tool", return_value=None),
+        patch("agent.prompt_builder.build_skills_system_prompt", return_value=_SKILLS),
     ):
         return builder(agent)
 
@@ -710,9 +758,9 @@ def test_conversation_start_uses_session_start_not_build_time(monkeypatch):
     monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
 
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value="CONTEXT_FILES"),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value="CONTEXT_FILES"),
         patch(
             "agent.coding_context.coding_system_prompt_parts",
             return_value=([], [], []),

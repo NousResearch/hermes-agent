@@ -56,6 +56,66 @@ class TestNoninteractiveGitEnv:
         env = noninteractive_git_env({"GIT_TERMINAL_PROMPT": "1"})
         assert env["GIT_TERMINAL_PROMPT"] == "0"
 
+    def test_strips_ambient_git_config_injection(self):
+        env = noninteractive_git_env(
+            {
+                "GIT_CONFIG_COUNT": "2",
+                "GIT_CONFIG_KEY_0": "core.pager",
+                "GIT_CONFIG_VALUE_0": "less",
+                "GIT_CONFIG_KEY_1": "core.hooksPath",
+                "GIT_CONFIG_VALUE_1": ".git/hooks",
+                "GIT_CONFIG_PARAMETERS": "'core.pager=less'",
+            }
+        )
+
+        assert env["GIT_CONFIG_COUNT"] != "2"
+        assert "GIT_CONFIG_PARAMETERS" not in env
+        values = {
+            env[f"GIT_CONFIG_KEY_{idx}"]: env[f"GIT_CONFIG_VALUE_{idx}"]
+            for idx in range(int(env["GIT_CONFIG_COUNT"]))
+        }
+        assert values["core.pager"] == "cat"
+        assert values["core.hooksPath"] == os.devnull
+        assert values["credential.helper"] == ""
+
+    def test_disables_pagers_hooks_editors_and_user_config(self):
+        env = noninteractive_git_env({})
+        values = {
+            env[f"GIT_CONFIG_KEY_{idx}"]: env[f"GIT_CONFIG_VALUE_{idx}"]
+            for idx in range(int(env["GIT_CONFIG_COUNT"]))
+        }
+
+        assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+        assert env["GIT_CONFIG_SYSTEM"] == os.devnull
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert env["GIT_PAGER"] == "cat"
+        assert env["PAGER"] == "cat"
+        assert env["GIT_EDITOR"] == "true"
+        assert values["core.fsmonitor"] == "false"
+        assert values["core.hooksPath"] == os.devnull
+        assert values["core.editor"] == "true"
+        assert values["sequence.editor"] == "true"
+        assert values["diff.external"] == ""
+
+    def test_ssh_host_key_prompts_fail_closed(self):
+        """core.sshCommand is pinned to BatchMode ssh (#104591).
+
+        ssh bypasses ``stdin=DEVNULL`` and ``GIT_TERMINAL_PROMPT`` — an unknown host key (or
+        password auth) opens ``/dev/tty`` directly and steals the caller's terminal. Under this
+        env the ssh child of a git fetch must fail fast instead of prompting; an
+        agent-authenticated ssh still succeeds.
+        """
+        env = noninteractive_git_env({})
+        values = {
+            env[f"GIT_CONFIG_KEY_{idx}"]: env[f"GIT_CONFIG_VALUE_{idx}"]
+            for idx in range(int(env["GIT_CONFIG_COUNT"]))
+        }
+        assert values["core.sshCommand"] == "ssh -o BatchMode=yes"
+        # Config-layer pin only: GIT_SSH_COMMAND is never set or overridden here, so a user's
+        # explicit env var still takes precedence over core.sshCommand.
+        override = "ssh -i custom-key -o BatchMode=no"
+        assert noninteractive_git_env({"GIT_SSH_COMMAND": override})["GIT_SSH_COMMAND"] == override
+
 
 # ---------------------------------------------------------------------------
 # 2. Real-git E2E: 401 remote fails fast instead of prompting

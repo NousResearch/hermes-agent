@@ -116,7 +116,18 @@ def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch)
     """
     spawned = []
     submitted = []
-    monkeypatch.setattr("subprocess.run", lambda *a, **k: spawned.append(a) or None)
+
+    class _Proc:
+        returncode, stdout, stderr = 0, "pong", ""
+
+    def _fake_run(argv, *a, **k):
+        # The server module's import-time update prefetch runs `git ...` on a
+        # daemon thread; only the relay's `hermes` CLI spawn is under test.
+        if argv and argv[0] != "git":
+            spawned.append(argv)
+        return _Proc()
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
     monkeypatch.setitem(
         srv._methods, "prompt.submit", lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"})
     )
@@ -137,10 +148,6 @@ def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch)
     srv._sessions["live-ops"]["pending_title"] = "Scratch"
     submitted.clear()
 
-    class _Proc:
-        returncode, stdout, stderr = 0, "pong", ""
-
-    monkeypatch.setattr("subprocess.run", lambda *a, **k: spawned.append(a) or _Proc())
     out = _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": "ping"}))
     assert out["reply"] == "pong" and spawned and not submitted
 

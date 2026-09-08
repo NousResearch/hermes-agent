@@ -244,6 +244,10 @@ class WisdomMediation:
                 origin_session=event.get("session_id") or "unaddressed",
             )
         for event in self.service.notifications(mark_seen=False)["events"]:
+            if event.get("category") == "publication_decision" and event.get("draft_id"):
+                from .publication_cards import has_card
+                if has_card(self.service.store, org, event["draft_id"]):
+                    continue
             self.queue.reconcile_feed(
                 org,
                 event["event_id"],

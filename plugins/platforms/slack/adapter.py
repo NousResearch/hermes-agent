@@ -7943,6 +7943,16 @@ class SlackAdapter(BasePlatformAdapter):
             sent += 1
         return sent
 
+    async def edit_wisdom_publication(self, receipt, view) -> None:
+        """Update the original card in its recorded workspace and conversation."""
+        await self._get_client(
+            receipt["destination"], team_id=receipt.get("scope_id") or None
+        ).chat_update(
+            channel=receipt["destination"], ts=receipt["message_id"],
+            text=wisdom_fallback_text(view),
+            blocks=sanitize_blocks(render_wisdom_blocks(view)) or [],
+        )
+
     async def _update_wisdom_interaction(self, body, view) -> None:
         blocks = sanitize_blocks(render_wisdom_blocks(view)) or []
         text = wisdom_fallback_text(view)

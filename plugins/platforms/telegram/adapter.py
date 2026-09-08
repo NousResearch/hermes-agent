@@ -8477,6 +8477,31 @@ class TelegramAdapter(BasePlatformAdapter):
 
         bind_view_callbacks(view, context)
 
+    async def edit_wisdom_publication(self, receipt, view) -> None:
+        """Edit only the durable receipt's message; never fall back to a new send."""
+        from telegram.error import BadRequest
+
+        try:
+            await self._bot.do_api_request(
+                "editMessageText",
+                api_kwargs={
+                    "chat_id": normalize_telegram_chat_id(receipt["destination"]),
+                    "message_id": int(receipt["message_id"]),
+                    "rich_message": {"html": self._wisdom_command_html(view, full_details=True)},
+                    "link_preview_options": {"is_disabled": True},
+                },
+            )
+        except BadRequest as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+            await self._bot.edit_message_text(
+                chat_id=normalize_telegram_chat_id(receipt["destination"]),
+                message_id=int(receipt["message_id"]),
+                text=_html.escape(self._wisdom_command_text(view)),
+                parse_mode=ParseMode.HTML,
+                reply_markup=self._wisdom_command_keyboard(view),
+            )
+
     async def _edit_wisdom_command_view(self, query, view, *, full_details: bool = False) -> None:
         message = getattr(query, "message", None)
         raw_request = getattr(getattr(self, "_bot", None), "do_api_request", None)

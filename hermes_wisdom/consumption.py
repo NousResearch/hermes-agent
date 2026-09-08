@@ -435,6 +435,7 @@ class WisdomConsumption:
                 "version": version,
                 "state": state or None,
                 "moderation_note": payload.get("moderation_note"),
+                **({"draft_id": draft_id} if draft_id else {}),
                 "portal_url": portal_url,
                 "occurred_at": event.get("created_at") or payload.get("occurred_at"),
                 "security_check": (

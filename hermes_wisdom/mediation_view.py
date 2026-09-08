@@ -189,12 +189,24 @@ def interaction_view(result: dict) -> WisdomView:
         elif result["operation"] == "publish":
             summary, detail = {
                 "published": (
-                    "Shared",
+                    "Published",
                     "Your skill is now shared with your organisation.",
                 ),
                 "pending_moderation": (
-                    "Submitted for review",
+                    "Pending moderation",
                     "Your skill is awaiting your organisation's approval.",
+                ),
+                "changes_requested": (
+                    "Changes requested",
+                    "Your organisation requested changes. Open the skill review for details.",
+                ),
+                "declined": (
+                    "Not published",
+                    "Your contribution was declined. Open the skill review for details.",
+                ),
+                "invalidated": (
+                    "Review required",
+                    "This contribution needs a fresh review before it can be published.",
                 ),
             }.get(
                 publication,

@@ -197,7 +197,9 @@ def test_share_is_native_local_preparation_then_separate_exact_publication(shari
     assert service.client.uploaded == 1
     assert service.client.publications == 1
     receipt = interaction_view(result)
-    assert receipt.summary == "Shared"
+    assert receipt.summary == "Published"
+    assert result["result"]["draft_id"] == "draft-1"
+    assert result["result"]["owner_user_id"] == service.client.identity["owner"]
     assert "confirmation control" not in receipt.to_text()
     assert "check" not in receipt.to_text().lower()
     assert (
@@ -420,7 +422,7 @@ def test_private_review_pages_cover_exact_files_without_consuming_consent(sharin
 
 @pytest.mark.parametrize(
     "publication,title",
-    [("published", "Shared"), ("pending_moderation", "Submitted for review")],
+    [("published", "Published"), ("pending_moderation", "Pending moderation")],
 )
 def test_publication_receipt_links_to_portal_without_expanding_checks(
     publication, title

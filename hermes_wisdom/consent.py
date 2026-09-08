@@ -565,6 +565,11 @@ class WisdomConsent:
                 "portal_url": result.get("portal_url")
                 if isinstance(result, dict)
                 else None,
+                "draft_id": result.get("draft_id")
+                if isinstance(result, dict) and value["operation"] == "publish"
+                else None,
+                "owner_user_id": self.service.client.identity.get("owner")
+                if value["operation"] == "publish" else None,
             }
         except WisdomConflict:
             state, outcome = "stale", {"reason": "package_or_authority_changed"}

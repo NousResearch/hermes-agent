@@ -33457,8 +33457,13 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
 
     logger.info("Gateway housekeeping started (interval=%ds)", interval)
     tick_count = 0
+    wisdom_cards_task = None
     while not stop_event.is_set():
         tick_count += 1
+
+        if adapters and loop and (wisdom_cards_task is None or wisdom_cards_task.done()):
+            from gateway.wisdom_publication_cards import refresh as refresh_wisdom_cards
+            wisdom_cards_task = asyncio.run_coroutine_threadsafe(refresh_wisdom_cards(adapters), loop)
 
         if tick_count % CHANNEL_DIR_EVERY == 0 and adapters:
             try:

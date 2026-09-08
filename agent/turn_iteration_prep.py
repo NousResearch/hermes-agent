@@ -91,6 +91,47 @@ class IterationPrep:
     request_logger: Any
 
 
+def _persist_repaired_sequence(agent: Any, messages: Any, request_logger: Any) -> None:
+    """Make a pre-request sequence repair the canonical active transcript when safe.
+
+    Usage anchors are captured against the list sent to the provider.  An append-only flush
+    cannot represent a merge or drop in that list, so a restarted process would otherwise reload
+    a different cursor and correctly reject the anchor.  Preserve older compaction generations
+    and soft-archive only the superseded active rows.
+
+    A current-turn clean-user override is intentionally left to the regular flush/finalizer: its
+    DB projection differs from the API-facing message and must retain the ``api_content`` sidecar.
+    """
+    session_db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if (
+        getattr(agent, "_persist_disabled", False)
+        or session_db is None
+        or not session_id
+        or getattr(agent, "_persist_user_message_override", None) is not None
+    ):
+        return
+    replace_messages = getattr(session_db, "replace_messages", None)
+    if not callable(replace_messages):
+        return
+    try:
+        replace_messages(session_id, messages, active_only=True, archive_dropped=True)
+    except Exception:
+        request_logger.warning(
+            "Could not durably rewrite repaired message sequence before request (session=%s); "
+            "the resumed usage anchor will fail closed",
+            session_id,
+            exc_info=True,
+        )
+        return
+    from agent.context_compressor import stamp_db_persisted_markers
+
+    stamp_db_persisted_markers(messages)
+    agent._last_flushed_db_idx = len(messages)
+    agent._db_flush_scan_prefix = messages[:]
+    agent._flushed_db_message_ids = set()
+
+
 def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> IterationPrep:
     """Prepare ``messages`` for this iteration in the original order. Every mutation here is
     cache-safe by construction: steer text lands in the newest tool result, the ghost-row
@@ -177,6 +218,7 @@ def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> Itera
     from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
     repaired_seq = repair_message_sequence_with_cursor(agent, messages)
     if repaired_seq > 0:
+        _persist_repaired_sequence(agent, messages, request_logger)
         request_logger.info(
             "Repaired %s message-alternation violations before request (session=%s)",
             repaired_seq,

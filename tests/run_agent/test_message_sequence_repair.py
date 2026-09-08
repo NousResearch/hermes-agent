@@ -9,6 +9,8 @@ providers (violating role alternation), which retriggered the empty-retry
 recovery every turn.
 """
 
+from types import SimpleNamespace
+
 from run_agent import AIAgent
 
 
@@ -471,6 +473,88 @@ def test_cursor_rewinds_when_compaction_happens_before_cursor():
     # min(2, len=2) would leave it at 2 and the flush would skip it.
     assert agent._last_flushed_db_idx == 1
     assert messages[agent._last_flushed_db_idx] is unflushed_assistant
+
+
+def test_preflight_repair_rewrites_active_history_before_anchor_persists(tmp_path):
+    """A repaired preflight transcript must be the durable transcript an anchor resumes against.
+
+    A malformed pair of adjacent user rows is repaired before the next provider request. The
+    following three-result tool batch mirrors the boundary that exposed the production bug:
+    without a durable rewrite, the final tool fingerprint lives at a different DB index and a
+    fresh process rejects its provider-usage anchor.
+    """
+    from agent.turn_iteration_prep import prepare_iteration
+    from agent.usage_anchor import capture_usage_anchor, restore_usage_anchor, set_usage_anchor
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "durable-preflight-repair"
+    db.create_session(session_id, source="cli")
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "user", "content": "second"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"call_{index}",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+                for index in range(3)
+            ],
+        },
+        *[
+            {"role": "tool", "tool_call_id": f"call_{index}", "content": f"result-{index}"}
+            for index in range(3)
+        ],
+    ]
+    for message in messages:
+        db.append_message(
+            session_id,
+            message["role"],
+            message.get("content"),
+            tool_calls=message.get("tool_calls"),
+            tool_call_id=message.get("tool_call_id"),
+        )
+
+    agent = SimpleNamespace(
+        session_id=session_id,
+        _session_db=db,
+        _persist_disabled=False,
+        _last_flushed_db_idx=len(messages),
+        step_callback=None,
+        _skill_nudge_interval=0,
+        _adopt_nous_key_before_expiry=lambda: None,
+        _drain_pending_steer=lambda: None,
+        run_budget_seconds=None,
+        logger=None,
+        _sanitize_tool_call_arguments=lambda *args, **kwargs: 0,
+    )
+
+    repaired = prepare_iteration(agent, messages=messages, api_call_count=1).messages
+    assert [message["role"] for message in repaired] == ["user", "assistant", "tool", "tool", "tool"]
+    assert all(message.get("_db_persisted") for message in repaired)
+
+    anchor = capture_usage_anchor(12_000, 100, repaired)
+    set_usage_anchor(agent, anchor)
+    fresh = SimpleNamespace(
+        session_id=session_id, _session_db=db, _persist_disabled=False, _usage_anchor=None,
+    )
+    durable = db.get_messages_as_conversation(session_id)
+    restore_usage_anchor(fresh, durable)
+
+    provider_fields = ("role", "content", "tool_call_id", "tool_calls")
+    assert [
+        {field: message.get(field) for field in provider_fields if message.get(field) is not None}
+        for message in durable
+    ] == [
+        {field: message.get(field) for field in provider_fields if message.get(field) is not None}
+        for message in repaired
+    ]
+    assert fresh._usage_anchor == anchor
+    db.close()
 
 
 

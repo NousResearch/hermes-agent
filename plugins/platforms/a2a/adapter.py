@@ -169,7 +169,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         return self.client_address[0] if self.client_address else ""
 
     def _request_public_url(self) -> str:
-        """A2A_PUBLIC_URL > X-Forwarded-Host / Host (scheme from X-Forwarded-Proto) > "" (bind host).
+        """A2A_PUBLIC_URL > forwarded authority/prefix > Host > "" (bind host).
 
         Empty means "caller has no info, fall back to bind host". See #41711.
         """
@@ -178,7 +178,11 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             return explicit
         host = (self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")).split(",")[0].strip()
         scheme = (self.headers.get("X-Forwarded-Proto", "") or "http").split(",")[0].strip()
-        return f"{scheme}://{host}/" if host else ""
+        prefix = (self.headers.get("X-Forwarded-Prefix", "") or "").split(",")[0].strip()
+        if (not prefix.startswith("/") or ".." in prefix or "//" in prefix
+                or any(char in prefix for char in "\\?#<>\"' \r\n\t")):
+            prefix = ""
+        return f"{scheme}://{host}{prefix.rstrip('/')}/" if host else ""
 
     def do_GET(self):  # noqa: N802
         adapter = self.adapter

@@ -108,6 +108,37 @@ Secure by default; every widening step is explicit:
 
 Behind a reverse proxy or Kubernetes Service, set `A2A_PUBLIC_URL` (or rely on `X-Forwarded-Host`/`X-Forwarded-Proto`) so the Agent Card advertises a URL peers can actually call back.
 
+## Hosted dashboard route
+
+When a hosted deployment exposes only the authenticated dashboard hostname, opt the A2A
+platform into the dashboard's loopback bridge:
+
+```yaml
+gateway:
+  platforms:
+    a2a:
+      enabled: true
+      extra:
+        port: 9900
+        public_route: true
+```
+
+Configure `A2A_PEER_TOKENS` (preferred) or `A2A_BEARER_TOKEN` as usual. The public endpoint is:
+
+```text
+https://<dashboard-host>/a2a/.well-known/agent-card.json
+https://<dashboard-host>/a2a/                         # SendMessage POST
+```
+
+The Agent Card GET remains public, as required by A2A discovery. Every task POST is authenticated
+by the A2A listener's bearer token; the browser dashboard OAuth session is neither required nor
+forwarded. The bridge targets only `127.0.0.1` and is disabled unless both `public_route: true`
+and an A2A token are configured, so `A2A_HOST` may remain at its safe loopback default. Forwarded
+host, scheme, and path-prefix metadata make the card advertise the `/a2a/` HTTPS URL automatically.
+
+For bidirectional delivery, enable the route on both instances and add each `/a2a` URL plus that
+instance's peer token to the other instance's `a2a_agents` map.
+
 ## Quick test
 
 ```bash

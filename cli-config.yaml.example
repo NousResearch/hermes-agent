@@ -1005,6 +1005,10 @@ group_sessions_per_user: true
 #       enabled: true
 #       extra:
 #         key: "your-api-server-secret"
+#         # On a hosted deployment whose HTTPS hostname serves the dashboard,
+#         # opt in to https://<dashboard-host>/hermes-api/*.
+#         # Authentication still uses API_SERVER_KEY at the API listener.
+#         public_route: true
 #         model_routes:
 #           # Xiaozhi clients send model="minimax-m2" → routed to MiniMax via OpenRouter
 #           minimax-m2:

@@ -38,6 +38,9 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login", "/auth/callback", "/auth/native/authorize", "/auth/native/token",
     "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",
     "/api/auth/providers", "/api/mcp/oauth/callback/",
+    # Machine-to-machine proxy routes delegate authentication to the loopback
+    # A2A/API listener. They must never enter the browser OAuth redirect flow.
+    "/a2a/", "/hermes-api/",
     "/assets/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
 
 

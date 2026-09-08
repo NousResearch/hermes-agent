@@ -551,7 +551,7 @@ def _iter_proc_cmdlines(exclude_pids: set[int]):
     argv inspection can never see it — so ownership is the only reliable identity.
     """
     my_pid = os.getpid()
-    my_uid = os.getuid()
+    my_uid = os.getuid() if hasattr(os, "getuid") else None
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
             continue
@@ -559,7 +559,7 @@ def _iter_proc_cmdlines(exclude_pids: set[int]):
         if pid == my_pid or pid in exclude_pids:
             continue
         try:
-            if os.stat(f"/proc/{pid}").st_uid != my_uid:
+            if my_uid is not None and os.stat(f"/proc/{pid}").st_uid != my_uid:
                 continue
             with open(f"/proc/{pid}/cmdline", "rb") as _f:
                 cmdline = _f.read().decode("utf-8", errors="replace")

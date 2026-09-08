@@ -94,6 +94,22 @@ class TestWebUIBuildNeeded:
         assert h1 == h2
         assert len(h1) == 64
 
+    def test_npm_install_restores_lockfile_metadata_churn(self, tmp_path, monkeypatch):
+        lockfile = tmp_path / "package-lock.json"
+        original = b'{"packages":{"node_modules/example":{"peer":true}}}\n'
+        lockfile.write_bytes(original)
+
+        def run_npm(*_args, **_kwargs):
+            lockfile.write_bytes(b'{"packages":{"node_modules/example":{}}}\n')
+            return __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+
+        monkeypatch.setattr("hermes_cli.main_web_build._run_npm_watching_for_engine_failure", run_npm)
+
+        result = _run_npm_install_deterministic("npm", tmp_path)
+
+        assert result.returncode == 0
+        assert lockfile.read_bytes() == original
+
     def test_write_stamp_creates_file_with_hash(self, tmp_path):
         import json as _json
         web_dir, _ = _make_web_dir(tmp_path)

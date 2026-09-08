@@ -326,6 +326,17 @@ def _run_npm_install_deterministic(
     the committed lockfile and makes every future ``npm ci`` fail — a self-reinforcing cycle where web
     devDeps never install and a stale dist is served on every update (PR #65595).
     """
+    # npm 12 can rewrite peer/optional metadata even during ``npm ci``. Preserve
+    # the caller's exact lockfile bytes so generated churn cannot dirty the
+    # checkout or invalidate a build stamp written earlier in the update.
+    lockfile = cwd / "package-lock.json"
+    preserve_lockfile = True
+    try:
+        original_lockfile = lockfile.read_bytes() if lockfile.exists() else None
+    except OSError:
+        preserve_lockfile = False
+        original_lockfile = None
+
     # CI=1 no-ops unicode-animations' postinstall that animates to /dev/tty.
     run_env = _npm_lifecycle_env(env)
 
@@ -334,25 +345,35 @@ def _run_npm_install_deterministic(
             return _run_npm_watching_for_engine_failure(
                 [npm_exe, *args, "--include=dev", *extra_args], cwd=cwd, env=run_env, capture_output=capture_output,
             )
-        if (cwd / "package-lock.json").exists():
+        if lockfile.exists():
             ci_result = _run(["ci"])
             if ci_result.returncode == 0:
                 return ci_result
         return _run(["install", "--no-save"])
 
-    result = _attempt(npm)
-    if result.returncode == 0:
-        return result
+    try:
+        result = _attempt(npm)
+        if result.returncode == 0:
+            return result
 
-    from hermes_cli.npm_engine import maybe_repair_npm_engine
-    repaired_npm = maybe_repair_npm_engine(npm, f"{result.stdout or ''}\n{result.stderr or ''}")
-    if not repaired_npm:
-        return result
-    # A freshly provisioned managed npm resolves `node` from PATH — put the
-    # managed tree first so it finds the managed Node, not a mismatched system one.
-    from hermes_constants import with_hermes_node_path
-    run_env["PATH"] = with_hermes_node_path(run_env)["PATH"]
-    return _attempt(repaired_npm)
+        from hermes_cli.npm_engine import maybe_repair_npm_engine
+        repaired_npm = maybe_repair_npm_engine(npm, f"{result.stdout or ''}\n{result.stderr or ''}")
+        if not repaired_npm:
+            return result
+        # A freshly provisioned managed npm resolves `node` from PATH — put the
+        # managed tree first so it finds the managed Node, not a mismatched system one.
+        from hermes_constants import with_hermes_node_path
+        run_env["PATH"] = with_hermes_node_path(run_env)["PATH"]
+        return _attempt(repaired_npm)
+    finally:
+        if preserve_lockfile:
+            try:
+                if original_lockfile is None:
+                    lockfile.unlink(missing_ok=True)
+                elif not lockfile.is_file() or lockfile.read_bytes() != original_lockfile:
+                    lockfile.write_bytes(original_lockfile)
+            except OSError as exc:
+                logger.warning("Could not restore package-lock.json after npm install: %s", exc)
 
 
 def _run_npm_watching_for_engine_failure(

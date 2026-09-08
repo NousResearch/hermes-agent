@@ -85,7 +85,7 @@ class TestSdkApprovalCanonicalizationHardening:
         assert calls == []
 
     def test_canonical_serialization_is_deterministic_utf8_and_bounded(self):
-        from agent.transports.claude_agent_sdk_session import (
+        from agent.transports.claude_agent_sdk_session_sanitize import (
             _canonical_sdk_tool_request,
             validate_canonical_sdk_request_serialization,
         )
@@ -208,10 +208,10 @@ class TestSdkApprovalCanonicalizationHardening:
     def test_markerless_callback_keeps_exact_abi_and_safe_actionable_presentations(
         self, monkeypatch,
     ):
-        from agent.transports import claude_agent_sdk_session as session_mod
+        from agent.transports import claude_agent_sdk_session_sanitize as sanitize_mod
 
         monkeypatch.setattr(
-            session_mod, "redact_sensitive_text",
+            sanitize_mod, "redact_sensitive_text",
             lambda value, **_kwargs: value.replace("SECRET", "[REDACTED]"),
         )
         received = []
@@ -325,9 +325,7 @@ class TestSdkApprovalCanonicalizationHardening:
     def test_wide_request_rejects_without_width_sized_validator_allocation(self):
         import tracemalloc
 
-        from agent.transports.claude_agent_sdk_session import (
-            _is_bounded_plain_sdk_json,
-        )
+        from agent.transports.claude_agent_sdk_session_sanitize import _is_bounded_plain_sdk_json
 
         request = {"wide": [None] * 200_000}
         tracemalloc.start()
@@ -341,9 +339,7 @@ class TestSdkApprovalCanonicalizationHardening:
     def test_wide_dictionary_rejection_time_is_node_budget_bounded(self):
         import time
 
-        from agent.transports.claude_agent_sdk_session import (
-            _is_bounded_plain_sdk_json,
-        )
+        from agent.transports.claude_agent_sdk_session_sanitize import _is_bounded_plain_sdk_json
 
         smaller = {str(index): None for index in range(50_000)}
         larger = {str(index): None for index in range(500_000)}
@@ -421,6 +417,7 @@ class TestSdkApprovalCanonicalizationHardening:
         import tracemalloc
 
         from agent.transports import claude_agent_sdk_session as session_mod
+        from agent.transports import claude_agent_sdk_session_sanitize as sanitize_mod
 
         marker = "SDK_CHOICE_RESULT_SECRET_27e"
         huge_choice = marker + ("é" * (32 * 1024 * 1024))
@@ -434,7 +431,7 @@ class TestSdkApprovalCanonicalizationHardening:
         current_result[0] = huge_choice
         category_calls = []
         hostile_category_counts = []
-        original_category = session_mod.unicodedata.category
+        original_category = sanitize_mod.unicodedata.category
         original_validator = session_mod._is_bounded_sdk_callback_string
 
         def counted_category(char):
@@ -450,7 +447,7 @@ class TestSdkApprovalCanonicalizationHardening:
                 hostile_category_counts.append(len(category_calls) - before)
             return valid
 
-        monkeypatch.setattr(session_mod.unicodedata, "category", counted_category)
+        monkeypatch.setattr(sanitize_mod.unicodedata, "category", counted_category)
         monkeypatch.setattr(
             session_mod, "_is_bounded_sdk_callback_string", counted_validator,
         )
@@ -479,6 +476,7 @@ class TestSdkApprovalCanonicalizationHardening:
         import tracemalloc
 
         from agent.transports import claude_agent_sdk_session as session_mod
+        from agent.transports import claude_agent_sdk_session_sanitize as sanitize_mod
 
         marker = "SDK_REASON_RESULT_SECRET_4af"
         huge_reason = marker + ("é" * (16 * 1024 * 1024))
@@ -492,7 +490,7 @@ class TestSdkApprovalCanonicalizationHardening:
         current_result[0] = {"choice": "deny", "reason": huge_reason}
         category_calls = []
         hostile_category_counts = []
-        original_category = session_mod.unicodedata.category
+        original_category = sanitize_mod.unicodedata.category
         original_validator = session_mod._is_bounded_sdk_callback_string
 
         def counted_category(char):
@@ -508,7 +506,7 @@ class TestSdkApprovalCanonicalizationHardening:
                 hostile_category_counts.append(len(category_calls) - before)
             return valid
 
-        monkeypatch.setattr(session_mod.unicodedata, "category", counted_category)
+        monkeypatch.setattr(sanitize_mod.unicodedata, "category", counted_category)
         monkeypatch.setattr(
             session_mod, "_is_bounded_sdk_callback_string", counted_validator,
         )
@@ -594,7 +592,7 @@ class TestSdkApprovalCanonicalizationHardening:
         assert "denied by user" not in caplog.text
 
     def test_callback_string_helper_enforces_exact_utf8_caps_and_text_contract(self):
-        from agent.transports.claude_agent_sdk_session import (
+        from agent.transports.claude_agent_sdk_session_sanitize import (
             _is_bounded_sdk_callback_string,
         )
 
@@ -613,7 +611,7 @@ class TestSdkApprovalCanonicalizationHardening:
 
     @pytest.mark.parametrize("budget", [0, 1, 5, 20, 21])
     def test_head_tail_helper_never_exceeds_supplied_budget(self, budget):
-        from agent.transports.claude_agent_sdk_session import (
+        from agent.transports.claude_agent_sdk_session_sanitize import (
             _bounded_control_sanitized_head_tail,
         )
 
@@ -621,7 +619,7 @@ class TestSdkApprovalCanonicalizationHardening:
         assert len(rendered.encode("utf-8")) <= budget
 
     def test_head_tail_helper_preserves_multibyte_tail_within_budget(self):
-        from agent.transports.claude_agent_sdk_session import (
+        from agent.transports.claude_agent_sdk_session_sanitize import (
             _bounded_control_sanitized_head_tail,
         )
 
@@ -675,12 +673,12 @@ class TestSdkApprovalCanonicalizationHardening:
     ):
         import tracemalloc
 
-        from agent.transports import claude_agent_sdk_session as session_mod
+        from agent.transports import claude_agent_sdk_session_sanitize as sanitize_mod
 
         payload = {"path": "/tmp/x", "nested": {"safe": True}}
         wide = {f"k{i}": i for i in range(100_000)}
         encoded_values = []
-        original = session_mod._bounded_canonical_sdk_json
+        original = sanitize_mod._bounded_canonical_sdk_json
 
         def mutate_before_encoding(value):
             payload["nested"] = wide
@@ -688,7 +686,7 @@ class TestSdkApprovalCanonicalizationHardening:
             return original(value)
 
         monkeypatch.setattr(
-            session_mod, "_bounded_canonical_sdk_json", mutate_before_encoding,
+            sanitize_mod, "_bounded_canonical_sdk_json", mutate_before_encoding,
         )
         callback_calls = []
         session, _ = _make_session(
@@ -717,9 +715,7 @@ class TestSdkApprovalCanonicalizationHardening:
     def test_alias_serialization_stops_near_canonical_byte_cap(self):
         import tracemalloc
 
-        from agent.transports.claude_agent_sdk_session import (
-            _canonical_sdk_tool_request,
-        )
+        from agent.transports.claude_agent_sdk_session_sanitize import _canonical_sdk_tool_request
 
         big = 10 ** 3_999
         payload = {"path": "/tmp/x", "aliases": [big] * 9_000}
@@ -817,7 +813,7 @@ class TestSdkApprovalCanonicalizationHardening:
 
 
     def test_canonical_utf8_cap_and_cap_plus_one_are_exact(self):
-        from agent.transports.claude_agent_sdk_session import (
+        from agent.transports.claude_agent_sdk_session_sanitize import (
             _SDK_CANONICAL_MAX_UTF8_BYTES,
             validate_canonical_sdk_request_serialization,
         )
@@ -840,7 +836,7 @@ class TestSdkApprovalCanonicalizationHardening:
         import time
         import tracemalloc
 
-        from agent.transports.claude_agent_sdk_session import (
+        from agent.transports.claude_agent_sdk_session_sanitize import (
             validate_canonical_sdk_request_serialization,
         )
 
@@ -919,9 +915,7 @@ class TestSdkApprovalCanonicalizationHardening:
         import time
         import tracemalloc
 
-        from agent.transports.claude_agent_sdk_session import (
-            _canonical_sdk_tool_request,
-        )
+        from agent.transports.claude_agent_sdk_session_sanitize import _canonical_sdk_tool_request
 
         huge = "é" * (16 * 1024 * 1024)
         payload = {"path": huge} if location == "value" else {huge: None}
@@ -1130,11 +1124,11 @@ class TestSdkApprovalCanonicalizationHardening:
             approval_ctx.reset_current_session_key(token)
 
     def test_redactor_exception_is_fixed_fail_closed(self, monkeypatch, caplog):
-        from agent.transports import claude_agent_sdk_session as session_mod
+        from agent.transports import claude_agent_sdk_session_sanitize as sanitize_mod
 
         marker = "REDACTOR_EXCEPTION_SECRET_a61"
         monkeypatch.setattr(
-            session_mod,
+            sanitize_mod,
             "redact_sensitive_text",
             lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError(marker)),
         )

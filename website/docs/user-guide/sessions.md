@@ -263,6 +263,13 @@ Hermes automatically generates a short descriptive title (3–7 words) for each 
 
 Auto-titling only fires once per session and is skipped if you've already set a title manually.
 
+In Desktop and TUI, a new branch initially keeps a numbered copy of its parent's
+title. After your first follow-up, Hermes generates a new title from that message,
+the inherited title, and a short excerpt near the branch point. The parent stays
+unchanged, and subsequent messages do not trigger another branch rename. A title
+you explicitly choose always wins, including a rename while generation is running.
+If auto-titling is disabled or generation fails, the inherited title stays in place.
+
 ### Setting a Title Manually
 
 Use the `/title` slash command inside any chat session (CLI or gateway):

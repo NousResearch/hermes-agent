@@ -1202,7 +1202,12 @@ class SessionDB(
     # Title provenance, lowest to highest authority: auto-titling may only replace a
     # strictly lower-authority title (``derived`` -> ``llm`` once; never a user-typed name).
     TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM, TITLE_SOURCE_USER = "derived", "llm", "user"
-    _TITLE_SOURCE_RANK = {TITLE_SOURCE_DERIVED: 0, TITLE_SOURCE_LLM: 1, TITLE_SOURCE_USER: 2}
+    TITLE_SOURCE_BRANCH = "branch"
+    TITLE_SOURCE_BRANCH_FALLBACK = "branch_fallback"
+    _TITLE_SOURCE_RANK = {
+        TITLE_SOURCE_BRANCH: -1, TITLE_SOURCE_BRANCH_FALLBACK: 0,
+        TITLE_SOURCE_DERIVED: 0, TITLE_SOURCE_LLM: 1, TITLE_SOURCE_USER: 2,
+    }
 
     # Bot Mode's canonical chat is resolved by exact-title lookup: the title IS the identity,
     # so _set_session_title refuses renames of a hidden row holding it.

@@ -52,6 +52,9 @@ interface AuxTaskCopy {
 
 export interface Translations {
   sessionImport: {
+    sources: string
+    grok: string
+    grokNotice: string
     title: string
     subtitle: string
     action: string

@@ -1,11 +1,14 @@
 import { requestGatewayForAgent } from '@/store/gateway'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 
+export type ForeignSource = 'claude' | 'cowork' | 'codex' | 'grok'
+
 export interface ForeignSession {
   id: string
-  source: 'claude' | 'codex'
+  source: ForeignSource
   label: string
   title: string
+  project?: string | null
   cwd: string | null
   mtime: number
   turn_count: number
@@ -14,6 +17,8 @@ export interface ForeignSession {
 
 export interface ForeignPage {
   sessions: ForeignSession[]
+  /** Absent on older backends, which supported Claude Code and Codex only. */
+  sources?: ForeignSource[]
   next_offset: number | null
   host: string
   unreadable: number
@@ -32,9 +37,15 @@ export interface ForeignImportResult {
   already_imported: boolean
 }
 
+export interface ForeignSnapshot {
+  origin: { tool: string; path: string; foreign_session_id: string | null }
+  messages: { role: string; content: string }[]
+  title: string
+}
+
 export function foreignRequest<T>(
   owner: SessionOwnerRoute,
-  method: 'list' | 'preview' | 'import',
+  method: 'list' | 'preview' | 'export' | 'import',
   params: Record<string, unknown>,
   signal?: AbortSignal
 ) {

@@ -1,8 +1,10 @@
-"""Import sessions from foreign coding agents (Claude Code, Codex CLI). Foreign files are only ever read;
+"""Import sessions from foreign agents. Foreign files are only ever read;
 imported history must satisfy the provider role-alternation invariant (see ``_merge_turns``)."""
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import json
 import os
@@ -13,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from stat import S_ISREG
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 # User-message texts that are really injected context wrappers, not typed input.
 _WRAPPER_TAG_RE = re.compile(
@@ -22,15 +24,20 @@ _WRAPPER_TAG_RE = re.compile(
     r"command-name|command-message|local-command-stdout|system-reminder)\b", re.IGNORECASE)
 
 _TITLE_MAX = 60
-_SOURCE_LABELS = {"claude": "Claude Code", "codex": "Codex CLI"}
-_SOURCE_DB_NAMES = {"claude": "claude-code", "codex": "codex-cli"}
+_SOURCE_LABELS = {
+    "claude": "Claude Code",
+    "cowork": "Claude Cowork",
+    "codex": "ChatGPT Work / Codex",
+    "grok": "Grok Bot",
+}
+_SOURCE_DB_NAMES = {"claude": "claude-code", "cowork": "claude-cowork", "codex": "codex-cli", "grok": "grok-bot"}
 
 
 @dataclass
 class ForeignSession:
     """A discoverable session in another tool's on-disk store."""
 
-    source: str  # "claude" | "codex"
+    source: str  # "claude" | "cowork" | "codex"
     path: Path
     mtime: float
     cwd: Optional[str] = None
@@ -163,28 +170,116 @@ def parse_codex_session(path: Path) -> Dict[str, Any]:
     return _parsed(turns, cwd, session_id)
 
 
+def _grok_transcript_key(path: Path) -> Optional[str]:
+    try:
+        key = base64.b32decode(path.stem.upper() + "=" * (-len(path.stem) % 8)).decode("utf-8")
+    except (ValueError, binascii.Error, UnicodeError):
+        return None
+    return key if "transcript.replica" in key else None
+
+
+def parse_grok_session(path: Path) -> Dict[str, Any]:
+    """Read only schema-1 transcript replicas, not Grok's credentials or other cache slices."""
+    key = _grok_transcript_key(path)
+    if key is None:
+        raise ValueError("Not a Grok Bot transcript replica")
+    path = path.resolve()
+    if not any(path.is_relative_to(root) for root in _source_roots("grok")):
+        raise ValueError("Grok Bot transcript is outside the local cache")
+    # ponytail: match the existing desktop log bound; no new cross-gateway limit on local imports.
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(fd, "rb") as stream:
+        if not S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("Grok Bot transcript is not a regular file")
+        raw = stream.read(32 * 1024 * 1024 + 1)
+    if len(raw) > 32 * 1024 * 1024:
+        raise ValueError("Grok Bot cache exceeds the 32 MB import limit")
+    data = json.loads(raw)
+    value = data.get("value") if isinstance(data, dict) and data.get("schemaVersion") == 1 else None
+    entries = value.get("entries") if isinstance(value, dict) else None
+    if not isinstance(entries, list):
+        raise ValueError("Unsupported Grok Bot transcript cache")
+    turns, seen = [], set()
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]:
+            continue
+        if entry["id"] in seen:
+            continue
+        kind = entry.get("kind")
+        message = entry.get("message")
+        # Grok renders send-message text as bot output; message entries carry the speaker role.
+        if kind == "send-message" and isinstance(message, dict) and message.get("type") == "text":
+            message = {"role": "assistant", "content": message.get("content")}
+        elif kind == "message" and entry.get("role") in ("user", "assistant"):
+            message = {"role": "assistant" if entry.get("fromAgent") else entry["role"],
+                       "content": entry.get("content")}
+        else:
+            continue
+        if turn := _message_turn(message):
+            seen.add(entry["id"])
+            turns.append(turn)
+    return _parsed(turns, None, key)
+
+
 # source -> (default root under ~, glob pattern, recursive, parser)
 _SOURCES = {
     "claude": ((".claude", "projects"), "*/*.jsonl", False, parse_claude_session),
+    "cowork": (("Library", "Application Support", "Claude", "local-agent-mode-sessions"),
+               "*/*/local_*/.claude/projects/*/*.jsonl", False, parse_claude_session),
     "codex": ((".codex", "sessions"), "rollout-*.jsonl", True, parse_codex_session),
+    "grok": (("Library", "Application Support", "Grok Bot", "sand-client-persistence"),
+             "*.blob", False, parse_grok_session),
 }
+
+
+def _source_roots(source: str, *, home: Optional[Path] = None, platform: Optional[str] = None,
+                  environ: Optional[Mapping[str, str]] = None) -> List[Path]:
+    """Default storage roots for one source. Cowork follows Claude Desktop's platform layout."""
+    default_root, _, _, _ = _SOURCES[source]
+    home = home or Path.home()
+    if source == "grok":
+        # Only the macOS cache location has been verified.
+        return [home.joinpath(*default_root).resolve()] if (platform or sys.platform) == "darwin" else []
+    if source != "cowork":
+        return [home.joinpath(*default_root).resolve()]
+
+    platform = platform or sys.platform
+    if platform == "darwin":
+        return [(home / "Library" / "Application Support" / name / "local-agent-mode-sessions").resolve()
+                for name in ("Claude", "Claude-3p")]
+    if platform != "win32":
+        return []
+
+    environ = os.environ if environ is None else environ
+    appdata = Path(environ.get("APPDATA", str(home / "AppData" / "Roaming")))
+    local = Path(environ.get("LOCALAPPDATA", str(home / "AppData" / "Local")))
+    roots = [appdata / name / "local-agent-mode-sessions" for name in ("Claude", "Claude-3p")]
+    roots.append(local / "Claude-3p" / "local-agent-mode-sessions")
+    roots.extend(local.glob("Packages/Claude_*/LocalCache/Roaming/Claude/local-agent-mode-sessions"))
+    return list(dict.fromkeys(path.resolve() for path in roots))
 
 
 def _walk(source: str, root: Optional[Path] = None) -> List[Tuple[Path, os.stat_result]]:
     """Regular log files of *source* under *root* (default ``~/<tool dir>``) as ``(path, stat)``,
     newest first. Symlinks escaping the root and unreadable/rotated entries are skipped, so one
     bad file never hides the rest. Shared by the CLI picker and the desktop browser."""
-    default_root, pattern, recursive, _ = _SOURCES[source]
-    root = (Path(root) if root else Path.home().joinpath(*default_root)).resolve()
+    _, pattern, recursive, _ = _SOURCES[source]
+    roots = [Path(root).resolve()] if root else _source_roots(source)
     found: List[Tuple[Path, os.stat_result]] = []
-    for path in (root.rglob(pattern) if recursive else root.glob(pattern)) if root.is_dir() else ():
-        try:
-            resolved = path.resolve()
-            st = resolved.stat()
-        except OSError:
-            continue
-        if resolved.is_relative_to(root) and S_ISREG(st.st_mode):
-            found.append((resolved, st))
+    seen = set()
+    for source_root in roots:
+        for path in ((source_root.rglob(pattern) if recursive else source_root.glob(pattern))
+                     if source_root.is_dir() else ()):
+            if source == "grok" and _grok_transcript_key(path) is None:
+                continue
+            try:
+                resolved = path.resolve()
+                st = resolved.stat()
+            except OSError:
+                continue
+            if resolved.is_relative_to(source_root) and resolved not in seen and S_ISREG(st.st_mode):
+                seen.add(resolved)
+                found.append((resolved, st))
     found.sort(key=lambda item: item[1].st_mtime, reverse=True)
     return found
 
@@ -250,7 +345,7 @@ def pick_foreign_session(source: Optional[str] = None, *, limit: int = 25) -> Op
     """Interactive numbered picker. Returns None when nothing was chosen."""
     sessions = gather_foreign_sessions(source, limit=limit)
     if not sessions:
-        where = _SOURCE_LABELS.get(source or "", "Claude Code or Codex CLI")
+        where = _SOURCE_LABELS.get(source or "", "Claude Code or ChatGPT Work / Codex")
         print(f"No {where} sessions found on this machine.")
         return None
     print("Foreign sessions (newest first):")

@@ -1,4 +1,4 @@
-"""Desktop foreign-history browsing, scoped to the serving backend and profile."""
+"""Desktop foreign-history browsing plus validated transfer between gateways."""
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -17,14 +17,29 @@ def _foreign_list(rid, params):
         return _err(rid, -32000, "Could not read session folders on this backend")
 
 
+@method("session.foreign.export")
+def _foreign_export(rid, params):
+    from hermes_cli.foreign_sessions_browser import export_browser_session
+    try:
+        return _ok(rid, export_browser_session(params.get("id")))
+    except ValueError as exc:
+        return _err(rid, -32602, str(exc))
+    except OSError:
+        return _err(rid, -32000, "Could not read this session on the source computer")
+
+
 def _foreign_history_request(rid, params, importing):
-    from hermes_cli.foreign_sessions_browser import import_browser_session, preview_foreign_session
+    from hermes_cli.foreign_sessions_browser import import_browser_session, import_browser_snapshot, preview_foreign_session
     try:
         with _profile_db(params) as db:
             if db is None:
                 return _db_unavailable_error(rid, code=-32000)
-            result = (import_browser_session(params.get("id"), db, _response_profile_name(params.get("profile")))
-                      if importing else preview_foreign_session(params.get("id"), db))
+            if importing:
+                profile = _response_profile_name(params.get("profile"))
+                result = (import_browser_snapshot(params["snapshot"], db, profile)
+                          if "snapshot" in params else import_browser_session(params.get("id"), db, profile))
+            else:
+                result = preview_foreign_session(params.get("id"), db)
             return _ok(rid, result)
     except ValueError as exc:
         return _err(rid, -32602, str(exc))

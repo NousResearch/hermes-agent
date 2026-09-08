@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.foreign_sessions — Claude Code / Codex CLI import.
+"""Tests for hermes_cli.foreign_sessions — Claude Code, Cowork, and Codex import.
 
 Fixture JSONL is synthesized inline (tmp_path); the SessionDB is opened
 against a temp path so nothing touches the real HERMES_HOME store.
@@ -10,6 +10,7 @@ import pytest
 
 from hermes_cli.foreign_sessions import (
     _list_sessions,
+    _source_roots,
     gather_foreign_sessions,
     import_foreign_session,
     parse_claude_session,
@@ -186,7 +187,30 @@ def test_list_sessions(tmp_path):
 
 def test_list_sessions_missing_roots(tmp_path):
     assert _list_sessions("claude", tmp_path / "nope") == []
+    assert _list_sessions("cowork", tmp_path / "nope") == []
     assert _list_sessions("codex", tmp_path / "nope") == []
+
+
+def test_cowork_roots_follow_mac_and_windows_app_data_layouts(tmp_path):
+    mac = _source_roots("cowork", home=tmp_path, platform="darwin")
+    assert mac == [
+        (tmp_path / "Library/Application Support/Claude/local-agent-mode-sessions").resolve(),
+        (tmp_path / "Library/Application Support/Claude-3p/local-agent-mode-sessions").resolve(),
+    ]
+
+    local = tmp_path / "Local"
+    package = local / "Packages" / "Claude_pzs8sxrjxfjjc" / "LocalCache" / "Roaming" / "Claude"
+    (package / "local-agent-mode-sessions").mkdir(parents=True)
+    windows = _source_roots("cowork", home=tmp_path, platform="win32", environ={
+        "APPDATA": str(tmp_path / "Roaming"),
+        "LOCALAPPDATA": str(local),
+    })
+    assert windows == [
+        (tmp_path / "Roaming/Claude/local-agent-mode-sessions").resolve(),
+        (tmp_path / "Roaming/Claude-3p/local-agent-mode-sessions").resolve(),
+        (local / "Claude-3p/local-agent-mode-sessions").resolve(),
+        (package / "local-agent-mode-sessions").resolve(),
+    ]
 
 
 # ── import into SessionDB ────────────────────────────────────────────────
@@ -211,6 +235,15 @@ def test_import_claude_session(tmp_path, session_db):
     assert origin["imported_from"]["path"] == str(f)
 
 
+def test_import_cowork_session_uses_distinct_provenance(tmp_path, session_db):
+    f = _write_claude_fixture(tmp_path)
+    session_id = import_foreign_session("cowork", f, db=session_db)
+    row = session_db.get_session(session_id)
+    assert row["source"] == "claude-cowork"
+    assert json.loads(row["origin_json"])["imported_from"]["tool"] == "claude-cowork"
+    assert session_db.get_session_title(session_id).startswith("Imported from Claude Cowork: ")
+
+
 def test_import_codex_session(tmp_path, session_db):
     f = _write_codex_fixture(tmp_path)
     session_id = import_foreign_session("@codex", f, db=session_db)
@@ -219,7 +252,7 @@ def test_import_codex_session(tmp_path, session_db):
     assert row["source"] == "codex-cli"
     assert row["message_count"] == 4
     title = session_db.get_session_title(session_id)
-    assert title.startswith("Imported from Codex CLI: ")
+    assert title.startswith("Imported from ChatGPT Work / Codex: ")
     messages = session_db.get_messages(session_id)
     _assert_alternating(messages)
     # resumable: resolve_session_id round-trips

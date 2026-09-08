@@ -1156,3 +1156,50 @@ class TestNewResetLineageBrowse:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_legacy_child" in sids
 
+
+
+# =========================================================================
+# Tool-role fallback on zero results (recall blind spot, cf. #19434)
+# =========================================================================
+
+class TestToolRoleFallback:
+    """Discovery's default role filter (user/assistant) hides matches that live
+    only in tool-role output — e.g. cron pipeline ingest totals. When the
+    default search finds nothing, retry once including tool output and say so."""
+
+    def _seed_tool_only_cron(self, db):
+        now = int(time.time())
+        db.create_session("cron_ingest", source="cron")
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
+                         (now - 500, "cron_ingest"))
+        db.append_message("cron_ingest", role="tool",
+                          content="ingest totals: skadefilloyalty sweep found 3 items")
+        db._conn.commit()
+
+    def test_tool_only_cron_match_surfaced_via_fallback(self, db):
+        self._seed_tool_only_cron(db)
+        result = json.loads(session_search(query="skadefilloyalty", db=db))
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["session_id"] == "cron_ingest"
+        assert "tool-output" in result["message"]
+
+    def test_explicit_role_filter_still_returns_zero(self, db):
+        self._seed_tool_only_cron(db)
+        result = json.loads(session_search(query="skadefilloyalty", role_filter="user", db=db))
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert "No matching sessions found" in result["message"]
+        # The fallback must not fire when the caller asked for a specific filter.
+        assert "tool-output" not in result.get("message", "")
+
+    def test_user_assistant_matches_unchanged_no_fallback_note(self, db):
+        db.create_session("s_chat", source="telegram")
+        db.append_message("s_chat", role="user", content="venomous modpack discussion")
+        db.append_message("s_chat", role="assistant", content="venomous modpack notes saved")
+        db._conn.commit()
+        result = json.loads(session_search(query="venomous modpack", db=db))
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["session_id"] == "s_chat"
+        assert result.get("message") is None

@@ -570,8 +570,13 @@ class LoopManager:
             return None
         fired_at = time.time()
         local_changes = self._local_state_changes()
+        claimed = False
 
         def _claim(current_json):
+            nonlocal claimed
+            # A SessionDB write may retry this callback after lock contention. Recompute the
+            # marker on every attempt so a claim from a rolled-back attempt cannot leak out.
+            claimed = False
             if not current_json:
                 return None
             current = LoopState.from_json(current_json)
@@ -586,6 +591,7 @@ class LoopManager:
             current.ticks_fired += 1
             current.last_fired_at = fired_at
             current.awaiting_response = True
+            claimed = True
             # Provisional schedule from NOW: complete_tick reschedules from turn end, but if the
             # process dies mid-turn this keeps the persisted loop from being 'due' in a tight loop.
             current.next_due_at = fired_at + (
@@ -597,7 +603,7 @@ class LoopManager:
         self._state = LoopState.from_json(persisted) if persisted else None
         self._persisted_state_json = persisted
         s = self._state
-        if s is None or s.last_fired_at != fired_at or not s.awaiting_response:
+        if not claimed or s is None or not s.awaiting_response:
             return None
 
         if s.prompt.lstrip().startswith("/"):

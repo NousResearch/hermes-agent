@@ -353,6 +353,21 @@ class TestTickLifecycle:
         assert mgr.is_due() is False  # can't double-fire mid-turn
         assert mgr.fire_tick() is None
 
+    def test_fire_tick_does_not_refire_when_clock_timestamp_repeats(self, hermes_home, monkeypatch):
+        from hermes_cli import loops
+        from hermes_cli.loops import LoopManager
+
+        now = 1234.5
+        monkeypatch.setattr(loops.time, "time", lambda: now)
+        mgr = LoopManager(session_id="t3-same-timestamp")
+        state = mgr.set("poll the build", interval_seconds=300)
+        state.next_due_at = now - 1
+
+        assert mgr.fire_tick() is not None
+        assert mgr.fire_tick() is None
+        assert mgr.state.awaiting_response is True
+        assert mgr.state.ticks_fired == 1
+
     def test_slash_prompt_returned_raw(self, hermes_home):
         from hermes_cli.loops import LoopManager
 

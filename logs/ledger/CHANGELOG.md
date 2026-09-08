@@ -8,6 +8,241 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.7.0] — 2026-09-08 — hermes@0333d48214 (0 behind upstream/main — rebased onto origin/main)
+
+**`RUN-2026-09-08-003` (reconcile + push):** the block was investigated
+uncommitted (contra the earlier "committed to local `main`" claim), then
+committed here per-CHG and rebased onto `origin/main`. Between the analysis and
+the push `origin/main` advanced `85518051ed`-base **+16 → +237** (a large
+`Merge branch 'NousResearch:main'` sync landed, tip `0333d48214`); re-checked —
+**none** of the 237 origin-only commits touch any file in `CHG-2026-09-08-001..007`
+(`config.py`/`config_home.py`/`nf-setup.ps1`/`north-forge.cmd`/`bootstrap-north-forge.ps1`/
+`README.md`/`.gitattributes`/`logs/ledger/`/`editions/`/`docs/preview.html`/`nf_tier.py`/
+`profiles.py`/`profile_distribution.py`/`apps/bootstrap-installer/`), so the rebase
+of the 2 ledger commits + these 7 is conflict-free. `origin/main` contains
+`upstream/main` (0 behind). (`git fetch upstream` itself 429'd — rate-limited —
+but the coordinate comes from `origin/main`, which carries the NousResearch merge.) **config.py
+verification:** `520e63661c` ("…across config and setup") and `c111ede3e5` do
+**not** touch `hermes_cli/config.py` or `config_home.py` at all — they're
+`config_providers.py` / `model_switch_providers.py` / `models.py` /
+`command_token_source.py` (provider-credential resolution for `/v1/models`
+discovery). `CHG-2026-09-08-002`'s `_ensure_default_skin()` is a different
+subsystem, zero shared symbols; `tests/hermes_cli/test_config.py` = 134 pass. No
+silent logic conflict. The separate-pass in-flight edits (`north-forge.cmd`,
+`scripts/bootstrap-north-forge.ps1`, `tests/test_bootstrap_launcher_hardening.py`)
+are **"Codex Audit Batch 1"** — reviewed and landed this pass as
+`CHG-2026-09-08-007` (13/13 after `RUN-2026-09-08-003` fixed a test-harness bug:
+`& $scriptblockParameter` drops `$LASTEXITCODE` on PS 5.1; the `Invoke-Native`
+code was always correct).
+
+**Owner decisions (`RUN-2026-09-08-003`):** (i) commit the whole NF-v0.7.0 tree
+per-CHG, rebase the 2 ledger commits + these onto `origin/main`, run the suite,
+**push if green**; (ii) Batch 1 goes in as its own commit (`CHG-2026-09-08-007`).
+`CHG-2026-09-08-001` (installer GUI) rests on `RUN-2026-09-08-001`'s stated
+`cargo test` / `tauri build` verification — not re-run this pass (Rust/TS, outside
+pytest). This block's `hermes@` / "behind" coordinates are stamped at the rebase.
+
+### Added
+
+- **CHG-2026-09-08-001** — **North Forge Setup GUI (lightweight tier).**
+  Retargeted `apps/bootstrap-installer/` (Tauri 2, Rust + React — vendored, 100%
+  upstream, never NF-modified before) from the Hermes machine-local installer
+  into a branded GUI that runs `scripts/bootstrap-north-forge.ps1` **unmodified**.
+  *Rebrand:* `tauri.conf.json` (productName / identifier / title / publisher /
+  copyright), `Cargo.toml` (`[[bin]] name = North-Forge-Setup`, package name /
+  description / authors, lib name), `hermes-setup.manifest` →
+  `north-forge-setup.manifest` (description + `assemblyIdentity`), icons →
+  `assets/icons/north-forge.ico`, all four screen-copy strings, `brand-mark.tsx`
+  / `nous-girl.jpg` → an inline North Forge mark, `index.html` title,
+  `package.json` (`@north-forge/setup`), `hermes-fade-in` → `nf-fade-in`.
+  *Stripped* (dead for a CLI-only, repo-already-on-drive product): the
+  `-Manifest` / `-Stage` JSON stage protocol; `update.rs` + `--update` mode;
+  `install_script.rs` (the GitHub download / cache / build-pin machinery, and the
+  pin-baking in `build.rs`); the Electron desktop-launch path
+  (`launch_hermes_desktop`, `resolve_hermes_desktop_exe`, Stage-Desktop); the
+  macOS launcher fast-path; `reqwest` / `windows-sys` / `libc` / `futures` and
+  three other now-unused crates. *New:* `repo.rs` resolves the checkout
+  (env override → installer-relative walk-up → drive scan) and derives the
+  sibling `<leaf>-venv` / `<leaf>-data` paths; `run_bootstrap` shells the PS
+  script once (`-RepoRoot <root>`, `powershell.rs` streaming kept verbatim) into a
+  single indeterminate progress view + the collapsible log panel; `location.tsx`
+  is a drive/folder picker that rejects the system drive; the Success screen's
+  "Launch" runs `north-forge.cmd` (or `<drive>:\Start North Forge.lnk`).
+  *Verified:* `cargo test` 9/9, `tsc` + `eslint` + `vite build` clean,
+  `tauri build` → `src-tauri/target/release/North-Forge-Setup.exe` (6.8 MB,
+  version resource = "North Forge Setup" / "North Forge" / 0.1.0); the exact
+  command the exe issues was run fresh (venv rebuild + editable install →
+  "READY") and already-bootstrapped against `D:\north-forge-agent`, and
+  `north-forge.cmd --version` reaches a working `hermes`. `bootstrap-north-forge.ps1`
+  and `nf-preflight.ps1` were **not** touched. Also added `*.rs text eol=lf` to
+  `.gitattributes` (matches every other source type; the fork's `.rs` files were
+  already LF at HEAD). Toolchain unblocked to build: npm bumped to 11.19.1 in the
+  user global (repo `engine-strict` excludes 11.10–11.16), Windows 11 SDK
+  10.0.26100 installed (VS BuildTools 2019 had the compiler but no SDK). Paths:
+  `apps/bootstrap-installer/**`, `.gitattributes`. Ref:
+  `logs/CODEX-INSTALLER-GUI-FEASIBILITY-2026-09-07.md` §3. Run: RUN-2026-09-08-001.
+
+- **CHG-2026-09-08-002** — **North Forge is the enforced first-launch skin.** New
+  `hermes_cli/config.py::_ensure_default_skin(home)`, called from
+  `hermes_cli/config_home.py::initialize_home()` right after
+  `_ensure_default_soul_md` (same seed-time pattern): when the home carries
+  `skins/north-forge.yaml` (dropped by `bootstrap-north-forge.ps1` /
+  `north-forge.cmd`) and `config.yaml`'s `display.skin` is absent or stock
+  (`default` / `none` / `null`), it writes `display.skin: north-forge` via the
+  fail-closed `atomic_config_write`. An explicit skin — including a later
+  `hermes config set display.skin …` — is never overridden; managed homes are
+  skipped; the helper never raises. `scripts/nf-setup.ps1` (Setup Run) now also
+  sets the same default explicitly as part of provisioning, alongside tier + pin,
+  and respects a pre-existing non-stock choice. *Before:* a genuinely fresh /
+  re-seeded `HERMES_HOME` fell through `skin_engine.init_skin_from_config` to the
+  stock Hermes `"default"` (gold/kawaii) skin. `+7` tests
+  (`tests/hermes_cli/test_config.py::TestEnsureDefaultSkin`); verified against a
+  fresh home (loads `north-forge`), a non-NF home (untouched), and an explicit
+  `crimson` choice (kept). Paths: `hermes_cli/config.py`,
+  `hermes_cli/config_home.py`, `scripts/nf-setup.ps1`,
+  `tests/hermes_cli/test_config.py`. Ref: `DECISION-2026-09-07-001`. Run:
+  RUN-2026-09-08-001.
+
+- **CHG-2026-09-08-004** — `docs/preview.html`: a single-file, dependency-free
+  tease page — forge palette, inline-SVG compass/anvil/flame mark, a CSS
+  recreation of the `skins/north-forge.yaml` session (banner, `❯` prompt,
+  `⚒ North Forge` response box, forge spinner, status bar), "what it is" +
+  feature grid pulled from `README.md`. Showpiece only, not wired into anything,
+  opens by double-click; rendered clean in headless Chromium. Paths:
+  `docs/preview.html`. Ref: —. Run: RUN-2026-09-08-001.
+  Superseded-by: `CHG-2026-09-08-005` (same file rebuilt to embed the real brand
+  art in place of the hand-drawn SVG).
+
+- **CHG-2026-09-08-006** — **Edition content + pin-system wiring (three editions).**
+  `editions/` gains two new personas and a working install path from repo → live
+  profile. *New editions:* `editions/penny-pincher/` (fresh — warm, plain-language
+  household-budgeting persona: bills, due dates, "what's left this month?",
+  spending-change nudges; explicitly not a power-user finance tool, no investment
+  advice) and `editions/pine-barron-farms/` (migrated from
+  `D:\KB_PROJECT_2026\PBF_v22_FINAL` — a virtual-production-partner persona:
+  accessibility-first working style, the CHANGE BRIEF / WHERE WE ARE / NEXT STEP
+  reply structure, a real-public-figure guardrail, a content covenant, and a
+  condensed generation method). **The PBF studio canon packet, episode cards and
+  personal/family detail were deliberately NOT migrated** — this repo is public;
+  `editions/pine-barron-farms/canon/README.md` documents that the real packet is
+  dropped in at deploy under `profiles/pine-barron-farms/canon/` (admin-gated,
+  Kyocera precedent; `editions/README.md` "no proprietary/personal vertical
+  content in the public chassis"). *Mechanism:* each edition is now a **Hermes
+  profile distribution** — `distribution.yaml` (name/version/description/
+  `hermes_requires`/`env_requires: []`/`distribution_owned`) + `SOUL.md` + `README.md`
+  at the folder root, installable with `hermes profile install editions/<name>`.
+  `editions/field-service/` got a backfilled `distribution.yaml` so the pattern is
+  uniform. `pine-barron-farms/distribution.yaml` lists `canon/README.md`
+  (not the `canon/` dir) as owned, so the placeholder ships but a real packet is
+  never clobbered by `hermes profile update`. *nf-setup.ps1:* new auto-install
+  step — when the `-Pin` (or, on Full, a `-Installed` name) is not a profile yet
+  but `editions/<name>/distribution.yaml` is in the checkout, it runs
+  `hermes profile install <dir> -y` before writing the signed record; new
+  `-SkipEditionInstall` opt-out; `-Installed a,b,c` comma-string (a `powershell
+  -File` quirk) is now split; new `Invoke-Hermes` helper (relaxed EAP, exit-code
+  judged). `editions/README.md` rewritten to document the distribution mechanism
+  and the three editions. *Task 3 (baseline skills):* native image generation
+  needs **no build** — the `image_generate` tool is already in the core toolset
+  and `plugins/image_gen/` ships `openai` (gpt-image) + `xai` (grok-2-image) +
+  deepinfra/fal/krea/openrouter/meta-ai; "enable" = set one provider key
+  (`OPENAI_API_KEY` / `XAI_API_KEY`) and optionally pin `image_gen.provider`.
+  Also native, key/enable-only: `video_generate` (`plugins/video_gen/` fal/xai/
+  deepinfra), `text_to_speech`, `vision_analyze`, free web search
+  (`brave_free`/`ddgs`), browser automation. Genuinely missing: music/lyric
+  generation (no tool, no plugin). *Verified:* `nf-setup.ps1 -NonInteractive`
+  provisioning runs against throwaway data dirs for Basic/`penny-pincher`,
+  Basic/`pine-barron-farms`, Basic/`field-service`, and Full/pin
+  `pine-barron-farms` + `-Installed` all three — each installs the edition to
+  `profiles/<name>/`, writes + signs `provisioning.json`, `hermes profile
+  show`/`info` recognise the manifest; `nf_tier.enforce_startup_profile` confirms
+  Basic bare-launch → pin, `-p <pin>` → allowed, `-p <other>` → blocked, stale
+  `active_profile` → pin, and Full → switchable. PS parse clean. Paths:
+  `editions/**`, `scripts/nf-setup.ps1`. Ref: `DECISION-2026-09-07-003`,
+  `north-forge-architecture` (owner coordination notes). Run: RUN-2026-09-08-003.
+
+### Changed
+
+- **CHG-2026-09-08-003** — **Docs / versioning consistency sweep.**
+  `logs/ledger/README.md` § "North-Forge version" no longer hardcodes a version
+  (it read `NF-v0.1.0`; stale — the recurrence the prompt flagged) — it now
+  points at the newest `CHANGELOG.md` heading and past-tenses the `NF-v0.2.0`
+  milestone. `README.md` § "Drive class" reworded: the volume-name class label is
+  a drive-prep convention (no code enforces it anywhere — confirmed), and the
+  machine-readable truth (tier + pinned edition) is the on-drive provisioning
+  record, read with `scripts\nf-setup.ps1 -Show`. *Verified consistent, left as-is:*
+  `pyproject.toml` `0.21.1` (engine version, independent of `NF-v` by design;
+  matches `hermes --version`); `CHANGELOG.md` + `INDEX.md` agree on `NF-v0.6.1` /
+  `RUN-2026-09-07-011` / `hermes@2237be3559`; `README.es/zh-CN/ur-pk.md` are pure
+  landing pages (no version, no install steps, link to canonical README);
+  `editions/README.md` + `editions/field-service/README.md` + `.githooks/README.md`
+  accurate and cross-consistent; `INDEX.md` open vs resolved incident/decision
+  tables correct (nothing resolved still listed open or vice-versa). No README
+  claim describes a shipped feature inaccurately or an un-shipped one as done; the
+  GUI installer (`CHG-2026-09-08-001`) is deliberately unmentioned in docs until
+  it lands on `origin/main`. Paths: `README.md`, `logs/ledger/README.md`. Ref: —.
+  Run: RUN-2026-09-08-001.
+
+- **CHG-2026-09-08-005** — `docs/preview.html` rebuilt on the **real brand art**.
+  The `CHG-2026-09-08-004` draft drew its own inline-SVG compass/anvil/flame; the
+  prompt for the page asked for the shipped assets. Now `assets/banner.png` is the
+  hero, `assets/icons/splash-alt.png` sits in the skin-detail block (captioned as
+  the held drive loading-screen splash), and `assets/icons/icon-256.png` is the
+  favicon + footer mark — each down-scaled and embedded as a `data:` URI (WebP for
+  the two line-art panels, PNG for the icon; ~89 KB of base64 total) so it stays
+  one file that opens by double-click with **zero** network loads (the only
+  external refs are four `href` links to GitHub / the Hermes docs). Also: forge
+  palette + named swatches lifted verbatim from `skins/north-forge.yaml`, the CSS
+  session recreation updated to `NF-v0.7.0` / `upstream 2237be35` and given the
+  `│` tool-prefix line, provenance footer carries both `LICENSE` copyright lines.
+  No JS. Verified: headless Chrome render of the full page (hero, what-it-is,
+  themed-session mock, engine grid, footer) — opens and looks right; HTML parses
+  clean; no leftover template placeholders. Showpiece, not documentation; not
+  wired into anything. Paths: `docs/preview.html`. Ref: —. Supersedes:
+  `CHG-2026-09-08-004`. Run: RUN-2026-09-08-002.
+
+### Fixed
+
+- **CHG-2026-09-08-007** — **Codex Audit Batch 1 — three field-breaking-risk
+  fixes to the drive-native launcher / bootstrap** (the batch `RUN-2026-09-07-010`
+  queued as "separate commit, hold for review"; `RUN-2026-09-08-003` reviewed and
+  landed it). **Fix 1** `scripts/bootstrap-north-forge.ps1` (+251/−160): under
+  PowerShell 5.1, `$ErrorActionPreference = 'Stop'` treats a native process that
+  merely writes to stderr (uv download progress, pip notices) as a terminating
+  error. Every native call now goes through new `Invoke-Native` / `Get-NativeText`
+  helpers (EAP relaxed locally, success judged by `$LASTEXITCODE` only), and the
+  whole run is wrapped in `Invoke-NfBootstrap` reporting via `$script:__nfExit` +
+  `return` so a single outer `finally{}` restores `$ErrorActionPreference`,
+  `HERMES_HOME` and `UV_CACHE_DIR` on every exit path. **Fix 2** `north-forge.cmd`
+  (+77/−3): renaming the checkout folder derives a new `<leaf>-data` name and
+  silently started fresh — the old conversations/config/credentials were not
+  found, not migrated, not flagged. The launcher now detects exactly one sibling
+  `*-data` folder and makes the operator choose (reuse / start fresh), with no
+  timeout and no default; adds `:find_prior_data` / `:consider_prior`. **Fix 3**
+  `north-forge.cmd`: `mkdir "%DATA%"` was unchecked — on a read-only / full /
+  disconnected drive `HERMES_HOME` pointed at a folder that was never created and
+  hermes failed deep in its own startup looking like data loss. Now verified after
+  `mkdir` with a clean hard-stop message; the `%DATA%\skins` mkdir gets the same
+  guard; the `nf_tier verify` gate is tightened from `if errorlevel 2` (≥2) to
+  exact `if "%ERRORLEVEL%"=="2"` so only a real signature failure trips the tamper
+  message; hermes's own exit code is now propagated (`exit /b %ERRORLEVEL%`).
+  **Tests** `tests/test_bootstrap_launcher_hardening.py` (new, 281 lines, 13
+  tests): source-structure assertions + Windows-only tests that drive the real
+  `.ps1` / `.cmd`. `RUN-2026-09-08-003` fixed one test-harness bug found on this
+  machine: `test_invoke_native_survives_stderr_and_preserves_exit_code` used a
+  `Check($name,$block)` helper that invoked a scriptblock **parameter** via
+  `& $block` — PowerShell 5.1 does not propagate a native command's
+  `$LASTEXITCODE` out of `& $scriptblockParameter` (reproduced with a bare
+  `& cmd /c 'exit 3'`, no `Invoke-Native` involved). Rewrote the harness to run
+  each probe at script scope; `Invoke-Native` itself was always correct.
+  **Verified:** `tests/test_bootstrap_launcher_hardening.py` 13/13; combined
+  `test_nf_tier_enforcement.py` + hardening + `test_config.py` = 166 passed.
+  Paths: `north-forge.cmd`, `scripts/bootstrap-north-forge.ps1`,
+  `tests/test_bootstrap_launcher_hardening.py`. Ref:
+  `logs/CODEX-AUDIT-2026-09-07.md`, `ERR-2026-09-07-003`/`-006`. Run:
+  RUN-2026-09-08-003.
+
+---
+
 ## [NF-v0.6.1] — 2026-09-07 — hermes@2237be3559 (0 behind upstream/main)
 
 `RUN-2026-09-07-011`. Two owner decisions ratified. **No tracked-file change

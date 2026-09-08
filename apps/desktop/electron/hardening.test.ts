@@ -39,9 +39,29 @@ function withTempDir(run: (dir: string) => void) {
   try {
     run(dir)
   } finally {
-    fs.rmSync(dir, { force: true, recursive: true })
+    // Windows holds briefly-open handles (indexer, AV) that make an immediate
+    // recursive delete throw EPERM and fail an otherwise-green test. The temp
+    // dir is disposable, so retry a little and then leave it to the OS.
+    try {
+      fs.rmSync(dir, { force: true, maxRetries: 5, recursive: true, retryDelay: 20 })
+    } catch {
+      // best-effort cleanup: never fail a test over temp-dir removal
+    }
   }
 }
+
+/**
+ * POSIX mode bits are the subject of these assertions, and Windows has none:
+ * Node maps `chmod` to the read-only bit, so `0600` reads back as `0666` and
+ * every owner-only assertion fails for a reason that says nothing about the
+ * code. `tightenSecretFileMode` returns early on win32 BY DESIGN (see
+ * hardening.ts) and that contract is covered by the injected-platform tests
+ * below, which DO run everywhere.
+ *
+ * So: skip the on-disk mode tests off POSIX rather than assert a falsehood or
+ * mock away the very thing under test.
+ */
+const posixOnly = process.platform === 'win32' ? test.skip : test
 
 function modeOf(filePath: string) {
   return fs.statSync(filePath).mode & 0o777
@@ -154,7 +174,7 @@ test('encryptDesktopSecret stores safeStorage base64 payload', () => {
 
 // ─── Owner-only credential files (connection.json) ─────────────────────────
 
-test('writeSecretFileAtomic creates the file owner-only, not at the 0644 umask default', () => {
+posixOnly('writeSecretFileAtomic creates the file owner-only, not at the 0644 umask default', () => {
   withTempDir(dir => {
     const target = path.join(dir, 'connection.json')
     const payload = JSON.stringify({ remote: { token: { encoding: SAFE_STORAGE_ENCODING, value: 'BLOB' } } })
@@ -381,7 +401,7 @@ test('resolvePersistedRemoteToken keeps the existing token when no new token is 
   assert.equal(called, false, 'an empty incoming token must not re-encrypt anything')
 })
 
-test('writeSecretFileAtomic does not inherit loose bits from a stale temp file', () => {
+posixOnly('writeSecretFileAtomic does not inherit loose bits from a stale temp file', () => {
   // renameSync keeps the TEMP file's permissions, and writeFileSync's `mode`
   // is ignored when the path already exists — so a temp left by a crashed
   // earlier write would otherwise hand 0644 straight to the target.
@@ -409,7 +429,7 @@ function fsWith(overrides: Record<string, unknown>) {
   return { ...fs, ...overrides } as any
 }
 
-test('the written file is owner-only even where chmod does nothing', () => {
+posixOnly('the written file is owner-only even where chmod does nothing', () => {
   // Windows, and any mount that refuses chmod. The create-time `mode` is what
   // covers this — there is no second chance to tighten.
   withTempDir(dir => {
@@ -434,7 +454,7 @@ test('the written file is owner-only even where chmod does nothing', () => {
   })
 })
 
-test('the written file is owner-only even when a stale temp cannot be removed', () => {
+posixOnly('the written file is owner-only even when a stale temp cannot be removed', () => {
   // The unlink is best-effort; if the stale temp survives, writeFileSync's
   // `mode` is ignored on an existing path and only the chmod before the rename
   // can still fix the bits.
@@ -449,7 +469,7 @@ test('the written file is owner-only even when a stale temp cannot be removed', 
   })
 })
 
-test('writeSecretFileAtomic cannot be redirected through a symlink planted at the temp path', () => {
+posixOnly('writeSecretFileAtomic cannot be redirected through a symlink planted at the temp path', () => {
   // A stale temp path is attacker-controllable in a shared temp/userData dir.
   // Following it would write the token into the victim file AND then rename the
   // link over connection.json, so every later write leaks too.
@@ -478,7 +498,7 @@ test('writeSecretFileAtomic cannot be redirected through a symlink planted at th
   })
 })
 
-test('tightenSecretFileMode tightens a pre-existing world-readable config in place', () => {
+posixOnly('tightenSecretFileMode tightens a pre-existing world-readable config in place', () => {
   // The upgrade path: a connection.json written by an older build sits at 0644
   // with a real (encrypted) token in it. Tightening must change the mode and
   // nothing else — the token has to stay readable or the user loses their
@@ -505,7 +525,7 @@ test('tightenSecretFileMode tightens a pre-existing world-readable config in pla
   })
 })
 
-test('tightenSecretFileMode leaves a non-safeStorage token payload readable', () => {
+posixOnly('tightenSecretFileMode leaves a non-safeStorage token payload readable', () => {
   // A hand-edited config (or one from a pre-release build) can hold a
   // non-safeStorage token payload, which decryptDesktopSecret still reads
   // verbatim on purpose. Tightening the mode must not disturb that fallback —
@@ -527,7 +547,7 @@ test('tightenSecretFileMode leaves a non-safeStorage token payload readable', ()
   })
 })
 
-test('tightenSecretFileMode is idempotent and never throws on an unusable path', () => {
+posixOnly('tightenSecretFileMode is idempotent and never throws on an unusable path', () => {
   withTempDir(dir => {
     const target = path.join(dir, 'connection.json')
     writeSecretFileAtomic(target, '{}')
@@ -542,7 +562,7 @@ test('tightenSecretFileMode is idempotent and never throws on an unusable path',
   })
 })
 
-test('tightenSecretFileMode refuses to chmod a symlink instead of following it to its target', () => {
+posixOnly('tightenSecretFileMode refuses to chmod a symlink instead of following it to its target', () => {
   // Matches readInstallationId in desktop-installation.ts. Without the lstat
   // guard a link planted at the config path sends the chmod to whatever it
   // resolves to — someone else's file gets its mode rewritten.
@@ -566,7 +586,7 @@ test('tightenSecretFileMode refuses to chmod a symlink instead of following it t
   })
 })
 
-test('tightenSecretFileMode only touches a regular file the current user owns', () => {
+posixOnly('tightenSecretFileMode only touches a regular file the current user owns', () => {
   // Directories, sockets, fifos and files owned by another account are all
   // "not ours to chmod". Injected lstat so the foreign-owner branch is
   // reachable without a second OS account.

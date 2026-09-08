@@ -594,7 +594,12 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
 
     stageGetWindowsInto(srcRoot, destRoot, { platform: 'darwin' })
 
-    assert.equal(fs.statSync(join(destRoot, 'main')).mode & 0o777, 0o755)
+    // The 0755 exec bit is a POSIX property; Windows has no mode bits and
+    // reports 0666 regardless. The staging behaviour under test (which files
+    // land, and the windows.js rewrite) is asserted below on every platform.
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(join(destRoot, 'main')).mode & 0o777, 0o755)
+    }
     const staged = fs.readFileSync(join(destRoot, 'lib', 'windows.js'), 'utf8')
     assert.match(staged, /Rewritten by stage-native-deps\.mjs/)
     assert.ok(!staged.includes('node-pre-gyp'), 'pre-gyp loader must not survive staging')

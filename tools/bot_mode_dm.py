@@ -90,10 +90,10 @@ def message_agent_tool_schema() -> dict:
                     "target": {
                         "type": "string",
                         "description": (
-                            "Who to message: a teammate profile name from your roster "
-                            "('researcher', 'hermes' for the default agent), or "
-                            "'<peer>' / '<peer>/<agent>' for a registered peer gateway."
-                        ),
+                                                    "Who to message: a teammate profile name from your roster "
+                                                    "('researcher', 'hermes' or 'capulex' for the default agent), or "
+                                                    "'<peer>' / '<peer>/<agent>' for a registered peer gateway."
+                                                ),
                     },
                     "message": {
                         "type": "string",
@@ -155,11 +155,27 @@ def ensure_message_agent_tool(agent: Any) -> bool:
 
 
 def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
-    """Map a target handle to a profile name ('hermes' → 'default')."""
+    """Map a target handle to a profile name.
+
+    Accepts any of (in priority order):
+      1. A literal profile name from ``roster`` (case-insensitive).
+      2. A display handle — ``tools.bot_mode_probe._handle(name)`` for some ``name``
+         in the roster. This keeps the resolver symmetric with the roster section
+         the system prompt renders, so a handle the prompt lists is always a valid
+         target. Forward-compat: any future alias rule added to ``_handle`` is
+         picked up here automatically.
+      3. ``capulex`` — preserved as a documented backward-compat alias for the
+         default profile (``hermes`` is the canonical display handle; ``capulex``
+         predates that rename and is in active use by several teammates).
+    """
+    from tools.bot_mode_probe import _handle as _canonical_handle
     want = target.strip().lower()
-    if want == "hermes":
-        return "default" if "default" in roster else None
-    return next((name for name in roster if name.lower() == want), None) if want else None
+    if not want:
+        return None
+    if "default" in roster and want in ("capulex", _canonical_handle("default").lower()):
+        return "default"
+    handle_to_name = {_canonical_handle(name).lower(): name for name in roster}
+    return handle_to_name.get(want) or next((n for n in roster if n.lower() == want), None)
 
 
 def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:

@@ -133,6 +133,12 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    cpu_pressure: Optional[str] = None
+    """Host CPU pressure (load-average / PSI, see :mod:`gateway.cpu_status`)
+    that restricted this tick: ``"critical"`` (no new workers), ``"elevated"``
+    (at most one), ``None`` (no restriction). Same host-global, defer-not-drop
+    contract as ``memory_pressure`` — a single reading of the whole machine,
+    not a per-board budget, so cron/CI/local-inference load registers too."""
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -1415,6 +1421,43 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+def _system_cpu_sample() -> dict:
+    """Best-effort host CPU snapshot (load average + PSI), ``{}`` when unknown.
+
+    Local import + module-level indirection mirrors :func:`_system_memory_sample`:
+    keeps this module importable without ``gateway`` and gives tests a seam
+    (monkeypatch ``kbd._system_cpu_sample``) so results don't depend on the CI
+    runner's live load average.
+    """
+    try:
+        from gateway.cpu_status import sample_cpu
+        return sample_cpu() or {}
+    except Exception:
+        return {}
+
+
+def _cpu_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
+    """Classify host CPU pressure: ok/elevated/critical/unknown.
+
+    Reuses :func:`gateway.cpu_status.classify_cpu_pressure` (worst-of
+    normalized load average and Linux PSI ``some avg60``). ``unknown`` (non-
+    Linux, read failure, containers without PSI) imposes no restriction —
+    same fail-open-on-unreadable convention as :func:`_memory_pressure_level`,
+    never brick dispatch where neither signal is available.
+    """
+    if sample is None:
+        sample = _system_cpu_sample()
+    if not sample:
+        return "unknown"
+    try:
+        from gateway.cpu_status import classify_cpu_pressure
+        return classify_cpu_pressure(
+            sample.get("load1"), sample.get("cpu_count"), sample.get("psi_some_avg60"),
+        )
+    except Exception:
+        return "unknown"
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -1689,20 +1732,39 @@ def _tick_spawn_budget(
     # critical -> spawn nothing this tick; elevated -> at most one new worker.
     # Reclaim/promotion already ran, so bookkeeping stays live; deferred tasks
     # wait for a later tick. "unknown" imposes no restriction.
-    pressure = _memory_pressure_level()
-    if pressure == "critical":
-        result.memory_pressure = pressure
+    mem_pressure = _memory_pressure_level()
+    if mem_pressure == "critical":
+        result.memory_pressure = mem_pressure
         _kb._log.warning(
             "kanban dispatch: system memory pressure is critical; "
             "spawning no new workers this tick (deferred, not dropped)"
         )
         return False, None
-    if pressure == "elevated":
-        result.memory_pressure = pressure
+
+    # Host-wide CPU-pressure guard (t_4008d306): same host-global, defer-not-drop
+    # contract as the memory guard above, applied to load average / PSI instead
+    # of MemAvailable. This reads the WHOLE host's CPU state — same signal for
+    # every board's tick — so it is one host-global admission decision, not a
+    # per-board budget; cron/CI/local-inference load registers here even though
+    # those processes are invisible to ``count_running_tasks*``.
+    cpu_pressure = _cpu_pressure_level()
+    if cpu_pressure == "critical":
+        result.cpu_pressure = cpu_pressure
+        _kb._log.warning(
+            "kanban dispatch: host CPU pressure is critical; "
+            "spawning no new workers this tick (deferred, not dropped)"
+        )
+        return False, None
+
+    if mem_pressure == "elevated":
+        result.memory_pressure = mem_pressure
+    if cpu_pressure == "elevated":
+        result.cpu_pressure = cpu_pressure
+    if mem_pressure == "elevated" or cpu_pressure == "elevated":
         if spawn_budget is None or spawn_budget > 1:
             _kb._log.warning(
-                "kanban dispatch: system memory pressure is elevated; "
-                "limiting to at most 1 new worker this tick"
+                "kanban dispatch: system pressure is elevated (memory=%s, cpu=%s); "
+                "limiting to at most 1 new worker this tick", mem_pressure, cpu_pressure,
             )
             spawn_budget = 1
     return True, spawn_budget

@@ -597,6 +597,29 @@ def _neutralize_kanban_memory_guard(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_kanban_cpu_guard(request, monkeypatch):
+    """Pin the kanban dispatcher's host-CPU guard to "no data" for every test.
+
+    Mirrors ``_neutralize_kanban_memory_guard`` above for the CPU-pressure
+    guard (t_4008d306): the dispatcher now also consults live load average /
+    PSI before spawning. Left un-patched, dispatch tests would pass or fail
+    based on how loaded the host running the suite happens to be — exactly
+    the flakiness the memory-guard neutralizer already exists to prevent.
+    Defaulting the sample to ``{}`` makes the pressure level ``"unknown"``,
+    i.e. the pre-guard behaviour every existing test was written against.
+    Tests that exercise the guard itself opt out with
+    ``@pytest.mark.real_cpu_guard`` or patch the seam directly.
+    """
+    if request.node.get_closest_marker("real_cpu_guard"):
+        return
+    try:
+        from hermes_cli import kanban_db_dispatch as _kbd_mod
+    except Exception:
+        return
+    monkeypatch.setattr(_kbd_mod, "_system_cpu_sample", lambda: {}, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_webbrowser(monkeypatch):
     """Record browser-open attempts instead of opening real browser windows."""
     import webbrowser as _webbrowser

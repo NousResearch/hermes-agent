@@ -152,7 +152,17 @@ class TestDuplicateSuppression(unittest.TestCase):
         with patch("smtplib.SMTP") as mock_smtp:
             result = asyncio.run(adapter.send("7185545230", "bootstrap notice"))
             self.assertTrue(result.success)
+            self.assertIsNone(result.message_id)
+            self.assertEqual(result.raw_response, {"skipped": "non_email_chat_id"})
             mock_smtp.return_value.send_message.assert_not_called()
+
+    def test_negative_window_clamped_to_disabled(self):
+        adapter = _make_adapter({"dedupe_window_seconds": -5})
+        self.assertEqual(adapter._dedupe_window, 0.0)
+
+    def test_nan_window_clamped_to_disabled(self):
+        adapter = _make_adapter({"dedupe_window_seconds": float("nan")})
+        self.assertEqual(adapter._dedupe_window, 0.0)
 
 
 import unittest

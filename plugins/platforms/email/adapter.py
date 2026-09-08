@@ -410,6 +410,8 @@ class EmailAdapter(BasePlatformAdapter):
         # (chat, content) within this window is treated as one send. Set 0 to disable.
         _dedupe_raw = extra.get("dedupe_window_seconds")
         self._dedupe_window = float(_dedupe_raw) if _dedupe_raw is not None else 20.0
+        if not self._dedupe_window >= 0:  # negative or NaN (NaN comparisons are False) -> disabled
+            self._dedupe_window = 0.0
         self._last_sends: Dict[Any, float] = {}
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
@@ -726,7 +728,9 @@ class EmailAdapter(BasePlatformAdapter):
         if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", chat_id or ""):
             logger.warning("[Email] Skipping send to non-email chat_id=%r (%d chars) — not an email address",
                            chat_id, len(content or ""))
-            return SendResult(success=True, message_id=None)
+            # success=True (skips must not fail home-channel bootstrap), but the skip is
+            # observable: message_id stays None and raw_response carries the reason.
+            return SendResult(success=True, message_id=None, raw_response={"skipped": "non_email_chat_id"})
         # Duplicate-send suppression (see __init__).
         now = time.monotonic()
         key = (chat_id, hashlib.sha256(content.encode("utf-8", "replace")).hexdigest())

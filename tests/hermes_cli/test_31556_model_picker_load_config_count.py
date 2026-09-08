@@ -13,6 +13,7 @@ survive reasonable provider list growth, but tight enough that the pre-fix
 behaviour (70+ load_config, 70+ load_pool) fails.
 """
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -52,6 +53,7 @@ def _patched_counters(monkeypatch):
     """Count deepcopying ``load_config()``, ``load_config_readonly()`` and
     ``load_pool()`` so the test can pin the post-fix budgets."""
     counts = {"load_config": 0, "load_config_readonly": 0, "load_pool": 0}
+    per_provider: dict[str, int] = {}
 
     real_load_config = hc.load_config
     real_load_config_ro = hc.load_config_readonly
@@ -67,21 +69,20 @@ def _patched_counters(monkeypatch):
 
     def counting_load_pool(provider):
         counts["load_pool"] += 1
-        counts.setdefault("load_pool_per_provider", {}).setdefault(provider, 0)
-        counts["load_pool_per_provider"][provider] += 1
+        per_provider[provider] = per_provider.get(provider, 0) + 1
         return real_load_pool(provider)
 
     monkeypatch.setattr(hc, "load_config", counting_load_config)
     monkeypatch.setattr(hc, "load_config_readonly", counting_load_config_ro)
     monkeypatch.setattr(cp, "load_pool", counting_load_pool)
-    return counts
+    return counts, per_provider
 
 
 def test_list_authenticated_providers_memoises_config_load(
     empty_picker_home, monkeypatch
 ):
     """Deepcopying ``load_config()`` must not run once per provider row."""
-    counts = _patched_counters(monkeypatch)
+    counts, per_provider = _patched_counters(monkeypatch)
     providers = list_authenticated_providers()
     assert isinstance(providers, list)
 
@@ -108,14 +109,13 @@ def test_list_authenticated_providers_reuses_pool_per_provider(
     empty_picker_home, monkeypatch
 ):
     """The same provider must not be ``load_pool``-ed in every section."""
-    counts = _patched_counters(monkeypatch)
+    counts, per_provider = _patched_counters(monkeypatch)
     providers = list_authenticated_providers()
     assert isinstance(providers, list)
 
     # Pre-fix: every section re-loaded the same provider's pool (up to 6x per
     # provider on the current roster). Post-fix: each distinct provider is
     # loaded exactly once per call, regardless of roster size.
-    per_provider = counts["load_pool_per_provider"]
     repeats = {p: c for p, c in per_provider.items() if c > 1}
     assert not repeats, (
         f"providers loaded more than once per call: {repeats} — "
@@ -175,16 +175,16 @@ def test_has_available_readonly_matches_has_available_verdicts(empty_picker_home
         return cp.CredentialPool(provider, entries)
 
     def _entry(**overrides):
-        defaults = dict(
+        entry = cp.PooledCredential(
             provider=provider,
-            id=overrides.pop("id", "e1"),
+            id="e1",
             label="key",
             auth_type=cp.AUTH_TYPE_API_KEY,
             priority=0,
             source=cp.SOURCE_MANUAL,
             access_token="sk-live",
         )
-        return cp.PooledCredential(**{**defaults, **overrides})
+        return replace(entry, **overrides)
 
     now = time.time()
     # Healthy credential → available.
@@ -213,3 +213,35 @@ def test_has_available_readonly_matches_has_available_verdicts(empty_picker_home
     unhydrated = _pool([_entry(access_token="")])
     assert unhydrated.has_available() is False
     assert unhydrated.has_available_readonly() is False
+
+    empty_oauth = _pool([_entry(auth_type=cp.AUTH_TYPE_OAUTH, access_token="")])
+    assert empty_oauth.has_available() is False
+    assert empty_oauth.has_available_readonly() is False
+
+
+@pytest.mark.parametrize("changed_source", ["environment", "managed"])
+def test_pool_config_observes_changes_between_picker_calls(
+    empty_picker_home, monkeypatch, changed_source,
+):
+    from hermes_cli import managed_scope
+
+    config_path = empty_picker_home / "config.yaml"
+    if changed_source == "environment":
+        config_path.write_text("credential_pool_strategies:\n  openai: ${PICKER_TEST_STRATEGY}\n")
+        monkeypatch.setenv("PICKER_TEST_STRATEGY", "fill_first")
+    else:
+        managed = empty_picker_home / "managed"
+        managed.mkdir()
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+        config_path = managed / "config.yaml"
+        config_path.write_text("credential_pool_strategies:\n  openai: fill_first\n")
+    managed_scope.invalidate_managed_cache()
+
+    list_authenticated_providers()
+    assert cp.get_pool_strategy("openai") == "fill_first"
+    if changed_source == "environment":
+        monkeypatch.setenv("PICKER_TEST_STRATEGY", "round_robin")
+    else:
+        config_path.write_text("credential_pool_strategies:\n  openai: round_robin\n")
+    list_authenticated_providers()
+    assert cp.get_pool_strategy("openai") == "round_robin"

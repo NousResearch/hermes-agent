@@ -52,6 +52,111 @@ class TestRuntimeGlue:
         # Skill-nudge counter parity with the codex path.
         assert agent._iters_since_skill == 2
 
+    def test_terminal_commit_consumes_late_agent_interrupt_without_retiring(self):
+        agent = _make_agent()
+        session = agent._claude_sdk_session
+
+        def completed_then_stopped(*_args, **_kwargs):
+            agent._interrupt_requested = True
+            return _make_turn(terminal_result_accepted=True)
+
+        session.run_turn.side_effect = completed_then_stopped
+        result = run_claude_agent_sdk_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[{"role": "user", "content": "hi"}],
+            effective_task_id="task-1",
+        )
+
+        assert result["completed"] is True
+        assert result["partial"] is False
+        assert result["interrupted"] is False
+        assert result["sdk_effects"]["interrupted"] is False
+        assert agent._interrupt_requested is False
+        assert agent._claude_sdk_session is session
+        session.consume_interrupt.assert_called_once_with()
+        session.close.assert_not_called()
+
+    def test_terminal_error_with_late_stop_stays_interrupted_and_cannot_fail_over(self):
+        agent = _make_agent()
+        session = agent._claude_sdk_session
+
+        def failed_then_stopped(*_args, **_kwargs):
+            agent._interrupt_requested = True
+            return _make_turn(
+                terminal_result_accepted=True,
+                error="SDK result error (subtype=error): rate limit",
+                api_error_status=429,
+                final_text="",
+                projected_messages=[],
+            )
+
+        session.run_turn.side_effect = failed_then_stopped
+        result = run_claude_agent_sdk_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[{"role": "user", "content": "hi"}],
+            effective_task_id="task-1",
+        )
+
+        assert result["interrupted"] is True
+        assert result["failed"] is False
+        assert result.get("failover_reason") is None
+        assert result["sdk_effects"]["interrupted"] is True
+        assert agent._interrupt_requested is False
+        assert agent._claude_sdk_session is None
+        session.close.assert_called_once_with()
+
+    def test_nonterminal_retire_with_stop_consumes_agent_interrupt(self):
+        agent = _make_agent()
+        session = agent._claude_sdk_session
+
+        def retired_then_stopped(*_args, **_kwargs):
+            agent._interrupt_requested = True
+            return _make_turn(
+                should_retire=True,
+                error="SDK message stream ended before this turn's result",
+                projected_messages=[],
+                final_text="",
+                token_usage_last=None,
+            )
+
+        session.run_turn.side_effect = retired_then_stopped
+        result = run_claude_agent_sdk_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[{"role": "user", "content": "hi"}],
+            effective_task_id="task-1",
+        )
+
+        assert result["interrupted"] is True
+        assert result["failed"] is False
+        assert agent._interrupt_requested is False
+
+    def test_raising_turn_with_stop_consumes_agent_interrupt(self):
+        agent = _make_agent()
+        session = agent._claude_sdk_session
+
+        def raised_then_stopped(*_args, **_kwargs):
+            agent._interrupt_requested = True
+            raise RuntimeError("SDK transport exploded")
+
+        session.run_turn.side_effect = raised_then_stopped
+        result = run_claude_agent_sdk_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[{"role": "user", "content": "hi"}],
+            effective_task_id="task-1",
+        )
+
+        assert result["interrupted"] is True
+        assert result["failed"] is False
+        assert agent._interrupt_requested is False
+
     def test_compact_boundary_completes_once_before_turn_end(self, monkeypatch):
         """The stream boundary is primary; terminal completion is fallback only."""
         import agent.transports.claude_agent_sdk_session as sdk_session_mod

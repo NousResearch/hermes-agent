@@ -220,12 +220,36 @@ class CLIStreamMixin:
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
 
+    def _reasoning_clamp_limit(self) -> int:
+        """Effective reasoning line limit shared by the streaming box and the recap."""
+        from cli import _coerce_reasoning_clamp_lines
+        return _coerce_reasoning_clamp_lines(getattr(self, "reasoning_clamp_lines", None))
+
+    def _emit_clamped_reasoning_line(self, line: str, clamp_active: bool, limit: int) -> None:
+        """Print one logical reasoning line unless the clamp hides it, then count it."""
+        from cli import _DIM, _RST, _cprint
+        shown = getattr(self, "_reasoning_logical_lines", 0)
+        if not clamp_active or shown < limit:
+            _cprint(f"{_DIM}{line}{_RST}")
+        self._reasoning_logical_lines = shown + 1
+
+    def _flush_pending_reasoning_blank_lines(self, clamp_active: bool, limit: int) -> None:
+        """Release blank lines held back until non-blank reasoning followed them."""
+        pending = getattr(self, "_reasoning_pending_blank_lines", 0)
+        self._reasoning_pending_blank_lines = 0
+        for _ in range(pending):
+            self._emit_clamped_reasoning_line("", clamp_active, limit)
+
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning tokens into a dim box above the response.
 
         Opened on the first token, closed when content arrives (_emit_stream_text). Once the
         response box is open further reasoning is suppressed — a late thinking block (e.g. after
         an interrupt) would otherwise draw a reasoning box inside the response box.
+
+        Output stops after reasoning_clamp_lines logical lines unless reasoning_full; the count
+        mirrors the recap's ``strip().splitlines()`` (leading/trailing blank lines are not
+        counted, interior ones are).
         """
         from cli import _DIM, _RST, _cprint
         if not text:
@@ -239,15 +263,39 @@ class CLIStreamMixin:
             r_label = " Reasoning "
             r_fill = w - 2 - len(r_label)
             _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
+            self._reasoning_logical_lines = 0
+            self._reasoning_pending_blank_lines = 0
+            self._reasoning_partial_line_flushed = False
 
         self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
-        # Emit complete lines; force-flush long partial lines so reasoning is visible in
-        # real-time even without newlines.
+        limit = self._reasoning_clamp_limit()
+        clamp_active = not getattr(self, "reasoning_full", False)
+
+        # Emit complete lines; stop printing once the clamp limit is reached.
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-            _cprint(f"{_DIM}{line}{_RST}")
-        if len(self._reasoning_buf) > 80:
-            _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
+            if getattr(self, "_reasoning_partial_line_flushed", False):
+                # Completes a long line whose head was already force-flushed; that line has not
+                # been counted yet, so count it exactly once.
+                self._reasoning_partial_line_flushed = False
+                self._emit_clamped_reasoning_line(line, clamp_active, limit)
+                continue
+            if not line.strip():
+                if getattr(self, "_reasoning_logical_lines", 0) > 0:
+                    self._reasoning_pending_blank_lines = (
+                        getattr(self, "_reasoning_pending_blank_lines", 0) + 1)
+                continue
+            self._flush_pending_reasoning_blank_lines(clamp_active, limit)
+            self._emit_clamped_reasoning_line(line, clamp_active, limit)
+
+        # Force-flush long partial lines so reasoning is visible in real-time even without
+        # newlines, without counting each rendered chunk as a separate logical line.
+        if len(self._reasoning_buf) > 80 and self._reasoning_buf.strip():
+            if not getattr(self, "_reasoning_partial_line_flushed", False):
+                self._flush_pending_reasoning_blank_lines(clamp_active, limit)
+            if not clamp_active or getattr(self, "_reasoning_logical_lines", 0) < limit:
+                _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
+            self._reasoning_partial_line_flushed = True
             self._reasoning_buf = ""
 
     def _close_reasoning_box(self) -> None:
@@ -256,9 +304,24 @@ class CLIStreamMixin:
         if not getattr(self, "_reasoning_box_opened", False):
             return
         buf = getattr(self, "_reasoning_buf", "")
-        if buf:
-            _cprint(f"{_DIM}{buf}{_RST}")
-            self._reasoning_buf = ""
+        clamp_active = not getattr(self, "reasoning_full", False)
+        limit = self._reasoning_clamp_limit()
+        # Trailing content is one more logical line. Trailing blank lines still held in
+        # _reasoning_pending_blank_lines are dropped, the same way the recap's strip() does.
+        if buf.strip():
+            if not getattr(self, "_reasoning_partial_line_flushed", False):
+                self._flush_pending_reasoning_blank_lines(clamp_active, limit)
+            self._emit_clamped_reasoning_line(buf, clamp_active, limit)
+        elif getattr(self, "_reasoning_partial_line_flushed", False):
+            # Whitespace tail of a force-flushed line: the line itself still counts once.
+            self._reasoning_logical_lines = getattr(self, "_reasoning_logical_lines", 0) + 1
+        self._reasoning_buf = ""
+        self._reasoning_pending_blank_lines = 0
+        self._reasoning_partial_line_flushed = False
+
+        hidden = getattr(self, "_reasoning_logical_lines", 0) - limit
+        if clamp_active and hidden > 0:
+            _cprint(f"{_DIM}  ... ({hidden} more lines — /reasoning full to show){_RST}")
         w = self._scrollback_box_width()
         _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
         self._reasoning_box_opened = False
@@ -493,6 +556,9 @@ class CLIStreamMixin:
         self._stream_last_was_newline = True
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
+        self._reasoning_logical_lines = 0
+        self._reasoning_pending_blank_lines = 0
+        self._reasoning_partial_line_flushed = False
         self._reasoning_preview_buf = ""
         self._deferred_content = ""
         self._stream_table_buf = []

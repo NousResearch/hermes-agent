@@ -782,9 +782,12 @@ DEFAULT_CONFIG = {
         # Stream reasoning live before the response; otherwise thinking models show only a spinner
         # for tens of seconds.
         "show_reasoning": True,
-        # Post-response "Reasoning" recap collapses to 10 lines; true prints it all (live streaming
-        # is always full).
+        # Both the live streaming box and the post-response "Reasoning" recap collapse to
+        # reasoning_clamp_lines; true prints it all (/reasoning full | clamp).
         "reasoning_full": False,
+        # Reasoning lines shown before the clamp hides the rest (/reasoning clamp <N>). Positive
+        # integer; invalid values fall back to 10.
+        "reasoning_clamp_lines": 10,
         # Background self-improvement notices in chat: "off" (review still runs) | "on" (generic "💾
         # Memory updated") | "verbose" (content preview). Per-platform via
         # display.platforms.<platform>.memory_notifications.

@@ -406,7 +406,8 @@ def _cli_config_defaults():
             # /resume recap tuning and show_reasoning: keep in sync with hermes_cli/config.py DEFAULT_CONFIG
             "resume_display": "full", "resume_exchanges": 10, "resume_max_user_chars": 300,
             "resume_max_assistant_chars": 200, "resume_max_assistant_lines": 3, "resume_skip_tool_only": True,
-            "show_reasoning": True, "reasoning_full": False, "streaming": True, "busy_input_mode": "interrupt",
+            "show_reasoning": True, "reasoning_full": False, "reasoning_clamp_lines": 10, "streaming": True,
+            "busy_input_mode": "interrupt",
             "persistent_output": True, "persistent_output_max_lines": 200,
             # Also clear scrollback on redraw/resize recovery; off because users prefer history.
             "cli_rebuild_scrollback_on_redraw": False,
@@ -1407,6 +1408,22 @@ class _SkinAwareAnsi:
 _ACCENT = _SkinAwareAnsi("response_border", "#FFD700", bold=True)
 # dim+italic attributes (not a hex) so dim text inherits the terminal foreground in both modes.
 _DIM = "\x1b[2;3m"
+
+# Reasoning lines shown before the display clamps. The live streaming box and the post-response
+# recap both read ``display.reasoning_clamp_lines`` (``/reasoning clamp [N]``); this is the
+# fallback when the config value is missing or invalid.
+_REASONING_CLAMP_LINES = 10
+
+
+def _coerce_reasoning_clamp_lines(value, default: int = _REASONING_CLAMP_LINES) -> int:
+    """``value`` as a positive int line limit, or ``default`` when invalid (bools included)."""
+    if isinstance(value, bool):
+        return default
+    try:
+        lines = int(value)
+    except (TypeError, ValueError):
+        return default
+    return lines if lines >= 1 else default
 
 
 def _tty_wrap(s: str, sgr: str) -> str:
@@ -2583,6 +2600,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self.bell_on_prompt = display.get("bell_on_prompt", False)  # bell when a blocking modal opens
         self.show_reasoning = display.get("show_reasoning", True)
         self.reasoning_full = display.get("reasoning_full", False)
+        self.reasoning_clamp_lines = _coerce_reasoning_clamp_lines(display.get("reasoning_clamp_lines"))
         _configure_output_history(
             enabled=display.get("persistent_output", True),
             max_lines=display.get("persistent_output_max_lines", 200),

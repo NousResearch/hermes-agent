@@ -180,15 +180,16 @@ _FAST_TIERS = {
     "fast": ("priority", "fast"), "on": ("priority", "fast"), "normal": (None, "normal"),
     "off": (None, "normal"), "auto": ("auto", "auto"), "cold": ("cold", "cold")}
 
-# /reasoning display toggles: arg -> (attr, value, headline, follow-up note)
+# /reasoning display toggles: arg -> (attr, value, headline, follow-up note). ``clamp [N]`` is
+# handled separately (it also sets the shared line limit).
 _REASONING_TOGGLES = {
     **dict.fromkeys(("show", "on"), ("show_reasoning", True, "ON",
                                      "Model thinking will be shown during and after each response.")),
     **dict.fromkeys(("hide", "off"), ("show_reasoning", False, "OFF", "")),
     **dict.fromkeys(("full", "all"), ("reasoning_full", True, "FULL",
-                                      "The post-response recap box will print complete thinking.")),
-    **dict.fromkeys(("clamp", "collapse", "short"), ("reasoning_full", False, "CLAMPED to 10 lines", "")),
+                                      "Streamed and post-response reasoning will print complete thinking.")),
 }
+_REASONING_CLAMP_WORDS = ("clamp", "collapse", "short")
 
 # /bg AIAgent provider-routing kwargs -> HermesCLI attribute carrying the value.
 _BG_PROVIDER_KWARGS = {
@@ -2470,21 +2471,38 @@ class CLICommandsMixin:
 
     # ---- model-behaviour settings: /reasoning, /busy, /indicator, /fast -------------------
     def _handle_reasoning_command(self, cmd: str):
-        """Handle /reasoning [<level> [--global]|show|hide|full|clamp] — effort level (session
-        scope unless --global) and thinking display toggles (always saved)."""
-        from cli import CLI_CONFIG, _parse_reasoning_config
+        """Handle /reasoning [<level> [--global]|show|hide|full|clamp [N]] — effort level (session
+        scope unless --global) and thinking display toggles (always saved). ``clamp N`` also sets
+        the line limit shared by the streaming box and the recap."""
+        from cli import CLI_CONFIG, _coerce_reasoning_clamp_lines, _parse_reasoning_config
         raw = _command_arg(cmd)
         if not raw:  # show current state
             rc = self.reasoning_config
             level = ("medium (default)" if rc is None else "none (disabled)"
                      if rc.get("enabled") is False else rc.get("effort", "medium"))
             display_state = "on ✓" if self.show_reasoning else "off"
-            full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
+            clamp_lines = _coerce_reasoning_clamp_lines(getattr(self, "reasoning_clamp_lines", None))
+            full_state = "full" if getattr(self, "reasoning_full", False) else f"clamped to {clamp_lines} lines"
             return _cp(_accent_line(f"Reasoning effort:  {level}"),
                        _accent_line(f"Reasoning display: {display_state} ({full_state})"),
                        _dim_line("Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|ultra"
-                          "|show|hide|full|clamp> [--global]"))
+                          "|show|hide|full|clamp [N]> [--global]"))
         arg, explicit_global = _split_scope_flags(raw)
+        tokens = arg.split()
+        if tokens and tokens[0] in _REASONING_CLAMP_WORDS:  # clamp [N]: restore the clamp, optionally resize it
+            if len(tokens) > 2:
+                return _cp(_dim_line("Usage: /reasoning clamp [lines]"))
+            if len(tokens) == 2:
+                clamp_lines = _coerce_reasoning_clamp_lines(tokens[1], default=0)
+                if clamp_lines < 1:
+                    return _cp(_dim_line(f"(._.) Clamp line count must be a positive integer, got: {tokens[1]}"))
+                self.reasoning_clamp_lines = clamp_lines
+                _save("display.reasoning_clamp_lines", clamp_lines)
+            else:
+                clamp_lines = _coerce_reasoning_clamp_lines(getattr(self, "reasoning_clamp_lines", None))
+            self.reasoning_full = False
+            _save("display.reasoning_full", False)
+            return _cp(_accent_line(f"✓ Reasoning display: CLAMPED to {clamp_lines} lines (saved)"))
         toggle = _REASONING_TOGGLES.get(arg)
         if toggle is not None:  # display show/hide or full/clamp recap toggle
             attr, value, headline, note = toggle
@@ -2503,7 +2521,7 @@ class CLICommandsMixin:
         if parsed is None:
             return _cp(_dim_line(f'(._.) Unknown argument: {arg}'),
                        _dim_line('Valid levels: none, minimal, low, medium, high, xhigh, max, ultra'),
-                       _dim_line('Display:      show, hide'),
+                       _dim_line('Display:      show, hide, full, clamp [N]'),
                        _dim_line('Scope:        session-scoped by default, --global to persist'))
         self.reasoning_config = parsed
         self.agent = None  # Force agent re-init with new reasoning config

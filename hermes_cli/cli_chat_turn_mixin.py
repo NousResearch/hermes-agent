@@ -579,11 +579,13 @@ class CLIChatTurnMixin:
                 r_label = " Reasoning "
                 r_top = f"{_DIM}┌─{r_label}{'─' * max(w - 3 - len(r_label), 0)}┐{_RST}"
                 r_bot = f"{_DIM}└{'─' * (w - 2)}┘{_RST}"
-                # First 10 lines unless the user opted into /reasoning full.
+                # First reasoning_clamp_lines lines (same limit as the streaming box) unless the
+                # user opted into /reasoning full.
                 lines = reasoning.strip().splitlines()
-                if len(lines) > 10 and not self.reasoning_full:
-                    display_reasoning = "\n".join(lines[:10])
-                    display_reasoning += f"\n{_DIM}  ... ({len(lines) - 10} more lines — /reasoning full to show){_RST}"
+                clamp_lines = self._reasoning_clamp_limit()
+                if len(lines) > clamp_lines and not self.reasoning_full:
+                    display_reasoning = "\n".join(lines[:clamp_lines])
+                    display_reasoning += f"\n{_DIM}  ... ({len(lines) - clamp_lines} more lines — /reasoning full to show){_RST}"
                 else:
                     display_reasoning = reasoning.strip()
                 _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")

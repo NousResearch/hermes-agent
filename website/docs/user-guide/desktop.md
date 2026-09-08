@@ -368,7 +368,22 @@ Side-by-side routing is live: each registered gateway dials its own backends and
 
 The connection has two halves: on the backend you protect it with an **auth provider**, and in the app you enter the backend's URL and sign in. Binding the backend to a non-loopback address automatically engages its auth gate, and the provider you configure is what lets the desktop app through.
 
-**Pick a provider based on where the backend lives:**
+:::note Which connection kind / auth mode should I choose?
+The connection kind (Remote gateway vs SSH) and, for a Remote gateway, the auth mode (OAuth vs Session token) are separate choices — and only some combinations persist across app restarts:
+
+| Connection | Requires on the backend | Persists across relaunches? |
+| --- | --- | --- |
+| Remote gateway · **OAuth** auth mode | A configured **OAuth provider** (Nous Portal or self-hosted OIDC) | ✅ — the OAuth session is stored and refreshed |
+| Remote gateway · **Session token** auth mode | Any gated backend (works with a username/password provider) | ✅ — the token is stored (OS keyring) and reused |
+| Remote gateway · OAuth mode **against a basic-auth-only backend** | — | ❌ — sign-in succeeds against the password gate, but nothing OAuth-redeemable is stored; every relaunch fails with *"not signed in"* and asks you to sign in again |
+| **SSH** kind | An SSH key for the remote user | ✅ — the app opens the tunnel on demand and adopts a dashboard token; no recurring sign-in at all |
+
+Two practical consequences:
+
+- If your backend only offers username/password auth, set the connection's auth mode to **Session token** (or sign in via the password form and let the app keep that session) — **not** OAuth. The OAuth mode against a password-only backend is the re-sign-in loop above: every step reports success, yet nothing persists.
+- For the "two personal machines" case (your laptop → your own desktop/Mini), the **SSH** connection kind is usually the best fit: no auth provider configuration, no exposed ports, no recurring sign-in — the app tunnels in with your SSH key and starts the dashboard for you. See [Adding a connection → SSH](./multi-connection-desktop.md#adding-a-connection-step-by-step) for the fields.
+
+Which provider a Remote gateway backend should use:
 
 - **OAuth (Nous Portal) — preferred for anything reachable beyond your own machine.** Logins are verified against your Nous account, so this is the option suitable for a VPS, a public host, or any remote backend. Register the dashboard with `hermes dashboard register` (or the Portal [`/local-dashboards`](https://portal.nousresearch.com/local-dashboards) page) to provision its OAuth client, then sign in from the app with **Sign in with Nous Research**. A self-hosted OIDC provider works the same way if you run your own identity provider.
 - **Username/password — local / trusted-network use only.** The simplest option when the backend is on the same trusted LAN or reachable only over a VPN (e.g. Tailscale). It protects a single shared credential with no external identity provider, so **do not use it for a dashboard exposed to the public internet** — reach for OAuth there instead.
@@ -427,6 +442,7 @@ The remote gateway host is configured per [profile](./profiles.md), so each prof
 - **Sign-in fails with 401 / "Invalid credentials"** — the username or password doesn't match the backend's `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`. The backend returns the same generic error for an unknown user and a wrong password (no enumeration oracle), so double-check both. Confirm the gate is on with `curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'` — it should report `true` and include `"basic"`.
 - **No "Sign in" button — it asks for a session token instead** — the backend's username/password provider isn't active. `/api/status` won't list `"basic"` in `auth_providers`. Make sure both the username and a password (or password hash) are set in `~/.hermes/.env` and that the dashboard process actually loaded them.
 - **Signed out on every restart** — set `HERMES_DASHBOARD_BASIC_AUTH_SECRET` to a stable value. Without it the token-signing key is regenerated per boot, invalidating all sessions.
+- **"Remote Hermes gateway uses OAuth, but you are not signed in" on every relaunch (basic-auth backend)** — the connection's auth mode is OAuth but the backend only offers the username/password provider, so no OAuth session can ever be stored. Sign-in succeeds against the password gate each time, then the next launch is unsigned again. Fix: edit the connection in **Settings → Gateways** and switch its auth mode to **Session token** (or sign in via the password form and let the app persist that session). Newer builds name this mismatch directly in the failure message.
 - **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
 
 For the same setup from the web-dashboard angle, see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend); the env vars are catalogued under [Environment Variables → Web Dashboard & Hermes Desktop](../reference/environment-variables.md#web-dashboard--hermes-desktop).

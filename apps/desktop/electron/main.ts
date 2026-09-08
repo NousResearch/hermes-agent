@@ -10086,7 +10086,10 @@ async function buildRemoteConnection(
 
       throw gatewayTicketFailure(
         error,
-        oauthTicketFailureAuthMessage(hasNativeSession(baseUrl)),
+        oauthTicketFailureAuthMessage(
+          hasNativeSession(baseUrl),
+          await gatewayAuthProviders(baseUrl, remoteHeaders)
+        ),
         'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
       )
     }

@@ -1219,7 +1219,7 @@ def _settled_effects(
         # A reply that was only a MEDIA: tag has no words left once the tag is removed, and a
         # blank member message is not publishable. Name what actually arrived instead.
         text = _truncate_utf8_text(
-            ", ".join(str(entry.get("name") or "attachment") for entry in attachments),
+            "Attached files: " + ", ".join(str(entry.get("name") or "attachment") for entry in attachments),
             max_bytes=MAX_MEMBER_TEXT_BYTES, suffix=_TRUNCATED_REPLY_NOTICE)
     if is_pass_text(text) and not attachments:
         return {"message_event_id": None, "passed": True}, []

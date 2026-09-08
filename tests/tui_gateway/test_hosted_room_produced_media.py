@@ -20,6 +20,7 @@ import pytest
 
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
+from gateway.hosted_room_attachments import AttachmentIntegrityError
 from tui_gateway.hosted_room_driver import room_session_title
 from tui_gateway.hosted_room_service import HostedRoomService
 
@@ -169,7 +170,7 @@ def test_a_reply_whose_only_file_is_unusable_reports_it_and_attaches_nothing(roo
     [
         ("tagged", "Here is the summary.\n\nMEDIA:{path}", True, "Here is the summary."),
         # A reply that is only a tag has no words left once the tag is removed.
-        ("media_only", "MEDIA:{path}", True, "produced.txt"),
+        ("media_only", "MEDIA:{path}", True, "Attached files: produced.txt"),
         # Code fences hold examples, never deliverables.
         ("protected", "Use it like this:\n```\nMEDIA:{path}\n```", False, None),
         ("unsafe", "MEDIA:/etc/shadow", False, None),
@@ -265,3 +266,154 @@ def test_a_promoted_reply_republishes_its_own_outcome_after_a_failed_append(room
     # Exactly once: a further pass publishes nothing new.
     reopened.prepare_room(_binding(reopened))
     assert len(_member_events(reopened)) == 1
+
+
+@pytest.mark.parametrize("reply", ["MEDIA:{path}", "pass\nMEDIA:{path}"])
+def test_pass_basename_roundtrips_as_a_member_message(room, tmp_path, reply):
+    produced = tmp_path / "pass"
+    produced.write_bytes(b"actual attachment")
+    event = _run(room, reply.format(path=produced))
+    assert event["payload"]["attachments"][0]["name"] == "pass"
+    room.prepare_room(_binding(room))
+    assert _member_events(room) == [event]
+
+
+@pytest.mark.parametrize("failure", ["mime", "poppler", "count", "bytes", "refused", "only_refused", "quota"])
+def test_refusal_is_durable_and_keeps_accepted_content(room, tmp_path, monkeypatch, failure):
+    kept = tmp_path / "kept.txt"
+    kept.write_bytes(b"kept bytes")
+    rejected = tmp_path / ("bad.pdf" if failure == "poppler" else "bad.png")
+    rejected.write_bytes(b"%PDF-1.7\n" if failure == "poppler" else b"not an image")
+    paths = [kept, rejected]
+    expected_count = 1
+    if failure == "poppler":
+        monkeypatch.setattr("tui_gateway.hosted_room_service.shutil.which", lambda _: None)
+    elif failure == "quota":
+        room.attachments.room_quota_count = 1
+        rejected = tmp_path / "quota.txt"
+        rejected.write_bytes(b"over quota")
+        paths = [kept, rejected]
+    elif failure == "only_refused":
+        paths = [rejected]
+        expected_count = 0
+    elif failure in {"count", "refused"}:
+        paths = [kept, *(tmp_path / f"file-{i}.txt" for i in range(10))]
+        if failure == "count":
+            for path in paths[1:]:
+                path.write_bytes(b"more bytes")
+            expected_count = 8
+    elif failure == "bytes":
+        paths = [kept, tmp_path / "large.txt", tmp_path / "overflow.txt"]
+        paths[1].write_bytes(b"a" * 15_000_000)
+        paths[2].write_bytes(b"b" * 10_000_000)
+        expected_count = 2
+    room.send(room_id=ROOM_ID, event_id="user-1",
+              payload={"text": "@default produce files", "thread_id": "thread-1"})
+    _settle(room, "Accepted text.\n" + "\n".join(f"MEDIA:{path}" for path in paths))
+    task = driver.list_tasks(room.db_path, room_id=ROOM_ID, status="settled")[0]
+    message_id = f"dmessage:{task['identity'].task_id.removeprefix('dtask:')}"
+    promoted, transitioned = room._promote_produced_media(
+        hosted_rooms.room_state(room.db_path, room_id=ROOM_ID), task, message_id, task["result"])
+    assert promoted["text"].startswith("Accepted text.")
+    assert "Attachment unavailable" in promoted["text"]
+    assert len(promoted.get("attachments", [])) == expected_count
+    receipt = room.attachments.find_promotion(room_id=ROOM_ID, event_id=message_id)
+    assert len(receipt["unavailable"]) <= 8
+    if failure == "refused":
+        assert "2 additional unavailable files" in promoted["text"]
+    room.attachments.abort_message_commit(
+        room_id=ROOM_ID, event_id=message_id, attachment_ids=transitioned)
+    for path in paths:
+        path.unlink(missing_ok=True)
+    rejected.write_bytes(b"changed source")
+    reopened = HostedRoomService(room.server, db_path=room.db_path)
+    reopened.local_profiles = room.local_profiles
+    reopened.prepare_room(_binding(reopened))
+    event, = _member_events(reopened)
+    assert event["payload"]["text"] == promoted["text"]
+    assert event["payload"].get("attachments", []) == promoted.get("attachments", [])
+    if expected_count:
+        entry = event["payload"]["attachments"][0]
+        assert reopened.read_attachment(
+            room_id=ROOM_ID, attachment_id=entry["attachment_id"], recipient_member_id=None,
+            event_id=event["event_id"], viewer=True).data == b"kept bytes"
+    reopened.prepare_room(_binding(reopened))
+    assert _member_events(reopened) == [event]
+    next_request = reopened.send(room_id=ROOM_ID, event_id="next-request",
+                                 payload={"text": "@default continue", "thread_id": "next-thread"})
+    assert any(task["payload"]["source_event_seq"] == next_request["seq"]
+               for task in driver.list_tasks(reopened.db_path, room_id=ROOM_ID, status="queued"))
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize("swap", ["file", "ancestor"])
+@pytest.mark.parametrize("validation_number", [1, 2])
+def test_source_swap_after_validation_never_reads_substituted_bytes(
+    room, tmp_path, monkeypatch, swap, validation_number,
+):
+    import gateway.platforms.base as base
+
+    parent = tmp_path / "output"
+    parent.mkdir()
+    produced = parent / "result.txt"
+    produced.write_bytes(b"allowed")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "result.txt").write_bytes(b"must not be delivered")
+    validate = base.validate_media_delivery_path
+    swapped = False
+    checks = 0
+
+    def replace_after_check(path, session_key=""):
+        nonlocal swapped, checks
+        safe = validate(path, session_key)
+        checks += 1
+        if safe == str(produced) and checks == validation_number:
+            swapped = True
+            if swap == "file":
+                produced.unlink()
+                produced.symlink_to(outside / "result.txt")
+            else:
+                parent.rename(tmp_path / "original")
+                parent.symlink_to(outside, target_is_directory=True)
+        return safe
+
+    monkeypatch.setattr(base, "validate_media_delivery_path", replace_after_check)
+    event = _run(room, f"Result.\nMEDIA:{produced}")
+    assert swapped
+    assert not event["payload"].get("attachments")
+    assert "Attachment unavailable" in event["payload"]["text"]
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, OSError, hosted_rooms.HostedRoomError,
+                                    AttachmentIntegrityError])
+def test_storage_faults_are_not_promoted_as_refusals(room, tmp_path, monkeypatch, failure):
+    produced = tmp_path / "result.txt"
+    produced.write_bytes(b"result")
+
+    def broken_store(**kwargs):
+        raise failure("storage fault")
+
+    monkeypatch.setattr(room, "put_attachment", broken_store)
+    with pytest.raises(failure, match="storage fault"):
+        _run(room, f"Result.\nMEDIA:{produced}")
+    assert not _member_events(room)
+
+
+def test_strict_boundary_does_not_open_a_refused_source(room, tmp_path, monkeypatch):
+    import os
+
+    produced = tmp_path / "not-allowed.txt"
+    produced.write_bytes(b"outside allowed roots")
+    monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+    monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+    original_open = os.open
+
+    def checked_open(path, *args, **kwargs):
+        assert str(path) not in (str(produced), produced.name), "refused source was opened"
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", checked_open)
+    event = _run(room, f"Result.\nMEDIA:{produced}")
+    assert not event["payload"].get("attachments")
+    assert "Attachment unavailable" in event["payload"]["text"]

@@ -434,7 +434,10 @@ class HostedRoomService:
         """
         import mimetypes
 
-        from gateway.hosted_room_attachments import MAX_ATTACHMENT_BYTES
+        from gateway.hosted_room_attachments import (
+            MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_ATTACHMENT_BYTES,
+            AttachmentError, AttachmentQuotaError, _name,
+        )
         from tui_gateway.hosted_room_driver import ROOM_SESSION_SOURCE, room_session_title
 
         fields = ("attachment_id", "kind", "name", "size", "mime")
@@ -482,28 +485,62 @@ class HostedRoomService:
             return result, ()
         manifest: list[dict[str, Any]] = []
         unavailable: list[str] = list(refused)
+        total_bytes = 0
         for index, safe_path in enumerate(paths):
             source = Path(safe_path)
+            if len(manifest) >= MAX_ATTACHMENTS_PER_MESSAGE:
+                unavailable.append(source.name)
+                continue
             try:
-                with source.open("rb") as handle:
-                    data = handle.read(MAX_ATTACHMENT_BYTES + 1)
+                data = self.rpc.read_produced_media(
+                    profile=profile, session_id=str(resolved.get("session_id") or ""), path=safe_path)
             except OSError:
                 # Bounded and named: a file that vanished or cannot be read must neither block
                 # this room's preparation forever nor be reported as delivered.
                 unavailable.append(source.name)
                 continue
-            if not 0 < len(data) <= MAX_ATTACHMENT_BYTES:
+            if not 0 < len(data) <= min(MAX_ATTACHMENT_BYTES, MAX_MESSAGE_ATTACHMENT_BYTES - total_bytes):
                 unavailable.append(source.name)
                 continue
             mime = (mimetypes.guess_type(source.name)[0] or "application/octet-stream").lower()
-            uploaded = self.put_attachment(
-                room_id=room_id, upload_id=f"{message_event_id}:{index}",
-                kind="image" if mime.startswith("image/") else (
-                    "pdf" if mime == "application/pdf" else "file"),
-                name=source.name, mime=mime, data=data)
+            if mime == "application/pdf" and shutil.which("pdftoppm") is None:
+                unavailable.append(source.name)
+                continue
+            try:
+                uploaded = self.put_attachment(
+                    room_id=room_id, upload_id=f"{message_event_id}:{index}",
+                    kind="image" if mime.startswith("image/") else (
+                        "pdf" if mime == "application/pdf" else "file"),
+                    name=source.name, mime=mime, data=data)
+            except AttachmentError as exc:
+                # Validation/quota refusals are outcomes; integrity, ownership and idempotency
+                # failures are not. Never turn a broken durable store into successful delivery.
+                if type(exc) not in (AttachmentError, AttachmentQuotaError):
+                    raise
+                unavailable.append(source.name)
+                continue
             manifest.append({key: uploaded[key] for key in fields})
+            total_bytes += uploaded["size"]
         if unavailable:
-            cleaned = f"{cleaned}\n\n[Attachment unavailable: {', '.join(unavailable)}]".strip()
+            omitted = max(0, len(unavailable) - MAX_ATTACHMENTS_PER_MESSAGE)
+            unavailable = unavailable[:MAX_ATTACHMENTS_PER_MESSAGE]
+            for index, name in enumerate(unavailable):
+                try:
+                    unavailable[index] = _name(name)
+                except AttachmentError:
+                    unavailable[index] = "file with an invalid attachment name"
+            notice = f"[Attachment unavailable: {', '.join(unavailable)}"
+            if omitted:
+                notice += f"; {omitted} additional unavailable files (names omitted)"
+            notice += "]"
+            cleaned = discussion._truncate_utf8_text(
+                cleaned, max_bytes=discussion.MAX_MEMBER_TEXT_BYTES - len(notice.encode("utf-8")) - 2,
+                suffix=discussion._TRUNCATED_REPLY_NOTICE)
+            cleaned = f"{cleaned}\n\n{notice}".strip()
+        else:
+            cleaned = discussion._truncate_utf8_text(
+                cleaned, max_bytes=discussion.MAX_MEMBER_TEXT_BYTES,
+                suffix=discussion._TRUNCATED_REPLY_NOTICE)
         committed, transitioned = commit(
             manifest=manifest, promotion={"display_text": cleaned, "unavailable": unavailable})
         if not committed:

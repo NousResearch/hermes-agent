@@ -428,6 +428,51 @@ class HostedRoomServerRPC:
                     refused.append(os.path.basename(path.rstrip("/\\")) or path)
         return tuple(paths), tuple(refused), cleaned
 
+    def read_produced_media(self, *, profile: str, session_id: str, path: str) -> bytes:
+        """Read the checked file, not a later symlink substituted at any path component."""
+        import os
+        from contextlib import ExitStack
+
+        from gateway.hosted_room_attachments import MAX_ATTACHMENT_BYTES
+        from gateway.platforms.base import validate_media_delivery_path
+
+        record = self._session_record(session_id)
+        if record is None:
+            raise FileNotFoundError("producing session is unavailable")
+        self._validated_profile_home(profile, record)
+        with self.server._session_profile_runtime_scope(record), ExitStack() as opened:
+            before = os.stat(path, follow_symlinks=False)
+            if validate_media_delivery_path(path, session_id) != path:
+                raise PermissionError("produced file path changed or is refused")
+            source = Path(path)
+            flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+            if os.open in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW"):
+                # Walk from the filesystem root: O_NOFOLLOW on only the leaf is insufficient.
+                directory_flags = flags | os.O_DIRECTORY | os.O_NOFOLLOW
+                parent = os.open(source.anchor, directory_flags)
+                opened.callback(os.close, parent)
+                for component in source.parts[1:-1]:
+                    parent = os.open(component, directory_flags, dir_fd=parent)
+                    opened.callback(os.close, parent)
+                descriptor = os.open(source.name, flags | os.O_NOFOLLOW, dir_fd=parent)
+            else:
+                # Cross-platform fallback preserves delivery and checks file identity. It cannot
+                # atomically exclude ancestor/reparse-point swaps without native handle APIs.
+                descriptor = os.open(path, flags)
+            opened.callback(os.close, descriptor)
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or (
+                info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+            ) != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns):
+                raise PermissionError("produced file changed before reading")
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                data = handle.read(MAX_ATTACHMENT_BYTES + 1)
+            after = os.fstat(descriptor)
+            if (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (
+                    after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise PermissionError("produced file changed while reading")
+            return data
+
     def _staged_media_text(
         self, session_id: str, attachment: Mapping[str, Any], staged: Mapping[str, Any]
     ) -> str:

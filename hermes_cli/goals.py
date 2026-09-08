@@ -533,6 +533,11 @@ class GoalGate:
         )
 
 
+def _gate_definitions(gates: List[GoalGate]) -> List[Tuple[str, int, int]]:
+    """The user-owned gate definition, excluding per-turn execution receipts."""
+    return [(gate.command, gate.timeout_seconds, gate.max_retries) for gate in gates]
+
+
 def workspace_fingerprint(cwd: Optional[str] = None) -> str:
     """sha256 of ``git rev-parse HEAD`` + ``git status --porcelain``; "" outside git (never matches,
     so gates always re-run — a safe fallback)."""
@@ -1347,7 +1352,7 @@ class GoalManager:
                 or current.subgoals != state.subgoals
                 or current.max_turns != state.max_turns
                 or current.contract != state.contract
-                or current.gates != state.gates
+                or _gate_definitions(current.gates) != _gate_definitions(state.gates)
             ):
                 outcome[0] = "replaced"
                 return current_json

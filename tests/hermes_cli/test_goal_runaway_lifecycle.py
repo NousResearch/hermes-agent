@@ -158,6 +158,26 @@ def test_stale_judge_cannot_complete_after_contract_or_gate_change():
     assert decision["should_continue"] is False
 
 
+def test_stale_judge_cannot_complete_after_gate_configuration_change():
+    sid = "gate-definition-changed-during-judge"
+    mgr = GoalManager(sid)
+    mgr.set("original objective")
+    mgr.add_gate("verification command")
+
+    def judge_changes_gate(*_args, **_kwargs):
+        fresh = load_goal(sid)
+        fresh.gates[0].max_retries = 7
+        save_goal(sid, fresh)
+        return "done", "old scope complete", False, None, False
+
+    with patch("hermes_cli.goals.run_gate", return_value=(True, 0, "ok")), \
+         patch("hermes_cli.goals.judge_goal", side_effect=judge_changes_gate):
+        decision = mgr.evaluate_after_turn("old work complete")
+
+    assert load_goal(sid).status == "active"
+    assert decision["should_continue"] is False
+
+
 def test_continuation_token_rejects_pause_or_replacement_after_judging():
     mgr = GoalManager("continuation-admission")
     mgr.set("original objective")

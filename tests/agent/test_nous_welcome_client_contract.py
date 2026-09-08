@@ -36,12 +36,13 @@ class TestAuxiliaryOnWelcomeHost:
         recommended.assert_not_called()   # the Portal's pick would be a guaranteed 429 model_not_free
         assert ac.auxiliary_is_nous is True
 
-    def test_vision_aux_on_welcome_host_skips_nous(self):
+    def test_vision_aux_on_welcome_host_uses_the_same_model(self):
         import agent.auxiliary_client as ac
         with patch.object(ac, "_resolve_nous_runtime_api", return_value=("jwt", WELCOME)), \
-             patch.object(ac, "_create_openai_client") as create:
-            assert ac._try_nous(vision=True) == (None, None)
-        create.assert_not_called()
+             patch.object(ac, "_create_openai_client", return_value="client"), \
+             patch("hermes_cli.models.get_nous_recommended_aux_model") as recommended:
+            assert ac._try_nous(vision=True) == ("client", anon_auth.GUEST_MODEL)
+        recommended.assert_not_called()
 
     def test_paid_host_keeps_the_portal_recommendation(self):
         import agent.auxiliary_client as ac

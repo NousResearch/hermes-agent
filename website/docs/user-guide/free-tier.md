@@ -30,9 +30,8 @@ answers on the `nous/welcome` model. Nothing to configure, no wizard to click th
 "Connectors" are the third-party accounts you link on the Nous portal so the agent can act in
 them. They work on the free tier without any sign-in.
 
-Background work (conversation compaction, chat titles, and similar) runs on `nous/welcome` too.
-Image understanding is not part of that model: on the free tier, a step that needs to look at an
-image falls through to any other provider you have configured, or is skipped.
+Background work (conversation compaction, chat titles, image understanding, and similar) runs on
+`nous/welcome` too.
 
 While the free tier carries inference, the banner and `hermes auth status` read
 `Nous · free tier · nous/welcome`, and `hermes model` lists a **Nous · free tier** row with that

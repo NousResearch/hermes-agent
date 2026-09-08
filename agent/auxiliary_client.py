@@ -2249,15 +2249,13 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
             (nous or {}).get("inference_base_url") or os.getenv("NOUS_INFERENCE_BASE_URL", _NOUS_DEFAULT_BASE_URL)
         ).rstrip("/")
     lane = "vision" if vision else "text"
-    # The free tier's host serves exactly one model (text only): asking it for the Portal's
-    # recommended aux model is a guaranteed 429 ``model_not_free``. Pin the route's model instead,
-    # and leave vision to the next provider in the ladder (the welcome model takes no images).
+    # The free tier's host serves exactly one model, for every lane: asking it for the Portal's
+    # recommended aux model is a guaranteed 429 ``model_not_free``. Pin the route's model instead.
+    # Vision rides the same id (the backing model is multimodal; a backing that is not answers
+    # the request with the upstream's own error, which the ladder handles like any other).
     from hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
     global auxiliary_is_nous
     if route_is_welcome_host(base_url):
-        if vision:
-            logger.debug("Auxiliary/vision: Nous free tier serves no vision model; skipping Nous")
-            return None, None
         auxiliary_is_nous = True
         logger.debug("Auxiliary/%s: Nous free tier; using %s", lane, GUEST_MODEL)
         return _create_openai_client(api_key=api_key, base_url=base_url), GUEST_MODEL

@@ -55,22 +55,17 @@ import {
   processStartMarker,
   REAP_PROBE_TIMEOUT_MS
 } from './backend-claim'
-import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
+import { dashboardFallbackArgs } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims } from './backend-dial-claim'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
-import {
-  canImportHermesCli,
-  execProbeSync,
-  PROBE_TIMEOUT_MS,
-  shouldTrustHermesOverride,
-  verifyHermesCli
-} from './backend-probes'
+import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
+import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
@@ -2590,70 +2585,13 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
 // installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
 // (covers a bare `hermes` resolved from PATH with no known source root). Result
 // is cached per resolved runtime so we probe at most once per backend.
-const _serveSupportCache = new Map()
-
-function backendSupportsServe(backend) {
-  if (!backend || !backend.command) {
-    return true
-  }
-
-  const key = `${backend.command}::${backend.root || ''}`
-
-  if (_serveSupportCache.has(key)) {
-    return _serveSupportCache.get(key)
-  }
-
-  let supported = null
-
-  if (backend.root) {
-    try {
-      const src = fs.readFileSync(path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'), 'utf8')
-      supported = sourceDeclaresServe(src)
-    } catch {
-      supported = null // source unreadable — fall through to the probe
-    }
-  }
-
-  if (supported === null) {
-    try {
-      const prefix = backend.args && backend.args[0] === '-m' ? backend.args.slice(0, 2) : []
-      // Same cold-Windows Python-startup class as the runtime probes
-      // (#61764/#72632/#72707): `serve --help` imports at least as much as
-      // `hermes --version` (~10.5s measured cold), and a false negative here
-      // is cached for the process lifetime, silently routing a modern
-      // runtime through the legacy `dashboard` form. Share the probe budget
-      // and its timeout-only retry instead of a thinner local bound.
-      execProbeSync(backend.command, [...prefix, 'serve', '--help'], {
-        cwd: backend.root || undefined,
-        env: { ...process.env, HERMES_HOME, ...(backend.env || {}) },
-        timeout: PROBE_TIMEOUT_MS,
-        stdio: 'ignore',
-        // `.cmd`/`.bat` shim backends carry shell: true in their descriptor
-        // (see resolveHermesBackend step 4); execFileSync of a .cmd without
-        // shell throws EINVAL on modern Node, which the catch below would
-        // mis-cache as "serve unsupported" for the process lifetime.
-        shell: Boolean(backend.shell),
-        windowsHide: true
-      })
-      supported = true
-    } catch {
-      supported = false
-    }
-  }
-
-  _serveSupportCache.set(key, supported)
-  rememberLog(
-    `[backend] \`serve\` ${supported ? 'supported' : 'unsupported → routing via legacy `dashboard`'} for ${backend.label || key}`
-  )
-
-  return supported
-}
+const backendSupportsServe = createBackendServeSupportResolver(HERMES_HOME, rememberLog)
 
 // Given a resolved backend whose args target `serve`, return the args the
 // runtime actually understands: unchanged when `serve` is supported, or
 // rewritten to `dashboard --no-open` for older runtimes.
-function getBackendArgsForRuntime(backend) {
-  return backendSupportsServe(backend) ? backend.args : dashboardFallbackArgs(backend.args)
+async function getBackendArgsForRuntime(backend) {
+  return (await backendSupportsServe(backend)) ? backend.args : dashboardFallbackArgs(backend.args)
 }
 
 function normalizeExecutablePathForCompare(commandPath) {
@@ -2703,7 +2641,7 @@ function isHermesSourceRoot(root) {
   return directoryExists(root) && fileExists(path.join(root, 'hermes_cli', 'main.py'))
 }
 
-function findPythonForRoot(root) {
+async function findPythonForRoot(root) {
   const override = process.env.HERMES_DESKTOP_PYTHON
 
   if (override && fileExists(override)) {
@@ -2725,7 +2663,7 @@ function findPythonForRoot(root) {
   return findSystemPython()
 }
 
-function findSystemPython() {
+async function findSystemPython() {
   if (!IS_WINDOWS) {
     // POSIX systems: PATH lookup is safe.
     for (const command of ['python3', 'python']) {
@@ -2786,13 +2724,10 @@ function findSystemPython() {
   for (const hive of ['HKLM', 'HKCU']) {
     for (const version of SUPPORTED_VERSIONS) {
       try {
-        const out = execFileSync(
+        const out = await execText(
           'reg',
           ['query', `${hive}\\SOFTWARE\\Python\\PythonCore\\${version}\\InstallPath`, '/ve', '/reg:64'],
-          // Registry reads are near-instant; the bound only exists so a
-          // pathologically wedged reg.exe can't hang the synchronous boot
-          // resolver forever (this ran unbounded before).
-          hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000 })
+          { timeout: 5_000 }
         )
 
         // Output format: "    (Default)    REG_SZ    C:\Path\To\Python\"
@@ -2842,19 +2777,9 @@ function findSystemPython() {
   if (pyExe) {
     for (const version of SUPPORTED_VERSIONS) {
       try {
-        const out = execFileSync(
-          pyExe,
-          [`-${version}`, '-c', 'import sys; print(sys.executable)'],
-          hiddenWindowsChildOptions({
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore'],
-            // Bare interpreter startup — much lighter than the hermes-import
-            // probes, but still python.exe under cold cache / AV scan, so
-            // share the probe budget rather than running unbounded (this
-            // synchronous exec previously had no timeout at all).
-            timeout: PROBE_TIMEOUT_MS
-          })
-        )
+        const out = await execText(pyExe, [`-${version}`, '-c', 'import sys; print(sys.executable)'], {
+          timeout: PROBE_TIMEOUT_MS
+        })
 
         const candidate = out.trim()
 
@@ -4742,7 +4667,7 @@ function readBootstrapMarker() {
 // or a DMG launch over a prior CLI install satisfies this WITHOUT the desktop
 // ever having written the bootstrap marker -- so we must be able to recognise
 // "already installed" off the filesystem alone, not just the marker.
-function isActiveRuntimeUsable() {
+async function isActiveRuntimeUsable() {
   const venvPython = getVenvPython(VENV_ROOT)
 
   return (
@@ -4756,13 +4681,13 @@ function isActiveRuntimeUsable() {
   )
 }
 
-function activeRuntimeState() {
+async function activeRuntimeState() {
   // We DELIBERATELY do NOT verify that the checkout is currently at the
   // pinned commit -- users update via the in-app update path or `hermes
   // update`, which moves HEAD legitimately. The marker only attests "a
   // desktop-managed bootstrap ran here at least once"; runtime usability is
   // what decides whether we can actually launch.
-  return classifyActiveRuntime(readBootstrapMarker(), BOOTSTRAP_MARKER_SCHEMA_VERSION, isActiveRuntimeUsable())
+  return classifyActiveRuntime(readBootstrapMarker(), BOOTSTRAP_MARKER_SCHEMA_VERSION, await isActiveRuntimeUsable())
 }
 
 function writeBootstrapMarker(payload) {
@@ -4988,8 +4913,8 @@ function writeDefaultProjectDir(dir) {
   }
 }
 
-function createPythonBackend(root, label, backendArgs, options: any = {}) {
-  const python = findPythonForRoot(root)
+async function createPythonBackend(root, label, backendArgs, options: any = {}) {
+  const python = await findPythonForRoot(root)
 
   if (!python) {
     return null
@@ -5024,9 +4949,9 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
 // canonical install location shared with the CLI installer. The venv at
 // VENV_ROOT may not exist yet on first run; bootstrap=true tells
 // ensureRuntime() to create / refresh it before launch.
-function createActiveBackend(backendArgs) {
+async function createActiveBackend(backendArgs) {
   const venvPython = getVenvPython(VENV_ROOT)
-  const command = fileExists(venvPython) ? venvPython : findSystemPython()
+  const command = fileExists(venvPython) ? venvPython : await findSystemPython()
 
   return {
     kind: 'python',
@@ -5044,13 +4969,13 @@ function createActiveBackend(backendArgs) {
   }
 }
 
-function resolveHermesBackend(backendArgs) {
+async function resolveHermesBackend(backendArgs) {
   // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
   //    checkout. Honour it as-is (no bootstrap; the user is driving).
   const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
 
   if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
-    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs)
+    const backend = await createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs)
 
     if (backend) {
       return backend
@@ -5062,7 +4987,7 @@ function resolveHermesBackend(backendArgs) {
   //    installed `hermes` on PATH so local Python edits are actually exercised.
   //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
   if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
-    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs)
+    const backend = await createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs)
 
     if (backend) {
       return backend
@@ -5077,7 +5002,7 @@ function resolveHermesBackend(backendArgs) {
   //    builds could leave a healthy install behind without the marker. If the
   //    active runtime is usable, launch it directly; only fall through to
   //    bootstrap when the runtime itself is unusable.
-  const activeRuntime = activeRuntimeState()
+  const activeRuntime = await activeRuntimeState()
 
   if (activeRuntime.shouldUseActiveRuntime && !bootstrapRepairRequested) {
     if (!activeRuntime.hasValidMarker) {
@@ -5124,7 +5049,7 @@ function resolveHermesBackend(backendArgs) {
     }
 
     if (hermesCommand) {
-      const unwrapped = unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
+      const unwrapped = await unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
 
       if (unwrapped) {
         return unwrapped
@@ -5143,7 +5068,10 @@ function resolveHermesBackend(backendArgs) {
       // the Nix wrapper), not a discovered PATH candidate. It must not fall
       // through to the install-script bootstrap if the optional probe times
       // out under load; the pinned backend is the only valid runtime there.
-      if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
+      if (
+        shouldTrustHermesOverride(hermesOverride) ||
+        (await verifyHermesCli(hermesCommand, { shell: shellForProbe }))
+      ) {
         // `unwrapped` above already answered "is this a Windows venv shim?" —
         // it was null (not a shim, or its import probe failed). Do NOT re-run
         // unwrapWindowsVenvHermesCommand here: the second call repeats the
@@ -5169,7 +5097,7 @@ function resolveHermesBackend(backendArgs) {
   // 5. Last-ditch: pip-installed hermes_cli module via system Python.
   //    Same rationale as #4 -- the user installed this; we use it but don't
   //    take ownership.
-  const python = findSystemPython()
+  const python = await findSystemPython()
 
   if (python) {
     // Same smoke-test rationale as step 4: a system Python in the
@@ -5180,7 +5108,7 @@ function resolveHermesBackend(backendArgs) {
     // Verify the import works before trusting the candidate; on
     // failure, fall through to step 6 so the bootstrap runner pulls
     // a uv-managed 3.11 into %LOCALAPPDATA%\hermes\hermes-agent\venv.
-    if (canImportHermesCli(python)) {
+    if (await canImportHermesCli(python)) {
       return {
         kind: 'python',
         label: `installed hermes_cli module via ${python}`,
@@ -5221,12 +5149,13 @@ function resolveHermesBackend(backendArgs) {
   }
 }
 
-function ensureRuntime(backend: any): Promise<any> {
-  return localBackendLifecycle.start(() => runEnsureRuntime(backend))
+function ensureRuntime(backend: any, assertStillOwned: () => void): Promise<any> {
+  return localBackendLifecycle.start(() => runEnsureRuntime(backend, assertStillOwned))
 }
 
-async function runEnsureRuntime(backend: any): Promise<any> {
+async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Promise<any> {
   localBackendLifecycle.assertCanStart()
+  assertStillOwned()
 
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
@@ -5338,7 +5267,7 @@ async function runEnsureRuntime(backend: any): Promise<any> {
 
     // Re-resolve now that the install exists. The new resolution lands in
     // step 3 (bootstrap-complete marker) and we recurse to wire venvPython.
-    return ensureRuntime(resolveHermesBackend(backend.args))
+    return ensureRuntime(await resolveHermesBackend(backend.args), assertStillOwned)
   }
 
   // bootstrap=true with a real backend (createActiveBackend path) means we
@@ -12557,9 +12486,14 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
   const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
-  const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
+
+  const backend = await ensureRuntime(await resolveHermesBackend(backendArgs), () =>
+    assertPoolEntryStillOwned(poolKey, entry)
+  )
+
   // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
-  backend.args = getBackendArgsForRuntime(backend)
+  backend.args = await getBackendArgsForRuntime(backend)
+  assertPoolEntryStillOwned(poolKey, entry)
   const hermesCwd = resolveHermesCwd()
   const webDist = resolveWebDist()
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
@@ -12975,8 +12909,10 @@ async function runHermesStart() {
 
     const setup = await runPrimaryBackendStartup({
       signal: localBackendLifecycle.signal,
+      assertCurrentAttempt: () => backendConnectionState.assertCurrentAttempt(connectionAttempt),
       connectRemote,
-      ensureLocalRuntime: ensureRuntime,
+      ensureLocalRuntime: backend =>
+        ensureRuntime(backend, () => backendConnectionState.assertCurrentAttempt(connectionAttempt)),
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
 
@@ -12995,6 +12931,8 @@ async function runHermesStart() {
       waitForLocalStart: waitForUpdateToFinish
     })
 
+    backendConnectionState.assertCurrentAttempt(connectionAttempt)
+
     if (setup.kind === 'remote') {
       // Paths from the remote backend belong to a host the Windows desktop
       // cannot open via wsl.exe — disable WSL path bridging so native dialogs
@@ -13010,7 +12948,8 @@ async function runHermesStart() {
 
     const backend = setup.backend
     // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
-    backend.args = getBackendArgsForRuntime(backend)
+    backend.args = await getBackendArgsForRuntime(backend)
+    backendConnectionState.assertCurrentAttempt(connectionAttempt)
     const hermesCwd = resolveHermesCwd()
     const webDist = resolveWebDist()
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
@@ -13023,9 +12962,7 @@ async function runHermesStart() {
     const backendNonce = crypto.randomBytes(16).toString('hex')
     const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
 
-    if (!backendConnectionState.isCurrentAttempt(connectionAttempt)) {
-      throw new Error('Hermes backend start was superseded by a newer connection attempt.')
-    }
+    backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     const hermesProcess = spawnOwnedBackend(
       backend.command,
@@ -15100,7 +15037,7 @@ ipcMain.handle('hermes:window:openInTerminal', async (_event, sessionId, opts) =
 
   try {
     const profile = typeof opts?.profile === 'string' ? opts.profile.trim() : ''
-    const backend = resolveHermesBackend(tuiResumeArgs(sessionId.trim(), profile || undefined))
+    const backend = await resolveHermesBackend(tuiResumeArgs(sessionId.trim(), profile || undefined))
 
     if (!backend.command) {
       return { ok: false, error: 'Hermes is not installed yet' }
@@ -17813,7 +17750,7 @@ async function runDesktopUninstall(mode) {
   let pythonPath = null
 
   if (modeRemovesAgent(mode)) {
-    const sysPy = findSystemPython()
+    const sysPy = await findSystemPython()
 
     if (sysPy) {
       py = sysPy

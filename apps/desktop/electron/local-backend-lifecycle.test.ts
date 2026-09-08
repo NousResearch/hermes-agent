@@ -104,6 +104,7 @@ test('the quit barrier cancels real first-run startup and waits for both local a
 
   const startup = lifecycle.start(() =>
     runPrimaryBackendStartup({
+      assertCurrentAttempt: () => {},
       signal: lifecycle.signal,
       resolveRemote: async () => null,
       connectRemote: async () => ({}),

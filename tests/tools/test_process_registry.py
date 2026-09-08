@@ -1911,6 +1911,7 @@ class TestSystemdCgroupIsolation:
 
         return fake_popen, captured
 
+    @pytest.mark.linux_only
     def test_wraps_in_systemd_scope_when_supervisor_and_available(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -2131,6 +2132,7 @@ class TestSystemdCgroupIsolation:
 
         assert session.systemd_unit == ""
 
+    @pytest.mark.linux_only
     def test_systemd_post_spawn_failure_never_kills_gateway_process_group(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -2165,6 +2167,7 @@ class TestSystemdCgroupIsolation:
         assert stop_unit.call_args.args[0].endswith(".scope")
         killpg.assert_not_called()
 
+    @pytest.mark.linux_only
     def test_pty_spawn_is_wrapped_in_systemd_scope(self, registry, monkeypatch, _gateway_identity):
         """Interactive executors receive the same sibling-cgroup isolation."""
         from ptyprocess import PtyProcess
@@ -2196,6 +2199,7 @@ class TestSystemdCgroupIsolation:
         assert argv[-3:] == ["/bin/bash", "-lic", "set +m; codex"]
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
+    @pytest.mark.linux_only
     def test_pty_spawn_failure_reaps_scope_before_distinct_pipe_fallback(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -2251,6 +2255,7 @@ class TestSystemdCgroupIsolation:
             f"hermes-worker-{session.id}-pipe-fallback.scope"
         )
 
+    @pytest.mark.linux_only
     def test_pty_spawn_failure_does_not_fallback_when_scope_reap_fails(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -2345,6 +2350,7 @@ class TestSystemdCgroupIsolation:
         assert session.id in registry._finished
         assert session.id not in registry._running
 
+    @pytest.mark.linux_only
     def test_systemd_run_user_scope_available_caches_after_probe(
         self, registry, monkeypatch
     ):
@@ -2452,6 +2458,7 @@ class TestSystemdCgroupIsolation:
         assert "/bin/true" not in payload, probe_argv
         assert payload[:3] == ["/bin/sh", "-c", "exit 0"], probe_argv
 
+    @pytest.mark.linux_only
     def test_systemd_scope_first_probe_is_serialized(self, monkeypatch):
         """Concurrent first-use callers must wait for one definitive probe.
 
@@ -2499,6 +2506,7 @@ class TestSystemdCgroupIsolation:
         assert results == [True, True]
         assert len(probe_calls) == 1
 
+    @pytest.mark.linux_only
     def test_failed_systemd_probe_retries_after_cache_ttl(self, monkeypatch):
         import tools.process_registry as pr
 

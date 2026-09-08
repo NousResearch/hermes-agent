@@ -49,17 +49,17 @@ def write_notes(root: Path, notes: dict[str, str]) -> int:
             raise ValueError("note path escapes navigation root")
         if any(parent.is_symlink() for parent in (target, *target.parents)):
             raise ValueError("navigation paths must not be symlinks")
-        if target.exists() and not target.read_text().startswith(MARKER):
+        if target.exists() and not target.read_text(encoding="utf-8").startswith(MARKER):
             raise ValueError(f"refusing to overwrite authored note: {target}")
         targets.append((target, content))
     updated = 0
     for target, content in targets:
-        if target.exists() and target.read_text() == content:
+        if target.exists() and target.read_text(encoding="utf-8") == content:
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(prefix=".navigation-", dir=target.parent)
         try:
-            with os.fdopen(descriptor, "w") as stream:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())

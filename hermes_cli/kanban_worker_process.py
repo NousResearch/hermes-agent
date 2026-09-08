@@ -41,11 +41,11 @@ def signal_worker_tree(pid: int, sig: int) -> None:
         try:
             pgid = os.getpgid(pid)
             if pgid == pid and pgid != os.getpgrp():
-                os.killpg(pgid, sig)
+                os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only guarded path
                 return
         except ProcessLookupError:
             if pid != os.getpgrp():
-                os.killpg(pid, sig)
+                os.killpg(pid, sig)  # windows-footgun: ok — POSIX-only guarded path
                 return
         except OSError:
             pass

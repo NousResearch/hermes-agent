@@ -159,14 +159,14 @@ def test_dirty_released_slot_is_preserved_and_uses_overflow(tmp_path, filename):
         "SELECT slot_id, lease_version, owner_pid FROM worktree_pool_slots"
     ).fetchone()
     pool.release(WorktreeSlotLease(*lease))
-    (original.path / filename).write_text("preserved work")
+    (original.path / filename).write_text("preserved work", encoding="utf-8")
 
     prepared = _prepare_receipt_worktree_with_overflow(
         pool, repo, receipt(second), tmp_path / "overflow"
     )
     assert prepared.path != original.path
-    assert (original.path / filename).read_text() == "preserved work"
-    assert (prepared.path / "source.txt").read_text() == "second PR"
+    assert (original.path / filename).read_text(encoding="utf-8") == "preserved work"
+    assert (prepared.path / "source.txt").read_text(encoding="utf-8") == "second PR"
     ledger.close()
 
 
@@ -340,8 +340,8 @@ def test_pool_never_removes_the_linked_venv_between_reuses(tmp_path: Path) -> No
 
     assert venv_link.is_symlink()
     assert (venv_link / "bin" / "python").is_file()
-    assert (prepared_a.path / "__pycache__" / "junk.pyc").read_text() == "x"
-    assert (prepared_a.path / "stray_untracked.txt").read_text() == "x"
+    assert (prepared_a.path / "__pycache__" / "junk.pyc").read_text(encoding="utf-8") == "x"
+    assert (prepared_a.path / "stray_untracked.txt").read_text(encoding="utf-8") == "x"
     assert prepared_b.path != prepared_a.path
     assert (prepared_b.path / ".venv" / "bin" / "python").is_file()
     ledger.close()
@@ -472,7 +472,7 @@ def test_reconcile_preserves_parent_checkout_until_review_child_finishes(tmp_pat
     assert pool.reconcile_leases(client) == 0
     with pytest.raises(WorktreePoolExhausted):
         pool.prepare_receipt_worktree(repo, receipt(second))
-    assert (prepared.path / "source.txt").read_text() == "reviewed source"
+    assert (prepared.path / "source.txt").read_text(encoding="utf-8") == "reviewed source"
     runner.child_status = "done"
     assert pool.reconcile_leases(client) == 1
     assert pool.prepare_receipt_worktree(repo, receipt(second)).expected_sha == second
@@ -683,12 +683,12 @@ def test_worktree_selects_matching_owned_interpreter_and_preserves_unknown_link(
     workspace = initialized_repository(tmp_path / 'target')
     current = repo / '.venv' / 'bin'
     current.mkdir(parents=True)
-    (current / 'python').write_text('#!/bin/sh\nprintf "0.0.0\\n"\n')
+    (current / 'python').write_text('#!/bin/sh\nprintf "0.0.0\\n"\n', encoding="utf-8")
     (current / 'python').chmod(0o755)
     matching = repo / 'venv-preserved' / 'bin'
     matching.mkdir(parents=True)
     (matching / 'python').symlink_to(sys.executable)
-    (workspace / '.python-version').write_text('.'.join(map(str, sys.version_info[:3])))
+    (workspace / '.python-version').write_text('.'.join(map(str, sys.version_info[:3])), encoding="utf-8")
     (workspace / '.venv').symlink_to(current.parent)
     LocalGitRepository._link_governed_venv(repo, workspace)
     assert (workspace / '.venv').resolve() == matching.parent
@@ -705,7 +705,7 @@ def test_missing_matching_environment_does_not_link_wrong_interpreter(tmp_path):
     repo = initialized_repository(tmp_path)
     workspace = initialized_repository(tmp_path / 'target')
     make_governed_venv(repo)
-    (workspace / '.python-version').write_text('0.0.0')
+    (workspace / '.python-version').write_text('0.0.0', encoding="utf-8")
     with pytest.raises(RuntimeError, match='matches Python'):
         LocalGitRepository._link_governed_venv(repo, workspace)
     assert not (workspace / '.venv').is_symlink()

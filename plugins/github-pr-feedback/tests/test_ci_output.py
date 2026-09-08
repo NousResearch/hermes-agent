@@ -15,5 +15,5 @@ def test_failed_command_retains_hash_bound_private_diagnostics(tmp_path, monkeyp
     assert result.returncode == 7
     digest = hashlib.sha256(result.stdout.encode()).hexdigest()
     output = tmp_path / 'home/github-pr-feedback/ci-output' / (digest + '.log')
-    assert output.read_text() == result.stdout
+    assert output.read_text(encoding="utf-8") == result.stdout
     assert output.stat().st_mode & 0o777 == 0o600

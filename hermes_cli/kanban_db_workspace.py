@@ -428,7 +428,7 @@ def _configured_worktree_base(repo_root: Path) -> Optional[str]:
     config_path = _kb.kanban_home() / "config.yaml"
     if not config_path.is_file():
         return None
-    config = yaml.safe_load(config_path.read_text()) or {}
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     refs = (config.get("kanban") or {}).get("worktree_base_refs", {})
     if not isinstance(refs, dict):
         raise ValueError("kanban.worktree_base_refs must map repository paths to Git refs")

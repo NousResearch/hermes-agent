@@ -905,7 +905,7 @@ def test_repair_card_acquires_pinned_base_after_mutable_branch_advances(
         ["git", "-C", str(source), "config", "user.email", "test@example.com"],
         check=True,
     )
-    (source / "state").write_text("base A\n")
+    (source / "state").write_text("base A\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(source), "add", "state"], check=True)
     subprocess.run(
         ["git", "-C", str(source), "commit", "--quiet", "-m", "A"], check=True
@@ -923,7 +923,7 @@ def test_repair_card_acquires_pinned_base_after_mutable_branch_advances(
         ["git", "-C", str(source), "push", "--quiet", str(remote), "stable"],
         check=True,
     )
-    (source / "state").write_text("base B\n")
+    (source / "state").write_text("base B\n", encoding="utf-8")
     subprocess.run(
         ["git", "-C", str(source), "commit", "--quiet", "-am", "B"], check=True
     )

@@ -20,7 +20,7 @@ def prepare_worker_route(task, profile_home, env):
     route = _resolve_explicit_local_task_route(task)
     if route is None and not task.model_override and _kanban_local_first_enabled():
         path = Path(profile_home) / "config.yaml" if profile_home else None
-        config = yaml.safe_load(path.read_text()) if path and path.is_file() else None
+        config = yaml.safe_load(path.read_text(encoding="utf-8")) if path and path.is_file() else None
         route = _resolve_local_first_route(config)
     if route is None:
         return task

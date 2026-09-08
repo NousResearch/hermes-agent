@@ -48,7 +48,10 @@ def plan_discovery(spec, tasks, day, links=()):
 
 
 def run(hermes, *args):
-    result = subprocess.run([hermes, *args], check=True, capture_output=True, text=True, timeout=60)
+    result = subprocess.run(
+        [hermes, *args], check=True, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=60,
+    )
     return json.loads(result.stdout)
 
 
@@ -58,7 +61,7 @@ def main():
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    spec = json.loads((root / 'configs/federation/discovery.json').read_text())
+    spec = json.loads((root / 'configs/federation/discovery.json').read_text(encoding="utf-8"))
     tasks = run(args.hermes, 'kanban', '--board', spec['board'], 'list', '--json')
     day = datetime.now(timezone.utc).date().isoformat()
     sys.path.insert(0, str(root))

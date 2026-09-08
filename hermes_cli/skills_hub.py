@@ -1133,6 +1133,12 @@ def do_local(action: str, path: str = "", console: Optional[Console] = None) -> 
         if not path:
             _print_error(c, f"Path required. Usage: hermes skills local {action} <path>")
             return
+        resolved_path = Path(path).expanduser().resolve()
+        if action == "add":
+            if not resolved_path.is_dir():
+                _print_error(c, f"Directory does not exist: {resolved_path}")
+                return
+            path = str(resolved_path)
         c.print((ok_line if getattr(mgr, method)(path) else fail_line).format(path=path))
     else:
         c.print(f"[bold red]Unknown local action:[/] {action}. Use: list, add, remove\n")

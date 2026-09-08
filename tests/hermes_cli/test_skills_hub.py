@@ -534,6 +534,26 @@ def test_do_local_add_list_remove_round_trip(hub_env, tmp_path):
     assert "No local skill directories configured" in _capture_local("list")
 
 
+def test_do_local_add_requires_existing_directory_and_prints_resolved_path(
+    hub_env, tmp_path, monkeypatch
+):
+    target = tmp_path / "other-agent-skills"
+    target.mkdir()
+    missing = tmp_path / "missing"
+    file_path = tmp_path / "not-a-directory"
+    file_path.write_text("", encoding="utf-8")
+
+    out = _capture_local("add", str(missing))
+    assert f"Directory does not exist: {missing}" in out
+    out = _capture_local("add", str(file_path))
+    assert f"Directory does not exist: {file_path}" in out
+    assert "No local skill directories configured" in _capture_local("list")
+
+    monkeypatch.chdir(tmp_path)
+    out = _capture_local("add", target.name)
+    assert f"Added local skills directory: {target.resolve()}" in out
+
+
 def test_do_local_requires_path_for_add_remove(hub_env):
     out = _capture_local("add")
     assert "Path required" in out

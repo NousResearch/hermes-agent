@@ -30,7 +30,7 @@ def _configured_dirs() -> List[Path]:
     from tools.skills_hub import LocalDirsManager
     dirs = []
     for raw in LocalDirsManager().list_dirs():
-        path = Path(raw)
+        path = Path(raw).expanduser()
         if path.is_dir():
             dirs.append(path)
         else:
@@ -92,10 +92,15 @@ class LocalFolderSource(SkillSource):
         """``local-dir:<root>/<name>`` -> the skill directory, or a bare name matched against every
         configured directory (must be unique)."""
         rel = identifier[len("local-dir:"):] if identifier.startswith("local-dir:") else identifier
-        if "/" in rel:
-            root_str, name = rel.rsplit("/", 1)
-            candidate = Path(root_str) / name
-            if candidate.is_dir() and (candidate / "SKILL.md").is_file() and Path(root_str) in _configured_dirs():
+        path_text = rel.replace("\\", "/")
+        parsed = Path(path_text)
+        if parsed.parent != Path("."):
+            root_path = parsed.parent.expanduser()
+            name = parsed.name
+            candidate = root_path / name
+            configured_roots = {root.resolve() for root in _configured_dirs()}
+            if (candidate.is_dir() and (candidate / "SKILL.md").is_file()
+                    and candidate.parent.resolve() in configured_roots):
                 return candidate
             rel = name  # fall through to bare-name lookup (root moved/stale)
         matches = [skill_dir for _, skill_dir in self._iter_skill_dirs() if skill_dir.name == rel]

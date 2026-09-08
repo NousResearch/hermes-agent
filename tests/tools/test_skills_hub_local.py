@@ -94,6 +94,16 @@ class TestLocalFolderSource:
         assert "SKILL.md" in bundle.files
         assert bundle.trust_level == "community"
 
+    def test_fetch_explicit_identifier_normalizes_root_and_separators(self, tmp_path):
+        equivalent_root = tmp_path / "skills-link"
+        equivalent_root.symlink_to(self.root, target_is_directory=True)
+        identifier_path = str(equivalent_root / "ab-test-setup").replace("/", "\\")
+
+        bundle = self.src.fetch(f"local-dir:{identifier_path}")
+
+        assert bundle is not None
+        assert bundle.name == "ab-test-setup"
+
     def test_fetch_by_bare_name(self):
         bundle = self.src.fetch("ab-test-setup")
         assert bundle is not None

@@ -1644,6 +1644,9 @@ class TurnRunner:
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
+        agent.show_provider_fallback_notices = ctx.resolve_display_setting(
+            ctx.user_config, platform_key, "provider_fallback_notices", True,
+        )
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)
         result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)

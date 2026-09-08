@@ -21,6 +21,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
+    "provider_fallback_notices": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
     "busy_steer_ack_enabled": True,  # busy_input_mode=steer echo; the text still lands in the run
@@ -152,6 +153,7 @@ _NORMALISERS: dict[str, Any] = {
     "show_reasoning": _norm_bool,
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,
+    "provider_fallback_notices": _norm_bool,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,

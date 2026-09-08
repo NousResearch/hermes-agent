@@ -2168,6 +2168,8 @@ Signal is listed as a valid platform key because the setting can be saved per pl
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 
+`provider_fallback_notices` (default `true`) controls successful provider-recovery notices on the gateway. Set `display.platforms.slack.provider_fallback_notices: false` for a quiet Slack surface. Provider selection, backend logs, terminal-failure diagnostics, warnings, and approval requests are unchanged. Other platforms retain their own display settings.
+
 `show_commentary` (default `true`) controls Codex Responses models' commentary channel — the polished progress narration these models produce alongside their private reasoning. When enabled, each completed commentary message is delivered as a visible mid-turn update (on the gateway this also requires `interim_assistant_messages`). Set it to `false` if the extra narration annoys you: commentary then falls back to the reasoning channel and is only shown when `show_reasoning` is enabled.
 
 ## Privacy

@@ -1917,9 +1917,13 @@ class TestApiKeyConstructionClearsEnvBearerToken:
             {},
         )
         assert client.api_key == "provider-key"
-        assert client.auth_token is None
+        # The guard is a copy-safe Omit() default header, so the wire never carries the
+        # sentinel even though the SDK keeps the env-derived auth_token attribute.
         assert "Authorization" not in client.auth_headers
         assert client.auth_headers == {"X-Api-Key": "provider-key"}
+        client_copy = client.with_options(timeout=30)
+        assert "Authorization" not in client_copy.auth_headers
+        assert client_copy.auth_headers == {"X-Api-Key": "provider-key"}
 
     def test_bearer_style_client_keeps_its_auth_token(self, monkeypatch):
         anthropic_sdk = pytest.importorskip("anthropic")
@@ -1976,6 +1980,60 @@ class TestApiKeyConstructionClearsEnvBearerToken:
                 base_url=f"http://127.0.0.1:{server.server_port}",
             )
             client.messages.create(
+                model="test-model",
+                max_tokens=8,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        finally:
+            server.shutdown()
+
+        headers = captured["headers"]
+        assert headers.get("x-api-key") == "third-party-provider-key"
+        assert "sentinel-env-token-DO-NOT-SEND" not in headers.get("authorization", "")
+
+    def test_with_options_copy_carries_no_foreign_bearer(self, monkeypatch):
+        """``with_options()`` re-runs the constructor with ``auth_token=None``, so an attribute
+        clear would re-leak ANTHROPIC_AUTH_TOKEN on the copy; the Omit() default header
+        propagates through copies and keeps the sentinel off the wire."""
+        anthropic_sdk = pytest.importorskip("anthropic")
+        http_server = pytest.importorskip("http.server")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sentinel-env-token-DO-NOT-SEND")
+
+        import json as _json
+        import threading
+
+        captured = {}
+
+        class _Handler(http_server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                captured["headers"] = {k.lower(): v for k, v in self.headers.items()}
+                self.rfile.read(int(self.headers.get("content-length", 0)))
+                body = _json.dumps({
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "model": "test",
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }).encode()
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = http_server.HTTPServer(("127.0.0.1", 0), _Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            client = build_anthropic_client(
+                "third-party-provider-key",
+                base_url=f"http://127.0.0.1:{server.server_port}",
+            )
+            client.with_options(timeout=30).messages.create(
                 model="test-model",
                 max_tokens=8,
                 messages=[{"role": "user", "content": "hi"}],

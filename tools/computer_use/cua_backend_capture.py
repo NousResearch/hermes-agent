@@ -136,7 +136,9 @@ class _CaptureMixin:
     def _cli_refetch(self, name: str, args: Dict[str, Any], timeout: float, what: str,
                      warning: str, *warning_args: Any) -> Optional[Dict[str, Any]]:
         """MCP came back empty/imageless without raising: log *warning*, then a one-shot call over the CLI
-        transport (different daemon socket). None on failure."""
+        transport (different daemon socket). None on failure; remote results never use the host CLI."""
+        if getattr(self, "_remote_config", None) is not None:
+            return None
         logger.warning(warning, *warning_args)
         try:
             cli_out = self._session._call_tool_via_cli(name, args, timeout)

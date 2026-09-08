@@ -511,9 +511,7 @@ class TestSession:
         # message clears it (2026-08-17 21:03 EDT production kill). The option
         # must always be present — falling back to the SDK default silently
         # reintroduces that failure.
-        from agent.transports.claude_agent_sdk_session import (
-            _DEFAULT_MAX_BUFFER_SIZE,
-        )
+        from agent.transports.claude_agent_sdk_session_config import _DEFAULT_MAX_BUFFER_SIZE
 
         session, _ = _make_session(script=[ResultMessage(result="ok")])
         assert session.build_option_fields()["max_buffer_size"] == (
@@ -540,9 +538,7 @@ class TestSession:
         # A typo must not disable the only backstop against an unterminated
         # line growing until the host OOMs, nor silently drop to 1 MiB.
         import hermes_cli.config as cfg
-        from agent.transports.claude_agent_sdk_session import (
-            _DEFAULT_MAX_BUFFER_SIZE,
-        )
+        from agent.transports.claude_agent_sdk_session_config import _DEFAULT_MAX_BUFFER_SIZE
 
         monkeypatch.setattr(
             cfg,

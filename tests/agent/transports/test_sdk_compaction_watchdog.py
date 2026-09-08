@@ -29,10 +29,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.transports.claude_agent_sdk_session import (
-    _COMPACTION_MAX_SUSPEND,
-    _TurnWatch,
-)
+from agent.transports.claude_agent_sdk_session_watchdog import _COMPACTION_MAX_SUSPEND, _TurnWatch
 
 QUIET = 90.0
 BUDGET = 600.0
@@ -42,7 +39,7 @@ def _armed_watch(monkeypatch, t0=1000.0):
     """A watch that has just taken a tool result -- the vulnerable state."""
     clock = {"now": t0}
     monkeypatch.setattr(
-        "agent.transports.claude_agent_sdk_session.time.monotonic",
+        "agent.transports.claude_agent_sdk_session_watchdog.time.monotonic",
         lambda: clock["now"],
     )
     watch = _TurnWatch()

@@ -41,7 +41,7 @@ def _isolate_provider_config(monkeypatch):
 class TestHttpMcpSecurity:
     @pytest.fixture(autouse=True)
     def _enable_direct_http_opt_in(self, monkeypatch):
-        from agent.transports import claude_agent_sdk_session as mod
+        from agent.transports import claude_agent_sdk_session_config as mod
 
         monkeypatch.setattr(
             mod,
@@ -52,7 +52,7 @@ class TestHttpMcpSecurity:
     def test_helper_is_default_off_even_when_called_directly(
         self, monkeypatch, tmp_path
     ):
-        from agent.transports import claude_agent_sdk_session as mod
+        from agent.transports import claude_agent_sdk_session_config as mod
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(
@@ -84,9 +84,7 @@ class TestHttpMcpSecurity:
     def test_header_bearing_server_is_refused_without_secret_in_logs(
         self, monkeypatch, tmp_path, caplog
     ):
-        from agent.transports.claude_agent_sdk_session import (
-            _http_mcp_entries_from_config,
-        )
+        from agent.transports.claude_agent_sdk_session_config import _http_mcp_entries_from_config
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("HERMES_PROFILE", "test")
@@ -110,9 +108,7 @@ class TestHttpMcpSecurity:
         assert "Authorization" not in caplog.text
 
     def test_headerless_server_is_safe_to_register(self, monkeypatch, tmp_path):
-        from agent.transports.claude_agent_sdk_session import (
-            _http_mcp_entries_from_config,
-        )
+        from agent.transports.claude_agent_sdk_session_config import _http_mcp_entries_from_config
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("HERMES_PROFILE", "test")
@@ -134,9 +130,7 @@ class TestHttpMcpSecurity:
     def test_malformed_resolved_url_is_refused_without_url_in_logs(
         self, monkeypatch, tmp_path, caplog
     ):
-        from agent.transports.claude_agent_sdk_session import (
-            _http_mcp_entries_from_config,
-        )
+        from agent.transports.claude_agent_sdk_session_config import _http_mcp_entries_from_config
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("HERMES_PROFILE", "test")
@@ -175,9 +169,7 @@ class TestHttpMcpSecurity:
     def test_templated_or_credential_bearing_url_is_refused(
         self, monkeypatch, tmp_path, url
     ):
-        from agent.transports.claude_agent_sdk_session import (
-            _http_mcp_entries_from_config,
-        )
+        from agent.transports.claude_agent_sdk_session_config import _http_mcp_entries_from_config
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(
@@ -187,9 +179,7 @@ class TestHttpMcpSecurity:
         assert _http_mcp_entries_from_config() == {}
 
     def test_truthy_non_mapping_headers_are_refused(self, monkeypatch, tmp_path):
-        from agent.transports.claude_agent_sdk_session import (
-            _http_mcp_entries_from_config,
-        )
+        from agent.transports.claude_agent_sdk_session_config import _http_mcp_entries_from_config
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(
@@ -200,7 +190,7 @@ class TestHttpMcpSecurity:
         assert _http_mcp_entries_from_config() == {}
 
     def test_http_server_name_honors_exclusion(self, monkeypatch, tmp_path):
-        from agent.transports import claude_agent_sdk_session as mod
+        from agent.transports import claude_agent_sdk_session_config as mod
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(
@@ -282,7 +272,7 @@ class TestHybridRegistryDiff:
         return ClaudeAgentSdkSession(cwd="/tmp", **kwargs)
 
     def _patch_registry(self, monkeypatch, specs, *, recorder=None):
-        from agent.transports import claude_agent_sdk_session as mod
+        from agent.transports import claude_agent_sdk_session_config as mod
 
         monkeypatch.setattr(
             mod, "_provider_config", lambda: {"hybrid_mcp_bridge": True}
@@ -364,7 +354,7 @@ class TestHybridRegistryDiff:
     def test_registry_failure_leaves_the_bridge_unchanged(
         self, monkeypatch, captured
     ):
-        from agent.transports import claude_agent_sdk_session as mod
+        from agent.transports import claude_agent_sdk_session_config as mod
 
         monkeypatch.setattr(
             mod, "_provider_config", lambda: {"hybrid_mcp_bridge": True}

@@ -11,7 +11,9 @@ import pytest
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
-from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
+from gateway.hosted_room_policy_checkpoint import (
+    HostedRoomPolicyCheckpoint, MAX_THREAD_TRANSCRIPT_EVENTS, MAX_TRANSCRIPT_POLICY_EVENTS,
+)
 from tests.tui_gateway.test_hosted_room_native_phase1 import native as native
 from tests.tui_gateway.test_hosted_room_produced_media import room as native_room
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC, _server
@@ -90,11 +92,11 @@ def test_native_not_admitted_deferral_retries_with_live_owner(native, native_roo
     assert probe_owner_incarnation(descriptor) == ALIVE
 
 
-def _service(tmp_path, monkeypatch):
+def _service(tmp_path, monkeypatch, profiles=("writer", "reviewer")):
     server = ModuleType("test_hosted_room_retry_handoff")
     vars(server).update(vars(_server()))
     service = HostedRoomService(server, db_path=tmp_path / "state.db")
-    service.local_profiles = lambda: ("writer", "reviewer")
+    monkeypatch.setattr(service, "local_profiles", lambda: profiles)
     monkeypatch.setattr(service, "rpc", RefusingRPC())
     service.runtime.rpc = service.rpc
     service.create_room(room_id="workshop", name="Workshop planning", members=[
@@ -134,6 +136,240 @@ def _file(service, task, content):
         room_id="workshop", event_id="dmessage:" + task["identity"].task_id.removeprefix("dtask:"),
         manifest=manifest, recipient_member_ids=["writer", "reviewer"], viewer_access=True, hold_until_event=True)
     return manifest
+
+
+@pytest.mark.parametrize("persisted_overbound", [False, True])
+def test_explicit_deferrals_stay_bounded_while_peer_is_pending(tmp_path, monkeypatch, persisted_overbound):
+    service, binding = _service(tmp_path, monkeypatch, ("writer", "reviewer", "observer"))
+    _send(service, "hold-observer", "@observer pause", thread_id="controls")
+    _send(service, "initial", "Prepare the workshop agenda.")
+    task = _queued(service)[0]
+    frozen = deepcopy(task["payload"])
+    for index in range(65):
+        if index:
+            task = service.retry_room_task("workshop", task_id=task["identity"].task_id)
+        attempt = driver.start_task(
+            service.db_path, task["identity"], service.runtime._ensure_lease(binding),
+            expected_cancel_generation=task["cancel_generation"], clock=service.runtime.clock)
+        # Run the real not-admitted/publication path, leaving the peer queued.
+        service.runtime._execute_attempt(binding, task, attempt)
+        assert driver.get_task(service.db_path, task["identity"])["status"] == "deferred"
+        service.prepare_room(binding)
+        assert len(_queued(service)) == 1
+    events = service._events("workshop")
+    deferrals = [event for event in events if event["kind"] == "turn.deferred"]
+    assert len(deferrals) == 65
+    with sqlite3.connect(service.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_policy_events").fetchone()[0] == 2
+    assert driver.get_task(service.db_path, task["identity"])["payload"] == frozen
+    peer = _queued(service)[0]
+    _finish(service, binding, _queued(service)[0])
+    events = service._events("workshop")
+    assert events[-1]["kind"] == "room.activity"
+    expected = service.policy_checkpoint.snapshot(room_id="workshop", latest_seq=events[-1]["seq"])
+    with sqlite3.connect(service.db_path) as conn:
+        watermarks = conn.execute("SELECT * FROM hosted_room_policy_watermarks ORDER BY thread_id, member_id").fetchall()
+        if persisted_overbound:
+            # Persist the pre-compaction insertion shape using ONLY the real producer's
+            # canonical events. The next unapplied event is the completing activity.
+            source_seq = task["payload"]["source_event_seq"]
+            conn.execute("""INSERT INTO hosted_room_policy_threads
+                VALUES ('workshop', 'workshop-thread', 'initial', ?, 0)""", (source_seq,))
+            for event in events:
+                if event["seq"] == source_seq or (
+                        event["payload"].get("discussion_event_id") == "initial"
+                        and event["kind"] != "room.activity"):
+                    conn.execute("INSERT INTO hosted_room_policy_events VALUES (?, ?, ?, ?, ?)",
+                                 ("workshop", "workshop-thread", "initial", event["seq"], json.dumps(event)))
+            assert conn.execute("SELECT COUNT(*) FROM hosted_room_policy_events").fetchone()[0] > 64
+            conn.execute("UPDATE hosted_room_policy_cursors SET through_seq=?", (events[-1]["seq"] - 1,))
+            conn.execute("UPDATE hosted_room_policy_transcript_state SET schema_version=5")
+    snapshot = HostedRoomPolicyCheckpoint(service.db_path).snapshot(
+        room_id="workshop", latest_seq=events[-1]["seq"])
+    assert snapshot == expected
+    assert snapshot.through_seq == events[-1]["seq"]
+    assert not snapshot.events
+    assert snapshot.held_member_ids == ("observer",)
+    with sqlite3.connect(service.db_path) as conn:
+        assert conn.execute("SELECT * FROM hosted_room_policy_watermarks ORDER BY thread_id, member_id").fetchall() == watermarks
+    assert service._events("workshop") == events
+    for accepted in (task, peer):
+        assert driver.get_task(service.db_path, accepted["identity"])["payload"] == accepted["payload"]
+        # Exact accepted refs still reconstruct, while the legacy context-loading path
+        # retains the first deferral used for the pre-publication watermark.
+        for input_context in (accepted["payload"].get("input_context"), None):
+            context = service.policy_checkpoint.events_for_task(
+                room_id="workshop", source_event_seq=accepted["payload"]["source_event_seq"],
+                input_context=input_context, task_id=accepted["identity"].task_id)
+            if input_context is None:
+                assert [event for event in context if event["kind"] == "turn.deferred"] == [
+                    deferrals[0], deferrals[-1]]
+            reconstructed = discussion.reconstruct_task_plan(
+                service._room("workshop"), context, accepted, local_profiles=service.local_profiles())
+            assert reconstructed.payload == accepted["payload"]
+
+
+@pytest.mark.parametrize("frozen_context", [False, True], ids=["legacy", "accepted-refs"])
+def test_transcript_retry_upgrade_preserves_intermediate_task_context(tmp_path, monkeypatch, frozen_context):
+    service, binding = _service(tmp_path, monkeypatch, ("writer", "reviewer", "observer"))
+    _send(service, "hold-observer", "@observer pause", thread_id="controls")
+    holds = service.policy_checkpoint.member_holds(room_id="workshop")
+    room = service._room("workshop")
+    clock = service.runtime.clock
+    publication_context = service._events("workshop")
+
+    def accept(event_id):
+        hosted_rooms.append_event(
+            service.db_path, room_id="workshop", event_id=event_id, kind="message.user",
+            actor={"kind": "user", "id": "owner"},
+            authority_gateway_id=binding.gateway_id, authority_epoch=binding.authority_epoch,
+            payload={"text": f"@writer review {event_id}", "thread_id": "workshop-thread"})
+        publication_context[:] = service._events("workshop")
+        plan = discussion.plan_next_task(
+            room, publication_context, local_profiles=service.local_profiles(),
+            held_member_ids=("observer",), freeze_input_context=frozen_context).task
+        assert plan is not None
+        task = driver.admit_task(service.db_path, plan.identity, payload=plan.payload, clock=clock)
+        return plan, task
+
+    def defer(plan):
+        task = driver.get_task(service.db_path, plan.identity)
+        lease = service.runtime._ensure_lease(binding)
+        if task["status"] == "deferred":
+            task = driver.requeue_deferred_task(
+                service.db_path, plan.identity, lease,
+                expected_execution_generation=task["execution_generation"],
+                expected_cancel_generation=task["cancel_generation"], clock=clock)
+        attempt = driver.start_task(service.db_path, plan.identity, lease,
+                                    expected_cancel_generation=task["cancel_generation"], clock=clock)
+        driver.defer_not_admitted_task(service.db_path, attempt, reason="member_unavailable", clock=clock)
+        for event in discussion.plan_publication(
+                room, publication_context, plan, status="deferred", execution_generation=attempt.execution_generation,
+                local_profiles=service.local_profiles()).events:
+            hosted_rooms.append_event(service.db_path, **event.append_kwargs("workshop"))
+
+    # Persist real admissions, fenced explicit retries and canonical publications while
+    # the checkpoint is offline. This is a valid log/upgrade case, not automatic retries.
+    first, accepted_a = accept("source-a")
+    for _ in range(3):
+        defer(first)
+    second, accepted_b = accept("source-b")
+    defer(first)
+    defer(second)
+    for _ in range(MAX_TRANSCRIPT_POLICY_EVENTS - 2):
+        defer(first)
+    events = service._events("workshop")
+    receipts = [event for event in events if event["kind"] == "turn.deferred"]
+    assert len(receipts) > MAX_TRANSCRIPT_POLICY_EVENTS
+    decision = discussion.plan_next_task(
+        room, events, local_profiles=service.local_profiles(), held_member_ids=("observer",))
+    assert decision.status == "settled"
+    hosted_rooms.append_event(
+        service.db_path, room_id="workshop", event_id="complete-b", kind="room.activity",
+        actor={"kind": "gateway", "id": binding.gateway_id},
+        authority_gateway_id=binding.gateway_id, authority_epoch=binding.authority_epoch,
+        payload={"status": decision.status, "reason_code": decision.reason,
+                 "thread_id": decision.thread_id, "discussion_event_id": decision.discussion_event_id})
+    events = service._events("workshop")
+    with sqlite3.connect(service.db_path) as conn:
+        conn.execute("UPDATE hosted_room_policy_transcript_state SET schema_version=5")
+    cold = HostedRoomPolicyCheckpoint(service.db_path)
+    snapshot = cold.snapshot(room_id="workshop", latest_seq=events[-1]["seq"])
+    assert snapshot.through_seq == events[-1]["seq"] and not snapshot.events
+    assert snapshot.holds == holds and snapshot.held_member_ids == ("observer",)
+    assert service._events("workshop") == events
+    with sqlite3.connect(service.db_path) as conn:
+        retained = conn.execute("SELECT seq FROM hosted_room_policy_transcript WHERE kind='turn.deferred' ORDER BY seq").fetchall()
+        first_receipts = [event for event in receipts if event["payload"]["task_id"] == first.identity.task_id]
+        second_receipts = [event for event in receipts if event["payload"]["task_id"] == second.identity.task_id]
+        assert retained == [(event["seq"],) for event in sorted(
+            [first_receipts[0], first_receipts[-1], *second_receipts], key=lambda event: event["seq"])]
+        watermarks = conn.execute("SELECT thread_id, member_id, seen_through_seq FROM hosted_room_policy_watermarks ORDER BY 1, 2").fetchall()
+        for key, value in discussion.derive_member_watermarks(room, events, local_profiles=service.local_profiles()).items():
+            assert (*key, value) in watermarks
+        # Reinflate only derived v5 receipt references, with activity next. Recovery
+        # must rebuild before its pre-handler walk queries the overbound transcript.
+        for event in receipts:
+            conn.execute("INSERT OR IGNORE INTO hosted_room_policy_transcript VALUES (?, ?, ?, ?, NULL)",
+                         ("workshop", "workshop-thread", event["seq"], "turn.deferred"))
+        conn.execute("INSERT INTO hosted_room_policy_threads VALUES (?, ?, ?, ?, 0)",
+                     ("workshop", "workshop-thread", second.discussion_event_id, second.payload["source_event_seq"]))
+        conn.execute("UPDATE hosted_room_policy_cursors SET through_seq=?", (events[-1]["seq"] - 1,))
+        conn.execute("UPDATE hosted_room_policy_transcript_state SET schema_version=5")
+    cold = HostedRoomPolicyCheckpoint(service.db_path)
+    assert cold.snapshot(room_id="workshop", latest_seq=events[-1]["seq"]) == snapshot
+    assert service._events("workshop") == events
+    with sqlite3.connect(service.db_path) as conn:
+        assert conn.execute("SELECT thread_id, member_id, seen_through_seq FROM hosted_room_policy_watermarks ORDER BY 1, 2").fetchall() == watermarks
+        assert conn.execute("SELECT seq FROM hosted_room_policy_transcript WHERE kind='turn.deferred' ORDER BY seq").fetchall() == retained
+    for accepted in (accepted_a, accepted_b):
+        assert driver.get_task(service.db_path, accepted["identity"])["payload"] == accepted["payload"]
+        context = cold.events_for_task(
+            room_id="workshop", source_event_seq=accepted["payload"]["source_event_seq"],
+            input_context=accepted["payload"].get("input_context"), task_id=accepted["identity"].task_id)
+        reconstructed = discussion.reconstruct_task_plan(
+            room, context, accepted, local_profiles=service.local_profiles())
+        assert reconstructed.payload == accepted["payload"]
+        if not frozen_context:
+            terminal_seq = next(event["seq"] for event in receipts
+                                if event["payload"]["task_id"] == accepted["identity"].task_id)
+            # Non-vacuous for B: A's watermark predates B, but A's latest receipt does not.
+            before = [event for event in events if event["seq"] < terminal_seq]
+            retained_before = [event for event in context if event["seq"] < terminal_seq]
+            assert discussion.derive_member_watermarks(room, retained_before, local_profiles=service.local_profiles()) == (
+                discussion.derive_member_watermarks(room, before, local_profiles=service.local_profiles()))
+
+    # Move the display window past A's first receipt, but not past B. Before
+    # compaction A's intermediate generation (between B's source and terminal)
+    # supplied B's historical watermark; retaining only A's future latest cannot.
+    for index in range(MAX_THREAD_TRANSCRIPT_EVENTS - 1):
+        hosted_rooms.append_event(
+            service.db_path, room_id="workshop", event_id=f"later-{index}", kind="message.user",
+            actor={"kind": "user", "id": "owner"},
+            authority_gateway_id=binding.gateway_id, authority_epoch=binding.authority_epoch,
+            payload={"text": "@reviewer later request", "thread_id": "workshop-thread"})
+    later = service._events("workshop")
+    cold.sync(room_id="workshop", latest_seq=later[-1]["seq"])
+    context = cold.events_for_task(
+        room_id="workshop", source_event_seq=accepted_b["payload"]["source_event_seq"],
+        input_context=accepted_b["payload"].get("input_context"), task_id=second.identity.task_id)
+    assert discussion.reconstruct_task_plan(
+        room, context, accepted_b, local_profiles=service.local_profiles()).payload == accepted_b["payload"]
+    if not frozen_context:
+        terminal_seq = second_receipts[0]["seq"]
+        assert discussion.derive_member_watermarks(
+            room, [event for event in context if event["seq"] < terminal_seq],
+            local_profiles=service.local_profiles()) == discussion.derive_member_watermarks(
+                room, [event for event in events if event["seq"] < terminal_seq],
+                local_profiles=service.local_profiles())
+    with sqlite3.connect(service.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_policy_transcript WHERE thread_id='workshop-thread' AND kind='message.user'").fetchone()[0] == MAX_THREAD_TRANSCRIPT_EVENTS
+        conn.execute("UPDATE hosted_room_policy_transcript_state SET schema_version=5")
+    cold.sync(room_id="workshop", latest_seq=later[-1]["seq"])
+    assert cold.events_for_task(
+        room_id="workshop", source_event_seq=accepted_b["payload"]["source_event_seq"],
+        input_context=accepted_b["payload"].get("input_context"), task_id=second.identity.task_id) == context
+    assert cold.member_holds(room_id="workshop") == holds
+    assert service._events("workshop") == later
+
+
+def test_transcript_compaction_keeps_nonadvancing_generations_visible(tmp_path, monkeypatch):
+    service, _binding = _service(tmp_path, monkeypatch)
+    _send(service, "initial")
+    room, events, task = service._room("workshop"), service._events("workshop"), _queued(service)[0]
+    plan = discussion.reconstruct_task_plan(room, events, task, local_profiles=service.local_profiles())
+    for generation in (1, 3, 2):
+        publication = discussion.plan_publication(
+            room, events, plan, status="deferred", execution_generation=generation,
+            local_profiles=service.local_profiles())
+        for event in publication.events:
+            hosted_rooms.append_event(service.db_path, **event.append_kwargs("workshop"))
+        latest_seq = service._events("workshop")[-1]["seq"]
+        if generation == 2:
+            with pytest.raises(discussion.DiscussionValidationError, match="deferral generation did not advance"):
+                service.policy_checkpoint.sync(room_id="workshop", latest_seq=latest_seq)
+        else:
+            service.policy_checkpoint.sync(room_id="workshop", latest_seq=latest_seq)
 
 
 @pytest.mark.parametrize(("with_file", "gate"), [

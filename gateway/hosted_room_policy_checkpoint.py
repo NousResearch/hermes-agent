@@ -30,7 +30,9 @@ MAX_THREAD_TRANSCRIPT_EVENTS = 24
 # threaded event, discarding input addressed to a peer. Holds, threads, transcript and citation
 # state rebuild with them from the canonical log, which is unchanged.
 # 5: rebuild compacted retry handoffs without rewriting accepted task input.
-_PROJECTION_SCHEMA_VERSION = 5
+# 6: compact superseded active/transcript deferrals, including overbound persisted
+# projections, before replay reaches a completing activity's pre-handler walk.
+_PROJECTION_SCHEMA_VERSION = 6
 MAX_TRANSCRIPT_POLICY_EVENTS = MAX_THREAD_TRANSCRIPT_EVENTS * (MAX_ACTIVE_POLICY_EVENTS + 2)
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 
@@ -227,6 +229,14 @@ class HostedRoomPolicyCheckpoint:
     @staticmethod
     def _store_active_event(
         conn: sqlite3.Connection, *, event: Mapping[str, Any], thread_id: str, discussion_event_id: str) -> None:
+        if event["kind"] == "turn.deferred" and (task_id := _text(event["payload"], "task_id")):
+            # Like retry restoration, active policy needs only the latest receipt per task.
+            # Canonical and transcript history still serve older accepted/as-of context.
+            conn.execute("""DELETE FROM hosted_room_policy_events
+                WHERE room_id=? AND discussion_event_id=? AND seq<?
+                    AND json_extract(event_json, '$.kind')='turn.deferred'
+                    AND json_extract(event_json, '$.payload.task_id')=?""",
+                (event["room_id"], discussion_event_id, int(event["seq"]), task_id))
         conn.execute("""INSERT OR IGNORE INTO hosted_room_policy_events(
                    room_id, thread_id, discussion_event_id, seq, event_json
                ) VALUES (?, ?, ?, ?, ?)""",
@@ -241,6 +251,21 @@ class HostedRoomPolicyCheckpoint:
                ON CONFLICT(room_id, thread_id, seq) DO UPDATE SET
                    settled_seq=COALESCE(excluded.settled_seq, hosted_room_policy_transcript.settled_seq)""",
             (event["room_id"], thread_id, int(event["seq"]), str(event["kind"]), settled_seq))
+        if event["kind"] == "turn.deferred" and (task_id := _text(event["payload"], "task_id")):
+            # Immutable retries repeat the same watermark. Keep its FIRST position for
+            # legacy pre-publication reconstruction, and the latest effective receipt.
+            # Leave nonadvancing generations visible to the ordinary policy validation.
+            conn.execute("""WITH receipts AS (
+                SELECT transcript.seq, json_extract(events.payload_json, '$.execution_generation') AS generation
+                FROM hosted_room_policy_transcript AS transcript
+                JOIN hosted_room_events AS events ON events.room_id=transcript.room_id AND events.seq=transcript.seq
+                WHERE transcript.room_id=? AND transcript.thread_id=? AND transcript.kind='turn.deferred'
+                    AND json_extract(events.payload_json, '$.task_id')=?)
+                DELETE FROM hosted_room_policy_transcript WHERE room_id=? AND thread_id=?
+                    AND seq IN (SELECT seq FROM receipts
+                        WHERE seq>(SELECT MIN(seq) FROM receipts) AND seq<? AND generation<?)""",
+                (event["room_id"], thread_id, task_id, event["room_id"], thread_id,
+                 int(event["seq"]), event["payload"]["execution_generation"]))
         if event["kind"] in {"message.user", "message.member"}:
             cutoff = conn.execute("""SELECT seq FROM hosted_room_policy_transcript
                    WHERE room_id=? AND thread_id=? AND kind IN ('message.user', 'message.member')
@@ -250,6 +275,22 @@ class HostedRoomPolicyCheckpoint:
                 conn.execute(
                     "DELETE FROM hosted_room_policy_transcript WHERE room_id=? AND thread_id=? AND seq<?",
                     (event["room_id"], thread_id, int(cutoff["seq"])))
+                # If the window trimmed a task's first receipt, recover its earliest
+                # still-in-window canonical reference. Its intermediate generations
+                # may have been compacted before this cutoff moved past the first.
+                conn.execute("""WITH retained AS (
+                    SELECT json_extract(events.payload_json, '$.task_id') AS task_id, MAX(transcript.seq) AS through_seq
+                    FROM hosted_room_policy_transcript AS transcript
+                    JOIN hosted_room_events AS events ON events.room_id=transcript.room_id AND events.seq=transcript.seq
+                    WHERE transcript.room_id=? AND transcript.thread_id=? AND transcript.kind='turn.deferred'
+                    GROUP BY json_extract(events.payload_json, '$.task_id'))
+                    INSERT OR IGNORE INTO hosted_room_policy_transcript(room_id, thread_id, seq, kind)
+                    SELECT ?, ?, MIN(publications.seq), 'turn.deferred'
+                    FROM retained JOIN hosted_room_policy_publications AS publications ON publications.task_id=retained.task_id
+                    WHERE publications.room_id=? AND publications.kind='turn.deferred'
+                        AND publications.seq>=? AND publications.seq<=retained.through_seq
+                    GROUP BY retained.task_id""",
+                    (event["room_id"], thread_id, event["room_id"], thread_id, event["room_id"], int(cutoff["seq"])))
 
     def _backfill_transcript(self, conn: sqlite3.Connection, *, room_id: str, through_seq: int) -> None:
         """Migrate bounded committed thread history from the durable room log."""

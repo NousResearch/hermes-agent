@@ -162,6 +162,27 @@ def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, 
     assert "ChatGPT-Account-Id" not in calls[0]["headers"]
 
 
+def test_anthropic_usage_keeps_provider_percent_points(monkeypatch):
+    """Anthropic's usage API reports utilization as percent points, not a fraction."""
+    payload = {
+        "five_hour": {"utilization": 1.0, "resets_at": "2026-09-05T21:30:00Z"},
+        "seven_day": {"utilization": 20.0, "resets_at": "2026-09-10T21:00:00Z"},
+    }
+    calls = []
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "sk-ant-oat-test-token")
+    monkeypatch.setattr(account_usage, "_is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, payload),
+    )
+
+    snapshot = account_usage.fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    assert [window.used_percent for window in snapshot.windows] == [1.0, 20.0]
+
+
 
 
 # ── Banked rate-limit reset credits (`/usage reset`) ─────────────────────────

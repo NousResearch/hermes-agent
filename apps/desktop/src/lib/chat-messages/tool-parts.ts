@@ -9,6 +9,7 @@ function toolId(payload: GatewayEventPayload | undefined): string {
 }
 
 let liveToolCounter = 0
+const stableIndexLengths = new WeakMap<Map<string, number>, number>()
 
 function nextLiveToolId(name: string): string {
   liveToolCounter += 1
@@ -154,20 +155,52 @@ function hasToolMatchOverlap(left: string[], right: string[]): boolean {
   return left.some(value => rightSet.has(value))
 }
 
+function synchronizeStableIndices(parts: ChatMessagePart[], stableIndices: Map<string, number>): void {
+  if (stableIndexLengths.get(stableIndices) === parts.length) {
+    return
+  }
+
+  stableIndices.clear()
+
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index]
+
+    if (part?.type === 'tool-call' && part.toolCallId) {
+      stableIndices.set(part.toolCallId, index)
+    }
+  }
+
+  stableIndexLengths.set(stableIndices, parts.length)
+}
+
 function findToolPartIndex(
   parts: ChatMessagePart[],
   name: string,
   stableId: string,
   payload: GatewayEventPayload | undefined,
-  phase: 'running' | 'complete'
+  phase: 'running' | 'complete',
+  stableIndices?: Map<string, number>
 ): number {
   const matchValues = toolPayloadMatchValues(payload)
   const overlaps = (index: number) => hasToolMatchOverlap(matchValues, toolPartMatchValues(parts[index]))
 
   if (stableId) {
-    const stableIndex = parts.findIndex(part => part.type === 'tool-call' && part.toolCallId === stableId)
+    if (stableIndices) {
+      synchronizeStableIndices(parts, stableIndices)
+    }
+
+    const cachedIndex = stableIndices?.get(stableId)
+    const cachedPart = cachedIndex === undefined ? undefined : parts[cachedIndex]
+
+    const stableIndex = stableIndices
+      ? cachedPart?.type === 'tool-call' && cachedPart.toolCallId === stableId
+        ? (cachedIndex as number)
+        : -1
+      : parts.findIndex(part => part.type === 'tool-call' && part.toolCallId === stableId)
 
     if (stableIndex >= 0) {
+      stableIndices?.set(stableId, stableIndex)
+
       return stableIndex
     }
 
@@ -286,21 +319,26 @@ function completeOpenStreamParts(parts: ChatMessagePart[], completedAt: number):
   )
 }
 
+function completeOpenStreamTail(parts: ChatMessagePart[], completedAt: number, next: ChatMessagePart[]): void {
+  const index = parts.length - 1
+  const tail = parts[index]
+
+  if ((tail?.type === 'text' || tail?.type === 'reasoning') && tail.completedAt === undefined) {
+    next[index] = { ...tail, completedAt } as ChatMessagePart
+  }
+}
+
 export function upsertToolPart(
   parts: ChatMessagePart[],
   payload: GatewayEventPayload | undefined,
   phase: 'running' | 'complete',
-  occurredAt = Date.now() / 1000
+  occurredAt = Date.now() / 1000,
+  stableIndices?: Map<string, number>
 ): ChatMessagePart[] {
   const stableId = toolId(payload)
   const name = payload?.name || 'tool'
-  // A completion can be the first tool event observed after reconnect, so it
-  // also constitutes a text/reasoning -> tool boundary when no start arrived.
-  const next = completeOpenStreamParts(parts, occurredAt)
-
-  const index = findToolPartIndex(next, name, stableId, payload, phase)
-
-  const prev = index >= 0 ? next[index] : null
+  const index = findToolPartIndex(parts, name, stableId, payload, phase, stableIndices)
+  const prev = index >= 0 ? parts[index] : null
   const prevArgs = prev && 'args' in prev ? prev.args : undefined
   const prevResult = prev && 'result' in prev ? prev.result : undefined
   const args = toolArgs(payload, prevArgs)
@@ -324,11 +362,24 @@ export function upsertToolPart(
     })
   } satisfies ChatMessagePart
 
+  const next = parts.slice()
+  // A completion can be the first tool event observed after reconnect, so it
+  // also constitutes a text/reasoning -> tool boundary when no start arrived.
+  completeOpenStreamTail(parts, occurredAt, next)
+
   if (index === -1) {
-    return [...next, base]
+    stableIndices?.set(id, next.length)
+    next.push(base)
+
+    if (stableIndices) {
+      stableIndexLengths.set(stableIndices, next.length)
+    }
+
+    return next
   }
 
-  next[index] = { ...next[index], ...base }
+  next[index] = { ...parts[index], ...base }
+  stableIndices?.set(id, index)
 
   return next
 }

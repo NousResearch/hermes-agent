@@ -189,6 +189,7 @@ export function useMessageStream({
   )
 
   const queuedDeltasRef = useRef<Map<string, QueuedStreamDelta[]>>(new Map())
+  const toolPartIndicesRef = useRef<Map<string, Map<string, number>>>(new Map())
   const flushHandleRef = useRef<number | null>(null)
   const lastFlushAtRef = useRef<number>(0)
   // What the previous flush cost on the main thread — drives the adaptive
@@ -480,10 +481,17 @@ export function useMessageStream({
         }
       }
 
+      let stableIndices = toolPartIndicesRef.current.get(sessionId)
+
+      if (!stableIndices) {
+        stableIndices = new Map()
+        toolPartIndicesRef.current.set(sessionId, stableIndices)
+      }
+
       mutateStream(
         sessionId,
-        parts => dedupeGeneratedImageEchoesInParts(upsertToolPart(parts, payload, phase, occurredAt)),
-        () => upsertToolPart([], payload, phase, occurredAt),
+        parts => dedupeGeneratedImageEchoesInParts(upsertToolPart(parts, payload, phase, occurredAt, stableIndices)),
+        () => upsertToolPart([], payload, phase, occurredAt, stableIndices),
         { pending: m => phase !== 'complete' || (m.pending ?? false) },
         occurredAt
       )

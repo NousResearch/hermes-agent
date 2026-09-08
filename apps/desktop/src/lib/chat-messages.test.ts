@@ -710,6 +710,42 @@ describe('preserveLocalAssistantErrors', () => {
 })
 
 describe('upsertToolPart', () => {
+  it('updates a stable-id row without scanning a warm tool timeline', () => {
+    const raw = Array.from({ length: 2_000 }, (_, index) => toolCallPart(`call-${index}`))
+
+    const stableIndices = new Map<string, number>(
+      raw.map((part, index) => [part.type === 'tool-call' ? String(part.toolCallId) : '', index])
+    )
+
+    let fullPasses = 0
+
+    const parts = new Proxy(raw, {
+      get(target, property, receiver) {
+        if (property === 'map' || property === 'findIndex') {
+          return (...args: never[]) => {
+            fullPasses += 1
+
+            return Reflect.apply(target[property], target, args)
+          }
+        }
+
+        return Reflect.get(target, property, receiver)
+      }
+    })
+
+    const updated = upsertToolPart(
+      parts,
+      { name: 'read_file', result: { content: 'done' }, tool_id: 'call-1999' },
+      'complete',
+      102.875,
+      stableIndices
+    )
+
+    expect(updated).toHaveLength(raw.length)
+    expect(updated[1_999]).toMatchObject({ completedAt: 102.875, toolCallId: 'call-1999' })
+    expect(fullPasses).toBe(0)
+  })
+
   it('preserves call time through progress and records completion time', () => {
     const started = upsertToolPart([], { name: 'read_file', tool_id: 'call-1' }, 'running', 100.125)
 

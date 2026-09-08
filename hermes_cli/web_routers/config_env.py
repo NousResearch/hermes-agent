@@ -22,6 +22,7 @@ from hermes_cli.web_server_profiles import (
 from fastapi import HTTPException, Request
 from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, redact_key, _deep_merge
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
+from hermes_cli.web_server_messaging import _refuse_if_env_key_managed, _refuse_if_managed_platform_config_changed
 from typing import Any, Dict, List, Optional, Tuple
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -119,6 +120,7 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
                 existing = read_raw_config()
                 incoming = _denormalize_config_from_web(body.config)
                 merged = _deep_merge(existing, incoming)
+                _refuse_if_managed_platform_config_changed(existing, merged)
                 # Compare normalized approvals.mode across the in-memory
                 # documents, not config blocks and not cache re-reads: the page
                 # PUTs the defaulted GET record while disk holds sparse YAML (a
@@ -273,6 +275,7 @@ def _get_env_vars_sync(profile: Optional[str] = None):
 
 @router.put("/api/env")
 async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
+    _refuse_if_env_key_managed(body.key)
     # Unified credential lifecycle: writes .env AND reconciles any config.yaml
     # mirror still holding the previous value of this var (model.api_key /
     # auxiliary.*.api_key / custom_providers[*]), so a rotation can't leave a
@@ -697,6 +700,7 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
 
 @router.delete("/api/env")
 async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
+    _refuse_if_env_key_managed(body.key)
     # Unified credential lifecycle: clears the .env entry AND every mirror of
     # the credential — env-seeded credential_pool entries in auth.json (stale
     # ones kept providers alive in the model picker), the affected providers'

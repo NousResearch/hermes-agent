@@ -169,7 +169,10 @@ _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
     "HERMES_YOLO_MODE", "HERMES_ACCEPT_HOOKS", "HERMES_REDACT_SECRETS",
     "HERMES_INTERACTIVE", "HERMES_EXEC_ASK", "HERMES_GATEWAY_SESSION",
     "HERMES_CRON_SESSION", "HERMES_SINGLE_QUERY_SESSION",
-    "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM"})
+    "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM",
+    # Host-declared channel ownership stamps (hermes_cli.managed_platforms): a user write
+    # here would switch the dashboard lock off.
+    "HERMES_MANAGED_PLATFORMS", "HERMES_MANAGED_PLATFORMS_LABEL"})
 
 
 def _env_var_policy_name(key: str, *, is_windows: Optional[bool] = None) -> str:

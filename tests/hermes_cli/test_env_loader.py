@@ -3,6 +3,8 @@ import importlib
 import os
 import sys
 
+import pytest
+
 from hermes_cli.env_loader import load_hermes_dotenv
 
 
@@ -461,6 +463,39 @@ def test_export_prefixed_known_key_in_user_env_is_kept(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
     load_hermes_dotenv(hermes_home=home)
     assert os.getenv("HERMES_ACP_AUTH_METHOD") == "claude_code_cli"
+
+
+@pytest.mark.parametrize("launch_platforms", ["telegram:native,discord:relay", None])
+def test_host_channel_stamps_keep_their_launch_value_over_user_env(tmp_path, monkeypatch, launch_platforms):
+    """A hosting layer injects HERMES_MANAGED_PLATFORMS into the process env. The user .env loads with
+    override, so a line assigning the stamp there would switch the dashboard lock off (or invent one):
+    the value the process launched with is re-asserted after the load. The portal URL the locked cards
+    link to gets the same treatment only under a declaration; without one it stays a user setting."""
+    from hermes_cli import env_loader
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "HERMES_MANAGED_PLATFORMS=\nHERMES_MANAGED_PLATFORMS_LABEL=Elsewhere\n"
+        "HERMES_DASHBOARD_PORTAL_URL=https://elsewhere.example\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(env_loader, "_HOST_STAMPS_AT_LAUNCH", None)
+    monkeypatch.delenv("HERMES_MANAGED_PLATFORMS_LABEL", raising=False)
+    monkeypatch.setenv("HERMES_DASHBOARD_PORTAL_URL", "https://portal.example")
+    if launch_platforms is None:
+        monkeypatch.delenv("HERMES_MANAGED_PLATFORMS", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_MANAGED_PLATFORMS", launch_platforms)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.environ.get("HERMES_MANAGED_PLATFORMS") == launch_platforms
+    assert "HERMES_MANAGED_PLATFORMS_LABEL" not in os.environ
+    host_owned = launch_platforms is not None
+    assert os.environ["HERMES_DASHBOARD_PORTAL_URL"] == (
+        "https://portal.example" if host_owned else "https://elsewhere.example"
+    )
 
 
 def test_shell_exported_credentials_survive_cleanup(tmp_path, monkeypatch):

@@ -2367,6 +2367,7 @@ export interface Translations {
     loopPromptPlaceholder: string
     intervalLabel: string
     intervalSeconds: string
+    loopMinIntervalError: (min: number) => string
     runLimitLabel: string
     runLimitOptional: string
     stopConditionLabel: string

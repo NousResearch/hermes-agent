@@ -80,6 +80,7 @@ export interface SessionControlSnapshot {
   goal: SessionControlGoal | null
   heartbeat: SessionControlHeartbeat | null
   loop: SessionControlLoop | null
+  loop_min_interval_seconds?: number
   revision: string
   updated_at: number
 }
@@ -476,11 +477,21 @@ function parseHeartbeat(value: unknown): SessionControlHeartbeat | null {
 
 /** Parses the stable allowlisted backend shape into fresh renderer-owned data. */
 export function parseSessionControlSnapshot(value: unknown): SessionControlSnapshot | null {
-  if (!isRecord(value) || !hasExactFields(value, ['goal', 'loop', 'heartbeat', 'revision', 'updated_at'])) {
+  if (
+    !isRecord(value) ||
+    !hasExactFields(value, ['goal', 'loop', 'heartbeat', 'revision', 'updated_at'], ['loop_min_interval_seconds'])
+  ) {
     return null
   }
 
   if (typeof value.revision !== 'string' || !isFiniteNumber(value.updated_at)) {
+    return null
+  }
+
+  if (
+    hasOwn(value, 'loop_min_interval_seconds') &&
+    (!isInteger(value.loop_min_interval_seconds) || value.loop_min_interval_seconds < 5)
+  ) {
     return null
   }
 
@@ -492,7 +503,14 @@ export function parseSessionControlSnapshot(value: unknown): SessionControlSnaps
     return null
   }
 
-  return { goal, heartbeat, loop, revision: value.revision, updated_at: value.updated_at }
+  return {
+    goal,
+    heartbeat,
+    loop,
+    ...(hasOwn(value, 'loop_min_interval_seconds') ? { loop_min_interval_seconds: value.loop_min_interval_seconds as number } : {}),
+    revision: value.revision,
+    updated_at: value.updated_at
+  }
 }
 
 function parseSessionControlDispatch(value: unknown): SessionControlDispatch | null {

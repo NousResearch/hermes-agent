@@ -2940,6 +2940,7 @@ export const zh: Translations = {
     loopPromptPlaceholder: 'Hermes 每次轮询应该做什么？',
     intervalLabel: '间隔',
     intervalSeconds: '秒',
+    loopMinIntervalError: min => `循环间隔至少需要 ${min} 秒。`,
     runLimitLabel: '运行上限',
     runLimitOptional: '可选',
     stopConditionLabel: '停止条件',

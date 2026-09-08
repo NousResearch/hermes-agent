@@ -386,6 +386,36 @@ class TestHeartbeatUpdate:
         assert updates[0][2]["control"]["heartbeat"]["prompt"] == "updated"
 
 
+class TestLoopMinIntervalUpdate:
+    def test_loop_update_rejects_interval_below_backend_minimum(self, server, session, monkeypatch):
+        from hermes_cli.loops import LoopState, save_loop
+        sid, key, _ = session
+        save_loop(key, LoopState(
+            prompt="original", status="active", mode="interval",
+            interval_seconds=60, current_delay=60, created_at=100.0,
+        ))
+        _forbid_dispatch(server, monkeypatch)
+        err = _error(_call(server, "session.control", session_id=sid, action="loop.update", args={
+            "prompt": "updated", "interval_seconds": 10,
+        }))
+        assert err["code"] == 4004
+        assert "30" in err["message"]
+
+    def test_loop_update_allows_interval_at_backend_minimum(self, server, session, monkeypatch):
+        from hermes_cli.loops import LoopState, save_loop
+        sid, key, _ = session
+        save_loop(key, LoopState(
+            prompt="original", status="active", mode="interval",
+            interval_seconds=60, current_delay=60, created_at=100.0,
+        ))
+        _forbid_dispatch(server, monkeypatch)
+        response = _call(server, "session.control", session_id=sid, action="loop.update", args={
+            "prompt": "updated", "interval_seconds": 30,
+        })
+        assert "error" not in response
+        assert response["result"]["control"]["loop"]["interval_seconds"] >= 30
+
+
 class TestUpdateUnknownSession:
     def test_update_returns_4004_for_missing_target(self, server):
         for action in ("goal.update", "loop.update", "heartbeat.update"):

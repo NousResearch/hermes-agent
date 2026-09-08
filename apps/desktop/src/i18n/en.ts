@@ -2778,6 +2778,7 @@ export const en: Translations = {
     loopPromptPlaceholder: 'What should Hermes do on every tick?',
     intervalLabel: 'Interval',
     intervalSeconds: 'seconds',
+    loopMinIntervalError: min => `Loop interval must be at least ${min} seconds.`,
     runLimitLabel: 'Run limit',
     runLimitOptional: 'optional',
     stopConditionLabel: 'Stop condition',

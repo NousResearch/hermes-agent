@@ -209,6 +209,54 @@ describe('AutomationComposerDialog', () => {
     expect(screen.getByText(/idle/i)).toBeTruthy()
   })
 
+  it('shows loop min interval error and disables Start when interval is below backend minimum', async () => {
+    $sessionControlBySession.set({
+      'session-123': {
+        capability: 'supported',
+        snapshot: {
+          goal: null,
+          loop: null,
+          heartbeat: null,
+          loop_min_interval_seconds: 30,
+          revision: 'r1',
+          updated_at: 1
+        }
+      }
+    } as never)
+    await renderDialog()
+    act(() => openAs('loop'))
+    await screen.findByRole('dialog')
+    fireEvent.change(screen.getByLabelText(/loop prompt/i), { target: { value: 'Poll CI' } })
+    fireEvent.change(screen.getByLabelText(/interval/i), { target: { value: '10' } })
+    expect(await screen.findByText(/at least 30 seconds/i)).toBeTruthy()
+    expect((screen.getByRole('button', { name: /start loop/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('keeps loop dialog open with entered value and visible error on invalid interval', async () => {
+    $sessionControlBySession.set({
+      'session-123': {
+        capability: 'supported',
+        snapshot: {
+          goal: null,
+          loop: null,
+          heartbeat: null,
+          loop_min_interval_seconds: 30,
+          revision: 'r1',
+          updated_at: 1
+        }
+      }
+    } as never)
+    await renderDialog()
+    act(() => openAs('loop'))
+    await screen.findByRole('dialog')
+    fireEvent.change(screen.getByLabelText(/loop prompt/i), { target: { value: 'Poll CI' } })
+    fireEvent.change(screen.getByLabelText(/interval/i), { target: { value: '10' } })
+    await screen.findByText(/at least 30 seconds/i)
+    fireEvent.click(screen.getByRole('button', { name: /start loop/i }))
+    expect(runSessionControlAction).not.toHaveBeenCalled()
+    expect($automationComposer.get().open).toBe(true)
+  })
+
   it('submits goal.create and closes on success', async () => {
     vi.mocked(runSessionControlAction).mockResolvedValueOnce({
       type: 'send',
@@ -313,6 +361,28 @@ describe('AutomationComposerDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /start goal/i }))
     expect(runSessionControlAction).not.toHaveBeenCalled()
     expect($automationComposer.get().open).toBe(true)
+  })
+
+  it('allows interval below 30 when snapshot has no loop_min_interval_seconds (legacy backend)', async () => {
+    $sessionControlBySession.set({
+      'session-123': {
+        capability: 'supported',
+        snapshot: {
+          goal: null,
+          loop: null,
+          heartbeat: null,
+          revision: 'r1',
+          updated_at: 1
+        }
+      }
+    } as never)
+    await renderDialog()
+    act(() => openAs('loop'))
+    await screen.findByRole('dialog')
+    fireEvent.change(screen.getByLabelText(/loop prompt/i), { target: { value: 'Poll CI' } })
+    fireEvent.change(screen.getByLabelText(/interval/i), { target: { value: '10' } })
+    expect(screen.queryByText(/at least/)).toBeNull()
+    expect((screen.getByRole('button', { name: /start loop/i }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('links to the cron UI from the dialog', async () => {

@@ -109,6 +109,39 @@ describe('session-control store', () => {
     expect(parsed!.goal!.wait_barrier).toEqual({ reason: 'waiting for deploy', type: 'until', until_at: 1_700_000_200 })
   })
 
+  it('accepts a legacy snapshot without loop_min_interval_seconds', () => {
+    const legacy = { ...FULL_SNAPSHOT }
+    delete (legacy as Record<string, unknown>).loop_min_interval_seconds
+
+    const parsed = parseSessionControlSnapshot(legacy)
+
+    expect(parsed).not.toBeNull()
+    expect(parsed!.loop_min_interval_seconds).toBeUndefined()
+    expect(parsed!.revision).toBe(FULL_SNAPSHOT.revision)
+    expect(parsed!.loop!.interval_seconds).toBe(300)
+  })
+
+  it('accepts a snapshot with loop_min_interval_seconds and preserves the value', () => {
+    const withMin = { ...FULL_SNAPSHOT, loop_min_interval_seconds: 15 }
+
+    const parsed = parseSessionControlSnapshot(withMin)
+
+    expect(parsed).not.toBeNull()
+    expect(parsed!.loop_min_interval_seconds).toBe(15)
+  })
+
+  it('rejects a snapshot with a non-integer loop_min_interval_seconds', () => {
+    const bad = { ...FULL_SNAPSHOT, loop_min_interval_seconds: 29.5 }
+
+    expect(parseSessionControlSnapshot(bad)).toBeNull()
+  })
+
+  it('rejects a snapshot below the backend minimum floor', () => {
+    const bad = { ...FULL_SNAPSHOT, loop_min_interval_seconds: 4 }
+
+    expect(parseSessionControlSnapshot(bad)).toBeNull()
+  })
+
   it.each([
     ['unknown goal status', { ...FULL_SNAPSHOT, goal: { ...FULL_SNAPSHOT.goal!, status: 'waiting' } }],
     ['non-finite top-level timestamp', { ...FULL_SNAPSHOT, updated_at: Number.NaN }],

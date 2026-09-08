@@ -82,6 +82,7 @@ let jumpRaf = 0
 
 export function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
   cancelAnimationFrame(jumpRaf)
+
   if (prefersReducedMotion()) {
     viewport.scrollTop = top
 
@@ -240,6 +241,7 @@ const ActiveThreadTimeline: FC = () => {
 
     pendingJumpRef.current = null
   }, [])
+
   const revealScopeRef = useRef(revealScope)
 
   useLayoutEffect(() => {

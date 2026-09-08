@@ -244,6 +244,44 @@ def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> in
     return fallback
 
 
+def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> Any:
+    """Stamp ``{turn_id, current_turn_user_idx}`` on a result envelope, proven against the
+    exact ``result["messages"]`` projection it travels with.
+
+    Hosts that settle their own transcript by index (hermes-webui) must never guess which
+    row is the current user turn after this loop rewrote history (alternation repair,
+    compaction, post-turn micro-compaction): a guessed index or a text match can relabel an
+    identical historical prompt and claim its old answer as this turn's. So the producer
+    exports the coordinate, computed on the final list, only when the addressed row is this
+    turn's user message verbatim. Otherwise the keys are omitted and hosts fail closed.
+    Also mirrors the final index into ``_persist_user_message_idx`` so the persist override
+    targets the surviving row after post-turn micro-compaction.
+    """
+    if not isinstance(result, dict):
+        return result
+    messages = result.get("messages")
+    turn_id = str(getattr(agent, "_current_turn_id", "") or "")
+    if not isinstance(messages, list) or not turn_id or user_message is None:
+        return result
+    idx = reanchor_current_turn_user_idx(messages, user_message)
+    if idx < 0 or idx >= len(messages):
+        return result
+    row = messages[idx]
+    if not (isinstance(row, dict) and row.get("role") == "user"):
+        return result
+    from agent.context_compressor import user_originated_turn_view
+
+    live_view = user_originated_turn_view(row)
+    if row.get("content") != user_message and not (
+        isinstance(live_view, dict) and live_view.get("content") == user_message
+    ):
+        return result  # rewritten (merge-into-tail) row: not a proven boundary
+    result["turn_id"] = turn_id
+    result["current_turn_user_idx"] = idx
+    agent._persist_user_message_idx = idx
+    return result
+
+
 def compression_made_progress(
     orig_len: int, new_len: int, orig_tokens: int, new_tokens: int
 ) -> bool:

@@ -193,6 +193,11 @@ def prepare_iteration(
         # a stale anchor injects prefetch into a historical row and makes hosts that settle
         # their transcript by this index (hermes-webui) write the current turn to the FRONT
         # of the context, rewriting the prompt's leading messages every turn.
+        # reanchor_current_turn_user_idx scans from the tail: with two identical user
+        # rows it resolves to the LAST one, i.e. this turn, never the historical copy.
+        # Without the message text the index cannot be re-derived; leave it (an
+        # out-of-range index is detectably stale, a clamped one would silently target
+        # a wrong row).
         _reanchored_idx = (
             reanchor_current_turn_user_idx(messages, user_message) if user_message is not None
             else current_turn_user_idx

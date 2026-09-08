@@ -394,6 +394,26 @@ describe('revalidatePooledRemoteBackends', () => {
     expect(pool.stopBackend).toHaveBeenCalledWith('coder')
   })
 
+  it('counts one host failure once when several profiles share its descriptor', async () => {
+    const pool = harness([
+      ['coder', { process: null, remoteBaseUrl: 'https://remote.example.com' }],
+      ['writer', { process: null, remoteBaseUrl: 'https://remote.example.com/' }],
+      ['reviewer', { process: null, remoteBaseUrl: 'https://remote.example.com' }]
+    ])
+
+    pool.unreachable.add('https://remote.example.com')
+    const tracker = new RemoteLivenessTracker()
+
+    await expect(pool.run(tracker)).resolves.toEqual({ dropped: [] })
+    expect(pool.probe).toHaveBeenCalledTimes(1)
+    expect(pool.stopBackend).not.toHaveBeenCalled()
+
+    await expect(pool.run(tracker)).resolves.toEqual({ dropped: [] })
+    await expect(pool.run(tracker)).resolves.toEqual({ dropped: ['coder', 'writer', 'reviewer'] })
+    expect(pool.probe).toHaveBeenCalledTimes(REMOTE_LIVENESS_FAILURE_LIMIT)
+    expect(pool.stopBackend).toHaveBeenCalledTimes(3)
+  })
+
   it('clears the streak when the host answers again', async () => {
     const pool = harness([['coder', { process: null, remoteBaseUrl: 'https://remote.example.com' }]])
     const tracker = new RemoteLivenessTracker()

@@ -205,11 +205,20 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
   tracker
 }: RevalidatePooledRemoteBackendsOptions<TConnection>): Promise<{ dropped: string[] }> {
   const remotes = [...entries].filter(([, entry]) => !entry.process && entry.remoteBaseUrl)
+  const remotesByBaseUrl = new Map<string, typeof remotes>()
   const dropped: string[] = []
 
+  for (const remote of remotes) {
+    const baseUrl = String(remote[1].remoteBaseUrl).replace(/\/+$/, '')
+    const siblings = remotesByBaseUrl.get(baseUrl) ?? []
+
+    siblings.push(remote)
+    remotesByBaseUrl.set(baseUrl, siblings)
+  }
+
   await Promise.all(
-    remotes.map(async ([profile, entry]) => {
-      const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
+    [...remotesByBaseUrl].map(async ([baseUrl, siblings]) => {
+      const [profile, entry] = siblings[0]
 
       try {
         if (!entry.connectionPromise) {
@@ -231,8 +240,11 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
         }
 
         log(`Pooled remote backend for profile "${profile}" failed liveness probe; dropping stale descriptor.`)
-        stopBackend(profile)
-        dropped.push(profile)
+
+        for (const [siblingProfile] of siblings) {
+          stopBackend(siblingProfile)
+          dropped.push(siblingProfile)
+        }
       }
     })
   )

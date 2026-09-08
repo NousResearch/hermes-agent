@@ -20,6 +20,7 @@ except ImportError:
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+from gateway.platforms.api_server_room_admission import RoomAdmissionFenced, room_admission_guard
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -431,10 +432,18 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     initial_status = self._set_run_status(
         run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
     if idempotency_key:
-        outcome, record = self._run_idempotency_store.reserve(
-            idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
-            owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
-            retention_until=_room_retention_until(request))
+        try:
+            with room_admission_guard(self, request) as guard:
+                outcome, record = self._run_idempotency_store.reserve(
+                    idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
+                    owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
+                    retention_until=_room_retention_until(request), **({"before_create": guard} if guard is not None else {}))
+        except Exception as exc:
+            _forget_run(self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
+                        self._run_statuses, self._run_owners)
+            if isinstance(exc, RoomAdmissionFenced):
+                return _json_error(_openai_error, str(exc), code="room_admission_fenced", status=403)
+            raise
         if outcome != "created":
             _forget_run(
                 self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,

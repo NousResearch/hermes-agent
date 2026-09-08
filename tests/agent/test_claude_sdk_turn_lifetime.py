@@ -317,6 +317,7 @@ class TestTurnLifetime:
             session.close()
         assert turn.error is None
         assert turn.should_retire is False
+        assert turn.interrupted is False
         assert turn.final_text == "the answer"
 
     def test_success_ack_without_prior_text_stays_a_trip(self):

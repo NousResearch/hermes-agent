@@ -1,5 +1,6 @@
 """Fresh state.db FTS bootstrap must honor cross-process rebuild admission."""
 
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,17 @@ with fts_rebuild_admission(Path(sys.argv[1]), timeout_seconds=0) as acquired:
     print("locked", flush=True)
     time.sleep(30)
 """
+
+
+def _trigram_supported() -> bool:
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("CREATE VIRTUAL TABLE trigram_probe USING fts5(content, tokenize='trigram')")
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        conn.close()
+    return True
 
 
 def test_fresh_fts_bootstrap_does_not_publish_schema_without_admission(tmp_path, monkeypatch):
@@ -53,6 +65,11 @@ def test_fresh_fts_bootstrap_does_not_publish_schema_without_admission(tmp_path,
     try:
         assert recovered._fts_stale is False
         assert recovered._fts_enabled is True
+        if _trigram_supported():
+            assert recovered._trigram_available is True
+            assert recovered._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'messages_fts_trigram'"
+            ).fetchone() is not None
         recovered.create_session("s1", source="test")
         recovered.append_message("s1", "user", "fresh bootstrap recovered")
         assert recovered.search_messages("recovered")

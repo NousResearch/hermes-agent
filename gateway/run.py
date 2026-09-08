@@ -2852,11 +2852,16 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
 
 
 def _parse_session_key(session_key: str) -> "dict | None":
-    """Parse a session key (``agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
+    """Parse a session key (``agent:<ns>:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
+
+    ``<ns>`` is the profile namespace (``main`` for the default/None profile, or a named profile
+    under multiplexing — see ``_session_key_namespace`` in ``gateway/session.py``). Accepting any
+    non-empty namespace means named-profile keys (``agent:<profile>:...``) parse the same way the
+    default ``agent:main:...`` keys always have, instead of being rejected (#105931).
     For group/channel sessions the suffix may be a user_id, not a thread_id, so ``thread_id`` is omitted.
     """
     parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+    if len(parts) >= 5 and parts[0] == "agent" and parts[1]:
         result = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]

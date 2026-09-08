@@ -595,7 +595,6 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     await self._abandon_native_stream()
                     return
                 tick = self._drain_queue()
-
                 # Boundary produces its own finalize and resets state, so it must
                 # run before got_done/segment_break processing.
                 if tick.approval_boundary is not None:

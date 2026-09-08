@@ -1190,8 +1190,182 @@ def test_find_windows_gateway_services_rejects_transitional_ancestor(monkeypatch
         )
 
 
+def test_find_windows_gateway_services_ignores_indeterminate_system_service(monkeypatch):
+    """A system service mid-transition (stop_pending/start_pending) must NOT abort the update
+    via the indeterminate-status guard — it is not a Hermes service at all. Complements
+    ``test_find_windows_gateway_services_rejects_transitional_ancestor`` which pins the
+    fail-closed path for a *whitelisted* (Hermes) service.
+    """
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
+
+    class FakeService:
+        def __init__(self, status):
+            self.status = status
+
+        def as_dict(self):
+            return {"name": "Schedule", "pid": 100, "status": self.status}
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def parents(self):
+            return [FakeProcess(100)]
+
+        def children(self, recursive=False):
+            return []
+
+        def create_time(self):
+            return float(self.pid)
+
+    fake_psutil = SimpleNamespace(
+        win_service_iter=lambda: [FakeService("stop_pending"), FakeService("start_pending")],
+        Process=FakeProcess,
+    )
+
+    # Both indeterminate states are ignored entirely — no raise, no match.
+    assert gateway.find_windows_gateway_services(
+        psutil_module=fake_psutil, profile_processes=[profile],
+    ) == []
+
+
 def test_find_windows_gateway_services_rejects_shared_service_host_pid(monkeypatch):
-    """A shared host PID cannot prove which service owns the gateway subtree."""
+    """Two Hermes-named SCM services sharing one host PID cannot prove which owns the gateway subtree.
+    The host-PID guard fires before the name whitelist enters the picture; both names pass the whitelist
+    but the structural proof (single-service-on-host) fails closed."""
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
+
+    class FakeService:
+        def __init__(self, name):
+            self.name = name
+
+        def as_dict(self):
+            return {"name": self.name, "pid": 100, "status": "running"}
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def parents(self):
+            # Two host PIDs, one of which is shared between the two Hermes-named services.
+            # The shared one (100) must trigger the fail-closed guard.
+            return [FakeProcess(100), FakeProcess(99)]
+
+        def children(self, recursive=False):
+            # Use the unambiguous host PID 99 as the source of the gateway descendant set.
+            assert self.pid == 99
+            return [FakeProcess(200), FakeProcess(300)]
+
+        def create_time(self):
+            return float(self.pid)
+
+    fake_psutil = SimpleNamespace(
+        win_service_iter=lambda: [FakeService("HermesGateway"), FakeService("HermesGateway-default")],
+        Process=FakeProcess,
+    )
+
+    with pytest.raises(RuntimeError, match="shared SCM host"):
+        gateway.find_windows_gateway_services(
+            psutil_module=fake_psutil,
+            profile_processes=[profile],
+        )
+
+
+def test_find_windows_gateway_services_rejects_windows_system_services(monkeypatch):
+    """System services that share a single SCM host PID with a gateway ancestor must NOT be
+    treated as a Hermes gateway service. Covers the ``sc.exe stop Schedule`` bug: a svchost
+    hosting ``Schedule`` (Task Scheduler) sits in a Windows service's parent chain, and the
+    SCM host-PID ancestry alone is not enough to prove Hermes ownership. Without the name
+    whitelist the updater's pause path would invoke ``sc.exe stop Schedule``, which requires
+    SYSTEM and aborts the update.
+    """
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
+
+    class FakeService:
+        def __init__(self, name):
+            self.name = name
+
+        def as_dict(self):
+            return {"name": self.name, "pid": 100, "status": "running"}
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def parents(self):
+            return [FakeProcess(100)]
+
+        def children(self, recursive=False):
+            # The whitelist rejects Schedule before descendants are checked, but mirror the
+            # real layout (a real svchost hosting Schedule never spawns the gateway, so this
+            # branch would never return the gateway PID either way).
+            return []
+
+        def create_time(self):
+            return float(self.pid)
+
+    fake_psutil = SimpleNamespace(
+        win_service_iter=lambda: [
+            FakeService("Schedule"),
+            FakeService("RpcSs"),
+            FakeService("W32Time"),
+            FakeService("BFE"),
+        ],
+        Process=FakeProcess,
+    )
+
+    # No service should match — return [] rather than raise, so the updater's pause path sees
+    # an empty SCM list and proceeds to the cold-start / restart branch.
+    assert gateway.find_windows_gateway_services(
+        psutil_module=fake_psutil, profile_processes=[profile],
+    ) == []
+
+
+def test_find_windows_gateway_services_matches_per_profile_service_name(monkeypatch):
+    """Per-profile SCM service names (``HermesGateway-<profile>``) match the whitelist."""
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    profile = SimpleNamespace(profile="work", pid=300, create_time=300.0)
+
+    class FakeService:
+        def __init__(self, name):
+            self.name = name
+
+        def as_dict(self):
+            return {"name": self.name, "pid": 100, "status": "running"}
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def parents(self):
+            return [FakeProcess(100)]
+
+        def children(self, recursive=False):
+            return [FakeProcess(200), FakeProcess(300)]
+
+        def create_time(self):
+            return float(self.pid)
+
+    fake_psutil = SimpleNamespace(
+        win_service_iter=lambda: [FakeService("HermesGateway-work")],
+        Process=FakeProcess,
+    )
+
+    result = gateway.find_windows_gateway_services(
+        psutil_module=fake_psutil, profile_processes=[profile],
+    )
+    assert [r.name for r in result] == ["HermesGateway-work"]
+    assert [r.profile for r in result] == ["work"]
+
+
+def test_find_windows_gateway_services_rejects_partial_prefix_overlap(monkeypatch):
+    """``HermesGatewaysAreCool`` (no ``-`` separator after the prefix) does NOT match.
+    Guards against prefix over-matching if Hermes ever adds a service whose name happens
+    to share the leading characters without the dash boundary.
+    """
     monkeypatch.setattr(gateway.sys, "platform", "win32")
     profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
 
@@ -1216,15 +1390,13 @@ def test_find_windows_gateway_services_rejects_shared_service_host_pid(monkeypat
             return float(self.pid)
 
     fake_psutil = SimpleNamespace(
-        win_service_iter=lambda: [FakeService("ServiceA"), FakeService("ServiceB")],
+        win_service_iter=lambda: [FakeService("HermesGatewaysAreCool")],
         Process=FakeProcess,
     )
 
-    with pytest.raises(RuntimeError, match="shared SCM host"):
-        gateway.find_windows_gateway_services(
-            psutil_module=fake_psutil,
-            profile_processes=[profile],
-        )
+    assert gateway.find_windows_gateway_services(
+        psutil_module=fake_psutil, profile_processes=[profile],
+    ) == []
 
 
 def test_find_windows_gateway_services_fails_closed_on_service_access_error(

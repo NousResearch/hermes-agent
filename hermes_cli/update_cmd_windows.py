@@ -757,13 +757,30 @@ def _pause_windows_gateway_services(service_gateways, token: dict, profiles: dic
     """Stop each SCM gateway service, recording them on *token*; roll everything back on failure.
 
     Runs after every fallible ordinary-gateway step so a failure here restores the attempted
-    services AND the already-paused ordinary gateways before re-raising."""
+    services AND the already-paused ordinary gateways before re-raising.
+
+    Defense in depth: every *service_gateways* entry must pass the same name whitelist
+    ``find_windows_gateway_services`` applies during enumeration. If a future caller passes
+    a hand-rolled WindowsGatewayService (tests, profile-create hooks, third-party plugins),
+    we refuse to invoke ``sc.exe`` on a Windows system service — better to raise here than
+    to halt the update mid-stop with a SYSTEM-only ``sc.exe stop`` error. The whitelist is
+    the single source of truth; update it in one place (``hermes_cli.gateway``).
+    """
+    from hermes_cli.gateway import _HERMES_SCM_SERVICE_NAME_PREFIXES, _is_hermes_owned_service_name
     from hermes_cli.update_cmd import _restore_windows_gateway_service, _stop_windows_gateway_service
     paused_services = []
     current_service_name = None
     try:
         for service in service_gateways:
             current_service_name = str(service.name)
+            if not _is_hermes_owned_service_name(current_service_name):
+                raise RuntimeError(
+                    f"Refusing to stop Windows service {current_service_name!r}: "
+                    "name does not match the Hermes SCM service whitelist "
+                    f"({_HERMES_SCM_SERVICE_NAME_PREFIXES!r}). This usually means a Windows "
+                    "system service (Schedule, RpcSs, ...) leaked into the gateway "
+                    "service list — abort the update and file a bug."
+                )
             _stop_windows_gateway_service(
                 current_service_name, expected_processes=tuple(getattr(service, "descendant_identities", ())),
                 expected_service_identity=(int(service.service_pid), float(service.service_create_time)),

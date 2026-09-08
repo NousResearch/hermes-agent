@@ -2526,8 +2526,29 @@ def run_one_job(
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
-            if _launch_external_cron_worker(job):
-                return True
+            # Env-passthrough resolution inside build_subprocess_env resolves credentials via
+            # get_secret() (env_passthrough.resolve_passthrough_value), which fails CLOSED when
+            # multiplexing is active and no profile secret scope is installed. The ticker thread
+            # dispatching a SECONDARY profile's job has no scope here (the in-process run path
+            # installs one at fire time), so the handoff raised UnscopedSecretError for the first
+            # passthrough-listed key it touched and the job never ran. Install the firing
+            # profile's scope around the handoff — same isolation the run path already provides.
+            _handoff_scope_token = None
+            try:
+                from agent.secret_scope import (
+                    build_profile_secret_scope, is_multiplex_active, set_secret_scope)
+                if is_multiplex_active():
+                    _handoff_scope_token = set_secret_scope(
+                        build_profile_secret_scope(_get_hermes_home()))
+            except Exception:
+                _handoff_scope_token = None
+            try:
+                if _launch_external_cron_worker(job):
+                    return True
+            finally:
+                if _handoff_scope_token is not None:
+                    from agent.secret_scope import reset_secret_scope
+                    reset_secret_scope(_handoff_scope_token)
         except Exception as handoff_error:
             error = f"Restart-safe cron worker dispatch failed: {handoff_error}"
             logger.error("Job '%s': %s", job["id"], error)

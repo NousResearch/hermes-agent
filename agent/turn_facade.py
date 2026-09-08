@@ -10,6 +10,7 @@ import uuid
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
+from agent.adaptive_reasoning import adaptive_reasoning_turn
 from agent.lazy_forward import forward as _forward
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -125,7 +126,12 @@ class TurnFacadeMixin:
 
             # Keep the ContextVar scope local (agent tokens may be observed from another thread).
             # A host that owns this thread (Hermes Console) may cancel the turn cross-thread.
-            with bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self):
+            # Admission and the review fence must finish before changing live reasoning state.
+            # Restore before relay/lease cleanup, even if that cleanup itself fails.
+            with (
+                bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self),
+                adaptive_reasoning_turn(self, user_message, moa_config=moa_config),
+            ):
                 try:
                     if lease is not None:
                         lease.start()

@@ -156,6 +156,19 @@ Circuit breaker tripped after 5 consecutive failures. Resets after 2 minutes.
 - **Platform mode**: Check API key and internet connectivity.
 - **OSS mode**: Check that your vector store (qdrant/pgvector) is running.
 
+### OSS: "Api key is used with an insecure connection" warning
+
+qdrant-client warns whenever an API key travels over plain HTTP. That is correct for
+public endpoints, but noisy for a trusted same-network deployment (Hermes and Qdrant in
+one Docker/Komodo network, no TLS termination for intra-network traffic). Opt in:
+
+```bash
+export HERMES_QDRANT_ALLOW_INSECURE=1
+```
+
+Only the qdrant-client warning is silenced, and only when explicitly set — the warning
+stays a safety net for Qdrant instances exposed to public networks.
+
 ### OSS: Qdrant connection refused
 
 ```bash

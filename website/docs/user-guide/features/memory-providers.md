@@ -423,6 +423,8 @@ The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/me
 | Embedder | openai, ollama |
 | Vector Store | qdrant (local/server), pgvector |
 
+**Same-network Qdrant over HTTP:** qdrant-client logs `Api key is used with an insecure connection` whenever an API key travels over plain HTTP. For trusted same-network deployments (Hermes + Qdrant in one Docker network) opt in with `HERMES_QDRANT_ALLOW_INSECURE=1` — only that warning is silenced; it stays on for publicly exposed Qdrant instances.
+
 **Switching modes:** Re-run `hermes memory setup mem0 --mode <platform|selfhosted|oss>` or edit `mem0.json` directly.
 
 ---

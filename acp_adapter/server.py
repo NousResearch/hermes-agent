@@ -822,6 +822,17 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             # Fresh context copy: concurrent sessions on the shared executor must not share ContextVars.
             ctx = contextvars.copy_context()
             result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
+        except asyncio.CancelledError:
+            # Client pressed stop and then disconnected while the turn was in
+            # flight: the SDK cancels the prompt task. CancelledError is a
+            # BaseException (not an Exception) in Python 3.11+, so the
+            # ``except Exception`` below would not catch it, the
+            # ``state.is_running = False`` reset would be skipped, and every
+            # later prompt would queue forever on a wedged session (#79196).
+            with state.runtime_lock:
+                state.is_running = False
+                state.current_prompt_text = ""
+            raise
         except Exception:
             logger.exception("Executor error for session %s", session_id)
             with state.runtime_lock:
@@ -899,7 +910,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         suppress = interrupted and final_response.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
         # Send the final text unless already streamed — or if a plugin hook transformed it after.
         if final_response and conn and not suppress and (not streamed_message or result.get("response_transformed")):
-            await conn.session_update(session_id, acp.update_agent_message_text(final_response))
+            try:
+                await conn.session_update(session_id, acp.update_agent_message_text(final_response))
+            except Exception:
+                # Client disconnected mid-turn (stop then close): the send
+                # fails, but the session must still return to idle below —
+                # otherwise is_running stays True and every later prompt
+                # queues forever (#79196).
+                logger.debug("Failed to deliver ACP final response for %s", session_id, exc_info=True)
 
         # Go idle before draining so recursive prompt() calls can acquire the session.
         with state.runtime_lock:

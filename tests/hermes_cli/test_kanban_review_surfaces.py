@@ -301,12 +301,21 @@ def test_goal_mode_review_handoff_scopes_judge_and_allows_independent_claim(
     kb.init_db()
 
     judge_calls: list[str] = []
+    implementation_reason = (
+        "Implementation and focused verification are reported complete, but the required native "
+        "same-card review by os-reviewer has not yet been completed"
+    )
+    verbatim_rejection = (
+        "goal review handoff rejected by judge: "
+        f"{implementation_reason}. Provide acceptance evidence matching the task."
+    )
 
     def scoped_judge(*, goal, last_response, **_kwargs):
         judge_calls.append(goal)
         assert last_response
-        assert "do not withhold DONE merely because" in goal
-        return "done", "implementation is ready for review", False, None, False
+        if "do not withhold DONE merely because" in goal:
+            return "done", "implementation is ready for review", False, None, False
+        return "continue", implementation_reason, False, None, False
 
     with kbc.connect() as conn:
         tool_task = kb.create_task(
@@ -321,9 +330,44 @@ def test_goal_mode_review_handoff_scopes_judge_and_allows_independent_claim(
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
 
     from tools import kanban_tools as tools
+    from hermes_cli import goals
+    import agent.auxiliary_client as auxiliary_client
 
     monkeypatch.setattr(tools, "_goal_judge_available", lambda: True)
     monkeypatch.setattr(tools, "judge_goal", scoped_judge)
+    monkeypatch.setattr(
+        auxiliary_client,
+        "get_text_auxiliary_client",
+        lambda purpose: (object(), "judge-model"),
+    )
+    monkeypatch.setattr(goals, "judge_goal", scoped_judge)
+
+    # Reproduce the old semantic boundary: without the review-readiness note,
+    # the mocked judge returns the exact circular rejection from the defect.
+    with kbc.connect() as conn:
+        legacy_verdict, legacy_reason = kc._goal_mode_handoff_rejection(
+            kb.get_task(conn, tool_task),
+            "Implementation and focused verification are reported complete.",
+            handoff="complete",
+        )
+        assert legacy_verdict == "continue"
+        assert (
+            f"goal review handoff rejected by judge: {legacy_reason}. "
+            "Provide acceptance evidence matching the task."
+        ) == verbatim_rejection
+
+        # The actual CLI boundary uses the user-facing "review handoff" label;
+        # the implementation must canonicalize it before invoking the gate.
+        gate_error = kc._goal_gate_error(
+            conn,
+            tool_task,
+            "Implementation and focused verification are reported complete.",
+            "review handoff",
+            "blocked",
+            "continue",
+        )
+    assert gate_error is None
+
     handed_off = json.loads(tools._handle_request_review({
         "summary": "Implementation tests pass.",
         "reviewer": "reviewer",
@@ -338,7 +382,8 @@ def test_goal_mode_review_handoff_scopes_judge_and_allows_independent_claim(
         assert tool_after.assignee == "reviewer"
         review = kb.claim_review_task(conn, tool_task, claimer="reviewer:1")
         assert review is not None
-    assert len(judge_calls) == 1
+    assert len([goal for goal in judge_calls if "do not withhold DONE merely because" in goal]) == 2
+    assert len([goal for goal in judge_calls if "do not withhold DONE merely because" not in goal]) == 1
 
     # The shell/CLI path follows the same phase-scoped handoff rule.
     with kbc.connect() as conn:
@@ -353,15 +398,6 @@ def test_goal_mode_review_handoff_scopes_judge_and_allows_independent_claim(
     monkeypatch.setenv("HERMES_KANBAN_TASK", cli_task)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(cli_claimed.current_run_id))
 
-    import agent.auxiliary_client as auxiliary_client
-    from hermes_cli import goals
-
-    monkeypatch.setattr(
-        auxiliary_client,
-        "get_text_auxiliary_client",
-        lambda purpose: (object(), "judge-model"),
-    )
-    monkeypatch.setattr(goals, "judge_goal", scoped_judge)
     output = kc.run_slash(f"request-review {cli_task} --summary 'Implementation is ready.'")
     assert "Requested review" in output
     with kbc.connect() as conn:
@@ -370,7 +406,7 @@ def test_goal_mode_review_handoff_scopes_judge_and_allows_independent_claim(
         assert cli_after.status == "review"
         cli_review = kb.claim_review_task(conn, cli_task, claimer="reviewer:2")
         assert cli_review is not None
-    assert len(judge_calls) == 2
+    assert len([goal for goal in judge_calls if "do not withhold DONE merely because" in goal]) >= 3
 
 
 def test_goal_loop_stops_after_reviewer_requests_changes(

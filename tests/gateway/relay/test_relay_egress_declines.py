@@ -9,8 +9,12 @@ an *authorization refusal* — either into a wrong reason ("prompt op
 unavailable") or, worse, into a DIFFERENT op re-addressed at the very chat the
 connector just refused (media falling back to a plain text notice).
 
-Every lane below drives the REAL `RelayAdapter` built from the REAL descriptor;
-the only substitution is the transport, which is what the connector is.
+Most lanes below drive the REAL `RelayAdapter` built from the REAL descriptor;
+the only substitution is the transport, which is what the connector is. The
+exceptions are explicit: the stream-consumer tests construct
+`StreamTransportMixin` / `StreamFallbackMixin` doubles and inject a `SendResult`
+directly, because the behaviour under test belongs to the CALLER of the adapter,
+not to the adapter itself.
 """
 
 from __future__ import annotations
@@ -690,15 +694,22 @@ def test_declined_stream_edit_does_not_send_the_unseen_tail():
     """R6-2: the stream consumer's edit-failure funnel.
 
     A refused edit put the consumer into ordinary fallback mode, which delivers
-    the unseen tail as a plain send. Measured: ops were
-    ['edit', 'edit', 'send'].
+    the unseen tail as a plain send. Measured: ops were ['edit', 'edit', 'send'].
+
+    THE DOUBLE IS DELIBERATELY COMPLETE. An earlier version implemented only the
+    guarded path, so removing either guard raised AttributeError inside the fake
+    (`_is_flood_error`, `_clean_for_display`) BEFORE any send could be observed
+    — the test went red for the wrong reason and proved nothing. Every attribute
+    the UNGUARDED path reaches is present here, so the mutation now fails on the
+    assertion that a send reached the wire.
     """
     from gateway.platforms.base import SendResult
+    from gateway.stream_consumer_fallback import StreamFallbackMixin
     from gateway.stream_consumer_transport import StreamTransportMixin
 
     adapter, connector = _code_only_adapter()
 
-    class _Consumer(StreamTransportMixin):
+    class _Consumer(StreamFallbackMixin, StreamTransportMixin):
         def __init__(self):
             self.adapter = adapter
             self.chat_id = "C1"
@@ -707,7 +718,29 @@ def test_declined_stream_edit_does_not_send_the_unseen_tail():
             self._message_id = "m1"
             self._last_sent_text = ""
             self._final_content_delivered = False
+            self._draft_id = None
+            self._use_draft_streaming = False
+            self._draft_failures = 0
+            self._fallback_prefix = ""
+            self._flood_strikes = 0
+            self._current_edit_interval = 1.0
+            self._last_edit_time = 0.0
+            self.thread_id = None
             self.cfg = SimpleNamespace(cursor=None)
+
+        # ── reached only when a guard is REMOVED; present so the mutant
+        #    reaches the wire instead of dying inside the double ──
+        def _is_flood_error(self, *a, **kw):
+            return False
+
+        def _clean_for_display(self, text):
+            return text
+
+        def _notify_new_message(self, *a, **kw):
+            return None
+
+        async def _try_strip_cursor(self, *a, **kw):
+            return None
 
         def _visible_prefix(self):
             return ""
@@ -718,32 +751,31 @@ def test_declined_stream_edit_does_not_send_the_unseen_tail():
         def _enter_fallback_mode(self, *a):
             return None
 
+        def _draft_metadata(self):
+            return {}
+
+        def _send_metadata(self, *a, **kw):
+            return {}
+
+        def _metadata_for_send(self, *a, **kw):
+            return {}
+
     consumer = _Consumer()
     declined = SendResult(
         success=False, error="declined", raw_response=dict(CODE_ONLY_DECLINE)
     )
-    asyncio.run(
-        consumer._on_edit_failure(
-            declined, "tail", finalize=True, is_turn_final=True
-        )
-    )
 
-    # Terminal for the run: the tail must not be re-sent anywhere.
+    asyncio.run(
+        consumer._on_edit_failure(declined, "tail", finalize=True, is_turn_final=True)
+    )
     assert consumer._egress_declined is True
 
-    # ...and DRIVE the fallback that would resend it. Asserting the flag alone
-    # checks a NEIGHBOUR of the property this test is named for: review removed
-    # the early return in `_send_fallback_final` and this case still passed.
-    from gateway.stream_consumer_fallback import StreamFallbackMixin
+    # Drive the real fallback: this is the lane that re-sent the tail.
+    asyncio.run(consumer._send_fallback_final("SECRET-TAIL"))
 
-    class _Fallback(StreamFallbackMixin, type(consumer)):
-        pass
-
-    consumer.__class__ = _Fallback
-    asyncio.run(consumer._send_fallback_final("tail"))
-    # The decline was injected as a SendResult (no frame was sent for it), so
-    # the invariant is that the fallback added NOTHING to the wire.
-    assert connector.ops == []
+    # The decline arrived as an injected SendResult, so no frame was sent for
+    # it; the invariant is that the fallback put NOTHING on the wire.
+    assert connector.ops == [], f"the unseen tail reached the wire: {connector.ops}"
 
 
 # ── holes found by attacking the latch itself ──────────────────────────────

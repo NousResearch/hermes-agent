@@ -415,7 +415,6 @@ class RelayAdapter(BasePlatformAdapter):
         op = action["op"]
         if self._transport is None or not self.descriptor.supports_op(op):
             return None
-            return latched if surface_declines else None
         try:
             result = await self._transport.send_outbound(
                 action, platform=platform or self._platform_by_chat.get(str(chat_id))

@@ -454,12 +454,14 @@ def test_requested_platform_name_is_also_normalised(relay_env, monkeypatch, requ
     The test above varies the CONFIGURED name while always requesting
     lowercase "discord", so it only pins `_relay_fronted`'s normalisation.
     Removing `.lower()` from the REQUESTED name in `relay_routed_platform`
-    (and in `authorize_relay_target`) therefore survived the whole suite,
-    while a probe showed the real effect: `relay_routed=False` and the
-    unattested target AUTHORIZED — the exact bypass round 3 reported.
+    (and in `authorize_relay_target`) therefore survived the whole suite.
 
-    The model names the target, so a mixed-case `send_message(target=
-    "Discord:999")` must be guarded identically.
+    SCOPE, precisely: `send_message` itself cannot reach this, because
+    `_resolve_tool_target` lowercases the platform at
+    tools/send_message_tool.py:47 before the guard is called. This pins the
+    HELPERS' own contract for every other caller — the gateway lanes, and any
+    future entry point that does not pre-normalise. Both functions are public
+    within the package and must not assume a lowercased argument.
     """
     import gateway.relay as gr
     import gateway.relay.egress as eg

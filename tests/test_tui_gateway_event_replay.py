@@ -135,6 +135,58 @@ def test_concurrent_stamping_never_drops_or_duplicates_seq():
     assert replay_stats()["events"] == 8 * 200
 
 
+def test_byte_budget_evicts_payloads_and_preserves_gap_semantics(monkeypatch):
+    monkeypatch.setattr(event_replay, "_REPLAY_BUFFER_BYTES_MAX", 700)
+    monkeypatch.setattr(event_replay, "_REPLAY_PROCESS_BYTES_MAX", 5_000)
+
+    first = _frame("s1", "tool.complete")
+    first["params"]["payload"] = {"result": "x" * 400}
+    second = _frame("s1", "tool.complete")
+    second["params"]["payload"] = {"result": "y" * 400}
+    event_replay._stamp_event(first)
+    event_replay._stamp_event(second)
+
+    stats = replay_stats()
+    assert stats["bytes"] <= stats["max_bytes_per_session"]
+    assert [event["seq"] for event in events_since("s1", 0)] == [2]
+    assert event_replay.is_truncated("s1", 0)
+
+    reset_replay_state()
+    monkeypatch.setattr(event_replay, "_REPLAY_BUFFER_BYTES_MAX", 1_000)
+    monkeypatch.setattr(event_replay, "_REPLAY_PROCESS_BYTES_MAX", 700)
+    first = _frame("s1", "tool.complete")
+    first["params"]["payload"] = {"result": "x" * 400}
+    event_replay._stamp_event(first)
+    other = _frame("s2", "tool.complete")
+    other["params"]["payload"] = {"result": "y" * 400}
+    event_replay._stamp_event(other)
+
+    stats = replay_stats()
+    assert stats["bytes"] <= stats["max_bytes_process"]
+    assert events_since("s1", 0) == []
+    assert event_replay.is_truncated("s1", 0)
+    assert [event["seq"] for event in events_since("s2", 0)] == [1]
+
+
+def test_oversized_event_marks_gap_even_with_empty_buffer(monkeypatch):
+    monkeypatch.setattr(event_replay, "_REPLAY_BUFFER_BYTES_MAX", 300)
+    monkeypatch.setattr(event_replay, "_REPLAY_PROCESS_BYTES_MAX", 300)
+
+    oversized = _frame("s1", "tool.complete")
+    oversized["params"]["payload"] = {"result": "x" * 1000}
+    event_replay._stamp_event(oversized)
+
+    assert events_since("s1", 0) == []
+    assert event_replay.is_truncated("s1", 0)
+    assert not event_replay.is_truncated("s1", 1)
+
+    event_replay._stamp_event(_frame("s1"))
+    assert [event["seq"] for event in events_since("s1", 0)] == [2]
+    assert event_replay.is_truncated("s1", 0)
+    assert not event_replay.is_truncated("s1", 1)
+    assert not event_replay.is_truncated("s1", 2)
+
+
 def test_truncation_detection_semantics():
     """The RPC handler's truncated flag: gap between last_seen and buffer start."""
     # Overflow the ring so the oldest events are genuinely evicted.

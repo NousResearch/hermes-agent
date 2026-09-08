@@ -10,6 +10,7 @@ _REPLAY_BUFFER_MAX events x _REPLAY_SESSIONS_MAX sessions, oldest session evicte
 
 from __future__ import annotations
 
+import json
 import threading
 import uuid
 from collections import OrderedDict, deque
@@ -19,15 +20,18 @@ from collections import OrderedDict, deque
 # epoch lets clients detect the restart and reset their watermarks.
 _REPLAY_EPOCH = uuid.uuid4().hex
 
-# A long turn emits ~hundreds of token events; 512 covers minutes of streaming plus
-# all control events. Desktop users rarely exceed a dozen live chats.
+# Count limits protect control-frame churn; byte limits protect large tool results.
 _REPLAY_BUFFER_MAX = 512
 _REPLAY_SESSIONS_MAX = 64
+_REPLAY_BUFFER_BYTES_MAX = 4 * 1024 * 1024
+_REPLAY_PROCESS_BYTES_MAX = 64 * 1024 * 1024
 
 _replay_lock = threading.Lock()
-# sid -> deque of (seq, params dict) — the bare event (type/session_id/seq/payload),
-# the exact shape the client's dispatch path consumes.
+# sid -> deque of (seq, params dict, serialized bytes).
 _replay_buffers: "OrderedDict[str, deque]" = OrderedDict()
+_replay_buffer_bytes: dict[str, int] = {}
+_replay_evicted_through: dict[str, int] = {}
+_replay_total_bytes = 0
 _replay_next_seq: dict[str, int] = {}
 
 
@@ -48,16 +52,40 @@ def _stamp_event(obj: dict) -> None:
         # Session-less global events (skin.changed etc.) are re-fetchable via their own RPCs.
         return
     with _replay_lock:
+        global _replay_total_bytes
         seq = _replay_next_seq.get(sid, 0) + 1
         _replay_next_seq[sid] = seq
         params["seq"] = seq
+        size = len(json.dumps(params, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8", errors="surrogatepass"))
         buf = _replay_buffers.get(sid)
         if buf is None:
-            buf = _replay_buffers[sid] = deque(maxlen=_REPLAY_BUFFER_MAX)
+            buf = _replay_buffers[sid] = deque()
+            _replay_buffer_bytes[sid] = 0
             while len(_replay_buffers) > _REPLAY_SESSIONS_MAX:
-                _oldest_sid, _oldest_buf = _replay_buffers.popitem(last=False)
-                _replay_next_seq.pop(_oldest_sid, None)
-        buf.append((seq, params))
+                oldest_sid, oldest_buf = _replay_buffers.popitem(last=False)
+                _replay_total_bytes -= _replay_buffer_bytes.pop(oldest_sid, 0)
+                _replay_next_seq.pop(oldest_sid, None)
+                _replay_evicted_through.pop(oldest_sid, None)
+        if size > _REPLAY_BUFFER_BYTES_MAX or size > _REPLAY_PROCESS_BYTES_MAX:
+            _replay_evicted_through[sid] = seq
+            return
+        buf.append((seq, params, size))
+        _replay_buffer_bytes[sid] += size
+        _replay_total_bytes += size
+        while len(buf) > _REPLAY_BUFFER_MAX or _replay_buffer_bytes[sid] > _REPLAY_BUFFER_BYTES_MAX:
+            evicted_seq, _event, evicted_size = buf.popleft()
+            _replay_buffer_bytes[sid] -= evicted_size
+            _replay_total_bytes -= evicted_size
+            _replay_evicted_through[sid] = evicted_seq
+        while _replay_total_bytes > _REPLAY_PROCESS_BYTES_MAX:
+            for evict_sid, evict_buf in _replay_buffers.items():
+                if evict_buf:
+                    evicted_seq, _event, evicted_size = evict_buf.popleft()
+                    _replay_buffer_bytes[evict_sid] -= evicted_size
+                    _replay_total_bytes -= evicted_size
+                    _replay_evicted_through[evict_sid] = evicted_seq
+                    break
 
 
 def events_since(sid: str, last_seen: int) -> list[dict]:
@@ -68,15 +96,14 @@ def events_since(sid: str, last_seen: int) -> list[dict]:
     """
     with _replay_lock:
         buf = _replay_buffers.get(sid or "")
-        return [event for seq, event in buf if seq > last_seen] if buf else []
+        return [event for seq, event, _size in buf if seq > last_seen] if buf else []
 
 
 def is_truncated(sid: str, last_seen: int) -> bool:
     """True when events between *last_seen* and the ring's oldest retained seq were
     evicted — the client must refetch history instead of trusting the replay."""
     with _replay_lock:
-        buf = _replay_buffers.get(sid or "")
-        return bool(buf) and last_seen + 1 < buf[0][0]
+        return last_seen < _replay_evicted_through.get(sid or "", 0)
 
 
 def latest_seq(sid: str) -> int:
@@ -88,8 +115,12 @@ def latest_seq(sid: str) -> int:
 def reset_replay_state() -> None:
     """Test hook."""
     with _replay_lock:
+        global _replay_total_bytes
         _replay_buffers.clear()
+        _replay_buffer_bytes.clear()
+        _replay_evicted_through.clear()
         _replay_next_seq.clear()
+        _replay_total_bytes = 0
 
 
 def replay_stats() -> dict:
@@ -97,5 +128,8 @@ def replay_stats() -> dict:
     with _replay_lock:
         return {
             "sessions": len(_replay_buffers),
-            "events": sum(len(b) for b in _replay_buffers.values()),
-            "max_per_session": _REPLAY_BUFFER_MAX}
+            "events": sum(len(buffer) for buffer in _replay_buffers.values()),
+            "bytes": _replay_total_bytes,
+            "max_per_session": _REPLAY_BUFFER_MAX,
+            "max_bytes_per_session": _REPLAY_BUFFER_BYTES_MAX,
+            "max_bytes_process": _REPLAY_PROCESS_BYTES_MAX}

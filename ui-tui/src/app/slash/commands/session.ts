@@ -13,7 +13,7 @@ import type {
 } from '../../../gatewayTypes.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import { fmtK } from '../../../lib/text.js'
-import type { PanelSection } from '../../../types.js'
+import type { PanelSection, SessionInfo } from '../../../types.js'
 import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
@@ -205,6 +205,35 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       patchOverlayState({ sessions: true })
+    }
+  },
+
+  {
+    aliases: ['cwd'],
+    help: 'change the session working directory',
+    name: 'cd',
+    usage: '/cd <path>',
+    run: (arg, ctx) => {
+      const path = arg.trim()
+
+      if (!path) {
+        return ctx.transcript.sys('usage: /cd <path>')
+      }
+
+      if (!ctx.sid) {
+        return ctx.transcript.sys('error: no active session')
+      }
+
+      ctx.gateway.rpc<SessionInfo>('session.cwd.set', { session_id: ctx.sid, cwd: path }).then(
+        ctx.guarded<SessionInfo>(r => {
+          if (!r?.cwd) {
+            return
+          }
+
+          ctx.transcript.sys(`cwd → ${r.cwd}`)
+          patchUiState(state => (state.info ? { ...state, info: { ...state.info, cwd: r.cwd } } : state))
+        })
+      )
     }
   },
 

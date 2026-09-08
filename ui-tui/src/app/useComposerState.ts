@@ -142,7 +142,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   } = useQueue()
 
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
-  const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
+  const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw, getUiState().sid)
 
   const clearIn = useCallback(() => {
     setInput('')

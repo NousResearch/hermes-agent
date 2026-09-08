@@ -32,4 +32,22 @@ describe('completionRequestForInput', () => {
   it('leaves plain text alone', () => {
     expect(completionRequestForInput('hello there')).toBeNull()
   })
+
+  it('passes session_id to path completion when a session is active', () => {
+    expect(completionRequestForInput('./src', 'sess-123')).toMatchObject({
+      method: 'complete.path',
+      params: { word: './src', session_id: 'sess-123' },
+      replaceFrom: 0
+    })
+  })
+
+  it('omits session_id from path completion when no session is active', () => {
+    const req = completionRequestForInput('./src', null)
+    expect(req).toMatchObject({
+      method: 'complete.path',
+      params: { word: './src' },
+      replaceFrom: 0
+    })
+    expect(req?.params).not.toHaveProperty('session_id')
+  })
 })

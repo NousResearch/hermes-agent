@@ -34,11 +34,13 @@ import { BotRow, GroupRow } from './bot-row'
 import {
   $botChatFocused,
   $botsPaneVisible,
+  $focusedBotOwner,
   $openBotChat,
   $rosterHydrated,
   $selectedRosterHydrated,
   $selectedRosterKey,
   clearSelectedRosterKey,
+  focusedRosterOwner,
   parseRosterKey,
   saveSelectedRosterBot
 } from './bot-state'
@@ -56,9 +58,10 @@ import {
   useRoster
 } from './data'
 import { EditProfileDialog } from './edit-profile-dialog'
-import { $groupChats, $groupChatWorkspace, $groupNeedsYou } from './group-chat'
+import { $groupChats, $groupChatWorkspace, $groupNeedsYou, updateGroupChat } from './group-chat'
 import { disbandGroupChat, GroupChatWorkspace, openGroupChat } from './group-chat-view'
 import { groupChatMemberBots, groupChatNames, groupLastActivity } from './group-membership'
+import { reorderGroupRows, sortGroupRosterRows } from './group-order'
 import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
 import { $showHiddenBots, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
@@ -77,7 +80,7 @@ import {
 } from './roster-sections'
 import type { ResolvedRosterGatewaySection } from './roster-sections'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
-import { ACTIVE_WINDOW_S, activeBots, BOT_ROSTER_SEARCH_THRESHOLD, rosterActivityMatches } from './row-helpers'
+import { ACTIVE_WINDOW_S, activeBots, BOT_ROSTER_SEARCH_THRESHOLD, rosterActivityMatches, useTurnBusy } from './row-helpers'
 import { backfillMessagingProtocol } from './soul'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
 import {
@@ -256,7 +259,10 @@ export function BotsPane() {
   const { data, error, isLoading, refetch } = useRoster()
   const gatewayState = useValue(host.state.gateway)
   const gatewayUp = gatewayState === 'open'
-  const activeProfile = (useValue(host.state.profile) || 'default').trim() || 'default'
+
+  const turnBusy = useTurnBusy()
+  const workingOwner = focusedRosterOwner(useValue($focusedBotOwner))
+  const activeConnectionId = host.state.connectionId?.get?.() || 'local'
   const [createOpen, setCreateOpen] = useState(false)
   const [groupCreateOpen, setGroupCreateOpen] = useState(false)
   const [editing, setEditing] = useState<null | RosterRow>(null)
@@ -343,7 +349,7 @@ export function BotsPane() {
   // and the persisted connection registry hydrate. Keep that transition in a
   // neutral loading state instead of flashing the first-run "No bots" copy.
   const initialRosterLoading = !data && !error && roster.length === 0
-  const activeRosterKeys = new Set(activeBots(roster, activeProfile, gatewayState).map(botRosterKey))
+  const activeRosterKeys = new Set(activeBots(roster, workingOwner, turnBusy, Date.now(), activeConnectionId).map(botRosterKey))
   const gatewayOptions = rosterGatewayOptions(sourceSnapshot, roster)
   const selectedGateway = gatewayOptions.find(option => option.connectionId === gatewayFilter)
   const gatewayFilterExists = gatewayFilter === 'all' || Boolean(selectedGateway)
@@ -414,20 +420,32 @@ export function BotsPane() {
           active: activeRosterKeys.has(botRosterKey(bot))
         }))
 
-  const sortRosterRows = <T extends { activity: number; pinned: boolean }>(rows: T[]): T[] =>
-    rows.slice().sort((a, b) => {
-      const pa = a.pinned ? 1 : 0
-      const pb = b.pinned ? 1 : 0
+  const rosterRows = sortGroupRosterRows([...botRows, ...groupRows], groupRooms)
+  const sortedGroupRows = sortGroupRosterRows(groupRows, groupRooms)
 
-      if (pa !== pb) {
-        return pb - pa
-      }
+  const moveRoom = (name: string, delta: -1 | 1) => {
+    // Read at the gesture, not the last render: a sync or disband may have
+    // replaced this room in the meantime. Ordering never writes bot metadata.
+    const current = $groupChats.get()
 
-      return b.activity - a.activity
+    if (current[name]?.roomId !== groupRooms[name]?.roomId || current[name]?.tombstone) {
+      return
+    }
+
+    const rows = groupChatNames($botMeta.get(), current).map(name => ({
+      kind: 'group' as const,
+      name,
+      pinned: Boolean(current[name]?.pinned),
+      activity: groupLastActivity(current[name])
+    }))
+
+    const order = reorderGroupRows(sortGroupRosterRows(rows, current), name, delta, sortedGroupRows.map(row => row.name))
+
+    order?.forEach((name, rosterOrder) => {
+      updateGroupChat(name, room => ({ ...room, rosterOrder }), { sync: false })
     })
+  }
 
-  const rosterRows = sortRosterRows([...botRows, ...groupRows])
-  const sortedGroupRows = sortRosterRows(groupRows)
   const gatewaySections = rosterGatewaySections(botRows, gatewayOptions, gatewayFilter)
   const showGatewaySections = gatewaySections.sectioned && botRows.length > 0
 
@@ -567,15 +585,31 @@ export function BotsPane() {
   )
 
   const renderGroupRow = (row: { members: GroupMember[]; name: string }) => (
-    <GroupRow
-      active={groupChatName === row.name}
-      group={row.name}
-      key={`group:${row.name}`}
-      members={row.members}
-      needsYou={Boolean(groupNeedsYou[row.name])}
-      onDisband={setDeletingGroup}
-      onOpen={openGroupChat}
-    />
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center" key={`group:${row.name}`}>
+      <GroupRow
+        active={groupChatName === row.name}
+        group={row.name}
+        members={row.members}
+        needsYou={Boolean(groupNeedsYou[row.name])}
+        onDisband={setDeletingGroup}
+        onOpen={openGroupChat}
+      />
+      <div className="flex flex-col">
+        {([-1, 1] as const).map(delta => (
+          <Tip key={delta} label={delta === -1 ? b.sections.moveUp : b.sections.moveDown}>
+            <Button
+              aria-label={`${row.name}: ${delta === -1 ? b.sections.moveUp : b.sections.moveDown}`}
+              disabled={!reorderGroupRows(sortedGroupRows, row.name, delta)}
+              onClick={() => moveRoom(row.name, delta)}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Codicon name={delta === -1 ? 'chevron-up' : 'chevron-down'} />
+            </Button>
+          </Tip>
+        ))}
+      </div>
+    </div>
   )
 
   const removeSection = (id: string) => {

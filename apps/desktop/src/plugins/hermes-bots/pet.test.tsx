@@ -12,7 +12,7 @@
  * failure must be evicted; a success must not be refetched.
  */
 
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { hostMock, UnboundedCache, useQueryMock } = vi.hoisted(() => ({
@@ -79,6 +79,55 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+})
+
+describe('the pet gallery', () => {
+  it('reserves paint space around boundary tiles inside the bounded scroller', async () => {
+    stubFetch(async () => ({ blob: async () => new Blob() }))
+    const PetTab = await loadPetTab()
+    const view = render(<PetTab image={null} onImage={vi.fn()} />)
+    await waitFor(() => expect(view.container.querySelector('img')).toBeTruthy())
+    const tile = view.getByText('Axolotl').closest('button')!
+    const scroller = tile.parentElement!.parentElement!
+
+    // The selection ring paints one pixel outside each tile. The scrollport
+    // must leave room for it even at the first/last row and outer columns.
+    const style = getComputedStyle(scroller)
+
+    for (const side of ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft'] as const) {
+      expect(parseFloat(style[side]) || 0).toBeGreaterThanOrEqual(1)
+    }
+
+    expect(parseFloat(style.maxHeight)).toBeGreaterThan(0)
+    view.unmount()
+  })
+
+  it('keeps selection while scrolling for more and resets the search window', async () => {
+    useQueryMock.mockReturnValue({ data: { pets: Array.from({ length: 60 }, (_, i) => ({
+      displayName: `Pet ${i}`, slug: `pet-${i}`, spritesheetUrl: SHEET
+    })) } })
+    stubFetch(async () => ({ blob: async () => new Blob() }))
+    const PetTab = await loadPetTab()
+    const onImage = vi.fn()
+    const view = render(<PetTab image={null} onImage={onImage} />)
+    const first = view.getByText('Pet 0').closest('button')!
+    fireEvent.click(first)
+    await waitFor(() => expect(onImage).toHaveBeenCalledWith('data:image/png;base64,ok'))
+    const scroller = first.parentElement!.parentElement!
+    Object.defineProperties(scroller, {
+      clientHeight: { value: 220 }, scrollHeight: { value: 600 }, scrollTop: { value: 400 }
+    })
+    fireEvent.scroll(scroller)
+    expect(view.getByText('Pet 47')).toBeTruthy()
+    expect(view.queryByText('Pet 48')).toBeNull()
+    expect(first.className).toContain('ring-1')
+    fireEvent.change(view.getByRole('textbox'), { target: { value: 'Pet 59' } })
+    expect(view.getByText('Pet 59')).toBeTruthy()
+    fireEvent.change(view.getByRole('textbox'), { target: { value: '' } })
+    expect(view.queryByText('Pet 24')).toBeNull()
+    expect(onImage).toHaveBeenCalledTimes(1)
+    view.unmount()
+  })
 })
 
 describe('the sprite-frame cache', () => {

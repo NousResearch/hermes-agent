@@ -104,8 +104,8 @@ class CLITerminalMixin:
         if getattr(self, "_terminal_io_broken", False):
             return
         monitor = getattr(self, "_subagent_monitor", None)
-        if monitor is not None and monitor.app is not None:
-            monitor.app.invalidate()
+        if monitor is not None:
+            monitor.invalidate()
         app = getattr(self, "_app", None)
         if app is not None:
             self._app_invalidate(app, "paint_now", swallow=True)

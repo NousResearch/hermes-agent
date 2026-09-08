@@ -599,7 +599,13 @@ class MemoryManager:
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        self._each_provider("on_turn_start failed", lambda p: p.on_turn_start(turn_number, message, **kwargs))
+        def _tick(p: MemoryProvider) -> None:
+            # A provider written before the author kwargs declares (turn_number, message) only; it still gets its tick.
+            params = _signature_params(p.on_turn_start)
+            accepted = kwargs if params is None or _has_var_kwargs(params) else {k: v for k, v in kwargs.items() if k in params}
+            p.on_turn_start(turn_number, message, **accepted)
+
+        self._each_provider("on_turn_start failed", _tick)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,

@@ -126,6 +126,28 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
     return None
 
 
+_BG_DELETE_ACTIONS = ("replace", "remove")
+
+
+def _background_delete_gate(action, operations) -> Optional[str]:
+    """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
+    stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
+    single or inside a batch — are denied. The near-limit "consolidate now" hint is otherwise
+    an instruction to decide what to forget, executed with no human in the loop."""
+    from tools.skill_provenance import is_background_review
+
+    if not is_background_review():
+        return None
+    if action in _BG_DELETE_ACTIONS or any(
+        isinstance(op, dict) and op.get("action") in _BG_DELETE_ACTIONS for op in (operations or [])
+    ):
+        return tool_error(
+            "Background review may not delete memory entries ('replace'/'remove', including in a "
+            "batch); 'add' is still available. Propose a consolidation in your review summary "
+            "instead.", success=False)
+    return None
+
+
 def memory_tool(action: str = None, target: str = "memory", content: str = None, old_text: str = None,
                 new_text: str = None, operations: Optional[List[Dict[str, Any]]] = None,
                 store: Optional[MemoryStore] = None) -> str:
@@ -141,6 +163,9 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return json.dumps(target_error)
+    denied = _background_delete_gate(action, operations)
+    if denied is not None:
+        return denied
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)

@@ -952,14 +952,17 @@ def _track_review_fork(agent: Any, review_agent: Any, *, register: bool) -> None
                     agent._active_children.remove(review_agent)
 
 
-def _review_tool_whitelist(review_agent: Any, task_cfg: Optional[Dict[str, Any]]) -> Tuple[set, set]:
+def _review_tool_whitelist(
+    review_agent: Any, task_cfg: Optional[Dict[str, Any]], review_memory: bool = False,
+) -> Tuple[set, set]:
     """``(whitelist, configured_extra_tools)`` for the review fork — DISPATCH-side only, so the
     advertised ``tools[]`` stays byte-identical to the parent's (prompt-cache parity)."""
     from model_tools import get_tool_definitions
-    # Gate the built-in memory tool on the profile's memory flags so a memory-disabled profile
-    # is never contaminated by the review LLM.
+    # Gate the built-in memory tool on BOTH the profile's memory flags and the trigger that fired
+    # (#105921): a skill-nudge review never gets the memory tool, so an unattended fork cannot
+    # act on the memory tool's "consolidate now" hint and delete entries no one reviewed.
     memory_on = review_agent._memory_enabled or review_agent._user_profile_enabled
-    review_toolsets = ["memory", "skills"] if memory_on else ["skills"]
+    review_toolsets = ["memory", "skills"] if memory_on and review_memory else ["skills"]
     whitelist = {t["function"]["name"] for t in get_tool_definitions(enabled_toolsets=review_toolsets, quiet_mode=True)}
     # Read-only file tools: denying read_file/search_files caused a per-review denial storm that
     # starved the loop (read_file also registers the read with the read-before-write guard).
@@ -1010,7 +1013,7 @@ def _release_fork_clients(review_agent: Any) -> None:
 
 def _run_review_fork(
     agent: Any, messages_snapshot: List[Dict], prompt: str, task_cfg: Optional[Dict[str, Any]],
-    review_run: Optional[_BackgroundReviewRun], st: _ReviewForkState,
+    review_run: Optional[_BackgroundReviewRun], st: _ReviewForkState, review_memory: bool = False,
 ) -> None:
     """Fork phase (inside thread-scoped silence): build the fork, run the prompt under the tool
     whitelist, snapshot its messages/usage, release its clients. Partial progress lands on ``st``
@@ -1018,17 +1021,21 @@ def _run_review_fork(
     st.review_agent, _rt, _routed = build_cache_parity_fork(agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
-    review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg)
+    review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
     extra_list = ", ".join(sorted(configured_extra_tools))
     deny_extra = f" Configured extra tools also allowed: {extra_list}." if configured_extra_tools else ""
     prompt_extra = f" Exception — these configured tools are also allowed: {extra_list}." if configured_extra_tools else ""
+    # Keep the deny/prompt wording in sync with the whitelist: a memory-less review must not
+    # tell the model that memory is available, or it will burn iterations on denied calls.
+    memory_phrase_deny = " and memory for notes (add only)" if "memory" in review_whitelist else ""
+    memory_phrase_prompt = "memory and skill " if "memory" in review_whitelist else "skill "
     set_thread_tool_whitelist(
         review_whitelist,
         deny_msg_fmt=(
             "Background review denied non-whitelisted tool: "
             "{tool_name}. Allowed here: skill_view/skills_list/read_file/search_files to read, "
-            "skill_manage(action='patch'|...) to change skills, and "
-            "memory for notes." + deny_extra + " Do not retry {tool_name}."
+            "skill_manage(action='patch'|...) to change skills"
+            + memory_phrase_deny + "." + deny_extra + " Do not retry {tool_name}."
         ),
     )
     with suppress(Exception):
@@ -1040,7 +1047,7 @@ def _run_review_fork(
             # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
             st.review_agent.run_conversation(
                 user_message=(
-                    prompt + "\n\nYou can only call memory and skill "
+                    prompt + "\n\nYou can only call " + memory_phrase_prompt +
                     "management tools. Other tools will be denied "
                     "at runtime — do not attempt them." + prompt_extra
                 ),
@@ -1074,6 +1081,7 @@ def _publish_review_summary(agent: Any, actions: List[str]) -> None:
 def _run_review_in_thread(
     agent: Any, messages_snapshot: List[Dict], prompt: str,
     task_cfg: Optional[Dict[str, Any]] = None, review_run: Optional[_BackgroundReviewRun] = None,
+    review_memory: bool = False,
 ) -> None:
     """Daemon-thread worker: build the fork, run the prompt, surface the action summary via
     ``agent._safe_print`` / ``background_review_callback``. ``review_run`` (from
@@ -1108,7 +1116,7 @@ def _run_review_in_thread(
         # their console output (#55769 / #55925). ``thread_scoped_silence`` routes only this thread's writes
         # to devnull and leaves all other threads on the real streams.
         with thread_scoped_silence():
-            _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st)
+            _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory)
         # A buggy/legacy tool response shape must NOT take down the whole review (the outer
         # except would discard every action the fork DID complete), so coerce to an empty list.
         try:
@@ -1182,7 +1190,9 @@ def spawn_background_review_thread(
         )
 
     def _target() -> None:  # resolves _run_review_in_thread at call time (tests patch it)
-        _run_review_in_thread(agent, messages_snapshot, prompt, task_cfg=task_cfg, review_run=review_run)
+        _run_review_in_thread(
+            agent, messages_snapshot, prompt, task_cfg=task_cfg, review_run=review_run,
+            review_memory=review_memory)
 
     return _target, prompt
 

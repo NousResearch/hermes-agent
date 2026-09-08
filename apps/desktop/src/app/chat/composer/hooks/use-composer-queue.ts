@@ -346,7 +346,9 @@ export function useComposerQueue({
     let retryTimer: ReturnType<typeof setTimeout> | undefined
 
     const onFail = () => {
-      if (cancelled) {return}
+      if (cancelled) {
+        return
+      }
       const fails = (drainFailuresRef.current.get(entry.id) ?? 0) + 1
       drainFailuresRef.current.set(entry.id, fails)
 

@@ -3664,6 +3664,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if not transcript or is_whisper_hallucination(transcript):
                 return
             logger.info("Voice input from user %d: %s", user_id, transcript[:100])
+            # The user spoke: re-arm the auto-disconnect inactivity timer so an active
+            # two-way voice conversation does not drop after
+            # voice_channel_inactivity_timeout_seconds (refs #105974). The bot's own
+            # TTS playback already re-arms via play_in_voice_channel's finally; the
+            # STT path that hears the user did not.
+            self._reset_voice_timeout(guild_id)
             if self._voice_input_callback:
                 await self._voice_input_callback(
                     guild_id=guild_id, user_id=user_id, transcript=transcript,

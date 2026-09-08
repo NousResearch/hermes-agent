@@ -81,7 +81,7 @@ class ClaudeSdkTurnMixin:
         result = TurnResult()
         prompt = _coerce_turn_input(user_input)
         if isinstance(prompt, str) and not prompt.strip():
-            self._interrupt_event.clear()
+            self.consume_interrupt()
             result.final_text = (
                 "This Claude Agent SDK route can't process an empty message. "
                 "Please send text or a supported image."
@@ -115,6 +115,15 @@ class ClaudeSdkTurnMixin:
             result.fatal_reason = "auth" if hint else "startup"
             return result
 
+        with self._interrupt_commit_lock:
+            # Re-open interrupt admission for this turn.  A post-terminal
+            # request that no outer runtime consumed belongs to this next
+            # direct turn and becomes its normal pre-set interrupt.
+            self._terminal_result_committed = False
+            if self._post_terminal_interrupt_pending:
+                self._post_terminal_interrupt_pending = False
+                self._interrupt_event.set()
+
         # Text buffered before this turn whose terminal ResultMessage never
         # arrived is partial mid-burst content — a later unrelated result
         # must never pick it up (misattribution is the proven worse failure;
@@ -135,7 +144,7 @@ class ClaudeSdkTurnMixin:
         # 60s) targets THIS turn — honor it instead of erasing it. (The old
         # unconditional clear() silently swallowed that window.)
         if self._interrupt_event.is_set():
-            self._interrupt_event.clear()
+            self.consume_interrupt()
             result.interrupted = True
             return result
 
@@ -255,7 +264,12 @@ class ClaudeSdkTurnMixin:
                     # racing this exact window loses its signal too — the
                     # completed answer it targeted is delivered, same as any
                     # near-boundary stop today.)
-                    self._interrupt_event.clear()
+                    self.consume_interrupt()
+                    # The watchdog's internal interrupt was withdrawn because
+                    # the turn completed in full during grace. Clear the
+                    # stream-consumer snapshot too; otherwise final mapping
+                    # resurrects the voided trip as a user interruption.
+                    turn_data["interrupt_observed"] = False
                     logger.info(
                         "claude-agent-sdk: turn completed during watchdog "
                         "grace (%.0fs elapsed) — delivered in full",
@@ -263,7 +277,7 @@ class ClaudeSdkTurnMixin:
                     )
                     trip = None
         except Exception as exc:
-            self._interrupt_event.clear()
+            self.consume_interrupt()
             safe_exc = _safe_sdk_error_text(exc)
             hint = classify_auth_failure(safe_exc)
             result.error = hint or f"claude-agent-sdk turn failed: {safe_exc}"
@@ -280,7 +294,7 @@ class ClaudeSdkTurnMixin:
             # Hard trip: the CLI ignored the interrupt for the whole grace —
             # nothing was harvested. Retire (today's shape, now the rare
             # fallback for a genuinely unresponsive CLI).
-            self._interrupt_event.clear()
+            self.consume_interrupt()
             result.interrupted = True
             result.error = self._format_trip_error(
                 trip, budget, quiet, trip_elapsed, trip_idle
@@ -300,11 +314,31 @@ class ClaudeSdkTurnMixin:
         result.api_call_made = turn_data.get("api_call_made", True)
         result.thread_id = self._session_id
         result.turn_id = turn_data.get("result_uuid")
-        result.interrupted = self._interrupt_event.is_set()
-        if result.interrupted:
-            # Consume the honored interrupt so it cannot bleed into the
-            # next turn on this session object.
-            self._interrupt_event.clear()
+        # The stream consumer records interruption at the last point where it
+        # can still precede terminal acceptance.  Never re-read the live event
+        # here: a /stop can arrive after ResultMessage while ownership release
+        # is finishing, and must not retroactively downgrade the committed
+        # result.  The SDK-specific marker is deliberately dynamic so the
+        # shared Codex TurnResult contract stays unchanged.
+        result.terminal_result_accepted = bool(
+            turn_data.get("terminal_result_accepted", False)
+        )
+        result.interrupted = bool(turn_data.get("interrupt_observed", False))
+        # A non-terminal turn can spend time releasing foreground ownership
+        # after the stream consumer's last snapshot. Restore the live read for
+        # that path so a stop admitted during a stream-death/release handshake
+        # remains authoritative. Terminal results stay fenced: once accepted,
+        # no later event may retroactively downgrade the completed answer.
+        if not result.terminal_result_accepted:
+            with self._interrupt_commit_lock:
+                result.interrupted = (
+                    result.interrupted or self._interrupt_event.is_set()
+                )
+        # Consume either the honored pre-terminal interrupt or a late stop
+        # aimed at the turn that has already committed. Both the event and
+        # post-terminal pending state must clear together so neither can bleed
+        # into the next turn on this session object.
+        self.consume_interrupt()
         if turn_data["error"]:
             # A prior MCP tool use is not evidence that this terminal SDK
             # error belongs to MCP; preserve fail-closed Claude auth handling
@@ -394,15 +428,26 @@ class ClaudeSdkTurnMixin:
             "billing_evidence": dict(self._billing_evidence),
             "total_cost_usd": None,
             "api_call_made": True,
+            "interrupt_observed": False,
+            "terminal_result_accepted": False,
         }
+
+        def _snapshot_interrupt() -> bool:
+            with self._interrupt_commit_lock:
+                observed = self._interrupt_event.is_set()
+            out["interrupt_observed"] = observed
+            return observed
+
         ended = self._stream_ended
         if ended is not None:
+            _snapshot_interrupt()
             out["error"] = "SDK message stream ended before this turn" + (
                 f": {_safe_sdk_error_text(ended.error)}" if ended.error else ""
             )
             out["stream_ended"] = True
             return out
         if self._billing_guard_error is not None:
+            _snapshot_interrupt()
             out["error"] = self._billing_guard_error
             out["billing_guard_violation"] = True
             out["billing_mode"] = self._reported_billing_mode()
@@ -417,6 +462,7 @@ class ClaudeSdkTurnMixin:
         # result and mis-serve it as this query's answer.
         claims = self._turn_claims
         if claims is None:
+            _snapshot_interrupt()
             out["error"] = "SDK message reader is not ready to claim this turn"
             out["stream_ended"] = True
             return out
@@ -432,10 +478,13 @@ class ClaudeSdkTurnMixin:
                 self._turn_claim_requested = False
             ended = self._stream_ended
             if ended is not None:
+                with self._interrupt_commit_lock:
+                    interrupted = interrupted or self._interrupt_event.is_set()
                 out["error"] = "SDK message stream ended before this turn" + (
                     f": {_safe_sdk_error_text(ended.error)}" if ended.error else ""
                 )
                 out["stream_ended"] = True
+                out["interrupt_observed"] = interrupted
                 return out
             query_input = (
                 _sdk_user_message_stream(prompt)
@@ -451,6 +500,8 @@ class ClaudeSdkTurnMixin:
                     # else so the caller-thread watchdog sees it.
                     watch.tick()
                 if isinstance(message, _StreamEnd):
+                    with self._interrupt_commit_lock:
+                        interrupted = interrupted or self._interrupt_event.is_set()
                     out["error"] = (
                         "SDK message stream ended before this turn's result"
                         + (f": {_safe_sdk_error_text(message.error)}" if message.error else "")
@@ -498,6 +549,15 @@ class ClaudeSdkTurnMixin:
                 projection, _result_is_error, _result_is_contradictory_success = (
                     self._project_message_step(projector, watch, message, out)
                 )
+                if projection.is_result:
+                    # Terminal acceptance and interrupt observation are one
+                    # atomic boundary.  If interrupt admission won the lock,
+                    # report it; if commit wins, later requests are queued and
+                    # cannot call client.interrupt() during release.
+                    with self._interrupt_commit_lock:
+                        interrupted = interrupted or self._interrupt_event.is_set()
+                        self._terminal_result_committed = True
+                    out["terminal_result_accepted"] = True
                 if not interrupted and not billing_guarded:
                     if projection.messages:
                         out["messages"].extend(projection.messages)
@@ -639,6 +699,7 @@ class ClaudeSdkTurnMixin:
                         )
                         continue
                 self._handle_unsolicited(residue)
+        out["interrupt_observed"] = interrupted
         out["billing_mode"] = self._reported_billing_mode()
         out["billing_evidence"] = dict(self._billing_evidence)
         return out

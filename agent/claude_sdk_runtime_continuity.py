@@ -5,13 +5,37 @@ Extracted from ``claude_sdk_runtime.py``.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from agent.claude_sdk_runtime_state import _SdkTurnState
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("agent.claude_sdk_runtime")
+
+
+_SDK_RESUME_BINDING_PREFIX = "hermes-sdk-resume-v1:"
+
+
+def _canonical_sdk_cwd(value: Optional[str] = None) -> str:
+    """Return the canonical CWD identity used to bind SDK resume IDs."""
+    if value is None:
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        value = str(resolve_agent_cwd())
+    return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(str(value)))))
+
+
+def _encode_sdk_resume_binding(session_id: str, *, cwd: Optional[str] = None) -> str:
+    payload = {
+        "cwd": _canonical_sdk_cwd(cwd),
+        "id": str(session_id),
+    }
+    return _SDK_RESUME_BINDING_PREFIX + json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    )
 
 
 def _persisted_sdk_session_id(agent) -> Optional[str]:
@@ -22,13 +46,42 @@ def _persisted_sdk_session_id(agent) -> Optional[str]:
         return None
     try:
         row = agent._session_db.get_session(agent.session_id) or {}
-        return row.get("claude_sdk_session_id") or None
+        raw = row.get("claude_sdk_session_id") or None
+        if not isinstance(raw, str) or not raw:
+            return None
+        current_cwd = _canonical_sdk_cwd()
+        if raw.startswith(_SDK_RESUME_BINDING_PREFIX):
+            try:
+                payload = json.loads(raw[len(_SDK_RESUME_BINDING_PREFIX) :])
+                session_id = payload["id"]
+                bound_cwd = payload["cwd"]
+                if not isinstance(session_id, str) or not session_id:
+                    raise ValueError("empty SDK session id")
+                if not isinstance(bound_cwd, str) or not bound_cwd:
+                    raise ValueError("empty SDK resume cwd")
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                _store_sdk_session_id(agent, None)
+                return None
+        else:
+            # Legacy raw IDs and unknown envelope versions have no trustworthy
+            # creation-workspace provenance.  The session row's CWD is mutable,
+            # so it cannot retroactively authorize a cross-workspace resume.
+            _store_sdk_session_id(agent, None)
+            return None
+        if _canonical_sdk_cwd(bound_cwd) != current_cwd:
+            logger.info(
+                "claude-agent-sdk: declining resume id bound to a different cwd"
+            )
+            return None
+        return session_id
     except Exception:
         logger.debug("resume-id read failed", exc_info=True)
         return None
 
 
-def _store_sdk_session_id(agent, value: Optional[str]) -> None:
+def _store_sdk_session_id(
+    agent, value: Optional[str], *, cwd: Optional[str] = None
+) -> None:
     """Persist (or clear, with None) the SDK session id on the session row."""
     if getattr(agent, "_persist_disabled", False):
         # A review/curator fork shares the parent's session_id — it must
@@ -37,7 +90,21 @@ def _store_sdk_session_id(agent, value: Optional[str]) -> None:
     if not (getattr(agent, "_session_db", None) and getattr(agent, "session_id", None)):
         return
     try:
-        agent._session_db.update_claude_sdk_session_id(agent.session_id, value)
+        if value is not None and cwd is None:
+            # The workspace this id belongs to was never sampled. Encoding it
+            # here would canonicalise whatever cwd happens to be live at
+            # persist time, which then matches on every subsequent turn and
+            # makes the check a silent no-op. Write nothing rather than a
+            # guess. Deliberately not a clear: callers that mean "clear" pass
+            # None explicitly, and the read path already re-validates a stored
+            # binding's cwd on every turn, so an older binding for this same
+            # workspace is exactly what should still be resumable.
+            logger.debug("resume-id not written: turn workspace unknown")
+            return
+        stored = (
+            _encode_sdk_resume_binding(value, cwd=cwd) if value is not None else None
+        )
+        agent._session_db.update_claude_sdk_session_id(agent.session_id, stored)
     except Exception:
         logger.debug("resume-id write failed", exc_info=True)
 
@@ -113,4 +180,4 @@ def _persist_turn(agent, state: _SdkTurnState) -> None:
         # transient lock — storing first would silently discard the id.
         thread_id = getattr(turn, "thread_id", None)
         if thread_id:
-            _store_sdk_session_id(agent, thread_id)
+            _store_sdk_session_id(agent, thread_id, cwd=state.turn_session_cwd)

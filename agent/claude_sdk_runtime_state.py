@@ -25,10 +25,16 @@ class _SdkTurnState:
     Per-turn wiring: ``on_interim_assistant`` / ``on_tool_iteration`` are the
     visibility callbacks refreshed every turn by ``_refresh_turn_visibility``.
 
-    Outcome, filled by the phases in order: ``turn`` and ``resumed`` by
-    ``_run_sdk_attempts``; ``effects``, ``failover_reason`` and
-    ``user_interrupted`` by ``_reconcile_turn_outcome``; ``usage_result`` and
-    ``should_review_skills`` by ``_account_turn``.
+    Outcome, filled by the phases in order: ``turn``, ``resumed`` and
+    ``turn_session_cwd`` by ``_run_sdk_attempts``; ``effects``,
+    ``failover_reason`` and ``user_interrupted`` by
+    ``_reconcile_turn_outcome``; ``usage_result`` and ``should_review_skills``
+    by ``_account_turn``.
+
+    ``turn_session_cwd`` is the workspace the SDK session that produced this
+    turn was actually created in, sampled before ``run_turn``. The resume id is
+    persisted BOUND to it, so a later turn in a different workspace declines
+    the binding instead of resuming a foreign session.
     """
 
     user_input: Any
@@ -39,6 +45,7 @@ class _SdkTurnState:
     on_tool_iteration: Any = None
     turn: Any = None
     resumed: bool = False
+    turn_session_cwd: Any = None
     effects: Any = None
     failover_reason: Any = None
     user_interrupted: bool = False

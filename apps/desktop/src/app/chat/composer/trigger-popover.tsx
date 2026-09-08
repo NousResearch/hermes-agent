@@ -1,9 +1,10 @@
 import type { Unstable_TriggerItem } from '@assistant-ui/core'
-import { Fragment } from 'react'
+import { Fragment, useEffect, useRef } from 'react'
 
 import { referenceKind, referenceStyle } from '@/components/assistant-ui/reference-kinds'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
@@ -91,6 +92,62 @@ export function ComposerTriggerPopover({
   const copy = t.composer
   const isSlash = kind === '/'
   const isEmoji = kind === ':'
+  const listRef = useRef<HTMLDivElement>(null)
+  const hoverIndexRef = useRef(-1)
+
+  // Only keyboard navigation should move the drawer. A hover echo already points
+  // at a visible row and scrolling it can shift another row under the pointer.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    const list = listRef.current
+
+    if (!list) {
+      return
+    }
+
+    const isHoverEcho = activeIndex === hoverIndexRef.current
+
+    hoverIndexRef.current = -1
+
+    if (isHoverEcho) {
+      return
+    }
+
+    if (activeIndex === 0) {
+      // `nearest` keeps the first row visible but can leave its group header
+      // clipped, so wrapping to the beginning restores the complete top edge.
+      list.scrollTop = 0
+
+      return
+    }
+
+    const highlighted = list.querySelector<HTMLElement>('[data-highlighted]')
+
+    if (!highlighted) {
+      return
+    }
+
+    // Keep scrolling local to the drawer. `scrollIntoView` may also move the
+    // transcript or window because it operates on every scrollable ancestor.
+    const listRect = list.getBoundingClientRect()
+    const highlightedRect = highlighted.getBoundingClientRect()
+    const visibleTop = listRect.top + list.clientTop
+    const visibleBottom = visibleTop + list.clientHeight
+    const topDelta = highlightedRect.top - visibleTop
+    const bottomDelta = highlightedRect.bottom - visibleBottom
+    const overflowsTop = topDelta < 0
+    const overflowsBottom = bottomDelta > 0
+
+    // A row that is fully visible needs no movement. An oversized row that
+    // spans both edges already covers the viewport, so moving it would not
+    // reveal the whole row and would only add churn. Otherwise align whichever
+    // edge requires the shorter movement, matching `block: nearest` semantics.
+    if (overflowsTop === overflowsBottom) {
+      return
+    }
+
+    list.scrollTop += Math.abs(topDelta) < Math.abs(bottomDelta) ? topDelta : bottomDelta
+  }, [activeIndex, items])
 
   let lastGroup: string | undefined
 
@@ -100,6 +157,7 @@ export function ComposerTriggerPopover({
       data-slot="composer-completion-drawer"
       data-state="open"
       onMouseDown={event => event.preventDefault()}
+      ref={listRef}
       role="listbox"
     >
       {scope && <div className={cn(GROUP_HEADER_CLASS, 'pt-0.5')}>{referenceStyle(scope).label}</div>}
@@ -142,29 +200,44 @@ export function ComposerTriggerPopover({
           return (
             <Fragment key={item.id}>
               {showHeader && <div className={cn(GROUP_HEADER_CLASS, isFirstHeader ? 'pt-0.5' : 'pt-2')}>{group}</div>}
-              <button
-                className={ROW_CLASS}
-                data-highlighted={active ? '' : undefined}
-                onClick={() => onPick(item)}
-                onMouseEnter={() => onHover(index)}
-                type="button"
+              <Tip
+                className="max-w-[calc(100vw-2rem)] wrap-anywhere"
+                collisionPadding={16}
+                delayDuration={400}
+                label={kind === '/' ? description : undefined}
+                sideOffset={4}
               >
-                {isEmoji ? (
-                  // The emoji is its own icon — a glyph column beside it reads
-                  // as decoration.
-                  <span className="min-w-0 shrink truncate leading-5 text-foreground">{display}</span>
-                ) : (
-                  <>
-                    <span className="grid size-4 shrink-0 place-items-center text-(--ref-color)" data-ref={refKind}>
-                      <Codicon name={referenceStyle(refKind).codicon} size="0.875rem" />
-                    </span>
-                    <span className="min-w-0 shrink truncate font-medium leading-5 text-foreground">{display}</span>
-                    {description && (
-                      <span className="min-w-0 flex-1 truncate leading-5 text-(--ui-text-tertiary)">{description}</span>
-                    )}
-                  </>
-                )}
-              </button>
+                <button
+                  className={ROW_CLASS}
+                  data-highlighted={active ? '' : undefined}
+                  onClick={() => onPick(item)}
+                  onMouseEnter={() => {
+                    // React bails out when hovering the already-active row. Do
+                    // not leave a marker behind for a later items refresh.
+                    hoverIndexRef.current = index === activeIndex ? -1 : index
+                    onHover(index)
+                  }}
+                  type="button"
+                >
+                  {isEmoji ? (
+                    // The emoji is its own icon — a glyph column beside it reads
+                    // as decoration.
+                    <span className="min-w-0 shrink truncate leading-5 text-foreground">{display}</span>
+                  ) : (
+                    <>
+                      <span className="grid size-4 shrink-0 place-items-center text-(--ref-color)" data-ref={refKind}>
+                        <Codicon name={referenceStyle(refKind).codicon} size="0.875rem" />
+                      </span>
+                      <span className="min-w-0 shrink truncate font-medium leading-5 text-foreground">{display}</span>
+                      {description && (
+                        <span className="min-w-0 flex-1 truncate leading-5 text-(--ui-text-tertiary)">
+                          {description}
+                        </span>
+                      )}
+                    </>
+                  )}
+                </button>
+              </Tip>
             </Fragment>
           )
         })

@@ -24,10 +24,12 @@ export function isFileEditTool(toolName: string): boolean {
 //   - `clarify`, `image_generate` and `delegate_task` bypass ToolEntry to
 //     render their own markup: a question the user has to answer, an image
 //     they asked for, the several agents a fan-out is running.
+//   - `setup_mcp` is the same kind: an inline consent card the user has to
+//     act on. Folding it into a "Using 2 tools" summary hides the buttons.
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
-const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate'])
+const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate', 'setup_mcp'])
 
 export function isCardTool(toolName: string): boolean {
   return CARD_TOOL_NAMES.has(toolName) || isFileEditTool(toolName)
@@ -37,7 +39,7 @@ export function isCardTool(toolName: string): boolean {
 // dedicated panel above the message content, and a reaction's UI is the emoji
 // landing on the bubble. Both still render when they FAIL, which is a bounded
 // error row either way.
-const SILENT_TOOL_NAMES = new Set(['react_to_message', 'todo'])
+const SILENT_TOOL_NAMES = new Set(['react_to_message', 'todo', 'todo_list'])
 
 export function isSilentTool(toolName: string): boolean {
   return SILENT_TOOL_NAMES.has(toolName)

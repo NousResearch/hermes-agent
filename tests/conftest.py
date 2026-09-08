@@ -21,6 +21,7 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import atexit
+import importlib
 import os
 import shutil
 import sqlite3
@@ -90,6 +91,20 @@ if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
     _SESSION_HERMES_HOME = tempfile.mkdtemp(prefix="hermes-test-home-")
     os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
     atexit.register(shutil.rmtree, _SESSION_HERMES_HOME, True)
+
+# Subprocess-surviving isolation marker (#82770). PYTEST_CURRENT_TEST /
+# PYTEST_VERSION are pytest's own vars, and tests that spawn children
+# routinely rebuild the child env and strip them ("the subprocess must look
+# like a real CLI") — which used to disarm hermes_state's live-DB guard in
+# the child at the same moment the child lost the HERMES_HOME redirect.
+# HERMES_TEST_ISOLATION is OUR marker: exported here (before any test module
+# imports), inherited by every child by default, and honored by
+# hermes_state_guard._running_under_pytest() as a test-context signal. A child
+# that carries it and still resolves the production state.db fails hard.
+# Tests that legitimately need a child to look like a non-test process AND
+# open a real DB must export HERMES_STATE_DB_GUARD_BYPASS=1 in that child's
+# env instead of stripping markers.
+os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
 
 #: HERMES_HOME as it stood when conftest was imported - i.e. before any test
 #: module could import code that configures logging. Recorded so the guard in
@@ -172,6 +187,7 @@ _CREDENTIAL_NAMES = frozenset({
     "PARALLEL_API_KEY",
     "EXA_API_KEY",
     "TAVILY_API_KEY",
+    "PERPLEXITY_API_KEY",
     "WANDB_API_KEY",
     "ELEVENLABS_API_KEY",
     "HONCHO_API_KEY",
@@ -250,6 +266,12 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_VOICE",
     "HERMES_VOICE_TTS",
     "HERMES_YOLO_MODE",
+    # Injected into subprocess envs by the terminal tool (_make_run_env), so
+    # any test run launched FROM a Hermes agent session inherits them and
+    # hermes_constants home-resolution helpers prefer them over monkeypatched
+    # HOME (test_subprocess_home_isolation red locally, green on CI).
+    "HERMES_REAL_HOME",
+    "TERMINAL_HOME_MODE",
     "HERMES_INTERACTIVE",
     "HERMES_QUIET",
     "HERMES_TOOL_PROGRESS",
@@ -327,6 +349,10 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # (user shell, earlier leaky test, CI env), they change gateway auth
     # behavior and flake button-authorization tests.
     "TELEGRAM_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_CHATS",
+    "QQ_ALLOWED_USERS",
+    "QQ_GROUP_ALLOWED_USERS",
     "DISCORD_ALLOWED_USERS",
     "WHATSAPP_ALLOWED_USERS",
     "SLACK_ALLOWED_USERS",
@@ -467,6 +493,14 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
+    # Keep the subprocess-surviving isolation marker pointed at THIS test's
+    # home (#82770): children spawned by the test inherit it by default, so
+    # hermes_state's live-DB guard stays armed in them even when the test
+    # strips pytest's own PYTEST_* vars from the child env.
+    monkeypatch.setenv("HERMES_TEST_ISOLATION", str(fake_hermes_home))
+    # And never let a developer-shell (or leaked child) bypass disarm the
+    # guard for in-process code under test.
+    monkeypatch.delenv("HERMES_STATE_DB_GUARD_BYPASS", raising=False)
 
     # 3b. hermes_state computes ``DEFAULT_DB_PATH = get_hermes_home() / "state.db"``
     #     at import time. When the module is first imported at collection (any
@@ -517,6 +551,13 @@ def _hermetic_environment(tmp_path, monkeypatch):
     try:
         import hermes_cli.plugins as _plugins_mod
         monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
+        # Also clear the keyed per-home manager cache (and any plugin
+        # submodules it left in sys.modules) so a manager built for a
+        # previous test's tmp_path HERMES_HOME can't leak forward. Paths
+        # are unique per test, so collisions are unlikely, but a full
+        # reset keeps this fixture the single source of plugin-state
+        # hygiene rather than relying on path uniqueness.
+        _plugins_mod._reset_plugin_managers_for_tests()
     except Exception:
         pass
     # Explicitly clear provider-specific base URL overrides that don't match
@@ -531,6 +572,28 @@ def _hermetic_environment(tmp_path, monkeypatch):
 def _isolate_hermes_home(_hermetic_environment):
     """Alias preserved for any test that yields this name explicitly."""
     return None
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_kanban_memory_guard(request, monkeypatch):
+    """Pin the kanban dispatcher's memory guard to "no data" for every test.
+
+    The dispatcher consults live system memory before spawning (OOF-30/
+    OOF-77: memory-derived default cap + pressure-based spawn restriction).
+    Left un-patched, dispatch tests would pass or fail based on how loaded
+    the CI runner happens to be. Defaulting the sample to ``{}`` makes the
+    derived cap ``None`` and the pressure level ``"unknown"`` — i.e. the
+    pre-guard behaviour every existing test was written against. Tests that
+    exercise the guard itself opt out with
+    ``@pytest.mark.real_memory_guard`` or patch the seam directly.
+    """
+    if request.node.get_closest_marker("real_memory_guard"):
+        return
+    try:
+        from hermes_cli import kanban_db_dispatch as _kbd_mod
+    except Exception:
+        return
+    monkeypatch.setattr(_kbd_mod, "_system_memory_sample", lambda: {}, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -570,12 +633,11 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
         return None
 
     try:
-        import agent.anthropic_adapter as _anthropic_adapter
+        _mod = importlib.import_module("agent.anthropic_credentials")
     except Exception:
         return None
-
     monkeypatch.setattr(
-        _anthropic_adapter,
+        _mod,
         "_read_claude_code_credentials_from_keychain",
         lambda *_args, **_kwargs: None,
         raising=False,
@@ -586,7 +648,7 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
 # ── Kanban write guard (#69283) ─────────────────────────────────────────────
 # When hermetic isolation is bypassed (stale checkout, wrong rootdir, direct
 # invocation), kanban writes silently pollute the real ~/.hermes. This autouse
-# fixture patches ``kanban_db.connect`` to refuse writes whose resolved DB
+# fixture patches ``kanban_db_connect.connect`` to refuse writes whose resolved DB
 # path lands under the REAL kanban root (captured at import time, before any
 # fixture rewires the environment). A deny-list is used instead of an
 # allow-list because test-level fixtures legitimately move HERMES_HOME to
@@ -633,15 +695,16 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
     ``~/.hermes`` captured at import time. Hermetic tests that legitimately
     move HERMES_HOME to sibling tempdirs are unaffected.
 
-    Only patches when ``hermes_cli.kanban_db`` is *already imported* — a
-    ``sys.modules`` probe, not an import — so the guard never drags the
+    Only patches when ``hermes_cli.kanban_db_connect`` is *already imported*
+    — a ``sys.modules`` probe, not an import — so the guard never drags the
     kanban module into unrelated test processes.
 
     Uses ``monkeypatch.setattr`` so pytest restores ``connect`` automatically
     after each test (no stacked wrappers or state leakage across tests).
     """
     _kdb = sys.modules.get("hermes_cli.kanban_db")
-    if _kdb is None:
+    _kdbc = sys.modules.get("hermes_cli.kanban_db_connect")
+    if _kdb is None or _kdbc is None:
         return
 
     # The sys.modules probe can observe the module MID-IMPORT: a fixture
@@ -650,8 +713,8 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
     # doesn't exist yet (AttributeError flake, caught in a full-suite run).
     # A half-imported module has no callers yet either — nothing to guard
     # this round; the next test's fixture will patch the completed module.
-    _orig_connect = getattr(_kdb, "connect", None)
-    if _orig_connect is None:
+    _orig_connect = getattr(_kdbc, "connect", None)
+    if _orig_connect is None or getattr(_kdb, "kanban_db_path", None) is None:
         return
 
     def _guarded_connect(db_path=None, *args, **kwargs):
@@ -675,7 +738,7 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
             f"to the real ~/.hermes. See #69283."
         )
 
-    monkeypatch.setattr(_kdb, "connect", _guarded_connect)
+    monkeypatch.setattr(_kdbc, "connect", _guarded_connect)
 
 
 # ── Live state.db write guard ───────────────────────────────────────────────
@@ -1112,6 +1175,12 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "require_symlinks: skip the test if symbolic links cannot be "
         "created in the current environment (needs admin/developer mode "
         "on Windows).",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_memory_guard: bypass the autouse fixture that pins the kanban "
+        "dispatcher's memory guard to 'no data' — only for tests that "
+        "exercise the guard itself with their own patched samples.",
     )
     # NOTE: linux_only / macos_only / windows_only are declared in
     # pyproject.toml's ``markers`` list, not here — they are part of the

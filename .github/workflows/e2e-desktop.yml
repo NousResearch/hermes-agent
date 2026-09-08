@@ -17,7 +17,10 @@ concurrency:
 jobs:
   e2e:
     name: Playwright E2E (Linux)
-    runs-on: ubuntu-latest
+    # This job builds the renderer and the electron bundle, then drives a real
+    # Electron app under xvfb. vite, tsc and the Playwright workers all scale
+    # with the core count.
+    runs-on: ubuntu-latest-32-core
     timeout-minutes: 20
     outputs:
       review_status: ${{ steps.review-status.outputs.review_status }}

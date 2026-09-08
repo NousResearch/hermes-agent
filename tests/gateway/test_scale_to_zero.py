@@ -38,6 +38,14 @@ def test_timeout_parses_minutes_to_seconds():
     assert parse_idle_timeout_seconds("5") == 300.0
 
 
+def test_timeout_invalid_values_degrade_to_default():
+    # Behavior contract: bad config falls back to the module default (whatever
+    # its current value), never to zero/negative — an instant-dormant gateway
+    # is never the intent.
+    for bad in (None, "", "nope", 0, -3):
+        assert parse_idle_timeout_seconds(bad) == DEFAULT_IDLE_TIMEOUT_MINUTES * 60.0
+
+
 # ── messaging_is_relay_only_or_absent (F6/D1) ────────────────────────────────
 
 
@@ -71,7 +79,7 @@ def test_arm_blocked_without_wake_url():
 
 def _idle_kwargs(**over):
     base = dict(
-        running_agent_count=0,
+        active_work_count=0,
         seconds_since_last_inbound=600.0,
         idle_timeout_seconds=300.0,
         has_live_background_work=False,
@@ -81,7 +89,7 @@ def _idle_kwargs(**over):
 
 
 def test_not_idle_with_running_agent():
-    assert is_idle(**_idle_kwargs(running_agent_count=1)) is False
+    assert is_idle(**_idle_kwargs(active_work_count=1)) is False
 
 
 def test_idle_exactly_at_threshold():
@@ -178,3 +186,106 @@ def test_self_suspend_available_needs_identity_and_socket():
         assert self_suspend_available(_FLY_ENV) is False
     # Missing identity -> unavailable regardless of socket.
     assert self_suspend_available({}) is False
+
+# Brokered suspend: Azure's stop verb needs a credential the sandbox lacks, so
+# NAS stamps a signed sleep URL and stops the machine on our POST.
+
+from gateway.scale_to_zero import (  # noqa: E402 - grouped with their section
+    SLEEP_URL_ENV,
+    brokered_sleep_url,
+    request_brokered_suspend,
+    suspend_available,
+)
+
+_SLEEP_URL = "https://portal.example.com/api/agents/inst-1/sleep?t=sig"
+
+
+def test_brokered_sleep_url_reads_the_stamp():
+    assert brokered_sleep_url({SLEEP_URL_ENV: _SLEEP_URL}) == _SLEEP_URL
+    assert brokered_sleep_url({}) is None
+    assert brokered_sleep_url({SLEEP_URL_ENV: "   "}) is None
+
+
+def test_malformed_sleep_url_warns_once_not_every_idle_tick(monkeypatch, caplog):
+    """The watcher calls this on every tick and its own no-lever latch sits after
+    it, so an unlatched warning would repeat for the life of the process."""
+    import gateway.scale_to_zero as sz
+
+    monkeypatch.setattr(sz, "_malformed_sleep_url_logged", False)
+    monkeypatch.setenv("GATEWAY_RELAY_SLEEP_URL", "http://portal.example.com/x")
+    with caplog.at_level("WARNING"):
+        for _ in range(5):
+            assert sz.brokered_sleep_url() is None
+    assert sum("ignoring malformed" in r.message for r in caplog.records) == 1
+
+
+def test_brokered_sleep_url_rejects_a_malformed_stamp(monkeypatch):
+    """Validated before it is treated as a lever: otherwise the watcher marks draining, holds the re-dial and flips the connector, and only then does urllib reject the value, quiescing for a suspend that could never happen."""
+    from gateway.scale_to_zero import brokered_sleep_url
+
+    for bad in ("not-a-url", "http://portal.example.com/x", "/api/agents/i/sleep"):
+        monkeypatch.setenv("GATEWAY_RELAY_SLEEP_URL", bad)
+        assert brokered_sleep_url() is None, bad
+    monkeypatch.setenv("GATEWAY_RELAY_SLEEP_URL", "https://portal.example.com/x?t=s")
+    assert brokered_sleep_url() == "https://portal.example.com/x?t=s"
+
+
+def test_suspend_available_accepts_either_lever(monkeypatch):
+    # No flaps socket but a broker exists, so the watcher may still quiesce.
+    monkeypatch.setattr(
+        "gateway.scale_to_zero.self_suspend_available", lambda *a, **k: False
+    )
+    assert suspend_available({SLEEP_URL_ENV: _SLEEP_URL}) is True
+    assert suspend_available({}) is False
+    monkeypatch.setattr(
+        "gateway.scale_to_zero.self_suspend_available", lambda *a, **k: True
+    )
+    assert suspend_available({}) is True
+
+
+class _FakeResponse:
+    def __init__(self, status):
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_brokered_timeout_outlasts_the_broker_and_fits_the_redial_hold():
+    """Cross-repo deadline chain."""
+    from gateway.relay.ws_transport import REDIAL_HOLD_MAX_S
+    from gateway.scale_to_zero import BROKERED_SUSPEND_TIMEOUT_S
+
+    NAS_ROUTE_MAX_DURATION_S = 30.0  # mirrors the sleep route's maxDuration
+    assert NAS_ROUTE_MAX_DURATION_S < BROKERED_SUSPEND_TIMEOUT_S
+    assert BROKERED_SUSPEND_TIMEOUT_S < REDIAL_HOLD_MAX_S
+
+
+def test_request_brokered_suspend_posts_the_signed_url():
+    seen = {}
+
+    def opener(request, timeout=None):
+        seen["url"] = request.full_url
+        seen["method"] = request.get_method()
+        return _FakeResponse(200)
+
+    assert request_brokered_suspend(_SLEEP_URL, opener=opener) is True
+    assert seen == {"url": _SLEEP_URL, "method": "POST"}
+
+
+def test_request_brokered_suspend_fails_awake():
+    # Fail-awake: any refusal leaves the machine running rather than stranding a
+    # frozen peer that still looks live to the connector.
+    import urllib.error
+
+    def http_error(request, timeout=None):
+        raise urllib.error.HTTPError(_SLEEP_URL, 409, "Conflict", {}, None)
+
+    def unreachable(request, timeout=None):
+        raise urllib.error.URLError("connection refused")
+
+    for opener in (http_error, unreachable, lambda *a, **k: _FakeResponse(500)):
+        assert request_brokered_suspend(_SLEEP_URL, opener=opener) is False

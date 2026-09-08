@@ -162,6 +162,21 @@ from an isolated `HERMES_HOME`. Those tests load and invoke the plugin through
 `PluginManager`; they assert real registration and callback outcomes rather
 than internal symbol lists or source-code shape.
 
+### Sep 2026 module decomposition: old import paths end 2026-09-14
+
+Hermes's internals were split into `<stem>_<topic>` sibling modules in Sep 2026 (PR #102117). **Internal
+import paths were never part of the plugin contract** above, but many plugins used them. Every moved name
+still resolves from its old module until **2026-09-14**, then the compatibility layer is removed.
+
+- **Check your plugin:** `hermes plugins compat /path/to/your/plugin` lists every `file:line` with the
+  old path and the new one, and exits 1 while any remain. `COMPAT_MANIFEST.md` in the repo is the full map.
+- **What users see:** a notice under the CLI banner, in `hermes doctor` and after `hermes update`, and a
+  one-time Desktop dialog naming the plugin. Each resolution through an old path also emits a
+  `HermesPluginCompatWarning` once per process.
+- **From 2026-09-14:** plugins that still import old paths are **not loaded** (the reason shows in
+  `hermes plugins list`). Users can force-load with `plugins.allow_deprecated_imports: true` until the
+  layer is actually removed, at which point the old paths raise `ImportError`.
+
 ## What you're building
 
 A **calculator** plugin with two tools:
@@ -253,6 +268,72 @@ config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
 are deprecated — declare capabilities instead so users get a single,
 auditable consent screen. Capabilities are consent + audit, **not a
 sandbox**: they gate host API surfaces, nothing more.
+
+**Pip-distributed plugins** have no `plugin.yaml` directory once installed,
+so declare capabilities in distribution metadata instead, via the companion
+`hermes_agent.plugin_capabilities` entry-point group. Each declaration is
+named `<plugin-id>.<capability-id>` and points at the same object as your
+`hermes_agent.plugins` entry point:
+
+```toml
+[project.entry-points."hermes_agent.plugins"]
+calculator = "my_pkg:register"
+
+[project.entry-points."hermes_agent.plugin_capabilities"]
+"calculator.tools.override" = "my_pkg:register"
+```
+
+Hermes reads these from installed metadata without importing your code, so
+`hermes plugins capabilities` and the consent flow stay accurate for pip
+installs.
+
+### Manifest v2 reference
+
+`plugin.yaml` also supports an additive **v2 schema** (#64165). Every field is
+optional; a manifest without `manifest_version` is a v1 manifest and stays
+fully supported forever. Unknown fields never break loading — they are ignored
+with a warning (forward compatibility), and a `manifest_version` newer than
+this Hermes understands still loads with a warning.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `manifest_version` | int | Manifest **file-format** version. Absent = `1`. Current max: `2`. Independent from `api_version`. |
+| `api_version` | int | Runtime **plugin API generation** the plugin targets (ctx surface / hook signatures). Deliberately a separate axis from `manifest_version` — an `api_version: 1` plugin can use a v2 manifest. |
+| `requires_plugins` | list | Inter-plugin dependencies: `- id: other-plugin` with optional `version_range: ">=1.0,<2"`. **Advisory**: a missing dependency logs a clear warning but the plugin still loads — probe at runtime with `ctx.has_plugin("other-plugin")`. Load **order** honors these edges: when A requires B, B's `register()` runs before A's (topological sort, alphabetical tiebreak; cycles warn and fall back to alphabetical order). |
+| `python_dependencies` | list of str | Declared pip requirements (e.g. `"requests>=2.0,<3"`). **Declaration seam only** — Hermes validates them, and `hermes plugins install` / `hermes plugins doctor` surface missing ones with a `pip install` hint, but Hermes **never auto-installs** them. Pin upper bounds. |
+| `config_schema` | mapping | JSON-schema-ish description of keys under `plugins.entries.<id>.settings`: `api_url: {type: str, default: "", description: "...", required: false}`. Validated at load; mismatches log actionable warnings naming the key and expected type — never load failures. Types: `str`, `int`, `float`, `bool`, `list`, `dict` (plus JSON-schema aliases). |
+| `license` | str | SPDX-style license id (e.g. `MIT`). |
+| `homepage` | str | Project URL. |
+| `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
+
+```yaml
+# plugin.yaml — manifest v2 example
+name: my-plugin
+version: 1.2.0
+manifest_version: 2
+api_version: 1
+license: MIT
+homepage: https://github.com/owner/my-plugin
+tags: [gateway, demo]
+requires_plugins:
+  - id: other-plugin
+    version_range: ">=1.0,<2"
+python_dependencies:
+  - "somepkg>=1.0,<2"     # surfaced, never auto-installed
+config_schema:
+  api_url: {type: str, default: "", description: "Service endpoint"}
+```
+
+:::note pip-dependency isolation is deferred
+`python_dependencies` is intentionally declare-and-surface only. Installing
+arbitrary packages into Hermes' shared venv is a conflict and supply-chain
+surface, so the install seam's isolation design (constraints-file installs
+against the host lock vs. per-plugin vendored dirs vs. conflict detection
+with refusal) is an explicitly deferred follow-up — see the round-2 review on
+[#64165](https://github.com/NousResearch/hermes-agent/issues/64165) and
+[#15220](https://github.com/NousResearch/hermes-agent/issues/15220). Plugin
+packs (#64166) build on these v2 fields.
+:::
 
 ## Step 3: Write the tool schemas
 
@@ -592,6 +673,31 @@ _DATA_FILE = _PLUGIN_DIR / "data" / "languages.yaml"
 with open(_DATA_FILE) as f:
     _DATA = yaml.safe_load(f)
 ```
+
+That's for files you *ship*. State you *write* is different — see the next
+section.
+
+### Store durable state
+
+Never write runtime state into your plugin directory: that's the install
+tree, and `hermes plugins update` / `remove` git-pull or delete it — your
+users' data dies with it. The sanctioned home is the per-plugin data root,
+which survives both and follows the active profile:
+
+```python
+from plugins.plugin_storage import plugin_data_dir, plugin_db
+
+# <hermes home>/plugin-data/<name>/ — created on first use
+state_file = plugin_data_dir("my-plugin") / "state.json"
+
+# Or a SQLite database at <data dir>/data.db (WAL mode, thread-friendly)
+conn = plugin_db("my-plugin")
+conn.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY)")
+```
+
+One directory per plugin means every plugin's data is inspectable in one
+predictable place. Secrets don't belong here — credential reads go through
+the standard `.env` / secret-scope path like everywhere else.
 
 ### Bundle skills
 
@@ -1188,7 +1294,85 @@ def register(ctx):
 - Standard slack_bolt rules apply — `await ack()` within 3 seconds, then do longer work.
 - For multi-workspace deployments the handler fires for clicks from any connected workspace; use `body["team"]["id"]` if you need to scope behaviour.
 
-This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead.
+This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead. For the full slack_bolt surface (events, shortcuts, commands — not just Block Kit actions), use the generic `register_platform_handler("slack", ...)` below.
+
+### Register native platform handlers (any platform)
+
+Plugins that need to receive platform events the core adapter doesn't route — extra update types, native button callbacks, reaction/member events, webhook routes — can register a handler factory that the platform's adapter invokes at connect time. This works on **every** gateway platform.
+
+```python
+def register(ctx):
+    def _wire(native, adapter):
+        # native: the platform's client/app object (see table below)
+        # adapter: the platform adapter instance (treat as read-only)
+        # Import platform SDKs HERE so register() works without them.
+        ...
+
+    ctx.register_platform_handler("discord", _wire)
+```
+
+**Signature:** `ctx.register_platform_handler(platform, factory) -> None`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `platform` | `str` | Gateway platform name, lowercase (`"telegram"`, `"discord"`, `"slack"`, `"matrix"`, ...) |
+| `factory` | callable | Receives `(native, adapter)` at connect time |
+
+**What `native` is, per platform:**
+
+| Platform | `native` object | Typical hooks |
+|----------|-----------------|---------------|
+| `telegram` | PTB `Application` | `add_handler` — any update type, pattern-scoped callbacks |
+| `discord` | `discord.ext.commands.Bot` | `add_listener` — reactions, member events, threads, voice |
+| `slack` | `slack_bolt.AsyncApp` | `app.event()` / `app.action()` / `app.command()` |
+| `matrix` | Matrix client | event callbacks |
+| `teams` | Teams `App` | `on_message` / `on_card_action` decorators |
+| `dingtalk` | `DingTalkStreamClient` | `register_callback_handler` for other stream topics |
+| `feishu` | lark_oapi client | API calls; event routing |
+| `line`, `api_server`, `msgraph_webhook` | aiohttp `web.Application` | `router.add_get/post` — custom routes (wired before the router freezes) |
+| everything else (whatsapp, signal, irc, email, sms, ntfy, wecom, weixin, bluebubbles, yuanbao, ...) | `None` | connect-time hook; work through the `adapter` handle |
+
+**Runtime behavior:**
+
+- Factories are queued at plugin-load time and invoked when the platform connects — for platforms where dispatch order matters (Telegram, Slack, Teams, aiohttp routers) they run **before** the core handlers register, so scoped plugin handlers take precedence and everything else falls through.
+- **Always scope handlers you add to first-match dispatch tables.** On Telegram, use `CallbackQueryHandler(..., pattern=r"^myplugin:")` — an unscoped handler would swallow the core button flows (exec approvals, model picker, clarify prompts).
+- Each factory is isolated: if it raises, the error is logged and the platform still connects.
+- Import platform SDKs inside the factory body, not at module level — `register()` must work when the SDK isn't installed.
+- One plugin can register factories for several platforms; each fires only when its platform connects.
+
+**Telegram alias:** `ctx.register_telegram_handler(factory)` is a back-compat alias for `ctx.register_platform_handler("telegram", factory)`.
+
+Example — Telegram, pattern-scoped inline buttons:
+
+```python
+def register(ctx):
+    def _wire(application, adapter):
+        from telegram.ext import CallbackQueryHandler
+
+        async def _on_button(update, context):
+            query = update.callback_query
+            await query.answer()
+            # ...handle "myplugin:*" callbacks
+
+        application.add_handler(
+            CallbackQueryHandler(_on_button, pattern=r"^myplugin:")
+        )
+
+    ctx.register_platform_handler("telegram", _wire)
+```
+
+Example — Discord, reaction events:
+
+```python
+def register(ctx):
+    def _wire(bot, adapter):
+        async def on_raw_reaction_add(payload):
+            ...  # e.g. reaction-based voting / moderation
+
+        bot.add_listener(on_raw_reaction_add, "on_raw_reaction_add")
+
+    ctx.register_platform_handler("discord", _wire)
+```
 
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.
@@ -1326,6 +1510,8 @@ def register(ctx):
 ```
 
 Memory providers are single-select — only one is active at a time, chosen via `memory.provider` in `config.yaml`.
+
+If a provider also loads as a general plugin, general discovery owns its lifecycle hooks. The memory loader supplies hooks only as a fallback until that same plugin source loads successfully through general discovery. Repeated provider loads replace the fallback hook group; distinct callbacks within the group are preserved. This does not deduplicate hooks from different plugin sources or change provider activation.
 
 **Full guide:** [Memory Provider Plugins](/developer-guide/memory-provider-plugin) — full `MemoryProvider` ABC, threading contract, profile isolation, CLI command registration via `cli.py`.
 

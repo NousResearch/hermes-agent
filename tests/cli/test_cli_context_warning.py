@@ -24,7 +24,7 @@ def cli_obj(_isolate):
         "display": {"tool_progress": "new"},
         "terminal": {},
     }), patch("cli.get_tool_definitions", return_value=[]), \
-         patch("cli.build_welcome_banner"):
+         patch("hermes_cli.banner.build_welcome_banner"):
         from cli import HermesCLI
         obj = HermesCLI.__new__(HermesCLI)
         obj.model = "test-model"
@@ -50,7 +50,7 @@ class TestLowContextWarning:
         """Warning shown when context is below Hermes' minimum."""
         cli_obj.agent.context_compressor.context_length = 32768
         with patch("cli.get_tool_definitions", return_value=[]), \
-             patch("cli.build_welcome_banner"):
+             patch("hermes_cli.banner.build_welcome_banner"):
             cli_obj.show_banner()
 
         calls = [str(c) for c in cli_obj.console.print.call_args_list]
@@ -64,7 +64,7 @@ class TestLowContextWarning:
         """Warning shown for 2048 tokens (common LM Studio default)."""
         cli_obj.agent.context_compressor.context_length = 2048
         with patch("cli.get_tool_definitions", return_value=[]), \
-             patch("cli.build_welcome_banner"):
+             patch("hermes_cli.banner.build_welcome_banner"):
             cli_obj.show_banner()
 
         calls = [str(c) for c in cli_obj.console.print.call_args_list]
@@ -75,7 +75,7 @@ class TestLowContextWarning:
         """No warning at exactly Hermes' minimum context length."""
         cli_obj.agent.context_compressor.context_length = MINIMUM_CONTEXT_LENGTH
         with patch("cli.get_tool_definitions", return_value=[]), \
-             patch("cli.build_welcome_banner"):
+             patch("hermes_cli.banner.build_welcome_banner"):
             cli_obj.show_banner()
 
         calls = [str(c) for c in cli_obj.console.print.call_args_list]
@@ -86,7 +86,7 @@ class TestLowContextWarning:
         """No warning above Hermes' minimum context length."""
         cli_obj.agent.context_compressor.context_length = MINIMUM_CONTEXT_LENGTH + 1
         with patch("cli.get_tool_definitions", return_value=[]), \
-             patch("cli.build_welcome_banner"):
+             patch("hermes_cli.banner.build_welcome_banner"):
             cli_obj.show_banner()
 
         calls = [str(c) for c in cli_obj.console.print.call_args_list]
@@ -98,7 +98,7 @@ class TestLowContextWarning:
         cli_obj.agent.context_compressor.context_length = 4096
         cli_obj.base_url = "http://localhost:11434/v1"
         with patch("cli.get_tool_definitions", return_value=[]), \
-             patch("cli.build_welcome_banner"):
+             patch("hermes_cli.banner.build_welcome_banner"):
             cli_obj.show_banner()
 
         calls = [str(c) for c in cli_obj.console.print.call_args_list]
@@ -112,7 +112,7 @@ class TestLowContextWarning:
         cli_obj.agent.context_compressor.context_length = 4096
         cli_obj.base_url = "http://localhost:8080/v1"
         with patch("cli.get_tool_definitions", return_value=[]), \
-             patch("cli.build_welcome_banner"):
+             patch("hermes_cli.banner.build_welcome_banner"):
             cli_obj.show_banner()
 
         calls = [str(c) for c in cli_obj.console.print.call_args_list]

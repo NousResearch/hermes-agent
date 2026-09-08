@@ -142,7 +142,7 @@ class TestNativePathRegion:
         downscaled with the rest."""
         from tools.vision_tools import _EMBED_MAX_DIMENSION, _vision_analyze_native
 
-        # Taller than the 7900px embed cap — full shot would be downscaled.
+        # Taller than the embed long-edge cap — full shot would be downscaled.
         big = tmp_path / "big.png"
         Image.new("RGB", (200, _EMBED_MAX_DIMENSION + 500), (0, 100, 0)).save(
             big, format="PNG"

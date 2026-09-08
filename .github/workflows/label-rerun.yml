@@ -44,7 +44,7 @@ jobs:
           RUN_INFO=$(gh run list \
             --repo "$REPO" \
             --commit "$HEAD_SHA" \
-            --workflow ci.yml \
+            --workflow ci.yaml \
             --limit 1 \
             --json databaseId,status \
             --jq '.[0] | "\(.databaseId) \(.status)"' 2>/dev/null || true)

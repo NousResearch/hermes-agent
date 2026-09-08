@@ -58,7 +58,6 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `disk-cleanup` | hooks + slash command | Auto-track ephemeral files and clean them on session end |
 | `security-guidance` | hooks | Pattern-match dangerous code on `write_file`/`patch` and append a security warning (or block) — 25 rules (Apache-2.0 fork of Anthropic's `claude-plugins-official` patterns) |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
-| `observability/nemo_relay` | hooks | Relay observability events (turns / LLM calls / tools) to an NVIDIA NeMo endpoint |
 | `teams_pipeline` | standalone | Microsoft Teams meeting pipeline — Graph-backed, transcript-first meeting summaries |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
@@ -202,6 +201,33 @@ Hermes-prefixed and standard SDK env vars (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECR
 **Performance:** the Langfuse client is cached after the first hook call. If credentials or SDK are missing, that decision is also cached — subsequent hooks fast-return without re-checking env vars or reloading config.
 
 **Disabling:** `hermes plugins disable observability/langfuse`. The plugin module is still discovered, but no module code runs until you re-enable.
+
+### NeMo Relay native integration (migration note)
+
+NeMo Relay is no longer a bundled Hermes plugin. Do not run `hermes plugins enable observability/nemo_relay`; Hermes core now owns the Relay session, turn, LLM, and tool lifecycles.
+
+To opt into Relay middleware or exporters, create a standard Relay `plugins.toml`, then set `HERMES_NEMO_RELAY_PLUGINS_TOML` to that file before starting Hermes. The policy is process-wide for every profile hosted by that Hermes process. See the [NeMo Relay observability configuration](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about) for ATOF, ATIF, and OpenTelemetry options.
+
+The old `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` settings no longer activate exporters. `hermes doctor` reports these stale settings when no replacement `plugins.toml` is selected.
+
+#### Session-span segmentation (continuous sessions)
+
+Relay exports a span when its scope closes. A continuous gateway session can keep its session span open for days even though each turn span exports normally. Optional segmentation rotates only the session scope at a turn boundary:
+
+```yaml
+gateway:
+  telemetry:
+    session_segments:
+      on_compaction: false  # rotate after context compaction
+      max_turns: 0          # 0 = unlimited; N = turns per segment
+```
+
+| Key | Default | Behavior |
+|---|---:|---|
+| `on_compaction` | `false` | Rotate after compaction completes, at the next turn boundary. |
+| `max_turns` | `0` | Rotate after every N completed turns; `0` disables the cap. |
+
+Both defaults preserve one session scope for the full session. Rotated spans retain the same `session_id` and add `hermes.session.segment` plus `hermes.session.segment_reason` (`compaction` or `max_turns`).
 
 ### google_meet
 

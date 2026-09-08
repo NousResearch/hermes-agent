@@ -5,6 +5,7 @@ import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/ov
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import { ZERO } from '../domain/usage.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -193,6 +194,40 @@ describe('createGatewayEventHandler', () => {
     } as any)
 
     expect(ctx.system.sys).toHaveBeenCalledWith('compressing 968 messages (~123,400 tok)…')
+    expect(getUiState().compacting).toBe(true)
+  })
+
+  it('keeps auto-compaction status visible until compaction finishes (#97239)', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+    const idleLine = '💤 Resumed after 747s idle — compacting ~44,579 tokens before continuing.'
+
+    vi.useFakeTimers()
+    patchUiState({ busy: true, status: 'running…' })
+
+    try {
+      onEvent({
+        payload: { kind: 'compacting', text: idleLine },
+        type: 'status.update'
+      } as any)
+
+      expect(ctx.system.sys).toHaveBeenCalledWith(idleLine)
+      expect(getUiState().compacting).toBe(true)
+      expect(getUiState().status).toBe(idleLine)
+
+      vi.advanceTimersByTime(4001)
+      expect(getUiState().status).toBe(idleLine)
+      expect(getUiState().compacting).toBe(true)
+
+      onEvent({
+        payload: { kind: 'compacted', text: '✓ Context compaction complete — continuing turn...' },
+        type: 'status.update'
+      } as any)
+
+      expect(getUiState().compacting).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keeps goal verdict text in transcript but shows a brief idle status (#goal statusbar)', () => {
@@ -1596,6 +1631,96 @@ describe('createGatewayEventHandler', () => {
     expect(getOverlayState().sudo).toBeNull()
   })
 
+  // ── Batch (multi-question) clarify ─────────────────────────────────
+
+  it('parses a batch clarify.request into a questions overlay', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        questions: [
+          { choices: ['a', 'b'], qid: 'q0', question: 'One?' },
+          { choices: null, qid: 'q1', question: 'Two?' }
+        ],
+        request_id: 'req-batch'
+      },
+      type: 'clarify.request'
+    } as any)
+
+    const clarify = getOverlayState().clarify
+    expect(clarify?.requestId).toBe('req-batch')
+    expect(clarify?.questions).toHaveLength(2)
+    expect(clarify?.questions?.[0]?.qid).toBe('q0')
+    expect(clarify?.questions?.[1]?.choices).toBeNull()
+    expect(clarify?.answers).toEqual({})
+  })
+
+  it('seeds locked answers from a reconnect-replay batch clarify.request', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        answers: { q0: 'a' },
+        questions: [
+          { choices: ['a', 'b'], qid: 'q0', question: 'One?' },
+          { choices: null, qid: 'q1', question: 'Two?' }
+        ],
+        request_id: 'req-replay'
+      },
+      type: 'clarify.request'
+    } as any)
+
+    expect(getOverlayState().clarify?.answers).toEqual({ q0: 'a' })
+  })
+
+  it('drops malformed batch entries and falls back to single-question shape when none survive', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        choices: ['x', 'y'],
+        question: 'Fallback?',
+        questions: [
+          { qid: '', question: 'no qid' },
+          { qid: 'q1', question: '   ' }
+        ],
+        request_id: 'req-bad'
+      },
+      type: 'clarify.request'
+    } as any)
+
+    const clarify = getOverlayState().clarify
+    expect(clarify?.questions).toBeUndefined()
+    expect(clarify?.question).toBe('Fallback?')
+    expect(clarify?.choices).toEqual(['x', 'y'])
+  })
+
+  it('persists an abandoned batch clarify with its locked partials on tool.complete', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    patchOverlayState({
+      clarify: {
+        answers: { q0: 'alpha' },
+        choices: null,
+        question: '',
+        questions: [
+          { choices: ['alpha', 'beta'], qid: 'q0', question: 'One?' },
+          { choices: null, qid: 'q1', question: 'Two?' }
+        ],
+        requestId: 'req-batch-timeout'
+      }
+    })
+
+    onEvent({ payload: { name: 'clarify', tool_id: 'clar-b' }, type: 'tool.complete' } as any)
+
+    const record = appended.find(msg => msg.role === 'system' && msg.text.startsWith('ask (2 questions)'))
+    expect(record).toBeDefined()
+    expect(record?.text).toContain('✓ One? → alpha')
+    expect(record?.text).toContain('· Two? (no answer)')
+    expect(getOverlayState().clarify).toBeNull()
+  })
+
   // ── Credits notice (Strategy B) ──────────────────────────────────────
   describe('credits notice', () => {
     it('shows a notice immediately when idle (no turn in flight)', () => {
@@ -1935,6 +2060,47 @@ describe('createGatewayEventHandler', () => {
       onEvent({ payload: { verification_url: '' }, type: 'billing.step_up.verification' } as any)
 
       expect(openExternalUrlMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('session.usage', () => {
+    it('merges a live usage tick into uiState (payload.usage shape, see tui_gateway _start_usage_ticker)', () => {
+      patchUiState({ sid: 'sess-1' })
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      onEvent({
+        payload: { usage: { calls: 3, context_percent: 42, input: 1200, output: 80, total: 1280 } },
+        session_id: 'sess-1',
+        type: 'session.usage'
+      } as any)
+
+      expect(getUiState().usage).toMatchObject({ context_percent: 42, input: 1200, total: 1280 })
+    })
+
+    it('keeps existing usage fields when the tick only carries a subset', () => {
+      patchUiState({ sid: 'sess-1', usage: { calls: 2, input: 500, output: 40, total: 540 } })
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      onEvent({
+        payload: { usage: { context_percent: 55 } },
+        session_id: 'sess-1',
+        type: 'session.usage'
+      } as any)
+
+      expect(getUiState().usage).toMatchObject({ context_percent: 55, input: 500, total: 540 })
+    })
+
+    it('drops a tick for a non-focused session', () => {
+      patchUiState({ sid: 'focused', usage: ZERO })
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      onEvent({
+        payload: { usage: { input: 9999, total: 9999 } },
+        session_id: 'background',
+        type: 'session.usage'
+      } as any)
+
+      expect(getUiState().usage).toEqual(ZERO)
     })
   })
 

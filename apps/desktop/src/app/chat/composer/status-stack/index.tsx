@@ -4,11 +4,13 @@ import { useNavigate } from 'react-router'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
 import { AGENTS_ROUTE } from '@/app/routes'
+import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { BillingBanner } from '@/components/billing-banner'
 import { composerDockCard } from '@/components/chat/composer-dock'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { useSessionSlice } from '@/lib/use-session-slice'
@@ -23,12 +25,14 @@ import {
   type StatusGroup,
   stopBackgroundProcess
 } from '@/store/composer-status'
-import { refreshSessionGoal } from '@/store/goals'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
+import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
 import { PreviewStatusRow } from './preview-row'
+import { SessionControlSections } from './session-control'
+import { useSessionValue } from './session-control-utils'
 import { StatusItemRow } from './status-row'
 
 // Slow safety-net poll for silent exits (processes without notify_on_complete
@@ -69,7 +73,11 @@ const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
   return group.type === 'subagent' ? s.subagents(group.items.length) : s.background(group.items.length)
 }
 
+const hasRunningTodo = (group: StatusGroup) =>
+  group.type === 'todo' && group.items.some(item => item.todoStatus === 'in_progress' && item.state === 'running')
+
 interface ComposerStatusStackProps {
+  onSubmit?: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   /** The queue, built by the composer (it owns the queue's callbacks). Rendered
    *  as the last group so it stays fused to the composer like before. */
   queue: ReactNode
@@ -81,7 +89,7 @@ interface ComposerStatusStackProps {
  * every session-scoped status — subagents, background tasks, queue — grouped by
  * type and separated by light dividers. Collapses to nothing when empty.
  */
-export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackProps) {
+export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   // Subscribe to THIS session's slice only. Both maps churn on other
@@ -92,17 +100,35 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   // items actually changed.
   const items = useSessionSlice($statusItemsBySession, sessionId)
   const previews = useSessionSlice($previewStatusBySession, sessionId)
+  const controlEntry = useSessionValue($sessionControlBySession, sessionId)
+
   const scrolledUp = useStore($threadScrolledUp)
   const billing = useStore($billingBlock)
 
-  const groups = useMemo(() => groupStatusItems(items), [items])
+  const isStructuredSupported = controlEntry?.capability === 'supported'
+
+  const groups = useMemo(() => {
+    const raw = groupStatusItems(items)
+
+    if (isStructuredSupported) {
+      return raw.filter(g => g.type !== 'goal')
+    }
+
+    return raw
+  }, [items, isStructuredSupported])
 
   // Seed from the registry on session open; event-driven refreshes (terminal /
-  // process tool completions) live in use-message-stream.
+  // process tool completions) live in use-message-stream. This must NOT reset
+  // the gone-polling latch: a mount/remount is not proof of a fresh runtime
+  // binding (a boot-restored tile can remount repeatedly while still bound to
+  // a dead runtime id), so clearing it here re-arms an endless 4001 storm
+  // against that id. The latch is reset at the actual rebind seams instead —
+  // gateway reconnect and runtime re-mint (see resetBackgroundPollingGuard
+  // call sites in use-gateway-boot.ts and store/gateway.ts).
   useEffect(() => {
     if (sessionId) {
       void refreshBackgroundProcesses(sessionId)
-      void refreshSessionGoal(sessionId)
+      void refreshSessionControl(sessionId)
     }
   }, [sessionId])
 
@@ -150,6 +176,21 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
     sections.push({ key: 'billing', node: <BillingBanner sessionId={sessionId} /> })
   }
 
+  const hasControlContent = Boolean(
+    controlEntry &&
+    (controlEntry.error ||
+      controlEntry.snapshot?.goal ||
+      controlEntry.snapshot?.loop ||
+      controlEntry.snapshot?.heartbeat)
+  )
+
+  if (sessionId && controlEntry && hasControlContent) {
+    sections.push({
+      key: 'session-control',
+      node: <SessionControlSections entry={controlEntry} onSubmit={onSubmit} sessionId={sessionId} />
+    })
+  }
+
   for (const group of groups) {
     sections.push({
       key: group.type,
@@ -168,6 +209,15 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
                   {t.statusStack.agents}
                 </Button>
               </Tip>
+            ) : undefined
+          }
+          collapsedIndicator={
+            hasRunningTodo(group) ? (
+              <GlyphSpinner
+                ariaLabel={t.statusStack.running}
+                className="text-[0.8rem] leading-none text-muted-foreground/80"
+                spinner="braille"
+              />
             ) : undefined
           }
           defaultCollapsed={group.type !== 'todo' && group.type !== 'goal'}
@@ -227,6 +277,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
       // bottom-anchored, so this grows upward over the thread without needing
       // to be positioned — and it shares the dock's left edge for free.
       className="flex max-h-[40vh] min-h-0 flex-col overflow-y-auto"
+      data-slot="composer-status-stack"
       onPointerDownCapture={() => blurComposerInput()}
     >
       {/* The card paints the shared --composer-fill (rest / scrolled / focused

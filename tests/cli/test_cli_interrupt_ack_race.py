@@ -270,7 +270,6 @@ def test_chat_multimodal_note_persists_clean_input_once(tmp_path, monkeypatch):
     agent._cached_system_prompt = "test system prompt"
     agent._session_init_model_config = None
     agent._parent_session_id = None
-    agent._session_json_enabled = False
     agent._pending_cli_user_message = None
     agent._session_persist_lock = threading.RLock()
     agent._persist_user_message_idx = None
@@ -411,7 +410,9 @@ def test_chat_clears_previous_turn_persistence_override_before_staging():
     assert agent.staged_override is None
     assert agent._persist_user_message_idx is None
     assert agent._persist_user_message_timestamp is None
-    assert agent.staged_message == {"role": "user", "content": "new prompt"}
+    assert agent.staged_message["role"] == "user"
+    assert agent.staged_message["content"] == "new prompt"
+    assert isinstance(agent.staged_message["timestamp"], float)
 
 
 
@@ -453,7 +454,6 @@ def test_close_waits_for_atomic_cli_staging_before_snapshot(tmp_path, monkeypatc
     agent._cached_system_prompt = "test system prompt"
     agent._session_init_model_config = None
     agent._parent_session_id = None
-    agent._session_json_enabled = False
     agent._pending_cli_user_message = None
     agent._session_persist_lock = threading.RLock()
     agent._persist_user_message_idx = None

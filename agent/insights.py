@@ -1,456 +1,135 @@
-"""
-Session Insights Engine for Hermes Agent.
-
-Analyzes historical session data from the SQLite state database to produce
-comprehensive usage insights — token consumption, cost estimates, tool usage
-patterns, activity trends, model/platform breakdowns, and session metrics.
-
-Inspired by Claude Code's /insights command, adapted for Hermes Agent's
-multi-platform architecture with additional cost estimation and platform
-breakdown capabilities.
-
-Usage:
-    from agent.insights import InsightsEngine
-    engine = InsightsEngine(db)
-    report = engine.generate(days=30)
-    print(engine.format_terminal(report))
-"""
+"""Session Insights Engine: aggregates the SQLite state DB into usage insights (tokens, cost estimates, tool/skill
+usage, activity, model/platform breakdowns). ``InsightsEngine(db).generate(days=30)`` → ``format_terminal(report)``."""
 
 import json
 import sqlite3
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
-from agent.usage_pricing import (
-    CanonicalUsage,
-    estimate_usage_cost,
-    format_duration_compact,
-    has_known_pricing,
-)
+from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, format_cost_label, format_duration_compact, has_known_pricing
+
+_TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+_SKILL_TOOLS = {"skill_view", "skill_manage"}
 
 
+def _fmt_est_cost(est_cost: float) -> str:
+    """Shared label helper so sub-cent totals render at 4dp, not "~$0.00".
+
+    Routes through ``format_cost_label`` so sub-cent aggregates render at 4dp instead of collapsing to
+    "~$0.00" (#79220 bug class — the same dishonesty this module's cost buckets exist to fix, #77223).
+    """
+    return format_cost_label(Decimal(str(est_cost)))
 
 
-def _estimate_cost(
-    session_or_model: Dict[str, Any] | str,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
-    *,
-    cache_read_tokens: int = 0,
-    cache_write_tokens: int = 0,
-    provider: Optional[str] = None,
-    base_url: Optional[str] = None,
-) -> tuple[float, str]:
+def _estimate_cost(session_or_model: Dict[str, Any] | str, input_tokens: int = 0, output_tokens: int = 0, *, cache_read_tokens: int = 0,
+                   cache_write_tokens: int = 0, provider: Optional[str] = None, base_url: Optional[str] = None) -> tuple[float, str]:
     """Estimate the USD cost for a session row or a model/token tuple."""
     if isinstance(session_or_model, dict):
-        session = session_or_model
-        model = session.get("model") or ""
-        usage = CanonicalUsage(
-            input_tokens=session.get("input_tokens") or 0,
-            output_tokens=session.get("output_tokens") or 0,
-            cache_read_tokens=session.get("cache_read_tokens") or 0,
-            cache_write_tokens=session.get("cache_write_tokens") or 0,
-        )
-        provider = session.get("billing_provider")
-        base_url = session.get("billing_base_url")
+        s = session_or_model
+        model = s.get("model") or ""
+        usage = CanonicalUsage(**{k: s.get(k) or 0 for k in _TOKEN_KEYS})
+        provider, base_url = s.get("billing_provider"), s.get("billing_base_url")
     else:
         model = session_or_model or ""
-        usage = CanonicalUsage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cache_read_tokens,
-            cache_write_tokens=cache_write_tokens,
-        )
-    result = estimate_usage_cost(
-        model,
-        usage,
-        provider=provider,
-        base_url=base_url,
-    )
+        usage = CanonicalUsage(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+    result = estimate_usage_cost(model, usage, provider=provider, base_url=base_url)
     return float(result.amount_usd or 0.0), result.status
 
 
-
-
 def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
-    """Create simple horizontal bar chart strings from values."""
     peak = max(values) if values else 1
-    if peak == 0:
-        return ["" for _ in values]
-    return ["█" * max(1, int(v / peak * max_width)) if v > 0 else "" for v in values]
+    return ["" for _ in values] if peak == 0 else ["█" * max(1, int(v / peak * max_width)) if v > 0 else "" for v in values]
+
+
+def _short_model(model: Optional[str]) -> str:
+    """Display name: strip the provider prefix; empty → "unknown"."""
+    return (model or "unknown").split("/")[-1]
+
+
+def _parse_json(raw: Any, kind: type) -> Any:
+    """JSON-decode *raw* when it is a string; the value if it is a *kind*, else None."""
+    try:
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return raw if isinstance(raw, kind) else None
+
+
+def _iter_functions(raw_calls: Any):
+    """Yield the ``function`` dict of every well-formed entry in a tool_calls column."""
+    for call in _parse_json(raw_calls, list) or []:
+        if isinstance(call, dict):
+            yield call.get("function", {})
+
+
+def _hour12(hr: int) -> str:
+    return f"{hr % 12 or 12}{'AM' if hr < 12 else 'PM'}"
+
+
+def _day(ts: Any) -> str:
+    return datetime.fromtimestamp(ts).strftime("%b %d") if ts else "?"
+
+
+def _scoped(before: str, after: str = "", *, src: str = " AND s.source = ?") -> tuple[str, str]:
+    """(unfiltered, source-filtered) query pair sharing one body. Built once at class definition,
+    so no runtime value can alter query structure."""
+    return before + after, before + src + after
 
 
 class InsightsEngine:
-    """
-    Analyzes session history and produces usage insights.
+    """Analyzes session history from a SessionDB (or raw sqlite3 connection)."""
 
-    Works directly with a SessionDB instance (or raw sqlite3 connection)
-    to query session and message data.
-    """
-
-    def __init__(self, db):
-        """
-        Initialize with a SessionDB instance.
-
-        Args:
-            db: A SessionDB instance (from hermes_state.py)
-        """
-        self.db = db
-        self._conn = db._conn
-        # INDEXED BY is a hard dependency (SQLite errors on a missing index).
-        # A read-only open of a state.db written by an older version skips
-        # schema init and lacks the partial index — probe once and fall back
-        # to the unpinned variants (identical rows, optimizer-chosen plan).
-        try:
-            self._has_assistant_calls_index = bool(
-                self._conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
-                    (self._MESSAGES_ASSISTANT_CALLS_INDEX,),
-                ).fetchone()
-            )
-        except sqlite3.Error:
-            self._has_assistant_calls_index = False
-        if not self._has_assistant_calls_index:
-            _strip = f" INDEXED BY {self._MESSAGES_ASSISTANT_CALLS_INDEX}"
-            # Loop over every pinned statement so adding a new one can't
-            # forget its strip line (which would be a hard `no such index`
-            # crash on read-only DBs — the exact bug this fallback prevents).
-            for _attr in (
-                "_GET_TOOL_CALLS_WITH_SOURCE",
-                "_GET_TOOL_CALLS_ALL",
-                "_GET_SKILL_CALLS_WITH_SOURCE",
-                "_GET_SKILL_CALLS_ALL",
-            ):
-                setattr(self, _attr, getattr(self, _attr).replace(_strip, ""))
-
-    def generate(self, days: int = 30, source: str = None) -> Dict[str, Any]:
-        """
-        Generate a complete insights report.
-
-        Args:
-            days: Number of days to look back (default: 30)
-            source: Optional filter by source platform
-
-        Returns:
-            Dict with all computed insights
-        """
-        cutoff = time.time() - (days * 86400)
-
-        # Token/cost totals may still sit on the SessionDB's async
-        # accounting queue; drain so the report reflects exact counters.
-        # (self.db may be a raw sqlite3 connection in tests — guard.)
-        flush = getattr(self.db, "flush_token_counts", None)
-        if callable(flush):
-            flush()
-
-        # Gather raw data
-        sessions = self._get_sessions(cutoff, source)
-        tool_usage = self._get_tool_usage(cutoff, source)
-        skill_usage = self._get_skill_usage(cutoff, source)
-        message_stats = self._get_message_stats(cutoff, source)
-
-        if not sessions:
-            return {
-                "days": days,
-                "source_filter": source,
-                "empty": True,
-                "overview": {},
-                "models": [],
-                "platforms": [],
-                "tools": [],
-                "skills": {
-                    "summary": {
-                        "total_skill_loads": 0,
-                        "total_skill_edits": 0,
-                        "total_skill_actions": 0,
-                        "distinct_skills_used": 0,
-                    },
-                    "top_skills": [],
-                },
-                "activity": {},
-                "top_sessions": [],
-            }
-
-        # Compute insights
-        models = self._compute_model_breakdown(sessions, cutoff, source)
-        overview = self._compute_overview(sessions, message_stats, models)
-        platforms = self._compute_platform_breakdown(sessions)
-        tools = self._compute_tool_breakdown(tool_usage)
-        skills = self._compute_skill_breakdown(skill_usage)
-        activity = self._compute_activity_patterns(sessions)
-        top_sessions = self._compute_top_sessions(sessions)
-
-        return {
-            "days": days,
-            "source_filter": source,
-            "empty": False,
-            "generated_at": time.time(),
-            "overview": overview,
-            "models": models,
-            "platforms": platforms,
-            "tools": tools,
-            "skills": skills,
-            "activity": activity,
-            "top_sessions": top_sessions,
-        }
-
-    def get_usage_breakdown(self, days: int = 30, source: str = None) -> Dict[str, Any]:
-        """Return the analytics-usage payload without running a full generate().
-
-        Uses the instr()-prefiltered _get_skill_usage query so only messages
-        that reference skill_view or skill_manage are loaded from SQLite, while
-        still preserving the per-tool breakdown used by the dashboard route.
-        """
-        cutoff = time.time() - (days * 86400)
-        tool_usage = self._get_tool_usage(cutoff, source)
-        skill_usage = self._get_skill_usage(cutoff, source)
-        return {
-            "tools": self._compute_tool_breakdown(tool_usage),
-            "skills": self._compute_skill_breakdown(skill_usage),
-        }
-
-    # =========================================================================
-    # Data gathering (SQL queries)
-    # =========================================================================
-
-    # Columns we actually need (skip system_prompt, model_config blobs)
     _SESSION_COLS = ("id, source, model, started_at, ended_at, "
                      "message_count, tool_call_count, input_tokens, output_tokens, "
                      "cache_read_tokens, cache_write_tokens, billing_provider, "
                      "billing_base_url, billing_mode, estimated_cost_usd, "
                      "actual_cost_usd, cost_status, cost_source, api_call_count")
 
-    # Pre-computed query strings — f-string evaluated once at class definition,
-    # not at runtime, so no user-controlled value can alter the query structure.
-    _GET_SESSIONS_WITH_SOURCE = (
-        f"SELECT {_SESSION_COLS} FROM sessions"
-        " WHERE started_at >= ? AND source = ?"
-        " ORDER BY started_at DESC"
-    )
-    _GET_SESSIONS_ALL = (
-        f"SELECT {_SESSION_COLS} FROM sessions"
-        " WHERE started_at >= ?"
-        " ORDER BY started_at DESC"
+    _GET_SESSIONS_ALL, _GET_SESSIONS_WITH_SOURCE = _scoped(
+        f"SELECT {_SESSION_COLS} FROM sessions WHERE started_at >= ?",
+        " ORDER BY started_at DESC",
+        src=" AND source = ?",
     )
 
-    # Assistant ``tool_calls`` scan for tool/skill usage.  ``INDEXED BY`` pins
-    # the partial index ``idx_messages_assistant_calls_by_session`` so the plan
-    # is deterministic on a freshly initialized state.db (before ANALYZE has
-    # run) for BOTH the unfiltered and source-filtered branches — without the
-    # hint the optimizer falls back to ``idx_messages_session_active`` for the
-    # source-filtered probe and scans each session's non-tool-call rows.
-    #
-    # The pin is a HARD dependency: SQLite raises ``no such index`` when the
-    # named index is absent. That happens in practice — the web dashboard's
-    # usage analytics open the DB ``read_only=True`` (skipping
-    # ``_init_schema``), so a state.db created by an older writer has no
-    # partial index yet. ``__init__`` probes for the index once and falls
-    # back to the unpinned (still-correct, just optimizer-chosen) variants.
+    # ``INDEXED BY`` pins the partial index so the plan is deterministic on a
+    # fresh state.db (before ANALYZE) for both branches; without it the
+    # source-filtered probe falls back to idx_messages_session_active and scans
+    # each session's non-tool-call rows. The pin is a HARD dependency (SQLite
+    # raises ``no such index``): read-only opens skip ``_init_schema``, so an
+    # older writer's DB may lack it — ``__init__`` probes once and falls back
+    # to the unpinned variants (identical rows, optimizer-chosen plan).
     _MESSAGES_ASSISTANT_CALLS_INDEX = "idx_messages_assistant_calls_by_session"
-    _GET_TOOL_CALLS_WITH_SOURCE = (
-        "SELECT m.tool_calls"
-        f" FROM messages m INDEXED BY {_MESSAGES_ASSISTANT_CALLS_INDEX}"
-        " JOIN sessions s ON s.id = m.session_id"
-        " WHERE s.started_at >= ? AND s.source = ?"
-        " AND m.role = 'assistant' AND m.tool_calls IS NOT NULL"
-    )
-    _GET_TOOL_CALLS_ALL = (
-        "SELECT m.tool_calls"
+    _ASSISTANT_CALLS = (
         f" FROM messages m INDEXED BY {_MESSAGES_ASSISTANT_CALLS_INDEX}"
         " JOIN sessions s ON s.id = m.session_id"
         " WHERE s.started_at >= ?"
-        " AND m.role = 'assistant' AND m.tool_calls IS NOT NULL"
     )
-    _GET_SKILL_CALLS_WITH_SOURCE = (
-        "SELECT m.tool_calls, m.timestamp"
-        f" FROM messages m INDEXED BY {_MESSAGES_ASSISTANT_CALLS_INDEX}"
-        " JOIN sessions s ON s.id = m.session_id"
-        " WHERE s.started_at >= ? AND s.source = ?"
-        " AND m.role = 'assistant' AND m.tool_calls IS NOT NULL"
-        " AND (instr(m.tool_calls, 'skill_view') > 0"
-        " OR instr(m.tool_calls, 'skill_manage') > 0)"
+    _GET_TOOL_CALLS_ALL, _GET_TOOL_CALLS_WITH_SOURCE = _scoped(
+        "SELECT m.tool_calls" + _ASSISTANT_CALLS,
+        " AND m.role = 'assistant' AND m.tool_calls IS NOT NULL",
     )
-    _GET_SKILL_CALLS_ALL = (
-        "SELECT m.tool_calls, m.timestamp"
-        f" FROM messages m INDEXED BY {_MESSAGES_ASSISTANT_CALLS_INDEX}"
-        " JOIN sessions s ON s.id = m.session_id"
-        " WHERE s.started_at >= ?"
+    _GET_SKILL_CALLS_ALL, _GET_SKILL_CALLS_WITH_SOURCE = _scoped(
+        "SELECT m.tool_calls, m.timestamp" + _ASSISTANT_CALLS,
         " AND m.role = 'assistant' AND m.tool_calls IS NOT NULL"
         " AND (instr(m.tool_calls, 'skill_view') > 0"
-        " OR instr(m.tool_calls, 'skill_manage') > 0)"
+        " OR instr(m.tool_calls, 'skill_manage') > 0)",
     )
-
-    def _get_sessions(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Fetch sessions within the time window."""
-        if source:
-            cursor = self._conn.execute(self._GET_SESSIONS_WITH_SOURCE, (cutoff, source))
-        else:
-            cursor = self._conn.execute(self._GET_SESSIONS_ALL, (cutoff,))
-        return [dict(row) for row in cursor.fetchall()]
-
-    def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Get tool call counts from messages.
-
-        Uses two sources:
-        1. tool_name column on 'tool' role messages (set by gateway)
-        2. tool_calls JSON on 'assistant' role messages (covers CLI where
-           tool_name is not populated on tool responses)
+    _GET_TOOL_NAMES_ALL, _GET_TOOL_NAMES_WITH_SOURCE = _scoped(
+        """SELECT m.tool_name, COUNT(*) as count
+                   FROM messages m
+                   JOIN sessions s ON s.id = m.session_id
+                   WHERE s.started_at >= ?""",
         """
-        tool_counts = Counter()
-
-        # Source 1: explicit tool_name on tool response messages
-        if source:
-            cursor = self._conn.execute(
-                """SELECT m.tool_name, COUNT(*) as count
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ? AND s.source = ?
                      AND m.role = 'tool' AND m.tool_name IS NOT NULL
                    GROUP BY m.tool_name
                    ORDER BY count DESC""",
-                (cutoff, source),
-            )
-        else:
-            cursor = self._conn.execute(
-                """SELECT m.tool_name, COUNT(*) as count
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ?
-                     AND m.role = 'tool' AND m.tool_name IS NOT NULL
-                   GROUP BY m.tool_name
-                   ORDER BY count DESC""",
-                (cutoff,),
-            )
-        for row in cursor.fetchall():
-            tool_counts[row["tool_name"]] += row["count"]
-
-        # Source 2: extract from tool_calls JSON on assistant messages
-        # (covers CLI sessions where tool_name is NULL on tool responses)
-        if source:
-            cursor2 = self._conn.execute(
-                self._GET_TOOL_CALLS_WITH_SOURCE, (cutoff, source)
-            )
-        else:
-            cursor2 = self._conn.execute(self._GET_TOOL_CALLS_ALL, (cutoff,))
-
-        tool_calls_counts = Counter()
-        for row in cursor2.fetchall():
-            try:
-                calls = row["tool_calls"]
-                if isinstance(calls, str):
-                    calls = json.loads(calls)
-                if isinstance(calls, list):
-                    for call in calls:
-                        func = call.get("function", {}) if isinstance(call, dict) else {}
-                        name = func.get("name")
-                        if name:
-                            tool_calls_counts[name] += 1
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                continue
-
-        # Merge: prefer tool_name source, supplement with tool_calls source
-        # for tools not already counted
-        if not tool_counts and tool_calls_counts:
-            # No tool_name data at all — use tool_calls exclusively
-            tool_counts = tool_calls_counts
-        elif tool_counts and tool_calls_counts:
-            # Both sources have data — use whichever has the higher count per tool
-            # (they may overlap, so take the max to avoid double-counting)
-            all_tools = set(tool_counts) | set(tool_calls_counts)
-            merged = Counter()
-            for tool in all_tools:
-                merged[tool] = max(tool_counts.get(tool, 0), tool_calls_counts.get(tool, 0))
-            tool_counts = merged
-
-        # Convert to the expected format
-        return [
-            {"tool_name": name, "count": count}
-            for name, count in tool_counts.most_common()
-        ]
-
-    def _get_skill_usage(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Extract per-skill usage from assistant tool calls."""
-        skill_counts: Dict[str, Dict[str, Any]] = {}
-
-        if source:
-            cursor = self._conn.execute(
-                self._GET_SKILL_CALLS_WITH_SOURCE, (cutoff, source)
-            )
-        else:
-            cursor = self._conn.execute(self._GET_SKILL_CALLS_ALL, (cutoff,))
-
-        for row in cursor.fetchall():
-            try:
-                calls = row["tool_calls"]
-                if isinstance(calls, str):
-                    calls = json.loads(calls)
-                if not isinstance(calls, list):
-                    continue
-            except (json.JSONDecodeError, TypeError):
-                continue
-
-            timestamp = row["timestamp"]
-            for call in calls:
-                if not isinstance(call, dict):
-                    continue
-                func = call.get("function", {})
-                tool_name = func.get("name")
-                if tool_name not in {"skill_view", "skill_manage"}:
-                    continue
-
-                args = func.get("arguments")
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-                if not isinstance(args, dict):
-                    continue
-
-                skill_name = args.get("name")
-                if not isinstance(skill_name, str) or not skill_name.strip():
-                    continue
-
-                entry = skill_counts.setdefault(
-                    skill_name,
-                    {
-                        "skill": skill_name,
-                        "view_count": 0,
-                        "manage_count": 0,
-                        "last_used_at": None,
-                    },
-                )
-                if tool_name == "skill_view":
-                    entry["view_count"] += 1
-                else:
-                    entry["manage_count"] += 1
-
-                if timestamp is not None and (
-                    entry["last_used_at"] is None or timestamp > entry["last_used_at"]
-                ):
-                    entry["last_used_at"] = timestamp
-
-        return list(skill_counts.values())
-
-    def _get_message_stats(self, cutoff: float, source: str = None) -> Dict:
-        """Get aggregate message statistics."""
-        if source:
-            cursor = self._conn.execute(
-                """SELECT
-                     COUNT(*) as total_messages,
-                     SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) as user_messages,
-                     SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END) as assistant_messages,
-                     SUM(CASE WHEN m.role = 'tool' THEN 1 ELSE 0 END) as tool_messages
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ? AND s.source = ?""",
-                (cutoff, source),
-            )
-        else:
-            cursor = self._conn.execute(
-                """SELECT
+    )
+    _GET_MESSAGE_STATS_ALL, _GET_MESSAGE_STATS_WITH_SOURCE = _scoped(
+        """SELECT
                      COUNT(*) as total_messages,
                      SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) as user_messages,
                      SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END) as assistant_messages,
@@ -458,389 +137,272 @@ class InsightsEngine:
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
                    WHERE s.started_at >= ?""",
-                (cutoff,),
-            )
-        row = cursor.fetchone()
-        return dict(row) if row else {
-            "total_messages": 0, "user_messages": 0,
-            "assistant_messages": 0, "tool_messages": 0,
+    )
+    _GET_MODEL_USAGE_ALL, _GET_MODEL_USAGE_WITH_SOURCE = _scoped(
+        "SELECT u.session_id, u.model, u.billing_provider, u.billing_base_url,"
+        " u.api_call_count, u.input_tokens, u.output_tokens,"
+        " u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,"
+        " u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,"
+        " u.cost_source, u.billing_mode"
+        " FROM session_model_usage u"
+        " JOIN sessions s ON s.id = u.session_id"
+        " WHERE s.started_at >= ?",
+    )
+    _PINNED = ("_GET_TOOL_CALLS", "_GET_SKILL_CALLS")
+
+    def __init__(self, db):
+        self.db = db
+        self._conn = db._conn
+        try:
+            self._has_assistant_calls_index = bool(self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (self._MESSAGES_ASSISTANT_CALLS_INDEX,)).fetchone())
+        except sqlite3.Error:
+            self._has_assistant_calls_index = False
+        if not self._has_assistant_calls_index:
+            strip = f" INDEXED BY {self._MESSAGES_ASSISTANT_CALLS_INDEX}"
+            for base in self._PINNED:
+                for suffix in ("_ALL", "_WITH_SOURCE"):
+                    setattr(self, base + suffix, getattr(self, base + suffix).replace(strip, ""))
+
+    def _query(self, base: str, cutoff: float, source: Optional[str]) -> list:
+        """Rows of ``<base>_WITH_SOURCE`` or ``<base>_ALL`` (instance attrs, so the unpinned fallback applies)."""
+        sql, params = (getattr(self, base + "_WITH_SOURCE"), (cutoff, source)) if source else (getattr(self, base + "_ALL"), (cutoff,))
+        return self._conn.execute(sql, params).fetchall()
+
+    def generate(self, days: int = 30, source: str = None) -> Dict[str, Any]:
+        """Generate a complete insights report for the last ``days`` days, optionally filtered by source platform."""
+        cutoff = time.time() - (days * 86400)
+        # Drain the SessionDB's async accounting queue so counters are exact
+        # (self.db may be a raw sqlite3 connection in tests — guard).
+        flush = getattr(self.db, "flush_token_counts", None)
+        if callable(flush):
+            flush()
+        sessions = self._get_sessions(cutoff, source)
+        tool_usage = self._get_tool_usage(cutoff, source)
+        skill_usage = self._get_skill_usage(cutoff, source)
+        message_stats = self._get_message_stats(cutoff, source)
+        if not sessions:
+            return {"days": days, "source_filter": source, "empty": True, "overview": {}, "models": [], "platforms": [], "tools": [],
+                    "skills": self._compute_skill_breakdown([]), "activity": {}, "top_sessions": []}
+        models = self._compute_model_breakdown(sessions, cutoff, source)
+        return {
+            "days": days, "source_filter": source, "empty": False, "generated_at": time.time(),
+            "overview": self._compute_overview(sessions, message_stats, models),
+            "models": models,
+            "platforms": self._compute_platform_breakdown(sessions),
+            "tools": self._compute_tool_breakdown(tool_usage),
+            "skills": self._compute_skill_breakdown(skill_usage),
+            "activity": self._compute_activity_patterns(sessions),
+            "top_sessions": self._compute_top_sessions(sessions),
         }
 
-    # =========================================================================
-    # Computation
-    # =========================================================================
+    def get_usage_breakdown(self, days: int = 30, source: str = None) -> Dict[str, Any]:
+        """Analytics-usage payload (tools + skills) without a full generate(); the
+        instr()-prefiltered skill query loads only skill_view/skill_manage messages."""
+        cutoff = time.time() - (days * 86400)
+        return {"tools": self._compute_tool_breakdown(self._get_tool_usage(cutoff, source)),
+                "skills": self._compute_skill_breakdown(self._get_skill_usage(cutoff, source))}
 
-    def _compute_overview(
-        self,
-        sessions: List[Dict],
-        message_stats: Dict,
-        models: Optional[List[Dict]] = None,
-    ) -> Dict:
-        """Compute high-level overview statistics."""
-        total_input = sum(s.get("input_tokens") or 0 for s in sessions)
-        total_output = sum(s.get("output_tokens") or 0 for s in sessions)
-        total_cache_read = sum(s.get("cache_read_tokens") or 0 for s in sessions)
-        total_cache_write = sum(s.get("cache_write_tokens") or 0 for s in sessions)
+    # ------------------------------------------------------------------ SQL
+
+    def _get_sessions(self, cutoff: float, source: str = None) -> List[Dict]:
+        return [dict(row) for row in self._query("_GET_SESSIONS", cutoff, source)]
+
+    def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+        """Tool call counts from two sources: ``tool_name`` on 'tool' rows (set
+        by the gateway) and ``tool_calls`` JSON on assistant rows (covers CLI,
+        where tool_name is not populated). Overlapping tools take the max."""
+        tool_counts = Counter()
+        for row in self._query("_GET_TOOL_NAMES", cutoff, source):
+            tool_counts[row["tool_name"]] += row["count"]
+        tool_calls_counts = Counter()
+        for row in self._query("_GET_TOOL_CALLS", cutoff, source):
+            try:
+                tool_calls_counts.update(filter(None, (fn.get("name") for fn in _iter_functions(row["tool_calls"]))))
+            except (TypeError, AttributeError):
+                continue
+        if tool_calls_counts and tool_counts:
+            tool_counts = Counter({tool: max(tool_counts.get(tool, 0), tool_calls_counts.get(tool, 0))
+                                   for tool in set(tool_counts) | set(tool_calls_counts)})
+        elif tool_calls_counts:
+            tool_counts = tool_calls_counts
+        return [{"tool_name": name, "count": count} for name, count in tool_counts.most_common()]
+
+    def _get_skill_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+        """Extract per-skill usage from assistant tool calls."""
+        skill_counts: Dict[str, Dict[str, Any]] = {}
+        for row in self._query("_GET_SKILL_CALLS", cutoff, source):
+            timestamp = row["timestamp"]
+            for func in _iter_functions(row["tool_calls"]):
+                tool_name = func.get("name")
+                if tool_name not in _SKILL_TOOLS:
+                    continue
+                skill_name = (_parse_json(func.get("arguments"), dict) or {}).get("name")
+                if not isinstance(skill_name, str) or not skill_name.strip():
+                    continue
+                entry = skill_counts.setdefault(skill_name, {"skill": skill_name, "view_count": 0, "manage_count": 0, "last_used_at": None})
+                entry["view_count" if tool_name == "skill_view" else "manage_count"] += 1
+                if timestamp is not None and (entry["last_used_at"] is None or timestamp > entry["last_used_at"]):
+                    entry["last_used_at"] = timestamp
+        return list(skill_counts.values())
+
+    def _get_message_stats(self, cutoff: float, source: str = None) -> Dict:
+        rows = self._query("_GET_MESSAGE_STATS", cutoff, source)
+        return dict(rows[0]) if rows else {"total_messages": 0, "user_messages": 0, "assistant_messages": 0, "tool_messages": 0}
+
+    def _get_model_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+        """Per-model usage rows; [] when the table is missing (older DB) so the caller falls back to the per-session aggregate."""
+        try:
+            return [dict(row) for row in self._query("_GET_MODEL_USAGE", cutoff, source)]
+        except sqlite3.OperationalError:
+            return []
+
+    # -------------------------------------------------------------- Compute
+
+    def _compute_overview(self, sessions: List[Dict], message_stats: Dict, models: Optional[List[Dict]] = None) -> Dict:
+        # Per-model breakdown includes auxiliary usage rows (vision/compression/
+        # titles) plus reconciled residuals, while session counters carry
+        # main-loop usage only — sum the breakdown when available so overview
+        # totals match the per-model table and aux spend isn't undercounted.
+        rows = models or sessions
+        total_input, total_output, total_cache_read, total_cache_write = (sum(int(r.get(k) or 0) for r in rows) for k in _TOKEN_KEYS)
         total_tokens = total_input + total_output + total_cache_read + total_cache_write
         total_tool_calls = sum(s.get("tool_call_count") or 0 for s in sessions)
         total_messages = sum(s.get("message_count") or 0 for s in sessions)
-
-        # Cost estimation (weighted by model)
-        total_cost = 0.0
-        actual_cost = 0.0
-        models_with_pricing = set()
-        models_without_pricing = set()
-        unknown_cost_sessions = 0
-        included_cost_sessions = 0
+        total_cost = actual_cost = 0.0
+        models_with_pricing, models_without_pricing, status_counts = set(), set(), Counter()
         for s in sessions:
             model = s.get("model") or ""
             estimated, status = _estimate_cost(s)
             total_cost += estimated
             actual_cost += s.get("actual_cost_usd") or 0.0
-            display = model.split("/")[-1] if "/" in model else (model or "unknown")
-            if status == "included":
-                included_cost_sessions += 1
-            elif status == "unknown":
-                unknown_cost_sessions += 1
-            if has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url")):
-                models_with_pricing.add(display)
-            else:
-                models_without_pricing.add(display)
-
+            status_counts[status] += 1
+            known = has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url"))
+            (models_with_pricing if known else models_without_pricing).add(_short_model(model))
         if models:
             total_cost = sum(float(m.get("cost") or 0.0) for m in models)
-            # Token totals likewise: the per-model breakdown includes
-            # auxiliary usage rows (vision/compression/titles — task
-            # dimension in session_model_usage, #23270) plus reconciled
-            # residuals, while the sessions counters carry main-loop usage
-            # only. Summing the breakdown keeps overview totals consistent
-            # with the per-model table and stops `hermes insights`
-            # undercounting aux spend (#58592, #9979).
-            total_input = sum(int(m.get("input_tokens") or 0) for m in models)
-            total_output = sum(int(m.get("output_tokens") or 0) for m in models)
-            total_cache_read = sum(int(m.get("cache_read_tokens") or 0) for m in models)
-            total_cache_write = sum(int(m.get("cache_write_tokens") or 0) for m in models)
-            total_tokens = total_input + total_output + total_cache_read + total_cache_write
-
-        # Session duration stats (guard against negative durations from clock drift)
-        durations = []
-        for s in sessions:
-            start = s.get("started_at")
-            end = s.get("ended_at")
-            if start and end and end > start:
-                durations.append(end - start)
-
-        total_hours = sum(durations) / 3600 if durations else 0
-        avg_duration = sum(durations) / len(durations) if durations else 0
-
-        # Earliest and latest session
-        started_timestamps = [s["started_at"] for s in sessions if s.get("started_at")]
-        date_range_start = min(started_timestamps) if started_timestamps else None
-        date_range_end = max(started_timestamps) if started_timestamps else None
-
+        # Guard against negative durations from clock drift.
+        durations = [s["ended_at"] - s["started_at"] for s in sessions
+                     if s.get("started_at") and s.get("ended_at") and s["ended_at"] > s["started_at"]]
+        started = [s["started_at"] for s in sessions if s.get("started_at")]
+        n = len(sessions)
         return {
-            "total_sessions": len(sessions),
-            "total_messages": total_messages,
-            "total_tool_calls": total_tool_calls,
-            "total_input_tokens": total_input,
-            "total_output_tokens": total_output,
-            "total_cache_read_tokens": total_cache_read,
-            "total_cache_write_tokens": total_cache_write,
-            "total_tokens": total_tokens,
-            "estimated_cost": total_cost,
-            "actual_cost": actual_cost,
-            "total_hours": total_hours,
-            "avg_session_duration": avg_duration,
-            "avg_messages_per_session": total_messages / len(sessions) if sessions else 0,
-            "avg_tokens_per_session": total_tokens / len(sessions) if sessions else 0,
+            "total_sessions": n, "total_messages": total_messages, "total_tool_calls": total_tool_calls,
+            "total_input_tokens": total_input, "total_output_tokens": total_output,
+            "total_cache_read_tokens": total_cache_read, "total_cache_write_tokens": total_cache_write,
+            "total_tokens": total_tokens, "estimated_cost": total_cost, "actual_cost": actual_cost,
+            "total_hours": sum(durations) / 3600 if durations else 0,
+            "avg_session_duration": sum(durations) / len(durations) if durations else 0,
+            "avg_messages_per_session": total_messages / n if sessions else 0,
+            "avg_tokens_per_session": total_tokens / n if sessions else 0,
             "user_messages": message_stats.get("user_messages") or 0,
             "assistant_messages": message_stats.get("assistant_messages") or 0,
             "tool_messages": message_stats.get("tool_messages") or 0,
-            "date_range_start": date_range_start,
-            "date_range_end": date_range_end,
+            "date_range_start": min(started) if started else None,
+            "date_range_end": max(started) if started else None,
             "models_with_pricing": sorted(models_with_pricing),
             "models_without_pricing": sorted(models_without_pricing),
-            "unknown_cost_sessions": unknown_cost_sessions,
-            "included_cost_sessions": included_cost_sessions,
+            "unknown_cost_sessions": status_counts["unknown"],
+            "included_cost_sessions": status_counts["included"],
         }
 
-    _GET_MODEL_USAGE_WITH_SOURCE = (
-        "SELECT u.session_id, u.model, u.billing_provider, u.billing_base_url,"
-        " u.api_call_count, u.input_tokens, u.output_tokens,"
-        " u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,"
-        " u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,"
-        " u.cost_source, u.billing_mode"
-        " FROM session_model_usage u"
-        " JOIN sessions s ON s.id = u.session_id"
-        " WHERE s.started_at >= ? AND s.source = ?"
-    )
-    _GET_MODEL_USAGE_ALL = (
-        "SELECT u.session_id, u.model, u.billing_provider, u.billing_base_url,"
-        " u.api_call_count, u.input_tokens, u.output_tokens,"
-        " u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,"
-        " u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,"
-        " u.cost_source, u.billing_mode"
-        " FROM session_model_usage u"
-        " JOIN sessions s ON s.id = u.session_id"
-        " WHERE s.started_at >= ?"
-    )
+    def _compute_model_breakdown(self, sessions: List[Dict], cutoff: float, source: str = None) -> List[Dict]:
+        """Tokens/cost per model from session_model_usage, so a session that
+        switched models via ``/model`` splits across every model it used.
+        Sessions without per-model rows (pre-table data) fall back to their
+        single recorded aggregate. Tool calls aren't tied to an API call, so
+        they stay attributed to the session's recorded model."""
+        count_keys = _TOKEN_KEYS + ("reasoning_tokens", "api_call_count")
+        model_data = defaultdict(lambda: {"sessions": set(), **dict.fromkeys(_TOKEN_KEYS, 0), "reasoning_tokens": 0, "total_tokens": 0,
+                                          "api_calls": 0, "tool_calls": 0, "cost": 0.0, "actual_cost": 0.0})
 
-    def _get_model_usage(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Fetch per-model usage rows within the window (issue #51607).
-
-        Returns an empty list when the table is missing (e.g. a DB opened by
-        older code that never created it) so the caller can fall back to the
-        per-session aggregate.
-        """
-        try:
-            if source:
-                cursor = self._conn.execute(
-                    self._GET_MODEL_USAGE_WITH_SOURCE, (cutoff, source)
-                )
-            else:
-                cursor = self._conn.execute(self._GET_MODEL_USAGE_ALL, (cutoff,))
-            return [dict(row) for row in cursor.fetchall()]
-        except sqlite3.OperationalError:
-            return []
-
-    def _compute_model_breakdown(
-        self, sessions: List[Dict], cutoff: float, source: str = None
-    ) -> List[Dict]:
-        """Break down token usage and cost by model.
-
-        Tokens and cost are attributed per model from session_model_usage, so a
-        session that switched models mid-flight (via ``/model``) splits across
-        every model it used instead of dumping everything on the initial model
-        (issue #51607). Sessions without per-model rows — e.g. data written
-        before this table existed and not yet backfilled — fall back to their
-        single recorded (model, billing_provider) aggregate so nothing is lost.
-
-        Tool calls aren't tied to a specific API invocation, so they stay
-        attributed to the session's recorded model.
-        """
-        model_data = defaultdict(lambda: {
-            "sessions": set(), "input_tokens": 0, "output_tokens": 0,
-            "cache_read_tokens": 0, "cache_write_tokens": 0,
-            "reasoning_tokens": 0, "total_tokens": 0, "api_calls": 0,
-            "tool_calls": 0, "cost": 0.0, "actual_cost": 0.0,
-        })
-
-        def _accumulate(model, provider, base_url, session_id, inp, out,
-                        cache_read, cache_write, reasoning, *,
+        def _accumulate(model, provider, base_url, session_id, counts: Dict[str, int], *,
                         stored_cost=None, actual_cost=None, cost_status=None):
             model = model or "unknown"
-            # Normalize: strip provider prefix for display
-            display_model = model.split("/")[-1] if "/" in model else model
-            d: Dict[str, Any] = model_data[display_model]
+            d: Dict[str, Any] = model_data[_short_model(model)]
             d["sessions"].add(session_id)
-            d["input_tokens"] += inp
-            d["output_tokens"] += out
-            d["cache_read_tokens"] += cache_read
-            d["cache_write_tokens"] += cache_write
-            d["reasoning_tokens"] += reasoning
-            d["total_tokens"] += inp + out + cache_read + cache_write
+            for key in _TOKEN_KEYS + ("reasoning_tokens",):
+                d[key] += counts[key]
+            d["total_tokens"] += sum(counts[k] for k in _TOKEN_KEYS)
+            d["api_calls"] += counts["api_call_count"]
             if stored_cost is None:
-                estimate, status = _estimate_cost(
-                    model, inp, out,
-                    cache_read_tokens=cache_read, cache_write_tokens=cache_write,
-                    provider=provider or None, base_url=base_url,
-                )
+                estimate, status = _estimate_cost(model, counts["input_tokens"], counts["output_tokens"], cache_read_tokens=counts["cache_read_tokens"],
+                                                  cache_write_tokens=counts["cache_write_tokens"], provider=provider or None, base_url=base_url)
             else:
-                estimate = float(stored_cost or 0.0)
-                status = cost_status or "unknown"
+                estimate, status = float(stored_cost or 0.0), cost_status or "unknown"
             d["cost"] += estimate
             d["actual_cost"] += float(actual_cost or 0.0)
             d["cost_status"] = status
-            if has_known_pricing(model, provider or None, base_url):
-                d["has_pricing"] = True
-            else:
-                d.setdefault("has_pricing", False)
-            return display_model
-
-        usage_rows = self._get_model_usage(cutoff, source)
-        usage_totals = defaultdict(lambda: {
-            "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
-            "cache_write_tokens": 0, "reasoning_tokens": 0,
-            "api_call_count": 0, "estimated_cost_usd": 0.0,
-            "actual_cost_usd": 0.0,
-        })
-        for r in usage_rows:
+            d["has_pricing"] = has_known_pricing(model, provider or None, base_url) or d.get("has_pricing", False)
+        usage_totals = defaultdict(lambda: dict.fromkeys(count_keys, 0) | {"estimated_cost_usd": 0.0, "actual_cost_usd": 0.0})
+        for r in self._get_model_usage(cutoff, source):
             totals: Dict[str, Any] = usage_totals[r["session_id"]]
-            for key in (
-                "input_tokens", "output_tokens", "cache_read_tokens",
-                "cache_write_tokens", "reasoning_tokens", "api_call_count",
-            ):
-                totals[key] += r[key] or 0
+            counts = {key: r[key] or 0 for key in count_keys}
+            for key in count_keys:
+                totals[key] += counts[key]
             totals["estimated_cost_usd"] += r["estimated_cost_usd"] or 0.0
             totals["actual_cost_usd"] += r["actual_cost_usd"] or 0.0
-            d = _accumulate(
-                r["model"], r["billing_provider"], r.get("billing_base_url"),
-                r["session_id"], r["input_tokens"] or 0, r["output_tokens"] or 0,
-                r["cache_read_tokens"] or 0, r["cache_write_tokens"] or 0,
-                r["reasoning_tokens"] or 0,
-                stored_cost=(
-                    r["estimated_cost_usd"]
-                    if r.get("cost_status") or r.get("cost_source")
-                    else None
-                ),
-                actual_cost=r["actual_cost_usd"],
-                cost_status=r.get("cost_status"),
-            )
-            model_data[d]["api_calls"] += r["api_call_count"] or 0
-
-        # Reconcile against the aggregate row. This covers legacy sessions,
+            _accumulate(r["model"], r["billing_provider"], r.get("billing_base_url"), r["session_id"], counts,
+                        stored_cost=r["estimated_cost_usd"] if r.get("cost_status") or r.get("cost_source") else None,
+                        actual_cost=r["actual_cost_usd"], cost_status=r.get("cost_status"))
+        # Reconcile against the aggregate row: covers legacy sessions,
         # interrupted migrations, and absolute cumulative updates without
         # double-counting already-attributed route deltas.
         for s in sessions:
             totals = usage_totals[s["id"]]
-            inp = max(0, (s.get("input_tokens") or 0) - totals["input_tokens"])
-            out = max(0, (s.get("output_tokens") or 0) - totals["output_tokens"])
-            cache_read = max(
-                0, (s.get("cache_read_tokens") or 0) - totals["cache_read_tokens"]
-            )
-            cache_write = max(
-                0, (s.get("cache_write_tokens") or 0) - totals["cache_write_tokens"]
-            )
-            residual_cost = max(
-                0.0, float(s.get("estimated_cost_usd") or 0.0)
-                - totals["estimated_cost_usd"],
-            )
-            residual_actual = max(
-                0.0, float(s.get("actual_cost_usd") or 0.0)
-                - totals["actual_cost_usd"],
-            )
-            residual_calls = max(
-                0, (s.get("api_call_count") or 0) - totals["api_call_count"]
-            )
-            if not (
-                inp or out or cache_read or cache_write or residual_cost
-                or residual_actual or residual_calls
-            ):
-                continue
-            d = _accumulate(
-                s.get("model"), s.get("billing_provider"),
-                s.get("billing_base_url"), s["id"],
-                inp, out, cache_read, cache_write, 0,
-                stored_cost=residual_cost,
-                actual_cost=residual_actual,
-                cost_status=s.get("cost_status"),
-            )
-            residual_bucket: Dict[str, Any] = model_data[d]
-            residual_bucket["api_calls"] += residual_calls
-
-        # Tool calls are attributed by the session's recorded model.
+            residual = {k: max(0, (s.get(k) or 0) - totals[k]) for k in _TOKEN_KEYS + ("api_call_count",)}
+            residual["reasoning_tokens"] = 0
+            residual_cost = max(0.0, float(s.get("estimated_cost_usd") or 0.0) - totals["estimated_cost_usd"])
+            residual_actual = max(0.0, float(s.get("actual_cost_usd") or 0.0) - totals["actual_cost_usd"])
+            if any(residual.values()) or residual_cost or residual_actual:
+                _accumulate(s.get("model"), s.get("billing_provider"), s.get("billing_base_url"), s["id"], residual,
+                            stored_cost=residual_cost, actual_cost=residual_actual, cost_status=s.get("cost_status"))
         for s in sessions:
-            tool_calls = s.get("tool_call_count") or 0
-            if not tool_calls:
-                continue
-            model = s.get("model") or "unknown"
-            display_model = model.split("/")[-1] if "/" in model else model
-            model_data[display_model]["tool_calls"] += tool_calls
-
-        result = []
-        for model, data in model_data.items():
-            entry = {"model": model, **data}
-            entry["sessions"] = len(data["sessions"])
-            # Models that surfaced only via tool-call attribution (no token
-            # rows) won't have these set by _accumulate — default them so the
-            # output shape is uniform for downstream/JSON consumers.
-            entry.setdefault("has_pricing", False)
-            entry.setdefault("cost_status", "unknown")
-            result.append(entry)
-        # Sort by tokens first, fall back to session count when tokens are 0
-        result.sort(key=lambda x: (x["total_tokens"], x["sessions"]), reverse=True)
-        return result
+            if s.get("tool_call_count"):
+                model_data[_short_model(s.get("model"))]["tool_calls"] += s["tool_call_count"]
+        # Models seen only via tool-call attribution never hit _accumulate —
+        # default has_pricing/cost_status so the output shape is uniform for JSON consumers.
+        defaults = (("has_pricing", False), ("cost_status", "unknown"))
+        result = [{"model": model, **data, "sessions": len(data["sessions"]), **{k: v for k, v in defaults if k not in data}}
+                  for model, data in model_data.items()]
+        return sorted(result, key=lambda x: (x["total_tokens"], x["sessions"]), reverse=True)
 
     def _compute_platform_breakdown(self, sessions: List[Dict]) -> List[Dict]:
-        """Break down usage by platform/source."""
-        platform_data = defaultdict(lambda: {
-            "sessions": 0, "messages": 0, "input_tokens": 0,
-            "output_tokens": 0, "cache_read_tokens": 0,
-            "cache_write_tokens": 0, "total_tokens": 0, "tool_calls": 0,
-        })
-
+        platform_data = defaultdict(lambda: {"sessions": 0, "messages": 0, **dict.fromkeys(_TOKEN_KEYS, 0), "total_tokens": 0, "tool_calls": 0})
         for s in sessions:
-            source = s.get("source") or "unknown"
-            d = platform_data[source]
+            d = platform_data[s.get("source") or "unknown"]
             d["sessions"] += 1
             d["messages"] += s.get("message_count") or 0
-            inp = s.get("input_tokens") or 0
-            out = s.get("output_tokens") or 0
-            cache_read = s.get("cache_read_tokens") or 0
-            cache_write = s.get("cache_write_tokens") or 0
-            d["input_tokens"] += inp
-            d["output_tokens"] += out
-            d["cache_read_tokens"] += cache_read
-            d["cache_write_tokens"] += cache_write
-            d["total_tokens"] += inp + out + cache_read + cache_write
+            for k in _TOKEN_KEYS:
+                d[k] += s.get(k) or 0
+                d["total_tokens"] += s.get(k) or 0
             d["tool_calls"] += s.get("tool_call_count") or 0
-
-        result = [
-            {"platform": platform, **data}
-            for platform, data in platform_data.items()
-        ]
-        result.sort(key=lambda x: x["sessions"], reverse=True)
-        return result
+        return sorted(({"platform": platform, **data} for platform, data in platform_data.items()), key=lambda x: x["sessions"], reverse=True)
 
     def _compute_tool_breakdown(self, tool_usage: List[Dict]) -> List[Dict]:
-        """Process tool usage data into a ranked list with percentages."""
-        total_calls = sum(t["count"] for t in tool_usage) if tool_usage else 0
-        result = []
-        for t in tool_usage:
-            pct = (t["count"] / total_calls * 100) if total_calls else 0
-            result.append({
-                "tool": t["tool_name"],
-                "count": t["count"],
-                "percentage": pct,
-            })
-        return result
+        """Ranked tool list with percentages."""
+        total_calls = sum(t["count"] for t in tool_usage)
+        return [{"tool": t["tool_name"], "count": t["count"], "percentage": (t["count"] / total_calls * 100) if total_calls else 0} for t in tool_usage]
 
     def _compute_skill_breakdown(self, skill_usage: List[Dict]) -> Dict[str, Any]:
-        """Process per-skill usage into summary + ranked list."""
-        total_skill_loads = sum(s["view_count"] for s in skill_usage) if skill_usage else 0
-        total_skill_edits = sum(s["manage_count"] for s in skill_usage) if skill_usage else 0
+        """Per-skill usage → summary + ranked list."""
+        total_skill_loads = sum(s["view_count"] for s in skill_usage)
+        total_skill_edits = sum(s["manage_count"] for s in skill_usage)
         total_skill_actions = total_skill_loads + total_skill_edits
-
-        top_skills = []
-        for skill in skill_usage:
-            total_count = skill["view_count"] + skill["manage_count"]
-            percentage = (total_count / total_skill_actions * 100) if total_skill_actions else 0
-            top_skills.append({
-                "skill": skill["skill"],
-                "view_count": skill["view_count"],
-                "manage_count": skill["manage_count"],
-                "total_count": total_count,
-                "percentage": percentage,
-                "last_used_at": skill.get("last_used_at"),
-            })
-
-        top_skills.sort(
-            key=lambda s: (
-                s["total_count"],
-                s["view_count"],
-                s["manage_count"],
-                s["last_used_at"] or 0,
-                s["skill"],
-            ),
-            reverse=True,
-        )
-
+        top_skills = [{
+            "skill": skill["skill"], "view_count": skill["view_count"], "manage_count": skill["manage_count"], "total_count": total_count,
+            "percentage": (total_count / total_skill_actions * 100) if total_skill_actions else 0, "last_used_at": skill.get("last_used_at"),
+        } for skill in skill_usage for total_count in (skill["view_count"] + skill["manage_count"],)]
+        top_skills.sort(key=lambda s: (s["total_count"], s["view_count"], s["manage_count"], s["last_used_at"] or 0, s["skill"]), reverse=True)
         return {
-            "summary": {
-                "total_skill_loads": total_skill_loads,
-                "total_skill_edits": total_skill_edits,
-                "total_skill_actions": total_skill_actions,
-                "distinct_skills_used": len(skill_usage),
-            },
+            "summary": {"total_skill_loads": total_skill_loads, "total_skill_edits": total_skill_edits,
+                        "total_skill_actions": total_skill_actions, "distinct_skills_used": len(skill_usage)},
             "top_skills": top_skills,
         }
 
     def _compute_activity_patterns(self, sessions: List[Dict]) -> Dict:
-        """Analyze activity patterns by day of week and hour."""
-        day_counts = Counter()  # 0=Monday ... 6=Sunday
-        hour_counts = Counter()
-        daily_counts = Counter()  # date string -> count
-
+        """Activity by day of week, hour, and active-day streak."""
+        day_counts, hour_counts, daily_counts = Counter(), Counter(), Counter()  # weekday (0=Monday), hour, "YYYY-MM-DD"
         for s in sessions:
             ts = s.get("started_at")
             if not ts:
@@ -849,314 +411,168 @@ class InsightsEngine:
             day_counts[dt.weekday()] += 1
             hour_counts[dt.hour] += 1
             daily_counts[dt.strftime("%Y-%m-%d")] += 1
-
         day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        day_breakdown = [
-            {"day": day_names[i], "count": day_counts.get(i, 0)}
-            for i in range(7)
-        ]
-
-        hour_breakdown = [
-            {"hour": i, "count": hour_counts.get(i, 0)}
-            for i in range(24)
-        ]
-
-        # Busiest day and hour
-        busiest_day = max(day_breakdown, key=lambda x: x["count"]) if day_breakdown else None
-        busiest_hour = max(hour_breakdown, key=lambda x: x["count"]) if hour_breakdown else None
-
-        # Active days (days with at least one session)
-        active_days = len(daily_counts)
-
-        # Streak calculation
+        day_breakdown = [{"day": day_names[i], "count": day_counts.get(i, 0)} for i in range(7)]
+        hour_breakdown = [{"hour": i, "count": hour_counts.get(i, 0)} for i in range(24)]
+        max_streak = 0
         if daily_counts:
-            all_dates = sorted(daily_counts.keys())
-            current_streak = 1
-            max_streak = 1
-            for i in range(1, len(all_dates)):
-                d1 = datetime.strptime(all_dates[i - 1], "%Y-%m-%d")
-                d2 = datetime.strptime(all_dates[i], "%Y-%m-%d")
-                if (d2 - d1).days == 1:
-                    current_streak += 1
-                    max_streak = max(max_streak, current_streak)
-                else:
-                    current_streak = 1
-        else:
-            max_streak = 0
+            dates = [datetime.strptime(d, "%Y-%m-%d") for d in sorted(daily_counts)]
+            current_streak = max_streak = 1
+            for prev, cur in zip(dates, dates[1:]):
+                current_streak = current_streak + 1 if (cur - prev).days == 1 else 1
+                max_streak = max(max_streak, current_streak)
+        return {"by_day": day_breakdown, "by_hour": hour_breakdown, "busiest_day": max(day_breakdown, key=lambda x: x["count"]),
+                "busiest_hour": max(hour_breakdown, key=lambda x: x["count"]), "active_days": len(daily_counts), "max_streak": max_streak}
 
-        return {
-            "by_day": day_breakdown,
-            "by_hour": hour_breakdown,
-            "busiest_day": busiest_day,
-            "busiest_hour": busiest_hour,
-            "active_days": active_days,
-            "max_streak": max_streak,
-        }
+    _TOP_METRICS = (
+        ("Most messages", lambda s: s.get("message_count") or 0, "{} msgs"),
+        ("Most tokens", lambda s: (s.get("input_tokens") or 0) + (s.get("output_tokens") or 0), "{:,} tokens"),
+        ("Most tool calls", lambda s: s.get("tool_call_count") or 0, "{} calls"),
+    )
 
     def _compute_top_sessions(self, sessions: List[Dict]) -> List[Dict]:
-        """Find notable sessions (longest, most messages, most tokens)."""
+        """Notable sessions (longest, most messages, most tokens, most tool calls)."""
         top = []
-
-        # Longest by duration
-        sessions_with_duration = [
-            s for s in sessions
-            if s.get("started_at") and s.get("ended_at")
-        ]
-        if sessions_with_duration:
-            longest = max(
-                sessions_with_duration,
-                key=lambda s: (s["ended_at"] - s["started_at"]),
-            )
-            dur = longest["ended_at"] - longest["started_at"]
-            top.append({
-                "label": "Longest session",
-                "session_id": longest["id"][:16],
-                "value": format_duration_compact(dur),
-                "date": datetime.fromtimestamp(longest["started_at"]).strftime("%b %d"),
-            })
-
-        # Most messages
-        most_msgs = max(sessions, key=lambda s: s.get("message_count") or 0)
-        if (most_msgs.get("message_count") or 0) > 0:
-            top.append({
-                "label": "Most messages",
-                "session_id": most_msgs["id"][:16],
-                "value": f"{most_msgs['message_count']} msgs",
-                "date": datetime.fromtimestamp(most_msgs["started_at"]).strftime("%b %d") if most_msgs.get("started_at") else "?",
-            })
-
-        # Most tokens
-        most_tokens = max(
-            sessions,
-            key=lambda s: (s.get("input_tokens") or 0) + (s.get("output_tokens") or 0),
-        )
-        token_total = (most_tokens.get("input_tokens") or 0) + (most_tokens.get("output_tokens") or 0)
-        if token_total > 0:
-            top.append({
-                "label": "Most tokens",
-                "session_id": most_tokens["id"][:16],
-                "value": f"{token_total:,} tokens",
-                "date": datetime.fromtimestamp(most_tokens["started_at"]).strftime("%b %d") if most_tokens.get("started_at") else "?",
-            })
-
-        # Most tool calls
-        most_tools = max(sessions, key=lambda s: s.get("tool_call_count") or 0)
-        if (most_tools.get("tool_call_count") or 0) > 0:
-            top.append({
-                "label": "Most tool calls",
-                "session_id": most_tools["id"][:16],
-                "value": f"{most_tools['tool_call_count']} calls",
-                "date": datetime.fromtimestamp(most_tools["started_at"]).strftime("%b %d") if most_tools.get("started_at") else "?",
-            })
-
+        timed = [s for s in sessions if s.get("started_at") and s.get("ended_at")]
+        if timed:
+            longest = max(timed, key=lambda s: s["ended_at"] - s["started_at"])
+            top.append({"label": "Longest session", "session_id": longest["id"][:16],
+                        "value": format_duration_compact(longest["ended_at"] - longest["started_at"]), "date": _day(longest["started_at"])})
+        for label, metric, fmt in self._TOP_METRICS:
+            best = max(sessions, key=metric)
+            value = metric(best)
+            if value > 0:
+                top.append({"label": label, "session_id": best["id"][:16], "value": fmt.format(value), "date": _day(best.get("started_at"))})
         return top
 
-    # =========================================================================
-    # Formatting
-    # =========================================================================
+    # ------------------------------------------------------------- Formatting
+
+    @staticmethod
+    def _section(title: str) -> List[str]:
+        return [f"  {title}", "  " + "─" * 56]
+
+    @staticmethod
+    def _cost_lines(o: Dict, templates: tuple) -> List[str]:
+        """One formatted line per non-zero cost bucket (estimated, included, unknown)."""
+        # Cost breakdown — surface the three buckets so subscription-included and unknown-cost sessions are
+        # visible instead of silently collapsing to $0. See #77223.
+        est_cost = o.get("estimated_cost", 0.0)
+        values = (_fmt_est_cost(est_cost) if est_cost > 0 else "", o.get("included_cost_sessions", 0), o.get("unknown_cost_sessions", 0))
+        return [tpl.format(v) for tpl, v in zip(templates, values) if v]
 
     def format_terminal(self, report: Dict) -> str:
         """Format the insights report for terminal display (CLI)."""
         if report.get("empty"):
-            days = report.get("days", 30)
             src = f" (source: {report['source_filter']})" if report.get("source_filter") else ""
-            return f"  No sessions found in the last {days} days{src}."
-
-        lines = []
+            return f"  No sessions found in the last {report.get('days', 30)} days{src}."
         o = report["overview"]
-        days = report["days"]
-        src_filter = report.get("source_filter")
-
-        # Header
-        lines.append("")
-        lines.append("  ╔══════════════════════════════════════════════════════════╗")
-        lines.append("  ║                    📊 Hermes Insights                    ║")
-        period_label = f"Last {days} days"
-        if src_filter:
-            period_label += f" ({src_filter})"
+        period_label = f"Last {report['days']} days"
+        if report.get("source_filter"):
+            period_label += f" ({report['source_filter']})"
         padding = 58 - len(period_label) - 2
         left_pad = padding // 2
-        right_pad = padding - left_pad
-        lines.append(f"  ║{' ' * left_pad} {period_label} {' ' * right_pad}║")
-        lines.append("  ╚══════════════════════════════════════════════════════════╝")
-        lines.append("")
-
-        # Date range
+        lines = [
+            "",
+            "  ╔══════════════════════════════════════════════════════════╗",
+            "  ║                    📊 Hermes Insights                    ║",
+            f"  ║{' ' * left_pad} {period_label} {' ' * (padding - left_pad)}║",
+            "  ╚══════════════════════════════════════════════════════════╝",
+            "",
+        ]
         if o.get("date_range_start") and o.get("date_range_end"):
             start_str = datetime.fromtimestamp(o["date_range_start"]).strftime("%b %d, %Y")
             end_str = datetime.fromtimestamp(o["date_range_end"]).strftime("%b %d, %Y")
-            lines.append(f"  Period: {start_str} — {end_str}")
-            lines.append("")
-
-        # Overview
-        lines.append("  📋 Overview")
-        lines.append("  " + "─" * 56)
-        lines.append(f"  Sessions:          {o['total_sessions']:<12}  Messages:        {o['total_messages']:,}")
-        lines.append(f"  Tool calls:        {o['total_tool_calls']:<12,}  User messages:   {o['user_messages']:,}")
-        lines.append(f"  Input tokens:      {o['total_input_tokens']:<12,}  Output tokens:   {o['total_output_tokens']:,}")
-        lines.append(f"  Total tokens:      {o['total_tokens']:,}")
+            lines += [f"  Period: {start_str} — {end_str}", ""]
+        lines += self._section("📋 Overview") + [
+            f"  Sessions:          {o['total_sessions']:<12}  Messages:        {o['total_messages']:,}",
+            f"  Tool calls:        {o['total_tool_calls']:<12,}  User messages:   {o['user_messages']:,}",
+            f"  Input tokens:      {o['total_input_tokens']:<12,}  Output tokens:   {o['total_output_tokens']:,}",
+            f"  Total tokens:      {o['total_tokens']:,}",
+        ]
         if o["total_hours"] > 0:
             lines.append(f"  Active time:       ~{format_duration_compact(o['total_hours'] * 3600):<11}  Avg session:     ~{format_duration_compact(o['avg_session_duration'])}")
-        lines.append(f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}")
-        lines.append("")
-
-        # Model breakdown
+        lines += [f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}", ""]
+        # Cost buckets: show included/unknown sessions instead of collapsing to $0.
+        cost_lines = self._cost_lines(o, ("  Estimated:          {}", "  Included:           {} session(s) (subscription — no provider invoice)",
+                                          "  Unknown:            {} session(s) (no pricing data)"))
+        if cost_lines:
+            lines += self._section("💰 Cost") + cost_lines + [""]
         if report["models"]:
-            lines.append("  🤖 Models Used")
-            lines.append("  " + "─" * 56)
-            lines.append(f"  {'Model':<30} {'Sessions':>8} {'Tokens':>12}")
-            for m in report["models"]:
-                model_name = m["model"][:28]
-                lines.append(f"  {model_name:<30} {m['sessions']:>8} {m['total_tokens']:>12,}")
-            lines.append("")
-
-        # Platform breakdown
-        if len(report["platforms"]) > 1 or (report["platforms"] and report["platforms"][0]["platform"] != "cli"):
-            lines.append("  📱 Platforms")
-            lines.append("  " + "─" * 56)
-            lines.append(f"  {'Platform':<14} {'Sessions':>8} {'Messages':>10} {'Tokens':>14}")
-            for p in report["platforms"]:
-                lines.append(f"  {p['platform']:<14} {p['sessions']:>8} {p['messages']:>10,} {p['total_tokens']:>14,}")
-            lines.append("")
-
-        # Tool usage
+            lines += self._section("🤖 Models Used") + [f"  {'Model':<30} {'Sessions':>8} {'Tokens':>12}"]
+            lines += [f"  {m['model'][:28]:<30} {m['sessions']:>8} {m['total_tokens']:>12,}" for m in report["models"]] + [""]
+        platforms = report["platforms"]
+        if len(platforms) > 1 or (platforms and platforms[0]["platform"] != "cli"):
+            lines += self._section("📱 Platforms") + [f"  {'Platform':<14} {'Sessions':>8} {'Messages':>10} {'Tokens':>14}"]
+            lines += [f"  {p['platform']:<14} {p['sessions']:>8} {p['messages']:>10,} {p['total_tokens']:>14,}" for p in platforms] + [""]
         if report["tools"]:
-            lines.append("  🔧 Top Tools")
-            lines.append("  " + "─" * 56)
-            lines.append(f"  {'Tool':<28} {'Calls':>8} {'%':>8}")
-            for t in report["tools"][:15]:  # Top 15
-                lines.append(f"  {t['tool']:<28} {t['count']:>8,} {t['percentage']:>7.1f}%")
+            lines += self._section("🔧 Top Tools") + [f"  {'Tool':<28} {'Calls':>8} {'%':>8}"]
+            lines += [f"  {t['tool']:<28} {t['count']:>8,} {t['percentage']:>7.1f}%" for t in report["tools"][:15]]
             if len(report["tools"]) > 15:
                 lines.append(f"  ... and {len(report['tools']) - 15} more tools")
             lines.append("")
-
-        # Skill usage
         skills = report.get("skills", {})
         top_skills = skills.get("top_skills", [])
         if top_skills:
-            lines.append("  🧠 Top Skills")
-            lines.append("  " + "─" * 56)
-            lines.append(f"  {'Skill':<28} {'Loads':>7} {'Edits':>7} {'Last used':>11}")
+            lines += self._section("🧠 Top Skills") + [f"  {'Skill':<28} {'Loads':>7} {'Edits':>7} {'Last used':>11}"]
             for skill in top_skills[:10]:
-                last_used = "—"
-                if skill.get("last_used_at"):
-                    last_used = datetime.fromtimestamp(skill["last_used_at"]).strftime("%b %d")
-                lines.append(
-                    f"  {skill['skill'][:28]:<28} {skill['view_count']:>7,} {skill['manage_count']:>7,} {last_used:>11}"
-                )
+                last_used = _day(skill.get("last_used_at")) if skill.get("last_used_at") else "—"
+                lines.append(f"  {skill['skill'][:28]:<28} {skill['view_count']:>7,} {skill['manage_count']:>7,} {last_used:>11}")
             summary = skills.get("summary", {})
-            lines.append(
-                f"  Distinct skills: {summary.get('distinct_skills_used', 0)}  "
-                f"Loads: {summary.get('total_skill_loads', 0):,}  "
-                f"Edits: {summary.get('total_skill_edits', 0):,}"
-            )
-            lines.append("")
-
-        # Activity patterns
+            lines += [f"  Distinct skills: {summary.get('distinct_skills_used', 0)}  Loads: {summary.get('total_skill_loads', 0):,}  "
+                      f"Edits: {summary.get('total_skill_edits', 0):,}", ""]
         act = report.get("activity", {})
         if act.get("by_day"):
-            lines.append("  📅 Activity Patterns")
-            lines.append("  " + "─" * 56)
-
-            # Day of week chart
-            day_values = [d["count"] for d in act["by_day"]]
-            bars = _bar_chart(day_values, max_width=15)
-            for i, d in enumerate(act["by_day"]):
-                bar = bars[i]
-                lines.append(f"  {d['day']}  {bar:<15} {d['count']}")
-
-            lines.append("")
-
-            # Peak hours (show top 5 busiest hours)
-            busy_hours = sorted(act["by_hour"], key=lambda x: x["count"], reverse=True)
-            busy_hours = [h for h in busy_hours if h["count"] > 0][:5]
+            lines += self._section("📅 Activity Patterns")
+            bars = _bar_chart([d["count"] for d in act["by_day"]], max_width=15)
+            lines += [f"  {d['day']}  {bar:<15} {d['count']}" for bar, d in zip(bars, act["by_day"])] + [""]
+            busy_hours = [h for h in sorted(act["by_hour"], key=lambda x: x["count"], reverse=True) if h["count"] > 0][:5]
             if busy_hours:
-                hour_strs = []
-                for h in busy_hours:
-                    hr = h["hour"]
-                    ampm = "AM" if hr < 12 else "PM"
-                    display_hr = hr % 12 or 12
-                    hour_strs.append(f"{display_hr}{ampm} ({h['count']})")
+                hour_strs = [f"{_hour12(h['hour'])} ({h['count']})" for h in busy_hours]
                 lines.append(f"  Peak hours: {', '.join(hour_strs)}")
-
             if act.get("active_days"):
                 lines.append(f"  Active days: {act['active_days']}")
             if act.get("max_streak") and act["max_streak"] > 1:
                 lines.append(f"  Best streak: {act['max_streak']} consecutive days")
             lines.append("")
-
-        # Notable sessions
         if report.get("top_sessions"):
-            lines.append("  🏆 Notable Sessions")
-            lines.append("  " + "─" * 56)
-            for ts in report["top_sessions"]:
-                lines.append(f"  {ts['label']:<20} {ts['value']:<18} ({ts['date']}, {ts['session_id']})")
-            lines.append("")
-
+            lines += self._section("🏆 Notable Sessions")
+            lines += [f"  {ts['label']:<20} {ts['value']:<18} ({ts['date']}, {ts['session_id']})" for ts in report["top_sessions"]] + [""]
         return "\n".join(lines)
 
     def format_gateway(self, report: Dict) -> str:
         """Format the insights report for gateway/messaging (shorter)."""
         if report.get("empty"):
-            days = report.get("days", 30)
-            return f"No sessions found in the last {days} days."
-
-        lines = []
+            return f"No sessions found in the last {report.get('days', 30)} days."
         o = report["overview"]
-        days = report["days"]
-
-        lines.append(f"📊 **Hermes Insights** — Last {days} days\n")
-
-        # Overview
-        lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")
-        lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
+        lines = [
+            f"📊 **Hermes Insights** — Last {report['days']} days\n",
+            f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}",
+            f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})",
+        ]
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{format_duration_compact(o['total_hours'] * 3600)} | **Avg session:** ~{format_duration_compact(o['avg_session_duration'])}")
         lines.append("")
-
-        # Models (top 5)
+        cost_parts = self._cost_lines(o, ("{} estimated", "{} included (subscription)", "{} unknown"))
+        if cost_parts:
+            lines += [f"**Cost:** {' | '.join(cost_parts)}", ""]
         if report["models"]:
-            lines.append("**🤖 Models:**")
-            for m in report["models"][:5]:
-                lines.append(f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens")
-            lines.append("")
-
-        # Platforms (if multi-platform)
+            lines += ["**🤖 Models:**"] + [f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens" for m in report["models"][:5]] + [""]
         if len(report["platforms"]) > 1:
-            lines.append("**📱 Platforms:**")
-            for p in report["platforms"]:
-                lines.append(f"  {p['platform']} — {p['sessions']} sessions, {p['messages']:,} msgs")
-            lines.append("")
-
-        # Tools (top 8)
+            lines += ["**📱 Platforms:**"] + [f"  {p['platform']} — {p['sessions']} sessions, {p['messages']:,} msgs" for p in report["platforms"]] + [""]
         if report["tools"]:
-            lines.append("**🔧 Top Tools:**")
-            for t in report["tools"][:8]:
-                lines.append(f"  {t['tool']} — {t['count']:,} calls ({t['percentage']:.1f}%)")
-            lines.append("")
-
+            lines += ["**🔧 Top Tools:**"] + [f"  {t['tool']} — {t['count']:,} calls ({t['percentage']:.1f}%)" for t in report["tools"][:8]] + [""]
         skills = report.get("skills", {})
         if skills.get("top_skills"):
             lines.append("**🧠 Top Skills:**")
             for skill in skills["top_skills"][:5]:
-                suffix = ""
-                if skill.get("last_used_at"):
-                    suffix = f", last used {datetime.fromtimestamp(skill['last_used_at']).strftime('%b %d')}"
-                lines.append(
-                    f"  {skill['skill']} — {skill['view_count']:,} loads, {skill['manage_count']:,} edits{suffix}"
-                )
+                suffix = f", last used {_day(skill['last_used_at'])}" if skill.get("last_used_at") else ""
+                lines.append(f"  {skill['skill']} — {skill['view_count']:,} loads, {skill['manage_count']:,} edits{suffix}")
             lines.append("")
-
-        # Activity summary
         act = report.get("activity", {})
         if act.get("busiest_day") and act.get("busiest_hour"):
-            hr = act["busiest_hour"]["hour"]
-            ampm = "AM" if hr < 12 else "PM"
-            display_hr = hr % 12 or 12
-            lines.append(f"**📅 Busiest:** {act['busiest_day']['day']}s ({act['busiest_day']['count']} sessions), {display_hr}{ampm} ({act['busiest_hour']['count']} sessions)")
+            lines.append(f"**📅 Busiest:** {act['busiest_day']['day']}s ({act['busiest_day']['count']} sessions), {_hour12(act['busiest_hour']['hour'])} ({act['busiest_hour']['count']} sessions)")
             if act.get("active_days"):
-                lines.append(f"**Active days:** {act['active_days']}", )
+                lines.append(f"**Active days:** {act['active_days']}")
             if act.get("max_streak", 0) > 1:
                 lines.append(f"**Best streak:** {act['max_streak']} consecutive days")
-
         return "\n".join(lines)

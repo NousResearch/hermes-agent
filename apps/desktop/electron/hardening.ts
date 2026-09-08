@@ -3,30 +3,22 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const DEFAULT_FETCH_TIMEOUT_MS = 15_000
-// Default / floor / ceiling for Desktop's data-URL file load (composer attach,
-// image preview, etc.). The whole file is base64-buffered in main, so this is
-// a memory guard — not a model limit. Settings → Chat takes a free-form MB
-// value; 16 MB ships as default. The ceiling is only a typo guard (very large
-// values can OOM / crash the app).
-const DATA_URL_READ_DEFAULT_MAX_MB = 16
-const DATA_URL_READ_MIN_MAX_MB = 1
-const DATA_URL_READ_MAX_MAX_MB = 4096
+// Relative, not `@hermes/shared`: the electron bundle is built by esbuild with
+// no tsconfig path resolution (see scripts/bundle-electron-main.mjs), so a bare
+// specifier would typecheck and then fail to bundle.
+import {
+  clampDataUrlReadMaxMb,
+  DATA_URL_READ_DEFAULT_MAX_MB,
+  DATA_URL_READ_MAX_MAX_MB,
+  DATA_URL_READ_MIN_MAX_MB
+} from '../../shared/src/data-url-read-max'
+
+const DEFAULT_FETCH_TIMEOUT_MS = 30_000
 // Remote file.attach sends one base64 JSON-RPC frame. Cap the dedicated attach
 // reader so the payload still fits uvicorn's raised ws_max_size (384 MiB)
 // after base64 + framing. Preview stays on the Settings-configurable path.
 const ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES = 256 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
-
-function clampDataUrlReadMaxMb(value) {
-  const parsed = Number(value)
-
-  if (!Number.isFinite(parsed)) {
-    return DATA_URL_READ_DEFAULT_MAX_MB
-  }
-
-  return Math.min(DATA_URL_READ_MAX_MAX_MB, Math.max(DATA_URL_READ_MIN_MAX_MB, Math.round(parsed)))
-}
 
 function dataUrlReadMaxBytesFromMb(maxMb) {
   return clampDataUrlReadMaxMb(maxMb) * 1024 * 1024
@@ -34,6 +26,119 @@ function dataUrlReadMaxBytesFromMb(maxMb) {
 
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
 const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
+
+// Owner-only mode for userData files that carry credentials (the encrypted
+// gateway token in connection.json, and the URL/SSH fields alongside it).
+// connection.json was the odd one out: its two credential-bearing neighbours
+// under userData are already 0600 — desktop-installation.json
+// (desktop-installation.ts) and native-oauth-tokens.json (main.ts
+// `_nativeTokenStoreIo`) — while connection.json was written with no mode at
+// all and landed at the 0644 umask default. This makes the three consistent.
+const SECRET_FILE_MODE = 0o600
+
+// The encoding tag that marks a payload as OS-encrypted. One constant because
+// the writer (encryptDesktopSecret, here) and the reader
+// (decryptDesktopSecret, in main.ts) have to agree on the exact string across
+// a file boundary, and the native-token store round-trips the same shape.
+const SAFE_STORAGE_ENCODING = 'safeStorage'
+
+interface SecretFileFs {
+  chmodSync: typeof fs.chmodSync
+  lstatSync: typeof fs.lstatSync
+  renameSync: typeof fs.renameSync
+  rmSync: typeof fs.rmSync
+  writeFileSync: typeof fs.writeFileSync
+}
+
+interface SecretFileOptions {
+  encoding?: BufferEncoding
+  fs?: SecretFileFs
+  platform?: string
+}
+
+/**
+ * Tighten an existing credential file to owner-only (0600), returning whether
+ * the file now has that mode.
+ *
+ * Exists because `fs.writeFileSync(path, data, { mode })` only applies `mode`
+ * when it CREATES the file — rewriting an existing path silently keeps the old
+ * bits. So a file already on disk at 0644 (every connection.json written
+ * before this change, since that write passed no mode at all) needs an explicit
+ * chmod; a fresh `mode:` alone would never tighten it.
+ *
+ * Guards match `readInstallationId` in desktop-installation.ts, which does the
+ * same job for the sibling userData credential file: only ever chmod a regular
+ * file we own, never a symlink and never another user's file. Without them a
+ * symlink planted at the path would send the chmod to whatever it resolves to.
+ *
+ * POSIX only. Windows has no meaningful chmod (Node maps it to the read-only
+ * bit), and userData there is already ACL'd to the user profile, so we report
+ * success without touching the file rather than flipping it read-only and
+ * breaking the next write.
+ *
+ * Never throws: a chmod can legitimately fail (read-only mount, file owned by
+ * another user), and failing to tighten a file is not a reason to lose the
+ * user's configured gateway.
+ */
+function tightenSecretFileMode(filePath, options: SecretFileOptions = {}) {
+  const fsImpl = options.fs || fs
+  const platform = options.platform || process.platform
+
+  if (platform === 'win32') {
+    return true
+  }
+
+  try {
+    const stat = fsImpl.lstatSync(filePath)
+
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      return false
+    }
+
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+      return false
+    }
+
+    if ((stat.mode & 0o777) === SECRET_FILE_MODE) {
+      return true
+    }
+
+    fsImpl.chmodSync(filePath, SECRET_FILE_MODE)
+
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Atomically write a credential file, owner-only wherever the OS expresses
+ * permissions as mode bits.
+ *
+ * On POSIX the file is owner-only from the moment it exists. On Windows this
+ * only gets the atomic rename: `tightenSecretFileMode` no-ops there (Node maps
+ * chmod to the read-only bit), so the file inherits the userData directory's
+ * ACL rather than an explicit owner-only one. Tightening Windows ACLs is being
+ * handled once, for the Python `_secure_file`, in PR #77527 — the desktop
+ * should follow that rather than start a second ACL story here.
+ *
+ * The temp-then-rename dance is what makes the mode subtle: `renameSync` keeps
+ * the TEMP file's permissions, so writing the temp at the default umask (0644)
+ * hands those bits to the target — and a crashed earlier write can leave a
+ * stale temp file whose existing loose bits `mode:` will not correct. Hence the
+ * unlink of any stale temp (which also drops a planted symlink, so the write
+ * cannot be redirected), the create-time `mode`, and the chmod before the
+ * rename.
+ */
+function writeSecretFileAtomic(targetPath, data, options: SecretFileOptions = {}) {
+  const fsImpl = options.fs || fs
+  const tmp = targetPath + '.tmp'
+
+  fsImpl.rmSync(tmp, { force: true })
+  fsImpl.writeFileSync(tmp, data, { encoding: options.encoding, mode: SECRET_FILE_MODE })
+  tightenSecretFileMode(tmp, options)
+  fsImpl.renameSync(tmp, targetPath)
+}
 
 function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {
   const fallback =
@@ -86,7 +191,7 @@ function encryptDesktopSecret(value, safeStorageApi, options: { allowPlainText?:
 
   try {
     return {
-      encoding: 'safeStorage',
+      encoding: SAFE_STORAGE_ENCODING,
       value: safeStorageApi.encryptString(raw).toString('base64')
     }
   } catch (error) {
@@ -440,6 +545,10 @@ export {
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
+  SAFE_STORAGE_ENCODING,
+  SECRET_FILE_MODE,
   sensitiveFileBlockReason,
-  TEXT_PREVIEW_SOURCE_MAX_BYTES
+  TEXT_PREVIEW_SOURCE_MAX_BYTES,
+  tightenSecretFileMode,
+  writeSecretFileAtomic
 }

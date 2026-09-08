@@ -368,15 +368,47 @@ class CreateTaskBody(BaseModel):
     provider_override: Optional[str] = None
     reasoning_effort: Optional[str] = None  # none|minimal|…|ultra; None inherits the profile's level
     project_id: Optional[str] = None  # None inherits the board's scoped project (if any)
+    subscribe_platforms: Optional[list[str]] = None  # None=auto per config, []=opt out, explicit=subset
 
 
 @router.post("/tasks")
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
         # CreateTaskBody field names match create_task's keyword parameters.
-        task_id = kanban_db.create_task(conn, created_by="dashboard", board=board, **payload.model_dump())
+        body_kwargs = payload.model_dump()
+        subscribe_platforms = body_kwargs.pop("subscribe_platforms")
+        task_id = kanban_db.create_task(
+            conn, created_by="dashboard", board=board, **body_kwargs
+        )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
+        # Terminal events must not stay silent for dashboard/API-created tasks: with
+        # kanban.auto_subscribe_on_create (the same gate /kanban create honours), write
+        # the notify_subs rows home-subscribe would — one per configured home channel,
+        # unless the request narrows (list) or opts out (empty list).
+        if task:
+            try:
+                homes = _configured_home_channels()
+                if subscribe_platforms is not None:
+                    wanted = {p.strip() for p in subscribe_platforms if str(p).strip()}
+                    unknown = wanted - {h["platform"] for h in homes}
+                    if unknown:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"no home channel configured for platform(s): {', '.join(sorted(unknown))}",
+                        )
+                    homes = [h for h in homes if h["platform"] in wanted]
+                elif not _auto_subscribe_enabled():
+                    homes = []
+                subscribed = _subscribe_homes(conn, task_id, homes)
+                if subscribed:
+                    body["subscribed_platforms"] = subscribed
+            except HTTPException:
+                raise
+            except Exception as exc:
+                log.warning(
+                    "auto-subscribe after dashboard task create failed: %r", exc
+                )
         # Dispatcher-presence warning so the UI can banner a ready+assigned task that would
         # otherwise sit idle (no gateway / dispatch_in_gateway=false); triage/todo are expected
         # to wait, unassigned tasks can't dispatch anyway. Probe the request's active home: the
@@ -1109,6 +1141,40 @@ def _home_for_platform(platform: str, detail: str) -> dict:
     if not home:
         raise HTTPException(status_code=404, detail=detail)
     return home
+
+
+def _subscribe_homes(
+    conn: sqlite3.Connection, task_id: str, homes: list[dict]
+) -> list[str]:
+    """Write the notify_subs rows ``home-subscribe`` would for each *homes* entry;
+    returns the platforms actually registered (deduped, config order)."""
+    profile = _active_profile_name()
+    subscribed: list[str] = []
+    for home in homes:
+        kbn.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform=home["platform"],
+            chat_id=home["chat_id"],
+            thread_id=home["thread_id"] or None,
+            notifier_profile=profile,
+        )
+        if home["platform"] not in subscribed:
+            subscribed.append(home["platform"])
+    return subscribed
+
+
+def _auto_subscribe_enabled() -> bool:
+    """``kanban.auto_subscribe_on_create`` — the same gate ``/kanban create`` uses;
+    unreadable config keeps the default (True)."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        return bool(
+            cfg_get(load_config(), "kanban", "auto_subscribe_on_create", default=True)
+        )
+    except Exception:
+        return True
 
 
 @router.get("/home-channels")

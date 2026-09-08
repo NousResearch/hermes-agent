@@ -10,6 +10,7 @@ the inbound gate opens.
 """
 
 import gateway.run as gateway_run
+import gateway.run_model_context as model_context
 
 
 def _quiet_tool_side(monkeypatch, tool_count):
@@ -26,10 +27,10 @@ def test_model_context_warmup_primes_default_route(monkeypatch):
 
     def fake_resolve(model=None, route=None):
         resolved.append((model, route))
-        return gateway_run._GatewayModelContext(
+        return model_context._GatewayModelContext(
             model="m", provider="p", base_url="", context_length=128000, context_source="detected")
 
-    monkeypatch.setattr(gateway_run, "_resolve_gateway_model_context", fake_resolve)
+    monkeypatch.setattr(model_context, "_resolve_gateway_model_context", fake_resolve)
     _quiet_tool_side(monkeypatch, 3)
 
     assert gateway_run._warm_turn_machinery_sync() == 3
@@ -42,7 +43,7 @@ def test_model_context_warmup_failure_is_non_fatal(monkeypatch):
     def boom(model=None, route=None):
         raise RuntimeError("catalog unreachable")
 
-    monkeypatch.setattr(gateway_run, "_resolve_gateway_model_context", boom)
+    monkeypatch.setattr(model_context, "_resolve_gateway_model_context", boom)
     _quiet_tool_side(monkeypatch, 7)
 
     assert gateway_run._warm_turn_machinery_sync() == 7

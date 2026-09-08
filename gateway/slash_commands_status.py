@@ -423,7 +423,8 @@ class GatewayStatusCommandsMixin:
     async def _resolve_route_context(self, source, model_name: str, route: dict | None = None):
         """``_resolve_gateway_model_context`` for a non-resident session, run off the event loop inside
         the profile serving ``source`` (multiplex). Fail-open: None on any error."""
-        from gateway.run import _profile_runtime_scope, _resolve_gateway_model_context
+        from gateway.run import _profile_runtime_scope
+        from gateway.run_model_context import _resolve_gateway_model_context
 
         def _resolve():
             if getattr(getattr(self, "config", None), "multiplex_profiles", False):

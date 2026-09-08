@@ -665,9 +665,13 @@ def _split_version_suffix(rest: str) -> tuple[list[float], str]:
         if ch in "-_.":
             pos += 1
             continue
-        if not (ch in "vV" or ch.isdigit()):
+        # Kimi ids (kimi-k3, kimi-k2.6) use k/K as the version marker, not v/V.
+        # Consume k/K only when it introduces a numeric version (k3), never a
+        # plain suffix (king) or standalone text (#78886).
+        k_version = ch in "kK" and pos + 1 < len(rest) and rest[pos + 1].isdigit()
+        if not (ch in "vV" or ch.isdigit() or k_version):
             break
-        if ch in "vV":
+        if ch in "vV" or k_version:
             pos += 1
         while pos < len(rest) and (rest[pos].isdigit() or rest[pos] == "."):
             if rest[pos] == "." and "." in run:

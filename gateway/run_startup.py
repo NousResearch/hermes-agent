@@ -1214,7 +1214,7 @@ class GatewayStartupMixin:
     async def _start_post_connect_services(self, connected_count: int) -> None:
         """Room worker, heartbeat, gateway:startup hook, channel directory, /update notice."""
         from gateway.run import _hermes_home
-        await self._ensure_hosted_room_worker()
+        # Supervise initial startup too: a broken room must not abort unrelated services.
         self._spawn_supervised(self._hosted_room_worker_watcher, "hosted_room_worker")
         self._start_loop_heartbeat_task()
         from gateway.run_heartbeat_restore import restore_heartbeat_watches

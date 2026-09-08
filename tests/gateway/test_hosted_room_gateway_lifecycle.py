@@ -184,7 +184,7 @@ async def test_native_recovery_failures_use_bounded_backoff(monkeypatch, owner, 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner", ["gateway", "web"])
 @pytest.mark.parametrize("configuration", ["absent", "unbound", "disabled", "invalid_path", "invalid_binding"])
-async def test_native_initial_configuration_failure_is_not_retried(
+async def test_native_initial_configuration_failure_is_isolated(
     tmp_path, monkeypatch, caplog, owner, configuration,
 ):
     from tui_gateway import methods_groups
@@ -209,7 +209,13 @@ async def test_native_initial_configuration_failure_is_not_retried(
     calls = Mock(side_effect=start_service)
     monkeypatch.setattr(methods_groups, "start_hosted_room_service", calls)
     runner = GatewayRunner.__new__(GatewayRunner)
-    runner._spawn_supervised = Mock()
+    runner._running = True
+    runner._background_tasks = set()
+    delays = []
+    backoff = GatewayRunner._supervised_backoff
+    monkeypatch.setattr(GatewayRunner, "_MAX_SUPERVISED_RESTARTS", 2)
+    monkeypatch.setattr(GatewayRunner, "_supervised_backoff",
+                        staticmethod(lambda attempt: delays.append(backoff(attempt)) or 0))
     runner._start_loop_heartbeat_task = Mock()
     runner._start_heartbeat_poller = Mock()
     runner.hooks = SimpleNamespace(loaded_hooks=[], emit=AsyncMock())
@@ -219,13 +225,24 @@ async def test_native_initial_configuration_failure_is_not_retried(
     monkeypatch.setattr("gateway.channel_directory.build_channel_directory", AsyncMock(return_value={}))
     try:
         if owner == "gateway":
+            await runner._start_post_connect_services(0)
+            runner._start_loop_heartbeat_task.assert_called_once()
+            runner._start_heartbeat_poller.assert_called_once()
+            runner.hooks.emit.assert_awaited_once_with("gateway:startup", {"platforms": []})
+            runner._send_update_notification.assert_awaited_once()
+            async with asyncio.timeout(5):
+                while (not calls.called or (invalid and runner._background_tasks)
+                       or (not invalid and configuration != "unbound"
+                           and methods_groups.get_hosted_room_service() is None)):
+                    await asyncio.sleep(0.01)
             if invalid:
-                with pytest.raises(ValueError):
-                    await runner._start_post_connect_services(0)
-                runner._spawn_supervised.assert_not_called()
+                assert calls.call_count == 3
+                assert delays == [1, 2]
+                failures = [r for r in caplog.records if "Supervised task hosted_room_worker died:" in r.message]
+                assert len(failures) == 3
+                assert all(isinstance(r.exc_info[1], ValueError) for r in failures)
             else:
-                await runner._start_post_connect_services(0)
-                runner._spawn_supervised.assert_called_once()
+                assert delays == []
         else:
             from fastapi.testclient import TestClient
             from hermes_cli import web_server
@@ -239,10 +256,16 @@ async def test_native_initial_configuration_failure_is_not_retried(
                 if invalid:
                     await asyncio.to_thread(threads[0].join, 2)
                     assert not threads[0].is_alive()
-        if invalid or owner == "gateway":
+        if invalid and owner == "web":
             assert calls.call_count == 1
         assert methods_groups._transport is None
+        if configuration == "unbound":
+            assert methods_groups._service is None
     finally:
+        runner._running = False
+        for task in list(runner._background_tasks):
+            task.cancel()
+        await asyncio.gather(*runner._background_tasks, return_exceptions=True)
         await asyncio.to_thread(methods_groups.stop_hosted_room_service)
 
 

@@ -114,11 +114,25 @@ class TestCmdPeersMap:
 
     @pytest.mark.parametrize("aliases, expected_host", [
         ({"111": "eri", "222": "tek"}, {"userPeerAliases": {"222": "tek"}}),
-        ({"111": "eri"}, {}),
-    ], ids=["one-of-two", "last-alias-drops-key"])
+        ({"111": "eri"}, {"userPeerAliases": {}}),
+    ], ids=["one-of-two", "last-alias-keeps-empty-map"])
     def test_dash_clears_alias(self, monkeypatch, tmp_path, aliases, expected_host):
         written = _run_map(monkeypatch, tmp_path, answers=["111", "-", ""], cfg=_cfg(userPeerAliases=aliases))
         assert written["cfg"]["hosts"]["hermes"] == expected_host
+
+    def test_cleared_host_map_does_not_resurrect_root_aliases(self, monkeypatch, tmp_path, capsys):
+        """A host block without the key inherits root, so clearing must leave an empty map behind."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = _cfg(root={"userPeerAliases": {"111": "root-person"}}, userPeerAliases={"111": "host-person"})
+        written = _run_map(monkeypatch, tmp_path, answers=["111", "-", ""], cfg=cfg)
+        assert written["cfg"]["hosts"]["hermes"]["userPeerAliases"] == {}
+        assert "root aliases no longer apply to [hermes]" in capsys.readouterr().out
+
+        path = tmp_path / "honcho.json"
+        path.write_text(json.dumps(written["cfg"]))
+        assert HonchoClientConfig.from_global_config(host="hermes", config_path=path).user_peer_aliases == {}
 
     @pytest.mark.parametrize("cfg, answers, kwargs", [
         (_cfg(), [""], {}),

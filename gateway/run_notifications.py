@@ -885,8 +885,6 @@ class GatewayNotificationsMixin:
         from gateway.run import _parse_session_key
         session_key = str(evt.get("session_key") or "").strip()
         derived = {}
-        parts = session_key.split(":")
-        profile = parts[1] if len(parts) >= 5 and parts[0] == "agent" and parts[1] != "main" else None
         if session_key:
             try:
                 self.session_store._ensure_loaded()
@@ -898,8 +896,8 @@ class GatewayNotificationsMixin:
             cached_source = self._get_cached_session_source(session_key)
             if cached_source is not None:
                 return cached_source
-            parse_key = ":".join(["agent", "main", *parts[2:]]) if profile else session_key
-            derived = _parse_session_key(parse_key) or {}
+            derived = _parse_session_key(session_key) or {}
+        profile = derived.get("profile")
         platform_name = str(evt.get("platform") or derived.get("platform") or "").strip().lower()
         chat_type = str(evt.get("chat_type") or derived.get("chat_type") or "").strip().lower()
         chat_id = str(evt.get("chat_id") or derived.get("chat_id") or "").strip()

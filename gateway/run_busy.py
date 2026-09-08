@@ -19,7 +19,7 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from gateway.session import SessionSource, _session_key_namespace
 from typing import Any, Dict, Optional, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -1001,8 +1001,15 @@ class GatewayBusySessionMixin:
         platform = source.platform.value
         chat_type = getattr(source, "chat_type", None) or ""
         # Match the exact key or prefix + ":" so a thread id that merely starts with this one
-        # is not matched.
-        prefix = ":".join(["agent:main", platform, chat_type, str(chat_id), str(thread_id)])
+        # is not matched. The namespace follows the source's profile so a named-profile run
+        # under multiplexing still matches its own keys.
+        prefix = ":".join([
+            _session_key_namespace(getattr(source, "profile", None)),
+            platform,
+            chat_type,
+            str(chat_id),
+            str(thread_id),
+        ])
         return [
             key
             for key, agent in self._running_agent_items()

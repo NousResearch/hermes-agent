@@ -72,6 +72,12 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         self._auth_failure: str | None = None
         self._auth_notice_emitted = False
 
+        # base_url → True once a peer_perspective search has returned a
+        # non-empty result, proving the filter works on that server. Absent
+        # means unproven: empty perspective results keep paying the peer_id
+        # retry until proven otherwise.
+        self._perspective_supported: dict[str, bool] = {}
+
         # Behavior knobs copied from config (HonchoClientConfig defaults when absent); the
         # observation booleans map 1:1 to Honcho's SessionPeerConfig toggles.
         for name, default in (

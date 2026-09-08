@@ -3,8 +3,8 @@
  * @mention parse, the round-robin driver, the #93129 member holds, the stop
  * path, and the user send that starts it all.
  */
-
 import { botFriendlyNames, botHandle, clearBotAttention, mentionNameForms, noteBotAttention } from './data'
+import { desktopRoomIdentity } from './desktop-room-command-client'
 import { recordGroupActivity } from './group-activity'
 import {
   $groupChats,
@@ -14,17 +14,45 @@ import {
   GROUP_CHAT_MAX_CONTINUATIONS,
   GROUP_CHAT_MAX_MESSAGES,
   GROUP_CHAT_MAX_ROUNDS,
+  groupChatHostedGateway,
   groupSpeakerLabel,
   groupThreadOf,
   mintGroupThreadId,
+  persistGroupChatRoomsRequired,
   shouldCommitMemberTurn,
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
+import {
+  bindGroupCommandFence,
+  cancelGroupCommandFence,
+  groupCommandFenceLive,
+  groupCommandFenceMatches
+} from './group-command-fence'
+import type { GroupCommandFence } from './group-command-fence'
+import { desktopCommandResult, settleDesktopCommand } from './group-command-receipts'
 import { durableGroupChatMembers, groupMemberKey } from './group-membership'
 import { harvestStrandedGroupReply, isGroupPassText, runGroupChatMemberTurn } from './group-turns'
+import {
+  beginHostedRoomMutation,
+  groupChatContinuityReady,
+  hostedRoomMutationIsCurrent,
+  queueHostedGroupChat,
+  stopHostedGroupChat
+} from './hosted-room-runtime'
+import { botsText } from './i18n'
 import { requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupMessage } from './types'
+
+function hostedConnectionName(room: null | Partial<GroupChatRoom> | undefined) {
+  return room?.members?.find(member => member.connectionLabel)?.connectionLabel || botsText().group.thisHost
+}
+
+interface SendGroupChatOptions {
+  commandFence?: GroupCommandFence
+  entryId?: string
+  userName?: string
+}
 
 // ── group chats: bounded round-robin coordination over a shared room log ─────
 //
@@ -425,6 +453,86 @@ export function unaddressedGroupMentions(group: string, members: GroupMember[], 
  *  falls back to the room's durable roster so a two-arg call still works. */
 export async function stopGroupThread(group: string, thread: null | string, members: GroupMember[] | null = null) {
   const room = $groupChats.get()[group] || {}
+
+  if (groupChatHostedGateway(room)) {
+    if (room.hostedStatus?.state === 'stopping') {
+      return
+    }
+
+    const connectionName = hostedConnectionName(room)
+    const roomId = String(room.roomId || '')
+    const generation = beginHostedRoomMutation(roomId)
+
+    updateGroupChat(
+      group,
+      current => ({
+        ...current,
+        running: true,
+        hostedStatus: {
+          state: 'stopping',
+          label: botsText().group.hostedStopping
+        }
+      }),
+      {
+        sync: false
+      }
+    )
+
+    try {
+      const acknowledged = await stopHostedGroupChat(group)
+
+      if (!hostedRoomMutationIsCurrent(roomId, generation)) {
+        return
+      }
+
+      updateGroupChat(
+        group,
+        current => ({
+          ...current,
+          running: !acknowledged,
+          hostedStatus: {
+            state: acknowledged ? 'stopped' : 'queued',
+            label: acknowledged ? botsText().group.hostedStopped : botsText().group.hostedStopQueued(connectionName)
+          },
+          continuityIssue: acknowledged ? null : botsText().group.hostedStopQueuedHint(connectionName)
+        }),
+        {
+          sync: false
+        }
+      )
+    } catch {
+      if (!hostedRoomMutationIsCurrent(roomId, generation)) {
+        return
+      }
+
+      updateGroupChat(
+        group,
+        current => ({
+          ...current,
+          running: false,
+          hostedStatus: {
+            state: 'offline',
+            label: botsText().group.hostedUnavailable(connectionName)
+          },
+          continuityIssue: botsText().group.hostedReconnectToStop(connectionName)
+        }),
+        {
+          sync: false
+        }
+      )
+    }
+
+    if (hostedRoomMutationIsCurrent(roomId, generation)) {
+      recordGroupActivity(group, {
+        kind: 'stopped',
+        member: 'You',
+        thread: thread || null
+      })
+    }
+
+    return
+  }
+
   const roster = Array.isArray(members) && members.length ? members : room.members || []
   const turnName = room.turn || null
 
@@ -487,14 +595,75 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   }
 }
 
+/** Fence a classic turn after its mailbox lease is lost, without adding the
+ * durable holds that belong only to an explicit user Stop. */
+export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMember[] | null, fence: GroupCommandFence) {
+  cancelGroupCommandFence(fence)
+  const room = $groupChats.get()[group] || {}
+
+  // A later user send or replacement room owns a different drive. Cancelling
+  // this command must not interrupt it or change its running/hold state.
+  if (
+    (fence.roomValid && !fence.roomValid()) ||
+    desktopRoomIdentity(group, room) !== fence.roomId ||
+    fence.epoch === null ||
+    (room.epoch || 0) !== fence.epoch
+  ) {
+    return
+  }
+
+  const roster = Array.isArray(members) && members.length ? members : room.members || []
+  const turnName = room.turn || null
+
+  updateGroupChat(group, current => ({
+    ...current,
+    epoch: (current.epoch || 0) + 1,
+    running: false,
+    turn: null
+  }))
+
+  const onTurn = turnName ? roster.find(member => member?.name === turnName) : null
+  const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+
+  if (onTurn && sessionId) {
+    void Promise.resolve()
+      .then(() => requestForBot(onTurn, 'session.interrupt', { session_id: sessionId }))
+      .catch(() => undefined)
+  }
+}
+
 /** Drive one bounded round-robin turn for ONE THREAD. Serial — one member at
  *  a time. A newer user send bumps the room epoch; this loop notices at the
  *  next member boundary, bails, and the newest send's own loop takes over.
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
-export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string) {
+export async function runGroupChatRounds(
+  group: string,
+  members: GroupMember[],
+  thread: string,
+  fence?: GroupCommandFence
+) {
+  const leaseLive = () => groupCommandFenceMatches(fence, desktopRoomIdentity(group, $groupChats.get()[group]), thread)
+
+  if (!leaseLive() || (fence && fence.epoch !== ($groupChats.get()[group]?.epoch || 0))) {
+    return
+  }
+
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
-  const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
+  const isCurrent = () => leaseLive() && (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
+
+  if (fence) {
+    try {
+      // Persist the command identity before its first Bot can perform work.
+      await persistGroupChatRoomsRequired()
+    } catch {
+      fence.persistenceFailed = true
+      cancelGroupThreadForLeaseLoss(group, members, fence)
+
+      return
+    }
+  }
+
   let posted = 0
   let continuations = 0
   // #94478: how this drive ended. 'settled' means quiet consensus (everyone
@@ -640,7 +809,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         let reply: null | string = null
 
         try {
-          reply = await runGroupChatMemberTurn(group, member, prompt, thread, deltaImages)
+          reply = await runGroupChatMemberTurn(group, member, prompt, thread, deltaImages, fence)
 
           // Needs-attention hook (#93091 item 3): a turn that produced a real
           // reply (or an explicit pass) is a good turn — clear the badge.
@@ -678,6 +847,10 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         // overshoot after a mid-turn trim and silently commit a stale turn.
         const roomNow = $groupChats.get()[group] || {
           log: []
+        }
+
+        if (!leaseLive()) {
+          return
         }
 
         const epochNow = roomNow.epoch || 0
@@ -807,7 +980,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
               let continuationReply: null | string = null
 
               try {
-                continuationReply = await runGroupChatMemberTurn(group, member, prompt, thread)
+                continuationReply = await runGroupChatMemberTurn(group, member, prompt, thread, undefined, fence)
 
                 if (continuationReply !== null) {
                   clearBotAttention(memberKey)
@@ -887,6 +1060,10 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
     // the round cap ended the drive, not consensus. (#94478)
     exitKind = 'capped'
   } finally {
+    const externalIds = (Array.isArray(($groupChats.get()[group] || {}).log) ? $groupChats.get()[group].log : [])
+      .filter(entry => entry?.external && groupThreadOf(entry) === thread && entry?.id)
+      .map(entry => String(entry.id))
+
     if (isCurrent()) {
       recordGroupActivity(group, {
         kind: exitKind,
@@ -896,6 +1073,10 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
       updateGroupChat(group, (r: GroupChatRoom) => {
         r.running = false
         r.turn = null
+
+        for (const id of externalIds) {
+          r.desktopCommandSettled = settleDesktopCommand(group, r, id, 'send', { room_name: group, thread_id: thread })
+        }
 
         return r
       })
@@ -954,6 +1135,84 @@ async function harvestStrandedUntilSettled(group: string, members: GroupMember[]
   })
 }
 
+/** Composer send with a durable hosted boundary. File staging and verified
+ * outbox insertion hold the room-order lock; only then is the optimistic
+ * message painted. Classic rooms retain the synchronous round engine. */
+export async function sendToGroupChatDurably(
+  group: string,
+  members: GroupMember[],
+  text: string,
+  thread?: null | string,
+  images?: Attachment[]
+) {
+  const room = $groupChats.get()[group]
+
+  if (!groupChatHostedGateway(room)) {
+    return sendToGroupChat(group, members, text, thread, images)
+  }
+
+  const trimmed = String(text || '').trim()
+  const attached = Array.isArray(images) ? images.filter((image): image is Attachment => Boolean(image?.data)) : []
+
+  if ((!trimmed && !attached.length) || !members.length || room.hostedStatus?.state === 'deleted') {
+    return null
+  }
+
+  if (!groupChatContinuityReady(room)) {
+    updateGroupChat(
+      group,
+      current => ({
+        ...current,
+        continuityIssue: current.continuityIssue || current.hostedStatus?.label || botsText().group.hostedSyncing
+      }),
+      { sync: false }
+    )
+
+    return null
+  }
+
+  const target = thread || mintGroupThreadId()
+  const commandId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const roomId = String(room.roomId || '')
+  const generation = beginHostedRoomMutation(roomId)
+
+  const message: GroupMessage = {
+    at: Date.now(),
+    from: { kind: 'user', name: 'You' },
+    id: commandId,
+    ...(attached.length ? { images: attached } : {}),
+    text: trimmed,
+    thread: target
+  }
+
+  await queueHostedGroupChat(group, message, target)
+
+  if (!hostedRoomMutationIsCurrent(roomId, generation) || !$groupChats.get()[group]) {
+    return target
+  }
+
+  $groupNeedsYou.set({
+    ...$groupNeedsYou.get(),
+    [group]: false
+  })
+  updateGroupChat(group, current => ({
+    ...current,
+    members: durableGroupChatMembers(members),
+    running: true,
+    hostedStatus: {
+      state: 'queued',
+      label: botsText().group.hostedQueued(hostedConnectionName(room))
+    },
+    continuityIssue: null
+  }))
+  const visibleAttachments = attached.map(({ uploadId: _uploadId, ...attachment }) => attachment)
+
+  appendGroupChatEntry(group, message.from, trimmed, target, visibleAttachments, { entryId: commandId })
+  recordGroupActivity(group, { kind: 'queued', member: 'You', thread: target })
+
+  return target
+}
+
 /** User send into a group room. `thread` continues that thread (its reply
  *  box); omitted/null mints a NEW thread — the main composer's Slack shape.
  *  Appends, bumps the room epoch (supersedes any running loop at its next
@@ -964,16 +1223,93 @@ export function sendToGroupChat(
   members: GroupMember[],
   text: string,
   thread?: null | string,
-  images?: Attachment[]
+  images?: Attachment[],
+  options: SendGroupChatOptions = {}
 ): null | string {
   const trimmed = String(text || '').trim()
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
+  const roomBeforeSend = $groupChats.get()[group]
+  const hosted = groupChatHostedGateway(roomBeforeSend)
+  const externalId = String(options.entryId || '').trim()
+  const fence = options.commandFence
+
+  if (
+    !groupCommandFenceLive(fence) ||
+    (fence && (fence.roomId !== desktopRoomIdentity(group, roomBeforeSend) || fence.commandId !== externalId))
+  ) {
+    return null
+  }
+
+  const userName =
+    String(options.userName || 'You')
+      .trim()
+      .slice(0, 128) || 'You'
 
   if ((!trimmed && !attached.length) || !members.length) {
     return null
   }
 
+  if (hosted && roomBeforeSend?.hostedStatus?.state === 'deleted') {
+    return null
+  }
+
+  if (!groupChatContinuityReady(roomBeforeSend)) {
+    updateGroupChat(
+      group,
+      current => ({
+        ...current,
+        continuityIssue: current.continuityIssue || current.hostedStatus?.label || botsText().group.hostedSyncing
+      }),
+      { sync: false }
+    )
+
+    return null
+  }
+
+  if (hosted) {
+    return null
+  }
+
+  // Runtime callers verify the durable snapshot before entering this function.
+  // A retained settlement must never mutate the log or restart a trimmed turn.
+  if (externalId && Object.hasOwn(roomBeforeSend?.desktopCommandSettled || {}, externalId)) {
+    return desktopCommandResult(group, roomBeforeSend, externalId, 'send')?.thread_id || null
+  }
+
   const target = thread || mintGroupThreadId()
+
+  if (externalId) {
+    const existing = (Array.isArray(roomBeforeSend?.log) ? roomBeforeSend.log : []).find(
+      entry => entry?.id === externalId
+    )
+
+    if (existing) {
+      if (!existing.external || existing.text !== trimmed || existing.from?.name !== userName) {
+        return null
+      }
+
+      const existingThread = existing.thread || 'legacy'
+
+      if (roomBeforeSend?.desktopCommandSettled?.[externalId] || roomBeforeSend?.running) {
+        return existingThread
+      }
+
+      updateGroupChat(group, current => ({
+        ...current,
+        members: durableGroupChatMembers(members),
+        epoch: (current.epoch || 0) + 1,
+        running: true
+      }))
+      recordGroupActivity(group, { kind: 'queued', member: userName, thread: existingThread })
+      bindGroupCommandFence(fence, existingThread, $groupChats.get()[group].epoch || 0)
+      void runGroupChatRounds(group, members, existingThread, fence).catch(() => {
+        updateGroupChat(group, current => ({ ...current, running: false }))
+      })
+
+      return existingThread
+    }
+  }
+
   $groupNeedsYou.set({
     ...$groupNeedsYou.get(),
     [group]: false
@@ -991,12 +1327,17 @@ export function sendToGroupChat(
     group,
     {
       kind: 'user',
-      name: 'You'
+      name: userName
     },
     trimmed,
     target,
-    attached
+    attached,
+    { entryId: externalId, external: Boolean(externalId) }
   )
+
+  if (!sent) {
+    return null
+  }
 
   const wasRunning = ($groupChats.get()[group] || {}).running === true
   updateGroupChat(group, (room: GroupChatRoom) => {
@@ -1022,12 +1363,13 @@ export function sendToGroupChat(
   })
   recordGroupActivity(group, {
     kind: 'queued',
-    member: 'You',
+    member: userName,
     thread: target
   })
+  bindGroupCommandFence(fence, target, $groupChats.get()[group].epoch || 0)
 
   if (!wasRunning) {
-    void runGroupChatRounds(group, members, target).catch(() => {
+    void runGroupChatRounds(group, members, target, fence).catch(() => {
       updateGroupChat(group, (r: GroupChatRoom) => {
         r.running = false
 
@@ -1038,7 +1380,7 @@ export function sendToGroupChat(
     // A loop is live; it bails at its next boundary. Chain the fresh loop
     // after a short settle so exactly one drive owns the room.
     setTimeout(() => {
-      void runGroupChatRounds(group, members, target).catch(() => {
+      void runGroupChatRounds(group, members, target, fence).catch(() => {
         updateGroupChat(group, (r: GroupChatRoom) => {
           r.running = false
 

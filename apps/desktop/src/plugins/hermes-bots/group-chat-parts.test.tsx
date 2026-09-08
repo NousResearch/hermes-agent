@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -10,7 +10,10 @@ import type { GroupMember } from './types'
 // input with a member-scoped popover of their own. Everything it inserts has
 // to be a string parseGroupChatMentions resolves.
 
-const { host } = vi.hoisted(() => ({ host: {} as Record<string, unknown> }))
+const { answerGroupClarify, host } = vi.hoisted(() => ({
+  answerGroupClarify: vi.fn(async () => undefined),
+  host: {} as Record<string, unknown>
+}))
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock } = await import('./group-test-utils')
@@ -30,6 +33,8 @@ vi.mock('@hermes/plugin-sdk', async () => {
     usePluginI18n: () => translateBots
   }
 })
+
+vi.mock('./group-turns', () => ({ answerGroupClarify }))
 
 const MEMBERS: GroupMember[] = [
   { handle: 'alpha', name: 'alpha', title: '' },
@@ -78,6 +83,7 @@ const options = () => screen.queryAllByRole('button').map(button => button.textC
 
 beforeEach(() => {
   vi.resetModules()
+  Object.assign(host, { notify: vi.fn() })
 })
 
 afterEach(() => {
@@ -209,5 +215,129 @@ describe('keyboard (#89884)', () => {
     fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })
 
     expect(onSubmitDraft).not.toHaveBeenCalled()
+  })
+})
+
+describe('hosted approval history', () => {
+  it('does not invent a Desktop-only transcript entry', async () => {
+    const { $groupChats } = await import('./group-chat')
+    const { GroupClarifyCard } = await import('./group-chat-parts')
+
+    $groupChats.set({
+      Core: {
+        log: [],
+        members: MEMBERS,
+        watermarks: {}
+      }
+    })
+    render(
+      <GroupClarifyCard
+        entry={{
+          at: 1,
+          choices: ['once', 'deny'],
+          command: 'npm test',
+          group: 'Core',
+          hostedApproval: {
+            executionGeneration: 2,
+            memberId: 'builder',
+            roomId: 'room-1',
+            taskId: 'task-1'
+          },
+          kind: 'approval',
+          member: 'builder',
+          memberKey: 'builder',
+          multiSelect: false,
+          question: 'Run tests',
+          requestId: 'approval-1'
+        }}
+        members={MEMBERS}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'once' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Respond' }))
+    await waitFor(() => expect(answerGroupClarify).toHaveBeenCalledTimes(1))
+    expect($groupChats.get().Core.log).toEqual([])
+  })
+
+  it('maps stale gateway approval errors to actionable copy', async () => {
+    answerGroupClarify.mockRejectedValueOnce(
+      Object.assign(new Error('authority epoch fencing mismatch'), { code: 5119 })
+    )
+    const { GroupClarifyCard } = await import('./group-chat-parts')
+
+    render(
+      <GroupClarifyCard
+        entry={{
+          at: 1,
+          choices: ['once', 'deny'],
+          command: 'npm test',
+          group: 'Core',
+          hostedApproval: {
+            executionGeneration: 2,
+            memberId: 'builder',
+            roomId: 'room-1',
+            taskId: 'task-1'
+          },
+          kind: 'approval',
+          member: 'builder',
+          memberKey: 'builder',
+          multiSelect: false,
+          question: 'Run tests',
+          requestId: 'approval-1'
+        }}
+        members={MEMBERS}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'once' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Respond' }))
+    await waitFor(() =>
+      expect(host.notify).toHaveBeenCalledWith({
+        kind: 'error',
+        message: 'This approval is no longer available. Refresh the Group Chat and try again.'
+      })
+    )
+    expect(JSON.stringify((host.notify as ReturnType<typeof vi.fn>).mock.calls)).not.toContain('fencing mismatch')
+  })
+
+  it('keeps transient hosted approval failures retryable', async () => {
+    answerGroupClarify.mockRejectedValueOnce(
+      Object.assign(new Error('room approval target is unavailable'), { code: 5119 })
+    )
+    const { GroupClarifyCard } = await import('./group-chat-parts')
+
+    render(
+      <GroupClarifyCard
+        entry={{
+          at: 1,
+          choices: ['once', 'deny'],
+          command: 'npm test',
+          group: 'Core',
+          hostedApproval: {
+            executionGeneration: 2,
+            memberId: 'builder',
+            roomId: 'room-1',
+            taskId: 'task-1'
+          },
+          kind: 'approval',
+          member: 'builder',
+          memberKey: 'builder',
+          multiSelect: false,
+          question: 'Run tests',
+          requestId: 'approval-1'
+        }}
+        members={MEMBERS}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'once' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Respond' }))
+    await waitFor(() =>
+      expect(host.notify).toHaveBeenCalledWith({
+        kind: 'error',
+        message: 'Could not send this approval. Check the gateway connection and try again.'
+      })
+    )
   })
 })

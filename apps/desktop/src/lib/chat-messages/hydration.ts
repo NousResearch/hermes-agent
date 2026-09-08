@@ -87,6 +87,15 @@ function codexMessageItemText(message: SessionMessage): string {
   return texts.join('')
 }
 
+// Compatibility for untyped history and desktop tail caches from older
+// backends. Only the formatter's opening envelope qualifies, not a quote or
+// an ordinary user mentioning delegation. Never mutate persisted/model data.
+export function isLegacyDelegationCompletion(role: string, text: string): boolean {
+  return (
+    role === 'user' && /^\[ASYNC DELEGATION(?: BATCH)? COMPLETE — [^\]\n]+\]\r?\nA background /.test(text.trimStart())
+  )
+}
+
 function displayContentForMessage(role: SessionMessage['role'], content: unknown): string {
   const textContent = textFromUnknown(content)
 
@@ -161,7 +170,7 @@ function messageReactions(metadata: SessionMessage['display_metadata']): Message
 
 // Only parse producer-owned boundaries, never render the model's task preamble.
 // Older backends can persist an unwrapped result rather than an envelope.
-function asyncResultBody(content: string): string | undefined {
+export function asyncResultBody(content: string): string | undefined {
   let bodies = [content]
 
   if (content.startsWith('[ASYNC DELEGATION')) {
@@ -266,6 +275,13 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   }
 
   messages.forEach((message, index) => {
+    if (
+      !message.display_kind &&
+      isLegacyDelegationCompletion(message.role, textFromUnknown(message.content || message.text))
+    ) {
+      message = { ...message, display_kind: 'async_delegation_complete' }
+    }
+
     if (message.role === 'tool') {
       const updatedPendingToolParts = applyStoredToolResultToParts(pendingToolParts, message)
 
@@ -408,6 +424,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     result.push({
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
+      ...(message.display_kind === 'async_delegation_complete'
+        ? { displayKind: 'async_delegation_complete' as const }
+        : {}),
       parts,
       ...(message.display_kind === 'async_delegation_complete'
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }

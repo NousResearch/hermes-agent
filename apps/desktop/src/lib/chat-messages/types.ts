@@ -30,6 +30,8 @@ export type ChatMessage = {
   errorSurface?: ErrorSurface
   branchGroupId?: string
   hidden?: boolean
+  /** Display-only boundary for a backend-originated background follow-up. */
+  displayKind?: 'async_delegation_complete'
   /** Sealed mid-turn commentary (`message.interim`) — rendered without the
    *  action footer so only the turn's final reply carries copy/refresh, and
    *  the live view matches rehydration (which merges the turn into one bubble). */
@@ -123,6 +125,8 @@ export type GatewayEventPayload = {
   count?: number
   // status.update (kind=process → background process completion/watch-match)
   kind?: string
+  display_kind?: string
+  display_metadata?: SessionMessage['display_metadata']
   // pane.reveal (agent focusing a desktop pane via the focus_pane tool)
   pane?: string
   // layout.apply (agent applying a layout preset via the apply_layout tool)

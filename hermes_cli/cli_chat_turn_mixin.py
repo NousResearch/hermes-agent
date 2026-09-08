@@ -209,8 +209,8 @@ class CLIChatTurnMixin:
             staged_user_message = stamp_message_timestamp({"role": "user", "content": message})
             from tools.process_registry_notifications import SubagentNotification
             if isinstance(message, SubagentNotification):
-                staged_user_message.update(content=str(message), display_kind="async_delegation_complete",
-                                           display_metadata={"display_text": message.display_text})
+                staged_user_message.update(content=str(message), display_kind=message.display_kind,
+                                           display_metadata=message.display_metadata)
             agent._pending_cli_user_message = staged_user_message
             self.conversation_history.append(staged_user_message)
 
@@ -309,12 +309,18 @@ class CLIChatTurnMixin:
         _persist_clean_user_message = message if (turn.voice_prefix or agent_message != message) else None
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
+        # The queue sentinel was converted to plain model text in chat(); retain
+        # its trusted sidecars from the staged row when turn-start persistence runs.
+        staged = getattr(self.agent, "_pending_cli_user_message", None) or {}
+        display_kwargs = {f"persist_user_{key}": staged[key]
+                          for key in ("display_kind", "display_metadata") if key in staged}
         try:
             turn.result = self.agent.run_conversation(
                 user_message=agent_message,
                 conversation_history=self.conversation_history[:-1],  # exclude the message just staged
                 stream_callback=turn.stream_callback, task_id=self.session_id,
                 persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
+                **display_kwargs,
             )
             if getattr(self, "_pending_moa_disable_after_turn", False):
                 _restore = getattr(self, "_pending_moa_restore_model", None) or {}

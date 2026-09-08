@@ -159,6 +159,7 @@ const COMPARED_FIELDS = [
   // so a change (e.g. resume replay attaching the descriptor) must repaint.
   'errorSurface',
   'hidden',
+  'displayKind',
   'branchGroupId',
   'interim',
   'reactions',
@@ -272,6 +273,7 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     (a.errorSurface?.code ?? null) !== (b.errorSurface?.code ?? null) ||
     (a.errorSurface?.retryable ?? null) !== (b.errorSurface?.retryable ?? null) ||
     a.hidden !== b.hidden ||
+    a.displayKind !== b.displayKind ||
     a.branchGroupId !== b.branchGroupId ||
     a.timestamp !== b.timestamp ||
     a.completedAt !== b.completedAt ||

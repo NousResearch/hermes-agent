@@ -3528,6 +3528,7 @@ export const en: Translations = {
           : `Will resume when ${count} background tasks finish`,
       thinking: 'Thinking',
       thought: 'Thought',
+      backgroundUpdates: 'Background updates',
       thoughtBriefly: 'Thought briefly',
       thoughtFor: duration => `Thought for ${duration}`,
       turnDuration: duration => `This turn took ${duration}`,

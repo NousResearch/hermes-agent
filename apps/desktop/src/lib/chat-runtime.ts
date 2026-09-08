@@ -4,6 +4,7 @@ import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { asyncResultBody, isLegacyDelegationCompletion } from '@/lib/chat-messages/hydration'
 import { normalize } from '@/lib/text'
 import type { ComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
@@ -423,6 +424,17 @@ export function messageCreatedAt(message: Pick<ChatMessage, 'timestamp'>, nowMs 
 }
 
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
+  // Warm transcript tails can predate display typing, bypassing hydration.
+  if (!message.displayKind && isLegacyDelegationCompletion(message.role, chatMessageText(message))) {
+    message = {
+      ...message,
+      role: 'system',
+      displayKind: 'async_delegation_complete',
+      asyncResult: message.asyncResult ?? asyncResultBody(chatMessageText(message).trimStart()),
+      parts: [textPart('background agent work finished')]
+    }
+  }
+
   const role =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
 
@@ -459,7 +471,13 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       role,
       content: [textPart(text)],
       createdAt,
-      metadata: { custom: { ...timelineMeta, ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}) } }
+      metadata: {
+        custom: {
+          ...timelineMeta,
+          ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
+          ...(message.displayKind ? { displayKind: message.displayKind } : {})
+        }
+      }
     } as ThreadMessage
   }
 

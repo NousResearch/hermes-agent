@@ -181,57 +181,51 @@ def _live_relay_fronted() -> Optional[Set[str]]:
     asks that same adapter and still routes over the relay. Measured:
     `relay_routed=False`, verdict `None`.
     """
+    # FAIL CLOSED BY DEFAULT. Five review rounds found this same defect at five
+    # different boundaries — the call, the attribute lookup, a non-callable
+    # attribute, the nested imports, and the adapter-registry `.get()` — because
+    # the old shape asked "did something go wrong?" and answered `None`, which
+    # MEANS "no live adapter, use the config snapshot". Every new statement was
+    # a new chance to fail open, so the fix kept relocating instead of closing.
+    #
+    # Inverted here: every `return None` is guarded by an explicit narrow check
+    # that cannot itself be the fault, and the outer handler turns anything else
+    # into `RelayRouteUnknown`. So a statement added inside this function is
+    # fail-CLOSED by default; previously it was fail-open by default.
     try:
-        from gateway.config import Platform
-        from gateway.run import _gateway_runner_ref
-    except ImportError as exc:
-        # Same ABSENCE vs FAULT split as `_relay_fronted` below. Only the
-        # absence of the gateway package is benign; an ImportError naming a
-        # nested dependency means an installed module failed to load, and
-        # returning None there degrades into the config snapshot — the exact
-        # bypass this function exists to close. Probed: with `gateway.config`
-        # raising and an empty snapshot, an unattested target was authorized
-        # while a healthy adapter refused it.
-        if not _is_missing_gateway_relay(exc):
-            raise RelayRouteUnknown(
-                f"gateway module failed to import: {exc}"
-            ) from exc
-        return None
+        try:
+            from gateway.config import Platform
+            from gateway.run import _gateway_runner_ref
+        except ImportError as exc:
+            # Only the gateway package being genuinely absent is benign; a
+            # nested dependency failing to load is a broken install, i.e. a
+            # fault. Same rule as `_relay_fronted` below.
+            if _is_missing_gateway_relay(exc):
+                return None
+            raise
 
-    try:
         runner = _gateway_runner_ref()
         if runner is None:
-            return None
-        relay = (getattr(runner, "adapters", None) or {}).get(Platform.RELAY)
-        if relay is None:
-            return None
-    except Exception:  # noqa: BLE001 - no live runner ⇒ genuine absence
-        logger.debug("no live relay runner to consult", exc_info=True)
-        return None
+            return None  # no gateway runner in this process (CLI, cron)
 
-    # From here a LIVE adapter exists, so any failure is a fault: it must not
-    # degrade into the config fallback. NOTE the attribute LOOKUP is inside
-    # this section, not the absence section above — `fronts_platform` may be a
-    # property or descriptor, and reading it can raise. Review probed exactly
-    # that and got `routed=False`, verdict `None` for an unattested target.
-    # Only `relay is None` is absence; everything about a present adapter,
-    # including reading its attributes, is a fault.
-    try:
-        fronts = getattr(relay, "fronts_platform", None)
-        if not callable(fronts):
-            raise RelayRouteUnknown(
-                "the connected relay adapter exposes no usable fronts_platform, "
-                "so this destination's routing could not be determined"
-            )
+        registry = getattr(runner, "adapters", None)
+        if not registry:
+            return None  # a runner with no adapters at all
+
+        relay = registry.get(Platform.RELAY)
+        if relay is None:
+            return None  # native-only deployment: nothing fronts anything
+
+        # A PRESENT adapter must answer. Anything below this line that fails is
+        # a fault, never an absence.
+        fronts = relay.fronts_platform
         return {
             str(p.value).strip().lower()
             for p in Platform
             if str(getattr(p, "value", "")).lower() != "relay" and fronts(p)
         }
-    except RelayRouteUnknown:
-        raise
-    except Exception as exc:  # noqa: BLE001 - a live adapter that cannot answer
-        logger.exception("live relay adapter failed to report its fronted set")
+    except Exception as exc:  # noqa: BLE001 - anything unproven is UNKNOWN
+        logger.exception("could not determine the live relay adapter's fronted set")
         raise RelayRouteUnknown(
             "the connected relay adapter could not report which platforms it "
             "fronts, so this destination's routing could not be determined"

@@ -1080,6 +1080,122 @@ def test_an_adapter_without_fronts_platform_is_a_fault(monkeypatch):
         eg._live_relay_fronted()
 
 
+def test_an_adapter_registry_that_cannot_be_read_is_a_fault(monkeypatch):
+    """Reviewer finding, round 2: `.get()` on the registry can raise too.
+
+    This was the FIFTH boundary in this one function where "something went
+    wrong" became `None`, i.e. "no live adapter, use the config snapshot".
+    Probed before the fix: relay_present=True, live=None, routed=False,
+    verdict=None — unattested `discord:999` authorized.
+
+    The function is now inverted: each `return None` sits behind an explicit
+    narrow check, and anything else raises. That is why this test and the one
+    below are grouped with the other fault cases rather than patching a sixth
+    boundary.
+    """
+    import gateway.relay as gr
+    import gateway.relay.egress as eg
+    import gateway.run as gr_run
+    from gateway.config import Platform
+
+    class HostileRegistry(dict):
+        def get(self, key, default=None):
+            raise RuntimeError("registry read failed")
+
+    class Runner:
+        def __init__(self):
+            self.adapters = HostileRegistry({Platform.RELAY: object()})
+
+    monkeypatch.setattr(gr_run, "_gateway_runner_ref", Runner, raising=False)
+    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: set())
+    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
+
+    with pytest.raises(eg.RelayRouteUnknown):
+        eg._live_relay_fronted()
+    with pytest.raises(eg.RelayRouteUnknown):
+        eg.relay_routed_platform("discord")
+
+
+def test_an_unreadable_adapters_attribute_is_a_fault(monkeypatch):
+    """`.adapters` may itself be a property that raises."""
+    import gateway.relay as gr
+    import gateway.relay.egress as eg
+    import gateway.run as gr_run
+
+    class Hostile:
+        @property
+        def adapters(self):
+            raise RuntimeError("adapters unavailable")
+
+    monkeypatch.setattr(gr_run, "_gateway_runner_ref", Hostile, raising=False)
+    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: set())
+    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
+
+    with pytest.raises(eg.RelayRouteUnknown):
+        eg._live_relay_fronted()
+
+
+def test_a_runner_with_no_relay_key_is_still_an_absence(monkeypatch):
+    """Control: a runner holding only NATIVE adapters is an absence, not a fault.
+
+    Without this control the inversion above could have turned every
+    native-only gateway into a hard failure.
+    """
+    from types import SimpleNamespace
+
+    import gateway.relay as gr
+    import gateway.relay.egress as eg
+    import gateway.run as gr_run
+    from gateway.config import Platform
+
+    monkeypatch.setattr(
+        gr_run,
+        "_gateway_runner_ref",
+        lambda: SimpleNamespace(adapters={Platform.TELEGRAM: object()}),
+        raising=False,
+    )
+    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
+    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
+
+    assert eg._live_relay_fronted() is None
+    assert eg.authorize_relay_target("discord", "123") is None
+    assert eg.authorize_relay_target("discord", "999") is not None
+
+
+def test_a_healthy_live_adapter_is_unaffected_by_the_fault_handling(monkeypatch):
+    """Liveness control: the ordinary path must still answer from the adapter.
+
+    Every other test here drives a failure. This one proves the fault handling
+    did not swallow the success case: a healthy adapter's own answer wins, the
+    attested target sends, and the unattested one is refused.
+    """
+    from types import SimpleNamespace
+
+    import gateway.relay as gr
+    import gateway.relay.egress as eg
+    import gateway.run as gr_run
+    from gateway.config import Platform
+
+    class Healthy:
+        def fronts_platform(self, platform):
+            return str(getattr(platform, "value", "")).lower() == "discord"
+
+    monkeypatch.setattr(
+        gr_run,
+        "_gateway_runner_ref",
+        lambda: SimpleNamespace(adapters={Platform.RELAY: Healthy()}),
+        raising=False,
+    )
+    # The config snapshot DISAGREES on purpose: the live adapter must win.
+    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: set())
+    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
+
+    assert eg._live_relay_fronted() == {"discord"}
+    assert eg.relay_routed_platform("discord") is True
+    assert eg.authorize_relay_target("discord", "123") is None
+    assert eg.authorize_relay_target("discord", "999") is not None
+
+
 def test_a_broken_gateway_import_inside_the_live_probe_is_a_fault(monkeypatch):
     """A nested ImportError in the live probe must not degrade to the config path.
 

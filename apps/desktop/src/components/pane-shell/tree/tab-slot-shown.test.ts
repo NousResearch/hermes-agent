@@ -48,13 +48,13 @@ describe('activateTreeTabSlot indexes shown panes only', () => {
   it('⌘1 is workspace and ⌘2 is the first SESSION tab when files is hidden', async () => {
     const { activeOf, tree } = await setup()
 
-    expect(tree.activateTreeTabSlot(1)).toBe(true)
+    expect(tree.activateTreeTabSlot(1)).toBe('workspace')
     expect(activeOf()).toBe('workspace')
 
-    expect(tree.activateTreeTabSlot(2)).toBe(true)
+    expect(tree.activateTreeTabSlot(2)).toBe('session-tile:a')
     expect(activeOf()).toBe('session-tile:a')
 
-    expect(tree.activateTreeTabSlot(3)).toBe(true)
+    expect(tree.activateTreeTabSlot(3)).toBe('session-tile:b')
     expect(activeOf()).toBe('session-tile:b')
   })
 
@@ -63,19 +63,19 @@ describe('activateTreeTabSlot indexes shown panes only', () => {
 
     // Shown: workspace + A + B → 3. Slot 4 would have been `B` on the raw array
     // (workspace, files, A, B) before this fix — now it correctly refuses.
-    expect(tree.activateTreeTabSlot(4)).toBe(false)
+    expect(tree.activateTreeTabSlot(4)).toBeNull()
   })
 
   it('⌃Tab cycles only visible chips', async () => {
     const { activeOf, tree } = await setup()
 
-    expect(tree.cycleTreeTabInFocusedZone(1)).toBe(true)
+    expect(tree.cycleTreeTabInFocusedZone(1)).toBe('session-tile:a')
     expect(activeOf()).toBe('session-tile:a')
 
-    expect(tree.cycleTreeTabInFocusedZone(1)).toBe(true)
+    expect(tree.cycleTreeTabInFocusedZone(1)).toBe('session-tile:b')
     expect(activeOf()).toBe('session-tile:b')
 
-    expect(tree.cycleTreeTabInFocusedZone(1)).toBe(true)
+    expect(tree.cycleTreeTabInFocusedZone(1)).toBe('workspace')
     expect(activeOf()).toBe('workspace')
   })
 })

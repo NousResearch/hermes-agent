@@ -22,9 +22,13 @@ export const SCAFFOLD_LABEL_CLASS =
 /** Durations, counts and diff stats trailing a scaffold label. */
 export const SCAFFOLD_META_CLASS = 'shrink-0 text-[0.625rem] tabular-nums text-(--conversation-scaffold-meta)'
 
+/** The fixed cell a scaffold line's leading glyph sits in — status dot, tool
+ *  icon, spinner. Same box on every line, so the labels share a left edge. */
+export const SCAFFOLD_GLYPH_CLASS = 'grid size-3.5 shrink-0 place-items-center'
+
 /**
  * One scaffold line. `children` is the label and whatever trails it in flow
- * (meta, diff counts); `trailing` overlays the right edge for a live timer.
+ * (meta, diff counts); `trailing` reserves a right-side slot for a live timer.
  */
 export function ScaffoldRow({
   children,

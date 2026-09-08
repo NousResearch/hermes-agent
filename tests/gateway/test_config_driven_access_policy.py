@@ -149,6 +149,96 @@ def test_own_policy_allowlist_authorized_without_env_allowlist(monkeypatch, plat
     assert runner._is_user_authorized(_source(platform)) is True
 
 
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_stored_route_cannot_reuse_prior_adapter_authorization(monkeypatch, platform):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            platform: PlatformConfig(
+                enabled=True,
+                extra={"dm_policy": "allowlist"},
+            )
+        }
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    assert runner._is_user_authorized(
+        _source(platform),
+        allow_adapter_delegation=False,
+    ) is False
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_own_policy_open_dm_authorized_with_gateway_allow_all(monkeypatch, platform):
+    """Explicit ``GATEWAY_ALLOW_ALL_USERS`` unlocks ``dm_policy: open``."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    config = GatewayConfig(
+        platforms={platform: PlatformConfig(enabled=True, extra={"dm_policy": "open"})}
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    assert runner._is_user_authorized(_source(platform)) is True
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_own_policy_open_dm_not_authorized_without_allowlist(monkeypatch, platform):
+    """``dm_policy: open`` forwards everyone → NOT authorization (SECURITY.md §2.6).
+
+    With no env allowlist and no per-platform allow-all flag, an own-policy
+    adapter running ``open`` (the default) must NOT fail open: the gateway falls
+    through to default-deny so the whole external network can't reach the agent.
+    """
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={platform: PlatformConfig(enabled=True, extra={"dm_policy": "open"})}
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    assert runner._is_user_authorized(_source(platform)) is False
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_own_policy_default_open_dm_is_fail_closed(monkeypatch, platform):
+    """The adapters' *default* ``open`` policy (no config at all) fails closed.
+
+    Operators who enable an own-policy adapter with only credentials get
+    ``dm_policy = "open"`` resolved on the live adapter. Simulate that resolved
+    state (empty config.extra, adapter ``_dm_policy = "open"``) and confirm the
+    gateway denies — the do-nothing default must not be open to the world.
+    """
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(platforms={platform: PlatformConfig(enabled=True, extra={})})
+    runner, adapter = _make_runner(platform, config, enforces=True)
+    adapter._dm_policy = "open"  # as the live adapter resolves the default
+
+    assert runner._is_user_authorized(_source(platform)) is False
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_own_policy_allowlist_authorized_for_group_chat(monkeypatch, platform):
+    """A config-only ``group_policy: allowlist`` is trusted for group traffic."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={platform: PlatformConfig(enabled=True, extra={"group_policy": "allowlist"})}
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    assert runner._is_user_authorized(_source(platform, chat_type="group")) is True
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_own_policy_open_group_not_authorized_without_allowlist(monkeypatch, platform):
+    """``group_policy: open`` is the same fail-open class as DM open → deny."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={platform: PlatformConfig(enabled=True, extra={"group_policy": "open"})}
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    assert runner._is_user_authorized(_source(platform, chat_type="group")) is False
+
+
 @pytest.mark.parametrize(
     "module_path, class_name, dm_helper",
     [

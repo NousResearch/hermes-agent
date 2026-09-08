@@ -106,3 +106,79 @@ def test_explicit_replace_takeover_reacquires_lock_once(adapter):
     assert acquire.call_count == 2
 
 
+def test_lock_conflict_names_owning_profile(adapter):
+    """OOF-3: cross-profile conflicts must name the owning profile, not just a PID."""
+    existing = {
+        "pid": 559,
+        "start_time": 123,
+        "profile": "lead-gen-outreach",
+        "hermes_home": "/opt/data/profiles/lead-gen-outreach",
+    }
+
+    with patch(
+        "gateway.status.acquire_scoped_lock",
+        return_value=(False, existing),
+    ), patch.object(adapter, "_write_runtime_status_safe"):
+        result = adapter._acquire_platform_lock(
+            "telegram-bot-token",
+            "test-token",
+            "Telegram bot token",
+        )
+
+    assert result is False
+    assert adapter._fatal_error_message == (
+        "Telegram bot token already in use by the "
+        "'lead-gen-outreach' profile gateway (PID 559). "
+        "Stop that gateway first "
+        "(hermes --profile lead-gen-outreach gateway stop)."
+    )
+    assert adapter._fatal_error_retryable is True
+    assert adapter._fatal_error_code == "telegram-bot-token_lock"
+
+
+def test_lock_conflict_infers_profile_from_legacy_hermes_home(adapter):
+    """Locks written before the profile field existed still attribute via hermes_home."""
+    existing = {
+        "pid": 559,
+        "start_time": 123,
+        "hermes_home": "/opt/data/profiles/lead-gen-outreach",
+    }
+
+    with patch(
+        "gateway.status.acquire_scoped_lock",
+        return_value=(False, existing),
+    ), patch.object(adapter, "_write_runtime_status_safe"):
+        result = adapter._acquire_platform_lock(
+            "telegram-bot-token",
+            "test-token",
+            "Telegram bot token",
+        )
+
+    assert result is False
+    assert "'lead-gen-outreach' profile gateway (PID 559)" in (
+        adapter._fatal_error_message
+    )
+
+
+def test_lock_conflict_keeps_pid_only_wording_for_legacy_record(adapter):
+    """Records with no attribution signal retain the original PID-only message."""
+    existing = {
+        "pid": 99999,
+        "start_time": 123,
+    }
+
+    with patch(
+        "gateway.status.acquire_scoped_lock",
+        return_value=(False, existing),
+    ), patch.object(adapter, "_write_runtime_status_safe"):
+        result = adapter._acquire_platform_lock(
+            "telegram-bot-token",
+            "test-token",
+            "Telegram bot token",
+        )
+
+    assert result is False
+    assert adapter._fatal_error_message == (
+        "Telegram bot token already in use (PID 99999). "
+        "Stop the other gateway first."
+    )

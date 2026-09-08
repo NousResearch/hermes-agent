@@ -12,6 +12,22 @@ Secret sources resolve provider credentials from an external secret manager (a v
 The bundled set is deliberately closed, same policy as [memory providers](/developer-guide/memory-provider-plugin): PRs adding new vault backends under `agent/secret_sources/` are closed with a pointer to this guide. Publish your backend as a standalone plugin repo and share it in the Nous Research Discord (`#plugins-skills-and-skins`).
 :::
 
+## First-process bootstrap timing
+
+`load_hermes_dotenv()` often runs at import time **before** plugins register.
+Hermes then re-pulls secrets after plugin discovery when any **enabled**
+plugin secret source is configured. Enablement uses the source's
+`is_enabled(cfg)` contract; the standard form is
+`secrets.<name>.enabled: true`, while custom activation remains supported.
+That closes the "replace Bitwarden with my vault" first-process gap (#64177).
+
+- Re-pull is idempotent and fail-open (never blocks startup).
+- Sources only supply env vars through the orchestrator; there is **no**
+  plugin API to dump other plugins' or the user's entire secret store beyond
+  what your source's own config allows.
+- Reading `os.environ` after load is possible for any in-process code — the
+  trust boundary remains "enabled plugins run with agent privilege".
+
 ## What the framework owns vs. what you own
 
 The orchestrator (`agent.secret_sources.registry.apply_all`) owns everything security- and precedence-sensitive, so a backend cannot get it wrong:
@@ -127,7 +143,7 @@ def register(ctx):
 Registration is rejected (with a log warning, never a crash) for: non-`SecretSource` instances, invalid/duplicate names, a `scheme` another source owns, wrong `api_version`, or a `shape` outside `mapped`/`bulk`.
 
 :::note Timing
-Plugin discovery runs later in startup than the first `load_hermes_dotenv()` call, so a plugin source is not consulted by the very first env load of the process that discovers it. It IS consulted by every subsequently spawned Hermes process (gateway children, cron sessions, subagents). Bundled sources cover first-process bootstrap.
+Plugin discovery runs later in startup than the first `load_hermes_dotenv()` call. Immediately after discovery, Hermes re-pulls enabled plugin secret sources (`reset_secret_source_cache()` + `load_hermes_dotenv()`), so the discovering process *does* pick them up — see [First-process bootstrap timing](#first-process-bootstrap-timing) above (#64177). The re-pull is fail-open and skipped when no plugin source is enabled. Any code that reads `os.environ` during the plugin module's import or `register(ctx)` still runs before the re-pull and cannot depend on credentials supplied by that same source; keep credentialed work inside `fetch()`. Gateway, cron, and subagent processes perform the same discovery/re-pull sequence.
 :::
 
 ## Users configure it like any other source

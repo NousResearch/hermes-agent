@@ -112,6 +112,34 @@ class TestSkillsDirectoryMount:
         # Symlink should NOT be present
         assert not (safe_path / "evil_link").exists()
 
+    def test_sanitized_copy_skips_bookkeeping_dirs(self, tmp_path):
+        """The symlink-safe copy is what gets mounted, so it must apply the
+        same EXCLUDED_SKILL_DIRS rule as the per-file sync path."""
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        (skills_dir / "cat" / "myskill" / "references").mkdir(parents=True)
+        (skills_dir / "cat" / "myskill" / "SKILL.md").write_text("# skill")
+        (skills_dir / "cat" / "myskill" / "references" / "api.md").write_text("ref")
+        for excluded in (".hub", ".curator_backups", "node_modules"):
+            junk = skills_dir / excluded / "vendored"
+            junk.mkdir(parents=True)
+            (junk / "blob.bin").write_bytes(b"\0" * 64)
+        # Force the sanitizing copy path.
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        (skills_dir / "evil_link").symlink_to(secret)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            mounts = get_skills_directory_mount()
+
+        safe_path = Path(mounts[0]["host_path"])
+        assert safe_path != skills_dir
+        assert (safe_path / "cat" / "myskill" / "SKILL.md").exists()
+        assert (safe_path / "cat" / "myskill" / "references" / "api.md").exists()
+        assert not (safe_path / "evil_link").exists()
+        for excluded in (".hub", ".curator_backups", "node_modules"):
+            assert not (safe_path / excluded).exists(), excluded
+
     def test_no_symlinks_returns_original_dir(self, tmp_path):
         """When no symlinks exist, the original dir is returned (no copy)."""
         hermes_home = tmp_path / ".hermes"
@@ -146,6 +174,46 @@ class TestIterSkillsFiles:
         assert "/root/.hermes/skills/cat/myskill/scripts/run.sh" in paths
         # Symlink should be excluded
         assert not any("evil" in f["container_path"] for f in files)
+
+    def test_skips_excluded_bookkeeping_dirs(self, tmp_path):
+        """Bookkeeping and dependency dirs must not be uploaded to a sandbox.
+
+        The sync path used a bare rglob("*"), so the .hub download cache,
+        .archive, curator backups and any node_modules/.git under a skills
+        tree were packed up on every sync even though the sandbox never
+        reads them. Sync now honours EXCLUDED_SKILL_DIRS like discovery.
+        """
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        (skills_dir / "cat" / "myskill").mkdir(parents=True)
+        (skills_dir / "cat" / "myskill" / "SKILL.md").write_text("# skill")
+        # Progressive-disclosure support files must still be synced.
+        (skills_dir / "cat" / "myskill" / "references").mkdir()
+        (skills_dir / "cat" / "myskill" / "references" / "api.md").write_text("ref")
+
+        for excluded in (".hub", ".archive", ".curator_backups", "node_modules"):
+            junk = skills_dir / excluded / "vendored"
+            junk.mkdir(parents=True)
+            (junk / "SKILL.md").write_text("# stale copy")
+        # Also nested inside an otherwise-valid skill package.
+        cache = skills_dir / "cat" / "myskill" / "__pycache__"
+        cache.mkdir()
+        (cache / "helper.cpython-311.pyc").write_text("bytecode")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            files = iter_skills_files()
+
+        paths = {f["container_path"] for f in files}
+        assert "/root/.hermes/skills/cat/myskill/SKILL.md" in paths
+        assert "/root/.hermes/skills/cat/myskill/references/api.md" in paths
+        for excluded in (
+            ".hub",
+            ".archive",
+            ".curator_backups",
+            "node_modules",
+            "__pycache__",
+        ):
+            assert not any(excluded in path for path in paths), excluded
 
     def test_empty_when_no_skills_dir(self, tmp_path):
         hermes_home = tmp_path / ".hermes"
@@ -355,12 +423,22 @@ class TestCacheDirectoryMounts:
         assert "/root/.hermes/cache/images" in container_paths
 
     def test_empty_hermes_home(self, tmp_path, monkeypatch):
-        """No cache dirs → empty list."""
+        """Empty home → every staging dir is created and mounted (#76577).
+
+        Docker snapshots the mount list at container creation; skipping
+        not-yet-existing dirs meant the first attachment/clipboard file after
+        container start dangled forever. All _CACHE_DIRS entries mount."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-        assert get_cache_directory_mounts() == []
+        mounts = get_cache_directory_mounts()
+        container_paths = {m["container_path"] for m in mounts}
+        assert "/root/.hermes/attachments" in container_paths
+        assert "/root/.hermes/images" in container_paths
+        assert "/root/.hermes/cache/images" in container_paths
+        for mount in mounts:
+            assert Path(mount["host_path"]).is_dir()
 
     def test_images_upload_dir_is_mounted(self, tmp_path, monkeypatch):
         """The flat top-level ``images/`` upload dir is mounted (#69575).
@@ -412,12 +490,55 @@ class TestMapCachePathToContainer:
         )
 
 
-    def test_returns_none_when_no_cache_dirs_exist(self, tmp_path, monkeypatch):
+    def test_maps_path_even_when_cache_dir_missing(self, tmp_path, monkeypatch):
+        """Missing staging dirs are auto-created at mount-list time (#76577):
+        Docker snapshots mounts at container creation, so a dir that appears
+        later would dangle for the container's whole life. The map must
+        therefore succeed (and the dir exist) even before first use."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-        assert map_cache_path_to_container(str(hermes_home / "cache" / "images" / "x.png")) is None
+        mapped = map_cache_path_to_container(str(hermes_home / "cache" / "images" / "x.png"))
+        assert mapped == "/root/.hermes/cache/images/x.png"
+        assert (hermes_home / "cache" / "images").is_dir()
+
+
+class TestToAgentVisiblePathPerBackend:
+    """#76577 follow-up: translation covers every backend that relocates the
+    Hermes cache — not just docker — and skips the ones where the host path
+    stays correct (local; singularity auto-binds the host home)."""
+
+    def _staged(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "attachments").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        return str(hermes_home / "attachments" / "drop.zip")
+
+    def test_docker_maps_to_root_hermes(self, tmp_path, monkeypatch):
+        staged = self._staged(tmp_path, monkeypatch)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        from tools.credential_files import to_agent_visible_cache_path
+        assert to_agent_visible_cache_path(staged) == "/root/.hermes/attachments/drop.zip"
+
+    def test_ssh_maps_to_tilde_hermes(self, tmp_path, monkeypatch):
+        staged = self._staged(tmp_path, monkeypatch)
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        from tools.credential_files import to_agent_visible_cache_path
+        assert to_agent_visible_cache_path(staged) == "~/.hermes/attachments/drop.zip"
+
+    @pytest.mark.parametrize("backend", ["local", "singularity", ""])
+    def test_untranslated_backends_keep_host_path(self, tmp_path, monkeypatch, backend):
+        staged = self._staged(tmp_path, monkeypatch)
+        monkeypatch.setenv("TERMINAL_ENV", backend)
+        from tools.credential_files import to_agent_visible_cache_path
+        assert to_agent_visible_cache_path(staged) == staged
+
+    def test_non_cache_path_passes_through(self, tmp_path, monkeypatch):
+        self._staged(tmp_path, monkeypatch)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        from tools.credential_files import to_agent_visible_cache_path
+        assert to_agent_visible_cache_path("/etc/hosts") == "/etc/hosts"
 
 
 class TestIterCacheFiles:

@@ -1,5 +1,6 @@
 """Tests for agent/insights.py — InsightsEngine analytics and reporting."""
 
+import sqlite3
 import time
 import pytest
 
@@ -368,6 +369,160 @@ class TestInsightsPopulated:
 
 
 
+    # The Insights assistant tool-call queries pin
+    # idx_messages_assistant_calls_by_session via INDEXED BY.  These tests prove
+    # (a) the planner uses that index for BOTH the unfiltered and source-filtered
+    # branches on a fresh DB *without* ANALYZE, and (b) the index is a pure
+    # optimization — output is identical whether or not it is selected.
+    _INDEX = "idx_messages_assistant_calls_by_session"
+    _PINNED_QUERIES = (
+        ("_GET_TOOL_CALLS_ALL", (0.0,)),
+        ("_GET_TOOL_CALLS_WITH_SOURCE", (0.0, "cli")),
+        ("_GET_SKILL_CALLS_ALL", (0.0,)),
+        ("_GET_SKILL_CALLS_WITH_SOURCE", (0.0, "cli")),
+    )
+
+    def test_assistant_call_queries_use_partial_index_without_analyze(
+        self, populated_db
+    ):
+        """Every fixed-predicate branch selects the partial index on a fresh DB.
+
+        No ANALYZE is run, so this covers the default-statistics case a freshly
+        initialized state.db is actually in. Both the unfiltered and the
+        source-filtered (``s.source = ?``) branches are checked.
+        """
+        # Guard against the fresh-DB planner regression the reviewers found:
+        # without INDEXED BY the source-filtered branch fell back to
+        # idx_messages_session_active.
+        assert "ANALYZE" not in "".join(
+            r["sql"] or ""
+            for r in populated_db._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'index'"
+            )
+        )
+        for attr, params in self._PINNED_QUERIES:
+            sql = getattr(InsightsEngine, attr)
+            plan = "\n".join(
+                row["detail"]
+                for row in populated_db._conn.execute(
+                    "EXPLAIN QUERY PLAN " + sql, params
+                ).fetchall()
+            )
+            assert self._INDEX in plan, f"{attr} did not use the index:\n{plan}"
+
+    def test_assistant_call_rows_invariant_to_index_selection(self, populated_db):
+        """The pinned index only changes the plan, never the result set.
+
+        For every branch, the index-pinned query and the un-pinned form (whose
+        plan the optimizer chooses freely) must return identical rows — proving
+        the index is a pure optimization — for both the unfiltered and
+        source-filtered scopes.
+        """
+        assert populated_db._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+            (self._INDEX,),
+        ).fetchone() is not None
+
+        for attr, params in self._PINNED_QUERIES:
+            pinned_sql = getattr(InsightsEngine, attr)
+            unpinned_sql = pinned_sql.replace(f" INDEXED BY {self._INDEX}", "")
+            pinned = [
+                tuple(r) for r in
+                populated_db._conn.execute(pinned_sql, params).fetchall()
+            ]
+            unpinned = [
+                tuple(r) for r in
+                populated_db._conn.execute(unpinned_sql, params).fetchall()
+            ]
+            assert sorted(pinned) == sorted(unpinned), attr
+
+    def test_tool_and_skill_usage_invariant_to_partial_index(self, populated_db):
+        """The public tool/skill usage output is stable and exercises the
+        assistant tool_calls path for both scopes."""
+        engine = InsightsEngine(populated_db)
+        cutoff = 0.0
+
+        tools = engine._get_tool_usage(cutoff)
+        tools_cli = engine._get_tool_usage(cutoff, source="cli")
+        skills = engine._get_skill_usage(cutoff)
+        skills_cli = engine._get_skill_usage(cutoff, source="cli")
+
+        # Sanity: the fixture actually drives the assistant tool_calls path.
+        assert any(t["tool_name"] == "search_files" for t in tools)
+        assert any(t["tool_name"] == "search_files" for t in tools_cli)
+        assert isinstance(skills, list) and isinstance(skills_cli, list)
+
+    def test_missing_index_falls_back_to_unpinned_queries(self, populated_db):
+        """INDEXED BY would be a hard error if the index is missing — which
+        happens on read-only opens of a state.db written by an older version
+        (web dashboard analytics). The engine must probe and fall back to the
+        unpinned variants instead of crashing, returning identical rows."""
+        engine_pinned = InsightsEngine(populated_db)
+        tools_before = engine_pinned._get_tool_usage(0.0)
+
+        populated_db._conn.execute(f"DROP INDEX IF EXISTS {self._INDEX}")
+        populated_db._conn.commit()
+
+        engine = InsightsEngine(populated_db)
+        assert engine._has_assistant_calls_index is False
+        assert "INDEXED BY" not in engine._GET_TOOL_CALLS_ALL
+        tools_after = engine._get_tool_usage(0.0)
+        assert sorted(t["tool_name"] for t in tools_after) == sorted(
+            t["tool_name"] for t in tools_before
+        )
+        # And with the index present, the pin stays.
+        assert "INDEXED BY" in InsightsEngine._GET_TOOL_CALLS_ALL
+
+    def test_get_skill_breakdown_matches_full_generate(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        full = engine.generate(days=30)
+        focused = engine.get_usage_breakdown(days=30)["skills"]
+        assert focused == full["skills"]
+
+    def test_get_usage_breakdown_matches_full_generate(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        full = engine.generate(days=30)
+        focused = engine.get_usage_breakdown(days=30)
+        assert focused["skills"] == full["skills"]
+        assert focused["tools"] == full["tools"]
+
+    def test_get_skill_breakdown_respects_source_filter(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        # Only s1 (cli) has skill_view "github-pr-workflow"
+        focused = engine.get_usage_breakdown(days=30, source="cli")["skills"]
+        skill_names = [s["skill"] for s in focused["top_skills"]]
+        assert "github-pr-workflow" in skill_names
+        # github-code-review was in discord (s4), not cli
+        assert "github-code-review" not in skill_names
+
+    def test_get_skill_breakdown_empty_db(self, db):
+        focused = InsightsEngine(db).get_usage_breakdown(days=30)["skills"]
+        assert focused == {
+            "summary": {
+                "total_skill_loads": 0,
+                "total_skill_edits": 0,
+                "total_skill_actions": 0,
+                "distinct_skills_used": 0,
+            },
+            "top_skills": [],
+        }
+
+    def test_get_skill_usage_prefilter_ignores_non_skill_substring(self, db):
+        # "my_skill_view_helper" contains "skill_view" as a substring; instr()
+        # will match but the Python-side name check keeps the set clean.
+        # More importantly, messages with no skill_* tools must be excluded.
+        db.create_session(session_id="sx", source="cli", model="gpt-4o")
+        db.append_message(
+            "sx",
+            role="assistant",
+            content="Just using read_file.",
+            tool_calls=[{"function": {"name": "read_file", "arguments": '{"path":"/tmp/x"}'}}],
+        )
+        db._conn.commit()
+        focused = InsightsEngine(db).get_usage_breakdown(days=30)["skills"]
+        assert focused["summary"]["total_skill_actions"] == 0
+        assert focused["top_skills"] == []
+
 
 # =========================================================================
 # Formatting
@@ -390,8 +545,8 @@ class TestTerminalFormatting:
 
 
 
-    def test_terminal_format_hides_cost_for_custom_models(self, db):
-        """Cost display is hidden entirely — custom models no longer show 'N/A' either."""
+    def test_terminal_format_unknown_bucket_for_custom_models(self, db):
+        """Custom models with no pricing surface as the Unknown bucket (#77223)."""
         db.create_session(session_id="s1", source="cli", model="my-custom-model")
         db.update_token_counts("s1", input_tokens=1000, output_tokens=500)
         db._conn.commit()
@@ -402,7 +557,11 @@ class TestTerminalFormatting:
 
         assert "N/A" not in text
         assert "custom/self-hosted" not in text
-        assert "Cost" not in text
+        # Cost section surfaces unknown-cost sessions (#77223) instead of
+        # hiding them — a custom model with no pricing data shows in the
+        # Unknown bucket rather than silently reporting $0.
+        assert "Unknown" in text
+        assert "no pricing data" in text
 
 
 class TestGatewayFormatting:
@@ -415,13 +574,17 @@ class TestGatewayFormatting:
         assert len(gateway_text) < len(terminal_text)
 
 
-    def test_gateway_format_hides_cost(self, populated_db):
-        """Gateway format omits dollar figures and internal cache details."""
+    def test_gateway_format_hides_cache_details(self, populated_db):
+        """Gateway format omits internal cache details.
+
+        Dollar figures now appear when there are estimated/included/unknown
+        cost buckets (#77223) — the old assertion that '$' is absent is no
+        longer correct because surfacing cost buckets is the fix.
+        """
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
         text = engine.format_gateway(report)
 
-        assert "$" not in text
         assert "cache" not in text.lower()
 
 
@@ -513,5 +676,101 @@ class TestEdgeCases:
         text = engine.format_terminal(report)
         # (it still shows platforms section if there's only cli and nothing else)
         # Actually the condition is > 1 platforms OR non-cli, so single cli won't show
+
+
+    def test_cost_buckets_displayed_in_terminal_format(self, db):
+        """#77223: included/estimated/unknown cost buckets surface in terminal."""
+        # Estimated cost session
+        db.create_session(session_id="est", source="cli", model="model-a")
+        db.update_token_counts(
+            "est", input_tokens=100, model="model-a",
+            billing_provider="custom",
+            estimated_cost_usd=1.50, actual_cost_usd=1.0,
+            cost_status="estimated", cost_source="provider", api_call_count=1,
+        )
+        # Included cost session (subscription)
+        db.create_session(session_id="inc", source="cli", model="gpt-5.4-mini")
+        db.update_token_counts(
+            "inc", input_tokens=200, model="gpt-5.4-mini",
+            billing_provider="openai-codex",
+            estimated_cost_usd=0.0, actual_cost_usd=0.0,
+            cost_status="included", cost_source="none", api_call_count=1,
+        )
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        text = engine.format_terminal(report)
+
+        # The cost section should appear with the buckets this DB has
+        # (estimated + included; no unknown-cost session is created here)
+        assert "💰 Cost" in text
+        assert "~$1.50" in text  # estimated
+        assert "included" in text.lower()
+        assert "subscription" in text.lower()
+
+    def test_sub_cent_aggregate_estimated_cost_not_zero(self, db):
+        """A sub-cent aggregate must not render 'Estimated: ~$0.00' (#79220).
+
+        The insights formatters share format_cost_label with per-response
+        labels; a cheap-model period totaling $0.0046 shows 4dp, not $0.00.
+        """
+        db.create_session(session_id="est", source="cli", model="model-a")
+        db.update_token_counts(
+            "est", input_tokens=100, model="model-a",
+            billing_provider="custom",
+            estimated_cost_usd=0.0046, actual_cost_usd=0.0,
+            cost_status="estimated", cost_source="provider", api_call_count=1,
+        )
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        terminal_text = engine.format_terminal(report)
+        gateway_text = engine.format_gateway(report)
+
+        assert "~$0.00\n" not in terminal_text
+        assert "~$0.0046" in terminal_text
+        assert "~$0.00 estimated" not in gateway_text
+        assert "~$0.0046 estimated" in gateway_text
+
+    def test_cost_buckets_displayed_in_gateway_format(self, db):
+        """#77223: included/estimated/unknown cost buckets surface in gateway."""
+        db.create_session(session_id="est", source="cli", model="model-a")
+        db.update_token_counts(
+            "est", input_tokens=100, model="model-a",
+            billing_provider="custom",
+            estimated_cost_usd=2.25, actual_cost_usd=0.0,
+            cost_status="estimated", cost_source="provider", api_call_count=1,
+        )
+        db.create_session(session_id="inc", source="cli", model="gpt-5.4-mini")
+        db.update_token_counts(
+            "inc", input_tokens=200, model="gpt-5.4-mini",
+            billing_provider="openai-codex",
+            estimated_cost_usd=0.0, actual_cost_usd=0.0,
+            cost_status="included", cost_source="none", api_call_count=1,
+        )
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        text = engine.format_gateway(report)
+
+        assert "**Cost:**" in text
+        assert "~$2.25" in text
+        assert "included" in text.lower()
+
+    def test_unknown_bucket_shown_for_costless_session(self, db):
+        """A session with no model still shows unknown cost bucket (#77223).
+
+        The unknown bucket is surfaced so users can see they have sessions
+        with no pricing data, rather than silently reporting $0.
+        """
+        db.create_session(session_id="s1", source="cli", model="test")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        text = engine.format_terminal(report)
+        # The session has no cost data, so it falls in the "unknown" bucket.
+        assert "💰 Cost" in text
+        assert "Unknown" in text
 
 

@@ -21,9 +21,9 @@ def _response(content="composed report"):
 def agent(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         instance = AIAgent(
             session_id="verify-budget-test",
@@ -38,7 +38,7 @@ def agent(tmp_path, monkeypatch):
         )
     instance._cached_system_prompt = "stable test prompt"
     instance._session_db = None
-    instance._session_json_enabled = False
+
     instance.save_trajectories = False
     instance.compression_enabled = False
     instance._cleanup_task_resources = lambda *_a, **_kw: None
@@ -251,5 +251,3 @@ def test_streamed_interim_then_different_summary_not_marked_previewed(agent, mon
     # CRITICAL: response_previewed must be False — the interim narration was
     # NOT the final response, so the CLI must render the summary.
     assert result["response_previewed"] is False
-
-

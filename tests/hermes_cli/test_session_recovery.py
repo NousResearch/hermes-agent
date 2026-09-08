@@ -12,7 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_state
-from hermes_state import FTS_STORAGE_VERSION, SCHEMA_VERSION, SessionDB
+from hermes_state import SessionDB
+from hermes_state_common import FTS_STORAGE_VERSION, SCHEMA_VERSION
 from hermes_cli import session_recovery
 from hermes_cli.session_recovery import (
     SessionRecoverySafetyError,
@@ -112,8 +113,6 @@ def _orphan_fts_schema(path: Path) -> None:
         conn.execute("PRAGMA writable_schema=OFF")
     finally:
         conn.close()
-
-
 def _make_page_spanning_source(
     path: Path,
     message_count: int = 320,
@@ -596,7 +595,242 @@ def test_cli_allow_partial_salvages_rows_across_a_corrupt_leaf(
     }
 
 
+def test_partial_recovery_clears_only_unreadable_system_prompt_refs(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "corrupt-system-prompts.db"
+    output = tmp_path / "partial-system-prompts.db"
+    session_count = 180
+    _make_many_sessions_source(source, session_count)
+
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        row = conn.execute(
+            "SELECT rootpage FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'system_prompts'"
+        ).fetchone()
+        assert row is not None
+        prompt_root = int(row[0])
+    finally:
+        conn.close()
+    _corrupt_middle_table_leaf(source, prompt_root)
+
+    report = recover_session_database(
+        source,
+        output,
+        work_dir=tmp_path,
+        chunk_size=8,
+        allow_partial=True,
+    )
+
+    assert report["verified"] is True
+    assert report["partial"] is True
+    assert report["copy"]["sessions"]["status"] == "complete"
+    assert report["copy"]["messages"]["status"] == "complete"
+    assert report["copy"]["system_prompts"]["status"] == "partial"
+    cleared = report["orphan_cleanup"]["session_prompt_refs_cleared"]
+    assert 0 < cleared < session_count
+    assert report["verification"]["foreign_key_check"] == []
+
+    conn = sqlite3.connect(str(output))
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == session_count
+        retained = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE system_prompt_hash IS NOT NULL"
+        ).fetchone()[0]
+        assert retained == session_count - cleared
+        assert (
+            conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0]
+            == retained
+        )
+    finally:
+        conn.close()
+
+
+def _insert_delivery_obligations(path: Path, rows: list[tuple[object, ...]]) -> None:
+    from gateway.delivery_ledger import _initialize_schema
+
+    conn = sqlite3.connect(str(path), isolation_level=None)
+    try:
+        _initialize_schema(conn)
+        conn.executemany(
+            """INSERT INTO delivery_obligations (
+                obligation_id, session_key, platform, chat_id, thread_id,
+                content, state, attempts, created_at, updated_at,
+                owner_pid, owner_started_at, last_error, adapter_profile
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+    finally:
+        conn.close()
+
+
+def test_recovery_copies_delivery_obligations(tmp_path: Path) -> None:
+    """Owed replies must survive salvage — #100313 lost 6 obligation rows."""
+
+    source = tmp_path / "state.db"
+    output = tmp_path / "recovered.db"
+    _make_source(source)
+    now = 1_720_000_000.0
+    _insert_delivery_obligations(
+        source,
+        [
+            (
+                "ob-pending",
+                "telegram:1:chat-1",
+                "telegram",
+                "chat-1",
+                None,
+                "owed reply",
+                "pending",
+                0,
+                now,
+                now,
+                4242,
+                99,
+                None,
+                "default",
+            ),
+            (
+                "ob-delivered",
+                "telegram:1:chat-1",
+                "telegram",
+                "chat-1",
+                None,
+                "already sent",
+                "delivered",
+                1,
+                now,
+                now + 1,
+                None,
+                None,
+                None,
+                "default",
+            ),
+        ],
+    )
+
+    inspection = inspect_session_database(source, work_dir=tmp_path)
+    assert inspection["tables"]["delivery_obligations"]["available"] is True
+    assert inspection["tables"]["delivery_obligations"]["rows"] == 2
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+    copied = report["copy"]["delivery_obligations"]
+    assert copied["status"] == "complete"
+    assert copied["copied_rows"] == 2
+    assert report["verification"]["table_counts"]["delivery_obligations"] == 2
+    assert report["complete"] is True
+    assert report["verified"] is True
+    assert report["installed"] is False
+
+    conn = sqlite3.connect(str(output))
+    try:
+        recovered = conn.execute(
+            """SELECT obligation_id, state, content, owner_pid, adapter_profile
+               FROM delivery_obligations ORDER BY obligation_id"""
+        ).fetchall()
+    finally:
+        conn.close()
+    assert recovered == [
+        ("ob-delivered", "delivered", "already sent", None, "default"),
+        ("ob-pending", "pending", "owed reply", 4242, "default"),
+    ]
+
+
+def test_recovery_without_delivery_ledger_is_not_lossy(tmp_path: Path) -> None:
+    """CLI-only stores never created the lazy table; that is not data loss."""
+
+    source = tmp_path / "state.db"
+    output = tmp_path / "recovered.db"
+    _make_source(source)
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+    assert report["copy"]["delivery_obligations"]["status"] == "missing"
+    assert "delivery_obligations" not in report["verification"]["table_counts"]
+    assert report["complete"] is True
+    assert report["verified"] is True
 
 
 
 
+
+def test_recovery_flags_delivery_obligation_count_mismatch_as_loss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source-vs-destination ledger count mismatch must not verify as complete.
+
+    The destination table is created through the registered initializer; a
+    real SQL trigger that silently drops one row stands in for the "rows went
+    missing on the way over" failure the verifier has to catch.
+    """
+
+    from hermes_cli import session_recovery
+
+    source = tmp_path / "state.db"
+    output = tmp_path / "recovered.db"
+    _make_source(source)
+    now = 1_720_000_000.0
+    _insert_delivery_obligations(
+        source,
+        [
+            ("ob-a", "k", "telegram", "chat-1", None, "a", "pending", 0, now, now, None, None, None, "default"),
+            ("ob-b", "k", "telegram", "chat-1", None, "b", "pending", 0, now, now, None, None, None, "default"),
+        ],
+    )
+
+    real_init = session_recovery._AUXILIARY_TABLE_SCHEMAS["delivery_obligations"]
+
+    def lossy_init(conn: sqlite3.Connection) -> None:
+        real_init(conn)
+        conn.execute(
+            """CREATE TRIGGER drop_ob_b BEFORE INSERT ON delivery_obligations
+               WHEN NEW.obligation_id = 'ob-b' BEGIN SELECT RAISE(IGNORE); END"""
+        )
+
+    monkeypatch.setitem(
+        session_recovery._AUXILIARY_TABLE_SCHEMAS, "delivery_obligations", lossy_init
+    )
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+    assert report["verification"]["table_counts"]["delivery_obligations"] == 1
+    assert report["complete"] is False
+    assert any(
+        "delivery_obligations count is 1, expected 2" in error
+        for error in report["verification"]["errors"]
+    )
+
+
+def test_lost_and_found_direct_copy_creates_lazy_delivery_ledger(tmp_path: Path) -> None:
+    """The .recover lane copies the ledger even though SessionDB never made it."""
+
+    from hermes_cli.session_lost_and_found import _copy_direct_tables
+
+    recovered_source = tmp_path / "lost_and_found.db"
+    now = 1_720_000_000.0
+    _insert_delivery_obligations(
+        recovered_source,
+        [
+            ("ob-1", "k", "telegram", "chat-1", None, "one", "pending", 0, now, now, None, None, None, "default"),
+            ("ob-2", "k", "telegram", "chat-1", None, "two", "failed", 3, now, now, None, None, "boom", "default"),
+        ],
+    )
+    output = tmp_path / "rebuilt.db"
+    SessionDB(db_path=output).close()
+
+    lf_conn = sqlite3.connect(str(recovered_source), isolation_level=None)
+    dest = sqlite3.connect(str(output), isolation_level=None)
+    try:
+        assert not dest.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='delivery_obligations'"
+        ).fetchall()
+        copied = _copy_direct_tables(lf_conn, dest)
+        assert copied["delivery_obligations"] == 2
+        rows = dest.execute(
+            "SELECT obligation_id, state, last_error FROM delivery_obligations ORDER BY obligation_id"
+        ).fetchall()
+    finally:
+        lf_conn.close()
+        dest.close()
+    assert rows == [("ob-1", "pending", None), ("ob-2", "failed", "boom")]

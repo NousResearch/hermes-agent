@@ -69,6 +69,30 @@ def test_wedged_worker_does_not_block_interpreter_exit():
     assert "main-done" in proc.stdout
 
 
+def test_submit_propagates_caller_contextvars():
+    """Pool workers inherit contextvars set in the submitting context.
+
+    Stdlib ThreadPoolExecutor snapshots the caller's context with
+    ``copy_context()``; some bundled CPython runtime builds strip that, so
+    the daemon pool restores it explicitly.  Without the fix this returns
+    the default because the worker runs in a bare context.
+    """
+    from contextvars import ContextVar
+
+    var = ContextVar("daemon_pool_test_var", default="unset")
+
+    pool = DaemonThreadPoolExecutor(max_workers=1)
+    try:
+        token = var.set("hello")
+        try:
+            seen = pool.submit(var.get).result(timeout=10)
+        finally:
+            var.reset(token)
+        assert seen == "hello"
+    finally:
+        pool.shutdown(wait=True)
+
+
 def _repo_root():
     import pathlib
 

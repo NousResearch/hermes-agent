@@ -24,9 +24,8 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 
@@ -198,9 +197,13 @@ class TestStaleSessionLockSelfHeal:
         # An ordinary message should heal the stale lock, then fall through
         # to normal dispatch.  User gets a reply instead of a busy ack.
         await adapter.handle_message(_make_event("hello"))
-        # Drain any spawned background tasks.
-        for _ in range(5):
-            await asyncio.sleep(0)
+        # Drain any spawned background tasks. Real sleeps, not bare yields:
+        # the delivery ledger hops to worker threads around the send, so a
+        # zero-delay yield loop can finish before the reply lands.
+        for _ in range(40):
+            if any("handled:text" in r for r in adapter.sent_responses):
+                break
+            await asyncio.sleep(0.05)
 
         assert any("handled:text" in r for r in adapter.sent_responses), (
             "stale lock trapped a normal message — split-brain not healed"

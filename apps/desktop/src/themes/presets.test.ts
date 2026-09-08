@@ -1,56 +1,28 @@
 import { describe, expect, it } from 'vitest'
 
-import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY, EMOJI_FALLBACK, hadesTheme } from './presets'
+import {
+  BUILTIN_THEME_LIST,
+  BUILTIN_THEMES,
+  DEFAULT_SKIN_NAME,
+  DEFAULT_TYPOGRAPHY,
+  EMOJI_FALLBACK,
+  hadesTheme,
+  nousAltTheme
+} from './presets'
 
 const DESKTOP_COLOR_KEYS = [
-  'background',
-  'foreground',
-  'card',
-  'cardForeground',
-  'muted',
-  'mutedForeground',
-  'popover',
-  'popoverForeground',
-  'primary',
-  'primaryForeground',
-  'secondary',
-  'secondaryForeground',
-  'accent',
-  'accentForeground',
-  'border',
-  'input',
-  'ring',
-  'midground',
-  'midgroundForeground',
-  'composerRing',
-  'destructive',
-  'destructiveForeground',
-  'sidebarBackground',
-  'sidebarBorder',
-  'userBubble',
+  'background', 'foreground', 'card', 'cardForeground', 'muted', 'mutedForeground',
+  'popover', 'popoverForeground', 'primary', 'primaryForeground', 'secondary',
+  'secondaryForeground', 'accent', 'accentForeground', 'border', 'input', 'ring',
+  'midground', 'midgroundForeground', 'composerRing', 'destructive',
+  'destructiveForeground', 'sidebarBackground', 'sidebarBorder', 'userBubble',
   'userBubbleBorder'
 ] as const
 
 const TERMINAL_COLOR_KEYS = [
-  'foreground',
-  'cursor',
-  'selectionBackground',
-  'black',
-  'red',
-  'green',
-  'yellow',
-  'blue',
-  'magenta',
-  'cyan',
-  'white',
-  'brightBlack',
-  'brightRed',
-  'brightGreen',
-  'brightYellow',
-  'brightBlue',
-  'brightMagenta',
-  'brightCyan',
-  'brightWhite'
+  'foreground', 'cursor', 'selectionBackground', 'black', 'red', 'green', 'yellow',
+  'blue', 'magenta', 'cyan', 'white', 'brightBlack', 'brightRed', 'brightGreen',
+  'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite'
 ] as const
 
 describe('Hades desktop theme completeness', () => {
@@ -96,5 +68,17 @@ describe('theme typography emoji fallback (#40364)', () => {
     expect(EMOJI_FALLBACK).toContain('Apple Color Emoji')
     expect(EMOJI_FALLBACK).toContain('Segoe UI Emoji')
     expect(EMOJI_FALLBACK).toContain('Noto Color Emoji')
+  })
+})
+
+// The pre-GitHub Nous palette stays available as nous-alt; the default name
+// still means GitHub chrome + brand blue.
+describe('nous-alt is the retired Nous, not the default', () => {
+  it('is registered under its own name and leaves nous as the default', () => {
+    expect(DEFAULT_SKIN_NAME).toBe('nous')
+    expect(BUILTIN_THEMES['nous-alt']).toBe(nousAltTheme)
+    expect(BUILTIN_THEMES.nous).not.toBe(nousAltTheme)
+    expect(nousAltTheme.darkColors?.background).toBe('#0D2F86')
+    expect(BUILTIN_THEMES.nous.darkColors?.background).not.toBe(nousAltTheme.darkColors?.background)
   })
 })

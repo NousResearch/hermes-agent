@@ -1,5 +1,5 @@
 ---
-name: simpo-training
+name: simpo
 description: Reference-free preference alignment, simpler than DPO.
 version: 1.0.0
 author: Orchestra Research

@@ -11,9 +11,17 @@ Subcommands
   reset                            start a clean ledger
   add URL [URL ...]                register source(s), print their ids
   ingest FILE|-                    register every url found in JSON tool output
+  quote ID --text T --from FILE|-  attach verbatim supporting evidence to a source
   list                             show the ledger
   render                           render a Sources block
   verify DRAFT                     check a draft's citations against the ledger
+
+Fact-checking is evidence-backed citation: ``quote`` only accepts text that
+literally appears in the fetched page text you point it at, ``verify
+--evidence`` requires every cited source to carry at least one such quote, and
+``render --style evidence`` prints the quotes under each source so the reader
+can check the chain themselves.  Claims from model knowledge are declared with
+an ``[unverified]`` marker rather than silently blended in.
 
 Ledger path resolution (first wins):
   --ledger PATH
@@ -45,6 +53,8 @@ _SOURCES_HEADER_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?sources:?(?:\*\*)?\
 _SOURCE_LINE_RE = re.compile(r"^\s*\[(\d{1,4})\]\s*[-–:]?\s*(\S+)")
 _URL_IN_TEXT_RE = re.compile(r"https?://[^\s\"'<>)\]}]+")
 _FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+# Explicit declaration that a claim comes from model knowledge, not a source.
+_UNVERIFIED_RE = re.compile(r"\[unverified\]", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +224,71 @@ def urls_from_json(payload: Any) -> list[tuple[str, str]]:
     return found
 
 
+# ---------------------------------------------------------------------------
+# Evidence quotes (fact-checking)
+# ---------------------------------------------------------------------------
+
+
+def _normalize_ws(text: str) -> str:
+    """Collapse all whitespace runs to single spaces for verbatim matching."""
+    return " ".join((text or "").split())
+
+
+# Markdown artifacts that retrieval tools inject into otherwise-identical prose.
+# ``web_extract`` returns markdown, so the most citation-worthy sentences are
+# exactly the ones carrying inline links and emphasis around terms:
+#   "including _[ERAP1](https://…/erap1/)_, _[IL1A](…)_, have also been…"
+# reads identically to the page a human sees.  Matching has to see through that
+# markup, or the skill pushes the agent toward weaker evidence fragments.
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\((?:[^()\s]|\([^()]*\))*\)")
+_MD_NOISE_RE = re.compile(r"[*_`~]|\\(?=[^\w\s])")
+
+
+def _match_key(text: str) -> str:
+    """Canonicalize text for verbatim comparison.
+
+    Whitespace-, case-, and markdown-insensitive: inline links collapse to
+    their label, emphasis/code markers and backslash escapes are dropped.  The
+    stored quote keeps whatever the caller passed, so the rendered evidence
+    block shows clean prose rather than extractor artifacts.
+    """
+    collapsed = _MD_LINK_RE.sub(r"\1", text or "")
+    return _normalize_ws(_MD_NOISE_RE.sub("", collapsed)).casefold()
+
+
+def quote_in_evidence(quote: str, evidence: str) -> bool:
+    """True when ``quote`` appears verbatim in the fetched ``evidence`` text,
+    ignoring whitespace, case, and markdown markup on either side."""
+    q = _match_key(quote)
+    return bool(q) and q in _match_key(evidence)
+
+
+def attach_quote(path: Path, source_id: int, quote: str, evidence: str) -> dict[str, Any]:
+    """Attach a verbatim quote to a ledger entry after checking it against
+    the evidence text.  Raises SystemExit on unknown id or non-verbatim text —
+    a quote the page does not contain is exactly the fabrication this guards
+    against."""
+    quote = (quote or "").strip()
+    if len(_normalize_ws(quote).split()) < 3:
+        raise SystemExit("error: quote too short — use at least 3 words of verbatim text")
+    if not quote_in_evidence(quote, evidence):
+        raise SystemExit(
+            "error: quote not found verbatim in the evidence text — "
+            "copy the exact wording from the fetched page, do not paraphrase"
+        )
+    with _LedgerLock(path):
+        data = load_ledger(path)
+        entry = next((s for s in data["sources"] if s["id"] == source_id), None)
+        if entry is None:
+            raise SystemExit(f"error: no source [{source_id}] in the ledger")
+        quotes = entry.setdefault("quotes", [])
+        norm = _match_key(quote)
+        if not any(_match_key(q.get("text", "")) == norm for q in quotes):
+            quotes.append({"text": quote, "added": time.strftime("%Y-%m-%d")})
+            save_ledger(path, data)
+    return entry
+
+
 def render_sources(
     sources: list[dict[str, Any]],
     style: str = "markdown",
@@ -247,6 +322,9 @@ def render_sources(
         title = s.get("title")
         suffix = f" — {title}" if title else ""
         lines.append(f"[{s['id']}] {s['url']}{suffix}")
+        if style == "evidence":
+            for q in s.get("quotes", []):
+                lines.append(f'    > "{q.get("text", "")}"')
     return "\n".join(lines)
 
 
@@ -288,6 +366,23 @@ def _split_draft(text: str) -> tuple[str, dict[int, str]]:
     return "\n".join(prose), listed
 
 
+def _strip_sources_block(text: str) -> str:
+    """Return the draft with its trailing Sources block removed.
+
+    Everything from the last Sources header onward goes; a draft with no such
+    header is returned unchanged.  This is what makes ``render --replace-in``
+    idempotent instead of stacking duplicate blocks.
+    """
+    lines = text.splitlines()
+    header_idx = -1
+    for i, line in enumerate(lines):
+        if _SOURCES_HEADER_RE.match(line):
+            header_idx = i
+    if header_idx < 0:
+        return text
+    return "\n".join(lines[:header_idx])
+
+
 def _sentences(prose: str) -> list[str]:
     """Rough sentence split over prose lines, skipping headings and tables."""
     out: list[str] = []
@@ -309,6 +404,7 @@ def verify_draft(
     sources: list[dict[str, Any]],
     strict: bool = False,
     min_coverage: float | None = None,
+    require_evidence: bool = False,
 ) -> tuple[int, list[str], list[str]]:
     """Return (exit_code, errors, warnings)."""
     text = draft_path.read_text(encoding="utf-8")
@@ -365,22 +461,37 @@ def verify_draft(
 
     sentences = _sentences(prose)
     cited_sentences = [s for s in sentences if _CITE_RE.search(s)]
-    coverage = (len(cited_sentences) / len(sentences)) if sentences else 0.0
+    unverified_sentences = [s for s in sentences if _UNVERIFIED_RE.search(s)]
+    covered = [s for s in sentences if _CITE_RE.search(s) or _UNVERIFIED_RE.search(s)]
+    coverage = (len(covered) / len(sentences)) if sentences else 0.0
     if min_coverage is not None and sentences and coverage < min_coverage:
         errors.append(
             f"citation coverage {coverage:.0%} is below the required {min_coverage:.0%} "
-            f"({len(cited_sentences)}/{len(sentences)} sentences cited)"
+            f"({len(covered)}/{len(sentences)} sentences cited or marked [unverified])"
         )
+
+    if require_evidence:
+        unevidenced = sorted(
+            i for i in cited_set if i in by_id and not by_id[i].get("quotes")
+        )
+        if unevidenced:
+            errors.append(
+                "cited sources carry no verbatim evidence quote (run `quote` with the "
+                "fetched page text): " + ", ".join(f"[{i}]" for i in unevidenced)
+            )
 
     over_cited = [s for s in sentences if len(_CITE_RE.findall(s)) > 3]
     if over_cited:
         warnings.append(f"{len(over_cited)} sentence(s) carry more than 3 citations")
 
     code = 1 if errors else (1 if (strict and warnings) else 0)
+    quoted = sum(1 for s in sources if s.get("quotes"))
     stats = (
-        f"{len(sentences)} prose sentence(s), {len(cited_sentences)} cited "
-        f"({coverage:.0%}), {len(cited_set)} distinct source(s) cited, "
-        f"{len(by_id)} in ledger"
+        f"{len(sentences)} prose sentence(s), {len(covered)} with declared provenance "
+        f"({coverage:.0%}) — {len(cited_sentences)} cited, "
+        f"{len(unverified_sentences)} marked [unverified] (a sentence may be both); "
+        f"{len(cited_set)} distinct source(s) cited, "
+        f"{len(by_id)} in ledger ({quoted} with evidence quotes)"
     )
     warnings.insert(0, f"stats: {stats}")
     return code, errors, warnings
@@ -424,20 +535,39 @@ def main(argv: list[str] | None = None) -> int:
     p_ing = sub.add_parser("ingest", help="register every url in JSON tool output")
     p_ing.add_argument("file", help="JSON file, or - for stdin")
 
+    p_q = sub.add_parser("quote", help="attach verbatim supporting evidence to a source")
+    p_q.add_argument("id", type=int, help="ledger id of the source the quote supports")
+    p_q.add_argument("--text", required=True, help="the exact quote, copied from the page")
+    p_q.add_argument(
+        "--from",
+        dest="evidence",
+        required=True,
+        help="file with the fetched page text (or - for stdin) the quote must appear in",
+    )
+
     p_list = sub.add_parser("list", help="show the ledger")
     p_list.add_argument("--json", action="store_true")
 
     p_render = sub.add_parser("render", help="render a Sources block")
     p_render.add_argument(
-        "--style", default="markdown", choices=["markdown", "plain", "footnotes", "bibtex"]
+        "--style", default="markdown", choices=["markdown", "plain", "footnotes", "bibtex", "evidence"]
     )
     p_render.add_argument("--only", help="ids to include, e.g. 1,3,5-7")
     p_render.add_argument("--cited-in", help="include only ids cited in this draft file")
+    p_render.add_argument(
+        "--replace-in",
+        help="rewrite this draft's Sources block in place (implies --cited-in on it)",
+    )
 
     p_ver = sub.add_parser("verify", help="check a draft's citations against the ledger")
     p_ver.add_argument("draft")
     p_ver.add_argument("--strict", action="store_true", help="treat warnings as failures")
     p_ver.add_argument("--min-coverage", type=float, help="required cited-sentence share, e.g. 0.5")
+    p_ver.add_argument(
+        "--evidence",
+        action="store_true",
+        help="require every cited source to carry at least one verbatim quote",
+    )
 
     args = parser.parse_args(argv)
     path = resolve_ledger_path(args.ledger)
@@ -474,6 +604,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{entry['id']}] {entry['url']}")
         return 0
 
+    if args.cmd == "quote":
+        raw = (
+            sys.stdin.read()
+            if args.evidence == "-"
+            else Path(args.evidence).read_text(encoding="utf-8")
+        )
+        entry = attach_quote(path, args.id, args.text, raw)
+        print(f"[{entry['id']}] evidence attached ({len(entry.get('quotes', []))} quote(s))")
+        return 0
+
     data = load_ledger(path)
     sources = sorted(data["sources"], key=lambda s: s["id"])
 
@@ -485,13 +625,16 @@ def main(argv: list[str] | None = None) -> int:
         else:
             for s in sources:
                 title = f"  {s['title']}" if s.get("title") else ""
-                print(f"[{s['id']}] {s['url']}{title}")
+                nq = len(s.get("quotes", []))
+                mark = f"  ({nq} quote{'s' if nq != 1 else ''})" if nq else ""
+                print(f"[{s['id']}] {s['url']}{title}{mark}")
         return 0
 
     if args.cmd == "render":
         only = _parse_only(args.only)
-        if args.cited_in:
-            draft = Path(args.cited_in).read_text(encoding="utf-8")
+        draft_for_ids = args.replace_in or args.cited_in
+        if draft_for_ids:
+            draft = Path(draft_for_ids).read_text(encoding="utf-8")
             prose, _ = _split_draft(draft)
             cited = {int(m) for m in _CITE_RE.findall(prose)}
             only = cited if only is None else (only & cited)
@@ -499,6 +642,12 @@ def main(argv: list[str] | None = None) -> int:
         if not block:
             print("no sources to render", file=sys.stderr)
             return 1
+        if args.replace_in:
+            target = Path(args.replace_in)
+            body = _strip_sources_block(target.read_text(encoding="utf-8"))
+            target.write_text(body.rstrip("\n") + "\n\n" + block + "\n", encoding="utf-8")
+            print(f"Sources block rewritten in {target}")
+            return 0
         print(block)
         return 0
 
@@ -508,10 +657,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: no such draft: {draft_path}", file=sys.stderr)
             return 2
         code, errors, warnings = verify_draft(
-            draft_path, sources, strict=args.strict, min_coverage=args.min_coverage
+            draft_path,
+            sources,
+            strict=args.strict,
+            min_coverage=args.min_coverage,
+            require_evidence=args.evidence,
         )
         for w in warnings:
-            print(f"warn: {w}")
+            prefix = "info" if w.startswith("stats: ") else "warn"
+            print(f"{prefix}: {w}")
         for e in errors:
             print(f"FAIL: {e}", file=sys.stderr)
         print("citations OK" if code == 0 else "verification failed")

@@ -92,3 +92,68 @@ test('stays quiet when the port opened, or is closed by design', () => {
   assert.equal(describeDevCdpDecision(resolveDevCdpPort({ ...devRun, isPackaged: true })), null)
   assert.equal(describeDevCdpDecision(resolveDevCdpPort({ ...devRun, devServer: undefined })), null)
 })
+
+// --- resolveDevCdpInstance: the descriptor attests the REALIZED home ---
+
+import { resolveDevCdpInstance } from './dev-cdp'
+import { resolveHermesHomeFromInputs } from './hermes-home'
+import os from 'node:os'
+import path from 'node:path'
+
+const homeBase = {
+  env: {} as Record<string, string | undefined>,
+  isWindows: false,
+  appHome: os.homedir(),
+  readWindowsUserEnvVar: () => undefined,
+  directoryExists: () => false
+}
+
+test('descriptor dataRoot equals the RESOLVED home, not an env.HERMES_HOME guess', () => {
+  const inst = resolveDevCdpInstance({
+    env: { HERMES_HOME: '/tmp/decoy' },
+    isPackaged: false,
+    devServer: DEV_SERVER,
+    resolvedHermesHome: '/tmp/probe-userdata/hermes-home'
+  })
+
+  assert.ok(inst, 'descriptor must exist for a dev run')
+  assert.equal(inst?.dataRoot, '/tmp/probe-userdata/hermes-home')
+  assert.ok(inst?.nonce, 'nonce must be present')
+})
+
+test("review case 1: HERMES_DESKTOP_USER_DATA_DIR-only launch attests <userData>/hermes-home", () => {
+  // The app resolves its home via the shared authority; the descriptor must
+  // carry exactly that value — NOT the ~/.hermes fallback the old code guessed.
+  const home = resolveHermesHomeFromInputs({ ...homeBase, userDataOverride: '/tmp/probe-userdata' })
+  assert.equal(home, '/tmp/probe-userdata/hermes-home')
+
+  const inst = resolveDevCdpInstance({
+    env: {},
+    isPackaged: false,
+    devServer: DEV_SERVER,
+    resolvedHermesHome: home
+  })
+
+  assert.equal(inst?.dataRoot, '/tmp/probe-userdata/hermes-home')
+})
+
+test('review case 2: default resolution cannot diverge from the descriptor', () => {
+  const home = resolveHermesHomeFromInputs(homeBase)
+  const inst = resolveDevCdpInstance({
+    env: {},
+    isPackaged: false,
+    devServer: DEV_SERVER,
+    resolvedHermesHome: home
+  })
+
+  // Same resolver feeds both the app and the descriptor; canonical form is
+  // lexical path.resolve on both sides.
+  assert.equal(inst?.dataRoot, path.resolve(path.join(os.homedir(), '.hermes')))
+})
+
+test('port gate unchanged: packaged / no-dev-server / opt-out still emit no descriptor', () => {
+  const gate = { env: {}, isPackaged: true, devServer: DEV_SERVER, resolvedHermesHome: '/tmp/x' }
+  assert.equal(resolveDevCdpInstance(gate), null)
+  assert.equal(resolveDevCdpInstance({ ...gate, isPackaged: false, devServer: undefined }), null)
+  assert.equal(resolveDevCdpInstance({ ...gate, devServer: DEV_SERVER, env: { HERMES_DESKTOP_CDP_PORT: 'off' } }), null)
+})

@@ -175,8 +175,19 @@ providers:
 // ── Electron launch ────────────────────────────────────────────────────
 
 function findElectron() {
-  const local = path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'electron')
-  if (fs.existsSync(local)) return local
+  const candidates = [
+    // Linux/Windows layout
+    path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'electron'),
+    // macOS app bundle layout
+    path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron'),
+    path.join(DESKTOP_ROOT, 'node_modules', 'electron', 'dist', 'electron'),
+    path.join(DESKTOP_ROOT, 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron')
+  ]
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate
+  }
+
   const r = spawnSync('which', ['electron'], { encoding: 'utf8' })
   if (r.status === 0 && r.stdout.trim()) return r.stdout.trim()
   throw new Error('Electron binary not found. Run "npm install" from the repo root.')

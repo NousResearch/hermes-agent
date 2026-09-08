@@ -109,11 +109,33 @@ export class CDP {
     return CDP.open(target.webSocketDebuggerUrl)
   }
 
-  send(method, params = {}) {
+  /**
+   * Send a CDP command and await its response.
+   * @param {string} method
+   * @param {object} [params]
+   * @param {number} [timeoutMs] reject if no response within this window (default 15000).
+   *   Guards against a hung renderer leaving an agent tool blocked forever.
+   */
+  send(method, params = {}, timeoutMs = 15000) {
     const id = ++this.id
 
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
+      let timer = null
+
+      this.pending.set(id, {
+        resolve,
+        reject: err => {
+          clearTimeout(timer)
+          reject(err)
+        }
+      })
+
+      timer = setTimeout(() => {
+        // Remove first so a late response finds no entry and is ignored.
+        this.pending.delete(id)
+        reject(new Error(`CDP ${method} timed out after ${timeoutMs}ms (renderer hung or busy?)`))
+      }, timeoutMs)
+
       this.ws.send(JSON.stringify({ id, method, params }))
     })
   }
@@ -134,7 +156,9 @@ export class CDP {
       throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text || 'eval failed')
     }
 
-    return r.result.value
+    // A5: a malformed/protocol-level response may lack a result payload —
+    // resolve undefined rather than throwing a TypeError on `r.result.value`.
+    return r.result?.value
   }
 
   close() {

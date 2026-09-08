@@ -1781,11 +1781,12 @@ agent:
 When enabled, each message is classified by a **deterministic local
 heuristic** — no extra LLM call, no new model tools, and no changes to the
 conversation the model sees. Ordinary and ambiguous turns stay at your
-baseline, including a `high` or `xhigh` baseline; substantial multi-step coding/debugging, consequential
+baseline, including `minimal`, `low`, `high` or `xhigh`; substantial multi-step coding/debugging, consequential
 infrastructure changes, and in-depth research escalate to `high`; genuinely
 difficult architecture/security/high-stakes work with corroborating signals
-escalates to `xhigh`. Short follow-ups like "go ahead" inherit the previous
-turn's level, and unrelated trivial turns drop straight back to the baseline.
+escalates to `xhigh`. Short follow-ups like "go ahead" inherit a previous
+escalation; without one, they keep the baseline. Unrelated trivial turns
+return to the baseline unless an opted-in downshift applies.
 
 **Downshift is opt-in and conservative.** Without `min_effort`, adaptive is
 escalation-only and your baseline is the floor. With `min_effort: "low"`,
@@ -1799,6 +1800,11 @@ must match, including its subject/operand. Compound requests such as
 baseline or above; unrecognized wording also retains baseline rather than
 being assumed simple. Error output, code, multiple questions, multi-step
 structure and infrastructure/debugging keywords block downshift.
+
+Simple turns never raise a lower baseline: `minimal` plus `hello` stays
+`minimal`, even with `min_effort: "low"`. The bounds constrain adjustments,
+not the baseline itself: a floor above the baseline does not raise it, and
+a ceiling below the baseline does not force ordinary or complex work down.
 
 This heuristic is not a natural-language parser or a proof of simplicity.
 It intentionally misses many genuinely simple questions (including unsupported

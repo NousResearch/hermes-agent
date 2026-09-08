@@ -282,6 +282,8 @@ def _registry_pid(pid: Any) -> int:
 def _valid_process_start(v: Any) -> bool:
     if v in (None, ""):
         return True
+    if type(v) is int:
+        return v > 0
     parsed = _optional_float(v)
     return parsed is not None and math.isfinite(parsed)
 
@@ -301,11 +303,23 @@ def _write_entries(path: Path, entries: list[dict[str, Any]]) -> None:
 
 
 def _process_start_time(pid: int) -> Optional[float]:
-    # Pair pid with create_time when psutil can read it, so a recycled pid does not
-    # keep a stale lease alive indefinitely.
+    # Legacy epoch wall-clock probe, kept only to compare against entries recorded
+    # before the fingerprint below existed.
     try:
         import psutil  # type: ignore
         return float(psutil.Process(pid).create_time())
+    except Exception:
+        return None
+
+
+def _process_start_fingerprint(pid: int) -> Optional[int]:
+    # Boot-relative start fingerprint — the PID-reuse guard primitive already used by
+    # gateway.status (/proc/<pid>/stat field 22 on Linux, centisecond create_time
+    # elsewhere). Unlike the wall-clock probe above it does not move when the clock
+    # steps (NTP resync, WSL2 host sleep), so a live lease stays validated (#105714).
+    try:
+        from gateway.status import get_process_start_time
+        return get_process_start_time(pid)
     except Exception:
         return None
 
@@ -336,6 +350,13 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
         return unknown_dead
     if not exists:
         return False
+    if type(process_start_time) is int:
+        # Fingerprint entries compare exactly: same ticks means the same process, and
+        # a clock step cannot counterfeit either side of the comparison.
+        current = _process_start_fingerprint(pid_int)
+        if current is None:
+            return True if lenient else None
+        return current == process_start_time
     expected_start = _optional_float(process_start_time)
     if expected_start is None:
         return True
@@ -428,7 +449,7 @@ def _lease_entry(
         "session_id": str(session_id),
         "surface": str(surface),
         "pid": os.getpid(),
-        "process_start_time": _process_start_time(os.getpid()),
+        "process_start_time": _process_start_fingerprint(os.getpid()),
         "started_at": now,
         "updated_at": now,
     }

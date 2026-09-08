@@ -646,3 +646,58 @@ def test_liveness_guard_keeps_a_just_acquired_own_lease_it_cannot_vouch_for(
     ) as active:
         assert active is False
     assert active_sessions.active_session_registry_snapshot(home) == []
+
+
+def test_pid_liveness_fingerprint_survives_wall_clock_step(monkeypatch):
+    # #105714: the wall-clock create_time of a LIVE pid moves when the clock steps
+    # (NTP resync, WSL2 host sleep), which used to prune a live session's lease.
+    # The boot-relative fingerprint must not follow the wall clock.
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda _pid: 1234567)
+    # Legacy probe reports the same process one wall-clock second later.
+    monkeypatch.setattr(
+        active_sessions, "_process_start_time", lambda _pid: 1_757_000_000.0 + 1.0
+    )
+    assert active_sessions._pid_liveness(4242, 1234567) is True
+    entry = {
+        "lease_id": "x", "session_id": "s", "surface": "cli",
+        "pid": 4242, "process_start_time": 1234567,
+    }
+    assert active_sessions._prune_dead([entry]) == [entry]
+
+
+def test_pid_liveness_fingerprint_detects_pid_reuse(monkeypatch):
+    # A different fingerprint on a live pid is a recycled pid: the lease must die.
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda _pid: 7654321)
+    assert active_sessions._pid_liveness(4242, 1234567) is False
+    entry = {
+        "lease_id": "x", "session_id": "s", "surface": "cli",
+        "pid": 4242, "process_start_time": 1234567,
+    }
+    assert active_sessions._prune_dead([entry]) == []
+
+
+def test_pid_liveness_legacy_epoch_float_keeps_legacy_probe(monkeypatch):
+    # Entries recorded before fingerprints exist keep their epoch-float comparison:
+    # identical readings stay alive, drifted readings still mis-validate (the old
+    # defect, confined to pre-existing leases until they turn over).
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
+    monkeypatch.setattr(active_sessions, "_process_start_time", lambda _pid: 1_757_000_000.5)
+    assert active_sessions._pid_liveness(4242, 1_757_000_000.5) is True
+    assert active_sessions._pid_liveness(4242, 1_757_000_000.0) is False
+
+
+def test_lease_entry_records_start_fingerprint(monkeypatch):
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda _pid: 987654)
+    entry = active_sessions._lease_entry(
+        lease_id="lease-1", session_id="session-1", surface="cli"
+    )
+    assert entry["process_start_time"] == 987654
+
+
+def test_valid_process_start_accepts_fingerprint_ints():
+    assert active_sessions._valid_process_start(1234567) is True
+    assert active_sessions._valid_process_start(0) is False
+    assert active_sessions._valid_process_start(-5) is False
+    assert active_sessions._valid_process_start(1_757_000_000.5) is True

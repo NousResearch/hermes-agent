@@ -84,9 +84,11 @@ def test_loader_fallback_cannot_authorize_a_desktop(profile_home, desktop, initi
         config.load_config()  # another consumer may have cached the fallback already
     events, _ = desktop
     for _ in range(2):
-        result = json.loads(registry.dispatch(
+        result = registry.dispatch(
             "computer_use", {"action": action, "element": 1}, session_id="invalid-config",
-        ))
+        )
+        assert isinstance(result, str)
+        result = json.loads(result)
         assert not events, {"desktop_effects": events, "result": result}
         assert "error" in result, result
     assert cu.check_computer_use_requirements() is False
@@ -111,9 +113,11 @@ def test_normal_config_preserves_direct_target_and_approval(profile_home, deskto
         managed_dir.mkdir()
         monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
         (managed_dir / "config.yaml").write_text("computer_use:\n" + managed)
-    result = json.loads(registry.dispatch(
+    result = registry.dispatch(
         "computer_use", {"action": action, "element": 1}, session_id="valid-config",
-    ))
+    )
+    assert isinstance(result, str)
+    result = json.loads(result)
     events, prompts = desktop
     assert "error" not in result, result
     assert events == [("start", expected), (action, expected)]
@@ -121,7 +125,7 @@ def test_normal_config_preserves_direct_target_and_approval(profile_home, deskto
     assert cu.check_computer_use_requirements() is True
 
 
-@pytest.mark.parametrize("initial,current", [(REMOTE, LOCAL), (LOCAL, REMOTE)])
+@pytest.mark.parametrize("initial,current", [(REMOTE, LOCAL), (LOCAL, REMOTE)], ids=["bound-remote", "bound-local"])
 def test_backend_availability_stays_bound_after_config_edit(profile_home, desktop, monkeypatch, initial, current):
     path = profile_home / "config.yaml"
     path.write_text("computer_use:\n" + initial)
@@ -134,7 +138,7 @@ def test_backend_availability_stays_bound_after_config_edit(profile_home, deskto
     assert not desktop[0]
 
 
-@pytest.mark.parametrize("initial,current", [(REMOTE, LOCAL), (LOCAL, REMOTE)])
+@pytest.mark.parametrize("initial,current", [(REMOTE, LOCAL), (LOCAL, REMOTE)], ids=["bound-remote", "bound-local"])
 def test_empty_discovery_diagnosis_stays_bound_after_config_edit(profile_home, desktop, monkeypatch, initial, current):
     path = profile_home / "config.yaml"
     path.write_text("computer_use:\n" + initial)
@@ -145,4 +149,73 @@ def test_empty_discovery_diagnosis_stays_bound_after_config_edit(profile_home, d
     reason = cua_backend._empty_discovery_reason(remote=backend._remote_config is not None)
     assert ("remote desktop returned no windows" in reason) is (initial == REMOTE)
     assert probes == ([] if initial == REMOTE else ["local"])
+    assert not desktop[0]
+
+
+@pytest.mark.parametrize("text", [
+    "computer_use:\n  provider: remote\n",
+    "computer_use:\n  provider: local\n" + REMOTE,
+    "computer_use:\n  provider: do-not-leak\n",
+    "computer_use:\n  provider: null\n",
+    "computer_use:\n  remote: null\n",
+    "computer_use:\n  remote: []\n",
+    "computer_use: [do-not-leak\n",
+    "- do-not-leak\n",
+    "computer_use: null\n",
+    None,
+    "computer_use:\n" + REMOTE.replace("https://desktop.example.test", "https://user:do-not-leak@desktop.example.test"),
+], ids=[
+    "provider-remote", "provider-local-conflict", "unknown-provider", "null-provider",
+    "null-remote", "list-remote", "yaml", "root", "null-block", "unreadable", "url-credentials",
+])
+@pytest.mark.parametrize("managed", [False, True])
+def test_unsupported_or_malformed_intent_cannot_select_a_desktop(profile_home, desktop, monkeypatch, text, managed):
+    path = profile_home / "config.yaml"
+    if managed:
+        path.write_text("computer_use:\n" + REMOTE)
+        managed_dir = profile_home / "managed"
+        managed_dir.mkdir()
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+        path = managed_dir / "config.yaml"
+    if text is None:
+        path.mkdir()
+    else:
+        path.write_text(text)
+    result = registry.dispatch("computer_use", {"action": "list_apps"}, session_id="bad-shape")
+    assert isinstance(result, str)
+    assert not desktop[0], {"desktop_effects": desktop[0], "result": result}
+    assert "error" in json.loads(result)
+    assert "do-not-leak" not in result
+    assert cu.check_computer_use_requirements() is False
+
+
+@pytest.mark.parametrize("mode", ["bounded", "unrestricted"])
+def test_direct_remote_constructor_retains_requested_permission_guard(profile_home, desktop, mode):
+    (profile_home / "config.yaml").write_text("computer_use:\n" + REMOTE)
+    with pytest.raises(RuntimeError, match="standard permission mode only"):
+        CuaDriverBackend(permission_mode=mode)
+    assert not desktop[0]
+
+
+def test_explicit_noop_never_constructs_a_desktop(profile_home, desktop, monkeypatch):
+    (profile_home / "config.yaml").write_text("computer_use:\n  provider: unsupported\n")
+    monkeypatch.setenv("HERMES_COMPUTER_USE_BACKEND", "noop")
+    result = registry.dispatch("computer_use", {"action": "click", "element": 1}, session_id="noop")
+    assert isinstance(result, str)
+    assert "error" not in json.loads(result)
+    assert not desktop[0]
+    assert isinstance(cu._get_backend("noop"), cu._NoopBackend)
+
+
+@pytest.mark.parametrize("token", [None, "do-not-leak"])
+def test_direct_remote_token_errors_are_sanitized(profile_home, desktop, monkeypatch, token):
+    (profile_home / "config.yaml").write_text("computer_use:\n" + REMOTE)
+    if token is None:
+        monkeypatch.delenv("HERMES_CUA_REMOTE_TOKEN")
+    else:
+        monkeypatch.setenv("HERMES_CUA_REMOTE_TOKEN", token)
+    result = registry.dispatch("computer_use", {"action": "list_apps"}, session_id="invalid-token")
+    assert isinstance(result, str)
+    assert "HERMES_CUA_REMOTE_TOKEN" in json.loads(result)["error"]
+    assert "do-not-leak" not in result
     assert not desktop[0]

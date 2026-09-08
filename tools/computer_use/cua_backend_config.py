@@ -51,6 +51,20 @@ def computer_use_config() -> dict[str, Any]:
     raw = _strict_block(config.get_config_path())
     managed_dir = config.managed_scope.get_managed_dir()
     managed = _strict_block(managed_dir / "config.yaml") if managed_dir else {}
+    selection = {**raw, **managed}
+    # This architecture intentionally has no provider registry/selector. A config
+    # copied from the provider-based alternative must not silently choose a host.
+    # Direct remote selection remains remote.enabled: true; URL alone is inert.
+    if "provider" in selection:
+        raise RuntimeError(
+            "computer_use.provider is unsupported by direct CUA; remove it and "
+            "use computer_use.remote.enabled and computer_use.remote.url",
+        )
+    # The general deep-merge ignores None over a mapping. Preserve an explicit
+    # malformed remote block instead of converting it to disabled defaults (or
+    # retaining a user's remote transport under a managed null).
+    if "remote" in selection and not isinstance(selection["remote"], dict):
+        raise RuntimeError("remote computer use configuration must be a mapping")
     try:
         effective = config.load_config().get("computer_use", {})
         # An unrelated processing error can silently yield defaults or stale LKG.

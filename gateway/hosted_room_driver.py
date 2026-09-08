@@ -565,9 +565,8 @@ def renew_lease(db_path: DbPath, lease: DriverLease, *, ttl_seconds: Any, clock:
 
 def require_active_lease(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> DriverLease:
     """Revalidate one exact lease generation without extending its lifetime."""
-    now = _timestamp(clock)
     with _transaction(db_path) as conn:
-        current = _require_active_lease(conn, lease, now=now)
+        current = _require_active_lease(conn, lease, now=_timestamp(clock))
         return _lease_from_row(current)
 
 

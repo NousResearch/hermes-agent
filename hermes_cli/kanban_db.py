@@ -1253,6 +1253,9 @@ def create_task(
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
+    # Keep creation permissive: external control-plane lanes intentionally use
+    # non-profile assignees and claim work through ``claim_task``. The dispatcher
+    # performs the profile-existence check only on the local spawn path.
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:

@@ -3275,19 +3275,16 @@ class GatewayTurnMixin:
         if _stts is None:
             return
         # Deltas are queued before start(); do not open an external audio stream
-        # until the turn result confirms persistence succeeded.  Failed turns are
-        # discarded without ever making audio audible.
-        if (
-            not isinstance(result, dict)
-            or result.get("failed")
-            or result.get("interrupted")
-            or result.get("completed") is False
-            or not isinstance(result.get("final_response"), str)
-            or not result["final_response"].strip()
-            or result["final_response"] == "(empty)"
-            or result.get("persistence_confirmed", True) is not True
+        # until the turn result carries an explicit positive persistence receipt.
+        # Missing/unknown/failed/interrupted results are all fail-closed.
+        if not (
+            isinstance(result, dict)
+            and result.get("persistence_confirmed") is True
+            and result.get("completed") is True
+            and not result.get("failed")
+            and not result.get("interrupted")
         ):
-            _stts.abort("turn result unavailable or persistence failed before streaming TTS start")
+            _stts.abort("canonical persistence not confirmed before streaming TTS start")
             return
         if _stts._task is None:
             _stts.start()

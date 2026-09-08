@@ -99,9 +99,12 @@ export function readLiveUpdateMarker(
   const [pidLine, startedLine] = String(raw).split('\n')
   const pid = parseMarkerInteger(pidLine)
   const startedAt = parseMarkerInteger(startedLine)
-  const ageMs = startedAt === null ? Infinity : now() - startedAt * 1000
+  // A wall-clock correction can put a valid live owner's timestamp briefly in
+  // the future. Clamp that case to a fresh age rather than deleting the mutex
+  // and allowing a second updater to overlap the first.
+  const ageMs = startedAt === null ? Infinity : Math.max(0, now() - startedAt * 1000)
 
-  if (pid === null || !isPidAlive(pid, kill) || ageMs < 0 || ageMs > maxAgeMs) {
+  if (pid === null || !isPidAlive(pid, kill) || ageMs > maxAgeMs) {
     try {
       fs.unlinkSync(file)
     } catch {

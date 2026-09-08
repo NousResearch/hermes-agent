@@ -86,13 +86,12 @@ test('malformed marker => no live update and pruned', () => {
   assert.ok(!fs.existsSync(markerPath(home)))
 })
 
-test('numeric prefixes and future timestamps are stale, not live updater claims', () => {
+test('numeric prefixes are stale, not live updater claims', () => {
   const now = 1_000_000_000_000
 
   const malformed = [
     ['pid-prefix', `4242junk\n${Math.floor(now / 1000)}`],
-    ['started-prefix', `4242\n${Math.floor(now / 1000)}junk`],
-    ['future-start', `4242\n${Math.floor(now / 1000) + 60}`]
+    ['started-prefix', `4242\n${Math.floor(now / 1000)}junk`]
   ]
 
   for (const [name, raw] of malformed) {
@@ -102,6 +101,20 @@ test('numeric prefixes and future timestamps are stale, not live updater claims'
     assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now }), null)
     assert.ok(!fs.existsSync(markerPath(home)), `${name} marker should be pruned`)
   }
+})
+
+test('a live owner survives a wall-clock rollback after writing its marker', () => {
+  const home = tmpHome('clock-rollback')
+  const now = 1_000_000_000_000
+
+  writeMarker(home, 4242, Math.floor(now / 1000) + 60)
+
+  const owner = readLiveUpdateMarker(home, { kill: ALIVE, now: () => now })
+
+  assert.ok(owner, 'clock rollback must not permit a second updater to overlap a live owner')
+  assert.equal(owner.pid, 4242)
+  assert.equal(owner.ageMs, 0)
+  assert.ok(fs.existsSync(markerPath(home)))
 })
 
 test('isPidAlive: own pid is alive, impossible pid is dead', () => {

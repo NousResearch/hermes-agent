@@ -163,9 +163,10 @@ def systemd_user_bus_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     System-level gateway units run as an unprivileged ``User=`` but normally do
     not inherit login-session variables.  When the conventional runtime
     directory is owned by this uid and its bus exists, derive the two standard
-    variables.  Derived fresh on every call rather than adopted once at boot: a
-    system unit has no ordering against ``user@<uid>.service``, and linger may be
-    enabled after the gateway started, so the bus can appear later (#104893).
+    variables.  Derived fresh on every call rather than adopted once at boot:
+    linger may be enabled after the gateway started (existing installs), so
+    the bus can appear later and the probe's failure TTL must be able to
+    recover (#104893).
     The returned copy is passed explicitly to the probe and every scoped spawn;
     ``os.environ`` is left unchanged.
     """

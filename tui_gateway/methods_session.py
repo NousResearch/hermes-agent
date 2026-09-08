@@ -91,6 +91,23 @@ def _make_agent_in_context(sid: str, key: str, **kwargs):
         _clear_session_context(tokens)
 
 
+def _row_follow_profile_config(row) -> bool:
+    """Bot-chat detection from a stored session row (upstream's own signals in
+    _stored_session_runtime_overrides). The live resume record must carry the
+    marker too, or config.set routes bot-chat picks session-scoped and they
+    snap back to the profile config on the next rebuild."""
+    if not row:
+        return False
+    model_config = _parse_model_config(row.get("model_config"), quiet=True)
+    title = str(row.get("title") or "").strip()
+    return bool(
+        model_config.get("room_plumbing")
+        or model_config.get("follow_profile_config")
+        or (row.get("hidden") and title.startswith("Group:"))
+        or title == "Bot Chat"
+    )
+
+
 def _profile_session_db(profile_home):
     """``(db, owns)``: a DEDICATED handle on ``profile_home``'s state.db, else the shared launch db."""
     if profile_home:
@@ -469,10 +486,14 @@ class _Resume:
         ``overrides`` restores the stored model/provider/reasoning/tier so the deferred build matches eager."""
         if overrides is not None:
             extra.update(model_override=overrides.get("model_override"), resume_runtime_overrides=overrides or None)
-        return _deferred_session_record(
+        record = _deferred_session_record(
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
+        # Resume must re-derive the bot-chat marker from the stored row: creation stamps it from
+        # params, resume does not — and without it config.set treats picks as session-scoped.
+        record["follow_profile_config"] = _row_follow_profile_config(self.found)
+        return record
 
     def claim(self, sid: str, record: dict) -> dict | None:
         """Register ``record`` live under the resume lock, or reuse a concurrent winner's session."""
@@ -767,6 +788,7 @@ def _resume_eager(ctx: _Resume) -> dict:
                     _transfer_db_to_agent(agent, ctx.db)
                 ctx.owns_db = False
             if (session := _sessions.get(sid)) is not None:
+                session["follow_profile_config"] = _row_follow_profile_config(ctx.found)
                 if stored_runtime_overrides.get("model_override") is not None:
                     session["model_override"] = stored_runtime_overrides["model_override"]
                 # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.

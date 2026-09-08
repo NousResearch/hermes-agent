@@ -310,6 +310,13 @@ def _set_reasoning(rid, params, key, value, session):
             session.pop("create_reasoning_override", None)
     else:  # session-scoped like the gateway's `/reasoning <level>`; a menu pick must not rewrite the global
         session["create_reasoning_override"] = parsed
+        # Bot chats rebuild model/effort from their profile config.yaml on every resume, so a
+        # session-scoped pick silently snaps back after an app restart. Persist bot-chat picks
+        # into the bot profile config (scoped write via _session_profile_runtime_scope).
+        # Main-chat picks stay session-scoped.
+        if session.get("follow_profile_config") or str(session.get("title") or "").strip() == "Bot Chat":
+            with _session_profile_runtime_scope(session):
+                _write_config_key("agent.reasoning_effort", arg)
     if session and session.get("agent") is not None:
         session["agent"].reasoning_config = parsed
         _persist_live_session_runtime(session)

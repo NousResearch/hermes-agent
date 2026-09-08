@@ -17,6 +17,30 @@ import json
 import pytest
 
 
+def test_wake_script_uses_job_workdir_before_loading_prompt(tmp_path, monkeypatch):
+    from hermes_constants import get_hermes_home
+    from cron import scheduler
+
+    scripts = get_hermes_home() / 'scripts'
+    scripts.mkdir(parents=True, exist_ok=True)
+    workdir = tmp_path / 'repository'
+    workdir.mkdir()
+    script = scripts / 'cwd-gate.py'
+    script.write_text(
+        "import os, json\n"
+        f"print(json.dumps({{'wakeAgent': os.getcwd() != {str(workdir)!r}}}))\n"
+    )
+    def unexpected(*args, **kwargs):
+        raise AssertionError('Empty gate must not build the prompt')
+    monkeypatch.setattr(scheduler, '_build_job_prompt', unexpected)
+    early, prompt = scheduler._prepare_job_prompt(
+        {'prompt': 'unused', 'script': str(script), 'workdir': str(workdir)},
+        'test', 'test', None, None)
+    assert early[0] is True
+    assert early[2] == scheduler.SILENT_MARKER
+    assert prompt is None
+
+
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
     """Isolate cron job storage into a temp dir so tests don't stomp on real jobs."""

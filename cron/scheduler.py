@@ -2054,7 +2054,8 @@ def _prepare_job_prompt(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script_with_claim_heartbeat(job, script_path, cancel_event=cancel_event)
+        prerun_script = _run_job_script_with_claim_heartbeat(
+            job, script_path, workdir=job.get("workdir"), cancel_event=cancel_event)
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)

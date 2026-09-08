@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 from plugins.memory.honcho import HonchoMemoryProvider
 from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho.session import HonchoSessionManager
+from tools.bot_relay import delivery_turn_author
 
 BOT_AUTHOR = {"id": "bot:coder", "name": "coder", "is_bot": True}
 HUMAN_AUTHOR = {"id": "111222", "name": "Alice", "is_bot": False}
@@ -128,6 +129,16 @@ class TestA2aRouting:
 
         assert ivy._a2a_session_key(BOT_AUTHOR) != holly._a2a_session_key(BOT_AUTHOR)
         assert ivy._a2a_session_key(BOT_AUTHOR).startswith("Bot-Chat:a2a:ivy:bot-coder-")
+
+    def test_same_named_senders_on_two_connections_get_two_sessions(self):
+        """A relayed envelope's author carries the sender's connection, and the a2a key keeps it."""
+        provider = _provider()
+        east = delivery_turn_author("coder", "coder", "east")
+        west = delivery_turn_author("coder", "coder", "west")
+
+        assert east["id"] == "bot:east/coder"
+        assert provider._a2a_session_key(east) != provider._a2a_session_key(west)
+        assert provider._a2a_session_key(east).startswith("Bot-Chat:a2a:hermes-assistant:bot-east-coder-")
 
     def test_long_session_key_stays_within_the_honcho_limit(self):
         provider = _provider()

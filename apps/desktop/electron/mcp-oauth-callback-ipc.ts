@@ -17,7 +17,7 @@
  * Security posture:
  *   - binds 127.0.0.1 on an ephemeral port; closes on first callback,
  *     cancel, or timeout — no long-lived listener;
- *   - the listener only ever RECEIVES `code`/`state` query params and
+ *   - the listener only ever RECEIVES `code`/`state`/`iss` query params and
  *     forwards them to the renderer; no tokens are exchanged here — the
  *     gateway verifies `state` (constant-time) before redeeming anything;
  *   - the browser sees only a minimal "return to Hermes" page.
@@ -41,6 +41,7 @@ const DONE_HTML =
 interface CallbackResult {
   code: null | string
   error: null | string
+  iss: null | string
   state: null | string
 }
 
@@ -83,7 +84,7 @@ function dispose(id: string) {
   }
 
   if (!entry.settled) {
-    settle(id, { code: null, error: 'cancelled', state: null })
+    settle(id, { code: null, error: 'cancelled', iss: null, state: null })
   }
 
   pending.delete(id)
@@ -112,6 +113,7 @@ export function registerMcpOauthCallbackIpc() {
       let code: null | string = null
       let state: null | string = null
       let error: null | string = null
+      let iss: null | string = null
 
       try {
         const parsed = new URL(url, 'http://127.0.0.1')
@@ -119,11 +121,12 @@ export function registerMcpOauthCallbackIpc() {
         code = parsed.searchParams.get('code')
         state = parsed.searchParams.get('state')
         error = parsed.searchParams.get('error')
+        iss = parsed.searchParams.get('iss')
       } catch {
         error = 'unparseable callback URL'
       }
 
-      settle(id, { code, error, state })
+      settle(id, { code, error, iss, state })
     })
 
     await new Promise<void>((resolve, reject) => {
@@ -143,7 +146,7 @@ export function registerMcpOauthCallbackIpc() {
     const entry = pending.get(String(id || ''))
 
     if (!entry) {
-      return { code: null, error: 'listener not found', state: null }
+      return { code: null, error: 'listener not found', iss: null, state: null }
     }
 
     if (entry.result) {
@@ -158,7 +161,7 @@ export function registerMcpOauthCallbackIpc() {
 
     const result = await new Promise<CallbackResult>(resolve => {
       const timer = setTimeout(() => {
-        settle(String(id), { code: null, error: 'timeout waiting for OAuth callback', state: null })
+        settle(String(id), { code: null, error: 'timeout waiting for OAuth callback', iss: null, state: null })
       }, timeout)
 
       entry.waiters.push(value => {

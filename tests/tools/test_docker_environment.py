@@ -56,6 +56,7 @@ def _make_dummy_env(**kwargs):
         persist_across_processes=kwargs.get("persist_across_processes", True),
         shared_container_key=kwargs.get("shared_container_key", ""),
         shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
+        snap_compat=kwargs.get("snap_compat", False),
     )
 
 
@@ -483,6 +484,27 @@ def test_security_args_include_setuid_setgid_for_privdrop(monkeypatch):
     }
     assert "SETUID" in added, "SETUID cap missing — image privilege-drop will fail"
     assert "SETGID" in added, "SETGID cap missing — image privilege-drop will fail"
+
+
+def test_snap_compat_drops_only_init_and_no_new_privileges(monkeypatch):
+    """#9730: snap-packaged Docker under AppArmor turns ``--init`` and ``no-new-privileges`` into
+    "exec: operation not permitted" for every process in the container. The opt-out drops exactly
+    those two flags; cap-drop, tmpfs hardening and the privdrop caps are unchanged."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+
+    def run_args(**kw):
+        calls = _mock_subprocess_run(monkeypatch)
+        _make_dummy_env(**kw)
+        return next(c[0] for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run")
+
+    default, compat = run_args(), run_args(snap_compat=True)
+    assert "--init" in default and "no-new-privileges" in default
+    assert "--init" not in compat and "no-new-privileges" not in compat
+
+    def strip(argv):  # everything except the two flags and the random container name
+        return [a for a in argv if a not in ("--init", "--security-opt", "no-new-privileges") and not a.startswith("hermes-")]
+
+    assert strip(default) == strip(compat)
 
 
 # ── run_as_host_user tests ────────────────────────────────────────

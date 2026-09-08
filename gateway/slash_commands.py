@@ -21,13 +21,14 @@ from typing import Optional, Union
 
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
-from gateway.platforms.base import EphemeralReply, MessageEvent
+from gateway.platforms.base import EphemeralReply
+from gateway.platforms.event import MessageEvent
 from gateway.session import AsyncSessionStore
 from gateway.session_transcript import TranscriptReadError
 from gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from gateway.slash_commands_model import GatewayModelCommandsMixin
 from gateway.slash_commands_session import GatewaySessionCommandsMixin
-from gateway.slash_commands_status import GatewayStatusCommandsMixin
+from gateway.slash_commands_status import HISTORY_UNREADABLE, GatewayStatusCommandsMixin
 from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
 
@@ -397,7 +398,7 @@ class GatewaySlashCommandsMixin(
                     # keys the participant on ``user_id_alt or user_id``, so a replayed wake rebuilds
                     # the same session key only when the alt id survives the round-trip.
                     user_id_alt=_field("user_id_alt"),
-                    notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                    notifier_profile=_field("profile") or getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
                     # Subscribing from chat: deliver the passive message and wake the destination agent.
                     delivery_mode="notify+wake", delivery_metadata=delivery_metadata)
             finally:
@@ -1252,7 +1253,7 @@ import hashlib  # noqa: F401,E402
 
 _PLUGIN_COMPAT_LAZY = {
     'HISTORY_UNREADABLE': ('gateway.slash_commands_status', 'HISTORY_UNREADABLE'),
-    'MessageType': ('gateway.platforms.base', 'MessageType'),
+    'MessageType': ('gateway.platforms.event', 'MessageType'),
     'SessionSource': ('gateway.session', 'SessionSource'),
     'base_url_host_matches': ('utils', 'base_url_host_matches'),
     'build_session_key': ('gateway.session', 'build_session_key'),

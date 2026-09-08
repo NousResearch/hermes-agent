@@ -105,3 +105,36 @@ class TestDeepSeekAnthropicPreservesThinking:
                     assert "cache_control" not in b
 
 
+@pytest.mark.parametrize("url", [None, "https://api.anthropic.com", "https://inference-api.nousresearch.com/anthropic"])
+def test_deepseek_model_name_does_not_override_native_signature_contract(url):
+    from agent.anthropic_message_convert import _manage_thinking_signatures
+    block = {"type": "thinking", "thinking": "signed native reasoning", "signature": "sig"}
+    messages = [{"role": "assistant", "content": [dict(block), {"type": "text", "text": "answer"}]}]
+    _manage_thinking_signatures(messages, url, "deepseek-v4")
+    assert messages[0]["content"][0] == block
+
+
+@pytest.mark.parametrize(("model", "kept"), [
+    ("vendor/deepseek-v4", [{"type": "thinking", "thinking": "unsigned"}]),  # thinking family: keep unsigned only
+    (" DeepSeek-Pro ", [{"type": "thinking", "thinking": "unsigned"}]),
+    ("deepseek-chat", []),  # non-thinking DeepSeek and unrelated models: generic third-party strip
+    ("vendor/other-model", []),
+])
+def test_deepseek_proxy_keeps_unsigned_thinking_in_older_tool_turns_only(model, kept):
+    import copy
+    from agent.anthropic_message_convert import convert_messages_to_anthropic
+    history = [
+        {"role": "user", "content": "inspect"},
+        {"role": "assistant", "content": "checking", "reasoning_details": [
+            {"type": "thinking", "thinking": "unsigned", "cache_control": {"type": "ephemeral"}},
+            {"type": "thinking", "thinking": "foreign signed", "signature": "sig"},
+            {"type": "redacted_thinking", "data": "redacted-signature"},
+        ], "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "inspect", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        {"role": "assistant", "content": "done"},
+    ]
+    snapshot = copy.deepcopy(history)
+    _, result = convert_messages_to_anthropic(history, base_url="https://proxy.example/anthropic", model=model)
+    assistant = next(m for m in result if m["role"] == "assistant")
+    assert [b for b in assistant["content"] if b.get("type") in {"thinking", "redacted_thinking"}] == kept
+    assert history == snapshot

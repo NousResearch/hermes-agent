@@ -115,7 +115,7 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
         "tools.memory_tool", "memory_tool", args,
         (
             ("action", "action"), ("target", "target", "memory"), ("content", "content"),
-            ("old_text", "old_text"), ("operations", "operations"),
+            ("old_text", "old_text"), ("new_text", "new_text"), ("operations", "operations"),
         ),
         store=agent._memory_store,
     )

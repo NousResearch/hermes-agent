@@ -19,8 +19,16 @@ const FN_KEY_RE =
 // CSI u (kitty keyboard protocol): ESC [ codepoint [; modifier] u
 // Example: ESC[13;2u = Shift+Enter, ESC[27u = Escape (no modifiers)
 // Modifier is optional - when absent, defaults to 1 (no modifiers)
+//
+// Each parameter may carry a colon sub-parameter once kitty progressive-enhancement
+// flags rise above 1: an alternate key on the codepoint (ESC[97:65;2u) or an event
+// type on the modifier (ESC[97;2:1u). We only consume the leading number of each
+// field and skip the sub-parameter, mirroring the Python path
+// (hermes_cli/curses_ui.py::_parse_csi_u_key) so the two input parsers agree —
+// otherwise the sequence fails to match, name comes back empty, and the CSI-u
+// branch in input-event.ts silently swallows the keystroke (#103885).
 // eslint-disable-next-line no-control-regex
-const CSI_U_RE = /^\x1b\[(\d+)(?:;(\d+))?u/
+const CSI_U_RE = /^\x1b\[(\d+)(?::\d+)?(?:;(\d+)(?::\d+)?)?u/
 
 // xterm modifyOtherKeys: ESC [ 27 ; modifier ; keycode ~
 // Example: ESC[27;2;13~ = Shift+Enter. Emitted by Ghostty/tmux/xterm when

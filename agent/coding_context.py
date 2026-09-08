@@ -195,6 +195,50 @@ def _coding_mode(config: Optional[dict[str, Any]]) -> str:
     return _MODE_ALIASES.get(str(raw).strip().lower(), "auto")
 
 
+def guarded_prompt_enabled(
+    *,
+    platform: Optional[str] = None,
+    cwd: Optional[str | Path] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    config: Optional[dict[str, Any]] = None,
+) -> bool:
+    """Return whether the explicitly opt-in guarded coding prompt applies."""
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            config = load_config_readonly()
+        except Exception:
+            return False
+    agent_cfg = (config or {}).get("agent", {}) or {}
+    if not isinstance(agent_cfg, dict) or _coding_mode(config) != "focus":
+        return False
+    raw = agent_cfg.get("guarded_prompt_mode")
+    if not isinstance(raw, dict) or raw.get("enabled") is not True:
+        return False
+    routes = raw.get("routes")
+    if not isinstance(routes, (list, tuple)):
+        return False
+    route_keys = {
+        (
+            str(route.get("provider") or "").strip().lower(),
+            str(route.get("model") or "").strip().lower(),
+        )
+        for route in routes
+        if isinstance(route, dict)
+    }
+    pair = (str(provider or "").strip().lower(), str(model or "").strip().lower())
+    return bool(
+        pair[0]
+        and pair[1]
+        and pair in route_keys
+        and resolve_runtime_mode(
+            platform=platform, cwd=cwd, config=config, model=model
+        ).is_coding
+    )
+
+
 def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
     if cwd:
         return Path(cwd).expanduser()

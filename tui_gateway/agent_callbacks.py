@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
+import os
 
 from .method_ctx import bind_module
 

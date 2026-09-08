@@ -1306,6 +1306,16 @@ def _load_cfg() -> dict:
     return cfg
 
 
+def _sync_agent_turn_limit_with_config(session: dict) -> None:
+    """Adopt config max-turn edits for an already-built Desktop/TUI agent."""
+    agent = session.get("agent")
+    if agent is None:
+        return
+    from tui_gateway.agent_callbacks import _cfg_max_turns
+
+    agent.max_iterations = _cfg_max_turns(_load_cfg(), 500)
+
+
 def _apply_managed(cfg: dict) -> dict:
     """Overlay administrator-pinned managed-scope values (read-side only, fail-open): this backend builds
     config independently of load_config, so managed skin/reasoning_effort/service_tier/provider_routing

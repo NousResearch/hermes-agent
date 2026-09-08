@@ -69,6 +69,7 @@ def _format_workflow_notification(board: str, snapshot: dict[str, Any]) -> str:
 def _collect_workflow_notifications(kb, *, notifier_profile: str) -> list[dict[str, Any]]:
     """Claim one due aggregate transition per workflow subscription."""
     from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
     try:
         boards = kb.list_boards(include_archived=False)
     except Exception:
@@ -84,6 +85,21 @@ def _collect_workflow_notifications(kb, *, notifier_profile: str) -> list[dict[s
         if db_path in seen_db_paths:
             continue
         seen_db_paths.add(db_path)
+        try:
+            if not kbn.count_workflow_subs(
+                board=board, notifier_profile=notifier_profile,
+            ):
+                logger.debug(
+                    "kanban workflow notifier: board %s has no subscriptions owned by %s; skipping open",
+                    board, notifier_profile,
+                )
+                continue
+        except Exception as exc:
+            logger.debug(
+                "kanban workflow notifier: read-only subscription probe failed for board %s (%s); "
+                "falling back to writable open",
+                board, exc,
+            )
         try:
             conn = kbc.connect(board=board)
         except Exception as exc:

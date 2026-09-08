@@ -85,3 +85,96 @@ def test_zero_sub_board_is_never_opened_writable(tmp_path, monkeypatch):
     assert adapter.sent == []
 
 
+def test_foreign_workflow_only_board_is_never_opened_writable(tmp_path, monkeypatch):
+    """A workflow sub owned by another notifier profile is not eligible work."""
+    db_path = tmp_path / "foreign-workflow-sub.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        acceptance = kb.create_task(conn, title="accept", tenant="tenant-a")
+        actor = kb.KanbanActorContext(
+            principal_id="svc:test", profile_name="default",
+            board_identity=str(kb.kanban_db_path().resolve()), tenant="tenant-a",
+            capabilities=frozenset({"workflow.manage", "workflow.admin"}),
+            source_kind="test",
+        )
+        kb.create_workflow(
+            conn, workflow_id="wf_foreign", name="release", tenant="tenant-a",
+            designated_acceptance_task_id=acceptance, actor=actor, mutation_id="create",
+        )
+        conn.execute(
+            "INSERT INTO kanban_workflow_subscriptions "
+            "(workflow_id,role,platform,chat_id,notifier_profile,target_states,tenant,created_at) "
+            "VALUES ('wf_foreign','origin','telegram','foreign-chat','other','[\"PASS\"]','tenant-a',0)",
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+
+    with patch.object(kbc, "connect", wraps=kbc.connect) as spy_connect:
+        asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    spy_connect.assert_not_called()
+    assert adapter.sent == []
+
+
+def test_workflow_only_board_opens_once_and_delivers(tmp_path, monkeypatch):
+    """An eligible workflow sub must bypass only the task-subscription gate."""
+    db_path = tmp_path / "workflow-only.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        acceptance = kb.create_task(conn, title="accept", tenant="tenant-a")
+        actor = kb.KanbanActorContext(
+            principal_id="svc:test", profile_name="default",
+            board_identity=str(kb.kanban_db_path().resolve()), tenant="tenant-a",
+            capabilities=frozenset({"workflow.manage", "workflow.admin"}),
+            source_kind="test",
+        )
+        created = kb.create_workflow(
+            conn, workflow_id="wf_only", name="release", tenant="tenant-a",
+            designated_acceptance_task_id=acceptance, actor=actor, mutation_id="create",
+        )
+        conn.execute(
+            "INSERT INTO kanban_workflow_subscriptions "
+            "(workflow_id,role,platform,chat_id,notifier_profile,target_states,tenant,created_at,last_event_id) "
+            "VALUES ('wf_only','origin','telegram','workflow-chat','default','[\"CANCELLED\"]','tenant-a',0,?)",
+            (created["workflow"]["last_event_id"],),
+        )
+        kb.cancel_workflow(
+            conn, workflow_id="wf_only", actor=actor, mutation_id="cancel",
+            expected_version=created["workflow"]["version"], reason="superseded",
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+
+    with patch.object(kbc, "connect", wraps=kbc.connect) as spy_connect:
+        asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    # Collection opens once; successful delivery advances the cursor through
+    # its own connection.
+    assert spy_connect.call_count == 2
+    assert [item["chat_id"] for item in adapter.sent] == ["workflow-chat"]
+
+
+def test_task_only_board_opens_once_for_task_collection(tmp_path, monkeypatch):
+    """An eligible task sub still collects while workflow probing stays read-only."""
+    db_path = tmp_path / "task-only.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    _create_completed_task(subscribe=True)
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._kanban_dispatcher_lock_handle = object()
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert [item["chat_id"] for item in adapter.sent] == ["chat-1"]
+

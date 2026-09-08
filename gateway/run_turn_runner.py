@@ -111,12 +111,16 @@ class TurnRunner:
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
         if not ctx.progress_queue or not ctx._run_still_current():
             return
-        # Tool-timer lifecycle, independent of display.tool_progress. When tool_progress is OFF the detailed
-        # progress line is never built (the callback returns before reaching it), so drive the timer
-        # directly here — using only the bare tool name (no args). Scoped to the off case; when
-        # tool_progress is ON the ordinary progress path below already arms/closes the timer (#96942).
-        if (ctx.tool_timer_enabled and not ctx.tool_progress_enabled
-                and event_type in {"tool.started", "tool.completed"}):
+        # Tool-timer lifecycle, dispatched ONCE and BEFORE the onboarding-hint / display branches so a
+        # finished tool always stops rendering as active — regardless of display.tool_progress. Previously
+        # the completion dispatch was split (an off-only block here + an on-only block after the hint), and
+        # the hint branch (`tool.completed and not long_tool_hint_fired[0]`) returned early on the DEFAULT
+        # gate state, swallowing the completion whenever tool_progress was ON (#96942 review issue 4).
+        # Guarded by supports_tool_timer (with the timer off nothing was armed, nothing to close) and, for
+        # tool.completed/tool.started, by NOT _native_slack_task_cards — native Slack task cards consume the
+        # ID-bearing start/complete callbacks themselves; name-correlated timer events would duplicate them.
+        if (ctx.tool_timer_enabled and event_type in {"tool.started", "tool.completed"}
+                and not ctx._native_slack_task_cards):
             sc = self._stream_consumer()
             if sc is not None and getattr(sc, "supports_tool_timer", False):
                 tool_call_id = kwargs.get("tool_call_id")
@@ -124,7 +128,18 @@ class TurnRunner:
                     sc.on_tool_completed(tool_name or "unknown", kwargs.get("duration", 0.0), tool_call_id=tool_call_id)
                 elif tool_name != "clarify":
                     sc.on_tool_started(tool_name or "tool", tool_call_id=tool_call_id)
-            return
+            # When tool_progress is OFF the detailed progress line below is never built, so the timer is the
+            # only consumer of started/completed — return. When ON, the ordinary progress path still renders
+            # the started line, so only completed (fully handled here) returns; started falls through.
+            if event_type == "tool.completed" or not ctx.tool_progress_enabled:
+                # The onboarding hint's only entry point is the tool.completed branch below, which this
+                # early return would otherwise skip on every timer-enabled turn (#96942 review Q3). The
+                # hint is fully self-gating (threshold + progress_mode == "all" + display.tool_progress_command
+                # gate + is_seen latch), so running it here before returning cannot mis-fire and preserves
+                # the one-time /verbose hint for timer platforms.
+                if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
+                    self._progress_onboarding_hint(kwargs)
+                return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
             self._progress_onboarding_hint(kwargs)
             return
@@ -147,12 +162,9 @@ class TurnRunner:
         # name-correlated text events would duplicate cards and mispair concurrent same-tool calls.
         if ctx._native_slack_task_cards and event_type in {"tool.started", "tool.completed"}:
             return
-        # tool_progress ON: close out the native timer history on completion (gated on supports_tool_timer;
-        # with the timer off no start was recorded, so there is nothing to close).
         if event_type == "tool.completed":
-            sc = self._stream_consumer()
-            if sc is not None and getattr(sc, "supports_tool_timer", False):
-                sc.on_tool_completed(tool_name or "unknown", kwargs.get("duration", 0.0), tool_call_id=kwargs.get("tool_call_id"))
+            # Timer completion already dispatched above (or suppressed by task cards). Nothing left to
+            # render for a bare completion on the progress path.
             return
         # tool_progress off → only _thinking passes (above). Only tool.started renders. clarify:
         # send_clarify IS the user-facing rendering (a bubble would duplicate it, and verbose mode

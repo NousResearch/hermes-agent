@@ -107,7 +107,7 @@ _LAUNCHCTL_LIFECYCLE_VERBS_RE = re.compile(
 )
 _HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway\b")
 
-_SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
+_SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh", "ash"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _SHELL_COMMAND_FLAGS = {"-c", "--command"}
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
@@ -789,6 +789,23 @@ def _is_posix_shell_source(text: str) -> bool:
     return _SHEBANG_POSIX_SHELL_RE.match(text) is not None
 
 
+def _is_locally_executable(path: Path) -> bool:
+    """True when *path* exists locally and carries any execute bit.
+
+    An executable, shebang-less file reached in command position still ends up parsed by a POSIX
+    shell: execve(2) fails with ENOEXEC and the calling shell falls back to interpreting the file
+    as shell source line by line, so the recursive walk must keep following it. A file without an
+    execute bit cannot be reached that way — bare execution fails with EACCES — and a remote-only
+    file's mode is not observable from here, so in both cases the observable evidence keeps the
+    (cheaper, still literal-scanned) direct-scan path.
+    """
+    try:
+        return os.access(str(path), os.X_OK)
+    except (OSError, ValueError):
+        # ValueError: embedded NUL from a decoded binary tokenized as a path — never crash the guard.
+        return False
+
+
 # --- referenced-script reading ----------------------------------------------------------------
 
 def _has_binary_magic(data: bytes) -> bool:
@@ -961,11 +978,17 @@ def _contains_unsafe_gateway_action(
             # budget and fail closed on benign CLIs (#105758). The literal-command regex still
             # scans the text — only the recursive reference walk is gated, mirroring the entry
             # point's .py exemption (#77131, #78398).
-            if not budget.charge_text(script_text):
+            if _is_locally_executable(resolved):
+                # An execute bit with no shell shebang is still shell-reachable — the POSIX
+                # ENOEXEC fallback interprets the file as shell source line by line — so a
+                # second-hop lifecycle command hidden in such a file stays inside the walk.
+                pass
+            elif not budget.charge_text(script_text):
                 return _budget_exhausted("text", depth)
-            if _direct_lifecycle_scan(script_text):
+            elif not _direct_lifecycle_scan(script_text):
+                continue
+            else:
                 return True
-            continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
         if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd):
             return True

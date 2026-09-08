@@ -268,10 +268,12 @@ def test_non_shell_bundle_does_not_exhaust_remote_read_budget(tmp_path):
 
 
 def test_non_shell_bundle_without_shebang_is_still_allowed(tmp_path):
-    """Shebang-less bundles (executed via the kernel's sh fallback only when shell-shaped)
-    are the same false-positive class; literal commands are still direct-scanned below."""
+    """A shebang-less bundle with NO execute bit cannot be reached as shell source (bare execution
+    fails with EACCES, so no ENOEXEC fallback ever parses it) — same false-positive class as the
+    shebanged bundle; literal commands are still direct-scanned below."""
     bundle = tmp_path / "tool"
     bundle.write_text(_minified_node_bundle(None), encoding="utf-8")
+    bundle.chmod(0o644)
     reads: list[str] = []
 
     def remote(path: str):
@@ -280,6 +282,44 @@ def test_non_shell_bundle_without_shebang_is_still_allowed(tmp_path):
 
     assert guard(f"{bundle} --version", read_remote_script=remote) is False
     assert reads == []
+
+
+def test_executable_shebangless_reference_keeps_full_walk(tmp_path):
+    """An execute bit with no shell shebang is shell-reachable: execve fails with ENOEXEC and the
+    calling POSIX shell interprets the file as shell source line by line, so the recursive walk
+    must keep following it — a second-hop lifecycle command must not hide behind the shape."""
+    inner = tmp_path / "inner.sh"
+    inner.write_text("echo prep\nhermes gateway restart\n", encoding="utf-8")
+    carrier = tmp_path / "carrier"
+    carrier.write_text(f"exec {inner}\n", encoding="utf-8")
+    reads: list[str] = []
+
+    def remote(path: str):
+        reads.append(path)
+        return None
+
+    carrier.chmod(0o755)
+    assert guard(f"{carrier}", read_remote_script=remote) is True
+    assert reads == []
+
+    # Same file without the execute bit is unreachable as shell source: only the literal scan of
+    # the carrier text runs (it references inner.sh but carries no lifecycle command itself).
+    carrier.chmod(0o644)
+    assert guard(f"{carrier}", read_remote_script=remote) is False
+
+
+def test_busybox_ash_is_a_posix_shell_source(tmp_path):
+    """`ash` joins the shell executables: a ``#!/bin/ash`` shebang keeps the recursive walk on a
+    bare reference, and an explicit ``ash <script>`` invocation stays forced-shell (BusyBox)."""
+    inner = tmp_path / "inner.sh"
+    inner.write_text("echo prep\nhermes gateway restart\n", encoding="utf-8")
+    ashed = tmp_path / "ashed"
+    ashed.write_text("#!/bin/ash\nexec ./inner.sh\n", encoding="utf-8")
+    bare = tmp_path / "bare"
+    bare.write_text("exec ./inner.sh\n", encoding="utf-8")
+
+    assert guard(f"{ashed}", cwd=str(tmp_path)) is True
+    assert guard(f"ash {bare}", cwd=str(tmp_path)) is True
 
 
 def test_literal_lifecycle_command_in_non_shell_source_still_blocked(tmp_path):

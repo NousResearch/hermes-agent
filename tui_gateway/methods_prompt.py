@@ -508,6 +508,14 @@ def _lock_in_submit_turn(
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
     with session["history_lock"]:
+        # Preflight releases this lock before lock-in. A notification or another
+        # human may have reserved the turn meanwhile; refuse without mutating it.
+        if session.get("running"):
+            return _err(rid, 4091, "session is busy — retry after the current turn"), fields
+        from tui_gateway.kanban_delivery import repair_cache
+        from tui_gateway import server as host
+        with _session_db(session) as db:
+            repair_cache(host, session, db)
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):

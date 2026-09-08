@@ -679,6 +679,20 @@ def active_session_registry_snapshot(
 
 
 @contextmanager
+def owned_active_session_guard(lease, session_id):
+    """Pin exact native ownership through a notification history write; never prune or release."""
+    if lease is None or lease.released or not lease.enabled or lease.session_id != session_id:
+        raise ActiveSessionRegistryError('Unknown notification session owner')
+    state_path, lock_path = _lease_paths(lease)
+    with _FileLock(lock_path):
+        entries = _read_entries(state_path, strict=True)
+        own = [e for e in entries if e.get('lease_id') == lease.lease_id and e.get('session_id') == session_id]
+        if len(own) != 1 or any(e.get('session_id') == session_id and e.get('lease_id') != lease.lease_id for e in entries):
+            raise ActiveSessionRegistryError('Notification session ownership changed')
+        yield
+
+
+@contextmanager
 def active_session_liveness_guard(
     session_id: str, *, registry_home: str | Path | None = None,
     own_live_lease_ids: set[str] | None = None,

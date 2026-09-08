@@ -360,23 +360,15 @@ def _collect_kanban_notifications(session: dict) -> list:
 
 
 def _notif_poll_kanban(sid: str, session: dict) -> None:
-    """One kanban poll: emit new texts, buffer them, and run the buffered batch as a turn if idle. Events are
-    cursor-claimed (never re-queued), so they wait in the buffer instead of dropping the agent turn."""
+    """Admit versioned events durably before advancing their source cursor."""
+    from tui_gateway import server
+    from tui_gateway.kanban_delivery import reconcile, preview, continue_pending
     try:
-        texts = _collect_kanban_notifications(session)
+        preview(server, sid, session)
+        reconcile(server, sid, session)
+        continue_pending(server, sid, session)
     except Exception as exc:
-        _notif_log_failure("kanban notification poll failed", exc)
-        texts = []
-    for text in texts:
-        _emit("status.update", sid, {"kind": "process", "text": text})
-    if texts:
-        session.setdefault("_kanban_pending", []).extend(texts)
-    if not session.get("_kanban_pending") or not _notif_claim_turn(session):
-        return
-    with session["history_lock"]:
-        batch, session["_kanban_pending"] = list(session.get("_kanban_pending") or []), []
-    with contextlib.suppress(Exception):
-        _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch), "kanban notification dispatch failed")
+        _notif_log_failure("kanban notification admission deferred", exc)
 
 
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:

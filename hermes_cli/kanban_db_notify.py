@@ -97,7 +97,7 @@ def add_notify_sub(
     metadata_json = _encode_notify_delivery_metadata(delivery_metadata)
     key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn):
-        conn.execute(
+        inserted = conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
@@ -111,6 +111,11 @@ def add_notify_sub(
                 insert_mode, metadata_json, int(time.time()), task_id,
             ),
         )
+        if inserted.rowcount and platform == 'tui':
+            import uuid
+            conn.execute('UPDATE kanban_notify_subs SET delivery_version=1, '
+                         'subscription_generation=?, cutover_event_id=last_event_id ' + _SUB_KEY_WHERE,
+                         (uuid.uuid4().hex, *key))
         # chat_type / delivery_mode / delivery_metadata are last-write-wins;
         # user_id_alt and notifier_profile only self-heal legacy rows lacking one.
         for column, value, fill_only in (

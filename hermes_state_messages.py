@@ -177,7 +177,7 @@ class SessionMessagesMixin:
     def _check_transcript_write_guards(self, conn, session_id: str, compression_lock_holder: Optional[str],
         turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0,
         reject_active_turn_lease: bool = False, reject_active_compression_lock: bool = False,
-        allow_closed_compression_parent: bool = False) -> None:
+        allow_closed_compression_parent: bool = False, strict_turn_lease: bool = False) -> None:
         """Transcript-write admission checks, run INSIDE the write txn by every writer. Ordinary appends do
         NOT check compression_locks: the lock only stops two COMPRESSIONS colliding and archive_and_compact()
         commits against a watermark, so concurrent appends are safe (blocking them killed turns during slow
@@ -207,7 +207,15 @@ class SessionMessagesMixin:
                 elif active_lock["holder"] != compression_lock_holder:
                     raise SessionCompressionInProgressError(
                         f"Session {session_id!r} is being compressed by another writer")
-        if turn_lease_holder or reject_active_turn_lease:
+        if strict_turn_lease:
+            # Notification admission must never enter ordinary renewal/reclaim paths.
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            lease = conn.execute(_TURN_LEASE_ROW_SQL, (conversation_id,)).fetchone()
+            if (not turn_lease_holder or lease is None or lease["holder"] != turn_lease_holder
+                    or not float(lease["expires_at"]) > time.time()):
+                raise SessionTurnLeaseLostError(
+                    f"Notification turn lease missing, competing or stale for {session_id!r}")
+        elif turn_lease_holder or reject_active_turn_lease:
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             lease = conn.execute(_TURN_LEASE_ROW_SQL, (conversation_id,)).fetchone()
             now = time.time()
@@ -289,6 +297,17 @@ class SessionMessagesMixin:
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    def append_notification_once(self, session_id: str, *, identity: Dict[str, Any],
+                                 content: str, turn_lease_holder: str) -> int:
+        """Atomically admit one structured TUI event under an existing live turn lease.
+
+        Returns the original message id on retry, including after compression.
+        The host must serialize its history boundary and reload its cache before
+        another turn; this storage primitive neither acquires leases nor acks Kanban.
+        """
+        from hermes_state_notifications import append_notification_once
+        return append_notification_once(self, session_id, identity, content, turn_lease_holder)
 
     def append_messages_batch(
         self, session_id: str, messages: List[Dict[str, Any]], compression_lock_holder: Optional[str] = None,

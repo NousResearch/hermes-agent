@@ -760,7 +760,10 @@ export function BotsPane() {
                 <Codicon className="mr-1.5" name="hubot" />
                 {b.bot.newTitle}
               </DropdownMenuItem>
-              <DropdownMenuItem disabled={activeSourceRoster.length < 2} onSelect={() => setGroupCreateOpen(true)}>
+              <DropdownMenuItem
+                disabled={roster.filter(bot => !bot?.ghost).length < 2}
+                onSelect={() => setGroupCreateOpen(true)}
+              >
                 <Codicon className="mr-1.5" name="organization" />
                 {b.group.newTitle}
               </DropdownMenuItem>

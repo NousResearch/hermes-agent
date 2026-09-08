@@ -9,6 +9,19 @@ INVALID_TABLE = "hosted_room_work_records_invalid"
 
 
 def initialize(conn):
+    # RELEASE commits a first opener, but never commits a caller-owned BEGIN.
+    # DDL is otherwise autocommitted before SQLite implicitly begins row copies.
+    conn.execute("SAVEPOINT work_record_initialize")
+    try:
+        _initialize_locked(conn)
+    except BaseException:
+        conn.execute("ROLLBACK TO work_record_initialize")
+        conn.execute("RELEASE work_record_initialize")
+        raise
+    conn.execute("RELEASE work_record_initialize")
+
+
+def _initialize_locked(conn):
     from gateway import hosted_room_work_records as work
     tables = (work.SOURCE_TABLE, work.TARGET_TABLE, work.PENDING_TABLE)
     # Orphans are opaque evidence, not snapshots. No FK or producer can honestly
@@ -66,7 +79,21 @@ def initialize(conn):
     _guards(conn, work, tables)
     _invalid_guards(conn)
     initialize_lineage_guards(conn)
+    # Validate before disposition reconciliation: metadata corruption is not a
+    # legitimate authority transition. Keep its original outcome and bytes.
+    for table in tables:
+        for row in conn.execute(f"SELECT * FROM {table} WHERE disposition='current'").fetchall():
+            try:
+                validate_stored(row)
+            except work.InvalidStoredWorkRecord:
+                key = "room_id=? AND producer_gateway_id=? AND producer_epoch=?"
+                args = (row["room_id"], row["producer_gateway_id"], row["producer_epoch"])
+                if table == work.PENDING_TABLE:
+                    key += " AND target_install_id=?"
+                    args += (row["target_install_id"],)
+                conn.execute(f"UPDATE {table} SET disposition='invalid' WHERE {key}", args)
     reconcile_locked(conn)
+    work.initialize_target_guards(conn)
 
 
 def reconcile_locked(conn):
@@ -97,14 +124,17 @@ def _guards(conn, work, tables):
             key = "room_id=NEW.room_id AND producer_gateway_id=NEW.producer_gateway_id AND producer_epoch=NEW.producer_epoch"
             if table == work.PENDING_TABLE:
                 key += " AND target_install_id=NEW.target_install_id"
-            old_size = (f"COALESCE((SELECT length(CAST(record_json AS BLOB)) FROM {table} WHERE {key}),0)"
-                        if operation == "INSERT" else "length(CAST(OLD.record_json AS BLOB))")
+            old_size = (f"COALESCE((SELECT {row_size_sql(table)} FROM {table} WHERE {key}),0)"
+                        if operation == "INSERT" else row_size_sql(table, "OLD."))
+            new_size = row_size_sql(table, "NEW.")
             old_count = f"(SELECT COUNT(*) FROM {table} WHERE {key})" if operation == "INSERT" else "1"
             conn.execute(f"DROP TRIGGER IF EXISTS trg_{table}_budget_v2_{operation.lower()}")
-            conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_budget_v3_{operation.lower()}
-                BEFORE {operation} ON {table} WHEN ({"1" if operation == "INSERT" else "NEW.record_json!=OLD.record_json"}) AND (
-                    {total}-{old_size}+length(CAST(NEW.record_json AS BLOB))>{work.MAX_STORE_BYTES}
-                    OR {count}-{old_count}+1>{work.MAX_STORE_ROWS})
+            conn.execute(f"DROP TRIGGER IF EXISTS trg_{table}_budget_v3_{operation.lower()}")
+            conn.execute(f"DROP TRIGGER IF EXISTS trg_{table}_budget_v4_{operation.lower()}")
+            conn.execute(f"""CREATE TRIGGER trg_{table}_budget_v4_{operation.lower()}
+                BEFORE {operation} ON {table} WHEN (
+                    (({new_size})>({old_size}) AND ({total})-({old_size})+({new_size})>{work.MAX_STORE_BYTES})
+                    OR ({old_count}=0 AND ({total}>{work.MAX_STORE_BYTES} OR {count}+1>{work.MAX_STORE_ROWS})))
                 BEGIN SELECT RAISE(ABORT, 'work record storage is full'); END""")
         conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_immutable_v2
             BEFORE UPDATE ON {table} WHEN
@@ -169,15 +199,23 @@ def initialize_lineage_guards(conn):
             END""")
 
 
+def retained_fields(table):
+    from gateway import hosted_room_work_records as work
+    fields = ["room_id", "revision", "digest", "record_json"]
+    fields += ["source_table"] if table == INVALID_TABLE else ["producer_gateway_id", "producer_epoch"]
+    if table in (work.PENDING_TABLE, INVALID_TABLE):
+        fields += ["target_install_id", "route_generation", "status"]
+    return fields
+
+
+def row_size_sql(table, prefix=""):
+    # Reserve the longest bounded disposition up front so freezing/cleanup can
+    # still run at capacity. Every original variable column is charged as bytes.
+    return "20+" + "+".join(f"COALESCE(length(CAST({prefix}{k} AS BLOB)),0)" for k in retained_fields(table))
+
+
 def usage_sql(tables):
-    # Charge all retained columns of opaque invalid evidence, not just its payload.
-    def size(table):
-        return ("length(CAST(record_json AS BLOB))" if table != INVALID_TABLE else
-                "length(CAST(record_json AS BLOB))+length(CAST(room_id AS BLOB))+length(CAST(digest AS BLOB))"
-                "+length(CAST(revision AS BLOB))+length(CAST(source_table AS BLOB))"
-                "+COALESCE(length(CAST(target_install_id AS BLOB)),0)"
-                "+COALESCE(length(CAST(route_generation AS BLOB)),0)+COALESCE(length(CAST(status AS BLOB)),0)")
-    return (" + ".join(f"(SELECT COALESCE(SUM({size(t)}),0) FROM {t})" for t in tables),
+    return (" + ".join(f"(SELECT COALESCE(SUM({row_size_sql(t)}),0) FROM {t})" for t in tables),
             " + ".join(f"(SELECT COUNT(*) FROM {t})" for t in tables))
 
 
@@ -217,10 +255,14 @@ def _invalid_guards(conn):
 
 def validate_stored(row):
     from gateway import hosted_room_work_records as work
-    record = work.validate(json.loads(row["record_json"]))
-    if (scope(record) != (row["room_id"], row["producer_gateway_id"], row["producer_epoch"])
-            or record["revision"] != row["revision"] or record["digest"] != row["digest"]):
-        raise work.WorkRecordError("stored work metadata conflicts with record scope")
+    try:
+        record = work.validate(json.loads(row["record_json"]))
+        if (row["disposition"] == "invalid"
+                or scope(record) != (row["room_id"], row["producer_gateway_id"], row["producer_epoch"])
+                or record["revision"] != row["revision"] or record["digest"] != row["digest"]):
+            raise work.WorkRecordError("stored work metadata conflicts with record scope")
+    except (ValueError, TypeError, KeyError, RecursionError) as exc:
+        raise work.InvalidStoredWorkRecord("stored work evidence is invalid") from exc
     return record
 
 
@@ -231,7 +273,6 @@ def scope(record):
 def save_locked(conn, table, record, *, target_install_id=None, route_generation=None):
     from gateway import hosted_room_work_records as work
     data = work.encode(record)
-    work._budget(conn, table, record["room_id"], data, target_install_id, producer=record["authority"])
     fields = ["room_id", "producer_gateway_id", "producer_epoch", "revision", "digest", "record_json", "disposition"]
     values = [*scope(record), record["revision"], record["digest"], data, "current"]
     keys = fields[:3]
@@ -239,6 +280,7 @@ def save_locked(conn, table, record, *, target_install_id=None, route_generation
         fields += ["target_install_id", "route_generation", "status"]
         values += [target_install_id, route_generation, "pending"]
         keys += ["target_install_id"]
+    work._budget(conn, table, dict(zip(fields, values)))
     updates = ','.join(f'{k}=excluded.{k}' for k in fields if k not in keys)
     conn.execute(f"INSERT INTO {table} ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)}) "
                  f"ON CONFLICT({','.join(keys)}) DO UPDATE SET {updates}", values)

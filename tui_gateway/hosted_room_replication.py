@@ -425,10 +425,18 @@ class HostedRoomReplicationPublisher:
                 refused = checkpoint["work_record_status"] in work_records.BLOCKED_DELIVERY_STATUSES
                 work_rank = 2 if opted_in and refused else 0 if opted_in else 1
                 unavailable = checkpoint["status"] == "unavailable"
-                work_unavailable = checkpoint["work_record_status"] == "unavailable"
-                # Equal transient work failures must get their existing queue
-                # turns; a stable member key otherwise pins retries to one peer.
-                turn_rank = route.key != initial.key if work_rank == 0 and work_unavailable else False
+                # A failed capability probe is also a transient inability to
+                # deliver work. It must share queue turns with failed work sends.
+                work_unavailable = (checkpoint["work_record_status"] == "unavailable"
+                                    or (unavailable and room["authority_epoch"] != 1
+                                        and checkpoint["work_record_version"] is None))
+                # V1 keeps its established queue turns. V2 also has pre-send
+                # negotiation failures: rotate those with work failures by last
+                # attempt, not by a stale failure kind or stable member key.
+                turn_rank = 0
+                if work_rank == 0 and work_unavailable:
+                    turn_rank = (checkpoint["updated_at"] if room["authority_epoch"] != 1
+                                 else route.key != initial.key)
                 selected.append((unavailable, work_rank, work_unavailable, turn_rank, route.key, route))
         # Prioritize a covered work anchor only when some current route can
         # attempt it. Blocked work must not hide an otherwise healthy history path.
@@ -616,9 +624,14 @@ class HostedRoomReplicationPublisher:
                                      (*route.key, route.generation)).fetchone()
                 if state is None or state[0] in work_records.BLOCKED_DELIVERY_STATUSES:
                     return False
-                record = work_records.prepare_delivery_locked(
-                    conn, room_id=route.key[0], target_install_id=route.link.catalog.installation_id,
-                    route_generation=route.generation, local_gateway_id=self.local_id, through_seq=checkpoint["acked_seq"])
+                try:
+                    record = work_records.prepare_delivery_locked(
+                        conn, room_id=route.key[0], target_install_id=route.link.catalog.installation_id,
+                        route_generation=route.generation, local_gateway_id=self.local_id, through_seq=checkpoint["acked_seq"])
+                except work_records.InvalidStoredWorkRecord:
+                    conn.execute(f"UPDATE {_TABLE} SET work_record_status='invalid_work_evidence' "
+                                 "WHERE room_id=? AND member_id=? AND generation=?", (*route.key, route.generation))
+                    return False
                 if record is None and state[0] in {"source_prefix_expired", "work_record_capture_unavailable"}:
                     # Successful unchanged capture needs no transport. Other
                     # no-delivery outcomes must not imply acknowledgement.
@@ -655,8 +668,8 @@ class HostedRoomReplicationPublisher:
                         conn, room_id=route.key[0], target_install_id=route.link.catalog.installation_id,
                         route_generation=route.generation, record=record, status=status)
                     if saved:
-                        conn.execute(f"UPDATE {_TABLE} SET work_record_status=? WHERE room_id=? AND member_id=? AND generation=?",
-                                     (status, *route.key, route.generation))
+                        conn.execute(f"UPDATE {_TABLE} SET work_record_status=?,updated_at=? WHERE room_id=? AND member_id=? AND generation=?",
+                                     (status, time.time(), *route.key, route.generation))
             if prefix_gap:
                 reset = dict(acked_seq=0, pending_end=None, pending_latest=None, pending_name=None, status="replica_gap")
                 if self._save(route, checkpoint, **reset):
@@ -718,7 +731,7 @@ class HostedRoomReplicationPublisher:
         except (OSError, sqlite3.Error):
             routes, retirements, record_deliveries, error = None, None, None, "publisher_status_unavailable"
         capture_errors = sorted({row["work_record_status"] for row in routes or []
-            if row["work_record_status"] in {"source_prefix_expired", "work_record_capture_unavailable", "unsupported_lineage"}
+            if row["work_record_status"] in {"source_prefix_expired", "work_record_capture_unavailable", "unsupported_lineage", "invalid_work_evidence"}
             and not row["status"].startswith("stopped")})
         return {
             "running": any(t.is_alive() for t in self._threads), "stopping": self._stop.is_set(),

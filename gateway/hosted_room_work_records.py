@@ -23,7 +23,7 @@ MAX_STORE_ROWS = 512
 SOURCE_TABLE = "hosted_room_work_records_source"
 TARGET_TABLE = "hosted_room_work_records_target"
 PENDING_TABLE = "hosted_room_work_records_pending"
-BLOCKED_DELIVERY_STATUSES = {"rejected", "needs_reauthorization", "invalid_ack", "unsupported_lineage"}
+BLOCKED_DELIVERY_STATUSES = {"rejected", "needs_reauthorization", "invalid_ack", "unsupported_lineage", "invalid_work_evidence"}
 LIMITATIONS = ["process_local_approvals_not_captured", "field_journals_not_captured",
                "external_effects_not_captured", "absent_record_is_not_non_admission", "not_execution_checkpoint"]
 _PHASES = {"queued", "running", "indeterminate", "stopping", "deferred", "settled", "failed", "cancelled"}
@@ -39,6 +39,10 @@ _FIELDS = {"version", "room_id", "home_install_id", "authority", "roster_sha256"
 
 class WorkRecordError(ValueError):
     """Controlled invalid or unavailable work evidence."""
+
+
+class InvalidStoredWorkRecord(WorkRecordError):
+    """Retained bytes cannot be reused; commit their invalid disposition."""
 
 
 class WorkRecordCapacityError(WorkRecordError):
@@ -157,6 +161,9 @@ def validate(record: dict) -> dict:
 
 def initialize(conn: sqlite3.Connection) -> None:
     storage.initialize(conn)
+
+
+def initialize_target_guards(conn):
     for operation in ("INSERT", "UPDATE"):
         conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_work_records_active_{operation.lower()}
             BEFORE {operation} ON {TARGET_TABLE}
@@ -193,17 +200,18 @@ def initialize_retirement_guards(conn):
         BEGIN DELETE FROM {TARGET_TABLE} WHERE room_id=NEW.room_id; END""")
 
 
-def _budget(conn, table, room_id, data, target_install_id=None, *, producer=None):
+def _budget(conn, table, proposed):
     total_sql, count_sql = storage.usage_sql((SOURCE_TABLE, TARGET_TABLE, PENDING_TABLE, storage.INVALID_TABLE))
     total, count = conn.execute(f"SELECT {total_sql}, {count_sql}").fetchone()
-    where, args = "room_id=?", (room_id,)
-    if target_install_id is not None:
-        where, args = where + " AND target_install_id=?", (*args, target_install_id)
-    if producer is not None:
-        where += " AND producer_gateway_id=? AND producer_epoch=?"
-        args = (*args, producer["gateway_id"], producer["epoch"])
-    old = conn.execute(f"SELECT length(CAST(record_json AS BLOB)) FROM {table} WHERE {where}", args).fetchone()
-    if total - (old[0] if old else 0) + len(data.encode("utf-8")) > MAX_STORE_BYTES or (count - (1 if old else 0) + 1 > MAX_STORE_ROWS):
+    keys = ["room_id", "producer_gateway_id", "producer_epoch"]
+    if table == PENDING_TABLE:
+        keys.append("target_install_id")
+    where = " AND ".join(f"{k}=?" for k in keys)
+    old = conn.execute(f"SELECT {storage.row_size_sql(table)} FROM {table} WHERE {where}",
+                       [proposed[k] for k in keys]).fetchone()
+    size = conn.execute(f"SELECT {storage.row_size_sql(table)} FROM (SELECT "
+                        + ",".join(f"? AS {k}" for k in proposed) + ")", tuple(proposed.values())).fetchone()[0]
+    if total - (old[0] if old else 0) + size > MAX_STORE_BYTES or count - bool(old) + 1 > MAX_STORE_ROWS:
         raise WorkRecordCapacityError("work record storage is full")
 
 
@@ -256,7 +264,11 @@ def _capture_tasks(conn, room_id):
 def capture(db_path, *, room_id: str, local_gateway_id: str, through_seq: int | None = None) -> dict:
     """Commit a new revision only when one consistent source view changes."""
     with rooms._transaction(db_path, immediate=True) as conn:
-        return capture_locked(conn, room_id=room_id, local_gateway_id=local_gateway_id, through_seq=through_seq)
+        try:
+            return capture_locked(conn, room_id=room_id, local_gateway_id=local_gateway_id, through_seq=through_seq)
+        except InvalidStoredWorkRecord:
+            pass  # Commit the initializer's invalid disposition, not new evidence.
+    raise InvalidStoredWorkRecord("stored work evidence is invalid")
 
 
 def capture_locked(conn, *, room_id, local_gateway_id, through_seq=None):
@@ -289,7 +301,8 @@ def capture_locked(conn, *, room_id, local_gateway_id, through_seq=None):
         content["incompleteness"] = ["prior_authority_work_unknown"]
     previous = conn.execute(f"SELECT * FROM {SOURCE_TABLE} WHERE room_id=? AND producer_gateway_id=? AND producer_epoch=?",
                             storage.scope(content)).fetchone()
-    revision = previous["revision"] + 1 if previous else 1
+    previous_record = storage.validate_stored(previous) if previous is not None else None
+    revision = previous_record["revision"] + 1 if previous_record else 1
     record = {**content, "revision": revision, "digest": digest(content)}
     if len(encode(record).encode("utf-8")) > MAX_BYTES:
         content.update(tasks=[], receipts=[], availability="unavailable", reason="bounds_exceeded")
@@ -304,8 +317,8 @@ def capture_locked(conn, *, room_id, local_gateway_id, through_seq=None):
             raise
         content.update(tasks=[], receipts=[], availability="unavailable", reason="unsupported_task")
         record = validate({**content, "revision": revision, "digest": digest(content)})
-    if previous is not None and previous["digest"] == record["digest"]:
-        return json.loads(previous["record_json"])
+    if previous_record is not None and previous_record["digest"] == record["digest"]:
+        return previous_record
     storage.save_locked(conn, SOURCE_TABLE, record)
     return record
 
@@ -327,14 +340,18 @@ def _validate_roster(record, members):
 def ingest(db_path, *, record: dict, token: str, secret: bytes, target_install_id: str, target_profile: str) -> dict:
     from gateway import hosted_room_replicas as replicas
     checked = validate(record)
+    error = WorkRecordError("passive work record target is quarantined")
     with replicas._replica_transaction(db_path) as conn:
         row = conn.execute("SELECT * FROM hosted_room_replicas WHERE room_id=?", (checked["room_id"],)).fetchone()
         if row is None or row["quarantine_reason"] is None:
-            return _ingest_audited_locked(conn, checked=checked, row=row, token=token, secret=secret,
-                                          target_install_id=target_install_id, target_profile=target_profile)
+            try:
+                return _ingest_audited_locked(conn, checked=checked, row=row, token=token, secret=secret,
+                                              target_install_id=target_install_id, target_profile=target_profile)
+            except InvalidStoredWorkRecord as exc:
+                error = exc  # Preserve the newly discovered invalid disposition.
         # Commit the existing auditor's quarantine, not a metadata write. Raising
         # inside the transaction would roll back that newly discovered evidence.
-    raise WorkRecordError("passive work record target is quarantined")
+    raise error
 
 
 def _ingest_audited_locked(conn, *, checked, row, token, secret, target_install_id, target_profile):
@@ -371,7 +388,7 @@ def _ingest_audited_locked(conn, *, checked, row, token, secret, target_install_
         raise WorkRecordPrefixError("work record history prefix conflicts")
     old = conn.execute(f"SELECT * FROM {TARGET_TABLE} WHERE room_id=? AND producer_gateway_id=? AND producer_epoch=?", storage.scope(checked)).fetchone()
     if old is not None:
-        previous = json.loads(old["record_json"])
+        previous = storage.validate_stored(old)
         if checked["revision"] < old["revision"] or (checked["revision"] == old["revision"] and checked["digest"] != old["digest"]):
             raise WorkRecordError("work record revision conflicts")
         if prefix["seq"] < previous["history"]["seq"]:
@@ -393,12 +410,12 @@ def pending_delivery_is_anchored_locked(conn, *, room_id, target_install_id, thr
     if not table_exists(conn, PENDING_TABLE):
         return False
     initialize(conn)
-    row = conn.execute(f"SELECT status,record_json FROM {PENDING_TABLE} WHERE room_id=? AND target_install_id=? AND disposition='current'",
+    row = conn.execute(f"SELECT * FROM {PENDING_TABLE} WHERE room_id=? AND target_install_id=? AND disposition='current'",
                        (room_id, target_install_id)).fetchone()
     if row is None or row["status"] == "acked":
         return False
     try:
-        record = validate(json.loads(row["record_json"]))
+        record = storage.validate_stored(row)
     except (WorkRecordError, ValueError, TypeError):
         return False
     return record["history"]["seq"] <= through_seq
@@ -412,12 +429,13 @@ def prepare_delivery_locked(conn, *, room_id, target_install_id, route_generatio
         raise WorkRecordError("work record source is unavailable")
     key = (room_id, current["authority_gateway_id"], current["authority_epoch"], target_install_id)
     old = conn.execute(f"SELECT * FROM {PENDING_TABLE} WHERE room_id=? AND producer_gateway_id=? AND producer_epoch=? AND target_install_id=?", key).fetchone()
+    old_record = storage.validate_stored(old) if old is not None else None
     if old is not None and old["disposition"] != "current":
         raise WorkRecordError("pending work record is not current")
     if old is not None and old["status"] != "acked":
         if old["route_generation"] == route_generation and old["status"] in BLOCKED_DELIVERY_STATUSES:
             return None
-        record = validate(json.loads(old["record_json"]))
+        record = old_record
         current = conn.execute("SELECT authority_gateway_id,authority_epoch,members_json FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
         if (current is None or record["home_install_id"] != local_gateway_id
                 or record["authority"] != {"gateway_id": current["authority_gateway_id"], "epoch": current["authority_epoch"]}
@@ -440,7 +458,12 @@ def prepare_delivery_locked(conn, *, room_id, target_install_id, route_generatio
 
 
 def delivery_status_locked(conn, *, room_id, target_install_id, route_generation, record, status):
-    storage.reconcile_locked(conn)
+    initialize(conn)
+    row = conn.execute(f"SELECT * FROM {PENDING_TABLE} WHERE room_id=? AND target_install_id=? "
+                       "AND producer_gateway_id=? AND producer_epoch=? AND disposition='current'",
+                       (room_id, target_install_id, record["authority"]["gateway_id"], record["authority"]["epoch"])).fetchone()
+    if row is None or storage.validate_stored(row) != record:
+        return False
     return conn.execute(f"""UPDATE {PENDING_TABLE} SET status=? WHERE room_id=? AND target_install_id=?
         AND route_generation=? AND revision=? AND digest=? AND producer_gateway_id=? AND producer_epoch=?
         AND disposition='current'""",
@@ -503,7 +526,7 @@ def summary_locked(conn, room_id):
                 item["task_origins"] = task_origins(record, enrolled_history(enrolled))
         except (WorkRecordError, ValueError, TypeError):
             item.update(availability="invalid", incompleteness=["invalid_work_evidence"])
-        if row["disposition"] == "current" and current is not None and producer == {"gateway_id": current["authority_gateway_id"], "epoch": current["authority_epoch"]}:
+        if row["disposition"] in {"current", "invalid"} and current is not None and producer == {"gateway_id": current["authority_gateway_id"], "epoch": current["authority_epoch"]}:
             selected = item
         scopes.append(item)
     for row in conn.execute(f"SELECT source_table FROM {storage.INVALID_TABLE} WHERE room_id=? AND source_table=?",

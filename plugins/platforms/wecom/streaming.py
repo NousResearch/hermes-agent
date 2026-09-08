@@ -150,6 +150,14 @@ class StreamTurn:
         # gateway cannot learn about it from a synchronous return. The next _send_stream_frame_core call
         # drains this into its StreamSendOutcome.rotated (deferred by one frame).
         self.pending_rotation_signal: bool = False
+        # Byte length of the body the MOST RECENT rotation sealed onto the old bubble (== len of
+        # accumulated_text at seal time). A finalize frame that lands on the fresh bubble carries the
+        # gateway's full cumulative slice (its split offset has not advanced yet — it learns rotated=True
+        # only from this call's return), so it still starts with the sealed prefix. _finalize_turn slices
+        # that prefix off by THIS length so the fresh bubble shows only the post-seal tail. None once no
+        # rotation is pending against the next frame (consumed by finalize, or cleared when an intermediate
+        # body actually flows post-rotation — that path is already corrected by the gateway's split offset).
+        self.rotation_seal_body_len: Optional[int] = None
         # Per-turn rotation lock (Layer 2 concurrency guard). The active rotation timer runs concurrently
         # with the frame-send path; both mutate stream_id/seeded/last_sent_content across awaits. This
         # lock makes each side's "check state -> act" critical section atomic. Created lazily because
@@ -505,6 +513,9 @@ class WeComStreamMixin:
         close_text = (turn.accumulated_text or "") + ROTATION_CONTINUATION_SUFFIX
         if close_text and close_text == turn.last_sent_content:
             close_text = close_text + "​"  # zero-width space so the server never drops the seal
+        # Record the sealed body length BEFORE the send: a finalize landing on the fresh bubble slices its
+        # (still-full) cumulative body by this so it never repeats the sealed prefix (see _finalize_turn).
+        turn.rotation_seal_body_len = len(turn.accumulated_text or "")
         try:
             await self._send_stream_reply(turn.req_id, old_stream_id, close_text, finish=True)
         except WeComStreamExpiredError:
@@ -700,6 +711,9 @@ class WeComStreamMixin:
                 return StreamFrameResult.DELIVERED  # nothing new (identity dedup)
             await self._send_stream_reply(turn.req_id, turn.stream_id, text, finish=False)
             turn.last_sent_content = text
+            # An intermediate body has now flowed on the fresh bubble; the gateway's split offset already
+            # slices subsequent frames, so a pending finalize-seal offset would be stale — drop it.
+            turn.rotation_seal_body_len = None
             return StreamFrameResult.DELIVERED
         except WeComStreamExpiredError:
             # Intermediates are overwritten by the next frame anyway; expiring here would duplicate.
@@ -728,6 +742,18 @@ class WeComStreamMixin:
         marking the turn finalized."""
         self._cancel_keepalive(turn)
         self._cancel_rotation_check(turn)
+        # A finalize that lands on a freshly-rotated bubble (this call rotated up-front, OR an active-timer
+        # rotation sealed just before it) receives the gateway's FULL cumulative slice — its split offset has
+        # not advanced yet (it learns rotated=True only from this call's return), so `text` still begins with
+        # the sealed prefix. Unlike an intermediate frame there is no next frame to correct the slice, so drop
+        # the sealed prefix HERE by the recorded seal length (offset accounting, not string search): the fresh
+        # bubble must show only the post-seal tail. Guard on the prefix actually matching so an unexpected
+        # divergence falls back to sending `text` whole rather than truncating wrong content.
+        seal_len = turn.rotation_seal_body_len
+        turn.rotation_seal_body_len = None  # consumed
+        if seal_len and 0 < seal_len <= len(text) and turn.accumulated_text and text.startswith(turn.accumulated_text):
+            logger.info("[%s] finalize on rotated bubble — dropping %d-char sealed prefix so the fresh bubble carries only the tail (turn=%s).", self.name, seal_len, turn_id)
+            text = text[seal_len:]
         # A final frame identical to the last intermediate is silently dropped — differ via ZWSP.
         final_text = text + "​" if text and text == turn.last_sent_content else text
         response = await self._send_stream_reply(turn.req_id, turn.stream_id, final_text, finish=True)

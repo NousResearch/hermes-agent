@@ -53,8 +53,10 @@ _manifest_lock = threading.Lock()
 _manifest_cache: Optional[Dict[str, Dict[str, str]]] = None   # facade -> {name: new_path}
 
 
+_MANIFEST_PATH = Path(__file__).resolve().parent.parent / _MANIFEST_NAME
+
 def manifest_path() -> Path:
-    return Path(__file__).resolve().parent.parent / _MANIFEST_NAME
+    return _MANIFEST_PATH
 
 
 def load_manifest() -> Dict[str, Dict[str, str]]:

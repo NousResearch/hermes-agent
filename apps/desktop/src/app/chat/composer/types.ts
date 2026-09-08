@@ -26,6 +26,10 @@ export interface ChatBarState {
     quickModels?: QuickModelOption[]
     /** Reused status-bar dropdown (built with gateway + selectModel upstream). */
     modelMenuContent?: ReactNode
+    /** Live effort for this surface and its dedicated dropdown. */
+    reasoningEffort?: string
+    reasoningMenuContent?: ReactNode
+    supportsReasoning?: boolean
   }
   tools: { enabled: boolean; label: string; suggestions?: ContextSuggestion[] }
   voice: { enabled: boolean; active: boolean }

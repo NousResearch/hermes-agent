@@ -131,6 +131,23 @@ describe('narrow tiles', () => {
   })
 })
 
+describe('separate model and reasoning controls', () => {
+  it('renders reasoning effort beside the model as its own control', () => {
+    renderControls({
+      state: {
+        ...state,
+        model: {
+          ...state.model,
+          reasoningEffort: 'high',
+          reasoningMenuContent: <div>Reasoning choices</div>
+        }
+      }
+    })
+
+    expect(screen.getByRole('button', { name: 'Effort: High' })).toBeTruthy()
+  })
+})
+
 describe('ComposerControls shortcut tooltips', () => {
   it('shows Enter for Send', async () => {
     renderControls()

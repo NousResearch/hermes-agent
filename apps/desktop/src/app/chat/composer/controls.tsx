@@ -13,6 +13,7 @@ import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
+import { ReasoningPill } from './reasoning-pill'
 import type { ChatBarState, VoiceStatus } from './types'
 import { VoiceMenu } from './voice-menu'
 
@@ -108,6 +109,7 @@ export function ComposerControls({
       {minimal ? null : (
         <>
           <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
+          <ReasoningPill disabled={disabled} model={state.model} />
           {voiceControls}
         </>
       )}

@@ -12,7 +12,6 @@ import { currentPickerSelection } from '@/lib/model-status-label'
 import { DEFAULT_REASONING_EFFORT } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey, setModelPreset } from '@/store/model-presets'
-import { $visibleModels } from '@/store/model-visibility'
 import { notifyError } from '@/store/notifications'
 import {
   $defaultReasoningEffort,
@@ -24,6 +23,7 @@ import { sessionTileDelegate } from '@/store/session-states'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 import { ModelCatalogMenu, type ModelMenuController } from './model-catalog-menu'
+import { ModelOptionsContent } from './model-edit-submenu'
 
 export { ModelMenuCloseContext } from './model-catalog-menu'
 
@@ -37,6 +37,7 @@ export interface ModelSelection {
 
 interface ModelMenuPanelProps {
   gateway?: HermesGateway
+  mode?: 'catalog' | 'reasoning'
   ownerConnectionId?: string
   onSelectModel: (selection: ModelSelection) => Promise<boolean> | void
   profile?: string
@@ -51,6 +52,7 @@ interface ModelMenuPanelProps {
  */
 export function ModelMenuPanel({
   gateway,
+  mode = 'catalog',
   onSelectModel,
   ownerConnectionId,
   profile = 'default',
@@ -70,7 +72,7 @@ export function ModelMenuPanel({
   const currentReasoningEffort = useStore(view.$reasoningEffort)
   const modelPresets = useStore($modelPresets)
   const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
-  const visibleModels = useStore($visibleModels)
+
   const touchesPrimary = view.kind === 'primary'
 
   // Subscribe to the SAME query the menu runs (identical key ⇒ React Query
@@ -242,9 +244,70 @@ export function ModelMenuPanel({
     }
   }
 
+  if (mode === 'reasoning') {
+    // Resolve the canonical provider row (optionsProvider may be an alias such
+    // as `custom:<key>`). Preset writes key on the row's slug — the same key
+    // catalog reads use — so an effort set here is restored later by that row.
+    const providerRow = modelOptions.data?.providers?.find(
+      row => row.slug === optionsProvider || (row.aliases?.includes(optionsProvider) ?? false)
+    )
+
+    const presetProvider = providerRow?.slug || optionsProvider
+
+    // Re-resolved when the edit fires, straight from the query cache: a click
+    // can land on a first-render closure whose `modelOptions` snapshot predates
+    // the catalog response, and a preset keyed on that render-time alias
+    // fallback would be stranded forever.
+    const resolvePresetProvider = () => {
+      const live =
+        queryClient.getQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, activeSessionId)) ??
+        modelOptions.data
+
+      return (
+        live?.providers?.find(
+          row => row.slug === optionsProvider || (row.aliases?.includes(optionsProvider) ?? false)
+        )?.slug || optionsProvider
+      )
+    }
+
+    const capabilities = providerRow?.capabilities?.[optionsModel]
+
+    if (!optionsModel || capabilities?.reasoning === false) {
+      return (
+        <DropdownMenuItem className={dropdownMenuRow} disabled>
+          {t.shell.modelOptions.noOptions}
+        </DropdownMenuItem>
+      )
+    }
+
+    return (
+      <ModelOptionsContent
+        canDisableReasoning={capabilities?.can_disable_reasoning}
+        defaultEffort={defaultEffort}
+        effort={currentReasoningEffort}
+        fastControl={{ kind: 'none' }}
+        isActive
+        model={optionsModel}
+        onSelectModel={nextModel =>
+          onSelectModel({ model: nextModel, provider: optionsProvider, sessionId: activeSessionId || null })
+        }
+        onSetOptions={patch =>
+          controller.setOptions(patch, {
+            isActive: true,
+            model: optionsModel,
+            provider: resolvePresetProvider()
+          })
+        }
+        provider={presetProvider}
+        reasoning
+      />
+    )
+  }
+
   return (
     <ModelCatalogMenu
       controller={controller}
+      detailsOnHover
       footer={
         <DropdownMenuItem
           className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}

@@ -122,9 +122,9 @@ def validate_decision(row):
     try:
         value = json.loads(row["work_record_json"])
         if value.get("object") != OBJECT:
-            # Legacy decisions retain their original identity; never upgrade them.
-            work.validate(value)
-            return value
+            # Preserve unwrapped legacy bytes, but never grant them new
+            # activation compatibility or let damaged v2 evidence downgrade.
+            raise ValueError("Legacy recovery evidence requires separate reconciliation")
         if type(value.get("version")) is not int or value["version"] != 2:
             raise ValueError("unsupported envelope")
         binding, rows = value["binding"], value["rows"]
@@ -165,9 +165,10 @@ def transfer_permission_sql(conn, table):
     from gateway.hosted_room_manual_promotion_schema import TABLE
     if not table_exists(conn, TABLE):
         return "0"
+    scope = f" AND OLD.source_table='{work.TARGET_TABLE}'" if table == storage.INVALID_TABLE else ""
     return f"""EXISTS (SELECT 1 FROM {TABLE} decision,
         json_each(decision.work_record_json,'$.rows.{table}') item
-        WHERE decision.room_id=OLD.room_id AND decision.status='transferring'
+        WHERE decision.room_id=OLD.room_id AND decision.status='transferring' {scope}
         AND json_extract(decision.work_record_json,'$.object')='{OBJECT}'
         AND json_extract(decision.work_record_json,'$.version')=2
         AND ({exact_row_sql(table)}))"""

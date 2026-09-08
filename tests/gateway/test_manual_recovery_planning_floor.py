@@ -120,7 +120,7 @@ def test_warm_projection_still_requires_durable_recovery_record(staged, lost_flo
 
 
 @pytest.mark.parametrize("lost_floor", [False, True])
-@pytest.mark.parametrize("damage", ["missing_rows", "changed_bytes"])
+@pytest.mark.parametrize("damage", ["missing_rows", "changed_bytes", "legacy_downgrade"])
 def test_warm_row_present_requires_bound_evidence(staged, lost_floor, damage):
     target, _old, _pending = staged
     expose_to_planner(target)
@@ -132,7 +132,9 @@ def test_warm_row_present_requires_bound_evidence(staged, lost_floor, damage):
         for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name=?", (TABLE,)).fetchall():
             conn.execute(f'DROP TRIGGER "{name}"')
         data = json.loads(conn.execute(f"SELECT work_record_json FROM {TABLE}").fetchone()[0])
-        if damage == "missing_rows":
+        if damage == "legacy_downgrade":
+            data = json.loads(data["rows"][records.TARGET_TABLE][0]["record_json"])
+        elif damage == "missing_rows":
             data["rows"] = {}
         else:
             data["rows"][records.TARGET_TABLE][0]["record_json"] += " "

@@ -27,7 +27,8 @@ def duplicate_credit_sql(prefix=""):
                  f"AND json_extract({data},'$.object')='{OBJECT}' AND json_extract({data},'$.version')=2")
     sizes, counts = [], []
     for table in (records.TARGET_TABLE, storage.INVALID_TABLE):
-        match = f"""original.room_id={prefix}room_id AND EXISTS (
+        source_scope = f" AND original.source_table='{records.TARGET_TABLE}'" if table == storage.INVALID_TABLE else ""
+        match = f"""original.room_id={prefix}room_id {source_scope} AND EXISTS (
             SELECT 1 FROM json_each({data},'$.rows.{table}') item
             WHERE {exact_row_sql(table, prefix='original.')})"""
         sizes.append(f"(SELECT COALESCE(SUM({storage.row_size_sql(table, 'original.')}),0) FROM {table} original WHERE {match})")
@@ -60,7 +61,7 @@ def install_recovery_budget_guards(conn):
             conn.execute(f"DROP TRIGGER IF EXISTS {name}")
             # Updates preserving all evidence bytes may still freeze dispositions
             # or clean up outcomes in an already-full database. No metadata growth.
-            fields = RECOVERY_FIELDS if table == RECOVERY_TABLE else storage.retained_fields(table)
+            fields = (*RECOVERY_FIELDS, "status") if table == RECOVERY_TABLE else storage.retained_fields(table)
             unchanged = " AND ".join(f"NEW.{k} IS OLD.{k} AND typeof(NEW.{k})=typeof(OLD.{k})" for k in fields)
             exempt = f"AND NOT ({unchanged})" if operation == "UPDATE" else ""
             conn.execute(f"""CREATE TRIGGER {name} AFTER {operation} ON {table}

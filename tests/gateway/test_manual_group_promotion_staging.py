@@ -105,6 +105,90 @@ def test_each_transfer_seam_rolls_back_all_evidence(saved_v2, seam):
     assert rows(target, TABLE) == []
 
 
+def test_enrollment_replaced_while_staging_waits_is_rechecked(saved_v2, monkeypatch):
+    from gateway.hosted_room_passive_lineage import ENROLLMENTS
+    from contextlib import contextmanager
+    import threading
+    entered = threading.Event()
+    original = replicas._replica_transaction
+    @contextmanager
+    def waiting(*args, **kwargs):
+        entered.set()
+        with original(*args, **kwargs) as conn:
+            yield conn
+    monkeypatch.setattr(replicas, "_replica_transaction", waiting)
+    target = saved_v2[1]
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with sqlite3.connect(target) as holder:
+            holder.execute("BEGIN IMMEDIATE")
+            future = pool.submit(stage, saved_v2)
+            assert entered.wait(5)
+            holder.execute(f"UPDATE {ENROLLMENTS} SET enrollment_id='new-owner-selection' WHERE is_current=1")
+        with pytest.raises(promotion.ManualRecoveryError):
+            future.result(8)
+    assert rows(target, "hosted_rooms") == []
+    assert len(rows(target, records.TARGET_TABLE)) == 2
+
+
+def test_pending_receipt_rejects_changed_evidence_and_sql_replacement(saved_v2):
+    target = saved_v2[1]
+    stage(saved_v2)
+    with sqlite3.connect(target) as conn:
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(f"UPDATE {TABLE} SET work_record_json='{{}}'")
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(f"INSERT OR REPLACE INTO {TABLE} SELECT * FROM {TABLE}")
+        conn.execute("DROP TRIGGER trg_recovery_evidence_immutable")
+        conn.execute(f"UPDATE {TABLE} SET work_record_json='{{}}'")
+    with pytest.raises(RuntimeError, match="recovery record"):
+        stage(saved_v2)
+
+
+def test_staging_leaves_other_room_and_non_target_archive_untouched(saved_v2):
+    from gateway.hosted_room_work_storage import INVALID_TABLE
+    target = saved_v2[1]
+    with sqlite3.connect(target) as conn:
+        conn.execute("DROP TRIGGER trg_work_invalid_insert")
+        for room_id, source_table in (("other-room", records.TARGET_TABLE), ("room", records.SOURCE_TABLE)):
+            conn.execute(f"INSERT INTO {INVALID_TABLE}(source_table,room_id,revision,digest,record_json,disposition) VALUES(?,?,7,'opaque','PRIVATE_OTHER','invalid')", (source_table, room_id))
+        before = conn.execute(f"SELECT * FROM {INVALID_TABLE} ORDER BY evidence_id").fetchall()
+    stage(saved_v2)
+    with sqlite3.connect(target) as conn:
+        assert conn.execute(f"SELECT * FROM {INVALID_TABLE} ORDER BY evidence_id").fetchall() == before
+
+
+def test_historical_closing_fact_blocks_empty_successor(saved_v2):
+    target = saved_v2[1]
+    with sqlite3.connect(target) as conn:
+        row = conn.execute(f"SELECT record_json FROM {records.TARGET_TABLE} WHERE producer_epoch=1").fetchone()
+        data = json.loads(row[0])
+        data["stop"]["closing"] = True
+        data["digest"] = records.digest({k: v for k, v in data.items() if k not in {"revision", "digest"}})
+        # Simulated retained historical input, never a production rewrite lease.
+        conn.execute(f"DROP TRIGGER trg_{records.TARGET_TABLE}_immutable_v2")
+        conn.execute(f"UPDATE {records.TARGET_TABLE} SET record_json=?,digest=? WHERE producer_epoch=1", (records.encode(data), data["digest"]))
+    view = prepare_recovery(target, room_id="room", target_gateway_id=TARGET)
+    assert view["work_records"]["stop"]["closing"] is False
+    assert "group_closing" in view["blockers"]
+    with pytest.raises(promotion.ManualRecoveryError):
+        stage(saved_v2, snapshot_id=view["snapshot_id"])
+    assert rows(target, "hosted_rooms") == []
+
+
+def test_current_sql_record_scope_mismatch_cannot_stage(saved_v2):
+    target = saved_v2[1]
+    with sqlite3.connect(target) as conn:
+        data = json.loads(conn.execute(f"SELECT record_json FROM {records.TARGET_TABLE} WHERE producer_epoch=2").fetchone()[0])
+        data["room_id"] = "other-room"
+        data["digest"] = records.digest({k: v for k, v in data.items() if k not in {"revision", "digest"}})
+        conn.execute(f"UPDATE {records.TARGET_TABLE} SET record_json=?,digest=? WHERE producer_epoch=2", (records.encode(data), data["digest"]))
+    view = prepare_recovery(target, room_id="room", target_gateway_id=TARGET)
+    assert "work_records_unavailable" in view["blockers"]
+    with pytest.raises(promotion.ManualRecoveryError):
+        stage(saved_v2, snapshot_id=view["snapshot_id"])
+    assert rows(target, "hosted_rooms") == []
+
+
 def stage(saved, **overrides):
     return promotion.stage_manual_recovery(saved[1], **{
         "room_id": "room", "recovery_id": "owner-decision", "snapshot_id": saved[3]["snapshot_id"],

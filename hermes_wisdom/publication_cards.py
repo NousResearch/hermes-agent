@@ -17,7 +17,7 @@ def has_card(store, org, draft_id):
                 """SELECT 1 FROM wisdom_consent c JOIN wisdom_delivery_receipt r
             ON r.assessment_id=c.assessment_id AND r.organization_id=c.organization_id
             AND r.owner_session=c.owner_session WHERE c.organization_id=?
-            AND c.operation='publish' AND c.state='completed'
+            AND c.operation='publish' AND c.state IN ('pending','completed','expired','stale')
             AND json_extract(c.result_json,'$.draft_id')=?
             AND c.platform IN ('telegram','slack') LIMIT 1""",
                 (org, draft_id),
@@ -42,8 +42,10 @@ class PublicationCards:
                 JOIN wisdom_delivery_receipt r ON r.assessment_id=c.assessment_id
                   AND r.organization_id=c.organization_id AND r.owner_session=c.owner_session
                 WHERE c.organization_id=? AND c.platform=? AND c.operation='publish'
-                  AND c.state='completed' AND json_extract(c.result_json,'$.draft_id') IS NOT NULL
-                  AND (json_extract(c.result_json,'$.publication_state')='pending_moderation'
+                  AND c.state IN ('pending','completed','expired','stale')
+                  AND json_extract(c.result_json,'$.draft_id') IS NOT NULL
+                  AND (c.state!='completed'
+                    OR json_extract(c.result_json,'$.publication_state') IN ('pending_moderation','changes_requested','invalidated')
                     OR COALESCE(json_extract(c.result_json,'$.card_displayed_state'),'')
                        != json_extract(c.result_json,'$.publication_state'))
                 ORDER BY c.created_at""",
@@ -67,7 +69,8 @@ class PublicationCards:
             if len(jobs) >= 4:
                 break
             result, plan = json.loads(row["result_json"]), json.loads(row["plan_json"])
-            draft = drafts.get(result["draft_id"])
+            root_id = result.get("original_draft_id", result["draft_id"])
+            draft = drafts.get(root_id)
             if not draft or draft.orgId != org or draft.ownerUserId != owner:
                 continue
             if plan.get("hashes") != {
@@ -76,13 +79,40 @@ class PublicationCards:
                 "package_manifest": draft.packageManifestHash,
             }:
                 continue
+            # Portal revisions have new hashes. Follow only the server-owned
+            # lineage from the exact original package, never a matching slug.
+            visited = {draft.id}
+            while True:
+                children = [
+                    d
+                    for d in drafts.values()
+                    if getattr(d, "supersedesDraftId", None) == draft.id
+                ]
+                if not children:
+                    break
+                if (
+                    len(children) != 1
+                    or children[0].id in visited
+                    or children[0].orgId != org
+                    or children[0].ownerUserId != owner
+                ):
+                    draft = None
+                    break
+                draft = children[0]
+                visited.add(draft.id)
+            if draft is None:
+                continue
             if draft.state not in FINAL | {"pending_moderation"}:
                 continue
+            result["original_draft_id"] = root_id
+            result["draft_id"] = draft.id
+            if draft.id != json.loads(row["result_json"])["draft_id"]:
+                result["portal_url"] = self.service.portal_review_url(draft.id)
             result["publication_state"] = draft.state
             if (
                 result.get("card_displayed_state") == draft.state
-                or result.get("card_retry_after", 0) > time.time()
-            ):
+                and result.get("card_displayed_draft_id", root_id) == draft.id
+            ) or result.get("card_retry_after", 0) > time.time():
                 continue
             receipt = json.loads(row["receipt_json"])
             address = plan.get("origin_address") or {}
@@ -104,19 +134,30 @@ class PublicationCards:
                 with self.store.transaction() as db:
                     MediationStore._check_org(db, org)
                     changed = db.execute(
-                        "UPDATE wisdom_consent SET result_json=? WHERE id=? AND result_json=? AND state='completed'",
-                        (json.dumps(result), row["id"], row["result_json"]),
+                        "UPDATE wisdom_consent SET state='completed',result_json=? WHERE id=? AND result_json=? AND state=?",
+                        (
+                            json.dumps(result),
+                            row["id"],
+                            row["result_json"],
+                            row["state"],
+                        ),
                     ).rowcount
                 if not changed:
                     self.store.release_operation_lock(entity, token)
                     continue
                 view = interaction_view(
-                    WisdomConsent.project({**row, "plan": plan, "result": result})
+                    WisdomConsent.project({
+                        **row,
+                        "state": "completed",
+                        "plan": plan,
+                        "result": result,
+                    })
                 )
                 jobs.append({
                     "id": row["id"],
                     "org": org,
                     "state": draft.state,
+                    "draft_id": draft.id,
                     "receipt": receipt,
                     "view": view,
                     "entity": entity,
@@ -141,10 +182,14 @@ class PublicationCards:
                     "SELECT result_json FROM wisdom_consent WHERE id=?", (job["id"],)
                 ).fetchone()
                 result = json.loads(row[0])
-                if result.get("publication_state") != job["state"]:
+                if (
+                    result.get("publication_state") != job["state"]
+                    or result.get("draft_id") != job["draft_id"]
+                ):
                     return
                 if success:
                     result["card_displayed_state"] = job["state"]
+                    result["card_displayed_draft_id"] = job["draft_id"]
                     result.pop("card_retry_after", None)
                     result.pop("card_edit_failures", None)
                 else:

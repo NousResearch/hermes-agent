@@ -126,6 +126,7 @@ class WisdomMuteResponse(BaseModel):
 
 class Draft(WireModel):
     id: str
+    supersedesDraftId: str | None = None
     orgId: str
     ownerUserId: str
     slug: str

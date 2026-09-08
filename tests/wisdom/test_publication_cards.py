@@ -173,3 +173,101 @@ def test_tracked_decision_stays_in_activity_without_second_assessment(cards):
         for row in mediation.queue.assessments("org")
     )
     assert updater.service.notifications(mark_seen=False)["events"] == [event]
+
+
+@pytest.mark.parametrize("state", ["pending", "expired", "stale"])
+def test_portal_publication_retires_original_consent_controls(cards, state):
+    updater, draft, identity = cards
+    with updater.store.transaction() as db:
+        db.execute("UPDATE wisdom_consent SET state=? WHERE id=?", (state, identity))
+    draft.state = "published"
+    (job,) = updater.claim("telegram")
+    assert job["view"].summary == "Published"
+    assert job["receipt"]["message_id"] == "1"
+    assert [a.label for a in job["view"].actions] == ["View in Portal"]
+    with updater.store.transaction() as db:
+        assert (
+            db.execute(
+                "SELECT state FROM wisdom_consent WHERE id=?", (identity,)
+            ).fetchone()[0]
+            == "completed"
+        )
+    updater.finish(job, success=True)
+    assert updater.claim("telegram") == []
+    assert updater.service.client.publications == 0
+
+
+def test_portal_revision_chain_tracks_moderation_then_publication(cards):
+    updater, original, identity = cards
+    with updater.store.transaction() as db:
+        db.execute("UPDATE wisdom_consent SET state='pending' WHERE id=?", (identity,))
+    original.state = "invalidated"
+    revision = SimpleNamespace(**{
+        **vars(original),
+        "id": "revision",
+        "supersedesDraftId": original.id,
+        "contentHash": "edited",
+        "state": "invalidated",
+    })
+    latest = SimpleNamespace(**{
+        **vars(revision),
+        "id": "latest",
+        "supersedesDraftId": revision.id,
+        "state": "pending_moderation",
+    })
+    updater.service.client.list_drafts.return_value = [latest, original, revision]
+    updater.service.portal_review_url = Mock(
+        side_effect=lambda id: f"https://portal.example/review/{id}"
+    )
+    (job,) = updater.claim("telegram")
+    assert job["view"].summary == "Pending moderation"
+    assert job["view"].actions[0].url == "https://portal.example/review/latest"
+    updater.finish(job, success=True)
+    assert updater.claim("telegram") == []
+    latest.state = "published"
+    (published,) = updater.claim("telegram")
+    assert published["receipt"] == job["receipt"]
+    assert published["view"].summary == "Published"
+    updater.finish(published, success=True)
+    assert updater.claim("telegram") == []
+    assert has_card(updater.store, "org", "latest")
+    assert updater.service.client.publications == 0
+
+
+@pytest.mark.parametrize("field,value", [("orgId", "other"), ("ownerUserId", "other")])
+def test_portal_revision_cannot_cross_authority(cards, field, value):
+    updater, original, _ = cards
+    original.state = "invalidated"
+    revision = SimpleNamespace(**{
+        **vars(original),
+        "id": "revision",
+        "supersedesDraftId": original.id,
+        "state": "published",
+        field: value,
+    })
+    updater.service.client.list_drafts.return_value = [original, revision]
+    assert updater.claim("telegram") == []
+
+
+def test_unrelated_publication_does_not_complete_private_review(cards):
+    updater, original, identity = cards
+    original.state = "ready"
+    original.slug = "same-slug"
+    other = SimpleNamespace(**{**vars(original), "id": "other", "state": "published"})
+    updater.service.client.list_drafts.return_value = [original, other]
+    with updater.store.transaction() as db:
+        db.execute("UPDATE wisdom_consent SET state='pending' WHERE id=?", (identity,))
+    assert updater.claim("telegram") == []
+
+
+def test_reviewed_draft_revision_still_preparing_does_not_show_invalidated(cards):
+    updater, original, _ = cards
+    original.state = "invalidated"
+    revision = SimpleNamespace(**{
+        **vars(original),
+        "id": "revision",
+        "supersedesDraftId": original.id,
+        "state": "vetting",
+    })
+    updater.service.client.list_drafts.return_value = [original, revision]
+    assert updater.claim("telegram") == []

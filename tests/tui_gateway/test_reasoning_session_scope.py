@@ -151,6 +151,27 @@ def test_desktop_factory_compares_composer_global_not_model_default(reasoning_fa
     assert again.reasoning_user_override is explicit
 
 
+@pytest.mark.parametrize("reasoning", [None, {}, {"enabled": False}, {"effort": "high"}])
+@pytest.mark.parametrize("pinned", [False, True])
+def test_runtime_reasoning_provenance_requires_a_current_config(reasoning, pinned):
+    agent = _agent(reasoning)
+    agent.reasoning_user_override = pinned
+    stored = server._runtime_model_config(agent, {
+        "reasoning_config": {"effort": "xhigh"}, "reasoning_user_override": True,
+    })
+    restored = server._stored_session_runtime_overrides({"model_config": stored})
+    if reasoning is None:
+        assert "reasoning_config" not in stored
+        assert "reasoning_user_override" not in stored
+        assert "reasoning_config_override" not in restored
+        assert "reasoning_user_override" not in restored
+    else:
+        assert stored["reasoning_config"] == reasoning
+        assert stored["reasoning_user_override"] is pinned
+        assert restored["reasoning_config_override"] == reasoning
+        assert restored["reasoning_user_override"] is pinned
+
+
 def _agent(reasoning_config):
     return SimpleNamespace(
         reasoning_config=reasoning_config,

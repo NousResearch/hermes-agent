@@ -1227,6 +1227,7 @@ _MODEL_OVERRIDE_FIELDS_SCHEMA = {
 }
 _EXTRA_CONTAINER_SCHEMA = {
     "custom_providers": [{"extra_body": {}, "extra_headers": {}}],
+    "mcp_servers": {},
     "model_catalog": {"excluded_providers": []},
     "model_overrides": {
         "_default": _MODEL_OVERRIDE_FIELDS_SCHEMA,

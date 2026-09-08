@@ -153,6 +153,8 @@ class TestStringifiedContainers:
 
     def test_container_typed_values_stored_as_strings_are_reported(self):
         cases = (
+            ({"mcp_servers": "{demo: {command: python, args: [server.py]}}"},
+             "mcp_servers", "mcp_servers", "mapping"),
             ({"model_catalog": {"excluded_providers": '["openai-api", "copilot"]'}},
              "model_catalog.excluded_providers", "model_catalog.excluded_providers", "list"),
             ({"plugins": {"enabled": "['state', 'status']"}},
@@ -217,6 +219,7 @@ class TestStringifiedContainers:
     def test_legitimate_strings_and_real_containers_are_not_reported(self):
         config = {
             "approvals": {"mode": "[off]"},
+            "mcp_servers": {"demo": {"command": "python", "args": ["server.py"]}},
             "model_catalog": {"excluded_providers": ["openai-api"]},
             "plugins": {"enabled": ["state", "[literal-plugin-name]"]},
             "custom_note": "[INST] not a list",

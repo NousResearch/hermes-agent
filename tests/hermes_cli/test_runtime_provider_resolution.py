@@ -1783,3 +1783,42 @@ def test_custom_provider_pool_target_model_wins(monkeypatch):
 
     assert resolved is not None
     assert resolved["model"] == "myproxy/gemini-flash"
+
+
+def test_model_extra_body_merges_into_resolved_runtime(monkeypatch):
+    """``model.extra_body`` is carried on the normal runtime override rail."""
+    monkeypatch.setattr(
+        rp,
+        "_resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "custom",
+            "base_url": "http://localhost:11434/v1",
+            "api_key": "no-key-required",
+            "request_overrides": {
+                "extra_body": {
+                    "options": {"num_ctx": 131072, "seed": 1},
+                    "provider_default": True,
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "extra_body": {
+                "options": {"seed": 42, "num_batch": 512},
+                "model_only": {"enabled": True},
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider()
+
+    assert resolved["request_overrides"] == {
+        "extra_body": {
+            "options": {"num_ctx": 131072, "seed": 42, "num_batch": 512},
+            "provider_default": True,
+            "model_only": {"enabled": True},
+        }
+    }

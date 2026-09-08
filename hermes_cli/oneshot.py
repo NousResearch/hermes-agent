@@ -398,6 +398,7 @@ def _run_agent(
             platform="cli",
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
+            request_overrides=runtime.get("request_overrides"),
             fallback_model=get_fallback_chain(cfg) or None,
             ephemeral_system_prompt=skills_prompt,
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on

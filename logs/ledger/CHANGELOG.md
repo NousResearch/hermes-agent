@@ -10,8 +10,10 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ## [NF-v0.6.1] — 2026-09-07 — hermes@2237be3559 (0 behind upstream/main)
 
-`RUN-2026-09-07-011`. **Ledger-only** — two owner decisions ratified; no
-tracked-file change outside `logs/ledger/`. **PATCH** (ledger-only per the version
+`RUN-2026-09-07-011`. Two owner decisions ratified. **No tracked-file change
+outside `logs/ledger/`**; the pass also *executed* the `DECISION-2026-09-06-002`
+outcome — deleting `D:\north-forge-agent-attic\nested-clone-2026-09-06\`, an
+out-of-tree directory (not a repo change). **PATCH** (ledger-only per the version
 table). Not pushed (local-review hold, as with the `NF-v0.4.x` / `NF-v0.5.x`
 line). The working tree carried unrelated in-flight edits from a separate pass
 (`north-forge.cmd`, `scripts/bootstrap-north-forge.ps1`,
@@ -43,12 +45,14 @@ committed here; only `logs/ledger/` is in this commit.
     starting it is a separate scheduling call. It stays the named home for the
     non-drive-resident key store `DECISION-2026-09-07-003` deferred here.
   - **`DECISION-2026-09-06-002` (attic clone — keep or delete) → DECIDED — A
-    (delete).** Same reasoning as at open: `origin/main` carries everything, zero
-    unique commits in `D:\north-forge-agent-attic\nested-clone-2026-09-06\`
-    (~869 MB), fully reconstructible by `git clone`. The physical
-    `Remove-Item -Recurse -Force` is an external one-liner recorded as **owed —
-    low urgency** (disk 76 % free); this pass was ledger-only. The sibling file
-    `D:\north-forge-agent-attic\marguerite-and-penny-suno.txt` is **out of scope**.
+    (delete), executed.** Same reasoning as at open: `origin/main` carries
+    everything, zero unique commits in
+    `D:\north-forge-agent-attic\nested-clone-2026-09-06\` (~869 MB), fully
+    reconstructible by `git clone`. **Deleted this run** (`RUN-2026-09-07-011`)
+    after verifying `820106d4a5` is an ancestor of `origin/main` and the copy had
+    no local branches, stashes, or uncommitted work — **~895 MB reclaimed** on
+    `D:`. The sibling file
+    `D:\north-forge-agent-attic\marguerite-and-penny-suno.txt` was **not** touched.
   - Both blocks moved `## Open` → `## Resolved` in `DECISION-LOG.md` (`Leaning:`
     renamed `Leaning at open:`, a `Decided:` section added, `Blocking:` on -003
     marked cleared); the Register quick-scan rows and `INDEX.md` (open- /

@@ -155,12 +155,13 @@ gains a `Superseded-by:` / `Supersedes:` link.
   fresh `git clone` plus the pushed history fully reconstruct it. B's narrow
   "GitHub unreachable *and* the local `.git` also lost" scenario does not justify
   ~869 MB.
-  - **Implementing step (owed, low urgency):** the physical
+  - **Implementing step — done 2026-09-07** (`RUN-2026-09-07-011`): ran
     `Remove-Item -Recurse -Force "D:\north-forge-agent-attic\nested-clone-2026-09-06"`
-    is an external one-liner, not a repo change — this was a ledger-only pass, so it
-    is recorded here as outstanding. The sibling file
-    `D:\north-forge-agent-attic\marguerite-and-penny-suno.txt` is **not** in scope
-    and must not be touched. Disk is 76 % free; no deadline.
+    after verifying the copy had zero unique commits (`820106d4a5` is an ancestor of
+    `origin/main`), no local branches, no stashes, no uncommitted work. **~895 MB
+    reclaimed** on `D:`. The sibling file
+    `D:\north-forge-agent-attic\marguerite-and-penny-suno.txt` was **not** touched;
+    the now near-empty `D:\north-forge-agent-attic\` directory was left in place.
 - **Blocking:** nothing — disk space only.
 - **Owner:** Kenneth C. Walker Jr.
 - **Status:** DECIDED
@@ -346,7 +347,7 @@ gains a `Superseded-by:` / `Supersedes:` link.
 | ID | Date | Area | Question | Status | Decided |
 | --- | --- | --- | --- | --- | --- |
 | DECISION-2026-09-06-001 | 2026-09-06 | Fork identity | Rebrand vs thin downstream? | DECIDED — B (full rebrand), landed `NF-v0.2.0` (CHG-2026-09-06-020..024) | 2026-09-06 |
-| DECISION-2026-09-06-002 | 2026-09-06 | Repo hygiene | Keep or delete the attic clone? | DECIDED — A (delete), `RUN-2026-09-07-011` / `CHG-2026-09-07-023`. `origin/main` carries all work, zero unique commits in the copy; physical `rm` of `D:\north-forge-agent-attic\nested-clone-2026-09-06\` still owed (low urgency) | 2026-09-07 |
+| DECISION-2026-09-06-002 | 2026-09-06 | Repo hygiene | Keep or delete the attic clone? | DECIDED — A (delete), `RUN-2026-09-07-011` / `CHG-2026-09-07-023`. `origin/main` carries all work, zero unique commits in the copy; `D:\north-forge-agent-attic\nested-clone-2026-09-06\` **deleted 2026-09-07** (~895 MB reclaimed) | 2026-09-07 |
 | DECISION-2026-09-06-003 | 2026-09-07 | Install model | Drive-native run-in-place vs machine-local managed install? | DECIDED — A (drive-native run-in-place), `RUN-2026-09-07-011` / `CHG-2026-09-07-023`. Sibling-venv + `nf-preflight.ps1` + `nf_tier.py` (`NF-v0.5.1`→`NF-v0.6.0`) already implement it; two Codex audits concur. Hardened form (seal / dual-volume / certify) now unblocked, not mandated | 2026-09-07 |
 | DECISION-2026-09-07-001 | 2026-09-07 | Branding | Keep the stock Hermes launch splash, or swap it? | DECIDED — C (swap via a North Forge skin), landed `CHG-2026-09-07-012`; reaffirmed `RUN-2026-09-07-006` (deferral floated then withdrawn, never executed) | 2026-09-07 |
 | DECISION-2026-09-07-003 | 2026-09-07 | Access architecture | What is an "edition", and how is Basic tier enforced? | DECIDED — A (edition = Hermes profile; HMAC-signed `provisioning.json` + gates at every profile-selection path), landed `CHG-2026-09-07-022` (`NF-v0.6.0`). Signature is tamper-evident not tamper-proof; hardened key store deferred to `DECISION-2026-09-06-003` | 2026-09-07 |

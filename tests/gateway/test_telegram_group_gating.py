@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
+from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageType
 from gateway.session import SessionSource
 
@@ -22,6 +23,8 @@ def _make_adapter(
     group_allowed_chats=None,
     guest_mode=None,
     observe_unmentioned_group_messages=None,
+    observe_sibling_bot_messages=None,
+    mirror_profiles=None,
     bot_username="hermes_bot",
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -65,6 +68,10 @@ def _make_adapter(
         extra["guest_mode"] = guest_mode
     if observe_unmentioned_group_messages is not None:
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
+    if observe_sibling_bot_messages is not None:
+        extra["observe_sibling_bot_messages"] = observe_sibling_bot_messages
+    if mirror_profiles is not None:
+        extra["mirror_final_responses_to_profiles"] = mirror_profiles
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -257,6 +264,66 @@ def test_observed_group_context_preserves_slash_command_text_for_dispatch():
     assert attributed.source.user_id == "111"
     assert attributed.source.user_name == "Alice"
     assert "observed Telegram group context" in attributed.channel_prompt
+
+
+def test_observe_attribution_gate_passes_when_only_sibling_observe_is_on():
+    """Sibling-observe alone must append the observe prompt even though unmentioned-observe is off."""
+    from gateway.platforms.event import MessageEvent
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=False,
+        observe_sibling_bot_messages=True,
+    )
+    event = MessageEvent(
+        text="/new@hermes_bot",
+        message_type=MessageType.COMMAND,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            user_id="111",
+            user_name="Alice",
+            chat_type="group",
+            thread_id="7",
+        ),
+        raw_message=_group_message(
+            "/new@hermes_bot",
+            entities=[_bot_command_entity("/new@hermes_bot", "/new@hermes_bot")],
+        ),
+    )
+    attributed = adapter._apply_telegram_group_observe_attribution(event)
+    assert "observed Telegram group context" in attributed.channel_prompt
+
+
+def test_observe_attribution_gate_skips_when_both_observe_flags_off():
+    """Both observe flags off → no observe prompt appended."""
+    from gateway.platforms.event import MessageEvent
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=False,
+        observe_sibling_bot_messages=False,
+    )
+    event = MessageEvent(
+        text="/new@hermes_bot",
+        message_type=MessageType.COMMAND,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            user_id="111",
+            user_name="Alice",
+            chat_type="group",
+            thread_id="7",
+        ),
+        raw_message=_group_message(
+            "/new@hermes_bot",
+            entities=[_bot_command_entity("/new@hermes_bot", "/new@hermes_bot")],
+        ),
+    )
+    attributed = adapter._apply_telegram_group_observe_attribution(event)
+    assert "observed Telegram group context" not in (attributed.channel_prompt or "")
 
 
 def test_shared_group_observe_source_is_authorized_by_group_allowed_chats(monkeypatch):
@@ -883,3 +950,498 @@ def test_identity_freshness_does_not_depend_on_host_uptime(monkeypatch):
 
     adapter._note_bot_username("new_helper_bot")
     assert adapter._bot_identity_is_fresh() is True
+
+
+def _sibling_message(text="hello", *, chat_id=-100, from_user_id=111, from_user_name="Alice",
+                     sender_is_bot=False, mention="@other_bot"):
+    """A group message that explicitly addresses a sibling bot (not this one).
+
+    ``sender_is_bot=True`` flips ``from_user.is_bot`` so the bot-sender exclusion
+    guard can be exercised; the sender id must NOT equal this bot's id (999) so the
+    self-message guard stays independent of the sibling-observe path.
+    """
+    entities = _mention_entities(text, [mention]) if mention else []
+    msg = _group_message(
+        text, chat_id=chat_id, from_user_id=from_user_id, from_user_name=from_user_name,
+        entities=entities,
+    )
+    if sender_is_bot:
+        msg.from_user.is_bot = True
+    return msg
+
+
+def _sibling_base_kwargs(**over):
+    """Common kwargs for the sibling-observe invariant tests."""
+    base = dict(
+        require_mention=True,
+        exclusive_bot_mentions=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=True,
+        observe_sibling_bot_messages=True,
+    )
+    base.update(over)
+    return base
+
+
+def test_sibling_addressed_message_is_observed_when_gated_on():
+    """Invariant 1: a user message addressing a sibling bot is stored context-only."""
+    async def _run():
+        adapter = _make_adapter(**_sibling_base_kwargs())
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        update = SimpleNamespace(
+            update_id=2002,
+            message=_sibling_message("@other_bot hello", from_user_id=111,
+                                     from_user_name="Alice Example"),
+            effective_message=None,
+        )
+        await adapter._handle_text_message(update, SimpleNamespace())
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        session_id, message, skip_db = store.messages[0]
+        assert skip_db is False
+        assert message["role"] == "user"
+        assert message["observed"] is True
+        assert message["message_id"] == "42"
+        assert "[Alice Example|" in message["content"]
+        assert "@other_bot hello" in message["content"]
+
+    asyncio.run(_run())
+
+
+def test_sibling_observe_is_opt_in():
+    """Invariant 2: flag absent/off → sibling messages are NOT observed."""
+    adapter = _make_adapter(**_sibling_base_kwargs(observe_sibling_bot_messages=False))
+    msg = _sibling_message("@other_bot hello")
+    assert adapter._should_process_message(msg) is False
+    assert adapter._should_observe_unmentioned_group_message(msg) is False
+
+
+def test_sibling_observe_excludes_bot_senders():
+    """Invariant 3: a bot-authored sibling reply must NOT be observed."""
+    adapter = _make_adapter(**_sibling_base_kwargs())
+    # from_user.id must not equal bot id (999) so _is_own_message stays False;
+    # is_bot=True is the guard under test.
+    msg = _sibling_message("@other_bot hello", from_user_id=222, sender_is_bot=True)
+    assert adapter._should_process_message(msg) is False
+    assert adapter._should_observe_unmentioned_group_message(msg) is False
+
+
+def test_sibling_observe_never_dispatches():
+    """Invariant 4: dispatch gate stays closed across all sibling cases."""
+    base = _sibling_base_kwargs()
+    # User sender, flag on.
+    adapter = _make_adapter(**base)
+    assert adapter._should_process_message(
+        _sibling_message("@other_bot hello", from_user_id=111)) is False
+    # Bot sender, flag on.
+    assert adapter._should_process_message(
+        _sibling_message("@other_bot hello", from_user_id=222, sender_is_bot=True)) is False
+    # Flag off.
+    adapter_off = _make_adapter(**_sibling_base_kwargs(observe_sibling_bot_messages=False))
+    assert adapter_off._should_process_message(
+        _sibling_message("@other_bot hello")) is False
+
+
+def test_sibling_observe_requires_observe_allowlist_chat():
+    """Flag on but chat not in the observe allowlist → not observed."""
+    adapter = _make_adapter(**_sibling_base_kwargs())
+    msg = _sibling_message("@other_bot hello", chat_id=-999)
+    assert adapter._should_observe_unmentioned_group_message(msg) is False
+    assert adapter._should_process_message(msg) is False
+
+
+# ---------------------------------------------------------------------------
+# Task 2: outbound mirror of final responses into sibling profile state DBs
+# ---------------------------------------------------------------------------
+
+
+def _sibling_state_db(tmp_path):
+    """Create a real SessionDB at <tmp_path>/sknerus/state.db and return
+    (db_path, db) so tests can inspect the transcript after a mirror call.
+
+    The path mirrors what the adapter's mirror helper opens when
+    ``_telegram_profiles_root`` is patched to ``tmp_path``: ``<root>/<profile>/state.db``.
+    """
+    from hermes_state import SessionDB
+    db_path = tmp_path / "sknerus" / "state.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = SessionDB(db_path=db_path, read_only=False)
+    return db_path, db
+
+
+def test_mirror_row_lands_in_sibling_db(tmp_path):
+    """T1: mirror call appends one observed, context-only row to the sibling DB."""
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=["sknerus"],
+        )
+        adapter._telegram_profiles_root = lambda: tmp_path
+        adapter._mirror_outgoing_response_to_siblings("-100123", "Final answer", None)
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is not None
+        msgs = db.get_messages(session_id)
+        assert len(msgs) == 1
+        row = msgs[0]
+        assert row["role"] == "user"
+        assert row["observed"]
+        assert row["content"].startswith("[hermes_bot|bot]")
+        assert "Final answer" in row["content"]
+    finally:
+        db.close()
+
+
+def test_mirror_noop_when_flag_empty(tmp_path):
+    """T2: empty mirror list → no row written."""
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=[],
+        )
+        adapter._telegram_profiles_root = lambda: tmp_path
+        adapter._mirror_outgoing_response_to_siblings("-100123", "Final answer", None)
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is None
+    finally:
+        db.close()
+
+
+def test_mirror_noop_when_chat_not_in_allowlist(tmp_path):
+    """T3: chat not in observe allowlist → no row written."""
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=["sknerus"],
+        )
+        adapter._telegram_profiles_root = lambda: tmp_path
+        adapter._mirror_outgoing_response_to_siblings("-999", "Final answer", None)
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-999", thread_id=None, user_id=None)
+        assert session_id is None
+    finally:
+        db.close()
+
+
+def test_mirror_truncates_long_content(tmp_path):
+    """T4: 5000-char content → row content ≤ ~4100 chars, ends with '…'."""
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=["sknerus"],
+        )
+        adapter._telegram_profiles_root = lambda: tmp_path
+        long_content = "x" * 5000
+        adapter._mirror_outgoing_response_to_siblings("-100123", long_content, None)
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is not None
+        msgs = db.get_messages(session_id)
+        assert len(msgs) == 1
+        content = msgs[0]["content"]
+        assert len(content) <= 4100
+        assert content.endswith("\u2026")
+    finally:
+        db.close()
+
+
+def test_mirror_skips_interim_send(tmp_path):
+    """T5: metadata with _interim_send=True → no row written."""
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=["sknerus"],
+        )
+        adapter._telegram_profiles_root = lambda: tmp_path
+        adapter._mirror_outgoing_response_to_siblings(
+            "-100123", "streaming chunk", {"_interim_send": True})
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is None
+    finally:
+        db.close()
+
+
+def test_mirror_missing_db_does_not_raise(tmp_path):
+    """T6: mirror_profiles=["missing"] with no DB file → no exception, returns normally."""
+    adapter = _make_adapter(
+        allowed_chats=["-100123"],
+        group_allowed_chats=["-100123"],
+        mirror_profiles=["missing"],
+    )
+    adapter._telegram_profiles_root = lambda: tmp_path
+    adapter._mirror_outgoing_response_to_siblings("-100123", "Final answer", None)
+    assert not (tmp_path / "missing" / "state.db").exists()
+
+
+def test_send_wiring_triggers_mirror(tmp_path, monkeypatch):
+    """T7: send() success calls _mirror_outgoing_response_to_siblings exactly once."""
+    adapter = _make_adapter(
+        allowed_chats=["-100123"],
+        group_allowed_chats=["-100123"],
+        mirror_profiles=["sknerus"],
+    )
+    adapter._bot = SimpleNamespace(
+        id=999, username="hermes_bot",
+        send_message=AsyncMock(return_value=SimpleNamespace(message_id=123)),
+    )
+    adapter._rich_messages_enabled = False
+    adapter._reply_to_mode = "first"
+    adapter._telegram_profiles_root = lambda: tmp_path
+
+    called_with = []
+
+    def fake_mirror(chat_id, content, metadata):
+        called_with.append((chat_id, content, metadata))
+
+    monkeypatch.setattr(adapter, "_mirror_outgoing_response_to_siblings", fake_mirror)
+
+    result = asyncio.run(adapter.send("-100123", "hello world"))
+    assert result.success is True
+    assert len(called_with) == 1
+    call = called_with[0]
+    assert call[0] == "-100123"
+    assert call[1] == "hello world"
+    assert call[2] is None
+
+
+def test_send_wiring_rich_path_triggers_mirror(tmp_path, monkeypatch):
+    """T7b: rich fast-path success also fires the mirror."""
+    adapter = _make_adapter(
+        allowed_chats=["-100123"],
+        group_allowed_chats=["-100123"],
+        mirror_profiles=["sknerus"],
+    )
+    adapter._bot = SimpleNamespace(
+        id=999, username="hermes_bot",
+        do_api_request=AsyncMock(return_value=SimpleNamespace(success=True)),
+    )
+    adapter._rich_messages_enabled = True
+    adapter._reply_to_mode = "first"
+    adapter._telegram_profiles_root = lambda: tmp_path
+
+    called_with = []
+
+    def fake_mirror(chat_id, content, metadata):
+        called_with.append((chat_id, content, metadata))
+
+    monkeypatch.setattr(adapter, "_mirror_outgoing_response_to_siblings", fake_mirror)
+
+    result = asyncio.run(adapter.send("-100123", "| a | b |\n| - | - |\n| 1 | 2 |"))
+    assert result.success is True
+    assert len(called_with) == 1
+    assert called_with[0][0] == "-100123"
+
+
+def test_send_wiring_whitespace_does_not_mirror(tmp_path, monkeypatch):
+    """Whitespace-only content early-returns success WITHOUT sending → no mirror."""
+    adapter = _make_adapter(
+        allowed_chats=["-100123"],
+        group_allowed_chats=["-100123"],
+        mirror_profiles=["sknerus"],
+    )
+    adapter._rich_messages_enabled = True
+    adapter._telegram_profiles_root = lambda: tmp_path
+
+    called_with = []
+
+    def fake_mirror(chat_id, content, metadata):
+        called_with.append((chat_id, content, metadata))
+
+    monkeypatch.setattr(adapter, "_mirror_outgoing_response_to_siblings", fake_mirror)
+
+    result = asyncio.run(adapter.send("-100123", "   "))
+    assert result.success is True
+    assert result.message_id is None
+    assert len(called_with) == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 2 review fixes: namespace, expect_edits gate, finalize-edit mirror, dedupe.
+# ---------------------------------------------------------------------------
+
+
+def test_mirror_namespace_adopts_profile(tmp_path):
+    """T8: mirror row lands with ``agent:<profile>:`` session key namespace (profile=profile,
+    not profile=None). Verified at the DB row level: SELECT session_key FROM sessions WHERE id=…
+    must equal the full expected key ``agent:sknerus:telegram:group:-100123``.
+    """
+    from hermes_state import SessionDB
+    from gateway.session import SessionSource, build_session_key
+    from gateway.config import Platform
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=["sknerus"],
+        )
+        adapter._telegram_profiles_root = lambda: tmp_path
+        adapter._mirror_outgoing_response_to_siblings("-100123", "Final answer", None)
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is not None
+        row = db._read_one("SELECT session_key FROM sessions WHERE id = ?", (session_id,))
+        assert row is not None
+        session_key = row["session_key"]
+        assert session_key.startswith("agent:sknerus:")
+        # Byte-equality with a freshly built key, not just a prefix.
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="-100123", chat_type="group",
+            thread_id=None, user_id=None)
+        expected = build_session_key(source, profile="sknerus")
+        assert session_key == expected
+        assert session_key == "agent:sknerus:telegram:group:-100123"
+    finally:
+        db.close()
+
+
+def test_mirror_skips_expect_edits(tmp_path):
+    """T9: metadata with ``expect_edits=True`` is a streaming draft, not a final — no row written."""
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=["sknerus"],
+        )
+        adapter._telegram_profiles_root = lambda: tmp_path
+        adapter._mirror_outgoing_response_to_siblings(
+            "-100123", "draft chunk", {"expect_edits": True})
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is None
+    finally:
+        db.close()
+
+
+def test_edit_message_finalize_mirrors(tmp_path):
+    """T10: calling ``edit_message(..., finalize=True)`` writes a row to the sibling DB."""
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=["sknerus"],
+        )
+        adapter._bot = SimpleNamespace(
+            id=999, username="hermes_bot",
+            edit_message_text=AsyncMock(return_value=SimpleNamespace()),
+        )
+        adapter._rich_messages_enabled = False
+        adapter._last_overflow_preview = {}
+        adapter._telegram_profiles_root = lambda: tmp_path
+        result = asyncio.run(adapter.edit_message("-100123", "123", "final text", finalize=True, metadata=None))
+        assert result.success is True
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is not None
+        msgs = db.get_messages(session_id)
+        assert len(msgs) == 1
+        assert "final text" in msgs[0]["content"]
+    finally:
+        db.close()
+
+
+def test_mirror_dedupe_consecutive_identical(tmp_path):
+    """T11: two mirror calls with identical (chat_id, content) → 1 row; differing content → 2nd row."""
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=["sknerus"],
+        )
+        adapter._telegram_profiles_root = lambda: tmp_path
+        adapter._mirror_outgoing_response_to_siblings("-100123", "same text", None)
+        adapter._mirror_outgoing_response_to_siblings("-100123", "same text", None)
+        adapter._mirror_outgoing_response_to_siblings("-100123", "different text", None)
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is not None
+        msgs = db.get_messages(session_id)
+        assert len(msgs) == 2
+        assert "same text" in msgs[0]["content"]
+        assert "different text" in msgs[1]["content"]
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Cross-vendor review fixes: edit_message non-finalize no-mirror, sibling-only flag
+# ---------------------------------------------------------------------------
+
+def test_edit_message_non_finalize_does_not_mirror(tmp_path):
+    """edit_message(..., finalize=False) must NOT mirror — early return before mirror call.
+
+    Pins the early-return ordering a reviewer misread: finalize=False bails out
+    of edit_message before the mirror call site is ever reached.
+    """
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=["sknerus"],
+        )
+        adapter._bot = SimpleNamespace(
+            id=999, username="hermes_bot",
+            edit_message_text=AsyncMock(return_value=SimpleNamespace()),
+        )
+        adapter._rich_messages_enabled = False
+        adapter._last_overflow_preview = {}
+        adapter._telegram_profiles_root = lambda: tmp_path
+
+        result = asyncio.run(
+            adapter.edit_message("-100123", "123", "partial draft",
+                                 finalize=False, metadata=None))
+        assert result.success is True
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is None
+        msgs = db.get_messages(session_id) if session_id else []
+        assert len(msgs) == 0
+    finally:
+        db.close()
+
+
+def test_sibling_only_flag_observes_sibling_without_unmentioned(tmp_path):
+    """observe_sibling only (unmentioned off) → sibling msgs observed, ordinary chatter not.
+
+    Pins the standalone-gate semantics from FIX 1: with
+    observe_unmentioned_group_messages=False and observe_sibling_bot_messages=True,
+    a sibling-addressed user message is observed, but an ordinary unmentioned
+    user message (no bot mention) is NOT.
+    """
+    adapter = _make_adapter(
+        require_mention=True,
+        exclusive_bot_mentions=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=False,
+        observe_sibling_bot_messages=True,
+    )
+
+    # Sibling-addressed message (explicitly mentions another bot, excludes self).
+    sibling_msg = _sibling_message(
+        "@other_bot hello", from_user_id=111, from_user_name="Alice Example")
+    assert adapter._should_observe_unmentioned_group_message(sibling_msg) is True
+
+    # Ordinary unmentioned message: no bot mention → must NOT be observed.
+    ordinary_msg = _group_message("side chatter", chat_id=-100)
+    assert adapter._should_observe_unmentioned_group_message(ordinary_msg) is False
+
+

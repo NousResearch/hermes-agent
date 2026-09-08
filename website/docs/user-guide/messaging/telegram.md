@@ -176,6 +176,36 @@ TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true
 
 This requires Telegram to deliver ordinary group messages to the gateway, so disable BotFather privacy mode or promote the bot to group admin as described above.
 
+### Multi-bot groups: share context between sibling bots
+
+If several Hermes profiles each run a separate Telegram bot in the same group, `@mention`s still route to exactly one bot — but Telegram never delivers one bot's messages to other bots, and privacy mode hides the user's ordinary group chatter too. Each bot therefore runs blind to the conversation around it. Two flags let you share context across sibling bots so a follow-up `@mention` to a different bot can see the group's history, including a sibling's earlier answer.
+
+```yaml
+telegram:
+  require_mention: true
+  exclusive_bot_mentions: true
+  observe_unmentioned_group_messages: true
+  observe_sibling_bot_messages: true
+  mirror_final_responses_to_profiles:
+    - "research"
+```
+
+With `require_mention: true` and `exclusive_bot_mentions: true` unchanged, messages the user addresses to *another* bot are stored as attributed observed context in this bot's shared group session instead of being dropped — they never wake this bot. This flag works standalone — sibling-addressed messages are observed even with `observe_unmentioned_group_messages` off — but the two combine cleanly when both are enabled. The same allowlist rules apply (`group_allowed_chats` ∩ `allowed_chats`): only chats allowed for both observation and response participate. As with unmentioned-group-observe, this still requires Telegram to deliver the sibling-addressed messages, so disable BotFather privacy mode or make the bot a group admin.
+
+```bash
+TELEGRAM_OBSERVE_SIBLING_BOT_MESSAGES=true
+```
+
+After this bot sends a final response to an allowlisted group, `mirror_final_responses_to_profiles` writes that response as attributed observed context into each listed sibling profile's own state database, so when the user later tags that sibling it sees this bot's answer in its observed-context block. Profile names are the directory names under `~/.hermes/profiles/`. Streaming draft frames, mid-turn status messages, and non-final edits are never mirrored — only the final response. Profiles whose `state.db` does not exist are skipped with a log line, and listing the bot's own profile in the mirror list is a no-op.
+
+```bash
+TELEGRAM_MIRROR_FINAL_RESPONSES_TO_PROFILES=research
+```
+
+:::note
+Observed and mirrored rows are context-only: they appear to the agent as a context block with attribution (e.g. `[botname|bot]`) and are never treated as pending requests. An untagged bot still never responds.
+:::
+
 ## Step 4: Find Your User ID
 
 Hermes Agent uses numeric Telegram user IDs to control access. Your user ID is **not** your username — it's a number like `123456789`.

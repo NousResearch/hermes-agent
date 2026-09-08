@@ -203,6 +203,8 @@ _SHARED_KEYS: tuple = (
     ("allowed_topics", _TELEGRAM, None),
     *_plain("free_response_channels", "mention_patterns", "exclusive_bot_mentions"),
     ("observe_unmentioned_group_messages", _TELEGRAM, None),
+    ("observe_sibling_bot_messages", _TELEGRAM, None),
+    ("mirror_final_responses_to_profiles", _TELEGRAM, None),
     *_plain(
         "dm_policy", "allow_from", "allow_admin_from", "user_allowed_commands",
         "group_policy", "group_allow_from", "group_allow_admin_from", "group_user_allowed_commands",

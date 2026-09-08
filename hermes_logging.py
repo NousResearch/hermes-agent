@@ -178,7 +178,54 @@ def setup_logging(
     """
     global _logging_initialized
     home = hermes_home or get_hermes_home()
+    from hermes_constants import mkdir_under_hermes_home
+    # --- worker-init RO evidence capture (read-only + bounded writability probe, best-effort) ---
+    # If this process is a kanban worker (HERMES_KANBAN_TASK set), record
+    # mount/writeability evidence BEFORE attempting to open agent.log so
+    # an immediate Errno 30 is observable. Never raises, never mutates.
+    # File writes limited to logs/<task>.worker_init.json via tmp rename.
+    # Open-append probe is a bounded writability probe (not pure read-only):
+    # it opens existing files with "ab" without writing then closes; it
+    # bumps atime and requires W but does not mutate content.
+    _kanban_task = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    if _kanban_task:
+        try:
+            from hermes_cli.kanban_prespawn_evidence import (
+                capture_prespawn_evidence as _kpe_cap2,
+                write_prespawn_evidence_file as _kpe_write2,
+            )
+
+            _ev2 = _kpe_cap2(
+                task_id=_kanban_task,
+                profile=os.environ.get("HERMES_PROFILE", "").strip(),
+                workspace=os.environ.get("HERMES_KANBAN_WORKSPACE", "") or str(home),
+                board=os.environ.get("HERMES_KANBAN_BOARD"),
+                hermes_home=str(home),
+            )
+            _ev2["capture_side"] = "worker_init_pre_logging"
+            # log_dir not yet known here; resolve via home/logs directly to avoid
+            # mkdir_under_hermes_home side-effects before capture
+            _wd_log = Path(home) / "logs"
+            try:
+                _kpe_write2(_wd_log, _kanban_task, _ev2, suffix="worker_init")
+            except Exception:
+                pass
+            # Also try board-scoped log dir if this is a board task (best-effort)
+            try:
+                from hermes_cli.kanban_db import worker_logs_dir as _wld
+
+                _b = os.environ.get("HERMES_KANBAN_BOARD")
+                if _b:
+                    _bl = _wld(board=_b)
+                    if _bl != _wd_log:
+                        _kpe_write2(_bl, _kanban_task, _ev2, suffix="worker_init")
+            except Exception:
+                pass
+        except Exception:
+            pass
     log_dir = mkdir_under_hermes_home(home / "logs")
+
+    # Read config defaults (best-effort — config may not be loaded yet).
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
     level_name = (log_level or cfg_level or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)

@@ -745,9 +745,7 @@ def _stamp_api_content_sidecar(
     # clean content and the request prefix diverges here. Both writers stamp ``_row_id`` on the live
     # dict, which is at once the proof a row exists and the address to update.
     #
-    # Do NOT widen this to an unconditional backfill: without a row id the store can only target the
-    # newest active user row, and a repeated user turn ("ok", "y", "continue") makes the PREVIOUS
-    # turn's row compare equal — this turn's bytes would overwrite its sidecar for good.
+    # Never widen this to an unconditional positional backfill — see set_latest_user_api_content.
     #
     # ``_row_id`` is read under ``_session_persist_lock``: a close flush holds it while it commits
     # the row and only then writes ``_row_id`` back (``sync_flushed_message_markers``). Read outside
@@ -755,17 +753,13 @@ def _stamp_api_content_sidecar(
     # persisted with ``api_content = NULL``, leaving no writer to correct the row.
     with _persist_lock(agent):
         _row_id = _turn_user_msg.get("_row_id")
-        _has_valid_row_id = isinstance(_row_id, int) and not isinstance(_row_id, bool) and _row_id > 0
         _in_place_compacted = preflight_compressed and bool(getattr(agent, "_last_compaction_in_place", False))
         _db = getattr(agent, "_session_db", None)
-        if _db is None or not (_has_valid_row_id or _in_place_compacted):
+        if _db is None or not (isinstance(_row_id, int) or _in_place_compacted):
             return
         try:
-            if _has_valid_row_id:
-                # Fail closed on a store wrapper without the row-addressed method: a positional
-                # fallback here is exactly the wrong-row write this function exists to prevent.
-                if hasattr(_db, "set_message_api_content"):
-                    _db.set_message_api_content(agent.session_id, _row_id, durable_content, _api_content)
+            if isinstance(_row_id, int):
+                _db.set_message_api_content(agent.session_id, _row_id, durable_content, _api_content)
             else:
                 # Compacted copies carry no row id; positional is safe only because
                 # archive_and_compact just made this message the newest active user row.

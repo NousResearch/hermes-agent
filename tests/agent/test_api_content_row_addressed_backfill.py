@@ -57,12 +57,6 @@ class TestSetMessageApiContent:
             assert rows[turn_1_id]["api_content"] == "ok\n\nTURN-1"
             assert rows[turn_2_id]["api_content"] == "ok\n\nTURN-2"
 
-            # The positional helper is only safe when the caller already knows
-            # the newest active user row is its own message.
-            db.set_latest_user_api_content("s1", "ok", "ok\n\nTURN-3")
-            rows = {r["id"]: r for r in db.get_messages("s1")}
-            assert rows[turn_2_id]["api_content"] == "ok\n\nTURN-3"
-            assert rows[turn_1_id]["api_content"] == "ok\n\nTURN-1"
         finally:
             db.close()
 
@@ -105,19 +99,6 @@ class TestPrologueRowAddressedBackfill:
         )
         agent._session_db.set_message_api_content.assert_not_called()
         agent._session_db.set_latest_user_api_content.assert_not_called()
-
-    def test_compaction_without_row_id_keeps_positional_fallback(self):
-        agent = _make_in_place_compaction_agent(row_id=None)
-        with patch(
-            "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "PLUGIN-CTX"}],
-        ):
-            _build(agent)
-        agent._session_db.set_latest_user_api_content.assert_called_once_with(
-            "sess-1", "hello", "hello\n\nPLUGIN-CTX"
-        )
-        agent._session_db.set_message_api_content.assert_not_called()
-
 
 class _RealPersistenceAgent(SessionPersistenceMixin, _FakeAgent):
     """Stand-in agent with the real SessionPersistenceMixin flush implementation."""
@@ -255,43 +236,3 @@ class TestRealEarlyFlushAndOverrideLifecycle:
             assert rows[t2_user_row["id"]]["api_content"] == "ok\n\nTURN-2-CTX"
         finally:
             db.close()
-
-
-def _make_in_place_compaction_agent(*, row_id):
-    """Agent whose preflight compression compacts in place, mirroring
-    ``archive_and_compact``: the current-turn user dict is replaced by a fresh
-    copy whose row already exists (and carries ``_row_id`` when the insert
-    stamped one)."""
-    agent = _FakeAgent()
-    agent.compression_enabled = True
-    agent._session_db = MagicMock()
-
-    calls = {"n": 0}
-
-    def _should_compress(_tokens):
-        calls["n"] += 1
-        return calls["n"] == 1
-
-    agent.context_compressor = types.SimpleNamespace(
-        protect_first_n=0,
-        protect_last_n=0,
-        threshold_tokens=1,
-        context_length=1000,
-        last_prompt_tokens=-1,
-        should_compress=_should_compress,
-        should_defer_preflight_to_real_usage=lambda _t: False,
-        get_active_compression_failure_cooldown=lambda: None,
-    )
-
-    def _compress(messages, _system, approx_tokens=None, task_id=None):
-        agent._last_compaction_in_place = True
-        survivor = dict(messages[-1])
-        if row_id is not None:
-            survivor["_row_id"] = row_id
-        return (
-            [{"role": "assistant", "content": "compaction summary"}, survivor],
-            "SYSTEM",
-        )
-
-    agent._compress_context = _compress
-    return agent

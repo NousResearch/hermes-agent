@@ -16,7 +16,7 @@ import plugins.memory.openviking as ov
 def isolated_config(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    for key in (*ov._OPENVIKING_ENV_KEYS, "OPENVIKING_CLI_CONFIG_FILE"):
+    for key in (*ov._OPENVIKING_ENV_KEYS, "OPENVIKING_CLI_CONFIG_FILE", "OPENVIKING_RECALL_SCOPE"):
         # Track absent keys too, so setup's direct environment writes are undone.
         monkeypatch.setenv(key, "")
         monkeypatch.delenv(key, raising=False)
@@ -147,6 +147,7 @@ def test_new_setup_does_not_ask_for_or_save_peer(
 
     def select(title, options, **kwargs):
         choices = {
+            "  OpenViking usage profile": 0,
             "  OpenViking connection": 0 if credential == "service" else 1,
             "  OpenViking credential": {"dev": 2, "user": 0, "root": 1}.get(
                 credential, 0
@@ -183,6 +184,61 @@ def test_new_setup_does_not_ask_for_or_save_peer(
         )
         assert "actor_peer_id" not in saved
         assert "agent_id" not in saved
+    assert saved_config["recall_scope"] == "peer"
+    assert "group_sessions_per_user" not in config
+    assert "thread_sessions_per_user" not in config
+
+
+def test_personal_usage_profile_preserves_session_policy():
+    config = {
+        "group_sessions_per_user": True,
+        "thread_sessions_per_user": False,
+        "memory": {"openviking": {"recall_limit": 9}},
+    }
+    provider_config = config["memory"]["openviking"]
+
+    ov._setup._apply_usage_profile(config, provider_config, "personal")
+
+    assert provider_config["recall_scope"] == "peer"
+    assert config["group_sessions_per_user"] is True
+    assert config["thread_sessions_per_user"] is False
+    assert provider_config["recall_limit"] == 9
+
+
+def test_shared_usage_profile_applies_full_preset():
+    config = {
+        "group_sessions_per_user": True,
+        "thread_sessions_per_user": True,
+        "memory": {"openviking": {"recall_limit": 9}},
+    }
+    provider_config = config["memory"]["openviking"]
+
+    ov._setup._apply_usage_profile(config, provider_config, "shared")
+
+    assert provider_config["recall_scope"] == "shared"
+    assert config["group_sessions_per_user"] is False
+    assert config["thread_sessions_per_user"] is False
+    assert provider_config["recall_limit"] == 9
+
+
+def test_shared_usage_profile_requires_explicit_confirmation(capsys):
+    selections = iter([1, 0])
+    menus = []
+
+    def select(title, options, **kwargs):
+        menus.append((title, options, kwargs))
+        return next(selections)
+
+    result = ov._setup._select_usage_profile(select, -1)
+
+    assert result == "shared"
+    assert [title for title, _, _ in menus] == [
+        "  OpenViking usage profile",
+        "  Confirm Shared Agent",
+    ]
+    output = capsys.readouterr().out
+    assert "share short-term group and thread context" in output
+    assert "all peer memories" in output
 
 
 @pytest.mark.parametrize("peer", ["", "work-assistant"])

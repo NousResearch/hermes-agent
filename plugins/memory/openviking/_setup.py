@@ -15,6 +15,8 @@ from typing import Optional
 
 _SETUP_CANCELLED = object()
 _CANCEL_OPTION = ("Cancel setup", "no changes saved")
+_PERSONAL_PROFILE = "personal"
+_SHARED_PROFILE = "shared"
 
 
 def _ov():
@@ -24,6 +26,55 @@ def _ov():
 
 def _say(message: str) -> None:
     print(f"  {message}", flush=True)
+
+
+def _select_usage_profile(select, cancelled) -> str | object:
+    """Select the memory/session policy before connection setup."""
+    while True:
+        choice = select(
+            "  OpenViking usage profile",
+            [
+                ("Personal Agent", "recall user memory and the current gateway peer; keep existing session settings"),
+                ("Shared Agent", "share group and thread context; recall memory from all peers"),
+            ],
+            default=0,
+            cancel_returns=cancelled,
+        )
+        if choice == cancelled:
+            return _SETUP_CANCELLED
+        if choice == 0:
+            return _PERSONAL_PROFILE
+        if choice != 1:
+            continue
+
+        _say("Shared Agent will share short-term group and thread context between participants.")
+        _say("Automatic recall can use user-level memory and all peer memories in this OpenViking user.")
+        confirm = select(
+            "  Confirm Shared Agent",
+            [
+                ("Apply Shared Agent", "set shared group/thread sessions and shared recall"),
+                ("Go back", "choose a different usage profile"),
+                _CANCEL_OPTION,
+            ],
+            default=1,
+            cancel_returns=cancelled,
+        )
+        if confirm == 0:
+            return _SHARED_PROFILE
+        if confirm != 1:
+            return _SETUP_CANCELLED
+
+
+def _apply_usage_profile(config: dict, provider_config: dict, profile: str) -> None:
+    """Apply the selected policy without changing unrelated provider settings."""
+    if profile == _PERSONAL_PROFILE:
+        provider_config["recall_scope"] = "peer"
+        return
+    if profile != _SHARED_PROFILE:
+        raise ValueError(f"Unknown OpenViking usage profile: {profile}")
+    config["group_sessions_per_user"] = False
+    config["thread_sessions_per_user"] = False
+    provider_config["recall_scope"] = "shared"
 
 
 def _retry_or_cancel_manual_setup(select, title: str, message: str, cancelled):
@@ -375,6 +426,13 @@ def run_setup(hermes_home: str, config: dict) -> None:
     common = dict(select=_curses_select, cancelled=_CANCELLED, config=config, provider_config=provider_config, env_path=env_path)
 
     print("\n  OpenViking memory setup\n")
+    usage_profile = _select_usage_profile(_curses_select, _CANCELLED)
+    if usage_profile is _SETUP_CANCELLED:
+        _print_cancelled_setup()
+        return
+    if not isinstance(usage_profile, str):  # defensive: custom selectors can return any sentinel
+        _print_cancelled_setup()
+        return
 
     profiles = _ov()._discover_ovcli_profiles()
     if profiles:
@@ -395,4 +453,5 @@ def run_setup(hermes_home: str, config: dict) -> None:
     if result is _SETUP_CANCELLED:
         _print_cancelled_setup()
     elif result:
+        _apply_usage_profile(config, provider_config, usage_profile)
         save_config(config)

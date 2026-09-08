@@ -108,6 +108,7 @@ def make_prefetch_provider(monkeypatch, responses, **env):
     FakeRecallClient.responses = responses
     for key in (
         "OPENVIKING_RECALL_LIMIT",
+        "OPENVIKING_RECALL_SCOPE",
         "OPENVIKING_RECALL_SCORE_THRESHOLD",
         "OPENVIKING_RECALL_MAX_INJECTED_CHARS",
         "OPENVIKING_RECALL_TIMEOUT_SECONDS",
@@ -277,6 +278,7 @@ class TestOpenVikingConfigSchema:
         env_vars = {entry.get("env_var") for entry in schema}
 
         assert "OPENVIKING_RECALL_LIMIT" in env_vars
+        assert "OPENVIKING_RECALL_SCOPE" in env_vars
         assert "OPENVIKING_RECALL_SCORE_THRESHOLD" in env_vars
         assert "OPENVIKING_RECALL_MAX_INJECTED_CHARS" in env_vars
         assert "OPENVIKING_RECALL_TIMEOUT_SECONDS" in env_vars
@@ -289,7 +291,9 @@ class TestOpenVikingConfigSchema:
         assert fields["recall_limit"]["maximum"] == 100
         assert fields["recall_score_threshold"]["type"] == "number"
         assert fields["recall_prefer_abstract"]["type"] == "boolean"
+        assert fields["recall_scope"]["choices"] == ["shared", "peer"]
         assert provider._recall_config() == {
+            "scope": "shared",
             "limit": 6,
             "score_threshold": 0.15,
             "max_injected_chars": 4000,
@@ -313,6 +317,7 @@ memory:
   provider: openviking
   openviking:
     recall_limit: 12
+    recall_scope: peer
     recall_score_threshold: 0.42
     recall_max_injected_chars: 8000
     profile_token_budget: 7000
@@ -334,6 +339,7 @@ memory:
         cfg = provider._recall_config()
 
         assert cfg["limit"] == 12
+        assert cfg["scope"] == "peer"
         assert cfg["score_threshold"] == 0.42
         assert cfg["max_injected_chars"] == 8000
         assert cfg["timeout_seconds"] == 2.0
@@ -355,6 +361,7 @@ memory:
   provider: openviking
   openviking:
     recall_limit: 12
+    recall_scope: peer
     recall_resources: true
 """,
             encoding="utf-8",
@@ -362,12 +369,14 @@ memory:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         # Override config.yaml via env
         monkeypatch.setenv("OPENVIKING_RECALL_LIMIT", "6")
+        monkeypatch.setenv("OPENVIKING_RECALL_SCOPE", "shared")
         monkeypatch.setenv("OPENVIKING_RECALL_RESOURCES", "false")
 
         provider = OpenVikingMemoryProvider()
         cfg = provider._recall_config()
 
         assert cfg["limit"] == 6, "env var should override config.yaml"
+        assert cfg["scope"] == "shared"
         assert cfg["resources"] is False, "env var false should override config.yaml true"
 
     def test_recall_config_partial_config_yaml(self, monkeypatch, tmp_path):
@@ -432,6 +441,7 @@ memory:
             "_load_hermes_openviking_config",
             lambda: {
                 "recall_limit": "many",
+                "recall_scope": "everyone-nearby",
                 "recall_score_threshold": True,
                 "recall_prefer_abstract": "sometimes",
                 "profile_token_budget": "7.5",
@@ -442,6 +452,7 @@ memory:
         cfg = provider._recall_config()
 
         assert cfg["limit"] == 6
+        assert cfg["scope"] == "shared"
         assert cfg["score_threshold"] == 0.15
         assert cfg["prefer_abstract"] is False
         assert provider._profile_token_budget() == 6000
@@ -639,7 +650,7 @@ class TestOpenVikingRead:
 class TestOpenVikingAutoRecallPrefetch:
     @pytest.mark.parametrize("peer", ["", "hermes"])
     def test_prefetch_e2e_sends_limit_and_reads_l2_content(self, monkeypatch, peer):
-        records = {"searches": [], "reads": [], "listings": [], "headers": []}
+        records = {"searches": [], "reads": [], "listings": [], "headers": [], "search_headers": []}
 
         class Handler(BaseHTTPRequestHandler):
             def _send_json(self, payload):
@@ -707,6 +718,7 @@ class TestOpenVikingAutoRecallPrefetch:
                 payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
                 records["headers"].append(dict(self.headers))
                 if self.path == "/api/v1/search/search":
+                    records["search_headers"].append(dict(self.headers))
                     records["searches"].append(payload)
                     if payload.get("context_type") == "memory":
                         self._send_json({
@@ -785,7 +797,9 @@ class TestOpenVikingAutoRecallPrefetch:
             {key.lower(): value for key, value in headers.items()}
             for headers in records["headers"]
         ]
-        assert all(headers.get("x-openviking-actor-peer", "") == peer for headers in normalized_headers)
+        assert any(headers.get("x-openviking-actor-peer", "") == peer for headers in normalized_headers)
+        search_headers = {key.lower(): value for key, value in records["search_headers"][0].items()}
+        assert "x-openviking-actor-peer" not in search_headers
         assert all(
             headers.get("user-agent") == f"openviking-memory-hermes/{_HERMES_VERSION}"
             for headers in normalized_headers

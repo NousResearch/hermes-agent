@@ -352,6 +352,8 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
     client = sdk.Anthropic(**kwargs)
     if "auth_token" in kwargs and "api_key" not in kwargs:
         client.api_key = None
+    elif "api_key" in kwargs and "auth_token" not in kwargs:
+        client.auth_token = None
     return client
 
 

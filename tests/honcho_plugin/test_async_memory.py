@@ -377,14 +377,14 @@ class TestStopAsyncWriterDrain:
         assert flushed == ["after"]
         assert mgr._async_queue.empty()
 
-    def test_shutdown_passes_the_join_timeout_through(self, make_manager, monkeypatch):
+    def test_shutdown_gives_the_writer_join_what_the_flush_left_of_the_timeout(self, make_manager, monkeypatch):
         mgr = make_manager("async")
         seen = {}
         monkeypatch.setattr(mgr, "stop_async_writer", lambda timeout=10.0: seen.setdefault("timeout", timeout))
 
         mgr.shutdown(timeout=2.5)
 
-        assert seen["timeout"] == 2.5
+        assert 2.0 < seen["timeout"] <= 2.5
 
 
 class TestAsyncWriterRetry:

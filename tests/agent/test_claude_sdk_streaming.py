@@ -7,6 +7,7 @@ stand-ins, fake clients and shared builders live in
 
 import asyncio
 import logging
+import threading
 import time
 
 import pytest
@@ -250,6 +251,229 @@ class TestStreamOwnership:
         assert holder["client"].queried == ["foreground question"]
         assert session._stream_ended is not None
         assert session._turn_inbox is None
+
+    def test_stop_during_stream_death_release_handshake_stays_authoritative(self):
+        """A non-terminal stream death must observe stops admitted before release."""
+        import agent.transports.claude_agent_sdk_session as sdk_session_mod
+
+        holder = {}
+
+        class ReleaseRaceSession(ClaudeAgentSdkSession):
+            async def _reader_loop(self):
+                operation, inbox, claim_ack = await self._turn_claims.get()
+                assert operation == "claim"
+                self._turn_inbox = inbox
+                claim_ack.set_result(None)
+
+                while not self._client.queried:
+                    await asyncio.sleep(0)
+                inbox.put_nowait(sdk_session_mod._StreamEnd(error=None))
+
+                operation, release_inbox, release_ack = await self._turn_claims.get()
+                assert operation == "release"
+                assert release_inbox is inbox
+                self.request_interrupt()
+                self._turn_inbox = None
+                self._stream_ended = sdk_session_mod._StreamEnd(error=None)
+                release_ack.set_result(None)
+
+        def factory(options=None):
+            client = _FakeClient(options=options)
+            holder["client"] = client
+            return client
+
+        session = ReleaseRaceSession(cwd="/tmp", client_factory=factory)
+        try:
+            turn = session.run_turn("foreground question")
+        finally:
+            session.close()
+
+        assert turn.error is not None
+        assert turn.final_text == ""
+        assert turn.terminal_result_accepted is False
+        assert turn.interrupted is True
+        assert turn.should_retire is True
+        assert session._interrupt_event.is_set() is False
+        assert holder["client"].queried == ["foreground question"]
+        assert holder["client"].interrupted is True
+
+    def test_late_interrupt_after_terminal_release_does_not_downgrade_answer(
+        self, caplog
+    ):
+        """A stop arriving after terminal commit belongs to the finished turn."""
+        holder = {}
+
+        class LateInterruptSession(ClaudeAgentSdkSession):
+            async def _consume_turn(self, prompt):
+                turn_data = await super()._consume_turn(prompt)
+                assert turn_data["result_uuid"] == "late-stop-result"
+                assert turn_data["final_text"] == "completed answer"
+                self.request_interrupt()
+                return turn_data
+
+        def factory(options=None):
+            client = _FakeClient(
+                options=options,
+                script=[
+                    ResultMessage(
+                        result="completed answer",
+                        uuid="late-stop-result",
+                        session_id="healthy-after-late-stop",
+                    )
+                ],
+            )
+            holder["client"] = client
+            return client
+
+        session = LateInterruptSession(cwd="/tmp", client_factory=factory)
+        with caplog.at_level(
+            logging.INFO, logger="agent.transports.claude_agent_sdk_session"
+        ):
+            try:
+                turn = session.run_turn("foreground question")
+                pending_after_turn = session._post_terminal_interrupt_pending
+            finally:
+                session.close()
+
+        # The decline is not silent: every other interrupt decline logs, and an
+        # operator whose /stop appeared to do nothing needs a record saying it
+        # was queued rather than dropped.
+        assert any(
+            "queued for the next turn" in record.getMessage()
+            for record in caplog.records
+        )
+        assert turn.error is None
+        assert turn.final_text == "completed answer"
+        assert turn.turn_id == "late-stop-result"
+        assert turn.thread_id == "healthy-after-late-stop"
+        assert turn.terminal_result_accepted is True
+        assert turn.interrupted is False
+        assert turn.should_retire is False
+        assert session._interrupt_event.is_set() is False
+        assert pending_after_turn is False
+        assert holder["client"].queried == ["foreground question"]
+        assert holder["client"].interrupted is False
+
+    def test_terminal_fence_holds_when_commit_guard_is_bypassed(self):
+        """The fence is the mapping's snapshot read, not only the commit guard.
+
+        ``request_interrupt`` declines to set ``_interrupt_event`` once the
+        terminal result is committed, so a late stop sent through the public
+        path leaves the event clear and the mapping is never asked to fence
+        anything. Set the event directly instead — the state any other
+        admission path would leave behind — so the only thing that can keep the
+        completed answer is ``run_turn`` mapping ``interrupt_observed`` from the
+        stream consumer's snapshot rather than re-reading the live event.
+        """
+        holder = {}
+
+        class BypassCommitGuardSession(ClaudeAgentSdkSession):
+            async def _consume_turn(self, prompt):
+                turn_data = await super()._consume_turn(prompt)
+                assert turn_data["terminal_result_accepted"] is True
+                assert turn_data["interrupt_observed"] is False
+                # Deliberately NOT request_interrupt(): that path would queue
+                # the stop instead of setting the event, and the fence under
+                # test would go unexercised.
+                self._interrupt_event.set()
+                return turn_data
+
+        def factory(options=None):
+            client = _FakeClient(
+                options=options,
+                script=[
+                    ResultMessage(
+                        result="completed answer",
+                        uuid="fenced-result",
+                        session_id="healthy-after-bypassed-stop",
+                    )
+                ],
+            )
+            holder["client"] = client
+            return client
+
+        session = BypassCommitGuardSession(cwd="/tmp", client_factory=factory)
+        try:
+            turn = session.run_turn("foreground question")
+            event_after_turn = session._interrupt_event.is_set()
+        finally:
+            session.close()
+
+        assert turn.error is None
+        assert turn.terminal_result_accepted is True
+        assert turn.interrupted is False
+        assert turn.final_text == "completed answer"
+        assert turn.turn_id == "fenced-result"
+        assert turn.thread_id == "healthy-after-bypassed-stop"
+        assert turn.should_retire is False
+        # The fenced stop is consumed with the turn, not carried to the next.
+        assert event_after_turn is False
+
+    @pytest.mark.parametrize("exit_shape", ["stream_ended", "billing", "no_claims"])
+    def test_preclaim_early_exit_snapshots_interrupt(self, exit_shape):
+        import agent.transports.claude_agent_sdk_session as sdk_session_mod
+
+        session, _ = _make_session(script=[ResultMessage(result="unused")])
+        try:
+            session.ensure_started()
+            session._interrupt_event.set()
+            if exit_shape == "stream_ended":
+                session._stream_ended = sdk_session_mod._StreamEnd(None)
+            elif exit_shape == "billing":
+                session._billing_guard_error = "metered billing refused"
+            else:
+                session._turn_claims = None
+            turn_data = session._run_coro(session._consume_turn("hi"), timeout=5.0)
+        finally:
+            session.close()
+
+        assert turn_data["interrupt_observed"] is True
+
+    def test_interrupt_admitted_during_terminal_projection_is_reported(
+        self, monkeypatch
+    ):
+        """Admission before commit and commit observation are one atomic boundary."""
+        # Patch seam follows the consumer's binding: after the transport split
+        # ``ClaudeSdkEventProjector`` is imported and instantiated in
+        # ``claude_agent_sdk_session_turn``, not in the facade.
+        import agent.transports.claude_agent_sdk_session_turn as sdk_session_mod
+
+        projection_entered = threading.Event()
+        continue_projection = threading.Event()
+        original_projector = sdk_session_mod.ClaudeSdkEventProjector
+
+        class BlockingProjector(original_projector):
+            def project(self, message):
+                if type(message).__name__ == "ResultMessage":
+                    projection_entered.set()
+                    assert continue_projection.wait(timeout=5.0)
+                return super().project(message)
+
+        monkeypatch.setattr(
+            sdk_session_mod, "ClaudeSdkEventProjector", BlockingProjector
+        )
+        session, holder = _make_session(
+            script=[ResultMessage(result="answer", uuid="terminal-race")]
+        )
+        outcome = {}
+
+        def run_turn():
+            outcome["turn"] = session.run_turn("hi")
+
+        worker = threading.Thread(target=run_turn)
+        worker.start()
+        try:
+            assert projection_entered.wait(timeout=5.0)
+            session.request_interrupt()
+            continue_projection.set()
+            worker.join(timeout=10.0)
+            assert worker.is_alive() is False
+        finally:
+            continue_projection.set()
+            session.close()
+
+        assert outcome["turn"].interrupted is True
+        assert holder["client"].interrupted is True
 
     def test_offset_does_not_accumulate_across_unsolicited_turns(self):
         # The live incident: 4 unsolicited turns -> every later reply answered

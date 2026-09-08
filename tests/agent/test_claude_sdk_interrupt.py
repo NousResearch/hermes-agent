@@ -163,6 +163,18 @@ class TestInterruptRoutesToSdkSession:
         finally:
             session.close()
 
+    def test_interrupt_between_completed_turns_targets_the_next_turn(self):
+        session, holder = _make_session(script=[ResultMessage(result="ok")])
+        try:
+            turn1 = session.run_turn("first")
+            assert turn1.interrupted is False
+            session.request_interrupt()
+            turn2 = session.run_turn("second")
+            assert turn2.interrupted is True
+            assert holder["client"].queried == ["first"]
+        finally:
+            session.close()
+
 
 class TestBargeInInterruptHandoff:
     """W22 (2026-08-09 barge-in incident): a mid-turn user message interrupts
@@ -331,6 +343,7 @@ class TestBargeInInterruptHandoff:
             turn = session.run_turn("hi", turn_timeout=10.0)
         finally:
             session.close()
+        assert turn.interrupted is True
         assert turn.error is not None
         # Stream death retires (the poisoned-session fix), interrupt or not.
         assert turn.should_retire is True

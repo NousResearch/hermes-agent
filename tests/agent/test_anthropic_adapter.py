@@ -1898,6 +1898,12 @@ class TestFinalPayloadHasNoBlankTextBlocks:
         assert len(image_blocks) == 1
 
 
+def _final_request_options(anthropic_sdk):
+    from anthropic._models import FinalRequestOptions
+
+    return FinalRequestOptions(method="post", url="/v1/messages", json_data={})
+
+
 class TestApiKeyConstructionClearsEnvBearerToken:
     """Api-key-style clients must not inherit ANTHROPIC_AUTH_TOKEN from the environment.
 
@@ -1917,13 +1923,13 @@ class TestApiKeyConstructionClearsEnvBearerToken:
             {},
         )
         assert client.api_key == "provider-key"
-        # The guard is a copy-safe Omit() default header, so the wire never carries the
-        # sentinel even though the SDK keeps the env-derived auth_token attribute.
-        assert "Authorization" not in client.auth_headers
-        assert client.auth_headers == {"X-Api-Key": "provider-key"}
-        client_copy = client.with_options(timeout=30)
-        assert "Authorization" not in client_copy.auth_headers
-        assert client_copy.auth_headers == {"X-Api-Key": "provider-key"}
+        # The guard is a copy-safe Omit() default header: the SDK keeps the env-derived
+        # auth_token attribute, but the request headers (what reaches the wire) never
+        # contain Authorization — on the original client and on any with_options() copy.
+        for wire_client in (client, client.with_options(timeout=30)):
+            headers = dict(wire_client._build_headers(_final_request_options(anthropic_sdk)))
+            assert headers.get("x-api-key") == "provider-key"
+            assert "authorization" not in headers
 
     def test_bearer_style_client_keeps_its_auth_token(self, monkeypatch):
         anthropic_sdk = pytest.importorskip("anthropic")

@@ -16,12 +16,14 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from unittest.mock import patch, MagicMock
 
 import pytest
 
+from hermes_cli import dashboard_procs
 from hermes_cli.main_dashboard import _find_stale_dashboard_pids
 from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
 from hermes_cli import dashboard_procs
@@ -344,7 +346,7 @@ class TestWindowsWmicEncoding:
                    side_effect=lambda name: "wmic" if name == "wmic" else None), \
              patch("hermes_cli._subprocess_compat.bounded_probe_run") as mock_probe:
             mock_probe.return_value = subprocess.CompletedProcess(
-                args=["wmic"],
+                args=["wmic"],  # windows-footgun: ok — a CompletedProcess fixture, not a spawn
                 returncode=0,
                 stdout=(
                     "CommandLine=python -m hermes_cli.main dashboard\n"
@@ -429,7 +431,8 @@ class TestWindowsWmicEncoding:
              patch("hermes_cli._subprocess_compat.bounded_probe_run",
                    side_effect=results) as mock_probe:
             assert _find_stale_dashboard_pids() == [12345]
-        assert [c.args[0][0] for c in mock_probe.call_args_list] == ["wmic", "powershell"]
+        assert [c.args[0][0] for c in mock_probe.call_args_list] == [
+            "wmic", "powershell"]  # windows-footgun: ok — asserting argv, not building one
 
     def test_neither_binary_present_returns_empty_without_spawning(self):
         """No query available is an empty scan, not a crash."""
@@ -1005,3 +1008,49 @@ class TestPostUpdateStaleModuleReload:
 
         assert "hermes_cli._subprocess_compat" in reloaded
         assert "hermes_cli.dashboard_procs" in reloaded
+
+
+class TestWindowsProcessTableParsing:
+    """Two behaviours the wmic/PowerShell fallback pair depends on."""
+
+    def test_wmic_present_but_silent_falls_back_to_powershell(self, monkeypatch):
+        """A present wmic that exits 0 with nothing to say is the deprecation shape.
+
+        On later Windows builds the stub can succeed and print nothing; treating only a None
+        result or a non-zero exit as failure left the scan permanently empty, so a forgotten
+        dashboard was never reaped.
+        """
+        calls = []
+
+        def fake_probe(argv, **kwargs):
+            calls.append(argv[0])
+            if "wmic" in argv[0]:
+                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="")
+            return subprocess.CompletedProcess(
+                args=argv, returncode=0,
+                stdout="CommandLine=python -m hermes_cli.main dashboard\nProcessId=4242\n")
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(shutil, "which", lambda name: f"C:\\{name}.exe")
+        monkeypatch.setattr(
+            "hermes_cli._subprocess_compat.bounded_probe_run", fake_probe, raising=False)
+        rows = dashboard_procs._iter_process_table()
+        assert [pid for pid, _ in rows] == [4242], "empty wmic output did not fall back"
+        assert len(calls) == 2 and "powershell" in calls[1].lower()
+
+    def test_a_record_without_a_commandline_does_not_inherit_the_previous_one(self, monkeypatch):
+        """Same contract as the gateway's parser: no CommandLine means an empty cmdline.
+
+        Inheriting it reads an unrelated pid as a forgotten dashboard, and `hermes update` reaps
+        what this returns. Driven through the real `_iter_process_table`, not a copy of its loop.
+        """
+        listing = ("CommandLine=python -m hermes_cli.main dashboard\nProcessId=1111\n\n"
+                   "ProcessId=2222\n\nCommandLine=notepad.exe\nProcessId=3333\n")
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(shutil, "which", lambda name: f"C:\\{name}.exe")
+        monkeypatch.setattr(
+            "hermes_cli._subprocess_compat.bounded_probe_run",
+            lambda argv, **kw: subprocess.CompletedProcess(args=argv, returncode=0, stdout=listing),
+            raising=False)
+        assert dashboard_procs._iter_process_table() == [
+            (1111, "python -m hermes_cli.main dashboard"), (2222, ""), (3333, "notepad.exe")]

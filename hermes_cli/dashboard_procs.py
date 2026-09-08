@@ -84,6 +84,10 @@ def _iter_process_table() -> list[tuple[int, str]]:
                 current_cmd = line[len("CommandLine=") :]
             elif line.startswith("ProcessId="):
                 _append_row(rows, line[len("ProcessId=") :], current_cmd)
+                # Reset, as the gateway's sibling parser does: a record with no CommandLine line
+                # would otherwise inherit the previous process's, and an unrelated pid would be
+                # read as a forgotten dashboard and reaped by `hermes update`.
+                current_cmd = ""
         return rows
     # ps, not `pgrep -f "hermes.*dashboard"` (greedy regex; consistent with gateway pid scan).
     result = subprocess.run(["ps", "-A", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS)

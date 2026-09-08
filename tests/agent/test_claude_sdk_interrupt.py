@@ -176,6 +176,34 @@ class TestInterruptRoutesToSdkSession:
             session.close()
 
 
+    def test_stop_between_turns_still_reaches_the_cli(self):
+        """The terminal fence ends when the result reaches the caller.
+
+        Between turns the CLI can still be working -- an unsolicited background
+        Agent task under ``deliver_background_results`` -- so a /stop then must
+        reach the child, exactly as it did before the fence existed. Leaving
+        the commit flag set past the turn would silently drop it.
+        """
+        import time
+
+        session, holder = _make_session(
+            script=[ResultMessage(result="answer", uuid="between-turns-1")]
+        )
+        try:
+            assert session.run_turn("hi").final_text == "answer"
+
+            session.request_interrupt()
+
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if getattr(holder["client"], "interrupted", False):
+                    break
+                time.sleep(0.01)
+            assert holder["client"].interrupted is True
+        finally:
+            session.close()
+
+
 class TestBargeInInterruptHandoff:
     """W22 (2026-08-09 barge-in incident): a mid-turn user message interrupts
     the running turn; the CLI, aborted before any assistant content, returns

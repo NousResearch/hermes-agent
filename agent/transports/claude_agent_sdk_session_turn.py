@@ -339,6 +339,12 @@ class ClaudeSdkTurnMixin:
         # post-terminal pending state must clear together so neither can bleed
         # into the next turn on this session object.
         self.consume_interrupt()
+        # The fence covered commit -> mapping. It ends HERE, with the result in
+        # the caller's hands: between turns the CLI can still be running an
+        # unsolicited background task, and a /stop then must reach the child
+        # (and pre-set the next turn) exactly as it did before the fence.
+        with self._interrupt_commit_lock:
+            self._terminal_result_committed = False
         if turn_data["error"]:
             # A prior MCP tool use is not evidence that this terminal SDK
             # error belongs to MCP; preserve fail-closed Claude auth handling
@@ -431,6 +437,8 @@ class ClaudeSdkTurnMixin:
             "interrupt_observed": False,
             "terminal_result_accepted": False,
         }
+
+        boundary_interrupt = False
 
         def _snapshot_interrupt() -> bool:
             with self._interrupt_commit_lock:
@@ -552,10 +560,19 @@ class ClaudeSdkTurnMixin:
                 if projection.is_result:
                     # Terminal acceptance and interrupt observation are one
                     # atomic boundary.  If interrupt admission won the lock,
-                    # report it; if commit wins, later requests are queued and
+                    # REPORT it; if commit wins, later requests are queued and
                     # cannot call client.interrupt() during release.
+                    #
+                    # Reported, never folded into `interrupted`: that local
+                    # gates delivery below, and the EDE mask further down whose
+                    # contract is "never a fresh event read". A stop admitted
+                    # during projection must not discard the answer this
+                    # ResultMessage just completed, nor reclassify a genuine
+                    # terminal error as an honored interrupt.
                     with self._interrupt_commit_lock:
-                        interrupted = interrupted or self._interrupt_event.is_set()
+                        boundary_interrupt = (
+                            interrupted or self._interrupt_event.is_set()
+                        )
                         self._terminal_result_committed = True
                     out["terminal_result_accepted"] = True
                 if not interrupted and not billing_guarded:
@@ -699,7 +716,7 @@ class ClaudeSdkTurnMixin:
                         )
                         continue
                 self._handle_unsolicited(residue)
-        out["interrupt_observed"] = interrupted
+        out["interrupt_observed"] = interrupted or boundary_interrupt
         out["billing_mode"] = self._reported_billing_mode()
         out["billing_evidence"] = dict(self._billing_evidence)
         return out

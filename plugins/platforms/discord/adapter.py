@@ -3398,19 +3398,37 @@ class DiscordAdapter(BasePlatformAdapter):
             return
         await interaction.followup.send(result.get("message") or f"{label}: `{slug}`")
 
+    def _blog_approval_view_from_content(self, content: str):
+        """Return a BlogApprovalView when a sent message is a SahilBlog approval card."""
+        if not DISCORD_AVAILABLE or "[Blog Approval Request]" not in str(content or ""):
+            return None
+        slug_match = re.search(r"\*\*Slug:\*\*\s*`([^`]+)`", content)
+        if not slug_match:
+            return None
+        slug = slug_match.group(1).strip()
+        if not slug:
+            return None
+        try:
+            return BlogApprovalView(
+                slug=slug,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+        except NameError:
+            return None
+
     # ── Idea Box handlers ──────────────────────────────────────────────
 
     # ── END KENSEI CUSTOM ──
-    @staticmethod
 
-    def _message_reference_from_ids(message_id, channel) -> "discord.MessageReference":
+    def _message_reference_from_ids(self, message_id, channel) -> "discord.MessageReference":
         """ids-built reply reference — no fetch_message round trip. fail_if_not_exists=False
         keeps sends to deleted targets degrading to the send-side 10008 retry."""
-    # KENSEI CUSTOM: fork's blog-approval + IdeaBox interaction layer (_resolve_blog_approval_
-    # action_blocking, _handle_blog_approval_component, ideabox slash/component handlers, intake
-    # channel helpers, view factories) was absorbed upstream-side — the dispatcher seam at
-    # _dispatch_discord_message (KENSEI CUSTOM hook) and the component dispatch registration
-    # upstream cover the wiring.
+        # KENSEI CUSTOM: the fork's blog-approval + IdeaBox interaction layer (_resolve_blog_approval_
+        # action_blocking, _handle_blog_approval_component, _blog_approval_view_from_content,
+        # ideabox slash/component handlers, intake channel helpers) lives in this class; the
+        # dispatcher seam at _dispatch_discord_message and the on_interaction component dispatch
+        # cover the wiring. NOT absorbed upstream — upstream never had this layer.
         return discord.MessageReference(
             message_id=int(message_id), channel_id=getattr(channel, "id", None),
             guild_id=getattr(getattr(channel, "guild", None), "id", None), fail_if_not_exists=False,
@@ -7066,9 +7084,11 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return {"content": content, "embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build)
-            # KENSEI CUSTOM: view._message is stored by the upstream _send_prompt seam so
-            # _HermesView.on_timeout can expire the embed; fork's inline send + send_profile_gate
-            # absorbed upstream-side (ProfileGateView registered at _define_discord_view_classes).
+        # KENSEI CUSTOM: view._message is stored by the upstream _send_prompt seam so
+        # _HermesView.on_timeout can expire the embed; ProfileGateView is registered at
+        # _define_discord_view_classes. NOTE: fork's send_profile_gate (863c2bbecc) and the
+        # profile-gate watcher delivery loop were lost in the 20260904 watcher refactor —
+        # tracked separately; the view class is restored here so any future caller works.
 
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
@@ -7940,10 +7960,6 @@ def _define_discord_view_classes() -> None:
     class UpdatePromptView(_HermesView):
         """Yes/No buttons for ``hermes update`` prompts; the answer is written to
         ``.update_response`` for the detached update process to pick up."""
-    # KENSEI CUSTOM (SahilBlog / IdeaBox / ProfileGate views): fork's standalone
-    # BlogApprovalView / IdeaBoxApprovalView / ProfileGateView + per-view on_timeout overrides
-    # are absorbed upstream-side — _HermesView provides auth/_gate/_expire_embed plumbing and
-    # _define_discord_view_classes() registers the globals.
 
         def __init__(self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
@@ -7970,6 +7986,159 @@ def _define_discord_view_classes() -> None:
         @discord.ui.button(label="No", style=discord.ButtonStyle.red, emoji="✗")
         async def no_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
             await self._respond(interaction, "n", discord.Color.red(), "No")
+
+    # KENSEI CUSTOM (SahilBlog / ProfileGate views): the fork's BlogApprovalView and
+    # ProfileGateView were NOT absorbed upstream (upstream never had them); the 20260904
+    # merge dropped their definitions while keeping the global declarations and the
+    # send-path seam (_blog_approval_view_from_content) — restored from commit 4e8cf99e15
+    # so live sends and the blog_approval:approve/amend/reject persistent components work.
+
+    class BlogApprovalView(_HermesView):
+        """Approve / Amend / Reject buttons for SahilBlog approval cards."""
+
+        def __init__(
+            self,
+            slug: str,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            # 24h so Sahil has time to review the draft preview.
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=86400)
+            self.slug = slug
+
+        @staticmethod
+        def _resolve_blocking(slug: str, action: str) -> dict:
+            import os
+            import sys
+            from pathlib import Path
+
+            engine = Path(os.getenv(
+                "BLOG_CONTENT_ENGINE_DIR",
+                "/home/kensei/repos/KenseiAgent/content_engine",
+            ))
+            if str(engine) not in sys.path:
+                sys.path.insert(0, str(engine))
+            from blog.blog_approval import handle_discord_command
+            return handle_discord_command(f"!{action} {slug}")
+
+        async def _resolve(self, interaction: discord.Interaction, action: str,
+                           color: discord.Color, label: str):
+            if not await self._gate(
+                interaction, resolved_msg="This blog approval has already been resolved~",
+                unauth_msg="You're not authorised to answer this prompt~",
+            ):
+                return
+            await self._finalize_embed(interaction, color, f"{label} by {interaction.user.display_name}")
+            try:
+                result = await asyncio.to_thread(self._resolve_blocking, self.slug, action)
+            except Exception as exc:
+                logger.error("blog approval button failed: %s", exc, exc_info=True)
+                await interaction.followup.send(f"Blog approval `{action}` failed: {exc}")
+                return
+            await interaction.followup.send(result.get("message") or f"{label}: `{self.slug}`")
+
+        @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, emoji="✅")
+        async def approve(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "approve", discord.Color.green(), "Approved")
+
+        @discord.ui.button(label="Amend", style=discord.ButtonStyle.grey, emoji="✏️")
+        async def amend(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "amend", discord.Color.blue(), "Amend requested")
+
+        @discord.ui.button(label="Reject", style=discord.ButtonStyle.red, emoji="❌")
+        async def reject(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "reject", discord.Color.red(), "Rejected")
+
+        async def on_timeout(self):
+            self.resolved = True
+            self._disable_all()
+            await self._expire_embed("⏱ Prompt expired; use !approve/!amend/!reject if still needed")
+
+    class ProfileGateView(_HermesView):
+        """Two-button Approve / Reject view for PROFILE-GATE.
+
+        Gates autonomous profile CREATE / DELETE. Clicking runs the
+        kanban-side resolver (``profile_lifecycle_gate`` resolve) in a
+        worker thread: on approve the op executes and the requester task
+        closes; on reject the op never runs. Only allowlisted users can
+        click. A long timeout keeps the buttons live; if it expires the
+        approval stays pending and the operator can resolve it via the
+        CLI fallback.
+        """
+
+        def __init__(
+            self,
+            approval_id: str,
+            board: Optional[str],
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            # 24h so Sahil has time; pending row survives expiry regardless.
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=86400)
+            self.approval_id = approval_id
+            self.board = board
+
+        @staticmethod
+        def _resolve_blocking(approval_id: str, board: Optional[str], decision: str, by: str) -> dict:
+            from contextlib import nullcontext
+            from hermes_cli import kanban_db as _kb
+            from hermes_cli import profile_lifecycle_gate as _gate
+            scope = _kb.scoped_current_board(board) if board else nullcontext()
+            with scope, _kb.connect() as conn:
+                if decision == "approve":
+                    return _gate.approve(conn, approval_id, resolved_by=by)
+                return _gate.reject(conn, approval_id, resolved_by=by)
+
+        async def _resolve(self, interaction: discord.Interaction, decision: str,
+                           color: discord.Color, label: str):
+            if not await self._gate(
+                interaction, resolved_msg="This approval has already been resolved~",
+                unauth_msg="You're not authorised to answer this prompt~",
+            ):
+                return
+            await self._finalize_embed(interaction, color, f"{label} by {interaction.user.display_name}")
+
+            by = f"discord:{interaction.user.display_name}"
+            try:
+                res = await asyncio.to_thread(
+                    self._resolve_blocking, self.approval_id, self.board, decision, by,
+                )
+            except Exception as exc:
+                logger.error("profile-gate resolve failed: %s", exc, exc_info=True)
+                await interaction.followup.send(f"Profile gate {decision} failed: {exc}")
+                return
+            if decision == "approve" and not res.get("ok"):
+                await interaction.followup.send(f"Approved but the op FAILED: {res.get('error')}")
+            else:
+                verb = "executed" if decision == "approve" else "rejected"
+                await interaction.followup.send(f"Profile {res.get('op')} {res.get('profile')} {verb}.")
+            logger.info(
+                "profile-gate %s for %s by %s",
+                decision, self.approval_id, interaction.user.display_name,
+            )
+
+        @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, emoji="✅")
+        async def approve(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "approve", discord.Color.green(), "Approved")
+
+        @discord.ui.button(label="Reject", style=discord.ButtonStyle.red, emoji="❌")
+        async def reject(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "reject", discord.Color.red(), "Rejected")
+
+        async def on_timeout(self):
+            self.resolved = True
+            self._disable_all()
+            await self._expire_embed("⏱ Gate expired; resolve via CLI fallback if still needed")
 
     class ModelPickerView(_HermesView):
         """Two-step select-menu model picker: provider dropdown → model dropdown,

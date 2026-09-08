@@ -491,66 +491,12 @@ class ClaudeSdkTurnMixin:
                     if not interrupted and not billing_guarded:
                         self._forward_stream_delta(message)
                     continue
-                for block in getattr(message, "content", None) or []:
-                    if (
-                        type(block).__name__ == "ToolUseBlock"
-                        and str(getattr(block, "name", "")).startswith("mcp__")
-                    ):
-                        out["mcp_tool_seen"] = True
+                self._note_mcp_tool_use(message, out)
                 if not interrupted and not billing_guarded:
                     self._notify_tool_started(message)
                     self._notify_interim_assistant(message)
-                projection = projector.project(message)
-                if watch is not None:
-                    # Outstanding-tool evidence: ToolUseBlocks issue, tool
-                    # results resolve (server tools never enter — the
-                    # projector resolves them inside their own assistant
-                    # message). A turn with a tool in flight is suspended
-                    # from BOTH watchdog rules.
-                    issued = sum(
-                        len(m.get("tool_calls") or [])
-                        for m in projection.messages
-                        if m.get("role") == "assistant"
-                    )
-                    if issued:
-                        watch.note_tools_issued(issued)
-                    if projection.is_tool_iteration:
-                        watch.note_tools_resolved(
-                            sum(
-                                1
-                                for m in projection.messages
-                                if m.get("role") == "tool"
-                            )
-                        )
-                        # Codex-parity arm point: a tool result just landed;
-                        # silence from here on is the wedge signature.
-                        watch.arm_post_tool()
-                    elif projection.messages or projection.final_text is not None:
-                        watch.disarm_post_tool()
-                if projection.model:
-                    # Last reported id wins; captured even on interrupted
-                    # turns — the tokens were still spent on that model.
-                    out["model"] = projection.model
-                # A genuine terminal SDK error carries a result string, but it
-                # is transport diagnostics, not an assistant answer. The outer
-                # runtime needs `out["error"]` to activate provider fallback;
-                # emitting this text first persists it as an assistant message
-                # and poisons the fallback's history with a false “I am
-                # blocked” claim. Contradictory success envelopes remain a
-                # success exactly as handled below.
-                _result_subtype = getattr(message, "subtype", "") or ""
-                _result_is_error = bool(
-                    projection.is_result
-                    and (
-                        getattr(message, "is_error", False)
-                        or _result_subtype not in ("", "success")
-                    )
-                )
-                _result_is_contradictory_success = bool(
-                    _result_is_error
-                    and _result_subtype == "success"
-                    and not (getattr(message, "errors", None) or [])
-                    and not getattr(message, "api_error_status", None)
+                projection, _result_is_error, _result_is_contradictory_success = (
+                    self._project_message_step(projector, watch, message, out)
                 )
                 if not interrupted and not billing_guarded:
                     if projection.messages:
@@ -696,6 +642,91 @@ class ClaudeSdkTurnMixin:
         out["billing_mode"] = self._reported_billing_mode()
         out["billing_evidence"] = dict(self._billing_evidence)
         return out
+
+    # ---------- ungated per-message steps of _consume_turn ----------
+    # Everything that depends on turn STATE (the interrupted / billing-guarded
+    # gates on delivery, and every exit) stays in the loop scaffold above; the
+    # two steps below run for every non-delta message regardless of that
+    # state and only feed it.
+
+    @staticmethod
+    def _note_mcp_tool_use(message: Any, out: dict[str, Any]) -> None:
+        """Record that this turn issued an ``mcp__`` tool (ungated)."""
+        for block in getattr(message, "content", None) or []:
+            if (
+                type(block).__name__ == "ToolUseBlock"
+                and str(getattr(block, "name", "")).startswith("mcp__")
+            ):
+                out["mcp_tool_seen"] = True
+
+    @staticmethod
+    def _project_message_step(
+        projector: ClaudeSdkEventProjector,
+        watch: Optional[_TurnWatch],
+        message: Any,
+        out: dict[str, Any],
+    ) -> tuple[Any, bool, bool]:
+        """Project one stream message and do the ungated bookkeeping around it.
+
+        Runs whatever the turn state: the projector recognises the terminal
+        result either way, the watchdog needs the outstanding-tool evidence, and
+        the model id is captured even on interrupted turns. Returns the
+        projection plus the two terminal-error flags that the gated delivery
+        reads to withhold a diagnostic ``result`` string from the transcript.
+        """
+        projection = projector.project(message)
+        if watch is not None:
+            # Outstanding-tool evidence: ToolUseBlocks issue, tool
+            # results resolve (server tools never enter — the
+            # projector resolves them inside their own assistant
+            # message). A turn with a tool in flight is suspended
+            # from BOTH watchdog rules.
+            issued = sum(
+                len(m.get("tool_calls") or [])
+                for m in projection.messages
+                if m.get("role") == "assistant"
+            )
+            if issued:
+                watch.note_tools_issued(issued)
+            if projection.is_tool_iteration:
+                watch.note_tools_resolved(
+                    sum(
+                        1
+                        for m in projection.messages
+                        if m.get("role") == "tool"
+                    )
+                )
+                # Codex-parity arm point: a tool result just landed;
+                # silence from here on is the wedge signature.
+                watch.arm_post_tool()
+            elif projection.messages or projection.final_text is not None:
+                watch.disarm_post_tool()
+        if projection.model:
+            # Last reported id wins; captured even on interrupted
+            # turns — the tokens were still spent on that model.
+            out["model"] = projection.model
+        # A genuine terminal SDK error carries a result string, but it
+        # is transport diagnostics, not an assistant answer. The outer
+        # runtime needs `out["error"]` to activate provider fallback;
+        # emitting this text first persists it as an assistant message
+        # and poisons the fallback's history with a false “I am
+        # blocked” claim. Contradictory success envelopes remain a
+        # success exactly as handled in the terminal branch.
+        _result_subtype = getattr(message, "subtype", "") or ""
+        _result_is_error = bool(
+            projection.is_result
+            and (
+                getattr(message, "is_error", False)
+                or _result_subtype not in ("", "success")
+            )
+        )
+        _result_is_contradictory_success = bool(
+            _result_is_error
+            and _result_subtype == "success"
+            and not (getattr(message, "errors", None) or [])
+            and not getattr(message, "api_error_status", None)
+        )
+        return projection, _result_is_error, _result_is_contradictory_success
 
     # ---------- stream ownership ----------
 

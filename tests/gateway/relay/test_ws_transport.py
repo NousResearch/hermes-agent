@@ -360,3 +360,88 @@ async def test_4401_with_reason_expired_repeated_still_never_latches():
         await srv.stop()
 
 
+
+
+@pytest.mark.asyncio
+async def test_provisional_4401_never_starts_a_second_dialer_while_the_supervisor_is_mid_dial(monkeypatch):
+    """Only ONE dialer may be live. A reader that dies with a provisional 4401
+    while the backoff supervisor is already mid-dial (socket installed, hello in
+    flight) must not start the fresh-token retry as a second concurrent dialer
+    — two dialers replace each other's socket/reader and can leave the
+    transport attached to the wrong socket. The supervisor's own re-dial carries
+    the fresh token instead, so exactly two dials happen in total."""
+    import gateway.relay.ws_transport as mod
+
+    class _Close4401(Exception):
+        code = 4401
+        reason = "unauthorized"
+
+    class _FirstWS:
+        """The supervisor's first dial: its reader 4401s while hello is in flight,
+        then the hello itself fails (the connector dropped this connection)."""
+
+        def __init__(self, second_dial_done: asyncio.Event):
+            self.release_reader = asyncio.Event()
+            self.second_dial_done = second_dial_done
+
+        async def send(self, _data):
+            self.release_reader.set()
+            await asyncio.wait_for(self.second_dial_done.wait(), 1)
+            raise RuntimeError("dial lost during hello")
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await self.release_reader.wait()
+            raise _Close4401()
+
+        async def close(self):
+            pass
+
+    class _IdleWS:
+        def __init__(self):
+            self.stop = asyncio.Event()
+
+        async def send(self, _data):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await self.stop.wait()
+            raise StopAsyncIteration
+
+        async def close(self):
+            self.stop.set()
+
+    second_dial_done = asyncio.Event()
+    sockets = [_FirstWS(second_dial_done), _IdleWS(), _IdleWS()]
+    dials: list = []
+
+    async def fake_connect(*_args, **_kwargs):
+        ws = sockets[len(dials)]
+        dials.append(ws)
+        if len(dials) == 2:
+            second_dial_done.set()
+        return ws
+
+    monkeypatch.setattr(mod.websockets, "connect", fake_connect)
+    t = WebSocketRelayTransport(
+        "ws://unused", "discord", "bot", reconnect=True,
+        reconnect_backoff_s=0, reconnect_max_backoff_s=0,
+    )
+    t._handshake_succeeded = True
+    t._supervisor = asyncio.create_task(t._reconnect_loop())
+    try:
+        assert await _wait_until(lambda: len(dials) >= 2)
+        await asyncio.sleep(0.1)  # give a racing second dialer time to show itself
+        assert len(dials) == 2, "a second dialer ran alongside the supervisor"
+        assert t._ws is sockets[1], "the transport must be attached to the live socket"
+        assert t._reader is not None and not t._reader.done()
+        assert not t.auth_revoked
+        # The supervisor's re-dial carried the fresh token: a 4401 on it is terminal.
+        assert t._auth_retry_generation == t._dial_generation
+    finally:
+        await t.disconnect(budget_s=0)

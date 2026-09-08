@@ -398,20 +398,27 @@ class WebSocketRelayTransport:
         # retry connection still counts as the refusal of the fresh token.
         self._dial_generation = 0
         self._auth_retry_generation: Optional[int] = None
+        # Set by a provisional 4401; the NEXT dial (whichever dialer performs
+        # it) becomes the fresh-token retry generation. A flag consumed at dial
+        # time, not a dedicated dialer, so the retry can never race a
+        # supervisor that is already mid-dial.
+        self._auth_retry_pending = False
 
     # ── lifecycle ────────────────────────────────────────────────────────
     async def connect(self) -> bool:
         await self._dial_and_start()
         return True
 
-    async def _dial_and_start(self, *, auth_retry: bool = False) -> None:
+    async def _dial_and_start(self) -> None:
         """Open the socket, start the reader, send hello(s). Used by connect() and
-        by the reconnect supervisor on a re-dial. ``auth_retry`` marks this dial
-        as the one-shot fresh-token re-dial after a provisional 4401."""
+        by the reconnect supervisor / fresh-token retry on a re-dial."""
         self._descriptor_ready = asyncio.get_running_loop().create_future()
         self._dial_generation += 1
-        if auth_retry:
+        if self._auth_retry_pending:
+            # This dial carries the freshly minted token that decides whether
+            # the provisional 4401 was an expired token or a revoked secret.
             self._auth_retry_generation = self._dial_generation
+            self._auth_retry_pending = False
         # Fresh handshake generation: a reconnected connector re-sends one
         # descriptor per hello, so stale descriptors must not survive.
         self._descriptor = None
@@ -684,7 +691,7 @@ class WebSocketRelayTransport:
                 logger.error("relay ws read loop started with no socket")
                 return
             try:
-                async for chunk in self._ws:
+                async for chunk in ws:
                     buf += chunk if isinstance(chunk, str) else chunk.decode("utf-8")
                     # Newline-delimited frames; keep any trailing partial line.
                     *lines, buf = buf.split("\n")
@@ -715,6 +722,7 @@ class WebSocketRelayTransport:
                             )
                     elif not self._closing:
                         auth_retry_scheduled = True
+                        self._auth_retry_pending = True
                         logger.warning(
                             "relay ws closed 4401 (unauthorized) after a successful handshake — "
                             "re-dialing once with a fresh upgrade token before treating it as "
@@ -722,22 +730,21 @@ class WebSocketRelayTransport:
                         )
                 elif not self._closing:
                     logger.warning("relay ws read loop ended: %s", exc)
-            # Socket closed. A provisional 4401 takes the immediate fresh-token
-            # re-dial (which arms the supervisor itself on a non-auth failure).
-            # Otherwise, unless this was a deliberate disconnect() or a terminal
-            # revocation (re-dialing a dead credential just spins), arm the
-            # supervisor: it re-dials and starts a fresh reader.
-            if auth_retry_scheduled and (self._auth_retry is None or self._auth_retry.done()):
+            # Socket closed. Exactly ONE dialer may be live at a time: the reader
+            # that dies while a dialer is already mid-dial (socket installed,
+            # hello still in flight) must NOT start a second one — that dialer's
+            # own failure handling re-dials, and the pending flag above makes
+            # that re-dial the fresh-token retry. A provisional 4401 with no
+            # dialer live takes the immediate fresh-token re-dial (no backoff);
+            # any other close arms the backoff supervisor unless this was a
+            # deliberate disconnect() or a terminal revocation.
+            if self._closing or self._dialer_running():
+                pass
+            elif auth_retry_scheduled:
                 self._auth_retry = asyncio.create_task(
                     self._redial_with_fresh_token(), name="relay-ws-auth-retry"
                 )
-            elif (
-                not auth_retry_scheduled
-                and self._reconnect
-                and not self._closing
-                and not self._auth_revoked
-                and (self._supervisor is None or self._supervisor.done())
-            ):
+            elif self._reconnect and not self._auth_revoked:
                 self._supervisor = asyncio.create_task(self._reconnect_loop(), name="relay-ws-reconnect")
         finally:
             # Drop the dead handle (identity-guarded) so every `_ws is None`
@@ -753,6 +760,13 @@ class WebSocketRelayTransport:
             self._fail_pending(
                 lambda fut: fut.set_result({"success": False, "error": "relay transport connection lost"})
             )
+
+    def _dialer_running(self) -> bool:
+        """True while the backoff supervisor or the fresh-token retry is live."""
+        return any(
+            task is not None and not task.done()
+            for task in (self._supervisor, getattr(self, "_auth_retry", None))
+        )
 
     @staticmethod
     def _close_code_of(exc: BaseException) -> Optional[int]:
@@ -795,30 +809,38 @@ class WebSocketRelayTransport:
         if self._closing:
             return
         try:
-            await self._dial_and_start(auth_retry=True)
+            await self._dial_and_start()
             logger.info("relay ws re-dialed with a fresh upgrade token after 4401")
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - fall back to the backoff supervisor
             if self._closing:
                 return
-            # A 4401 rejected at the UPGRADE (before any frame flows) surfaces
-            # here as the dial exception rather than in a reader: that is the
-            # fresh token being refused, i.e. the second strike.
-            if self._close_code_of(exc) == _RELAY_UNAUTHORIZED_CLOSE_CODE and (
-                self._close_reason_of(exc) != _RELAY_EXPIRED_CLOSE_REASON
-            ):
-                self._auth_revoked = True
-                logger.warning(
-                    "relay ws fresh-token re-dial rejected with 4401 — treating as a "
-                    "revoked relay credential (opt-out); not reconnecting"
-                )
+            if self._latch_if_fresh_token_refused(exc):
                 return
             logger.warning("relay ws fresh-token re-dial failed: %s", exc)
-            if self._reconnect and (self._supervisor is None or self._supervisor.done()):
+            if self._reconnect and not (self._supervisor and not self._supervisor.done()):
                 self._supervisor = asyncio.create_task(
                     self._reconnect_loop(), name="relay-ws-reconnect"
                 )
+
+    def _latch_if_fresh_token_refused(self, exc: BaseException) -> bool:
+        """A 4401 at the UPGRADE of the fresh-token dial (before any frame flows)
+        surfaces as the dial exception rather than in a reader: that is the fresh
+        token being refused, i.e. the second strike. Latch revocation and report
+        True; anything else (incl. reason "expired") is not a revocation."""
+        if (
+            self._auth_retry_generation == self._dial_generation
+            and self._close_code_of(exc) == _RELAY_UNAUTHORIZED_CLOSE_CODE
+            and self._close_reason_of(exc) != _RELAY_EXPIRED_CLOSE_REASON
+        ):
+            self._auth_revoked = True
+            logger.warning(
+                "relay ws fresh-token re-dial rejected with 4401 — treating as a "
+                "revoked relay credential (opt-out); not reconnecting"
+            )
+            return True
+        return False
 
     async def _reconnect_loop(self) -> None:
         """Re-dial with capped exponential backoff until a dial succeeds (its reader
@@ -838,6 +860,8 @@ class WebSocketRelayTransport:
                 logger.info("relay ws reconnected")
                 return
             except Exception as exc:  # noqa: BLE001 - keep retrying on dial failure
+                if self._latch_if_fresh_token_refused(exc):
+                    return
                 logger.warning("relay ws reconnect failed: %s", exc)
                 backoff = min(backoff * 2, self._reconnect_max_backoff_s)
 

@@ -1161,3 +1161,31 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# kanban_create schema wording — prerequisites vs. ownership (#105573)
+# ---------------------------------------------------------------------------
+
+
+def test_kanban_create_schema_clarifies_parents_are_prerequisites():
+    """The create wording must separate continuations from decomposition.
+
+    A continuation may list the current task in ``parents`` (it starts after
+    that task is done), but a child the current task waits on must not list
+    it — a root held open until its children deliver would deadlock. The
+    schema is model-facing guidance, so the clarification lives in the
+    description strings.
+    """
+    from tools.kanban_tools_schemas import KANBAN_CREATE_SCHEMA
+
+    desc = KANBAN_CREATE_SCHEMA["description"]
+    assert "continuation of the current one" in desc
+    assert "prerequisites, not ownership" in desc
+    assert "waiting on this new one" in desc
+    assert "body for traceability" in desc
+
+    parents = KANBAN_CREATE_SCHEMA["parameters"]["properties"]["parents"]["description"]
+    assert parents.startswith("Prerequisite task ids.")
+    assert "Continuations may list the current task" in parents
+    assert "waiting on the new one" in parents

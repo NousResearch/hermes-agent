@@ -351,12 +351,17 @@ KANBAN_ATTACHMENTS_SCHEMA = _schema(
 KANBAN_CREATE_SCHEMA = _schema(
     "kanban_create",
     (
-        "Create a new kanban task, optionally as a child of the current "
-        "one (pass the current task id in ``parents``). Used by "
-        "orchestrator workers to fan out — decompose work into child "
-        "tasks with specific assignees, link them into a pipeline, "
-        "then complete your own task. The dispatcher picks up the new "
-        "tasks on its next tick and spawns the assigned profiles."
+        "Create a new kanban task, optionally as a continuation of the "
+        "current one (pass the current task id in ``parents`` — the new "
+        "task only starts after that task is done). Used by orchestrator "
+        "workers to fan out — decompose work into child tasks with "
+        "specific assignees, link them into a pipeline, then complete "
+        "your own task. ``parents`` are prerequisites, not ownership: "
+        "never list a task that is waiting on this new one (a root held "
+        "open until its children deliver would deadlock) — mention its "
+        "id in the body for traceability instead. The dispatcher picks "
+        "up the new tasks on its next tick and spawns the assigned "
+        "profiles."
     ),
     {
         "title": _prop("string", "Short task title (required)."),
@@ -375,9 +380,11 @@ KANBAN_CREATE_SCHEMA = _schema(
             "type": "array",
             "items": {"type": "string"},
             "description": (
-                "Parent task ids. The new task stays in 'todo' "
+                "Prerequisite task ids. The new task stays in 'todo' "
                 "until every parent reaches 'done'; then it "
-                "auto-promotes to 'ready'. Typical fan-in: list "
+                "auto-promotes to 'ready'. Continuations may list the "
+                "current task; a task that is waiting on the new one "
+                "must not be listed (deadlock). Typical fan-in: list "
                 "all the researcher task ids when creating a "
                 "synthesizer task."
             ),

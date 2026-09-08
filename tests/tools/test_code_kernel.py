@@ -364,7 +364,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
     """Interpreter state persists across cells; RPC authority must not."""
 
     def _recorder(self, seen):
-        def _handle(tool_name, tool_args, task_id=None):
+        def _handle(tool_name, tool_args, task_id=None, programmatic=False):
             from tools.thread_context import _callback_api
 
             get_approval, _get_sudo, _set_a, _set_s = _callback_api()
@@ -372,6 +372,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
                 {
                     "tool": tool_name,
                     "task_id": task_id,
+                    "programmatic": programmatic,
                     "approval_cb": get_approval(),
                 }
             )
@@ -406,6 +407,8 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         self.assertIs(seen[0]["approval_cb"], cb_one)
         self.assertIs(seen[1]["approval_cb"], cb_two)
         self.assertEqual(seen[0]["task_id"], "kernel-test")
+        self.assertTrue(seen[0]["programmatic"])
+        self.assertTrue(seen[1]["programmatic"])
 
     def test_cross_cell_alias_dispatches_under_the_current_cell(self):
         # Adversarial cross-cell dataflow: a callable captured in cell 1 and

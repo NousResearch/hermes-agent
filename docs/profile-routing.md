@@ -8,8 +8,8 @@
 
 By default a single gateway run uses one profile (memory, persona, tools). **Profile-based
 routing** lets one gateway instance serve **multiple isolated profiles**, selecting which
-profile handles an inbound message based on *where the message came from* — the platform,
-server (`guild_id`), channel (`chat_id`), and/or thread (`thread_id`).
+profile handles an inbound message based on its sender and location — the platform,
+sender (`user_id`), server (`guild_id`), channel (`chat_id`), and/or thread (`thread_id`).
 
 This is the inbound counterpart to multiplexing: instead of running N gateways, run one
 gateway and route per-community / per-channel / per-thread to a dedicated profile. Each
@@ -52,6 +52,12 @@ profile_routes:
     chat_id: "9876543210"
     thread_id: "1111111111"
     profile: standup
+
+  # Route one Teams user across DMs, groups, and channels.
+  - name: teams-owner
+    platform: teams
+    user_id: "00000000-0000-0000-0000-000000000000"
+    profile: owner
 ```
 
 ### Fields
@@ -64,6 +70,7 @@ profile_routes:
 | `guild_id` | no | Server/guild (Discord). |
 | `chat_id` | no | Channel/group/DM id. |
 | `thread_id` | no | Thread id within a channel. |
+| `user_id` | no | Exact sender id. A blank value never matches; omitted or `null` means no sender constraint. |
 | `enabled` | no | Default `true`; set `false` to disable a route without removing it. |
 
 ## Matching rules
@@ -72,6 +79,7 @@ A route matches an inbound source when **every discriminator the route declares 
 (conjunctive / AND). A field the route leaves unset is ignored.
 
 - **`platform`** must equal the source platform exactly.
+- **`user_id`** (if set) must equal the source sender id exactly.
 - **`thread_id`** (if set) must equal the source thread id.
 - **`chat_id`** (if set) must match the source channel **or** its parent — a thread in a
   channel matches the channel's route (hierarchical match for Discord forums/threads).
@@ -84,12 +92,14 @@ When multiple routes match, the **most specific** one wins. Specificity is addit
 
 | Discriminator | Weight |
 |---|---|
+| `user_id` | 16 |
 | `thread_id` | 8 |
 | `chat_id` | 4 |
 | `guild_id` | 2 |
 | (platform only) | 0 |
 
-So a thread route (8) beats a channel route (4) beats a guild route (2) within the same server.
+So a sender-only route (16) beats every location-only route, while combining `user_id` with
+location fields raises its specificity further. Equal scores preserve declaration order.
 If no route matches, the message uses the default/active profile.
 
 ## How it works at runtime
@@ -113,5 +123,5 @@ every platform goes through this path — not just Discord.
 `profile_routes` requires `gateway.multiplex_profiles: true`. Multiplexing is what
 activates the per-profile runtime scope (per-profile `HERMES_HOME`, secret scope, and
 profile-namespaced session keys); routing is the decision layer that picks *which*
-profile a given guild/channel/thread lands in. With multiplexing off, `profile_routes`
+profile a given sender/guild/channel/thread lands in. With multiplexing off, `profile_routes`
 is ignored entirely — behavior is byte-identical to a single-profile gateway.

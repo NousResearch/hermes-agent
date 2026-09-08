@@ -528,6 +528,50 @@ class TestTeamsMessageHandling:
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "group"
 
+    @pytest.mark.anyio
+    async def test_aad_user_route_survives_conversation_changes(self, monkeypatch):
+        from gateway.profile_routing import parse_profile_routes
+        from gateway.run import GatewayRunner
+
+        routes = parse_profile_routes([
+            {"name": "owner", "platform": "teams", "user_id": "aad-456", "profile": "owner"},
+            {"name": "other", "platform": "teams", "user_id": "aad-789", "profile": "other"},
+        ])
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(multiplex_profiles=True, profile_routes=routes)
+        monkeypatch.setattr(
+            "gateway.run._multiplex_profile_homes",
+            lambda _config: [("owner", None), ("other", None)],
+        )
+
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter.gateway_runner = runner
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        for activity_id, conversation_id, conversation_type, user_id in (
+            ("activity-group", "19:shared@thread.v2", "groupChat", "aad-456"),
+            ("activity-channel", "19:channel@thread.v2", "channel", "aad-456"),
+            ("activity-dm", "19:dm@thread.v2", "personal", "aad-456"),
+            ("activity-other", "19:shared@thread.v2", "groupChat", "aad-789"),
+        ):
+            await adapter._on_message(self._make_ctx(self._make_activity(
+                activity_id=activity_id,
+                conversation_id=conversation_id,
+                conversation_type=conversation_type,
+                from_aad_id=user_id,
+            )))
+
+        sources = [call.args[0].source for call in adapter.handle_message.await_args_list]
+        assert [source.profile for source in sources] == ["owner", "owner", "owner", "other"]
+        assert [source.chat_type for source in sources] == ["group", "channel", "dm", "group"]
+        assert [runner._session_key_for_source(source).split(":", 2)[1] for source in sources] == [
+            "owner", "owner", "owner", "other",
+        ]
+
 
 class TestTeamsAttachmentClassification:
     """Document attachments must set MessageType.DOCUMENT so run.py's

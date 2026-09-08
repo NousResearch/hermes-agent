@@ -66,8 +66,12 @@ class ProviderRegistry(Generic[P]):
         else:
             self._scoped_generations[scope] = self._scoped_generations.get(scope, 0) + 1
 
-    def register(self, provider: P, *, scope: Optional[str] = None) -> None:
-        """Register a provider; same-name re-registration overwrites (hot reload)."""
+    def register(self, provider: P, *, scope: Optional[str] = None, builtin: bool = False) -> None:
+        """Register a provider; same-name re-registration overwrites (hot reload).
+
+        ``builtin=True`` is for global in-tree factories whose names this registry
+        reserves. Scoped plugin registrars never grant this exemption.
+        """
         if not isinstance(provider, self.provider_cls):
             article = "an" if self.provider_cls.__name__[0] in "AEIOU" else "a"
             raise TypeError(
@@ -78,7 +82,7 @@ class ProviderRegistry(Generic[P]):
         if not isinstance(raw_name, str) or not raw_name.strip():
             raise ValueError(f"{self.label} provider .name must be a non-empty string")
         key = self.normalize(raw_name)
-        if key in self.builtin_names:
+        if key in self.builtin_names and not (builtin and scope is None):
             if self._on_builtin_collision is not None:
                 self._on_builtin_collision(key)
             return

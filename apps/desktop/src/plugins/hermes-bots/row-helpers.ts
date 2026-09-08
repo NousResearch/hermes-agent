@@ -108,7 +108,13 @@ export function botWorkingMood(
 ): 'idle' | 'think' | 'work' {
   const botConnectionId = bot.connectionId || (bot.remoteSource ? '' : activeConnectionId)
 
-  if (turnBusy && owner?.authoritative && owner.connectionId && owner.name === bot.name && owner.connectionId === botConnectionId) {
+  if (
+    turnBusy &&
+    owner?.authoritative &&
+    owner.connectionId &&
+    owner.name === bot.name &&
+    owner.connectionId === botConnectionId
+  ) {
     return 'think'
   }
 

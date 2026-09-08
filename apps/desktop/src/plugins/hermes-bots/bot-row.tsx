@@ -62,7 +62,15 @@ import { displayName, stripPreviewMarkdown } from './labels'
 import { duplicateBot } from './profile-ops'
 import { openRosterBot } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
-import { A2A_PREFIX_RE, botCanonicalSessionId, botRowOwnsWorkspace, botWorkingMood, previewKind, useTurnBusy, workerActiveAt } from './row-helpers'
+import {
+  A2A_PREFIX_RE,
+  botCanonicalSessionId,
+  botRowOwnsWorkspace,
+  botWorkingMood,
+  previewKind,
+  useTurnBusy,
+  workerActiveAt
+} from './row-helpers'
 import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
 import { $botSections, $draggingBot, BOT_DRAG_MIME, botSectionId, moveBotsToSection } from './user-sections'
 

@@ -14,16 +14,31 @@ describe('room display order', () => {
     expect(sortGroupRosterRows(rows, {}).map(row => row.name)).toEqual(['Pinned', 'Newer', 'Bot', 'Older'])
     const rooms = { Older: { rosterOrder: 0 }, Newer: { rosterOrder: 1 } }
     expect(sortGroupRosterRows(rows, rooms).map(row => row.name)).toEqual(['Pinned', 'Older', 'Bot', 'Newer'])
-    expect(sortGroupRosterRows(rows.map(row => ({ ...row, activity: row.name === 'Newer' ? 999 : row.activity })), rooms).filter(row => row.kind === 'group').map(row => row.name)).toEqual(['Pinned', 'Older', 'Newer'])
+    expect(
+      sortGroupRosterRows(
+        rows.map(row => ({ ...row, activity: row.name === 'Newer' ? 999 : row.activity })),
+        rooms
+      )
+        .filter(row => row.kind === 'group')
+        .map(row => row.name)
+    ).toEqual(['Pinned', 'Older', 'Newer'])
     expect(rows[0].name).toBe('Older')
   })
 
   it('moves only visible same-band rooms while retaining hidden slots and ignoring stale targets', () => {
-    const ordered = sortGroupRosterRows(rows.filter(row => row.kind === 'group'), {})
+    const ordered = sortGroupRosterRows(
+      rows.filter(row => row.kind === 'group'),
+      {}
+    )
     expect(reorderGroupRows(ordered, 'Older', -1)).toEqual(['Pinned', 'Older', 'Newer'])
     expect(reorderGroupRows(ordered, 'Newer', -1)).toBeNull()
     expect(reorderGroupRows(ordered, 'deleted', 1)).toBeNull()
     const hidden = { kind: 'group' as const, name: 'Hidden', activity: 2, pinned: false }
-    expect(reorderGroupRows([ordered[0], ordered[1], hidden, ordered[2]], 'Older', -1, ['Newer', 'Older'])).toEqual(['Pinned', 'Older', 'Hidden', 'Newer'])
+    expect(reorderGroupRows([ordered[0], ordered[1], hidden, ordered[2]], 'Older', -1, ['Newer', 'Older'])).toEqual([
+      'Pinned',
+      'Older',
+      'Hidden',
+      'Newer'
+    ])
   })
 })

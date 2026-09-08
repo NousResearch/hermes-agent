@@ -103,9 +103,15 @@ describe('the pet gallery', () => {
   })
 
   it('keeps selection while scrolling for more and resets the search window', async () => {
-    useQueryMock.mockReturnValue({ data: { pets: Array.from({ length: 60 }, (_, i) => ({
-      displayName: `Pet ${i}`, slug: `pet-${i}`, spritesheetUrl: SHEET
-    })) } })
+    useQueryMock.mockReturnValue({
+      data: {
+        pets: Array.from({ length: 60 }, (_, i) => ({
+          displayName: `Pet ${i}`,
+          slug: `pet-${i}`,
+          spritesheetUrl: SHEET
+        }))
+      }
+    })
     stubFetch(async () => ({ blob: async () => new Blob() }))
     const PetTab = await loadPetTab()
     const onImage = vi.fn()
@@ -115,7 +121,9 @@ describe('the pet gallery', () => {
     await waitFor(() => expect(onImage).toHaveBeenCalledWith('data:image/png;base64,ok'))
     const scroller = first.parentElement!.parentElement!
     Object.defineProperties(scroller, {
-      clientHeight: { value: 220 }, scrollHeight: { value: 600 }, scrollTop: { value: 400 }
+      clientHeight: { value: 220 },
+      scrollHeight: { value: 600 },
+      scrollTop: { value: 400 }
     })
     fireEvent.scroll(scroller)
     expect(view.getByText('Pet 47')).toBeTruthy()

@@ -80,7 +80,13 @@ import {
 } from './roster-sections'
 import type { ResolvedRosterGatewaySection } from './roster-sections'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
-import { ACTIVE_WINDOW_S, activeBots, BOT_ROSTER_SEARCH_THRESHOLD, rosterActivityMatches, useTurnBusy } from './row-helpers'
+import {
+  ACTIVE_WINDOW_S,
+  activeBots,
+  BOT_ROSTER_SEARCH_THRESHOLD,
+  rosterActivityMatches,
+  useTurnBusy
+} from './row-helpers'
 import { backfillMessagingProtocol } from './soul'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
 import {
@@ -349,7 +355,9 @@ export function BotsPane() {
   // and the persisted connection registry hydrate. Keep that transition in a
   // neutral loading state instead of flashing the first-run "No bots" copy.
   const initialRosterLoading = !data && !error && roster.length === 0
-  const activeRosterKeys = new Set(activeBots(roster, workingOwner, turnBusy, Date.now(), activeConnectionId).map(botRosterKey))
+  const activeRosterKeys = new Set(
+    activeBots(roster, workingOwner, turnBusy, Date.now(), activeConnectionId).map(botRosterKey)
+  )
   const gatewayOptions = rosterGatewayOptions(sourceSnapshot, roster)
   const selectedGateway = gatewayOptions.find(option => option.connectionId === gatewayFilter)
   const gatewayFilterExists = gatewayFilter === 'all' || Boolean(selectedGateway)
@@ -439,7 +447,12 @@ export function BotsPane() {
       activity: groupLastActivity(current[name])
     }))
 
-    const order = reorderGroupRows(sortGroupRosterRows(rows, current), name, delta, sortedGroupRows.map(row => row.name))
+    const order = reorderGroupRows(
+      sortGroupRosterRows(rows, current),
+      name,
+      delta,
+      sortedGroupRows.map(row => row.name)
+    )
 
     order?.forEach((name, rosterOrder) => {
       updateGroupChat(name, room => ({ ...room, rosterOrder }), { sync: false })

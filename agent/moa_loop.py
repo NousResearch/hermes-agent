@@ -359,7 +359,7 @@ def _price_reference_response(
 def _run_reference(
     slot: dict[str, Any], ref_messages: list[dict[str, Any]], *, temperature: float | None = None,
     max_tokens: int | None = None, reference_timeout: float | None = None, context_length_cache: Any = None,
-    cache_disabled: bool | None = None, cache_ttl: str | None = None,
+    cache_disabled: bool | None = None, cache_ttl: str | None = None, custom_providers: list | None = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model; return ``(label, text, accounting)``. Never raises:
     a failed reference becomes a labelled ``[failed: …]`` note. Runs in a thread pool."""
@@ -378,6 +378,7 @@ def _run_reference(
         # advisory system prompt is prepended so its tokens count against the budget too.
         trimmed = _trim_messages_for_reference(
             messages, slot, runtime, reserve_output_tokens=max_tokens, context_length_cache=context_length_cache,
+            custom_providers=custom_providers,
         )
         trimmed = _maybe_apply_moa_cache_control(trimmed, _with_cache_disabled(runtime, cache_disabled), cache_ttl=cache_ttl)
 
@@ -407,7 +408,9 @@ _REFERENCE_DEFAULT_OUTPUT_RESERVE = 8192
 _REFERENCE_TRIM_SAFETY_FRACTION = 0.10
 
 
-def _reference_context_length(slot: dict[str, Any], runtime: dict[str, Any], cache: Any) -> int | None:
+def _reference_context_length(
+    slot: dict[str, Any], runtime: dict[str, Any], cache: Any, custom_providers: list | None = None,
+) -> int | None:
     """Context window for a slot, memoized in ``cache`` per (provider, model) when given.
 
     Failures are cached too so a flaky metadata source is not re-probed per reference.
@@ -423,6 +426,7 @@ def _reference_context_length(slot: dict[str, Any], runtime: dict[str, Any], cac
     try:
         context_length = get_model_context_length(
             model=model, base_url=str(runtime.get("base_url") or ""), api_key=str(runtime.get("api_key") or ""), provider=provider,
+            custom_providers=custom_providers,
         )
     except Exception:
         logger.debug("MoA reference context-length resolution failed for %s", _slot_label(slot))
@@ -435,6 +439,7 @@ def _reference_context_length(slot: dict[str, Any], runtime: dict[str, Any], cac
 def _trim_messages_for_reference(
     messages: list[dict[str, Any]], slot: dict[str, str], runtime: dict[str, Any], *,
     reserve_output_tokens: int | None = None, context_length_cache: Any = None,
+    custom_providers: list | None = None,
 ) -> list[dict[str, Any]]:
     """Trim an advisory request to fit a reference model's context window.
 
@@ -453,7 +458,7 @@ def _trim_messages_for_reference(
         return messages
     from agent.model_metadata import estimate_messages_tokens_rough
 
-    context_length = _reference_context_length(slot, runtime, context_length_cache)
+    context_length = _reference_context_length(slot, runtime, context_length_cache, custom_providers)
     if not isinstance(context_length, int) or context_length <= 0:
         return messages
     reserve = reserve_output_tokens if isinstance(reserve_output_tokens, int) and reserve_output_tokens > 0 else _REFERENCE_DEFAULT_OUTPUT_RESERVE
@@ -558,6 +563,10 @@ def _run_references_parallel(
     # Shared per-fan-out context-length cache (dict get/set is GIL-atomic).
     ctx_len_cache: dict[tuple[str, str], int | None] = {}
     cache_disabled, cache_ttl = _agent_cache_opts(agent)
+    # Same source _check_compression_model_feasibility reuses (agent_init.py); without it a
+    # per-model context_length override in custom_providers is invisible to the trim below and
+    # a reference whose real window is larger than the catalog default gets truncated for nothing.
+    custom_providers = getattr(agent, "_custom_providers", None)
     try:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
@@ -566,7 +575,7 @@ def _run_references_parallel(
             futures[executor.submit(
                 propagate_context_to_thread(_run_reference), slot, ref_messages, temperature=temperature,
                 max_tokens=max_tokens, reference_timeout=reference_timeout, context_length_cache=ctx_len_cache,
-                cache_disabled=cache_disabled, cache_ttl=cache_ttl,
+                cache_disabled=cache_disabled, cache_ttl=cache_ttl, custom_providers=custom_providers,
             )] = idx
 
         # Collect every reference (no early exit except a user interrupt).

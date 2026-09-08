@@ -152,7 +152,7 @@ def growth_decision(profile: ModelProfile, budget: HardwareBudget, *,
 
 def validate_tensor_placement(tensor_placement: str) -> str:
     """Validate the configured tensor-placement policy before runtime startup."""
-    if tensor_placement not in {"auto", "host"}:
+    if not isinstance(tensor_placement, str) or tensor_placement not in {"auto", "host"}:
         raise ValueError(f"unsupported tensor placement: {tensor_placement!r}")
     return tensor_placement
 

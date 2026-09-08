@@ -393,47 +393,28 @@ _SQLITE_AUTH_DBS = frozenset({"Cookies", "Login Data", "Login Data For Account",
 
 
 def _copy_auth_file(src_file: str, dst_file: str) -> bool:
-    """Copy one auth file, lock-aware; True on success. SQLite DBs use the online-backup API (works
-    under a Windows write lock), falling through to a raw copy; failure only if BOTH fail."""
+    """Copy auth state; refuse a DB that cannot be snapshotted consistently within five seconds."""
     os.makedirs(os.path.dirname(dst_file), exist_ok=True)
-    if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
-        # With a live Chrome on macOS, mode=ro WITHOUT immutable=1 blocks inside lock
-        # negotiation and NEVER returns: sqlite's busy timeout does not cover lock
-        # negotiation, so `timeout=5` cannot rescue it. immutable=1 reads instantly and
-        # is what we want anyway — a committed snapshot of a file another process owns,
-        # not coordinated writes. So immutable=1 is the ONLY source mode we attempt.
-        #
-        # The DESTINATION is the other half, and the one that actually bit (#hang):
-        # backup() retries a busy destination internally FOREVER and ignores the
-        # connection's busy timeout, so a dst left locked by an earlier hung mirror
-        # parks the thread in sqlite3_sleep permanently, holding the agent's turn open.
-        # The tool-level timeout abandons that thread but cannot interrupt a C-level
-        # lock wait, so the lock is never released and every later launch re-hangs —
-        # the failure is self-perpetuating.
-        #
-        # Fix: never back up into the live destination. Write a FRESH temp file (no
-        # other process can hold it, so there is nothing to contend on) and move it
-        # into place atomically. Measured against a live Chrome with a deliberately
-        # locked destination: 0.01s here vs an indefinite hang writing in place.
-        tmp_dst = f"{dst_file}.new"
-        try:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_dst)
-            with contextlib.closing(
-                    sqlite3.connect(f"file:{src_file}?mode=ro&immutable=1", uri=True, timeout=5)) as source:
-                with contextlib.closing(sqlite3.connect(tmp_dst, timeout=5)) as out, out:
-                    source.backup(out)
-            os.replace(tmp_dst, dst_file)
-            return True
-        except Exception as e:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_dst)
-            logger.debug("real-profile: sqlite-backup of %s failed (%s); trying plain copy",
-                         src_file, e)
     try:
-        shutil.copy2(src_file, dst_file)
+        if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
+            deadline = time.monotonic() + 5.0
+
+            def check_deadline(_status: int, _remaining: int, _total: int) -> None:
+                if _status != sqlite3.SQLITE_DONE and time.monotonic() >= deadline:
+                    raise TimeoutError("auth database backup exceeded five seconds")
+
+            # SQLite must coordinate both ends: immutable ignores committed source WAL,
+            # while replacing only the destination file can replay its abandoned WAL.
+            # Connection busy timeouts do not bound backup's retry loop; its callback does.
+            with contextlib.closing(sqlite3.connect(
+                    Path(src_file).resolve().as_uri() + "?mode=ro", uri=True, timeout=0.0)) as source:
+                with contextlib.closing(sqlite3.connect(dst_file, timeout=0.0)) as out:
+                    source.backup(out, pages=256, progress=check_deadline, sleep=0.1)
+        else:
+            shutil.copy2(src_file, dst_file)
         return True
-    except OSError as e:
+    except (OSError, sqlite3.Error) as e:
+        # A raw DB copy can lose committed WAL or overwrite a locked destination.
         logger.debug("real-profile: could not copy %s: %s", src_file, e)
         return False
 
@@ -680,7 +661,7 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         failed_dbs = _mirror_profile_auth(src, dst, source_profile)
         if failed_dbs:  # even online-backup failed: never launch a silently signed-out session
             return None, (f"could not read the '{browser}' profile's login data ({failed_dbs} "
-                          f"database(s) locked). Close {browser} and retry, or turn "
+                          f"database(s) unavailable). Close {browser} and retry, or turn "
                           "browser.use_real_profile off.")
         # Never carry live-instance leftovers into the copy.
         for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):

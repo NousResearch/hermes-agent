@@ -20,6 +20,19 @@ from tools import browser_tool_session as bt_session
 from tools import browser_tool_install as bt_install
 
 
+def _auth_db(path, value=None):
+    """Store/read a marker in a real auth DB so snapshot fixtures exercise SQLite."""
+    import sqlite3
+    from contextlib import closing
+
+    with closing(sqlite3.connect(path)) as conn, conn:
+        if value is not None:
+            conn.execute("create table if not exists marker(value)")
+            conn.execute("delete from marker")
+            conn.execute("insert into marker values(?)", (value,))
+        return conn.execute("select value from marker").fetchone()[0]
+
+
 class TestRealProfileResolvers:
     def test_data_dir_windows(self):
         import hermes_cli.browser_connect as bc
@@ -88,9 +101,9 @@ class TestSnapshotRealProfile:
         (root / "Code Cache" / "js").mkdir(parents=True)
         (root / "Crashpad").mkdir()
         (root / "Local State").write_text('{"os_crypt": {}}')
-        (root / "Default" / "Cookies").write_text("sqlite-cookies")
-        (root / "Default" / "Network" / "Cookies").write_text("sqlite-net-cookies")
-        (root / "Default" / "Login Data").write_text("sqlite-logins")
+        _auth_db((root / "Default" / "Cookies"), "sqlite-cookies")
+        _auth_db((root / "Default" / "Network" / "Cookies"), "sqlite-net-cookies")
+        _auth_db((root / "Default" / "Login Data"), "sqlite-logins")
         (root / "Default" / "Preferences").write_text("{}")
         (root / "Default" / "Cache" / "Cache_Data" / "big").write_text("x" * 1000)
         (root / "Code Cache" / "js" / "blob").write_text("y" * 1000)
@@ -109,7 +122,7 @@ class TestSnapshotRealProfile:
         assert err is None
         assert dst == str(home / "browser-profile" / "chrome")
         # Auth files present
-        assert (home / "browser-profile" / "chrome" / "Default" / "Cookies").read_text() == "sqlite-cookies"
+        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies")) == "sqlite-cookies"
         assert (home / "browser-profile" / "chrome" / "Default" / "Network" / "Cookies").exists()
         assert (home / "browser-profile" / "chrome" / "Default" / "Login Data").exists()
         assert (home / "browser-profile" / "chrome" / "Local State").exists()
@@ -129,13 +142,13 @@ class TestSnapshotRealProfile:
         assert err is None
         # Simulate: user logs into a new site in their own browser, and the
         # copy has drifted state that must survive (History not in refresh set).
-        (src / "Default" / "Cookies").write_text("sqlite-cookies-v2")
+        _auth_db((src / "Default" / "Cookies"), "sqlite-cookies-v2")
         copy_history = home / "browser-profile" / "chrome" / "Default" / "History"
         copy_history.write_text("agent-session-history")
 
         dst2, err2 = bc.snapshot_real_profile("chrome", src=str(src))
         assert err2 is None and dst2 == dst
-        assert (home / "browser-profile" / "chrome" / "Default" / "Cookies").read_text() == "sqlite-cookies-v2"
+        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies")) == "sqlite-cookies-v2"
         assert copy_history.read_text() == "agent-session-history"
 
     def test_missing_source_fails_closed(self, tmp_path, monkeypatch):
@@ -654,7 +667,7 @@ class TestSnapshotIsCredentialStore:
         src = tmp_path / "real" / "Default"
         src.mkdir(parents=True)
         (tmp_path / "real" / "Local State").write_text("{}")
-        (src / "Cookies").write_text("db")
+        _auth_db((src / "Cookies"), "db")
         monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
         called = {"paths": []}
         with patch("hermes_cli.config._secure_dir",
@@ -678,9 +691,9 @@ class TestReviewBugFixes:
             '{"profile": {"last_used": "Profile 6"}}'
         )
         # Default is signed OUT (tracking cookies only); Profile 6 has the session.
-        (root / "Default" / "Cookies").write_text("default-tracking-only")
-        (root / "Profile 6" / "Cookies").write_text("PROFILE6-SESSION-AUTH")
-        (root / "Profile 6" / "Login Data").write_text("profile6-logins")
+        _auth_db((root / "Default" / "Cookies"), "default-tracking-only")
+        _auth_db((root / "Profile 6" / "Cookies"), "PROFILE6-SESSION-AUTH")
+        _auth_db((root / "Profile 6" / "Login Data"), "profile6-logins")
         (root / "Profile 6" / "Preferences").write_text("{}")
         return root
 
@@ -692,9 +705,9 @@ class TestReviewBugFixes:
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
         # The copy's Default must carry PROFILE 6's session, not Default's.
-        got = (home / "browser-profile" / "chrome" / "Default" / "Cookies").read_text()
+        got = _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies"))
         assert got == "PROFILE6-SESSION-AUTH"
-        assert (home / "browser-profile" / "chrome" / "Default" / "Login Data").read_text() == "profile6-logins"
+        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Login Data")) == "profile6-logins"
 
     def test_last_used_falls_back_to_default(self, tmp_path):
         import hermes_cli.browser_connect as bc
@@ -716,10 +729,10 @@ class TestReviewBugFixes:
         home = tmp_path / "hh"
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
         bc.snapshot_real_profile("chrome", src=str(src))          # fresh
-        (src / "Profile 6" / "Cookies").write_text("PROFILE6-REFRESHED")
+        _auth_db((src / "Profile 6" / "Cookies"), "PROFILE6-REFRESHED")
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))  # refresh
         assert err is None
-        assert (home / "browser-profile" / "chrome" / "Default" / "Cookies").read_text() == "PROFILE6-REFRESHED"
+        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies")) == "PROFILE6-REFRESHED"
 
     # ── Bug 3: private-URL sidecar must NOT carry the real profile ──
     def test_sidecar_never_uses_real_profile(self):
@@ -799,8 +812,8 @@ class TestReviewRound3:
         for prof in ("Default", "Profile 6"):
             (root / prof / "Network").mkdir(parents=True)
         (root / "Local State").write_text('{"profile": {"last_used": "Profile 6"}}')
-        (root / "Default" / "Cookies").write_text("default-signed-out")
-        (root / "Profile 6" / "Cookies").write_text("PROFILE6-SESSION")
+        _auth_db((root / "Default" / "Cookies"), "default-signed-out")
+        _auth_db((root / "Profile 6" / "Cookies"), "PROFILE6-SESSION")
         (root / "Profile 6" / "Preferences").write_text("{}")
         return root
 
@@ -826,7 +839,7 @@ class TestReviewRound3:
         d, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
         # Rebuilt from the active profile, not treated as populated.
-        assert (home / "browser-profile" / "chrome" / "Default" / "Cookies").read_text() == "PROFILE6-SESSION"
+        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies")) == "PROFILE6-SESSION"
         assert os.path.isfile(os.path.join(dst, bc._SNAPSHOT_DONE_MARKER))
 
     # ── ④ only the active profile is copied, never the others ──
@@ -835,14 +848,14 @@ class TestReviewRound3:
         src = self._multi(tmp_path / "real")
         # Add a non-active profile with its own cookies — must NOT be copied.
         (src / "Profile 3").mkdir()
-        (src / "Profile 3" / "Cookies").write_text("PROFILE3-SHOULD-NOT-COPY")
+        _auth_db((src / "Profile 3" / "Cookies"), "PROFILE3-SHOULD-NOT-COPY")
         home = tmp_path / "hh"
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
         copy = home / "browser-profile" / "chrome"
         # Active profile (Profile 6) landed in Default; other profiles absent.
-        assert (copy / "Default" / "Cookies").read_text() == "PROFILE6-SESSION"
+        assert _auth_db((copy / "Default" / "Cookies")) == "PROFILE6-SESSION"
         assert not (copy / "Profile 3").exists()
         assert not (copy / "Profile 6").exists()
 
@@ -1056,116 +1069,72 @@ class TestWindowsLockedProfileCopy:
         assert bc._copy_auth_file(src, dst) is True
         assert sqlite3.connect(dst).execute("select count(*) from cookies").fetchone()[0] == 1
 
-    def test_copy_auth_file_never_opens_the_unbounded_ro_mode(self, tmp_path, monkeypatch):
-        """`mode=ro` without immutable=1 must NEVER be attempted.
-
-        On macOS with a live Chrome that URI blocks inside lock negotiation and never
-        returns — sqlite's busy timeout does not cover lock negotiation, so the
-        `timeout=5` argument cannot rescue it. The thread parks in sqlite3_sleep
-        holding the agent's turn open forever.
-
-        Guard the URI SET rather than the hang itself: reproducing a real indefinite
-        block needs a live Chrome, but "we never ask for the mode that can hang" is
-        exactly the invariant and is deterministic.
-        """
-        import hermes_cli.browser_connect as bc
+    @pytest.mark.parametrize("locked", ["source", "destination"])
+    def test_copy_auth_file_bounds_locks_without_overwriting(self, tmp_path, locked):
         import sqlite3
-
-        src = str(tmp_path / "Cookies")
-        con = sqlite3.connect(src)
-        con.execute("create table cookies(x)")
-        con.commit()
-        con.close()
-        # Make the immutable attempt fail so any surviving fallback is exercised.
-        dst = str(tmp_path / "out" / "Cookies")
-        seen: list[str] = []
-        real_connect = sqlite3.connect
-
-        def spy(target, *a, **kw):
-            if isinstance(target, str):
-                seen.append(target)
-                if "immutable=1" in target:
-                    raise sqlite3.OperationalError("database is locked")
-            return real_connect(target, *a, **kw)
-
-        monkeypatch.setattr(bc.sqlite3, "connect", spy)
-        bc._copy_auth_file(src, dst)
-
-        unbounded = [u for u in seen if "mode=ro" in u and "immutable=1" not in u]
-        assert not unbounded, f"attempted the mode that can hang forever: {unbounded}"
-
-    def test_copy_auth_file_never_backs_up_into_the_live_destination(self, tmp_path, monkeypatch):
-        """backup() must target a FRESH temp file, never the destination in place.
-
-        ``backup()`` retries a busy destination internally forever and ignores the
-        connection's busy timeout, so writing straight into a destination that an
-        earlier hung mirror still holds parks the thread in sqlite3_sleep permanently.
-        Verified against a live Chrome with a deliberately locked destination: writing
-        in place hung indefinitely, temp-file + os.replace completed in 0.01s.
-        """
+        import subprocess
+        import sys
         import hermes_cli.browser_connect as bc
-        import sqlite3
 
-        src = str(tmp_path / "Cookies")
-        con = sqlite3.connect(src)
-        con.execute("create table cookies(x)")
-        con.execute("insert into cookies values(7)")
-        con.commit()
-        con.close()
-
-        dst = str(tmp_path / "out" / "Cookies")
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        # Hold the destination exclusively, exactly like a previous hung mirror.
-        holder = sqlite3.connect(dst)
-        holder.execute("create table t(x)")
+        src, dst = tmp_path / "Cookies", tmp_path / "out" / "Cookies"
+        dst.parent.mkdir()
+        for path, value in ((src, 7), (dst, 99)):
+            with sqlite3.connect(path) as conn:
+                conn.execute("create table cookies(x)")
+                conn.execute("insert into cookies values(?)", (value,))
+            conn.close()
+        holder = sqlite3.connect(src if locked == "source" else dst)
         holder.execute("begin exclusive")
-        # Run in a worker with a join deadline: on the unfixed code backup() retries the
-        # busy destination forever, so an unbounded assertion would hang the SUITE rather
-        # than fail it. The deadline turns that hang into a clean, fast failure.
-        import threading
-
-        outcome: dict[str, object] = {}
-
-        def _copy() -> None:
-            try:
-                outcome["ok"] = bc._copy_auth_file(src, dst)
-            except BaseException as exc:  # noqa: BLE001 — surfaced via the assert below
-                outcome["exc"] = exc
-
-        worker = threading.Thread(target=_copy, daemon=True)
-        worker.start()
-        worker.join(20)
         try:
-            assert not worker.is_alive(), (
-                "backup() blocked on a locked destination — it must write a temp file instead")
-            assert outcome.get("exc") is None, outcome.get("exc")
-            assert outcome.get("ok") is True
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "from hermes_cli.browser_connect import _copy_auth_file; "
+                 "import sys; print(_copy_auth_file(sys.argv[1], sys.argv[2]))",
+                 str(src), str(dst)],
+                capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip() == "False"
         finally:
             holder.rollback()
             holder.close()
-        assert sqlite3.connect(dst).execute("select count(*) from cookies").fetchone()[0] == 1
-        assert not os.path.exists(f"{dst}.new"), "temp file left behind"
+        with sqlite3.connect(dst) as conn:
+            assert conn.execute("select x from cookies").fetchall() == [(99,)]
+        conn.close()
+        assert bc._copy_auth_file(str(src), str(dst)) is True
+        with sqlite3.connect(dst) as conn:
+            assert conn.execute("select x from cookies").fetchall() == [(7,)]
+        conn.close()
 
-    def test_copy_auth_file_cleans_up_temp_on_failure(self, tmp_path):
-        """A failed backup must not strand the .new temp beside the real file."""
-        import hermes_cli.browser_connect as bc
-
-        src = str(tmp_path / "Cookies")
-        open(src, "wb").write(b"not-a-sqlite-db")
-        dst = str(tmp_path / "out" / "Cookies")
-        assert bc._copy_auth_file(src, dst) is True  # plain-copy fallback
-        assert not os.path.exists(f"{dst}.new")
-
-    def test_copy_auth_file_falls_back_to_plain_copy_when_backup_fails(self, tmp_path, monkeypatch):
-        """Dropping the mode=ro fallback must not cost the plain-copy fallback."""
-        import hermes_cli.browser_connect as bc
+    def test_copy_auth_file_preserves_source_wal_not_abandoned_destination_wal(self, tmp_path):
         import sqlite3
+        import subprocess
+        import sys
+        import hermes_cli.browser_connect as bc
 
-        src = str(tmp_path / "Cookies")
-        open(src, "wb").write(b"not-a-sqlite-db")
-        dst = str(tmp_path / "out" / "Cookies")
-        assert bc._copy_auth_file(src, dst) is True
-        assert open(dst, "rb").read() == b"not-a-sqlite-db"
+        src, dst = tmp_path / "Cookies", tmp_path / "out" / "Cookies"
+        dst.parent.mkdir()
+        source = sqlite3.connect(src)
+        source.execute("create table cookies(x)")
+        source.execute("insert into cookies values(7)")
+        source.commit()
+        source.execute("pragma journal_mode=wal")
+        source.execute("update cookies set x=8")
+        source.commit()
+        subprocess.run(
+            [sys.executable, "-c",
+             "import sqlite3, os, sys; c=sqlite3.connect(sys.argv[1]); "
+             "c.execute('create table cookies(x)'); c.commit(); "
+             "c.execute('pragma journal_mode=wal'); "
+             "c.execute('insert into cookies values(99)'); c.commit(); os._exit(0)",
+             str(dst)], check=True, timeout=15, stdin=subprocess.DEVNULL)
+        assert os.path.exists(str(dst) + "-wal")
+        try:
+            assert bc._copy_auth_file(str(src), str(dst)) is True
+            with sqlite3.connect(dst) as conn:
+                assert conn.execute("select x from cookies").fetchall() == [(8,)]
+            conn.close()
+        finally:
+            source.close()
 
     def test_copy_auth_file_plain_for_non_db(self, tmp_path):
         import hermes_cli.browser_connect as bc

@@ -473,10 +473,17 @@ def _format_elements(elements: List[UIElement], max_lines: int = 40) -> List[str
     return out + ([f"  ... +{len(elements) - max_lines} more (call capture with app= to narrow)"] if len(elements) > max_lines else [])
 
 def _bounds_hints(elements: List[UIElement], image_width: int, image_height: int) -> Tuple[Optional[float], Optional[str]]:
-    """(scale, note) when element bounds live in a different coordinate space than the screenshot, else (None, None).
-    On HiDPI displays AX bounds are native while the screenshot is downscaled, so coordinate= clicks read off the
-    screenshot miss by the scale factor. 5% slack: window chrome can hang a few px past the captured frame without
-    implying a different space. Scale heuristic: larger axis ratio wins."""
+    """(scale, note) when element bounds live outside the screenshot space, else (None, None).
+
+    The scale factor is ALWAYS None: a mismatch between raw element bounds and the captured
+    screenshot does not establish a uniform conversion. The difference may be a window/desktop
+    offset, clipping, stale geometry, or a DPI scale (#105560) — and ``coordinate=[x, y]`` is
+    defined as screenshot-local pixels, so telling the model to derive or scale click points from
+    raw bounds sends clicks into the wrong space. When bounds clearly exceed the frame we only
+    warn that raw bounds are not directly actionable and point at the reliable paths (a fresh
+    element index, or a point measured on the screenshot). 5% slack: window chrome can hang a few
+    px past the captured frame without implying a different space.
+    """
     if not elements or image_width <= 0 or image_height <= 0:
         return None, None
     max_x = max_y = 0
@@ -488,10 +495,14 @@ def _bounds_hints(elements: List[UIElement], image_width: int, image_height: int
         max_x, max_y = max(max_x, int(x) + int(w)), max(max_y, int(y) + int(h))
     if max_x <= image_width * 1.05 and max_y <= image_height * 1.05:
         return None, None
-    note = (f"element bounds are in native desktop coordinates (extend to ~{max_x}x{max_y}), "
-            f"NOT screenshot pixels ({image_width}x{image_height}). coordinate= clicks expect the native "
-            "space — derive click points from element bounds, or scale screenshot positions up accordingly")
-    return round(max(max_x / image_width, max_y / image_height), 2), note
+    note = (
+        f"element bounds extend to ~{max_x}x{max_y}, beyond the {image_width}x{image_height} "
+        "screenshot — raw element bounds are NOT screenshot-local and cannot be reliably "
+        "converted into coordinate= clicks (the difference may be a window/desktop offset, "
+        "clipping, or a DPI scale rather than a uniform factor). Click by a fresh element index "
+        "instead, or supply a point measured on the screenshot."
+    )
+    return None, note
 
 _bounds_scale = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[0]  # noqa: E731
 _bounds_space_note = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[1]  # noqa: E731

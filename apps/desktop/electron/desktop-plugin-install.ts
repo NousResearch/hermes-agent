@@ -22,8 +22,11 @@ export interface PluginComponentDetection {
   desktop: boolean
   agentName: string | null
   desktopName: string | null
-  desktopSourceSubdir: string | null
+  desktopSourceSubdir: DesktopSourceSubdir | null
 }
+
+/** Where a repo keeps its desktop half: a root `plugin.js` or `desktop/plugin.js`. */
+export type DesktopSourceSubdir = '.' | 'desktop'
 
 export interface PluginProbeResult {
   ok: boolean
@@ -31,6 +34,11 @@ export interface PluginProbeResult {
   desktop: boolean
   agentName?: string | null
   desktopName?: string | null
+  /** Where the desktop half lives in the repo: '.' (root plugin.js) or
+   *  'desktop' (desktop/plugin.js). Only the nested shape is also served by
+   *  the unified `plugins/<name>/desktop/` door, so the install modal needs
+   *  to know which one it is looking at. */
+  desktopSourceSubdir?: DesktopSourceSubdir | null
   warnings: string[]
   insecure: boolean
   error?: string
@@ -175,7 +183,27 @@ async function pathIsFile(filePath: string): Promise<boolean> {
   }
 }
 
-export function findDesktopEntry(pluginRoot: string): { entryFile: string; sourceSubdir: string } | null {
+/**
+ * The top-level `name:` of a plugin manifest, read the way `yaml.safe_load`
+ * would for the plain scalars manifests use: a quoted value verbatim (a `#`
+ * inside the quotes is part of the name, a comment may follow the closing
+ * quote), an unquoted value up to a ` #` comment. The backend names the
+ * install folder after this value, so a caller can locate that folder (#100412).
+ */
+export function manifestNameFromYaml(text: string): string | null {
+  // `[^\r\n]` so a CRLF manifest does not smuggle the \r into the value.
+  const quoted = text.match(/^name:[ \t]*(?:"([^"\r\n]*)"|'([^'\r\n]*)')[ \t]*(?:#[^\r\n]*)?\r?$/m)
+
+  if (quoted) {
+    return (quoted[1] ?? quoted[2] ?? '').trim() || null
+  }
+
+  const plain = text.match(/^name:[ \t]*([^\r\n]*)\r?$/m)
+
+  return plain?.[1].replace(/\s+#.*$/, '').trim() || null
+}
+
+export function findDesktopEntry(pluginRoot: string): { entryFile: string; sourceSubdir: DesktopSourceSubdir } | null {
   const rootPlugin = path.join(pluginRoot, 'plugin.js')
 
   if (pathExistsSync(rootPlugin)) {
@@ -191,7 +219,16 @@ export function findDesktopEntry(pluginRoot: string): { entryFile: string; sourc
   return null
 }
 
-export async function detectPluginComponents(pluginRoot: string): Promise<PluginComponentDetection> {
+/**
+ * `fallbackName` is what an agent half is called when its manifest carries no
+ * `name:` — the backend uses the install subdir's last segment or the repo
+ * name, never the folder we happened to clone into. Defaults to the folder
+ * name for callers that resolved a real subdir.
+ */
+export async function detectPluginComponents(
+  pluginRoot: string,
+  fallbackName: string = path.basename(pluginRoot)
+): Promise<PluginComponentDetection> {
   const hasYaml =
     pathExistsSync(path.join(pluginRoot, 'plugin.yaml')) || pathExistsSync(path.join(pluginRoot, 'plugin.yml'))
 
@@ -205,7 +242,7 @@ export async function detectPluginComponents(pluginRoot: string): Promise<Plugin
   let agentName: string | null = null
 
   if (agent) {
-    agentName = path.basename(pluginRoot)
+    agentName = fallbackName
 
     if (hasYaml) {
       try {
@@ -214,10 +251,10 @@ export async function detectPluginComponents(pluginRoot: string): Promise<Plugin
           : path.join(pluginRoot, 'plugin.yml')
 
         const text = await fsp.readFile(yamlPath, 'utf8')
-        const match = text.match(/^name:\s*['"]?([^'"\n]+)['"]?\s*$/m)
+        const name = manifestNameFromYaml(text)
 
-        if (match?.[1]) {
-          agentName = match[1].trim()
+        if (name) {
+          agentName = name
         }
       } catch {
         // Fall back to directory name.
@@ -342,8 +379,11 @@ export async function probePluginRepo(gitBin: string, identifier: string): Promi
 
     try {
       const pluginRoot = await resolvePluginRoot(cloneRoot, subdir)
-      const detected = await detectPluginComponents(pluginRoot)
       const repoFallback = repoNameFromUrl(gitUrl)
+      // Without a subdir the plugin root IS the mkdtemp clone folder, whose
+      // basename means nothing — the backend would name the install after the
+      // repo instead.
+      const detected = await detectPluginComponents(pluginRoot, subdir ? undefined : repoFallback)
 
       if (!detected.agent && !detected.desktop) {
         return {
@@ -362,6 +402,7 @@ export async function probePluginRepo(gitBin: string, identifier: string): Promi
         desktop: detected.desktop,
         agentName: detected.agentName ?? (detected.agent ? repoFallback : null),
         desktopName: detected.desktop ? desktopPluginFolderName(gitUrl, subdir) : null,
+        desktopSourceSubdir: detected.desktopSourceSubdir,
         warnings,
         insecure
       }

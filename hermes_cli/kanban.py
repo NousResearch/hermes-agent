@@ -855,8 +855,11 @@ def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: 
     """Goal-mode judge gate shared by ``complete`` / ``request-review`` (mirrors tools/kanban_tools.py);
     applied to every terminal handoff so request-review can't bypass it. Returns the error line, or
     None to allow."""
+    # The CLI keeps ``review handoff`` as its user-facing label, while the
+    # goal gate uses the canonical phase name ``review``.
+    phase = "review" if handoff in {"review", "review handoff"} else "complete"
     verdict, rejection = _goal_mode_handoff_rejection(
-        kb.get_task(conn, tid), evidence, handoff=handoff)
+        kb.get_task(conn, tid), evidence, handoff=phase)
     if verdict == "blocked":
         return (f"kanban: goal {handoff} of {tid} rejected: judge ruled "
                 f"the goal unachievable — {rejection}. {blocked_hint}")

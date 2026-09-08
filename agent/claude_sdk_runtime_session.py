@@ -96,3 +96,17 @@ def _make_visibility_callbacks(agent):
     """Create visibility callbacks fenced to this exact Hermes turn."""
     visibility = _TurnVisibility(agent)
     return visibility.relay_interim_assistant, visibility.on_tool_iteration
+
+
+def _approval_bypass_active(agent) -> bool:
+    """Resolve live trusted bypass posture for the foreign SDK thread."""
+    try:
+        from tools.approval import is_approval_bypass_active_for_session
+
+        ctx = getattr(agent, "_sdk_approval_turn_ctx", None)
+        session_key = (
+            ctx.get("session_key", "") if type(ctx) is dict else ""
+        )
+        return is_approval_bypass_active_for_session(session_key)
+    except Exception:
+        return False

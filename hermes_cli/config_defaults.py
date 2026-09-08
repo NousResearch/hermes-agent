@@ -2205,10 +2205,10 @@ DEFAULT_CONFIG = {
 
     "computer_use": {
         # Which machine's keyboard and mouse computer_use drives. `local` (default) = cua-driver on
-        # the gateway host; plugins register others via ctx.register_computer_use_provider(). Never
-        # inferred: an unrecognized name is an error, not a quiet fall back to the host desktop.
+        # the gateway host; plugins register others via ctx.register_computer_use_provider().
+        # Legacy remote intent is preserved; an unknown name never falls back to the host.
         # Replaces the HERMES_COMPUTER_USE_BACKEND env var.
-        "provider": "local",
+        # Deliberately absent: a merged provider default would erase legacy remote intent.
         # cua-driver's upstream PostHog telemetry defaults ON; Hermes sets
         # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in every child env unless this is true.
         "cua_telemetry": False,

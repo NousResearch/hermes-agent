@@ -22,10 +22,10 @@ naming the missing provider.
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from agent.computer_use_provider import ComputerUseProvider
-from agent.provider_registry import ProviderRegistry
+from agent.provider_registry import ProviderRegistry, lower_key
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +36,20 @@ HOST_PROVIDER_NAME = "local"
 #: lands here too, so the default is the behavior that predates the registry.
 _HOST_ALIASES = {"", "local", "cua", "cua-driver", "builtin", "host"}
 
+def _reserved_name(name: str) -> None:
+    raise ValueError(f"computer_use provider name {name!r} is reserved for a builtin")
+
+
 _registry: ProviderRegistry[ComputerUseProvider] = ProviderRegistry(
     label="Computer use", provider_cls=ComputerUseProvider, logger=logger,
+    normalize=lower_key, builtin_names=frozenset(_HOST_ALIASES | {"remote", "noop"}),
+    on_builtin_collision=_reserved_name,
 )
 _registry.export(globals())
+
+if TYPE_CHECKING:
+    # export() supplies the runtime API; keep its exact bound signature visible.
+    register_provider = _registry.register
 
 
 class UnknownComputerUseProvider(LookupError):
@@ -57,6 +67,10 @@ class UnknownComputerUseProvider(LookupError):
 
 
 def resolve_provider(configured: Optional[str]) -> ComputerUseProvider:
+    return resolve_provider_registration(configured)[0]
+
+
+def resolve_provider_registration(configured: Optional[str]) -> tuple:
     """Return the provider that should service calls.
 
     Raises :class:`UnknownComputerUseProvider` when *configured* names one
@@ -69,9 +83,9 @@ def resolve_provider(configured: Optional[str]) -> ComputerUseProvider:
     if name in _HOST_ALIASES:
         name = HOST_PROVIDER_NAME
 
-    provider = _registry.get_provider(name)
+    provider, revision = _registry.get_registration(name)
 
     if provider is None:
         raise UnknownComputerUseProvider(name, [p.name for p in _registry.list_providers()])
 
-    return provider
+    return provider, revision

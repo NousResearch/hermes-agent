@@ -544,8 +544,8 @@ browser:
 #   # unrecognized name is an error rather than a quiet fall back to driving
 #   # this host's own desktop.
 #   #
-#   # Replaces HERMES_COMPUTER_USE_BACKEND, which still wins where it is set
-#   # but warns once per process.
+#   # Legacy remote.enabled: true selects remote when provider is absent.
+#   # The deprecated env selector must agree with an explicit provider.
 #   provider: local
 
 # =============================================================================

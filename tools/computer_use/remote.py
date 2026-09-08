@@ -72,7 +72,9 @@ def resolve_remote_cua_config(
     permission_mode: str,
     environ: Optional[Mapping[str, str]] = None,
 ) -> Optional[RemoteCuaConfig]:
-    """Resolve and validate remote CUA configuration, or return local mode.
+    """Resolve remote transport, or return None when it is not configured.
+
+    The provider factory chooses the machine; None does not select local mode.
 
     A bare-host URL (empty or "/" path) is normalized to "/mcp" — the bridge serves
     a single /mcp route, so a host-only URL would 404.

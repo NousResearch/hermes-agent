@@ -34,7 +34,7 @@ def test_collision_pair_grants_do_not_cross(monkeypatch, grant, release_index):
     owners = [("/tmp/astra-owner", "segment:session"),
               ("/tmp/astra-owner:segment", "session")]
     prompts = []
-    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode: cu._NoopBackend())
+    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode, provider: cu._NoopBackend())
 
     def approve(*args):
         prompts.append(args[0])
@@ -66,7 +66,7 @@ def test_collision_pair_backends_do_not_cross(monkeypatch, release_index):
 
     owners = [("/tmp/astra-owner", "segment:session"),
               ("/tmp/astra-owner:segment", "session")]
-    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode: _InstantBackend(mode))
+    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode, provider: _InstantBackend(mode))
     backends = []
     for home, sid in owners:
         with _profile(home):
@@ -84,7 +84,7 @@ def test_collision_pair_backends_do_not_cross(monkeypatch, release_index):
 def test_trailing_colon_release_does_not_enter_empty_session(monkeypatch, tmp_path):
     from tools.computer_use import tool as cu
 
-    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode: _InstantBackend(mode))
+    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode, provider: _InstantBackend(mode))
     with _profile(tmp_path / "a"):
         backend = cu._get_backend("named-session:")
     with _profile(tmp_path / "b"):
@@ -97,7 +97,7 @@ def test_trailing_colon_release_does_not_enter_empty_session(monkeypatch, tmp_pa
 def test_empty_session_acquisition_is_profile_local(monkeypatch, tmp_path):
     from tools.computer_use import tool as cu
 
-    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode: _InstantBackend(mode))
+    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode, provider: _InstantBackend(mode))
     with _profile(tmp_path / "a"):
         backend_a = cu._get_backend("")
     with _profile(tmp_path / "b"):
@@ -114,7 +114,7 @@ def test_empty_session_injection_is_profile_local(monkeypatch, tmp_path):
     from tools.computer_use import tool as cu
 
     injected = _InstantBackend()
-    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode: _InstantBackend(mode))
+    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode, provider: _InstantBackend(mode))
     with _profile(tmp_path / "a"):
         cu._backend[cu.hermes_home_key()] = injected
     with _profile(tmp_path / "b"):
@@ -142,7 +142,7 @@ def test_release_fences_mode_replacement_teardown(monkeypatch):
 
     created = []
 
-    def create(sid, mode):
+    def create(sid, mode, provider):
         backend = BlockingStop(mode) if not created else _InstantBackend(mode)
         created.append(backend)
         return backend
@@ -180,7 +180,7 @@ def test_failed_start_cleans_generation_and_candidate(monkeypatch, error_type, r
             raise error_type("startup failed")
 
     candidate = FailingStart()
-    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode: candidate)
+    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode, provider: candidate)
     with ThreadPoolExecutor(max_workers=1) as pool:
         lookup = pool.submit(cu._get_backend, "failed-owner")
         try:
@@ -218,7 +218,7 @@ def test_queued_waiter_keeps_revoked_generation(monkeypatch):
 
     stale, replacement = _SlowStartBackend(), _InstantBackend()
     backends = iter((stale, replacement))
-    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode: next(backends))
+    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode, provider: next(backends))
     cu._backend_start_locks[cu._backend_owner_key("queued-owner")] = ObservedLock()
     with ThreadPoolExecutor(max_workers=2) as pool:
         starter = pool.submit(cu._get_backend, "queued-owner")
@@ -339,7 +339,7 @@ def test_session_close_releases_its_profile_owner(monkeypatch, tmp_path, lifecyc
     server, launch_home, create = lifecycle_session
     home = tmp_path / ".hermes" if profile == "default" else tmp_path / "profile-b"
     agent = create(home, record_home=profile != "missing-record")
-    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode: _InstantBackend(mode))
+    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode, provider: _InstantBackend(mode))
     prompts = []
     monkeypatch.setattr(cu, "_approval_callback", lambda *args: prompts.append(args[0]) or "approve_session")
     args = {"action": "click", "x": 1, "y": 1}
@@ -369,11 +369,11 @@ def test_session_timer_close_fences_its_profile_blocked_start(monkeypatch, tmp_p
     server, launch_home, create = lifecycle_session
     home = tmp_path / "profile-b"
     agent = create(home)
-    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode: _InstantBackend(mode))
+    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode, provider: _InstantBackend(mode))
     with _profile(launch_home):
         backend_a = cu._get_backend(agent.session_id)
     stale = _SlowStartBackend()
-    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode: stale)
+    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode, provider: stale)
     closed = threading.Event()
     close = agent.close
 
@@ -410,7 +410,7 @@ def test_session_timer_close_fences_its_profile_blocked_start(monkeypatch, tmp_p
 
 
 def _permission_mode(*args):
-    return args[-1]
+    return args[1] if len(args) == 3 else args[-1]
 
 
 def test_backend_cache_keys_are_profile_qualified(monkeypatch):

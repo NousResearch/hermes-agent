@@ -468,8 +468,49 @@ clicking the user's screen.
 `noop` is built in for tests and CI — it records calls and has no side
 effects.
 
-`HERMES_COMPUTER_USE_BACKEND` did this before `computer_use.provider` existed.
-It still wins where it is set, and warns once per process.
+### Remote host bridge
+
+The built-in `remote` provider reaches cua-driver on another machine over
+MCP streamable HTTP. The gateway does not need a local display or driver:
+
+```yaml
+computer_use:
+  provider: remote
+  permission_mode: standard
+  remote:
+    url: https://desktop.example.com:8765/mcp
+```
+
+Set `HERMES_CUA_REMOTE_TOKEN` in the profile's secret environment (at least
+32 bytes). Non-loopback connections require HTTPS; redirects and ambient HTTP
+proxies are disabled. Remote mode supports `standard` permissions only and
+never falls back to the gateway's local desktop, including when the remote
+host returns no windows.
+
+On the desktop host, use `hermes computer-use host-bridge --help`. Without a
+Hermes installation, copy `host_bridge_standalone.py`, `host_bridge.py` and
+`host_validation.py` from `tools/computer_use/` together. This standalone route
+still requires Python 3.11+, MCP, Starlette, Uvicorn and cua-driver. Host
+allowlists contain the exact Host header, including its port; Origin
+allowlists contain full origins. Protect any non-loopback deployment with TLS.
+A separately published bridge package is not automatically kept in sync with
+this source tree.
+
+### Selection, migration and plugin lifetime
+
+An explicit `provider: local` ignores leftover remote configuration. When no
+provider is written, legacy `remote.enabled: true` preserves the selected
+remote machine and warns to migrate to `provider: remote`. That explicit
+remote selection needs no `enabled` flag; an explicit `enabled: false`
+contradicts it and is rejected. Invalid or unreadable configuration never
+selects a fallback desktop.
+
+`HERMES_COMPUTER_USE_BACKEND` is deprecated. It must agree with an explicit
+provider; conflicting selectors are rejected rather than choosing a machine
+silently. Change profile configuration between processes, not mid-session.
+Plugin names are resolved again when used: unloading or replacing a selected
+registration revokes its cached backend, while unrelated profiles remain
+independent. Built-in provider names and local aliases are reserved.
 
 ### Telemetry
 

@@ -1027,7 +1027,8 @@ _SCOPED_PROVIDER_REGISTRARS: Tuple[Tuple[str, str, str, str, str, str, Dict[str,
      "Register a :class:`agent.computer_use_provider.ComputerUseProvider`; ``provider.name`` is "
      "matched by ``computer_use.provider``. Selection is explicit: registering never activates. This "
      "is how a runtime that owns its own display (container pool, leased sandbox, desktop-client "
-     "bridge) supplies a backend without core knowing it exists.", {}),
+     "bridge) supplies a backend without core knowing it exists. Builtin names and aliases are reserved.",
+     {"normalize": "lower"}),
     ("register_terminal_environment_provider", "terminal_environment_provider",
      "agent.terminal_env_registry", "agent.terminal_env_provider:TerminalEnvironmentProvider",
      "terminal environment provider",

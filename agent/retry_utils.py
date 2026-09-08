@@ -4,6 +4,7 @@ Jittered delays (vs. fixed exponential) prevent thundering-herd retry spikes
 when many sessions hit the same rate-limited provider concurrently.
 """
 
+import math
 import random
 import threading
 import time
@@ -28,7 +29,7 @@ _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS = 3
 
 def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     """Parse a ``Retry-After`` value (numeric / HTTP-date) or a headers mapping (both casings tried) into
-    seconds, clamped at 0.0; None when absent / unparseable."""
+    seconds, clamped at 0.0; None when absent, unparseable or non-finite."""
     raw = value_or_headers
     if raw is not None and not isinstance(raw, (str, int, float)):
         getter = getattr(raw, "get", None)
@@ -43,12 +44,17 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     if raw is None or isinstance(raw, bool):
         return None
     if isinstance(raw, (int, float)):
-        return max(0.0, float(raw))
+        try:
+            seconds = float(raw)
+        except OverflowError:
+            return None
+        return max(0.0, seconds) if math.isfinite(seconds) else None
     text = str(raw).strip()
     if not text:
         return None
     try:
-        return max(0.0, float(text))
+        seconds = float(text)
+        return max(0.0, seconds) if math.isfinite(seconds) else None
     except (TypeError, ValueError):
         pass
     # HTTP-date form (RFC 7231): seconds until that instant, clamped at 0.

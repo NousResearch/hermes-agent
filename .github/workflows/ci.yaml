@@ -33,7 +33,7 @@ concurrency:
 jobs:
   # ─────────────────────────────────────────────────────────────────────
   # detect: run the classifier once. Every downstream job reads its outputs
-  # to decide whether to run. Upstream pushes fail open (all lanes true),
+  # to decide whether to run. Manual runs and upstream pushes fail open,
   # while fork pushes skip the validation that already passed on the PR.
   # ─────────────────────────────────────────────────────────────────────
   detect:
@@ -67,8 +67,6 @@ jobs:
         id: classify
         uses: ./.github/actions/detect-changes
         with:
-          sparse-checkout: scripts/ci/classify_changes.py
-          sparse-checkout-cone-mode: false
           github-token: ${{ github.token }}
 
   # ─────────────────────────────────────────────────────────────────────
@@ -254,6 +252,7 @@ jobs:
       - history-check
       - contributor-check
       - uv-lockfile
+      - infographic-check
       - case-collision-check
       - lockfile-diff
       - docker-lint

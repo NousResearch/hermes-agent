@@ -97,7 +97,7 @@ jobs:
           # 10 GB quota of the repository and helps no later run. A PR still
           # restores: it reads the cache that the merge to main wrote. This is
           # the same rule that docker.yml applies to `cache-to`.
-          save: ${{ github.event_name != 'pull_request' }}
+          save: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
 
           # Collect garbage before the save, so the store stays inside the
           # 10 GB quota of the repository. Without a limit the store grows at
@@ -106,13 +106,9 @@ jobs:
           # size of the compressed archive.
           gc-max-store-size-linux: 5G
 
-          # Delete the caches that this key replaces. GitHub removes caches by
-          # least recent use across the whole repository, so a Nix store that
-          # is never purged pushes out the caches of the other workflows.
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-created: 0
-          purge-primary-key: never
+          # Validation has read-only Actions permissions. Leave repository
+          # cache deletion to GitHub retention or separately authorized upkeep.
+          purge: false
 
       - name: nix flake check
         # --print-build-logs: a check that fails then prints the assertion

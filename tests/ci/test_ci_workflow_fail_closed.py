@@ -50,25 +50,32 @@ def test_fork_python_suite_uses_public_runner_without_obsolete_sharding():
         ("nix.yml", "detect", False),
     ],
 )
-def test_fork_main_push_skips_duplicate_validation(
+def test_fork_validation_is_opt_in_but_prs_and_upstream_pushes_still_run(
     workflow_name: str, job_name: str, must_run_after_failed_needs: bool
 ):
-    """A fork merge must not repeat the PR validation that just passed."""
+    """Allow explicit fork validation without duplicating every merged PR run."""
     condition = str(_workflow(workflow_name)["jobs"][job_name].get("if", ""))
     normalized = re.sub(r"\s+", "", condition)
     fork_guard = (
         "github.event_name=='pull_request'||"
+        "github.event_name=='workflow_dispatch'||"
         "github.repository=='NousResearch/hermes-agent'"
     )
 
-    assert fork_guard in normalized
-    if must_run_after_failed_needs:
-        assert normalized.startswith("always()&&(")
+    expected = f"always()&&({fork_guard})" if must_run_after_failed_needs else fork_guard
+    assert normalized == expected
 
 
-def test_required_gate_rejects_cancelled_detect_job(tmp_path):
-    """A cancelled classifier must block the required gate, not skip every lane green."""
-    steps = _ci_workflow()["jobs"]["all-checks-pass"]["steps"]
+@pytest.mark.parametrize("job_name, result, expected_exit", [
+    ("detect", "cancelled", 1),
+    ("infographic-check", "failure", 1),
+    ("infographic-check", "success", 0),
+])
+def test_required_gate_evaluates_validation_results(tmp_path, job_name, result, expected_exit):
+    """Both dependency wiring and runtime evaluation must enforce failed checks."""
+    gate = _ci_workflow()["jobs"]["all-checks-pass"]
+    assert job_name in gate["needs"]
+    steps = gate["steps"]
     evaluate = next(
         step for step in steps if step.get("name") == "Evaluate job results"
     )
@@ -81,12 +88,12 @@ def test_required_gate_rejects_cancelled_detect_job(tmp_path):
     completed = subprocess.run(
         [sys.executable, "-c", python_source],
         cwd=_REPO,
-        input=json.dumps({"detect": {"result": "cancelled"}}),
+        input=json.dumps({job_name: {"result": result}}),
         text=True,
         capture_output=True,
         check=False,
         env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
 
-    assert completed.returncode != 0, completed.stdout
-    assert "detect: cancelled" in completed.stdout
+    assert completed.returncode == expected_exit, completed.stdout + completed.stderr
+    assert f"{job_name}: {result}" in completed.stdout

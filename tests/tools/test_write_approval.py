@@ -214,42 +214,162 @@ def approval_callback_cleanup():
     set_approval_callback(None)
 
 
-def test_memory_inline_approve_writes(hermes_home, approval_callback_cleanup):
+def _stage_memory_add(content, target="memory"):
+    """Stage one add payload exactly as memory_tool's gate path would."""
+    from tools import write_approval as wa
+    return wa.stage_write(
+        wa.MEMORY, {"action": "add", "target": target, "content": content, "old_text": None},
+        summary=f"add to {target}: {content[:120]}", origin="foreground")
+
+
+def test_memory_gate_on_stages_even_with_approval_callback(hermes_home, approval_callback_cleanup):
+    # #44963: memory writes use the pending-review flow, never the generic timed
+    # approval box. A registered CLI approval callback must NOT be invoked.
     from tools.memory_tool import memory_tool, MemoryStore
     from tools.terminal_tool import set_approval_callback
     from tools import write_approval as wa
     _set_approval("memory", True)
 
     calls = []
-    def approve_cb(command, description, **kw):
-        calls.append((command, description))
-        return "once"
-    set_approval_callback(approve_cb)
+    set_approval_callback(lambda command, description, **kw: calls.append((command, description)) or "once")
 
     store = MemoryStore(); store.load_from_disk()
     r = json.loads(memory_tool("add", "memory", "approved fact", store=store))
     assert r["success"] is True
-    assert r.get("staged") is None  # real write, not staged
-    assert store.memory_entries == ["approved fact"]
-    assert wa.pending_count("memory") == 0
-    # The registered callback must actually be invoked (not the input() path).
-    assert len(calls) == 1
-    assert "approved fact" in calls[0][0]
-
-
-def test_memory_inline_deny_blocks(hermes_home, approval_callback_cleanup):
-    from tools.memory_tool import memory_tool, MemoryStore
-    from tools.terminal_tool import set_approval_callback
-    from tools import write_approval as wa
-    _set_approval("memory", True)
-    set_approval_callback(lambda command, description, **kw: "deny")
-
-    store = MemoryStore(); store.load_from_disk()
-    r = json.loads(memory_tool("add", "memory", "denied fact", store=store))
-    assert r["success"] is False
-    assert "denied" in r["error"].lower()
+    assert r.get("staged") is True
+    assert r.get("pending_id")
     assert store.memory_entries == []
-    assert wa.pending_count("memory") == 0  # denied, not staged
+    assert wa.pending_count("memory") == 1
+    assert calls == []
+
+
+def test_memory_review_shows_record_with_abcde_menu(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    rec = _stage_memory_add("specific fact", target="user")
+    out = handle_pending_subcommand(wa.MEMORY, ["review"])
+    assert out is not None
+    assert "MEMORY WRITE APPROVAL" in out
+    assert f"Pending ID: {rec['id']}" in out
+    assert "Action: add to USER" in out
+    assert "specific fact" in out
+    assert "A) Approve" in out
+    assert "E) Review one-by-one" in out
+
+
+def test_memory_review_renders_batch_operations(hermes_home):
+    from tools import write_approval as wa
+    # Sweeper finding on #44966: a staged batch is stored as
+    # {action: "batch", operations: [...]} and must render every op, not just
+    # the one-line summary.
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    wa.stage_write(wa.MEMORY,
+                   {"action": "batch", "target": "memory",
+                    "operations": [{"action": "add", "content": "op one"},
+                                   {"action": "replace", "old_text": "stale", "content": "fresh"},
+                                   {"action": "remove", "old_text": "gone"}]},
+                   summary="apply 3 op(s) to memory", origin="foreground")
+    out = handle_pending_subcommand(wa.MEMORY, ["review"])
+    assert out is not None
+    assert "- add: op one" in out
+    assert "- replace: stale -> fresh" in out
+    assert "- remove: gone" in out
+
+
+def test_memory_review_empty_queue(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    assert handle_pending_subcommand(wa.MEMORY, ["review"]) == "No pending memory writes."
+
+
+def test_memory_review_missing_id(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    _stage_memory_add("present fact")
+    out = handle_pending_subcommand(wa.MEMORY, ["review", "nope"])
+    assert out is not None
+    assert "No pending memory write with id 'nope'" in out
+
+
+def test_memory_edit_updates_pending_content(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    rec = _stage_memory_add("old fact")
+    out = handle_pending_subcommand(wa.MEMORY, ["edit", rec["id"], "new", "fact"])
+    assert out is not None
+    assert "Updated pending memory write" in out
+    updated = wa.get_pending(wa.MEMORY, rec["id"])
+    assert updated["payload"]["content"] == "new fact"
+    assert "new fact" in updated["summary"]
+
+
+def test_memory_edit_rejects_empty_content(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    rec = _stage_memory_add("unchanged fact")
+    out = handle_pending_subcommand(wa.MEMORY, ["edit", rec["id"]])
+    assert out is not None
+    assert "Usage" in out
+    assert wa.get_pending(wa.MEMORY, rec["id"])["payload"]["content"] == "unchanged fact"
+
+
+def test_memory_edit_rejects_batch_and_remove(hermes_home):
+    from tools import write_approval as wa
+    # Only single-op add/replace records are editable; batch/remove must be
+    # rejected-and-reissued, never half-edited.
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    batch = wa.stage_write(wa.MEMORY, {"action": "batch", "target": "memory",
+                                       "operations": [{"action": "add", "content": "x"}]},
+                           summary="apply 1 op(s) to memory", origin="foreground")
+    rem = wa.stage_write(wa.MEMORY, {"action": "remove", "target": "memory",
+                                     "content": None, "old_text": "victim"},
+                         summary="remove from memory: victim", origin="foreground")
+    for rec in (batch, rem):
+        out = handle_pending_subcommand(wa.MEMORY, ["edit", rec["id"], "whatever"])
+        assert out is not None
+        assert "cannot be edited" in out, out
+    assert wa.get_pending(wa.MEMORY, batch["id"])["payload"]["action"] == "batch"
+
+
+def test_memory_abcde_aliases_drive_approve_and_reject(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.memory_tool import MemoryStore
+    store = MemoryStore(); store.load_from_disk()
+    rec = _stage_memory_add("alias fact")
+    assert "MEMORY WRITE APPROVAL" in handle_pending_subcommand(wa.MEMORY, ["e"])
+    assert "pending writes" in handle_pending_subcommand(wa.MEMORY, ["c"])
+    assert "Approved 1" in handle_pending_subcommand(wa.MEMORY, ["a", rec["id"]], memory_store=store)
+    rec2 = _stage_memory_add("reject me")
+    assert "Rejected" in handle_pending_subcommand(wa.MEMORY, ["b", rec2["id"]])
+    _stage_memory_add("reject all me")
+    assert "Rejected 1" in handle_pending_subcommand(wa.MEMORY, ["d"])
+    assert wa.pending_count(wa.MEMORY) == 0
+
+
+def test_memory_pending_list_is_labeled(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    _stage_memory_add("remember carefully")
+    out = handle_pending_subcommand(wa.MEMORY, ["pending"])
+    assert out is not None
+    assert "MEMORY WRITE APPROVAL" in out
+    assert "add to MEMORY" in out
+    assert "/memory approve" in out
+
+
+def test_memory_reject_all_alias_with_id_does_not_wipe_queue(hermes_home):
+    # Cross-vendor review catch: '/memory d <id>' must not silently purge the
+    # whole queue when the user plausibly meant "drop <id>" — point at /memory b.
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    rec1 = _stage_memory_add("keep me one")
+    rec2 = _stage_memory_add("keep me two")
+    out = handle_pending_subcommand(wa.MEMORY, ["d", rec2["id"]])
+    assert out is not None
+    assert "rejects ALL" in out
+    assert f"/memory b {rec2['id']}" in out
+    assert wa.pending_count(wa.MEMORY) == 2  # nothing purged
 
 
 def test_memory_invalid_params_rejected_before_staging(hermes_home):

@@ -265,7 +265,7 @@ first, set `memory.write_approval: true`. It's a simple on/off gate applied to
 | `write_approval` | Behaviour |
 |------------------|-----------|
 | `false` (default) | Write freely — the gate is off (the pre-gate behaviour). |
-| `true` | Require approval before anything is saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
+| `true` | Require approval before anything is saved. Every write — interactive CLI, messaging platforms, scripts, and the background self-improvement review — is **staged** for review with `/memory pending`; nothing touches your memory files until you approve it. Staged writes are clearly labelled `MEMORY WRITE APPROVAL`, so approving one never looks like a generic command approval. |
 
 > To turn memory off entirely (not just gate it), set both `memory_enabled: false` and `user_profile_enabled: false`. When both built-in stores are disabled, the built-in `memory` tool is automatically hidden.
 
@@ -273,8 +273,10 @@ Review staged writes from the CLI or any messaging platform:
 
 ```
 /memory pending             # list staged memory writes (auto ones tagged [auto])
-/memory approve <id>        # apply one (or 'all')
-/memory reject <id>         # drop one (or 'all')
+/memory review [id]         # show one staged write in full (oldest first without an id)
+/memory approve <id>        # apply one (or 'all')      aliases: a
+/memory reject <id>         # drop one (or 'all')       aliases: b  ·  'd' = reject all
+/memory edit <id> <new text> # correct the staged text before approving (add/replace only)
 /memory approval on         # turn the gate on (or 'off') and persist it
 ```
 

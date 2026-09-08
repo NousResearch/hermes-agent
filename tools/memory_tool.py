@@ -62,13 +62,13 @@ def load_on_disk_store() -> "MemoryStore":
 
 
 def _gate_or_stage(summary: str, detail: str, payload: Dict[str, Any]) -> Optional[str]:
-    """JSON tool-result string when the write must NOT proceed (blocked or staged
+    """JSON tool-result string when the write must NOT proceed (staged
     for approval), None to proceed. Fails open if the gate module can't load."""
     try:
         from tools import write_approval as wa
     except Exception:
         return None
-    decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
+    decision = wa.evaluate_gate(wa.MEMORY)
     if decision.allow:
         return None
     if decision.blocked:
@@ -88,7 +88,7 @@ _STORE_ACTIONS = {
                lambda label, content, old_text: (f"remove from {label}", old_text or ""))}
 
 
-def _batch_op_line(op: Dict[str, Any]) -> str:
+def format_batch_op_line(op: Dict[str, Any]) -> str:
     op = op or {}
     act, content, old = op.get("action", "?"), op.get("content") or op.get("new_text") or "", op.get("old_text", "")
     if act == "remove":
@@ -102,7 +102,7 @@ def _apply_write_gate(action: str, target: str, content: Optional[str], old_text
     label = "user profile" if target == "user" else "memory"
     if operations is not None:
         return _gate_or_stage(f"apply {len(operations)} op(s) to {label}",
-                              "\n".join(_batch_op_line(op) for op in operations),
+                              "\n".join(format_batch_op_line(op) for op in operations),
                               {"action": "batch", "target": target, "operations": operations})
     return _gate_or_stage(*_STORE_ACTIONS[action][1](label, content, old_text),
                           {"action": action, "target": target, "content": content, "old_text": old_text})
@@ -144,7 +144,7 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        # Approval gate: stages (background/gateway) or prompts inline (CLI); off by default.
+        # Approval gate: stages for /memory review when the gate is on; off by default.
         gate_result = _apply_write_gate("batch", target, None, None, operations)
         if gate_result is not None:
             return gate_result

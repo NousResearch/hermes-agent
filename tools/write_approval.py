@@ -4,9 +4,10 @@
 A per-subsystem boolean ``write_approval`` gates the agent's cross-session writes —
 **memory** (MEMORY.md / USER.md) and **skills** (SKILL.md + files) — from either
 origin (**foreground** turn or **background_review** fork). ``false`` (default)
-writes freely; ``true`` never commits directly: it prompts inline (memory,
-interactive CLI only) or **stages** the write under
-``<HERMES_HOME>/pending/{memory,skills}/<id>.json`` for out-of-band review.
+writes freely; ``true`` never commits directly: it **stages** the write under
+``<HERMES_HOME>/pending/{memory,skills}/<id>.json`` for out-of-band review with
+``/memory pending`` or ``/skills pending`` (#44963 — memory writes are staged, never
+inline-prompted, because accepting one permanently changes future behavior).
 """
 
 from __future__ import annotations
@@ -126,6 +127,31 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
     return False
 
 
+def update_pending(subsystem: str, pending_id: str, payload: Dict[str, Any],
+                   *, summary: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Update a pending record in place and return the updated record, or None when the
+    record does not exist or cannot be rewritten. #44963: ``/memory edit`` uses this so a
+    user can correct staged memory text before approving it — the payload is the exact
+    kwargs replayed on approval, so the edit must land in the payload itself."""
+    path = _pending_path(subsystem, pending_id)
+    if not path.exists():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["payload"] = payload
+        if summary is not None:
+            record["summary"] = summary.strip()
+        # Unique tmp name: concurrent edits of the same record must not share a
+        # tmp path (stage_write gets this for free from a fresh uuid4 id).
+        tmp = path.with_suffix(f".json.{os.getpid()}_{time.time_ns()}.tmp")
+        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        return record
+    except Exception as e:
+        logger.error("Failed to update pending %s/%s: %s", subsystem, pending_id, e)
+        return None
+
+
 def pending_count(subsystem: str) -> int:
     """Cheap count of pending records (for notification badges)."""
     d = _pending_path(subsystem, "").parent
@@ -152,8 +178,9 @@ def current_origin() -> str:
 @dataclass(slots=True, kw_only=True)
 class GateDecision:
     """Result of evaluating the write gate; exactly one flag is True. ``allow``: do the real write;
-    ``blocked``: user denied the inline prompt (``message`` says why); ``stage``: caller must
-    ``stage_write`` the payload (``message`` is the user-facing "staged for approval" note)."""
+    ``blocked``: user denied the write (``message`` says why; no current gate path produces it —
+    reserved for gate variants that prompt); ``stage``: caller must ``stage_write`` the payload
+    (``message`` is the user-facing "staged for approval" note)."""
 
     allow: bool = False
     blocked: bool = False
@@ -167,48 +194,16 @@ def _staged(subsystem: str) -> GateDecision:
                                              f"Not yet saved — review with {where}."))
 
 
-def evaluate_gate(subsystem: str, *, inline_summary: str = "", inline_detail: str = "") -> GateDecision:
-    """Decide what to do with a pending write: gate off → allow; gate on + skills (any origin) or
-    background → stage; gate on + memory + foreground → inline prompt when an interactive channel
-    exists, else stage. The gate only ever delays a write, never silently refuses it; ``blocked``
-    is produced only when the user actively denies the inline prompt."""
+def evaluate_gate(subsystem: str) -> GateDecision:
+    """Decide what to do with a pending write: gate off → allow; gate on → stage for
+    out-of-band review (``/memory pending`` or ``/skills pending``). #44963: memory
+    writes stage like skills — approving one permanently changes future assistant
+    behavior, so it must never ride the generic timed command-approval box, and a
+    staged record lets the user read (and edit) the exact text before it lands.
+    The gate only ever delays a write, never silently refuses it."""
     if not write_approval_enabled(subsystem):
         return GateDecision(allow=True)
-    # Skills are too big to review inline; a background write runs in a daemon thread with no user.
-    if subsystem == SKILLS or current_origin() == "background_review":
-        return _staged(subsystem)
-    granted = _prompt_inline_memory_approval(inline_summary, inline_detail)
-    if granted is None:
-        return _staged(MEMORY)
-    if granted:
-        return GateDecision(allow=True)
-    return GateDecision(blocked=True, message="Memory write denied by user. The change was not saved.")
-
-
-def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:
-    """Prompt inline for a memory write: True approved, False denied, None → stage. Uses the per-thread
-    CLI approval callback (``tools.terminal_tool.set_approval_callback``) directly, not
-    ``prompt_dangerous_approval``: that wrapper falls back to ``input()`` (deadlock-prone under
-    prompt_toolkit; silent deny in gateway sessions) and turns callback errors into a deny, whereas
-    here a missing channel or failed prompt must stage instead.
-
-    See #15216.
-    """
-    try:
-        from tools.terminal_tool import _get_approval_callback
-    except Exception:
-        return None
-    callback = _get_approval_callback()
-    if callback is None:
-        return None
-    header = summary.strip() or "Save to memory?"
-    try:
-        choice = callback(detail.strip() or header, f"Save to memory: {header}", allow_permanent=False)
-    except Exception as e:
-        logger.error("Inline memory approval prompt failed: %s", e)
-        return None
-    # unknown outcome → stage rather than drop
-    return {"once": True, "session": True, "deny": False}.get(choice)
+    return _staged(subsystem)
 
 
 # --- Skill-specific helpers (gist + diff for the review affordances) ---

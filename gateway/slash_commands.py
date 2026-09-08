@@ -840,7 +840,8 @@ class GatewaySlashCommandsMixin(
             wa.MEMORY, event.get_command_args().strip().split(), memory_store=load_on_disk_store(),
             set_mode_fn=self._write_approval_setter("memory", event))
         return out if out is not None else (
-            "Unknown /memory subcommand. Use: pending, approve <id>, reject <id>, approval <on|off>."
+            "Unknown /memory subcommand. Use: pending, review [id], approve <id>, "
+            "reject <id>, edit <id> <new text>, approval <on|off>."
         )
 
     async def _handle_skills_command(self, event: MessageEvent) -> str:

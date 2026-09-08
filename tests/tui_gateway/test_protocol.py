@@ -1335,6 +1335,74 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     assert "skill command" in resp["error"]["message"]
 
 
+def test_slash_exec_routes_quick_command_alias_to_skill(server, monkeypatch):
+    """A quick-command alias whose target is a skill must reach command.dispatch,
+    not the slash worker. On the worker path the CLI queues the loaded skill onto
+    _pending_input, which only the interactive REPL drains, so it is silently
+    dropped on desktop/TUI (#106063)."""
+    import agent.skill_commands as sc_mod
+
+    sid = "test-alias-skill"
+    # No slash_worker: if the alias fell through to the worker path this would
+    # try to spawn one; asserting a skill result proves it never got there.
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+
+    monkeypatch.setattr(
+        server, "_load_cfg",
+        lambda: {"quick_commands": {"tr": {"type": "alias", "target": "/trading-tr-hermes"}}},
+    )
+    fake_cmds = {"/trading-tr-hermes": {"name": "trading-tr-hermes", "description": "Trading skill"}}
+    monkeypatch.setattr(sc_mod, "get_skill_commands", lambda: fake_cmds)
+    monkeypatch.setattr(sc_mod, "scan_skill_commands", lambda: fake_cmds)
+    monkeypatch.setattr(
+        sc_mod, "build_skill_invocation_message",
+        lambda key, arg, task_id="": f"[IMPORTANT: run {key.lstrip('/')}] {arg}".strip(),
+    )
+
+    resp = server.handle_request({
+        "id": "r1",
+        "method": "slash.exec",
+        "params": {"command": "tr EURUSD", "session_id": sid},
+    })
+
+    assert "error" not in resp, resp
+    result = resp["result"]
+    assert result["type"] == "skill"
+    assert result["name"] == "trading-tr-hermes"
+    # The user's argument reaches the resolved skill.
+    assert "EURUSD" in result["message"]
+
+
+def test_alias_skill_target_resolution(server, monkeypatch):
+    """_alias_skill_target resolves only alias→skill, prepends the target's own
+    args, and returns None for non-alias / exec / non-skill targets."""
+    import agent.skill_commands as sc_mod
+
+    session = {"session_key": "s", "agent": None}
+    cfg = {"quick_commands": {
+        "tr": {"type": "alias", "target": "/trading-tr-hermes preset"},
+        "sh": {"type": "alias", "target": "/some-helper"},
+        "run": {"type": "exec", "command": "echo hi"},
+    }}
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    # Only /trading-tr-hermes is a skill; /some-helper is not.
+    monkeypatch.setattr(
+        sc_mod, "get_skill_commands",
+        lambda: {"/trading-tr-hermes": {"name": "trading-tr-hermes"}},
+    )
+
+    # alias→skill: target's embedded arg is prepended to the user arg.
+    assert server._alias_skill_target(session, "tr", "EURUSD") == ("trading-tr-hermes", "preset EURUSD")
+    # alias→skill with no user arg keeps just the target's embedded arg.
+    assert server._alias_skill_target(session, "tr", "") == ("trading-tr-hermes", "preset")
+    # alias whose target is not a skill → None (worker/plugin path unchanged).
+    assert server._alias_skill_target(session, "sh", "") is None
+    # exec-type quick command → None.
+    assert server._alias_skill_target(session, "run", "") is None
+    # unknown base → None.
+    assert server._alias_skill_target(session, "nope", "") is None
+
+
 def test_command_dispatch_queue_sends_message(server):
     """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
     sid = "test-session"

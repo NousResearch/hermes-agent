@@ -178,6 +178,56 @@ test('startup reap preserves failed stops for the next launch', async () => {
   assert.deepEqual(parseBackendOwnership(store.value()), [entry])
 })
 
+test('startup reap stops at the deadline and preserves the unprocessed records', async ({ onTestFinished }) => {
+  // Advance only when the first probe completes, never with runner scheduling.
+  const now = vi.spyOn(Date, 'now').mockReturnValue(0)
+  onTestFinished(() => now.mockRestore())
+  const first = ownershipEntry({ pid: 60 })
+  const second = ownershipEntry({ pid: 61 })
+  const store = memoryStore(stored([first, second]))
+  const stop = vi.fn()
+
+  const ownership = createOwnership(store, {
+    // Exhaust the budget exactly at the boundary after processing one entry.
+    matchesIdentity: async () => {
+      now.mockReturnValue(1)
+
+      return false
+    },
+    stop,
+    reapDeadlineMs: 1
+  })
+
+  assert.deepEqual(await ownership.reapOrphans(), [])
+  // The first entry was processed (dropped); the second was preserved for the
+  // next launch instead of stalling boot on a slow identity probe.
+  assert.deepEqual(parseBackendOwnership(store.value()), [second])
+})
+
+test('startup reap preserves would-be-reaped records when the budget runs out', async ({ onTestFinished }) => {
+  const now = vi.spyOn(Date, 'now').mockReturnValue(0)
+  onTestFinished(() => now.mockRestore())
+  const first = ownershipEntry({ pid: 62 })
+  const second = ownershipEntry({ pid: 63 })
+  const store = memoryStore(stored([first, second]))
+  const stop = vi.fn()
+
+  const ownership = createOwnership(store, {
+    matchesIdentity: async () => {
+      now.mockReturnValue(1)
+
+      return true
+    },
+    stop,
+    reapDeadlineMs: 1
+  })
+
+  assert.deepEqual(await ownership.reapOrphans(), [62])
+  // The second would have been reaped too, but the budget ran out — it is
+  // preserved so a later launch retries it.
+  assert.deepEqual(parseBackendOwnership(store.value()), [second])
+})
+
 test('startup reap never stops a backend whose parent Electron is still alive', async () => {
   const entry = { ...ownershipEntry({ pid: 54 }), parentPid: 100, parentStartMarker: 'os-start-parent' }
   const store = memoryStore(stored([entry]))
@@ -283,4 +333,73 @@ test('shutdown coordinator returns one promise and awaits teardown exactly once'
   await second
   assert.equal(finished, true)
   assert.equal(coordinator.run(), first)
+})
+
+// #89298: a corrupt ownership file must never be silently rewritten as [] —
+// that permanently erases the only record of still-running backends. The reap
+// sweep quarantines the file and skips; a later healthy write recreates it.
+test('reapOrphans on a corrupt file quarantines and does not rewrite', async () => {
+  let contents = '{ this is not json'
+  let quarantined = 0
+  const writes: string[] = []
+  const stopped: number[] = []
+
+  const store = {
+    read: () => contents,
+    value: () => contents,
+    write: (next: string) => {
+      writes.push(next)
+      contents = next
+    },
+    quarantine: () => {
+      quarantined += 1
+    }
+  }
+
+  const ownership = createOwnership(store, {
+    stop: identityArg => {
+      stopped.push(identityArg.pid)
+    }
+  })
+
+  assert.deepEqual(await ownership.reapOrphans(), [])
+  assert.equal(quarantined, 1)
+  assert.deepEqual(writes, [])
+  assert.deepEqual(stopped, [])
+})
+
+test('reapOrphans on a corrupt file without a quarantine hook still skips the rewrite', async () => {
+  const writes: string[] = []
+
+  const store = {
+    read: () => 'garbage{{{',
+    value: () => 'garbage{{{',
+    write: (next: string) => {
+      writes.push(next)
+    }
+  }
+
+  const ownership = createOwnership(store)
+
+  assert.deepEqual(await ownership.reapOrphans(), [])
+  assert.deepEqual(writes, [])
+})
+
+test('an empty or missing ownership file is NOT corrupt — reap sweeps normally', async () => {
+  const writes: string[] = []
+
+  const store = {
+    read: () => '',
+    value: () => '',
+    write: (next: string) => {
+      writes.push(next)
+    },
+    quarantine: () => assert.fail('empty file must not be quarantined')
+  }
+
+  const ownership = createOwnership(store)
+
+  assert.deepEqual(await ownership.reapOrphans(), [])
+  // Empty roster: rewriting [] is harmless and keeps the legacy behavior.
+  assert.equal(writes.length, 1)
 })

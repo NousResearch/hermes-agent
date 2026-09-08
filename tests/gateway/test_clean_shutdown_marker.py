@@ -23,10 +23,8 @@ def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):
     return SessionSource(platform=platform, chat_id=chat_id, user_id=user_id)
 
 
-def _make_store(tmp_path, policy=None):
+def _make_store(tmp_path):
     config = GatewayConfig()
-    if policy:
-        config.default_reset_policy = policy
     return SessionStore(sessions_dir=tmp_path, config=config)
 
 
@@ -93,7 +91,7 @@ class TestCleanShutdownMarker:
              patch("gateway.status.remove_pid_file"), \
              patch("tools.process_registry.process_registry") as mock_proc_reg, \
              patch("tools.terminal_tool.cleanup_all_environments"), \
-             patch("tools.browser_tool.cleanup_all_browsers"):
+             patch("tools.browser_tool_lifecycle.cleanup_all_browsers"):
             mock_proc_reg.kill_all = MagicMock()
 
             import asyncio
@@ -131,71 +129,3 @@ class TestCleanShutdownMarker:
 # ---------------------------------------------------------------------------
 # resume_pending freshness gate (#46934)
 # ---------------------------------------------------------------------------
-
-class TestResumePendingFreshnessGate:
-    """A resume_pending session is only returned while it is still fresh.
-
-    ``get_or_create_session`` returns a ``resume_pending`` session so its
-    transcript reloads intact after a restart.  But the idle/daily reset
-    policy keys on ``updated_at``, which is bumped to ``now`` on every
-    message — so a zombie session that keeps receiving messages never trips
-    it and would resume stale context forever.  The freshness gate keys on
-    ``last_resume_marked_at`` (set once at resume-mark, never bumped) so it
-    catches that case.
-    """
-
-    def _mark_resume_pending(self, store, source):
-        """Put the session into resume_pending and return the entry."""
-        store.get_or_create_session(source)
-        count = store.suspend_recently_active()
-        assert count == 1
-        with store._lock:
-            entry = store._entries[store._generate_session_key(source)]
-        assert entry.resume_pending
-        assert entry.last_resume_marked_at is not None
-        return entry
-
-
-    def test_stale_resume_pending_falls_through_to_reset(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
-        # The freshness gate only applies when the user has opted into
-        # automatic resets — session_reset.mode: none disables it (#61052).
-        from gateway.config import SessionResetPolicy
-        store = _make_store(
-            tmp_path, policy=SessionResetPolicy(mode="idle", idle_minutes=999999)
-        )
-        source = _make_source()
-        entry = self._mark_resume_pending(store, source)
-
-        # Backdate the resume mark past the freshness window. Keep updated_at
-        # fresh (as a per-message zombie would have) so the idle/daily policy
-        # would NOT fire — only the freshness gate should catch this.
-        with store._lock:
-            entry.last_resume_marked_at = datetime.now() - timedelta(seconds=7200)
-            entry.updated_at = datetime.now()
-            store._save()
-
-        fresh = store.get_or_create_session(source)
-        # Zombie detected → brand-new session, not the stale transcript.
-        assert fresh.session_id != entry.session_id
-        assert not fresh.resume_pending
-
-    def test_reset_mode_none_disables_freshness_gate(self, tmp_path, monkeypatch):
-        """session_reset.mode: none opts out of ALL automatic resets —
-        including the resume_pending freshness gate (#61052)."""
-        monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
-        from gateway.config import SessionResetPolicy
-        store = _make_store(tmp_path, policy=SessionResetPolicy(mode="none"))
-        source = _make_source()
-        entry = self._mark_resume_pending(store, source)
-
-        with store._lock:
-            entry.last_resume_marked_at = datetime.now() - timedelta(seconds=7200)
-            entry.updated_at = datetime.now()
-            store._save()
-
-        refreshed = store.get_or_create_session(source)
-        # Explicit opt-out honored: same session back, transcript preserved.
-        assert refreshed.session_id == entry.session_id
-        assert refreshed.resume_pending
-

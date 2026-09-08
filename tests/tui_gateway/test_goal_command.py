@@ -180,6 +180,57 @@ def test_goal_bare_shows_status_when_none_set(server, session):
     assert "No active goal" in r["result"]["output"]
 
 
+def _exhaust_budget(session_key: str, goal_text: str = "finish the benchmark"):
+    """Set a 1-turn goal and drive it to budget-exhaustion auto-pause."""
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_key)
+    mgr.set(goal_text, max_turns=1)
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("continue", "needs more steps", False, None, False),
+    ):
+        decision = mgr.evaluate_after_turn("worked a bit")
+    assert decision["status"] == "paused"
+    assert decision["should_continue"] is False
+    return mgr
+
+
+def test_goal_resume_after_budget_exhaustion_dispatches_continuation(
+    server, session
+):
+    """#75362: /goal resume must restart work, not just flip state.
+
+    The pre-fix handler returned a display-only `exec` payload, so the
+    resumed goal sat idle until the user sent another message. Resume
+    must return a sendable dispatch carrying the canonical continuation
+    prompt, with a concise `/goal resume` transcript projection.
+    """
+    from hermes_cli.goals import GoalManager
+
+    sid, session_key, _ = session
+    _exhaust_budget(session_key)
+    assert GoalManager(session_key).state.status == "paused"
+
+    r = _call(server, "command.dispatch", name="goal", arg="resume", session_id=sid)
+    result = r["result"]
+    assert result["type"] == "send"
+    assert result["message"].startswith("[Continuing toward your standing goal]")
+    assert result["display"] == "/goal resume"
+    assert "Goal resumed" in result["notice"]
+
+    state = GoalManager(session_key).state
+    assert state.status == "active"
+    assert state.turns_used == 0, "resume must reset the turn budget"
+
+
+def test_goal_resume_without_goal_stays_exec(server, session):
+    sid, _, _ = session
+    r = _call(server, "command.dispatch", name="goal", arg="resume", session_id=sid)
+    assert r["result"]["type"] == "exec"
+    assert "No goal to resume" in r["result"]["output"]
+
+
 # ── slash.exec /goal routing ──────────────────────────────────────────
 
 
@@ -416,3 +467,64 @@ moa:
     # Bare /moa is usage-only now; switching to a preset is via the model picker.
     assert "error" in r
     assert "model_override" not in s
+
+
+@pytest.mark.parametrize("method", ["command.dispatch", "slash.exec"])
+def test_goal_draft_uses_session_profile_without_blocking_rpc_reader(
+    server, session, monkeypatch, tmp_path, method,
+):
+    from hermes_cli import goals
+    from hermes_constants import get_hermes_home
+    import hermes_state
+
+    # Restore call-time profile resolution; conftest pins this constant to one DB.
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    sid, key, record = session
+    secondary = tmp_path / "secondary"
+    secondary.mkdir()
+    (secondary / "config.yaml").write_text("goals:\n  max_turns: 37\n", encoding="utf-8")
+    record["profile_home"] = str(secondary)
+    started, release, returned, replied = (threading.Event() for _ in range(4))
+    observed, frames = [], []
+
+    def draft(objective):
+        observed.append(get_hermes_home())
+        started.set()
+        assert release.wait(10)
+        return goals.GoalContract(verification="tests pass")
+
+    def write(frame):
+        frames.append(frame)
+        if frame.get("id") == "draft":
+            replied.set()
+        return True
+
+    monkeypatch.setattr(goals, "draft_contract", draft)
+    transport = types.SimpleNamespace(write=write)
+    params = {"session_id": sid, "name": "goal", "arg": "draft profile objective"}
+    if method == "slash.exec":
+        params = {"session_id": sid, "command": "/goal draft profile objective"}
+
+    def dispatch():
+        server.dispatch({"id": "draft", "method": method, "params": params}, transport)
+        returned.set()
+
+    caller = threading.Thread(target=dispatch)
+    caller.start()
+    try:
+        assert started.wait(5)
+        assert returned.wait(2), "draft blocked the transport reader"
+        ping = server.dispatch({"id": "ping", "method": "ping", "params": {}}, transport)
+        assert ping["id"] == "ping" and "result" in ping
+    finally:
+        release.set()
+        caller.join(5)
+    assert replied.wait(5)
+    assert observed == [secondary]
+    assert goals.load_goal(key) is None, "goal leaked into the launch profile"
+    with server._session_profile_runtime_scope(record):
+        state = goals.load_goal(key)
+        assert state.goal == "profile objective"
+        assert state.max_turns == 37 and state.contract.verification == "tests pass"
+    result = next(frame["result"] for frame in frames if frame.get("id") == "draft")
+    assert result["type"] == "send" and result["message"] == state.goal

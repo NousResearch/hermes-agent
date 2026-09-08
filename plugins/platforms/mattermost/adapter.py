@@ -642,7 +642,8 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
                     body = await resp.text()
                     return {"error": f"Mattermost API error ({resp.status}): {body[:400]}"}
                 data = await resp.json()
-            return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": data.get("id")}
+            return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": data.get("id"),
+                    "media_delivered": bool(file_ids)}
     except aiohttp.ClientError as exc:
         return {"error": f"Mattermost send failed (network): {exc}"}
     except Exception as exc:  # noqa: BLE001

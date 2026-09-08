@@ -392,13 +392,19 @@ class DeliveryAuthor:
         return f"DeliveryAuthor({self.author!r})"
 
 
-def delivery_turn_author(from_profile: Any, from_handle: Any) -> Optional[dict]:
-    """The author of a relayed DM's recipient turn, built from the envelope's sender fields.
+def delivery_turn_author(from_profile: Any, from_handle: Any, from_connection: Any = None) -> Optional[dict]:
+    """The author of a relayed DM's recipient turn, built from the envelope's sender fields. A sender on another
+    machine is qualified by the Desktop's id for its connection, so two machines' ``scout`` profiles stay distinct.
     None when the envelope names no sender, so an unattributed delivery stays unattributed."""
+    from agent.turn_author import bot_author_id
+
     profile = str(from_profile or "").strip()
     if not profile:
         return None
-    return {"id": f"bot:{profile}", "name": str(from_handle or "").strip() or profile, "is_bot": True}
+    connection = str(from_connection or "").strip()
+    # The Desktop names its own gateway "local"; that sender keeps the bare id local deliveries always had.
+    origin = connection if connection != "local" else ""
+    return {"id": bot_author_id(profile, origin), "name": str(from_handle or "").strip() or profile, "is_bot": True}
 
 
 def delivery_env(author: Optional[dict]) -> dict[str, str]:

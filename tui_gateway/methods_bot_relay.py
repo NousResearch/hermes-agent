@@ -96,7 +96,7 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
                 record, _session_lookup_key(record, fallback=live_sid)) == BOT_CHAT_TITLE), "")
         # The Desktop forwards the envelope's sender. The author labels memory only and grants nothing.
         from tools.bot_relay import DeliveryAuthor, delivery_env, delivery_turn_author
-        author = delivery_turn_author(params.get("from_profile"), params.get("from_handle"))
+        author = delivery_turn_author(params.get("from_profile"), params.get("from_handle"), params.get("from_connection"))
         if live_sid:
             # queued=True: a teammate's DM runs as the NEXT turn and never interrupts or steers a
             # turn in flight (the default busy mode does); arrivals queue in order.

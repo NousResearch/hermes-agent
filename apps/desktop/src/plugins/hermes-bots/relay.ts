@@ -401,9 +401,11 @@ async function drainRelayOutboxes() {
             {
               profile: String(envelope?.target_profile || ''),
               message: String(envelope?.message || ''),
-              // The target gateway sets HERMES_TURN_AUTHOR on the delivery turn from these two.
+              // The target gateway sets HERMES_TURN_AUTHOR on the delivery turn from these; the
+              // sender's connection id qualifies a bot on another machine.
               from_profile: String(envelope?.from_profile || ''),
-              from_handle: String(envelope?.from_handle || '')
+              from_handle: String(envelope?.from_handle || ''),
+              from_connection: String(sender.id)
             },
             RELAY_DELIVER_TIMEOUT_MS
           )

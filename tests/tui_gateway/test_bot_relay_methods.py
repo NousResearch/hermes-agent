@@ -215,8 +215,10 @@ def fake_runs(monkeypatch):
 
 @pytest.mark.parametrize("sender, expected", [
     ({"from_profile": "scout", "from_handle": "scout"}, {"id": "bot:scout", "name": "scout", "is_bot": True}),
+    ({"from_profile": "scout", "from_handle": "scout", "from_connection": "cloud-1"},
+     {"id": "bot:cloud-1/scout", "name": "scout", "is_bot": True}),
     ({}, None),
-], ids=["sender fields", "no sender fields"])
+], ids=["sender fields", "sender on another connection", "no sender fields"])
 def test_deliver_child_env_carries_the_envelope_sender_on_every_attempt(home, monkeypatch, fake_runs, sender, expected):
     """HERMES_TURN_AUTHOR on the child comes from the envelope's sender fields alone: the retry gets the same
     author, and without sender fields a stale author on the gateway's own environment never reaches the child."""

@@ -574,6 +574,15 @@ def test_delivery_turn_author_from_envelope_sender_fields():
     assert bot_relay.delivery_turn_author(None, None) is None
 
 
+def test_delivery_turn_author_qualifies_a_remote_sender_by_its_connection():
+    """Two machines can both run ``ops``; the Desktop's connection id keeps them apart, and its own gateway
+    (``local``) keeps the bare id."""
+    remote = bot_relay.delivery_turn_author("ops", "ops-bot", "cloud-1")
+    assert remote == {"id": "bot:cloud-1/ops", "name": "ops-bot", "is_bot": True}
+    assert bot_relay.delivery_turn_author("ops", "ops-bot", "local") == {"id": "bot:ops", "name": "ops-bot", "is_bot": True}
+    assert bot_relay.delivery_turn_author("ops", "ops-bot", "") == {"id": "bot:ops", "name": "ops-bot", "is_bot": True}
+
+
 def test_delivery_env_carries_only_the_given_author(monkeypatch):
     """The dispatcher's own HERMES_TURN_AUTHOR never reaches the child: dropped without an author, replaced with one."""
     from agent.turn_author import TURN_AUTHOR_ENV

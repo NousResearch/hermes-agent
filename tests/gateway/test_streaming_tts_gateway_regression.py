@@ -182,7 +182,7 @@ def test_streaming_tts_aborts_when_turn_result_is_unavailable():
     asyncio.run(_run())
     assert consumer.started is False
     assert consumer.aborted == [
-        "turn result unavailable or persistence failed before streaming TTS start"
+        "canonical persistence not confirmed before streaming TTS start"
     ]
 
 

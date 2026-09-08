@@ -453,6 +453,10 @@ def finalize_turn(
         and not failed
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
     )
+    # External delivery requires positive proof of canonical persistence.  The
+    # default is deliberately negative; only the successful return from the
+    # canonical persistence operation can mint this receipt.
+    persistence_confirmed = False
 
     _rollback_interrupted_preflight_display(agent, interrupted)
 
@@ -468,24 +472,38 @@ def finalize_turn(
         _cleanup_errors, logger,
     )
     # Persist only after the transcript tail is shaped and scaffolding removed. Each
-    # sub-step runs in the same order as the original inline block, and the
-    # stream-recovered ``final_response`` is rebound the moment it is computed — BEFORE
-    # the fallible tail-shaping / override / micro-compaction / persist calls — so a
-    # raise in any of them can't drop text the user already saw (#95514, #8049).
+    # sub-step runs in the same order as the original inline block. The stream-recovered
+    # response is rebound before the fallible work so the durable transcript is shaped
+    # consistently; if any step fails, _mark_persistence_failed() invalidates the
+    # response and blocks external delivery.
+    def _mark_persistence_failed():
+        nonlocal final_response, failed, completed, _turn_exit_reason, persistence_confirmed
+        persistence_confirmed = False
+        failed = True
+        completed = False
+        _turn_exit_reason = "session_persistence_failed"
+        final_response = ""
+        if getattr(agent, "_last_persistence_error_cause", None) is None:
+            agent._last_persistence_error_cause = "unknown"
+
     def _persist_step():
-        nonlocal final_response, failed, _turn_exit_reason
-        _drop_transcript_scaffolding(agent, messages)
-        final_response, _recovered_from_stream = _recover_final_from_stream(
-            agent, final_response, interrupted, failed
-        )
-        _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
-        if not interrupted and not failed:
-            _micro_compact_after_turn(agent, messages, final_response, logger)
-        _persisted = agent._persist_session(messages, conversation_history)
-        if _persisted is False:
-            failed = True
-            _turn_exit_reason = "session_persistence_failed"
-            final_response = ""
+        nonlocal final_response, failed, _turn_exit_reason, persistence_confirmed
+        try:
+            _drop_transcript_scaffolding(agent, messages)
+            final_response, _recovered_from_stream = _recover_final_from_stream(
+                agent, final_response, interrupted, failed
+            )
+            _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
+            if not interrupted and not failed:
+                _micro_compact_after_turn(agent, messages, final_response, logger)
+            _persisted = agent._persist_session(messages, conversation_history)
+        except Exception:
+            _mark_persistence_failed()
+            raise
+        if _persisted is not True:
+            _mark_persistence_failed()
+            return
+        persistence_confirmed = True
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
 
@@ -543,6 +561,7 @@ def finalize_turn(
         "messages": messages,
         "api_calls": api_call_count,
         "completed": completed,
+        "persistence_confirmed": persistence_confirmed,
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls

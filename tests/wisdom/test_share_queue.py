@@ -309,6 +309,15 @@ def test_share_copy_and_controls_keep_publication_separate(sharing):
     ])
     assert "You can review the skill before publishing" in view.to_text()
     assert "handoff package" not in view.to_text()
+    assert "Security (local preflight): ✅ Pass" in view.to_text()
+    assert "will be scanned" not in view.to_text()
+    expanded = advice_view([
+        {"advice": {"title": "Skill", "explanation": "Useful", "relevance": "recommend"},
+         "interaction": shown}
+    ], checks_expanded=True)
+    assert "Private keys: ✅ Pass" in expanded.to_text()
+    assert "Harmful instruction patterns: ✅ Pass" in expanded.to_text()
+    assert "Pending" not in expanded.to_text()
 
 
 def test_checks_toggle_is_read_only_and_preserves_consent(sharing):

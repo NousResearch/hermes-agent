@@ -420,6 +420,23 @@ class WisdomService:
             for event in events
         ]
 
+    def candidate_security_check(
+        self, *, skill_id: str, content_hash: str
+    ) -> dict[str, Any]:
+        local = self.store.local_skill(skill_id)
+        source = Path(str(local["canonical_path"])) if local else None
+        if source is None or _source_fingerprint(source) != content_hash:
+            raise WisdomConflict("candidate changed before security scanning")
+        files = exact_utf8_package(source)
+        check = prepared_security_check(
+            files, "", _scan_summary(source), include_gateway_pending=False
+        )
+        if _source_fingerprint(source) != content_hash:
+            raise WisdomConflict("candidate changed during security scanning")
+        check["content_hash"] = content_hash
+        check["author_description_hash"] = author_description_hash("")
+        return check
+
     def candidate_professionalism_review(
         self, *, skill_id: str, content_hash: str
     ) -> dict[str, Any] | None:
@@ -468,9 +485,10 @@ class WisdomService:
             self.store.expedite_professionalism_review(str(row["id"]))
             process_pending_reviews(
                 self.store,
-                max_jobs=2,
+                max_jobs=1,
                 review_id=str(row["id"]),
                 retry_delay_seconds=0,
+                terminal_on_failure=True,
             )
         return self.candidate_professionalism_review(
             skill_id=skill_id, content_hash=content_hash

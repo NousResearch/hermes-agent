@@ -99,6 +99,37 @@ def test_prepared_security_never_attaches_results_to_changed_bytes(staged):
     assert service.client.uploaded == 0
 
 
+def test_candidate_scan_runs_before_preparation_and_rejects_changed_source(staged):
+    service, package, source, _ = staged
+    skill_id = service.store.register_skill(
+        source, content_hash=package.source_content_hash, source_kind="local"
+    )
+    check = service.candidate_security_check(
+        skill_id=skill_id, content_hash=package.source_content_hash
+    )
+    assert check["status"] == "pass"
+    assert check["content_hash"] == package.source_content_hash
+    assert all(row["status"] == "pass" for row in check["checks"])
+    assert service.client.uploaded == 0
+    (source / "SKILL.md").write_text("changed")
+    with pytest.raises(WisdomConflict, match="candidate changed"):
+        service.candidate_security_check(
+            skill_id=skill_id, content_hash=package.source_content_hash
+        )
+
+
+def test_candidate_scan_detects_real_secret_before_any_share_request(staged):
+    service, _, source, _ = staged
+    token = "ghp_" + "a" * 36
+    (source / "SKILL.md").write_text("---\nname: notes\n---\n" + token)
+    content_hash = _source_fingerprint(source)
+    skill_id = service.store.register_skill(source, content_hash=content_hash, source_kind="local")
+    check = service.candidate_security_check(skill_id=skill_id, content_hash=content_hash)
+    assert check["status"] == "blocked" and check["upload_allowed"] is False
+    assert token not in json.dumps(check)
+    assert service.client.uploaded == 0
+
+
 def test_background_package_waits_for_parallel_reviews(staged, monkeypatch):
     service, package, source, root = staged
     scan_started, review_started = Event(), Event()

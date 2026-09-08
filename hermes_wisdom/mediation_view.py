@@ -6,7 +6,6 @@ from gateway.wisdom_command import WisdomAction, WisdomItem, WisdomView
 from .consent import ConsentActor, WisdomConsent
 from .review_presentation import (
     full_review_text,
-    professionalism_review_text,
     review_status_text,
 )
 
@@ -102,12 +101,8 @@ def advice_view(
                 )
             sharing = interaction["operation"] == "share"
             for key, label in (
-                ()
-                if sharing
-                else (
-                    ("security_check", "Security"),
-                    ("professionalism_check", "Professionalism (advisory)"),
-                )
+                ("security_check", "Security"),
+                ("professionalism_check", "Professionalism (advisory)"),
             ):
                 check = facts.get(key) or {}
                 local = check.get("source") == "local_preflight"
@@ -119,23 +114,9 @@ def advice_view(
                     or check.get("source") == "local_preflight"
                 ) and check.get("summary"):
                     detail += "\n" + str(check["summary"])[:512]
-            if sharing:
-                check = facts.get("professionalism_check") or {}
-                detail += "\n\nProfessionalism (advisory): " + review_status_text(
-                    check.get("status")
-                )
-                if check.get("status") in {"advisory", "blocked"} and check.get(
-                    "summary"
-                ):
-                    detail += "\n" + str(check["summary"])[:512]
-                detail += "\nSecurity: the prepared package will be scanned before submission."
             if checks_expanded:
-                detail += "\n\n" + (
-                    professionalism_review_text(facts.get("professionalism_check"))
-                    if sharing
-                    else full_review_text(
-                        facts.get("security_check"), facts.get("professionalism_check")
-                    )
+                detail += "\n\n" + full_review_text(
+                    facts.get("security_check"), facts.get("professionalism_check")
                 )
             if not sharing:
                 detail += (

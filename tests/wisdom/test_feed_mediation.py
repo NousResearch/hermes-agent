@@ -103,6 +103,8 @@ def test_qualified_candidate_uses_professionalism_not_installation_assessor(
     instance.service.finish_candidate_professionalism_review.return_value = {
         "status": review_status
     }
+    security = {"source": "local_preflight", "status": "pass", "local_status": "pass"}
+    instance.service.candidate_security_check.return_value = security
     present = Mock(
         return_value={
             "id": "consent",
@@ -111,6 +113,7 @@ def test_qualified_candidate_uses_professionalism_not_installation_assessor(
                 "slug": "local",
                 "source_hash": "hash",
                 "professionalism_check": {"status": review_status},
+                "security_check": security,
             },
             "actions": ["defer", "inspect", "confirm"],
         }
@@ -140,8 +143,39 @@ def test_qualified_candidate_uses_professionalism_not_installation_assessor(
     assert "repeated use" in view.to_text()
     assert review_status.capitalize() in view.to_text()
     assert "Hermes recommendation:" not in view.to_text()
-    assert "prepared package will be scanned" in view.to_text()
+    assert "Security (local preflight): ✅ Pass" in view.to_text()
+    assert "will be scanned" not in view.to_text()
+    instance.service.candidate_security_check.assert_called_once_with(
+        skill_id="local", content_hash="hash"
+    )
     instance.service.approve_candidate.assert_not_called()
+
+
+def test_qualification_security_and_professionalism_run_together(mediation):
+    from threading import Event
+
+    instance, _, _, _ = mediation
+    instance.service._candidate_event_context.return_value = (
+        {"organization_id": "org", "qualification": "high_usage"}, "local", "hash", "Skill"
+    )
+    scan_started, review_started = Event(), Event()
+
+    def scan(**_):
+        scan_started.set()
+        assert review_started.wait(5)
+        return {"status": "pass"}
+
+    def review(**_):
+        review_started.set()
+        assert scan_started.wait(5)
+        return {"status": "pass"}
+
+    instance.service.candidate_security_check.side_effect = scan
+    instance.service.finish_candidate_professionalism_review.side_effect = review
+    result = instance.qualification_advice(
+        "org", {"reference": {"event_id": "event", "content_hash": "hash"}}
+    )
+    assert result["assessment_kind"] == "qualification"
 
 
 def test_source_changed_during_professionalism_review_never_reaches_consent(

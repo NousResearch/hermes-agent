@@ -110,6 +110,9 @@ class WisdomConsent:
                 or {}
             )
             if existing is None:
+                security = self.service.candidate_security_check(
+                    skill_id=skill_id, content_hash=source_hash
+                )
                 review = self.service.store.professionalism_review(
                     skill_id=skill_id,
                     content_hash=source_hash,
@@ -120,8 +123,9 @@ class WisdomConsent:
                     "slug": name,
                     "event_id": event_id,
                     "source_hash": source_hash,
-                    "allowed": True,
+                    "allowed": security["upload_allowed"],
                     "sharing_stage": "prepare",
+                    "security_check": security,
                     "professionalism_check": (
                         review.get("result") or {"status": review["state"]}
                     )

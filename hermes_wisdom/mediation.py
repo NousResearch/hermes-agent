@@ -7,6 +7,7 @@ context. It cannot dispatch general agent tools or mutate the live cached prompt
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal
 
@@ -580,9 +581,19 @@ class WisdomMediation:
             or content_hash != reference["content_hash"]
         ):
             raise ValueError("candidate changed")
-        self.service.finish_candidate_professionalism_review(
-            skill_id=skill_id, content_hash=content_hash
-        )
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            review = pool.submit(
+                self.service.finish_candidate_professionalism_review,
+                skill_id=skill_id, content_hash=content_hash,
+            )
+            self.service.candidate_security_check(
+                skill_id=skill_id, content_hash=content_hash
+            )
+            result = review.result()
+        if not isinstance(result, dict) or result.get("status") not in {
+            "pass", "advisory", "unavailable"
+        }:
+            raise ValueError("candidate professionalism review is still running")
         # The background review may yield while the owner edits the source.
         current, _, current_hash, _ = self.service._candidate_event_context(
             reference["event_id"]

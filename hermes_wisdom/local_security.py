@@ -6,7 +6,8 @@ from .agent_led.share_flow import scan_credentials
 
 
 def prepared_security_check(
-    files: list[dict[str, str]], description: str, scan: dict[str, Any]
+    files: list[dict[str, str]], description: str, scan: dict[str, Any],
+    *, include_gateway_pending: bool = True,
 ) -> dict[str, Any]:
     findings = scan_credentials(
         [{"path": item["path"], "content": item["content_utf8"]} for item in files]
@@ -42,10 +43,10 @@ def prepared_security_check(
         # Do not surface raw matches, filenames, or scanner reasons containing secrets.
         "details": ["The local skills guard checks known harmful instruction patterns."],
     })
-    for key, label in (
+    for key, label in ((
         ("organization_policy", "Organization policy"),
         ("personal_information", "Personal information"),
-    ):
+    ) if include_gateway_pending else ()):
         rows.append({
             "key": key, "label": label, "status": "pending",
             "finding_count": 0,
@@ -54,17 +55,19 @@ def prepared_security_check(
     blocked = any(row["status"] == "blocked" for row in rows)
     advisory = any(row["status"] == "advisory" for row in rows)
     unavailable = guard_status == "unavailable"
+    local_status = "blocked" if blocked else "unavailable" if unavailable else "advisory" if advisory else "pass"
     return {
         "schema_version": 1,
         "source": "local_preflight",
-        "status": "blocked" if blocked else "unavailable" if unavailable else "pending",
-        "local_status": "blocked" if blocked else "unavailable" if unavailable else "advisory" if advisory else "pass",
+        "status": "pending" if include_gateway_pending and not blocked and not unavailable else local_status,
+        "local_status": local_status,
         "upload_allowed": not blocked and not unavailable,
         "summary": (
             "Local security checks found content that must be removed before sharing."
             if blocked else "Local security scanning could not complete. Try preparation again."
             if unavailable else "Local security checks have findings to review."
             if advisory else "Local security checks found no known matches."
-        ) + " Required Gateway checks run after you authorize upload and before publication.",
+        ) + (" Required Gateway checks run after you authorize upload and before publication."
+             if include_gateway_pending else ""),
         "checks": rows,
     }

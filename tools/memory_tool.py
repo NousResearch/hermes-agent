@@ -9,7 +9,7 @@ import json
 import logging
 from contextvars import ContextVar
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import is_truthy_value
@@ -40,8 +40,28 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 
+def get_global_policy_path() -> Path:
+    """Canonical machine-wide GLOBAL.md, shared across profile homes."""
+    return get_default_hermes_root() / "memories" / "GLOBAL.md"
+
+
 from tools.memory_tool_store import (  # noqa: E402,F401  (re-exports)
     ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content)
+
+
+def load_global_policy_block() -> str:
+    """Read the frozen machine-wide policy as one prompt block; failures are empty."""
+    try:
+        entries = list(dict.fromkeys(MemoryStore._read_file(get_global_policy_path())))
+        if not entries:
+            return ""
+        separator = "═" * 46
+        return (
+            f"{separator}\nGLOBAL POLICY (shared across all Hermes profiles)\n"
+            f"{separator}\n{ENTRY_DELIMITER.join(entries)}"
+        )
+    except Exception:
+        return ""
 
 
 def load_on_disk_store() -> "MemoryStore":

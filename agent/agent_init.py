@@ -1123,7 +1123,8 @@ def _publish_session_id(session_id: str) -> None:
 
 
 def _init_session_state(agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
-    checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb):
+    global_policy_snapshot, checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb,
+    checkpoint_max_file_size_mb):
     agent.session_start = datetime.now()
     agent.session_id = session_id or (
         f"{agent.session_start.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -1145,6 +1146,16 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
 
     agent._session_db = session_db  # optional SQLite store (CLI/gateway-provided)
     agent._parent_session_id = parent_session_id
+    # Machine-wide policy is independent of writable personal-memory stores.
+    # Freeze it for every agent, including minimal/skip-memory agents.
+    agent._global_policy_snapshot = global_policy_snapshot
+    if agent._global_policy_snapshot is None:
+        agent._global_policy_snapshot = ""
+        try:
+            from tools.memory_tool import load_global_policy_block
+            agent._global_policy_snapshot = load_global_policy_block()
+        except Exception:
+            pass  # Optional GLOBAL.md must never break agent initialization.
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
@@ -2203,7 +2214,8 @@ def init_agent(
     chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
     gateway_session_key: str = None, skip_context_files: bool = False,
     load_soul_identity: bool = False, skip_memory: bool = False,
-    skip_background_review: bool = False, session_db=None, parent_session_id: str = None,
+    global_policy_snapshot: str = None, skip_background_review: bool = False,
+    session_db=None, parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
     fallback_model: Dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
@@ -2280,7 +2292,7 @@ def init_agent(
     _init_fallback_chain(agent, fallback_model)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)
     _init_session_state(
-        agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
+        agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens, global_policy_snapshot,
         checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,
     )
 

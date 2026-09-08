@@ -34,9 +34,26 @@ _CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
 _SYSTEM_CONFIG_PATH = rf'(?:/etc/|{_MACOS_PRIVATE_SYSTEM_PATH})'
+# A raw block device: writing to one destroys a whole disk (or the volume/array behind it) with no
+# recovery path. Shared by every rule that gates such a write, because the spelling depends on the
+# platform and the storage stack — knowing only the Linux SCSI names left Mac disks unprotected:
+#   sd/hd/vd/xvd/nvme/mmcblk  SATA-SCSI-USB, IDE, virtio, Xen, NVMe, eMMC/SD cards (Linux)
+#   md / dm- / mapper/<name>  md RAID arrays and device-mapper/LVM volumes (Linux)
+#   loop / nbd                loopback and network block devices (Linux)
+#   [r]disk<N>[s<M>]          macOS whole disks, slices, and the raw character node
+#   disk/by-*/<name>          udev persistent-name symlinks — the same disks under stable names
+# The loose `[a-z0-9]*` tail of the original rules is kept so partition/namespace suffixes (sda1,
+# nvme0n1p2) come along; `disk` alone requires a digit because bare /dev/disk is the by-* symlink
+# DIRECTORY, not a device.
+_BLOCK_DEVICE_PATH = (
+    r'/dev/(?:(?:sd|hd|vd|xvd|nvme|mmcblk|md|dm-|loop|nbd)[a-z0-9]*'
+    r'|r?disk[0-9]+[a-z0-9]*'
+    r'|mapper/[^\s;&|<>()"\']+'
+    r'|disk/by-(?:id|uuid|path|label|partuuid|partlabel)/[^\s;&|<>()"\']+)'
+)
 _SENSITIVE_WRITE_TARGET = (
-    rf'(?:{_SYSTEM_CONFIG_PATH}|/dev/sd|{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH}|'
-    rf'{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
+    rf'(?:{_SYSTEM_CONFIG_PATH}|{_BLOCK_DEVICE_PATH}|{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|'
+    rf'{_HERMES_CONFIG_PATH}|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
 )
 _USER_SENSITIVE_WRITE_TARGET = rf'(?:{_SSH_SENSITIVE_PATH}|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
@@ -94,11 +111,26 @@ HARDLINE_PATTERNS = [
     # Command-name rules (mkfs, dd, kill, shutdown...) are _CMDPOS-anchored so quoted prose
     # (`echo "does this use mkfs?"`) cannot trip the floor.
     # See #93392.
-    (_CMDPOS + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    # mke2fs IS mkfs.ext2/3/4 (one binary, three names), so it is unconditional like mkfs. mkswap
+    # and the macOS newfs_<fs> family are gated on a raw block device operand instead, because
+    # `mkswap /swapfile` / `newfs_hfs disk.dmg` write a FILE and must keep working. diskutil is
+    # gated on its destructive verbs — `diskutil list|info|mount|unmount|apfs list` are read-only.
+    (_CMDPOS + r'(?:(?:mkfs(?:\.[a-z0-9]+)?|mke2fs)\b'
+     rf'|(?:mkswap|newfs(?:_[a-z0-9]+)?)\b[^;|&\n]*{_BLOCK_DEVICE_PATH}'
+     r'|diskutil\s+(?:[a-z]+\s+)?(?:erase(?:disk|volume)|zerodisk|randomdisk|secureerase|reformat|partitiondisk)\b)',
+     "format filesystem (mkfs)"),
+    # Whole-device wipes that are neither dd nor a redirect: each erases the partition table or the
+    # raw sectors of the device it is pointed at. Every branch needs BOTH its destructive flag and a
+    # raw block device operand on the same command, so `wipefs /dev/sda` (prints signatures),
+    # `sgdisk -p /dev/sda` (prints the table), `blkdiscard --help` and `shred secret.txt` still run.
+    (_CMDPOS + r'(?:wipefs\b(?=[^;|&\n]*\s(?:-[a-z]*a[a-z]*|--all)\b)'
+     r'|sgdisk\b(?=[^;|&\n]*\s(?:-z|--zap-all|-o|--clear)\b)'
+     r'|blkdiscard\b|shred\b)'
+     rf'(?=[^;|&\n]*{_BLOCK_DEVICE_PATH})', "wipe raw block device"),
     # `dd` is a command-name token, so anchor it to command position like mkfs/rm/shutdown (#93392): quoted
     # prose such as `git commit -m "never dd of=/dev/sda"` is an argument, not a command. The argument tail
     # ([^\n]*of=/dev/...) is kept so flag order doesn't matter.
-    (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    (_CMDPOS + rf'dd\b[^\n]*\bof={_BLOCK_DEVICE_PATH}', "dd to raw block device"),
     # Positionless rules (no command-name token: `>` sits mid-command, the fork bomb is a function
     # definition) are matched against a QUOTE-MASKED variant (_QUOTE_MASKED_HARDLINE_DESCRIPTIONS /
     # _mask_quoted_prose) so quoted prose cannot trip them; sh -c / bash -c / eval payloads still scan raw.
@@ -107,7 +139,7 @@ HARDLINE_PATTERNS = [
     # of the command (see _QUOTE_MASKED_HARDLINE / _mask_quoted_strings) so quoted prose (`echo "cat f >
     # /dev/sda"`) cannot trip it, while shell-carrying wrappers (sh -c / bash -c / eval) still surface their
     # payload as a raw detection variant — quoting is not a bypass (#93392).
-    (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
+    (rf'>\s*{_BLOCK_DEVICE_PATH}\b', "redirect to raw block device"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
@@ -262,7 +294,7 @@ DANGEROUS_PATTERNS = [
     # See #93392.
     (_CMDPOS + r'mkfs\b', "format filesystem"),
     (_CMDPOS + r'dd\s+.*if=', "disk copy"),
-    (r'>\s*/dev/sd', "write to block device"),
+    (rf'>\s*{_BLOCK_DEVICE_PATH}', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
     # [^\n]* not .*: under DOTALL a WHERE on the *next* line would satisfy the lookahead and
     # silently allow DELETE without WHERE.

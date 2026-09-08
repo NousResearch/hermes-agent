@@ -244,15 +244,20 @@ def _shutdown_backend_atexit() -> None:
     disabling the cursor overlay; the process itself still lingered.
     """
     with _backend_lock:
-        unique = {id(b): (b, _backend_call_locks.get(owner)) for owner, b in _backends.items()}
+        unique = {id(b): (owner[0], b, _backend_call_locks.get(owner)) for owner, b in _backends.items()}
         for home, backend in _backend.items():
-            unique.setdefault(id(backend), (backend, _backend_call_locks.get((home, ""))))
+            unique.setdefault(id(backend), (home, backend, _backend_call_locks.get((home, ""))))
         _backend.clear()
         _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_start_locks.clear()
     with _approval_lock:
         _session_auto_approve.clear(), _always_allow.clear(), _escalation_warned.clear()
-    for backend, call_lock in unique.values():
-        _stop_backend(backend, call_lock, lambda e: logger.debug("cua-driver atexit teardown failed: %s", e))
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    for home, backend, call_lock in unique.values():
+        token = set_hermes_home_override(home)
+        try:
+            _stop_backend(backend, call_lock, lambda e: logger.debug("cua-driver atexit teardown failed: %s", e))
+        finally:
+            reset_hermes_home_override(token)
 
 def reset_backend_for_tests() -> None:  # pragma: no cover — tear down the cached backend and per-session state
     _shutdown_backend_atexit()

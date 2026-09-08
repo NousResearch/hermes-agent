@@ -275,6 +275,36 @@ describe("ChatPage", () => {
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
   });
 
+  it("explains how to recover after the chat process exits", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({
+        code: 4410,
+        reason: "process exited",
+        wasClean: true,
+      });
+    });
+
+    expect(container.textContent).toContain(
+      "The process behind this chat stopped.",
+    );
+    expect(container.textContent).toContain(
+      "Start a new session to continue; you do not need to reload the page.",
+    );
+    expect(
+      container.querySelector('[aria-label="Start a new chat session"]'),
+    ).not.toBeNull();
+  });
+
   it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {
     // NS-434 follow-up: ChatPage stays mounted (hidden) on every dashboard
     // route. The keyboard-inset/scroll-pin listeners must only be live while

@@ -1881,8 +1881,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               whole page to get a working chat back. */}
           {ptyState === "ended" && (
             <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/60">
-              <div className="text-sm tracking-wide text-white/80">
-                Session ended.
+              <div className="max-w-md px-6 text-center text-sm tracking-wide text-white/80">
+                The process behind this chat stopped. This can happen after the
+                dashboard restarts or when the session exits. Start a new
+                session to continue; you do not need to reload the page.
               </div>
               <Button
                 onClick={startFreshPty}

@@ -1,0 +1,5 @@
+name: claude-oauth-directsdk
+kind: model-provider
+version: 0.1.0
+description: Claude OAuth DirectSDK — official native CLI transport with Hermes-owned tools
+author: Nous Research

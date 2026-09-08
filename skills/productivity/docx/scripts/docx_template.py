@@ -20,7 +20,11 @@ import json
 import re
 import sys
 
-from docx import Document
+try:
+    from docx import Document
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install python-docx'", file=sys.stderr)
+    sys.exit(2)
 
 from docx_common import iter_all_paragraphs, replace_in_paragraph
 

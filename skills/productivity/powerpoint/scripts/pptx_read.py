@@ -12,9 +12,13 @@ import json
 import os
 import sys
 
-from pptx import Presentation
-from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pptx.util import Emu
+try:
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from pptx.util import Emu
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install python-pptx'", file=sys.stderr)
+    sys.exit(2)
 
 
 def iter_shapes(shapes):

@@ -16,7 +16,11 @@ import argparse
 import json
 import sys
 
-from pptx import Presentation
+try:
+    from pptx import Presentation
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install python-pptx'", file=sys.stderr)
+    sys.exit(2)
 
 
 def fill_tokens(prs, values):

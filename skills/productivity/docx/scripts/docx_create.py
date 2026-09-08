@@ -42,10 +42,14 @@ import argparse
 import json
 import sys
 
-from docx import Document
-from docx.enum.style import WD_STYLE_TYPE
-from docx.enum.text import WD_BREAK
-from docx.shared import Mm, Pt, RGBColor
+try:
+    from docx import Document
+    from docx.enum.style import WD_STYLE_TYPE
+    from docx.enum.text import WD_BREAK
+    from docx.shared import Mm, Pt, RGBColor
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install python-docx'", file=sys.stderr)
+    sys.exit(2)
 
 
 def apply_page(doc, page: dict) -> None:

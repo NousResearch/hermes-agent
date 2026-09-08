@@ -33,7 +33,11 @@ import json
 import sys
 from datetime import date, datetime, time
 
-from openpyxl import load_workbook
+try:
+    from openpyxl import load_workbook
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install openpyxl'", file=sys.stderr)
+    sys.exit(2)
 
 
 def jsonable(value):

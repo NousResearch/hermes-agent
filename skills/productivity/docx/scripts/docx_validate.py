@@ -27,7 +27,11 @@ import posixpath
 import sys
 import zipfile
 
-from lxml import etree
+try:
+    from lxml import etree
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install lxml'", file=sys.stderr)
+    sys.exit(2)
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"

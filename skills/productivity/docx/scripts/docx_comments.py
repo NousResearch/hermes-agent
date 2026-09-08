@@ -26,9 +26,13 @@ import json
 import sys
 from copy import deepcopy
 
-from docx import Document
-from docx.opc.constants import RELATIONSHIP_TYPE as RT
-from lxml import etree
+try:
+    from lxml import etree
+    from docx import Document
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install python-docx'", file=sys.stderr)
+    sys.exit(2)
 
 from docx_common import iter_part_roots
 

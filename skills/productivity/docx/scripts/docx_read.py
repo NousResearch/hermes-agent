@@ -21,7 +21,11 @@ import os
 import sys
 import zipfile
 
-from docx import Document
+try:
+    from docx import Document
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install python-docx'", file=sys.stderr)
+    sys.exit(2)
 
 
 def table_to_rows(table) -> list:

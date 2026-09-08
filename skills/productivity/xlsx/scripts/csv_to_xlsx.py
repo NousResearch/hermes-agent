@@ -22,9 +22,13 @@ import json
 import sys
 from datetime import date, datetime
 
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
-from openpyxl.utils import get_column_letter
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install openpyxl'", file=sys.stderr)
+    sys.exit(2)
 
 MAX_COL_WIDTH = 60
 COL_PADDING = 2

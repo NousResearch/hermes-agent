@@ -8,6 +8,7 @@ from gateway.kanban_watchers_common import (
     _acquire_singleton_lock,
     _release_singleton_lock,
 )
+from gateway.kanban_watchers import _format_workflow_notification
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
@@ -748,3 +749,16 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+def test_workflow_notification_uses_aggregate_state_not_member_routing_fields():
+    text = _format_workflow_notification("alpha", {
+        "workflow": {"id": "wf_1", "name": "release", "state": "PASS", "active_generation": 2},
+        "members": [{"generation": 2, "task_id": "task_1", "stage_key": "acceptance", "task_status": "done", "session_id": "wrong-destination"}],
+        "outcomes": [{"generation": 2, "task_id": "task_1", "outcome": "PASS", "summary": "approved\nextra"}],
+    })
+
+    assert "Aggregate workflow wf_1 — release (generation 2)" in text
+    assert "acceptance: task_1 (done) — PASS: approved" in text
+    assert "wrong-destination" not in text
+    assert text.endswith("Final acceptance is recorded for this workflow generation.")

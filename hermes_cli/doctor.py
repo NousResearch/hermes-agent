@@ -65,6 +65,58 @@ _PROVIDER_ENV_HINTS = (
 )
 
 
+def _check_kanban_workflow_health(db_path=None) -> list[str]:
+    """Read aggregate workflow state without modifying a board or launcher."""
+    import sqlite3
+    from pathlib import Path
+    from hermes_cli import kanban_db as kb
+
+    path = Path(db_path) if db_path is not None else kb.kanban_db_path()
+    if not path.exists():
+        return []
+    diagnostics: list[str] = []
+    try:
+        conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "kanban_workflows" not in tables:
+                return []
+            total = int(conn.execute("SELECT COUNT(*) AS n FROM kanban_workflows").fetchone()["n"])
+            if not total:
+                return []
+            active = int(conn.execute("SELECT COUNT(*) AS n FROM kanban_workflows WHERE state IN ('ACTIVE','REMEDIATION_REQUIRED','NEEDS_INPUT')").fetchone()["n"])
+            if active:
+                diagnostics.append(f"{active} active/nonterminal aggregate workflow(s) require monitoring")
+            dead = int(conn.execute("SELECT COUNT(*) AS n FROM kanban_workflow_subscriptions WHERE dead_lettered_at IS NOT NULL").fetchone()["n"])
+            if dead:
+                diagnostics.append(f"{dead} aggregate workflow subscription(s) are dead-lettered")
+            for row in conn.execute("SELECT id FROM kanban_workflows ORDER BY id"):
+                report = kb.workflow_integrity_report(conn, workflow_id=str(row["id"]))
+                if not report.get("ok"):
+                    details = list(report.get("errors") or []) + list(report.get("warnings") or [])
+                    diagnostics.append(f"workflow {row['id']} integrity mismatch: {', '.join(details or ['unknown mismatch'])}")
+            if diagnostics:
+                diagnostics.insert(0, f"{total} aggregate workflow(s) require aggregate-aware handling; older binaries must not run while these diagnostics remain")
+        finally:
+            conn.close()
+    except Exception as exc:
+        diagnostics.append(f"aggregate workflow health check failed: {exc}")
+    return diagnostics
+
+
+@doctor_check()
+def _check_kanban_aggregate_workflows(should_fix: bool, finding: Finding) -> None:
+    diagnostics = _check_kanban_workflow_health()
+    if diagnostics:
+        for diagnostic in diagnostics:
+            finding.manual_issues.append(f"Aggregate workflow: {diagnostic}")
+            check_info(f"Aggregate workflow: {diagnostic}")
+        check_info("Workflow doctor is read-only; inspect/reconcile through workflow APIs")
+    else:
+        check_info("No aggregate workflow hazards detected")
+
+
 @doctor_check()
 def _check_auth_providers(should_fix: bool, f: Finding) -> None:
     """Refresh-free OAuth status snapshot (doctor must never trigger a token refresh)."""
@@ -119,6 +171,7 @@ DOCTOR_CHECKS = (
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),
     ('Tool Availability', _check_tool_availability), ('Skills Hub', _check_skills_hub),
     ('Memory Provider', _check_memory_provider), (None, _check_profiles),
+    ('Kanban Aggregate Workflows', _check_kanban_aggregate_workflows),
 )
 
 

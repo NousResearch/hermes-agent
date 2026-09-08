@@ -13,6 +13,7 @@ import os
 import shlex
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -1228,6 +1229,41 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
                              ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
 
 
+def _workflow_actor(tenant: str) -> kb.KanbanActorContext:
+    profile = _profile_author()
+    return kb.KanbanActorContext(
+        principal_id=f"cli:{profile}", profile_name=profile,
+        board_identity=str(kb.kanban_db_path().resolve()), tenant=tenant,
+        capabilities=frozenset({"workflow.read", "workflow.manage", "workflow.outcome", "workflow.admin"}),
+        source_kind="cli",
+    )
+
+
+def _cmd_workflow(args: argparse.Namespace) -> int:
+    """Run a native workflow operation with locally derived authority."""
+    actor = _workflow_actor(args.tenant)
+    mutation_id = getattr(args, "mutation_id", None) or f"cli-{uuid.uuid4().hex}"
+    with kbc.connect_closing() as conn:
+        if args.workflow_action == "create":
+            result = kb.create_workflow(
+                conn, workflow_id=args.workflow_id, name=args.name, tenant=args.tenant,
+                designated_acceptance_task_id=args.acceptance_task, actor=actor,
+                mutation_id=mutation_id, root_task_id=getattr(args, "root_task", None),
+            )
+        elif args.workflow_action == "show":
+            result = kb.get_workflow(conn, args.workflow_id, actor=actor, include_events=True)
+            if result is None:
+                raise ValueError(f"unknown workflow: {args.workflow_id}")
+        else:
+            raise ValueError(f"unsupported workflow action: {args.workflow_action}")
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        workflow = result["workflow"]
+        print(f"Workflow {workflow['id']}: {workflow['state']} v{workflow['version']} (generation {workflow['active_generation']})")
+    return 0
+
+
 _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
@@ -1247,6 +1283,7 @@ _HANDLERS = {
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
     "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,
     "context": _cmd_context, "specify": _cmd_specify, "decompose": _cmd_decompose,
+    "workflow": _cmd_workflow,
     "gc": _cmd_gc,
 }
 

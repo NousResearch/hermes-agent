@@ -1078,6 +1078,16 @@ hermes kanban create "monthly report" \
 
 Workers receive `$HERMES_TENANT` and namespace their memory writes by prefix. The board, the dispatcher, and the profile definitions are all shared; only the data is scoped.
 
+## Native aggregate workflows
+
+A workflow is a durable acceptance aggregate over explicitly enrolled task stages. It is distinct from a dependency link: links control scheduling, while membership records which stages contribute to an acceptance generation. Completing a task does not pass a workflow; each required member records a durable outcome and the designated acceptance member must pass.
+
+Workflow mutations use expected versions and idempotent mutation IDs. `PASS`, `CANCELLED`, and `SUPERSEDED` are terminal for a generation. Reopening creates a new generation without rewriting the prior ledger. Membership, prerequisite links touching enrolled tasks, and workflow outcomes all require matching non-null tenant and board identities.
+
+Workflow notifications have one durable origin subscription. Its platform, destination, profile, and metadata are the only delivery authority; member task session fields are provenance only. Delivery is at least once: Hermes claims an event cursor, rewinds on failure with bounded retry/backoff, and records dead letters for operator action. Adapters receive a workflow-event idempotency key, but an external send acknowledged before cursor persistence can still be duplicated.
+
+Workflow storage is additive and opt-in. Before downgrading Hermes, run `hermes doctor`, resolve or explicitly pause active workflows and undelivered aggregate events, and back up the SQLite DB together with its WAL and SHM files. Do not drop workflow tables as a rollback procedure.
+
 ## Desktop notifications
 
 The Desktop app's Kanban plugin surfaces the same terminal events natively — no gateway platform required. While the Kanban board's live event socket is connected, each `completed`, `blocked`, `gave_up`, `crashed`, `timed_out`, or routed-to-triage (`block_loop_detected`) event raises an in-app toast with the worker's handoff (summary, block reason, or error) and an "Open Kanban" action. When you're away from the Hermes window, the same event also fires a native OS notification (gated by **Settings ▸ Notifications ▸ Plugin notifications**), so a task hitting a blocker while you're in another app still reaches you.

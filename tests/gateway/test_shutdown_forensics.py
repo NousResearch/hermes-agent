@@ -141,22 +141,34 @@ class TestResolveAncestorChain:
         assert f"pid={emitter.pid}" in chain_section, chain_section
 
 
-    def test_multiline_cmdline_stays_one_line_per_ancestor(self):
-        """A `python -c '<script>'` parent embeds newlines in its cmdline.
+    def test_chain_persists_names_never_argv(self):
+        """The chain is written to a world-readable log; argv routinely carries secrets.
 
-        Left raw, one ancestor renders as many lines: the section becomes unparseable and its
-        line count silently overstates the chain depth (5 ancestors reading as 9 rows).
+        pid + executable name answers "who killed us" without persisting a connection string
+        or token that happened to sit on a parent's command line (cf. upstream #59929).
         """
         chain = [
-            {"pid": 10, "ppid": 11, "cmdline": "python -c \nimport os\nimport sys\nrun()"},
-            {"pid": 11, "ppid": 1, "cmdline": "bash script.sh"},
+            {"pid": 10, "ppid": 11, "name": "python",
+             "cmdline": "python app.py --token=SUPERSECRET123 --db=postgres://u:pw@h/d"},
+            {"pid": 11, "ppid": 1, "name": "bash", "cmdline": "bash deploy.sh --key=AKIAXXXX"},
+        ]
+        out = sf._format_ancestor_chain(chain)
+        assert "SUPERSECRET123" not in out
+        assert "postgres://" not in out
+        assert "AKIAXXXX" not in out
+        assert len(out.splitlines()) == 2
+        assert "pid=10 ppid=11 python" in out
+
+    def test_multiline_name_stays_one_line_per_ancestor(self):
+        """Control chars must not split one ancestor across lines (unparseable section)."""
+        chain = [
+            {"pid": 10, "ppid": 11, "name": "weird\nname\there"},
+            {"pid": 11, "ppid": 1, "name": "bash"},
         ]
         out = sf._format_ancestor_chain(chain)
         assert len(out.splitlines()) == 2, f"expected 1 line per ancestor, got:\n{out}"
-        assert "pid=10 ppid=11" in out
-        assert "import os import sys run()" in out
 
-    def test_falls_back_to_name_then_placeholder(self):
+    def test_falls_back_to_placeholder(self):
         assert "bash" in sf._format_ancestor_chain([{"pid": 5, "ppid": 1, "name": "bash"}])
         assert sf._format_ancestor_chain([]) == "(chain unavailable)"
 

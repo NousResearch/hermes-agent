@@ -180,17 +180,22 @@ def resolve_ancestor_chain(pid: int, *, max_depth: int = 12) -> List[Dict[str, A
 
 
 def _format_ancestor_chain(chain: List[Dict[str, Any]]) -> str:
-    """One line per ancestor, shell-safe for embedding in the diagnostic script.
+    """One line per ancestor: ``pid``/``ppid`` plus the executable NAME only.
 
-    Control characters are collapsed to spaces: a ``python -c '<script>'`` parent carries literal
-    newlines in its cmdline, which would otherwise split one ancestor across many lines and make
-    the section unparseable (and its line count meaningless).
+    Deliberately never the full cmdline. This text is persisted to
+    ``gateway-shutdown-diag.log``, and argv routinely carries secrets (a connection string
+    with a password, an API token, an ``--mcp-config {...}`` blob). The forensic question is
+    *which* process killed us, which the name and pid answer; see the parallel argument in
+    NousResearch/hermes-agent#59929. ``parent_cmdline`` in the in-memory context line is left
+    alone here — that is that PR's call to make, not this platform fix's.
+
+    Control characters are collapsed to spaces so one ancestor stays on one line.
     """
     lines = []
     for entry in chain:
-        raw = str(entry.get("cmdline") or entry.get("name") or "?")
-        cmd = " ".join(raw.split())[:200]
-        lines.append(f"pid={entry.get('pid')} ppid={entry.get('ppid', '?')} {cmd}")
+        raw = str(entry.get("name") or "?")
+        name = " ".join(raw.split())[:80]
+        lines.append(f"pid={entry.get('pid')} ppid={entry.get('ppid', '?')} {name}")
     return "\n".join(lines) or "(chain unavailable)"
 
 

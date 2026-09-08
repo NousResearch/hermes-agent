@@ -3,7 +3,6 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { useAgentRoster } from '../app/agentRoster.js'
-import { patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { type AgentRows, buildAgentRows, dockRowLimit } from '../lib/agentRows.js'
 import { mix } from '../lib/color.js'
@@ -17,11 +16,11 @@ export function AgentsPanelView({ cols, hidden, rows, running, t }: AgentRows & 
 
   return (
     <Box backgroundColor={mix(t.color.statusBg, t.color.shellDollar, 0.12)} flexDirection="column" flexShrink={0} width={cols}>
-      <Text bold color={t.color.accent} onClick={() => patchOverlayState({ agents: true })} wrap="truncate-end">
+      <Text bold color={t.color.accent} wrap="truncate-end">
         {`▾ ${running} live agents${hidden ? ` · +${hidden} more` : ''} · Ctrl+T expand`}
       </Text>
       {rows.map(row => (
-        <Box flexDirection="column" key={row.key} onClick={() => patchOverlayState({ agents: true })}>
+        <Box flexDirection="column" key={row.key}>
           <Text wrap="truncate-end">
             <Text color={statusGlyph(row.status, t).color}>{statusGlyph(row.status, t).glyph} </Text>
             <Text color={t.color.text}>{compactPreview(row.goal, Math.max(8, cols - 18))}</Text>

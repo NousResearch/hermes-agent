@@ -213,6 +213,29 @@ async def test_stuck_worker_skips_the_session_db_close():
     assert "worker_write" in events, "worker never finished"
 
 
+def test_restart_safe_external_worker_skips_session_db_close():
+    """Gateway restart must not checkpoint state.db while a detached cron worker owns a run.
+
+    The worker is outside this gateway process, so executor quiescing cannot
+    observe it. Closing the gateway's connection during the worker's final
+    transcript append races the shared WAL generation; the gateway must leave
+    that handle alone and let process exit close it naturally.
+    """
+    from cron import scheduler
+
+    events = []
+    gw = _FakeGateway(events)
+    scheduler._restart_safe_waiter_job_ids.add("external-cron-job")
+    try:
+        asyncio.run(gw_mod.GatewayRunner.stop(gw))
+    finally:
+        scheduler._restart_safe_waiter_job_ids.discard("external-cron-job")
+
+    assert "close:session_db" not in events, (
+        f"SessionDB was closed while a restart-safe external worker was active: {events}"
+    )
+
+
 def test_shutdown_executor_defaults_to_no_wait():
     """The no-argument call keeps the historical fire-and-forget contract."""
     gw = _FakeGateway([])

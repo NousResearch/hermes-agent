@@ -1772,6 +1772,30 @@ class GatewayShutdownMixin:
                 "open for SQLite to recover on next open", _exec_live, _exec_quiesce_budget,
             )
             return
+        # A restart-safe cron worker is outside this gateway process and cannot
+        # be quiesced by the executor drain above. Its final transcript append
+        # still targets this profile's state.db, so an explicit close-time WAL
+        # checkpoint here would race the worker's live SQLite generation. The
+        # process is already shutting down; leave the handles alone and let
+        # process exit close them naturally. A replacement gateway can then
+        # open the same generation after this process is gone.
+        try:
+            from cron.scheduler import has_restart_safe_external_workers
+            if has_restart_safe_external_workers():
+                logger.warning(
+                    "Shutdown phase: restart-safe external cron worker(s) still active — "
+                    "skipping SessionDB close/checkpoint to protect the shared WAL generation"
+                )
+                return
+        except Exception as exc:
+            # Failing closed is safer than checkpointing an unknown live worker
+            # during a planned replacement.
+            logger.warning(
+                "Shutdown phase: could not inspect restart-safe cron workers (%s) — "
+                "skipping SessionDB close/checkpoint",
+                exc,
+            )
+            return
         logger.info("Shutdown phase: executor quiesced at +%.2fs", ctx.elapsed())
         _step = GatewayShutdownMixin._quiet_step
         # Close SQLite session DBs so --replace's new gateway does not hit 'database is locked'.

@@ -563,6 +563,18 @@ def get_running_job_ids() -> "frozenset[str]":
         return frozenset(_running_job_ids | _running_fire_owners.keys())
 
 
+def has_restart_safe_external_workers() -> bool:
+    """Whether a detached cron worker still owns a run outside this gateway.
+
+    The parent gateway waits synchronously on these workers, but the worker
+    itself lives in a separate restart-safe systemd scope. Shutdown cannot
+    quiesce its thread or process, so it must not checkpoint/close state.db
+    while the worker may be appending its final transcript.
+    """
+    with _running_lock:
+        return bool(_restart_safe_waiter_job_ids)
+
+
 def try_register_running_job(job_id: str) -> bool:
     """Atomically add ``job_id`` to the in-flight set; False (caller must skip) if already mid-run.
     Single dedupe owner for ticker + manual runs (the fire claim's 300s TTL is outlived by real

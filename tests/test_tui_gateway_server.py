@@ -14691,6 +14691,9 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
             raise RuntimeError("locking protocol")
 
     fake_mod.SessionDB = _BrokenSessionDB
+    # _get_db() imports this from hermes_state before acquire(); the stub must expose it
+    # or the import raises before the exercised degrade path.
+    fake_mod.default_root_db_path = lambda: Path("/nonexistent/state.db")
 
     def _broken_shared(_db_path=None):
         raise RuntimeError("locking protocol")
@@ -14716,6 +14719,9 @@ def test_ensure_session_db_row_false_when_store_unavailable(monkeypatch):
             raise RuntimeError("utf-8 boom")
 
     fake_mod.SessionDB = _BrokenSessionDB
+    # _get_db() imports this from hermes_state before acquire(); the stub must expose it
+    # or the import raises before the exercised degrade path.
+    fake_mod.default_root_db_path = lambda: Path("/nonexistent/state.db")
 
     def _broken_shared(_db_path=None):
         raise RuntimeError("utf-8 boom")
@@ -15534,6 +15540,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
 
     class ProfileDB:
         def __init__(self, db_path=None):
+            self.db_path = db_path
             seen["db_path"] = db_path
             seen.setdefault("inits", 0)
             seen["inits"] += 1
@@ -15548,6 +15555,10 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
             seen["created"] = new_key
             seen["parent"] = kwargs.get("parent_session_id")
             seen["profile_name"] = kwargs.get("profile_name")
+
+        def _own_profile_name(self):
+            # Mirror the real derivation: <root>/profiles/<name>/state.db -> <name>.
+            return Path(self.db_path).parent.name if self.db_path else None
 
         def append_message(self, **kwargs):
             seen["msgs"].append(kwargs)

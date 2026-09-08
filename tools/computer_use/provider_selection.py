@@ -8,8 +8,14 @@ managed-scope-aware config loader.
 
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+from agent.computer_use_registry import HOST_PROVIDER_NAME, _HOST_ALIASES
+
+logger = logging.getLogger(__name__)
 
 
 def _strict_block(path: Path) -> dict[str, Any]:
@@ -33,6 +39,19 @@ def _strict_block(path: Path) -> dict[str, Any]:
     return block
 
 
+def _same_config(left: Any, right: Any) -> bool:
+    """Compare the complete block without bool/int equality hiding bad intent."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _same_config(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(_same_config(a, b) for a, b in zip(left, right))
+    return left == right
+
+
 def computer_use_config() -> dict[str, Any]:
     from hermes_cli import config
 
@@ -48,6 +67,20 @@ def computer_use_config() -> dict[str, Any]:
         raise RuntimeError("computer_use configuration could not be loaded") from exc
     if not isinstance(effective, dict):
         raise RuntimeError("computer_use configuration must be a mapping")
+    # The general loader may silently return defaults or a cached last-good
+    # config after an unrelated processing error. Neither may override current
+    # desktop intent. Rebuild this block with the loader's defaults, expansion
+    # and managed precedence: overlaying current leaves onto the loaded result
+    # cannot detect deleted keys resurrected from last-good state. The loader's
+    # canonicalization only changes agent/model, not computer_use.
+    intended = config._deep_merge(
+        cast(dict[str, Any], config._expand_env_vars(
+            config._deep_merge(cast(dict[str, Any], config.DEFAULT_CONFIG.get("computer_use", {})), raw),
+        )),
+        cast(dict[str, Any], config._expand_env_vars(managed)),
+    )
+    if not _same_config(effective, intended):
+        raise RuntimeError("computer_use configuration does not match current desktop intent; fix config.yaml")
     block = dict(effective)
     if "remote" not in provenance:
         block.pop("remote", None)  # only the disabled default block was present
@@ -59,3 +92,37 @@ def computer_use_config() -> dict[str, Any]:
             block["remote"].pop("enabled", None)
     return block
 
+
+def _name(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError("computer_use.provider must be a non-empty string")
+    name = value.strip().lower()
+    return HOST_PROVIDER_NAME if name in _HOST_ALIASES else name
+
+
+def configured_provider_name() -> str:
+    block = computer_use_config()
+    explicit = _name(block["provider"]) if "provider" in block else None
+    legacy = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "").strip()
+    # An explicit provider owns transport choice, not any leftover remote block.
+    remote = block.get("remote", {})
+    inspect_remote = explicit is None or explicit == "remote" or legacy.lower() in {"cua", "cua-driver"}
+    remote_intent = False
+    if inspect_remote:
+        if not isinstance(remote, dict):
+            raise RuntimeError("remote computer use configuration must be a mapping")
+        if "enabled" in remote and not isinstance(remote["enabled"], bool):
+            raise RuntimeError("remote computer use configuration 'enabled' must be a boolean")
+        remote_intent = remote.get("enabled") is True
+        if explicit is None and remote and "enabled" not in remote:
+            raise RuntimeError("orphaned computer_use.remote configuration: set computer_use.provider explicitly")
+    if legacy:
+        legacy_name = "remote" if legacy.lower() in {"cua", "cua-driver"} and remote_intent else _name(legacy)
+        if explicit is not None and explicit != legacy_name:
+            raise RuntimeError("computer_use.provider conflicts with deprecated HERMES_COMPUTER_USE_BACKEND; remove the env selector")
+        logger.warning("HERMES_COMPUTER_USE_BACKEND is deprecated; set computer_use.provider in config.yaml instead.")
+        explicit = explicit or legacy_name
+    if remote_intent and "provider" not in block and (not legacy or legacy.lower() in {"cua", "cua-driver"}):
+        logger.warning("computer_use.remote.enabled is deprecated as a selector; preserving the remote desktop. Set computer_use.provider: remote.")
+        return "remote"
+    return explicit or HOST_PROVIDER_NAME

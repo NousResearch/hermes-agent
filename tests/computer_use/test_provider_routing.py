@@ -28,6 +28,7 @@ from agent.computer_use_registry import (
     restore_registration,
     snapshot_registration,
 )
+from hermes_cli import config
 from tools.computer_use import tool as cu_tool
 
 
@@ -143,7 +144,7 @@ class TestSelection:
         monkeypatch.delenv("HERMES_COMPUTER_USE_BACKEND", raising=False)
         cu_tool.reset_backend_for_tests()
 
-        with patch("hermes_cli.config.load_config", return_value={}) as load:
+        with patch("hermes_cli.config.load_config", wraps=config.load_config) as load:
             cu_tool.active_computer_use_provider()
             cu_tool.active_computer_use_provider()
 
@@ -158,16 +159,13 @@ class TestSelection:
         monkeypatch.delenv("HERMES_COMPUTER_USE_BACKEND", raising=False)
         cu_tool.reset_backend_for_tests()
 
-        with patch("hermes_cli.config.load_config", return_value={}):
-            assert cu_tool.active_computer_use_provider().name == HOST_PROVIDER_NAME
+        assert cu_tool.active_computer_use_provider().name == HOST_PROVIDER_NAME
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "other"))
-
-        with patch(
-            "hermes_cli.config.load_config",
-            return_value={"computer_use": {"provider": "second-profile"}},
-        ):
-            assert cu_tool.active_computer_use_provider() is provider
+        path = config.get_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("computer_use:\n  provider: second-profile\n")
+        assert cu_tool.active_computer_use_provider() is provider
 
         cu_tool.reset_backend_for_tests()
         restore_registration("second-profile", provider, None)
@@ -187,21 +185,19 @@ class TestSelection:
         monkeypatch.delenv("HERMES_COMPUTER_USE_BACKEND", raising=False)
         cu_tool.reset_backend_for_tests()
 
-        with patch(
-            "hermes_cli.config.load_config",
-            return_value={"computer_use": {"provider": "from-config"}},
-        ):
-            assert cu_tool.active_computer_use_provider() is provider
+        config.get_config_path().write_text("computer_use:\n  provider: from-config\n")
+        assert cu_tool.active_computer_use_provider() is provider
 
         cu_tool.reset_backend_for_tests()
         restore_registration("from-config", provider, None)
 
-    def test_an_unreadable_config_still_gets_the_host(self, monkeypatch):
+    def test_an_unreadable_config_refuses_to_select_the_host(self, monkeypatch):
         monkeypatch.delenv("HERMES_COMPUTER_USE_BACKEND", raising=False)
         cu_tool.reset_backend_for_tests()
 
         with patch("hermes_cli.config.load_config", side_effect=OSError("boom")):
-            assert cu_tool.active_computer_use_provider().name == HOST_PROVIDER_NAME
+            with pytest.raises(RuntimeError, match="configuration could not be loaded"):
+                cu_tool.active_computer_use_provider()
 
         cu_tool.reset_backend_for_tests()
 
@@ -246,7 +242,8 @@ class TestAvailabilityGate:
     def test_a_provider_answers_for_its_own_runtime_not_the_hosts(self, clean_provider):
         """A container pool supplies displays a headless gateway does not have,
         so the host platform gate is not its to fail."""
-        with patch.object(cu_tool.sys, "platform", "freebsd13"):
+        with patch("tools.computer_use.cua_backend_driver.cua_driver_binary_available",
+                   side_effect=AssertionError("a plugin must not probe the host driver")):
             assert cu_tool.check_computer_use_requirements() is True
 
     def test_a_throwing_provider_is_an_absent_one(self, clean_provider):
@@ -262,12 +259,14 @@ class TestAvailabilityGate:
 
         assert cu_tool.check_computer_use_requirements() is True
 
-    def test_the_host_provider_still_gates_on_platform_and_binary(self, monkeypatch):
+    def test_the_host_provider_still_gates_on_its_availability(self, monkeypatch):
         monkeypatch.setenv("HERMES_COMPUTER_USE_BACKEND", "local")
         cu_tool.reset_backend_for_tests()
 
-        with patch.object(cu_tool.sys, "platform", "freebsd13"):
+        with patch("tools.computer_use.host_provider.HostCuaProvider.is_available",
+                   return_value=False) as available:
             assert cu_tool.check_computer_use_requirements() is False
+        available.assert_called_once_with()
 
     def test_a_provider_that_refuses_to_build_reports_the_cause_not_a_timeout(
         self, clean_provider

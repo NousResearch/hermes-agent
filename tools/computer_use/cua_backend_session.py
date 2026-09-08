@@ -590,6 +590,8 @@ class _CuaDriverSession:
         working. Output is remapped to the ``_extract_tool_result`` shape. ``get_window_state`` routes its
         screenshot to a temp file (``screenshot_out_file``) so the daemon returns a tiny JSON body, not the
         multi-megabyte base64 blob that congests the socket; ``_cli_result`` reads it back."""
+        if getattr(self, "_remote_config", None) is not None:
+            raise RuntimeError("local CLI fallback is unavailable for remote cua-driver sessions")
         import tempfile as _tempfile
         from tools.computer_use import cua_backend as _cb
         from tools.environments.local import _sanitize_subprocess_env

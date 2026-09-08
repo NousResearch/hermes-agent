@@ -1,8 +1,7 @@
 """Tests for ``_deliver_approval_message`` — the production delivery helper.
 
-All tests call the module-level ``_deliver_approval_message`` directly
-with a fake adapter so they exercise the real button / text / redaction /
-fail-closed paths without touching ``TurnRunner`` internals.
+Tests drive the production TurnRunner callback with fake transports, including
+its scheduling boundary, so a disconnected delivery helper cannot pass them.
 """
 
 import pytest
@@ -22,6 +21,9 @@ class _FakeSendResult:
 class FakeButtonAdapter:
     """Adapter that offers ``send_exec_approval`` (Discord-style)."""
     typed_command_prefix = "/"
+
+    def pause_typing_for_chat(self, chat_id):
+        pass
 
     def __init__(self, *, send_result: _FakeSendResult | None = None):
         self._send_result = send_result or _FakeSendResult(True)
@@ -43,17 +45,22 @@ class FakeButtonAdapter:
 
     async def send(self, chat_id, message, *, metadata=None):
         self.sent_messages.append(message)
+        return _FakeSendResult(True)
 
 
 class FakeTextAdapter:
     """Text-only adapter (no ``send_exec_approval``)."""
     typed_command_prefix = "!"
 
+    def pause_typing_for_chat(self, chat_id):
+        pass
+
     def __init__(self):
         self.sent_messages: list[str] = []
 
     async def send(self, chat_id, message, *, metadata=None):
         self.sent_messages.append(message)
+        return _FakeSendResult(True)
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +146,31 @@ def _make_deliver_kwargs(adapter, monkeypatch):
     }
 
 
+def _deliver_approval_message(*, adapter, chat_id, command, description,
+                              session_key, metadata, loop, logger,
+                              allow_permanent=True, allow_session=True,
+                              smart_denied=False):
+    """Harness only: invoke the real registered production callback."""
+    from types import SimpleNamespace
+    from gateway.run_turn_runner import TurnRunner
+    import gateway.run as gw_run
+
+    runner = object.__new__(TurnRunner)
+    runner._ctx = SimpleNamespace(
+        _status_adapter=adapter, _status_chat_id=chat_id,
+        _status_thread_metadata=metadata, session_key=session_key,
+    )
+    runner._close_native_stream_boundary = lambda reason: None
+    runner._schedule = lambda coro, label: gw_run.safe_schedule_threadsafe(
+        coro, loop, logger=logger, log_message=label,
+    )
+    runner._approval_notify_sync(dict(
+        command=command, description=description,
+        allow_permanent=allow_permanent, allow_session=allow_session,
+        smart_denied=smart_denied,
+    ))
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -149,7 +181,6 @@ class TestButtonPath:
     def test_description_includes_model_context(self, monkeypatch):
         """Button-based approval receives the enhanced description so
         Purpose/Effect/Risk appear in the same button card."""
-        from gateway.run import _deliver_approval_message
 
         adapter = FakeButtonAdapter()
         kwargs = _make_deliver_kwargs(adapter, monkeypatch)
@@ -165,7 +196,6 @@ class TestButtonPath:
 
     def test_button_success_sends_no_text_fallback(self, monkeypatch):
         """When the button path succeeds, ``send()`` is never called."""
-        from gateway.run import _deliver_approval_message
 
         adapter = FakeButtonAdapter(send_result=_FakeSendResult(True))
         kwargs = _make_deliver_kwargs(adapter, monkeypatch)
@@ -179,7 +209,6 @@ class TestButtonPath:
     def test_button_failure_falls_through_to_text(self, monkeypatch):
         """When the button path fails, the text fallback sends exactly one
         message."""
-        from gateway.run import _deliver_approval_message
 
         adapter = FakeButtonAdapter(send_result=_FakeSendResult(False, "timeout"))
         kwargs = _make_deliver_kwargs(adapter, monkeypatch)
@@ -195,7 +224,6 @@ class TestButtonPath:
         (e.g. adapter signature mismatch) means the card definitively did
         not post — the text fallback must still deliver the prompt so the
         user can approve, instead of hard-failing with DeliveryError."""
-        from gateway.run import _deliver_approval_message
 
         adapter = FakeButtonAdapter()
 
@@ -218,7 +246,6 @@ class TestTextPath:
 
     def test_sends_exactly_once(self, monkeypatch):
         """Text-only adapters receive exactly one ``send()`` call."""
-        from gateway.run import _deliver_approval_message
 
         adapter = FakeTextAdapter()
         kwargs = _make_deliver_kwargs(adapter, monkeypatch)
@@ -229,7 +256,6 @@ class TestTextPath:
     def test_message_contains_context_and_approve_instruction(self, monkeypatch):
         """The single text message carries the full context AND the
         /approve instruction in one payload."""
-        from gateway.run import _deliver_approval_message
 
         adapter = FakeTextAdapter()
         kwargs = _make_deliver_kwargs(adapter, monkeypatch)
@@ -245,7 +271,6 @@ class TestTextPath:
     def test_no_standalone_followup(self, monkeypatch):
         """There is never an independent second message — context is
         always co-located with the approval prompt."""
-        from gateway.run import _deliver_approval_message
 
         adapter = FakeTextAdapter()
         kwargs = _make_deliver_kwargs(adapter, monkeypatch)
@@ -262,7 +287,6 @@ class TestOutboundRedaction:
 
     def test_redacts_in_button_description(self, monkeypatch):
         """Button path description must not contain raw credentials."""
-        from gateway.run import _deliver_approval_message
 
         adapter = FakeButtonAdapter()
         desc_with_creds = (
@@ -282,7 +306,6 @@ class TestOutboundRedaction:
 
     def test_redacts_in_text_message(self, monkeypatch):
         """Text-fallback message must not contain raw credentials."""
-        from gateway.run import _deliver_approval_message
 
         adapter = FakeTextAdapter()
         desc_with_creds = (
@@ -307,7 +330,6 @@ class TestFailClosed:
     def test_empty_description_raises(self, monkeypatch):
         """An empty or blank description must raise ValueError before any
         adapter method is called."""
-        from gateway.run import _deliver_approval_message
 
         adapter = FakeButtonAdapter()
         kwargs = _make_deliver_kwargs(adapter, monkeypatch)
@@ -320,7 +342,6 @@ class TestFailClosed:
 
     def test_whitespace_only_description_raises(self, monkeypatch):
         """Whitespace-only description is treated the same as empty."""
-        from gateway.run import _deliver_approval_message
 
         adapter = FakeButtonAdapter()
         kwargs = _make_deliver_kwargs(adapter, monkeypatch)
@@ -333,7 +354,6 @@ class TestFailClosed:
 
     def test_fail_closed_on_text_adapter_too(self, monkeypatch):
         """Fail-closed applies to text adapters as well."""
-        from gateway.run import _deliver_approval_message
 
         adapter = FakeTextAdapter()
         kwargs = _make_deliver_kwargs(adapter, monkeypatch)
@@ -358,7 +378,7 @@ class TestDeliveryError:
         either, and DeliveryError propagates — the caller must treat the
         approval as notify-failed rather than wait for a reply that can
         never come."""
-        from gateway.run import _deliver_approval_message, DeliveryError
+        from gateway.run_turn_runner import ApprovalDeliveryError as DeliveryError
         import gateway.run as gw_run
 
         adapter = FakeButtonAdapter()
@@ -376,7 +396,6 @@ class TestDeliveryError:
         posted with a late ack) — the helper must return without raising so
         the prompt registration stays armed for a late reply."""
         import concurrent.futures
-        from gateway.run import _deliver_approval_message
         import gateway.run as gw_run
 
         class _TimeoutFuture:
@@ -397,7 +416,7 @@ class TestDeliveryError:
 
     def test_text_send_failure_raises(self, monkeypatch):
         """When the text send raises, DeliveryError must propagate."""
-        from gateway.run import _deliver_approval_message, DeliveryError
+        from gateway.run_turn_runner import ApprovalDeliveryError as DeliveryError
 
         adapter = FakeTextAdapter()
 
@@ -472,7 +491,7 @@ class TestE2EFailClosed:
             unregister_gateway_notify,
         )
         from tools.approval_context import reset_current_session_key, set_current_session_key
-        from gateway.run import DeliveryError
+        from gateway.run_turn_runner import ApprovalDeliveryError as DeliveryError
 
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
         session_key = "test-e2e-delivery-fail"
@@ -506,3 +525,21 @@ class TestE2EFailClosed:
         assert amod._gateway_queues.get(session_key) is None, (
             "orphaned entry must be removed on delivery failure"
         )
+
+
+@pytest.mark.parametrize("result", [
+    _FakeSendResult(False, "network failure"),
+    _FakeSendResult(False, "relay egress declined: unapproved destination"),
+])
+def test_text_error_result_is_notify_failure(monkeypatch, result):
+    from gateway.run_turn_runner import ApprovalDeliveryError
+
+    adapter = FakeTextAdapter()
+    async def send(chat_id, message, *, metadata=None):
+        adapter.sent_messages.append(message)
+        return result
+    adapter.send = send
+    kwargs = _make_deliver_kwargs(adapter, monkeypatch)
+    with pytest.raises(ApprovalDeliveryError):
+        _deliver_approval_message(**kwargs)
+    assert len(adapter.sent_messages) == 1

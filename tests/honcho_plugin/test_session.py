@@ -1305,27 +1305,17 @@ def _provider_with_raw(raw, host="hermes"):
 
 
 class TestSessionStartInjection:
-    def test_unset_renders_every_component_in_fixed_order(self):
-        formatted = _provider_with_raw({})._format_first_turn_context(_FULL_CTX)
-        headings = [line for line in formatted.splitlines() if line.startswith("## ")]
-        assert headings == ["## Session Summary", "## User Representation", "## User Peer Card",
-                            "## AI Self-Representation", "## AI Identity Card"]
-
-    def test_empty_list_means_inject_nothing(self):
-        raw = {"injection": {"sessionStart": []}}
-        assert _provider_with_raw(raw)._format_first_turn_context(_FULL_CTX) == ""
-
-    def test_pinned_names_render_in_table_order_not_config_order(self):
-        raw = {"injection": {"sessionStart": ["aiCard", "summary"]}}
+    @pytest.mark.parametrize("raw, headings", [
+        ({}, ["## Session Summary", "## User Representation", "## User Peer Card",
+              "## AI Self-Representation", "## AI Identity Card"]),
+        ({"injection": {"sessionStart": []}}, []),
+        ({"injection": {"sessionStart": ["aiCard", "summary"]}}, ["## Session Summary", "## AI Identity Card"]),
+        ({"injection": {"sessionStart": ["summary"]}, "hosts": {"hermes": {"injection": {"sessionStart": ["peerCard"]}}}},
+         ["## User Peer Card"]),
+    ], ids=["unset-renders-all-in-fixed-order", "empty-list-injects-nothing", "pin-keeps-table-order", "host-block-beats-root"])
+    def test_pin_selects_the_rendered_components(self, raw, headings):
         formatted = _provider_with_raw(raw)._format_first_turn_context(_FULL_CTX)
-        headings = [line for line in formatted.splitlines() if line.startswith("## ")]
-        assert headings == ["## Session Summary", "## AI Identity Card"]
-
-    def test_host_block_pin_beats_root(self):
-        raw = {"injection": {"sessionStart": ["summary"]},
-               "hosts": {"hermes": {"injection": {"sessionStart": ["peerCard"]}}}}
-        formatted = _provider_with_raw(raw)._format_first_turn_context(_FULL_CTX)
-        assert "## User Peer Card" in formatted and "## Session Summary" not in formatted
+        assert [line for line in formatted.splitlines() if line.startswith("## ")] == headings
 
     def test_non_list_value_is_treated_as_unset(self):
         raw = {"injection": {"sessionStart": "summary"}}
@@ -1343,37 +1333,26 @@ class TestSessionStartInjection:
 
 
 class TestInjectionAuditLog:
-    def test_off_by_default(self, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _no_logging_env(self, monkeypatch):
         monkeypatch.delenv("HONCHO_LOGGING", raising=False)
         monkeypatch.delenv("HONCHO_INJECTION_LOG", raising=False)
-        assert _provider_with_raw({})._injection_log_path is None
 
-    def test_logging_key_enables_default_path(self, monkeypatch):
-        monkeypatch.delenv("HONCHO_INJECTION_LOG", raising=False)
-        path = _provider_with_raw({"logging": True})._injection_log_path
-        assert path is not None and path.endswith("injection.log")
-
-    def test_host_block_can_switch_it_off(self, monkeypatch):
-        monkeypatch.delenv("HONCHO_LOGGING", raising=False)
-        monkeypatch.delenv("HONCHO_INJECTION_LOG", raising=False)
-        raw = {"logging": True, "hosts": {"hermes": {"logging": False}}}
+    @pytest.mark.parametrize("raw, env", [
+        ({}, None),
+        ({"logging": True, "hosts": {"hermes": {"logging": False}}}, None),
+        *[({"logging": value}, None) for value in ("false", "0", "no", "off", "")],
+        ({}, "off"),
+    ])
+    def test_stays_off(self, monkeypatch, raw, env):
+        if env is not None:
+            monkeypatch.setenv("HONCHO_LOGGING", env)
         assert _provider_with_raw(raw)._injection_log_path is None
 
-    @pytest.mark.parametrize("value", ["false", "0", "no", "off", ""])
-    def test_string_false_values_keep_it_off(self, monkeypatch, value):
-        monkeypatch.delenv("HONCHO_LOGGING", raising=False)
-        monkeypatch.delenv("HONCHO_INJECTION_LOG", raising=False)
-        assert _provider_with_raw({"logging": value})._injection_log_path is None
-
-    @pytest.mark.parametrize("value", ["true", "1", "yes", "on"])
-    def test_string_true_values_switch_it_on(self, monkeypatch, value):
-        monkeypatch.delenv("HONCHO_INJECTION_LOG", raising=False)
-        assert _provider_with_raw({"logging": value})._injection_log_path is not None
-
-    def test_env_off_value_keeps_it_off(self, monkeypatch):
-        monkeypatch.setenv("HONCHO_LOGGING", "off")
-        monkeypatch.delenv("HONCHO_INJECTION_LOG", raising=False)
-        assert _provider_with_raw({})._injection_log_path is None
+    @pytest.mark.parametrize("value", [True, "true", "1", "yes", "on"])
+    def test_logging_key_switches_on_the_default_path(self, value):
+        path = _provider_with_raw({"logging": value})._injection_log_path
+        assert path is not None and path.endswith("injection.log")
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
     def test_log_file_is_owner_only(self, tmp_path):

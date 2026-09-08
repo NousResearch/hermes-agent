@@ -647,18 +647,21 @@ class TestConcurrentFlushSession:
         mgr._sessions_cache[session.honcho_session_id] = remote
         return remote
 
-    def test_racing_flushes_send_the_batch_once(self, make_manager):
-        mgr = make_manager(write_frequency="turn")
-        session = _make_session(key="race")
-        session.add_message("user", "only once")
-        upload_started = threading.Event()
-        release_upload = threading.Event()
+    def _blocking_remote(self, mgr, session):
+        """Remote whose add_messages blocks until the returned release event is set."""
+        upload_started, release_upload = threading.Event(), threading.Event()
 
         def blocking_add_messages(_messages):
             upload_started.set()
             release_upload.wait(timeout=2)
 
-        remote = self._wire_remote(mgr, session, blocking_add_messages)
+        return self._wire_remote(mgr, session, blocking_add_messages), upload_started, release_upload
+
+    def test_racing_flushes_send_the_batch_once(self, make_manager):
+        mgr = make_manager(write_frequency="turn")
+        session = _make_session(key="race")
+        session.add_message("user", "only once")
+        remote, upload_started, release_upload = self._blocking_remote(mgr, session)
         results = []
         first = threading.Thread(target=lambda: results.append(mgr._flush_session(session)), daemon=True)
         second = threading.Thread(target=lambda: results.append(mgr._flush_session(session)), daemon=True)
@@ -683,14 +686,7 @@ class TestConcurrentFlushSession:
         session.add_message("assistant", "hi")
         with mgr._cache_lock:
             mgr._cache[session.key] = session
-        upload_started = threading.Event()
-        release_upload = threading.Event()
-
-        def blocking_add_messages(_messages):
-            upload_started.set()
-            release_upload.wait(timeout=2)
-
-        remote = self._wire_remote(mgr, session, blocking_add_messages)
+        remote, upload_started, release_upload = self._blocking_remote(mgr, session)
         mgr.save(session)
         assert upload_started.wait(timeout=2), "async writer never started the upload"
         exit_flush = threading.Thread(target=mgr.flush_all, daemon=True)

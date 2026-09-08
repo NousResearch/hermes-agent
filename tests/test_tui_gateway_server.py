@@ -4562,46 +4562,26 @@ def _capture_make_agent_kwargs(monkeypatch) -> dict:
     return captured
 
 
-def test_make_agent_passes_the_authenticated_dashboard_user_as_user_id(monkeypatch):
-    """The identity stamped at WS-upgrade auth (WSTransport.auth_identity) reaches the agent as
-    ``user_id``, the same kwarg gateways pass, so memory providers scope memory to the login."""
+@pytest.mark.parametrize("identity, user_id", [
+    ({"user_id": "oidc|abc123", "provider": "oidc"}, "oidc:oidc|abc123"),
+    ({"user_id": "alice", "provider": "basic"}, "basic:alice"),
+    ({"user_id": "alice", "provider": "oidc"}, "oidc:alice"),
+    (None, None),
+    ({"user_id": "server-internal", "provider": "server-internal"}, None),
+    ({"user_id": "", "provider": "oidc"}, None),
+    ({"user_id": "abc", "provider": ""}, None),
+])
+def test_make_agent_passes_the_authenticated_dashboard_user_as_user_id(monkeypatch, identity, user_id):
+    """WSTransport.auth_identity reaches the agent as ``user_id`` prefixed with the login provider, so a
+    basic-auth ``alice`` and an OIDC ``alice`` stay two memory peers. The legacy token, stdio and the PTY
+    child's server-internal credential name no human, so the agent gets no user id for them."""
     captured = _capture_make_agent_kwargs(monkeypatch)
-    transport = types.SimpleNamespace(auth_identity={"user_id": "oidc|abc123", "provider": "oidc"})
+    transport = types.SimpleNamespace(auth_identity=identity)
     monkeypatch.setitem(server._sessions, "sid-auth", {"session_key": "k", "transport": transport})
 
     server._make_agent("sid-auth", "k")
 
-    assert captured["user_id"] == "oidc:oidc|abc123"
-
-
-def test_make_agent_keeps_same_named_users_of_two_login_providers_apart(monkeypatch):
-    """A basic-auth ``alice`` and an OIDC ``alice`` are two people and must not share one memory peer."""
-    seen = []
-    for provider in ("basic", "oidc"):
-        captured = _capture_make_agent_kwargs(monkeypatch)
-        transport = types.SimpleNamespace(auth_identity={"user_id": "alice", "provider": provider})
-        monkeypatch.setitem(server._sessions, f"sid-{provider}", {"session_key": "k", "transport": transport})
-        server._make_agent(f"sid-{provider}", "k")
-        seen.append(captured["user_id"])
-    assert seen == ["basic:alice", "oidc:alice"]
-
-
-@pytest.mark.parametrize("identity", [
-    None,
-    {"user_id": "server-internal", "provider": "server-internal"},
-    {"user_id": "", "provider": "oidc"},
-    {"user_id": "abc", "provider": ""},
-])
-def test_make_agent_passes_no_user_id_without_an_authenticated_human(monkeypatch, identity):
-    """Legacy token, stdio and the PTY child's server-internal credential name no human. The
-    agent must not receive a user id memory would treat as a person."""
-    captured = _capture_make_agent_kwargs(monkeypatch)
-    transport = types.SimpleNamespace(auth_identity=identity)
-    monkeypatch.setitem(server._sessions, "sid-anon", {"session_key": "k", "transport": transport})
-
-    server._make_agent("sid-anon", "k")
-
-    assert captured["user_id"] is None
+    assert captured["user_id"] == user_id
 
 
 def test_make_agent_passes_no_user_id_for_an_unknown_session(monkeypatch):

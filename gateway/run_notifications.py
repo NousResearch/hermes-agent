@@ -748,12 +748,14 @@ class GatewayNotificationsMixin:
         error = getattr(self, "_session_db_init_error", None)
         if not error:
             return
-        from hermes_constants import get_default_hermes_root
+        from hermes_constants import get_active_hermes_root
         from hermes_state import _default_db_path, classify_persistence_error, format_session_db_unavailable
         if classify_persistence_error(error) == "corrupt":
             # Copy-pasteable, so name the real store (profiles / HERMES_HOME do not live under ~/.hermes).
+            # get_active_hermes_root() (not get_default_hermes_root()) so a profile scoped in via
+            # set_hermes_home_override (multiplexed gateway) names its own root, not the ambient one.
             db_path = _default_db_path()
-            backups_dir = get_default_hermes_root() / "backups"
+            backups_dir = get_active_hermes_root() / "backups"
             message = (
                 "⚠️ Session database corruption detected. Messages may not be "
                 "persisted. Recovery options:\n"

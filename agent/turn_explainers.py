@@ -295,11 +295,13 @@ class TurnExplainersMixin:
             )
             if persistence_cause == "corrupt":
                 # Copy-pasteable, so name the real store (profiles / HERMES_HOME do not live under ~/.hermes).
-                from hermes_constants import get_default_hermes_root
+                # get_active_hermes_root() (not get_default_hermes_root()) so a profile scoped in via
+                # set_hermes_home_override (multiplexed gateway) names its own root, not the ambient one.
+                from hermes_constants import get_active_hermes_root
                 from hermes_state import _default_db_path
 
                 body = body.replace("{db_path}", str(_default_db_path()))
                 body = body.replace(
-                    "{backups_dir}", str(get_default_hermes_root() / "backups")
+                    "{backups_dir}", str(get_active_hermes_root() / "backups")
                 )
         return _NO_REPLY + body if body else ""

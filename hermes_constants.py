@@ -162,6 +162,25 @@ def get_default_hermes_root() -> Path:
     return result
 
 
+def get_active_hermes_root() -> Path:
+    """Root Hermes dir for the currently active (possibly profile-scoped) home.
+
+    Like :func:`get_default_hermes_root`, but consults the context-local override first: a
+    multiplexed gateway or CLI operation that scopes into a named profile via
+    ``set_hermes_home_override`` does not mutate ``os.environ``, so ``get_default_hermes_root()``
+    would still resolve the ambient process's root instead of the scoped profile's. Callers that
+    name a path for the operator to act on (e.g. corruption recovery guidance) need the root the
+    active profile actually lives under; callers that want the one shared, process-wide root
+    regardless of profile scope (kanban, auth, plugins, …) should keep using
+    ``get_default_hermes_root()``.
+    """
+    override = get_hermes_home_override()
+    if override is None:
+        return get_default_hermes_root()
+    override_path = Path(override)
+    return override_path.parent.parent if override_path.parent.name == "profiles" else override_path
+
+
 # Tombstone lives beside the profile dir (not inside) so a stale mkdir or rmtree cannot erase it.
 _DELETED_PROFILES_DIR = ".deleted"
 # Files marking a real Hermes home; arbitrary dirs with a ``profiles`` segment lack them.

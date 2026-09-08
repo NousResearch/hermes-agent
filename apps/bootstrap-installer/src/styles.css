@@ -1,35 +1,31 @@
 /*
- * Hermes Setup — defer entirely to the desktop's styles.css.
+ * North Forge Setup — styles.
  *
- * Rather than re-implement the Hermes design system (and inevitably drift
- * from it), we import apps/desktop/src/styles.css wholesale. The desktop
- * is the canonical source of truth for fonts, color tokens, button chrome,
- * scrollbars, layout utilities, and animations. Any change to the
- * Hermes look propagates here automatically with no copy-paste maintenance.
+ * STANDING REBASE-DRIFT ITEM (see the feasibility report §2.B / §3): this
+ * still imports the Hermes desktop design system wholesale for its fonts,
+ * colour tokens, button chrome, scrollbars and layout utilities. Cutting
+ * the `@import` + `@nous-research/ui` coupling and restyling from a
+ * North-Forge-owned base is deliberately OUT OF SCOPE for the lightweight
+ * tier — it is tracked as ongoing work regardless of what this app does.
  *
- * Path resolution caveats:
- *   - Tailwind v4's `@import` resolves relative to this file. The desktop's
- *     `@source '../../../node_modules/...'` declarations therefore re-resolve
- *     against apps/bootstrap-installer/src/. Since both apps live two levels
- *     deep under the same repo root, `../../../node_modules` lands in the
- *     same place. (Verify if either app ever moves.)
- *   - The desktop's `@font-face url('../../../node_modules/...')` references
- *     are baked into the *imported* stylesheet; CSS resolves url()s relative
- *     to the file that contains them, so they continue to point at the
- *     correct node_modules path even from here.
+ * Path resolution caveats (unchanged from upstream):
+ *   - Tailwind v4's `@import` resolves relative to this file; both apps sit
+ *     two levels under the repo root, so `../../../node_modules` lands in
+ *     the same place from either. (Verify if either app moves.)
+ *   - The desktop's `@font-face url('../../../node_modules/...')` refs are
+ *     baked into the imported stylesheet; url()s resolve relative to the
+ *     file that contains them, so they still point at the right place.
  *
- * Follows the OS appearance: the installer has no in-app theme switcher, so
- * src/theme.ts tracks the Tauri window theme and toggles `.dark` on
- * <html>. The desktop's runtime applyTheme() normally PAINTS the dark seed
- * colors inline (its imported :root.dark below only flips the per-mode mix
- * knobs + neutral chrome), so we supply the Nous *dark* seeds ourselves in the
- * :root.dark block at the end of this file.
+ * Follows the OS appearance: no in-app theme switcher, so src/theme.ts
+ * tracks the Tauri window theme and toggles `.dark` on <html>. The
+ * imported :root.dark only flips the per-mode mix knobs; the dark seed
+ * COLORS are normally painted at runtime by the desktop app, which we
+ * don't have — so we supply them ourselves in the :root.dark block below.
  */
 @import '../../desktop/src/styles.css';
 
-/* Installer-only additions: a fade-in animation and a warm radial glow
-   for the welcome screen. Everything else inherits from the desktop. */
-@keyframes hermes-fade-in {
+/* Setup-only additions: a fade-in animation and a warm radial glow. */
+@keyframes nf-fade-in {
   from {
     opacity: 0;
     transform: translateY(4px);
@@ -40,11 +36,11 @@
   }
 }
 
-.hermes-fade-in {
-  animation: hermes-fade-in 0.45s ease-out both;
+.nf-fade-in {
+  animation: nf-fade-in 0.45s ease-out both;
 }
 
-.hermes-glow {
+.nf-glow {
   background: radial-gradient(
     ellipse at center,
     color-mix(in srgb, var(--ui-warm) 18%, transparent) 0%,
@@ -53,18 +49,15 @@
 }
 
 /*
- * Dark appearance — Nous dark seeds.
+ * Dark appearance — dark seeds.
  *
  * The imported desktop :root.dark only flips the per-mode mix knobs + neutral
  * chrome; the seed COLORS are normally painted at runtime by the desktop's
- * applyTheme(). The installer has no theme runtime, so we mirror them here from
- * apps/desktop/src/themes/presets.ts (nousTheme.darkColors). The whole
+ * applyTheme(). Setup has no theme runtime, so we mirror them here. The whole
  * --ui-* / --dt-* chain in the imported stylesheet derives from these seeds, so
  * flipping them is enough — we only additionally override the few tokens
- * applyTheme() sets inline that DON'T derive from a seed (primary-foreground on
- * the cream accent, destructive). Unlayered on purpose so it wins over the
- * imported @layer base :root light seeds. Keep in sync with nousTheme.darkColors
- * if that palette is retuned.
+ * applyTheme() sets inline that DON'T derive from a seed. Unlayered on purpose
+ * so it wins over the imported @layer base :root light seeds.
  */
 :root.dark {
   color-scheme: dark;
@@ -81,7 +74,7 @@
   --theme-elevated-seed: #123a96;
   --theme-bubble-seed: #143b91;
 
-  /* Non-derived shadcn tokens applyTheme() paints inline (Nous dark values). */
+  /* Non-derived shadcn tokens applyTheme() paints inline. */
   --dt-primary-foreground: #0d2f86;
   --dt-destructive: #c0473a;
   --dt-destructive-foreground: #fef2f2;

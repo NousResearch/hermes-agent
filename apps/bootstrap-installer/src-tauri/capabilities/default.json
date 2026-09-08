@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2/capability",
   "identifier": "default",
-  "description": "Capabilities required by Hermes Setup. Narrowly scoped: we don't write user files outside HERMES_HOME, we don't read arbitrary paths, and the only external network call goes through reqwest (Rust side, not exposed to the webview).",
+  "description": "Capabilities for North Forge Setup. Narrowly scoped: a folder picker for choosing the drive/checkout, opening the log folder, and window controls. No arbitrary filesystem or network access from the webview; running bootstrap-north-forge.ps1 happens Rust-side.",
   "windows": ["main"],
   "permissions": [
     "core:default",

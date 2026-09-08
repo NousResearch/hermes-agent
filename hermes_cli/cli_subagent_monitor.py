@@ -78,6 +78,7 @@ class SubagentMonitor:
     def dock_text(self, *, columns, rows):
         if not self.entries:
             return ''
+        columns = max(0, columns - 2)
         count = min(len(self.entries), max(1, min(4, (rows - 10) // 3)))
         hidden = len(self.entries) - count
         heading = f' Subagents · {len(self.entries)} live · F6 expand'
@@ -89,7 +90,7 @@ class SubagentMonitor:
             lines.append(_clip(f" ● {_clip(row.get('goal'), goal_width)} · {activity}", columns))
         if hidden:
             lines.append(_clip(f' +{hidden} more · F6 all subagents', columns))
-        return '\n'.join(lines)
+        return '\n'.join(' ' + line for line in lines)
 
 
 def read_tail(path):
@@ -132,7 +133,7 @@ def build_monitor_application(monitor, **kwargs):
             text = f"{'❯' if selected else ' '} {row['elapsed']}s · {row.get('status') or 'starting'} · {row.get('goal') or row['subagent_id']}"
             if row.get('last_tool'):
                 text += f" · last: {row['last_tool']}"
-            rows.append(('reverse' if selected else '', _clip(text, size.columns) + '\n'))
+            rows.append(('class:subagent-dock.selected' if selected else '', _clip(text, size.columns) + '\n'))
         return rows or [('', 'No live subagents. Results arrive in the conversation.')]
 
     def cursor():
@@ -155,7 +156,7 @@ def build_monitor_application(monitor, **kwargs):
         title = f"Subagents · {len(monitor.entries)} live"
         if state['detail'] and row:
             title += f" · {row['subagent_id']} · {row.get('goal') or ''}"
-        return [('bold', _clip(title, app.output.get_size().columns))]
+        return [('class:subagent-dock.heading', _clip(title, app.output.get_size().columns))]
 
     def footer():
         narrow = app.output.get_size().columns < 60
@@ -240,7 +241,7 @@ def build_monitor_application(monitor, **kwargs):
         ConditionalContainer(steer, filter=Condition(lambda: state['steering'])),
         Window(FormattedTextControl(lambda: _clip(state['notice'], app.output.get_size().columns)), height=1),
         Window(FormattedTextControl(footer), height=1),
-    ]), focused_element=roster)
+    ], style='class:subagent-dock'), focused_element=roster)
     def before_render(app):
         # Prompts arrive on worker threads; exit on the UI loop, including the
         # first frame if a prompt won the race with in_terminal() acquisition.
@@ -249,6 +250,9 @@ def build_monitor_application(monitor, **kwargs):
         elif state['detail']:
             update_tail()
 
+    from prompt_toolkit.styles import Style
+    from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
+    kwargs.setdefault('style', Style.from_dict(get_prompt_toolkit_style_overrides()))
     app = Application(layout=layout, key_bindings=kb, full_screen=True, mouse_support=False,
                       before_render=before_render, **kwargs)
     return app
@@ -287,9 +291,13 @@ def install_dock(cli):
 
     def text():
         size = get_app().output.get_size()
-        return [('class:subagent-border', monitor.dock_text(columns=size.columns, rows=size.rows))]
+        lines = monitor.dock_text(columns=size.columns, rows=size.rows).splitlines()
+        return [('class:subagent-dock.heading' if i == 0 else '',
+                 line + ('\n' if i < len(lines) - 1 else ''))
+                for i, line in enumerate(lines)]
 
     cli._subagent_dock_widget = ConditionalContainer(
-        Window(FormattedTextControl(text), wrap_lines=False),
+        Window(FormattedTextControl(text), wrap_lines=False, dont_extend_height=True,
+               style='class:subagent-dock'),
         filter=Condition(lambda: bool(monitor.entries) and not modal_prompt_active(cli)),
     )

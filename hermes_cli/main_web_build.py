@@ -363,7 +363,7 @@ def _run_npm_install_deterministic(
     finally:
         if original_lockfile is None:
             lockfile.unlink(missing_ok=True)
-        else:
+        elif lockfile.read_bytes() != original_lockfile:
             lockfile.write_bytes(original_lockfile)
 
 

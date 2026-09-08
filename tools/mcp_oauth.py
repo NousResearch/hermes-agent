@@ -21,9 +21,23 @@ import socket
 import stat
 import sys
 import threading
+from contextlib import contextmanager as _contextmanager
 import time
 import webbrowser
 from functools import partialmethod
+
+# Cross-process advisory file locking for the token store's critical sections.
+# Mirrors cron/jobs.py: fcntl is Unix-only, msvcrt is the Windows fallback, and
+# either may be absent - in which case locking degrades to in-process only
+# (the historical behaviour) rather than failing.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-Unix
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - non-Windows
+    msvcrt = None
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -37,6 +51,92 @@ if TYPE_CHECKING:  # annotations only; the SDK is imported lazily at runtime
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthMetadata, OAuthToken
 
 logger = logging.getLogger(__name__)
+
+# Bounded acquisition for the token-store lock. Deliberately short: every
+# critical section it guards is a local file read/write, never a network call.
+_TOKEN_LOCK_TIMEOUT_SECONDS = 10.0
+
+# In-process mutual exclusion, keyed by lock path, so threads inside one
+# process don't fight over the same file before the advisory lock is reached.
+_token_locks: dict[str, threading.RLock] = {}
+_token_locks_guard = threading.Lock()
+
+
+@_contextmanager
+def _token_store_lock(path: "Path"):
+    """Serialize a read-modify-write on one server's token file.
+
+    Two Hermes backends routinely share one HERMES_HOME (the desktop app spawns
+    ``serve`` while the scheduled task runs ``gateway run``); cron/jobs.py
+    already guards jobs.json the same way. Without this, a provider that issues
+    single-use refresh tokens can have both processes POST the same token, and
+    the loser's refresh is rejected.
+
+    Acquisition is bounded and non-blocking (the lesson of cron's #60703: a
+    plain blocking ``flock`` with no timeout lets one wedged process freeze
+    every other one forever). On timeout we log and proceed with in-process
+    locking only — a briefly-contended refresh is strictly better than a
+    permanently stuck client.
+    """
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    key = str(lock_path)
+
+    with _token_locks_guard:
+        local_lock = _token_locks.setdefault(key, threading.RLock())
+
+    with local_lock:
+        lock_fd = None
+        acquired = False
+        try:
+            try:
+                secure_parent_dir(lock_path)
+                lock_fd = open(lock_path, "a+", encoding="utf-8")
+                lock_fd.seek(0)
+                deadline = time.monotonic() + _TOKEN_LOCK_TIMEOUT_SECONDS
+                while True:
+                    try:
+                        if fcntl is not None:
+                            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            acquired = True
+                        elif msvcrt is not None:
+                            getattr(msvcrt, "locking")(
+                                lock_fd.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
+                            )
+                            acquired = True
+                        break
+                    except (OSError, IOError):
+                        if time.monotonic() >= deadline:
+                            logger.warning(
+                                "Token store lock timed out after %.0fs (%s); "
+                                "proceeding with in-process locking only",
+                                _TOKEN_LOCK_TIMEOUT_SECONDS,
+                                lock_path.name,
+                            )
+                            break
+                        time.sleep(0.05)
+            except OSError as exc:
+                # An unwritable lock path must never block token access.
+                logger.debug("Token store lock unavailable (%s): %s", lock_path.name, exc)
+
+            yield
+        finally:
+            if lock_fd is not None:
+                try:
+                    if acquired:
+                        if fcntl is not None:
+                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                        elif msvcrt is not None:
+                            getattr(msvcrt, "locking")(
+                                lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
+                            )
+                except (OSError, IOError):
+                    pass
+                finally:
+                    lock_fd.close()
+
+# ---------------------------------------------------------------------------
+# Lazy imports -- MCP SDK with OAuth support is optional
+# ---------------------------------------------------------------------------
 
 # SDK availability is detected WITHOUT importing mcp (~170 ms); classes bind lazily via _sdk_class().
 _OAUTH_AVAILABLE = _importlib_util.find_spec("mcp") is not None
@@ -329,7 +429,10 @@ class HermesTokenStorage:
                 data["expires_in"] = int(max(implied_expiry - time.time(), 0))
 
     async def get_tokens(self) -> "OAuthToken | None":
-        return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._rebase_expires_in)
+        # Held across the read so a peer process mid-rotation cannot expose a
+        # half-written token file (see _token_store_lock).
+        with _token_store_lock(self._tokens_path()):
+            return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._rebase_expires_in)
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
         payload = _model_json(tokens)
@@ -337,7 +440,8 @@ class HermesTokenStorage:
         if payload.get("expires_in") is not None:
             with contextlib.suppress(TypeError, ValueError):  # mock tokens / odd shapes: skip, don't fail persistence
                 payload["expires_at"] = time.time() + int(payload["expires_in"])
-        _write_json(self._tokens_path(), payload)
+        with _token_store_lock(self._tokens_path()):
+            _write_json(self._tokens_path(), payload)
         logger.debug("OAuth tokens saved for %s", self._server_name)
 
     @staticmethod

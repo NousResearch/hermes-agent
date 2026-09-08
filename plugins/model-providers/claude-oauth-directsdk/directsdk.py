@@ -93,13 +93,12 @@ def prepare_history(messages):
                     raise ValueError('Unsupported native assistant carrier version')
                 carrier = carriers[0]
                 expected = {**carrier['projection'], 'content': carrier['projection']['content'].strip()}
-                if projection(message) != expected:
-                    raise ValueError('Signed native assistant projection was modified; regenerate this turn')
-                for native in carrier['messages']:
-                    frames.append({'type': 'assistant', 'message': copy.deepcopy(native)})
-                continue
-            if details:
-                raise ValueError('Cannot replay foreign reasoning_details without native signed history')
+                if projection(message) == expected:
+                    for native in carrier['messages']:
+                        frames.append({'type': 'assistant', 'message': copy.deepcopy(native)})
+                    continue
+                # Host compaction/hooks own visible history. Never restore stale
+                # pre-edit blocks or attach their signatures to rewritten content.
             blocks = content_blocks(message.get('content'))
             for call in projection(message)['tool_calls']:
                 blocks.append({'type': 'tool_use', 'id': call['id'], 'name': PREFIX + call['name'], 'input': call['input']})
@@ -149,7 +148,8 @@ def request_body(kwargs):
             raise ValueError('reasoning supports enabled and effort only')
         if 'enabled' in reasoning and type(reasoning['enabled']) is not bool:
             raise ValueError('reasoning.enabled must be boolean')
-        effort = reasoning.get('effort')
+        from agent.reasoning_effort import clamp_effort
+        effort = clamp_effort(reasoning.get('effort'), ('none', 'low', 'medium', 'high', 'xhigh', 'max'))
         if effort not in (None, 'none', 'low', 'medium', 'high', 'xhigh', 'max'):
             raise ValueError('Unsupported native reasoning effort')
         if reasoning.get('enabled') is False or effort == 'none':
@@ -182,6 +182,9 @@ def request_body(kwargs):
     for key in ('temperature', 'top_p'):
         if key in body and (isinstance(body[key], bool) or not isinstance(body[key], (int, float)) or not math.isfinite(body[key]) or not 0 <= body[key] <= 1):
             raise ValueError(f'{key} must be finite and between zero and one')
+        # Subscription models reject sampling controls, including Hermes' title
+        # generator default. Match the host's sampling-forbidden model behavior.
+        body.pop(key, None)
     if 'max_tokens' in body and (type(body['max_tokens']) is not int or body['max_tokens'] < 1):
         raise ValueError('max_tokens must be a positive integer')
     if 'stop_sequences' in body and (not isinstance(body['stop_sequences'], list) or not all(isinstance(x, str) and x for x in body['stop_sequences'])):
@@ -204,8 +207,6 @@ def request_body(kwargs):
         tools.append({'name': PREFIX + name, 'description': description, 'input_schema': schema})
     body['tools'] = tools
     encoded = json.dumps(body, separators=(',', ':'), allow_nan=False)
-    if len(encoded.encode()) >= 120000:
-        raise ValueError('Native extra-body exceeds qualified environment size (120000 bytes)')
     return encoded, manifest, names
 
 
@@ -225,11 +226,11 @@ class Request:
                 except ProcessLookupError:
                     pass
 
-    def spawn(self, command, **kwargs):
+    def spawn(self, command, *, stdin=subprocess.DEVNULL, **kwargs):
         with self.lock:
             if self.cancelled.is_set():
                 raise RuntimeError('Claude request cancelled')
-            self.process = subprocess.Popen(command, start_new_session=True, **kwargs)
+            self.process = subprocess.Popen(command, stdin=stdin, start_new_session=True, **kwargs)
         return self.process
 
 
@@ -380,10 +381,15 @@ class Client:
                 config = env.pop('CLAUDE_OAUTH_DIRECTSDK_CONFIG_DIR', None)
                 if config:
                     env['CLAUDE_CONFIG_DIR'] = config
-                env.update(CLAUDE_CODE_EXTRA_BODY=body, ENABLE_TOOL_SEARCH='false', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', CLAUDE_CODE_MAX_RETRIES='0')
+                env.pop('CLAUDE_CODE_EXTRA_BODY', None)
+                env.update(ENABLE_TOOL_SEARCH='false', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', CLAUDE_CODE_MAX_RETRIES='0', DISABLE_AUTO_COMPACT='1', DISABLE_COMPACT='1')
+                # Native settings apply env inside the process, avoiding execve's
+                # per-argument/environment-string limit for full Hermes schemas.
+                (root / 'settings.json').write_text(json.dumps({'env': {'CLAUDE_CODE_EXTRA_BODY': body}}), encoding='utf-8')
+                (root / 'system.md').write_text(system, encoding='utf-8')
                 if 'max_tokens' in json.loads(body):
                     env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = str(json.loads(body)['max_tokens'])
-                command = self.command + ['-p', '--model', kwargs['model'], '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--tools', '', '--system-prompt', system, '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--max-turns', '1', '--permission-mode', 'dontAsk', '--no-session-persistence', '--mcp-config', json.dumps(mcp)]
+                command = self.command + ['-p', '--model', kwargs['model'], '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--tools', '', '--system-prompt-file', str(root / 'system.md'), '--settings', str(root / 'settings.json'), '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--max-turns', '1', '--permission-mode', 'dontAsk', '--no-session-persistence', '--mcp-config', json.dumps(mcp)]
                 p = request.spawn(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', cwd=tmp, env=env)
                 events = queue.Queue()
                 def read():
@@ -405,6 +411,7 @@ class Client:
                     raise ValueError('timeout must be positive seconds')
                 deadline = time.monotonic() + timeout
                 def receive():
+                    nonlocal deadline
                     while True:
                         if request.cancelled.is_set():
                             raise RuntimeError('Claude request cancelled')
@@ -417,6 +424,7 @@ class Client:
                             continue
                         if isinstance(event, Exception):
                             raise RuntimeError('Invalid native stream-json output') from event
+                        deadline = time.monotonic() + timeout
                         return event
                 for index, frame in enumerate(frames):
                     frame = copy.deepcopy(frame)
@@ -455,6 +463,8 @@ class Client:
                         if delta.get('type') == 'text_delta':
                             emitted += delta['text']
                             yield self._chunk(kwargs['model'], {'content': delta['text']})
+                        elif delta.get('type') == 'thinking_delta':
+                            yield self._chunk(kwargs['model'], {'reasoning_content': delta['thinking']})
                 p.wait(timeout=max(.1, deadline-time.monotonic()))
                 reader.join(timeout=1)
                 if request.cancelled.is_set():
@@ -482,7 +492,8 @@ class Client:
                         yield self._chunk(kwargs['model'], {'content': text[len(emitted):]})
                     else:
                         raise RuntimeError('Native final text differs from incremental stream')
-                message = {'role': 'assistant', 'content': text or None, 'tool_calls': calls or None}
+                message = {'role': 'assistant', 'content': text or None, 'tool_calls': calls or None,
+                           'reasoning_content': ''.join(b.get('thinking', '') for b in blocks if b.get('type') == 'thinking') or None}
                 carrier = {'type': CARRIER, 'version': 1, 'messages': assistants, 'projection': projection(message)}
                 message['reasoning_details'] = [carrier]
                 inp = usage['input_tokens'] + usage.get('cache_read_input_tokens', 0) + usage.get('cache_creation_input_tokens', 0)

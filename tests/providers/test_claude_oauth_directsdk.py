@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2] / "plugins" / "model-providers" / "cl
 sys.path.insert(0, str(ROOT))
 
 FAKE = r"""
-import json, os, sys, time
+import json, os, pathlib, sys, time
 if os.environ.get('PID_FILE'):
  open(os.environ['PID_FILE'],'w').write(str(os.getpid()))
 if '--version' in sys.argv:
@@ -24,7 +24,8 @@ for line in sys.stdin:
 if os.environ.get('HANG'):
  print(json.dumps({'type':'stream_event','event':{'type':'content_block_delta','delta':{'type':'text_delta','text':'started'}}}),flush=True)
  time.sleep(60)
-wire=json.loads(os.environ['CLAUDE_CODE_EXTRA_BODY'])
+settings=json.loads(pathlib.Path(sys.argv[sys.argv.index('--settings')+1]).read_text())
+wire=json.loads(settings['env']['CLAUDE_CODE_EXTRA_BODY'])
 assert wire['tools'][0]['description'].endswith('TAIL')
 assert '--max-turns' in sys.argv and sys.argv[sys.argv.index('--max-turns')+1]=='1'
 assert sys.argv[sys.argv.index('--permission-mode')+1]=='dontAsk'
@@ -33,9 +34,14 @@ assert rows[-1]['type']=='user'
 assert 'metadata' not in wire
 blocks=[{'type':'thinking','thinking':'private','signature':'signed-test'}, {'type':'text','text':'hello\n'}, {'type':'tool_use','id':'toolu_test','name':'mcp__hermes__probe','input':{'value':'x'}}]
 if len(rows)>1:
- assert rows[1]['message']['content']==blocks
+ if rows[1]['message']['content'][0]['type']=='thinking':
+  assert rows[1]['message']['content']==blocks
+ else:
+  assert rows[1]['message']['content'][0]['text']=='middleware changed'
  blocks=[{'type':'text','text':'done'}]
 for b in blocks:
+ if b['type']=='thinking':
+  print(json.dumps({'type':'stream_event','event':{'type':'content_block_delta','delta':{'type':'thinking_delta','thinking':b['thinking']}}}),flush=True)
  if b['type']=='text':
   print(json.dumps({'type':'stream_event','event':{'type':'content_block_delta','delta':{'type':'text_delta','text':b['text']}}}),flush=True)
 print(json.dumps({'type':'assistant','message':{'role':'assistant','content':blocks,'id':'msg_test','model':'sonnet','stop_reason':'tool_use' if len(blocks)>1 else 'end_turn'}}),flush=True)
@@ -88,6 +94,7 @@ class Contract(unittest.TestCase):
                 result = client.chat.completions.create(**req, stream=streaming)
                 if streaming:
                     chunks = list(result)
+                    self.assertEqual(''.join(getattr(c.choices[0].delta, 'reasoning_content', None) or '' for c in chunks), 'private')
                     self.assertEqual(
                         "".join(
                             c.choices[0].delta.content or ""
@@ -116,6 +123,7 @@ class Contract(unittest.TestCase):
                 else:
                     final = result
                     msg = result.choices[0].message.model_dump()
+                    self.assertEqual(msg['reasoning_content'], 'private')
                     self.assertEqual(msg["tool_calls"][0]["function"]["name"], "probe")
                 self.assertEqual(final.usage.prompt_tokens, 21)
                 self.assertEqual(final.usage.completion_tokens, 5)
@@ -133,8 +141,7 @@ class Contract(unittest.TestCase):
                     "done",
                 )
                 msg["content"] = "middleware changed"
-                with self.assertRaisesRegex(ValueError, "modified"):
-                    client.chat.completions.create(**req)
+                self.assertEqual(client.chat.completions.create(**req).choices[0].message.content, "done")
             client.close()
 
     def test_fail_closed_and_cancellation(self):

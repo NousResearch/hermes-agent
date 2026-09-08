@@ -1314,7 +1314,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> dict[str, Any]:
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
         escaping destroys table pipes. Currency ``$`` is escaped so two amounts never pair as inline math."""
-        payload: dict[str, Any] = {"markdown": degrade_unrenderable_links(escape_rich_currency_dollars(_rich_normalize_linebreaks(content)))}
+        from .rich_markdown import escape_literal_hash_prefixes
+
+        payload: dict[str, Any] = {"markdown": degrade_unrenderable_links(
+            escape_rich_currency_dollars(_rich_normalize_linebreaks(escape_literal_hash_prefixes(content))))}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload

@@ -280,7 +280,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   mcpOauth: {
     // One-shot loopback listener for MCP OAuth against remote backends: bind
     // on this machine, hand redirectUri to mcp.servers.oauth.start, then wait
-    // for the provider redirect and relay code/state via oauth.callback.
+    // for the provider redirect and relay code/state/iss via oauth.callback.
     listen: () => ipcRenderer.invoke('hermes:mcp-oauth:listen'),
     wait: (id, timeoutMs) => ipcRenderer.invoke('hermes:mcp-oauth:wait', id, timeoutMs),
     cancel: id => ipcRenderer.invoke('hermes:mcp-oauth:cancel', id)

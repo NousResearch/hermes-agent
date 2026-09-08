@@ -56,6 +56,15 @@ class SubagentMonitor:
             self.selected_id = entries[0]['subagent_id'] if entries else None
         return changed
 
+    def invalidate(self):
+        from hermes_cli.cli_terminal_mixin import _run_on_app_loop
+
+        app = self.app
+        if app is not None:
+            # Teardown clears app.loop; don't let it interleave with a worker's
+            # invalidate call, which reads the loop more than once.
+            _run_on_app_loop(app, app.invalidate)
+
     def tick(self):
         now = time.monotonic()
         if now - self._last_poll < 1:
@@ -63,7 +72,7 @@ class SubagentMonitor:
         self._last_poll = now
         if self.refresh():
             if self.app is not None:
-                self.app.invalidate()
+                self.invalidate()
             else:
                 self.cli._invalidate()
 

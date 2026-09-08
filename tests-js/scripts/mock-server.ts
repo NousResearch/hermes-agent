@@ -505,6 +505,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
           const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
           const isTaskPanelResumeTrigger = userText.includes(TASK_PANEL_RESUME_TRIGGER)
+
           const isVerificationStopTrigger = messages.some(
             message => typeof message?.content === 'string' && message.content.includes(VERIFICATION_STOP_TRIGGER),
           )
@@ -517,7 +518,9 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             const turn =
               TASK_PANEL_RESUME_SCRIPT[_taskPanelResumeIndex] ??
               TASK_PANEL_RESUME_SCRIPT[TASK_PANEL_RESUME_SCRIPT.length - 1]
+
             _taskPanelResumeIndex++
+
             const respond = () => {
               if (stream) {
                 streamScriptedTurn(res, model, turn)
@@ -533,6 +536,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             } else {
               respond()
             }
+
             return
           }
 
@@ -550,6 +554,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
               } else {
                 nonStreamingScriptedTurn(res, model, BATCH_CLARIFY_TURN)
               }
+
               return
             }
           }

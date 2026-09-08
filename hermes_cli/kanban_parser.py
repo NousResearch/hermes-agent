@@ -81,6 +81,12 @@ _STEP_HANDOFF = (
     _arg("--summary", help="Structured handoff summary. Falls back to --result if omitted."),
     _arg("--metadata", help="JSON dict of structured facts to store on the latest completed run."),
 )
+_LEASE_GUARD_ARGS = (
+    _arg("--expected-run-id", type=int),
+    _arg("--expected-claim-lock", "--expected-claim-token", dest="expected_claim_lock"),
+    _arg("--expected-tenant", "--expected-business", dest="expected_tenant"),
+    _arg("--expected-workspace-path"),
+)
 
 _BOARD_SPECS = [
     _cmd("list", [
@@ -188,6 +194,10 @@ _SPECS = [
                   "the worker). Requires --model."),
         _arg("--completion-contract", metavar="CONTRACT",
              help="local-only (default), OWNER/REPO for publication, or exact GitHub PR URL; required CI gates done."),
+        _arg("--bucket-key", help="Persist an inert Sunny bucket reference"),
+        _arg("--route-policy-ref", help="Persist a Sunny route-policy reference"),
+        _arg("--route-policy-version", type=int,
+             help="Version paired with --route-policy-ref"),
         _arg("--goal", action="store_true", dest="goal_mode",
              help="Run the worker in a goal loop: after each turn a judge checks the "
                   "response against the card title/body and, if not done, the worker "
@@ -219,6 +229,9 @@ _SPECS = [
         _arg("--assignee"),
         _arg("--status", choices=sorted(kb.VALID_STATUSES)),
         _arg("--tenant"),
+        _arg("--bucket-key"),
+        _arg("--route-policy-ref"),
+        _arg("--route-policy-version", type=int),
         _arg("--session",
              help="Filter by originating chat/agent session id (set on tasks created from inside an ACP loop)"),
         _arg("--archived", action="store_true", help="Include archived tasks"),
@@ -240,7 +253,8 @@ _SPECS = [
              help="Provider the model belongs to (worker is spawned with "
                   "--provider <name>). Cleared together with the model."),
     ], help="Set or clear a task's model/provider override (takes effect on the next dispatch)"),
-    _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON], help="Release an active worker claim on a running task"),
+    _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON, *_LEASE_GUARD_ARGS],
+         help="Release an active worker claim on a running task"),
     _cmd("reassign", [
         _TASK_ID,
         _arg("profile", help="New profile name (or 'none' to unassign)"),
@@ -260,6 +274,14 @@ _SPECS = [
         _TASK_ID,
         _arg("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS, help="Claim TTL in seconds (default: 900)"),
     ], help="Atomically claim a ready task (prints resolved workspace path)"),
+    _cmd("lease-spec", [
+        _arg("--worker-id", default=""),
+        _arg("--capability", action="append", metavar="PROVIDER:MODEL:EFFORT",
+             help="Complete worker route capability; repeat for multiple routes"),
+        _arg("--bucket-key"),
+        _arg("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS),
+        _json_flag(help="Emit JSON (the only output format)"),
+    ], help="Atomically lease one compatible ready task and emit a worker JSON spec"),
     _cmd("comment", [
         _TASK_ID,
         _arg("text", nargs="+", help="Comment body"),
@@ -283,11 +305,15 @@ _SPECS = [
         _arg("--metadata",
              help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                   '"tests_run": 12}\'). Stored on the closing run.'),
+        *_LEASE_GUARD_ARGS,
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,
-        _arg("--result", required=True, help="Backfilled task result text for a done task"),
+        _arg("--result", help="Backfilled task result text for a done task"),
         *_STEP_HANDOFF,
+        _arg("--bucket-key"),
+        _arg("--route-policy-ref"),
+        _arg("--route-policy-version", type=int),
     ], help="Edit recovery fields on an already-completed task"),
     _cmd("block", [
         _TASK_ID,
@@ -394,6 +420,7 @@ _SPECS = [
     _cmd("heartbeat", [
         _TASK_ID,
         _arg("--note", help="Optional short note attached to the heartbeat event"),
+        *_LEASE_GUARD_ARGS,
     ], help="Emit a heartbeat event for a running task (worker liveness signal)"),
     _cmd("assignees", [_json_flag()],
          help="List known profiles + per-profile task counts (union of ~/.hermes/profiles/ and current assignees on the board)"),

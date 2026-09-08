@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli.kanban_lease import LEASE_GUARD_UNSET, lease_guard_predicate
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -715,6 +716,9 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    bucket_key: Optional[str] = None
+    route_policy_ref: Optional[str] = None
+    route_policy_version: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -745,6 +749,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "bucket_key", "route_policy_ref", "route_policy_version",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -941,7 +946,22 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Inert, durable scheduling references. They identify policy, never
+    -- credentials, provider entitlement, or a live worker configuration.
+    bucket_key           TEXT,
+    route_policy_ref     TEXT,
+    route_policy_version INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS sunny_route_policies (
+    policy_ref      TEXT NOT NULL,
+    policy_version  INTEGER NOT NULL,
+    provider_ref    TEXT NOT NULL,
+    model_ref       TEXT NOT NULL,
+    effort_ref      TEXT,
+    created_at      INTEGER NOT NULL,
+    PRIMARY KEY (policy_ref, policy_version)
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1232,6 +1252,8 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    bucket_key: Optional[str] = None, route_policy_ref: Optional[str] = None,
+    route_policy_version: Optional[int] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1248,8 +1270,12 @@ def create_task(
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
+    from hermes_cli.kanban_sunny import normalize_task_route_references
 
     completion_contract = validate_contract(completion_contract)
+    bucket_key, route_policy_ref, route_policy_version = normalize_task_route_references(
+        bucket_key, route_policy_ref, route_policy_version,
+    )
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
@@ -1326,8 +1352,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        bucket_key, route_policy_ref, route_policy_version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1337,6 +1364,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        bucket_key, route_policy_ref, route_policy_version,
                     ),
                 )
                 for pid in parents:
@@ -1359,6 +1387,9 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "bucket_key": bucket_key,
+                        "route_policy_ref": route_policy_ref,
+                        "route_policy_version": route_policy_version,
                     },
                 )
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
@@ -1464,6 +1495,8 @@ def list_tasks(
     tenant: Optional[str] = None, session_id: Optional[str] = None, include_archived: bool = False,
     limit: Optional[int] = None, order_by: Optional[str] = None,
     workflow_template_id: Optional[str] = None, current_step_key: Optional[str] = None,
+    bucket_key: Optional[str] = None, route_policy_ref: Optional[str] = None,
+    route_policy_version: Optional[int] = None,
 ) -> list[Task]:
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
@@ -1472,7 +1505,8 @@ def list_tasks(
     for col, val in (
         ("assignee", _canonical_assignee(assignee)), ("status", status), ("tenant", tenant),
         ("session_id", session_id), ("workflow_template_id", workflow_template_id),
-        ("current_step_key", current_step_key),
+        ("current_step_key", current_step_key), ("bucket_key", bucket_key),
+        ("route_policy_ref", route_policy_ref), ("route_policy_version", route_policy_version),
     ):
         if val is not None:
             query += f" AND {col} = ?"
@@ -2245,15 +2279,28 @@ def goal_run_status(
 def heartbeat_claim(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Any = LEASE_GUARD_UNSET,
+    expected_tenant: Any = LEASE_GUARD_UNSET,
+    expected_workspace_path: Any = LEASE_GUARD_UNSET,
 ) -> bool:
     """Extend a running claim; True if we still own it."""
     expires = int(time.time()) + _resolve_claim_ttl_seconds(ttl_seconds)
     lock = claimer or _claimer_id()
+    guard_sql, guard_params, full_lease_guard = lease_guard_predicate(
+        expected_run_id=expected_run_id,
+        expected_claim_lock=expected_claim_lock,
+        expected_tenant=expected_tenant,
+        expected_workspace_path=expected_workspace_path,
+    )
     with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET claim_expires = ? "
-            "WHERE id = ? AND status = 'running' AND claim_lock = ?", (expires, task_id, lock),
-        )
+        sql = "UPDATE tasks SET claim_expires = ? WHERE id = ? AND status = 'running'"
+        params: tuple[Any, ...] = (expires, task_id, *guard_params)
+        sql += guard_sql
+        if not full_lease_guard:
+            sql += " AND claim_lock = ?"
+            params = (*params, lock)
+        cur = conn.execute(sql, params)
         if cur.rowcount != 1:
             return False
         _extend_run_claim(conn, task_id, expires)
@@ -2400,34 +2447,76 @@ def _extend_live_stale_claim(conn: sqlite3.Connection, row: sqlite3.Row, now: in
 
 def reclaim_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None, signal_fn=None,
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Any = LEASE_GUARD_UNSET,
+    expected_tenant: Any = LEASE_GUARD_UNSET,
+    expected_workspace_path: Any = LEASE_GUARD_UNSET,
 ) -> bool:
     """Operator reclaim regardless of TTL: release the claim, restore the source
     phase, reset the failure counter. False when not running."""
-    row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?", (task_id,),
-    ).fetchone()
-    if not row:
-        return False
-    if row["status"] != "running" and row["claim_lock"] is None:
-        # Nothing to reclaim — already ready / blocked / done.
-        return False
-    prev_lock = row["claim_lock"]
-    termination = _terminate_reclaimed_worker(row["worker_pid"], prev_lock, signal_fn=signal_fn)
-    with write_txn(conn):
-        retry_status = _retry_status_for_run(conn, task_id)
-        cur = conn.execute(
-            "UPDATE tasks SET status = ?, claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
-            "AND claim_lock IS ?", (retry_status, task_id, prev_lock),
-        )
-        if cur.rowcount != 1:
+    guard_sql, guard_params, _ = lease_guard_predicate(
+        expected_run_id=expected_run_id,
+        expected_claim_lock=expected_claim_lock,
+        expected_tenant=expected_tenant,
+        expected_workspace_path=expected_workspace_path,
+    )
+    if guard_sql:
+        with write_txn(conn):
+            row = conn.execute(
+                "UPDATE tasks SET claim_expires = claim_expires "
+                "WHERE id = ? AND status = 'running'" + guard_sql
+                + " RETURNING worker_pid, claim_lock",
+                (task_id, *guard_params),
+            ).fetchone()
+            if row is None:
+                return False
+            prev_lock = row["claim_lock"]
+            termination = _terminate_reclaimed_worker(
+                row["worker_pid"], prev_lock, signal_fn=signal_fn,
+            )
+            retry_status = _retry_status_for_run(conn, task_id)
+            if conn.execute(
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL WHERE id = ?",
+                (retry_status, task_id),
+            ).rowcount != 1:
+                return False
+            _record_reclaim(
+                conn, task_id, termination,
+                error=(f"manual_reclaim: {reason}" if reason
+                       else f"manual_reclaim lock={prev_lock}"),
+                payload={"manual": True, "reason": reason, "prev_lock": prev_lock,
+                         "retry_status": retry_status},
+            )
+    else:
+        row = conn.execute(
+            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if not row:
             return False
-        _record_reclaim(
-            conn, task_id, termination,
-            error=f"manual_reclaim: {reason}" if reason else f"manual_reclaim lock={prev_lock}",
-            payload={"manual": True, "reason": reason, "prev_lock": prev_lock, "retry_status": retry_status},
+        if row["status"] != "running" and row["claim_lock"] is None:
+            return False
+        prev_lock = row["claim_lock"]
+        termination = _terminate_reclaimed_worker(
+            row["worker_pid"], prev_lock, signal_fn=signal_fn,
         )
+        with write_txn(conn):
+            retry_status = _retry_status_for_run(conn, task_id)
+            cur = conn.execute(
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
+                "AND claim_lock IS ?", (retry_status, task_id, prev_lock),
+            )
+            if cur.rowcount != 1:
+                return False
+            _record_reclaim(
+                conn, task_id, termination,
+                error=(f"manual_reclaim: {reason}" if reason
+                       else f"manual_reclaim lock={prev_lock}"),
+                payload={"manual": True, "reason": reason, "prev_lock": prev_lock,
+                         "retry_status": retry_status},
+            )
     # Operator intervention = fresh retry budget (own txn, runs after commit).
     _clear_failure_counter(conn, task_id)
     return True
@@ -2521,10 +2610,17 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class TerminalReadbackError(RuntimeError):
+    """A terminal transition could not be read back under its lease identity."""
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
+    expected_claim_lock: Any = LEASE_GUARD_UNSET,
+    expected_tenant: Any = LEASE_GUARD_UNSET,
+    expected_workspace_path: Any = LEASE_GUARD_UNSET,
     fire_lifecycle_hook: bool = True,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
@@ -2538,11 +2634,25 @@ def complete_task(
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
     """
     now = int(time.time())
+    guard_sql, guard_params, full_lease_guard = lease_guard_predicate(
+        expected_run_id=expected_run_id,
+        expected_claim_lock=expected_claim_lock,
+        expected_tenant=expected_tenant,
+        expected_workspace_path=expected_workspace_path,
+    )
+    if full_lease_guard and conn.execute(
+        "SELECT 1 FROM tasks WHERE id = ? AND status = 'running'" + guard_sql,
+        (task_id, *guard_params),
+    ).fetchone() is None:
+        return False
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
-    verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
+    verified_cards = _gate_created_cards(
+        conn, task_id, created_cards, summary or result,
+        audit_rejection=not full_lease_guard,
+    )
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
@@ -2551,6 +2661,11 @@ def complete_task(
     if acceptance is False:
         return False
     with write_txn(conn):
+        if full_lease_guard and conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ? AND status = 'running'" + guard_sql,
+            (task_id, *guard_params),
+        ).fetchone() is None:
+            return False
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
@@ -2571,10 +2686,8 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
-        params: tuple = (result, now, task_id)
-        if expected_run_id is not None:
-            sql += " AND current_run_id = ?"
-            params = (*params, int(expected_run_id))
+        params: tuple = (result, now, task_id, *guard_params)
+        sql += guard_sql
         if conn.execute(sql, params).rowcount != 1:
             return False
         if isinstance(metadata, dict):
@@ -2600,6 +2713,24 @@ def complete_task(
             _completed_event_payload(result, event_summary, verified_cards, metadata),
             run_id=run_id,
         )
+        terminal = conn.execute(
+            "SELECT status, claim_lock, current_run_id, tenant, workspace_path "
+            "FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if (
+            terminal is None
+            or terminal["status"] != "done"
+            or terminal["claim_lock"] is not None
+            or terminal["current_run_id"] is not None
+            or (full_lease_guard and (
+                run_id != guard_params[0]
+                or terminal["tenant"] != expected_tenant
+                or terminal["workspace_path"] != expected_workspace_path
+            ))
+        ):
+            raise TerminalReadbackError(
+                f"completion of {task_id} could not be read back exactly"
+            )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
@@ -2616,6 +2747,7 @@ _REVIEW_APPROVED_NOTE = "Review approved without additional evidence."
 
 def _gate_created_cards(
     conn: sqlite3.Connection, task_id: str, created_cards: Optional[Iterable[str]], preview_text: Optional[str],
+    *, audit_rejection: bool = True,
 ) -> list[str]:
     """Verify ``created_cards`` BEFORE the main write txn; returns the verified
     ids. A phantom id is recorded in its own tiny txn (auditable) then raised
@@ -2624,15 +2756,16 @@ def _gate_created_cards(
         return []
     verified_cards, phantom_cards = _verify_created_cards(conn, task_id, created_cards)
     if phantom_cards:
-        with write_txn(conn):
-            _append_event(
-                conn, task_id, "completion_blocked_hallucination",
-                {
-                    "phantom_cards": phantom_cards,
-                    "verified_cards": verified_cards,
-                    "summary_preview": _first_line(preview_text, 200) or None,
-                },
-            )
+        if audit_rejection:
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "completion_blocked_hallucination",
+                    {
+                        "phantom_cards": phantom_cards,
+                        "verified_cards": verified_cards,
+                        "summary_preview": _first_line(preview_text, 200) or None,
+                    },
+                )
         raise HallucinatedCardsError(phantom_cards, task_id)
     return verified_cards
 
@@ -4041,6 +4174,12 @@ from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     _terminate_reclaimed_worker,
     _worker_survived_termination,
     _worker_terminal_timeout_env,
+)
+from hermes_cli.kanban_sunny import (  # noqa: E402
+    RoutePolicy,
+    get_route_policy,
+    put_route_policy,
+    update_task_route_references,
 )
 
 

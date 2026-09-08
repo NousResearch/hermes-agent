@@ -14,7 +14,7 @@ import shlex
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
@@ -32,6 +32,7 @@ from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
 from hermes_cli.kanban_parser import build_parser  # noqa: F401  (re-exported: hermes_cli.main, run_slash)
+from hermes_cli.kanban_lease_spec import claim_lease_exec_spec
 
 
 # --- Flag parsing helpers ---
@@ -212,7 +213,7 @@ def _profile_author() -> str:
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
-    "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
+    "claim", "lease-spec", "comment", "attach", "attach-rm", "complete", "edit", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
@@ -318,9 +319,13 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_heartbeat(args: argparse.Namespace) -> int:
+    try:
+        guards = _lease_guard_kwargs(args, args.task_id)
+    except ValueError as exc:
+        return _err(f"kanban: {exc}", 2)
     with kbc.connect_closing() as conn:
         ok = kbd.heartbeat_worker(conn, args.task_id, note=getattr(args, "note", None),
-                                 expected_run_id=_worker_run_id_for(args.task_id))
+                                  **guards)
     return _ok_or_err(ok, f"cannot heartbeat {args.task_id} (not running?)",
                       f"Heartbeat recorded for {args.task_id}")
 
@@ -372,6 +377,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
+            bucket_key=getattr(args, "bucket_key", None),
+            route_policy_ref=getattr(args, "route_policy_ref", None),
+            route_policy_version=getattr(args, "route_policy_version", None),
             initial_status=getattr(args, "initial_status", "running"),
             creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
                              if is_dispatcher_owned_worker_context() else None),
@@ -425,6 +433,9 @@ def _cmd_list(args: argparse.Namespace) -> int:
             conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,
             include_archived=args.archived, order_by=getattr(args, "sort", None),
             workflow_template_id=args.workflow_template_id, current_step_key=args.current_step_key,
+            bucket_key=getattr(args, "bucket_key", None),
+            route_policy_ref=getattr(args, "route_policy_ref", None),
+            route_policy_version=getattr(args, "route_policy_version", None),
         )
     if _json_out(args, [_task_to_dict(t) for t in tasks]):
         return 0
@@ -506,6 +517,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
     field("assignee", task.assignee or "-")
     if task.tenant:
         field("tenant", task.tenant)
+    if task.bucket_key:
+        field("bucket", task.bucket_key)
+    if task.route_policy_ref:
+        field("route", f"{task.route_policy_ref}@{task.route_policy_version}")
     field("workspace", f"{task.workspace_kind}" + (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.branch_name:
         field("branch", task.branch_name)
@@ -597,8 +612,14 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
 
 
 def _cmd_reclaim(args: argparse.Namespace) -> int:
+    try:
+        guards = _lease_guard_kwargs(args, args.task_id)
+    except ValueError as exc:
+        return _err(f"kanban: {exc}", 2)
     with kbc.connect_closing() as conn:
-        ok = kb.reclaim_task(conn, args.task_id, reason=getattr(args, "reason", None))
+        ok = kb.reclaim_task(
+            conn, args.task_id, reason=getattr(args, "reason", None), **guards,
+        )
     return _ok_or_err(ok, f"cannot reclaim {args.task_id} (not running or unknown id)",
                       f"Reclaimed {args.task_id}")
 
@@ -724,6 +745,32 @@ def _cmd_claim(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_lease_spec(args: argparse.Namespace) -> int:
+    capabilities = []
+    for index, raw in enumerate(args.capability or ()):
+        try:
+            provider, remainder = raw.split(":", 1)
+            model, effort = remainder.rsplit(":", 1)
+        except ValueError:
+            payload = {
+                "ok": False,
+                "code": "invalid_worker_capability",
+                "error": f"worker capability {index} must use PROVIDER:MODEL:EFFORT",
+                "capability_index": index,
+            }
+            _print_json(payload)
+            return 1
+        capabilities.append({"provider": provider, "model_id": model, "effort": effort})
+    with kbc.connect_closing() as conn:
+        payload = claim_lease_exec_spec(
+            conn, worker_identity=args.worker_id, worker_capabilities=capabilities,
+            bucket_key=args.bucket_key, ttl_seconds=args.ttl,
+            board=kb.get_current_board(),
+        )
+    _print_json(payload)
+    return 0 if payload["ok"] else 1
+
+
 def _cmd_comment(args: argparse.Namespace) -> int:
     body = " ".join(args.text).strip()
     if args.max_len is not None:
@@ -802,6 +849,75 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _lease_guard_kwargs(args: argparse.Namespace, task_id: str) -> dict[str, Any]:
+    """Resolve exact CLI guards, falling back to the scoped worker environment."""
+    env_task = os.environ.get("HERMES_KANBAN_TASK")
+    if env_task and env_task != task_id:
+        raise ValueError(f"worker is scoped to task {env_task}; refusing to mutate {task_id}")
+    explicit = {
+        "expected_run_id": getattr(args, "expected_run_id", None),
+        "expected_claim_lock": getattr(args, "expected_claim_lock", None),
+        "expected_tenant": getattr(args, "expected_tenant", None),
+        "expected_workspace_path": getattr(args, "expected_workspace_path", None),
+    }
+    identity_keys = (
+        "expected_claim_lock", "expected_tenant", "expected_workspace_path",
+    )
+    explicit_supplied = any(value is not None for value in explicit.values())
+
+    if env_task == task_id:
+        run_id = os.environ.get("HERMES_KANBAN_RUN_ID")
+        claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
+        workspace = os.environ.get("HERMES_KANBAN_WORKSPACE")
+        tenant = os.environ.get("HERMES_KANBAN_TENANT")
+        full_identity = claim_lock is not None or workspace is not None or tenant is not None
+        if full_identity:
+            if not run_id or not str(claim_lock or "").strip() or not str(workspace or "").strip():
+                raise ValueError("worker lease identity is incomplete")
+            try:
+                env_guards: dict[str, Any] = {
+                    "expected_run_id": int(run_id),
+                    "expected_claim_lock": claim_lock,
+                    "expected_tenant": tenant.strip() if tenant and tenant.strip() else None,
+                    "expected_workspace_path": workspace,
+                }
+            except ValueError as exc:
+                raise ValueError("worker run identity is invalid") from exc
+        elif run_id:
+            try:
+                env_guards = {"expected_run_id": int(run_id)}
+            except ValueError as exc:
+                raise ValueError("worker run identity is invalid") from exc
+        else:
+            env_guards = {}
+        if explicit_supplied:
+            identity = tuple(explicit[key] for key in identity_keys)
+            if any(value is not None for value in identity):
+                if not full_identity or (
+                    explicit["expected_run_id"] is None
+                    or any(value is None or not str(value).strip() for value in identity)
+                ):
+                    raise ValueError("worker lease identity cannot be partially overridden")
+                comparable = {**explicit, "expected_run_id": int(explicit["expected_run_id"])}
+                if comparable != env_guards:
+                    raise ValueError("explicit lease identity does not match the worker environment")
+            elif explicit["expected_run_id"] is None or (
+                int(explicit["expected_run_id"]) != env_guards.get("expected_run_id")
+            ):
+                raise ValueError("explicit run identity does not match the worker environment")
+        return env_guards
+
+    if explicit_supplied:
+        identity = tuple(explicit[key] for key in identity_keys)
+        if any(value is not None for value in identity) and (
+            explicit["expected_run_id"] is None
+            or any(value is None or not str(value).strip() for value in identity)
+        ):
+            raise ValueError("lease-scoped writes require the complete expected lease identity")
+        return {key: value for key, value in explicit.items() if value is not None}
+    return {}
+
+
 def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     """Goal judge for every terminal worker handoff (including review).
 
@@ -871,6 +987,11 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         def op(tid):
+            try:
+                guards = _lease_guard_kwargs(args, tid)
+            except ValueError as exc:
+                fail_msg[tid] = f"kanban: {exc}"
+                return False
             gate_err = _goal_gate_error(
                 conn, tid, (summary or args.result or "").strip(), "completion",
                 "Re-scope with kanban edit, or record the block with kanban block instead of completing.",
@@ -880,18 +1001,41 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
             return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                    expected_run_id=_worker_run_id_for(tid))
+                                    **guards)
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
+    has_bucket = getattr(args, "bucket_key", None) is not None
+    has_ref = getattr(args, "route_policy_ref", None) is not None
+    has_version = getattr(args, "route_policy_version", None) is not None
+    if has_ref != has_version:
+        return _err(
+            "kanban: --route-policy-ref and --route-policy-version must be set together", 2,
+        )
+    if args.result is None and not has_bucket and not has_ref:
+        return _err("kanban: edit requires a result or Sunny reference", 2)
     metadata, rc = _parse_metadata_flag(getattr(args, "metadata", None))
     if rc:
         return rc
     with kbc.connect_closing() as conn:
-        ok = kb.edit_completed_task_result(conn, args.task_id, result=args.result,
-                                           summary=getattr(args, "summary", None), metadata=metadata)
+        ok = True
+        if has_bucket or has_ref:
+            route_kwargs = {}
+            if has_bucket:
+                route_kwargs["bucket_key"] = args.bucket_key
+            if has_ref:
+                route_kwargs.update(
+                    route_policy_ref=args.route_policy_ref,
+                    route_policy_version=args.route_policy_version,
+                )
+            ok = kb.update_task_route_references(conn, args.task_id, **route_kwargs)
+        if ok and args.result is not None:
+            ok = kb.edit_completed_task_result(
+                conn, args.task_id, result=args.result,
+                summary=getattr(args, "summary", None), metadata=metadata,
+            )
     return _ok_or_err(ok, f"cannot edit {args.task_id} (unknown id or task is not done)", f"Edited {args.task_id}")
 
 
@@ -1235,6 +1379,7 @@ _HANDLERS = {
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
+    "lease-spec": _cmd_lease_spec,
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,

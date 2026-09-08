@@ -24,6 +24,8 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli.kanban_lease import LEASE_GUARD_UNSET, lease_guard_predicate
+
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
 
@@ -382,6 +384,9 @@ def heartbeat_worker(
     *,
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    expected_claim_lock: Any = LEASE_GUARD_UNSET,
+    expected_tenant: Any = LEASE_GUARD_UNSET,
+    expected_workspace_path: Any = LEASE_GUARD_UNSET,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
 
@@ -390,12 +395,16 @@ def heartbeat_worker(
     Returns False if the task is not running or its claim expired.
     """
     now = int(time.time())
+    guard_sql, guard_params, _ = lease_guard_predicate(
+        expected_run_id=expected_run_id,
+        expected_claim_lock=expected_claim_lock,
+        expected_tenant=expected_tenant,
+        expected_workspace_path=expected_workspace_path,
+    )
     with _kb.write_txn(conn):
         sql = "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ? AND status = 'running'"
-        params: tuple = (now, task_id)
-        if expected_run_id is not None:
-            sql += " AND current_run_id = ?"
-            params += (int(expected_run_id),)
+        params: tuple = (now, task_id, *guard_params)
+        sql += guard_sql
         cur = conn.execute(sql, params)
         if cur.rowcount != 1:
             return False
@@ -2188,6 +2197,12 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     from gateway.session_context import _VAR_MAP
     for key in _VAR_MAP:
         env.pop(key, None)
+    for key in (
+        "HERMES_KANBAN_BOARD", "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID",
+        "HERMES_KANBAN_CLAIM_LOCK", "HERMES_KANBAN_TENANT", "HERMES_KANBAN_WORKSPACE",
+        "HERMES_TENANT",
+    ):
+        env.pop(key, None)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml:
     # without it the child's get_hermes_home() falls back to the DEFAULT
@@ -2201,6 +2216,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         pass
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
+        env["HERMES_KANBAN_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
     # Tag the session `kanban` so session-browsing surfaces filter it out by

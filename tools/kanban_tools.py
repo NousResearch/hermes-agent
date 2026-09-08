@@ -155,6 +155,36 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return None
 
 
+def _worker_lease_guards(task_id: str) -> dict[str, Any]:
+    """Exact active lease identity for a dispatcher-owned worker."""
+    run_id = _own_task_env(task_id, "HERMES_KANBAN_RUN_ID")
+    claim_lock = _own_task_env(task_id, "HERMES_KANBAN_CLAIM_LOCK")
+    workspace = _own_task_env(task_id, "HERMES_KANBAN_WORKSPACE")
+    tenant = _own_task_env(task_id, "HERMES_KANBAN_TENANT")
+    if claim_lock is not None or workspace is not None or tenant is not None:
+        _check(run_id, "worker lease identity is incomplete: missing run id")
+        _check(str(claim_lock or "").strip(),
+               "worker lease identity is incomplete: missing claim lock")
+        _check(str(workspace or "").strip(),
+               "worker lease identity is incomplete: missing workspace")
+        try:
+            parsed_run_id = int(str(run_id))
+        except ValueError as exc:
+            raise _Reject("worker lease identity has an invalid run id") from exc
+        return {
+            "expected_run_id": parsed_run_id,
+            "expected_claim_lock": claim_lock,
+            "expected_tenant": tenant.strip() if tenant and tenant.strip() else None,
+            "expected_workspace_path": workspace,
+        }
+    if not run_id:
+        return {}
+    try:
+        return {"expected_run_id": int(run_id)}
+    except ValueError as exc:
+        raise _Reject("worker lease identity has an invalid run id") from exc
+
+
 def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Optional[dict]:
     """Add trusted worker session id metadata for this worker's own task."""
     session_id = _own_task_env(task_id, "HERMES_SESSION_ID")
@@ -428,14 +458,18 @@ def heartbeat_current_worker_from_env() -> bool:
     try:
         from hermes_cli import kanban_db_dispatch as kbd
         with _board(None, quiet_close=True) as (kb, conn):
-            ops = ((kb.heartbeat_claim, {"claimer": os.environ.get("HERMES_KANBAN_CLAIM_LOCK")}),
-                   (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid)}))
-            for fn, kwargs in ops:
-                op = fn.__name__
-                try:
-                    fn(conn, tid, **kwargs)
-                except Exception:
-                    logger.debug("auto-heartbeat: %s failed", op, exc_info=True)
+            guards = _worker_lease_guards(tid)
+            try:
+                kbd.heartbeat_worker(conn, tid, note=None, **guards)
+            except Exception:
+                logger.debug("auto-heartbeat: heartbeat_worker failed", exc_info=True)
+            try:
+                kb.heartbeat_claim(
+                    conn, tid, claimer=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"),
+                    **guards,
+                )
+            except Exception:
+                logger.debug("auto-heartbeat: heartbeat_claim failed", exc_info=True)
         return True
     except Exception:
         logger.debug("auto-heartbeat: bridge failed", exc_info=True)
@@ -556,6 +590,7 @@ def _handle_complete(args: dict, **kw) -> str:
     _check(summary or result, "provide at least one of: summary (preferred), result")
     _require_dict_metadata(metadata)
     metadata = _stamp_worker_session_metadata(tid, metadata)
+    guards = _worker_lease_guards(tid)
     with _board(args.get("board")) as (kb, conn):
         # Goal-mode pre-completion judge gate (Issue #38367). Prevent workers from bypassing the auxiliary
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
@@ -565,7 +600,7 @@ def _handle_complete(args: dict, **kw) -> str:
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+                created_cards=created_cards, **guards)
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the
@@ -669,14 +704,20 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     Without the claim half, a worker blocked in one long tool call would still
     be reclaimed by ``release_stale_claims``."""
     tid = _worker_guard("kanban_heartbeat", args)
+    guards = _worker_lease_guards(tid)
     from hermes_cli import kanban_db_dispatch as kbd
     with _board(args.get("board")) as (kb, conn):
         # The dispatcher pins HERMES_KANBAN_CLAIM_LOCK at spawn; the default
         # claimer covers locally-driven workers that bypassed the dispatcher.
-        kb.heartbeat_claim(conn, tid, claimer=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"))
         ok = kbd.heartbeat_worker(
-            conn, tid, note=args.get("note"), expected_run_id=_worker_run_id(tid))
+            conn, tid, note=args.get("note"), **guards)
         _check(ok, f"could not heartbeat {tid} (unknown id or not running)")
+        _check(
+            kb.heartbeat_claim(
+                conn, tid, claimer=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"), **guards,
+            ),
+            f"could not extend claim for {tid} (stale lease identity)",
+        )
         return _ok(task_id=tid)
 
 

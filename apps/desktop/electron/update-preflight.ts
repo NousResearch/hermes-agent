@@ -45,6 +45,7 @@ export type UpdatePreflightOutcome =
       reason: 'unlock-failed' | 'holders' | 'marker-unavailable' | 'quiesce-incomplete' | 'needs-elevation'
       result?: VenvBlockerScanResult
       elevationHolders?: ForceReleaseHolder[]
+      holders?: ForceReleaseHolder[]
     }
   | { kind: 'probe-failure'; error: string; message: string }
 
@@ -192,6 +193,7 @@ export async function runWindowsUpdatePreflight(
         return {
           kind: 'blocked',
           reason: 'unlock-failed',
+          holders: forceOutcome.holders,
           message: forceOutcome.message
         }
       }
@@ -263,6 +265,7 @@ export async function runWindowsUpdatePreflight(
           kind: 'blocked',
           reason: 'unlock-failed',
           result: blockedResult,
+          holders: forced.holders,
           message: forced.message
         }
       }

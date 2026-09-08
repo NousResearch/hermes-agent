@@ -2635,7 +2635,10 @@ export const zhHant = defineLocale({
   updates: {
     rebuildTitle: '桌面應用程式需要重新建置',
     rebuildBody: '程式碼已是最新，但目前執行的應用程式是由舊版本建置的。立即更新以重新建置。',
+    cancellingWait: '正在取消…',
+    cancelWaitFailed: 'Hermes 無法取消等待。請重試，或關閉列出的程序以繼續。',
     stages: {
+      waiting: '正在等待程序關閉',
       idle: '準備中…',
       prepare: '準備中…',
       fetch: '下載中…',

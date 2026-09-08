@@ -17,7 +17,8 @@ import {
   RELEASE_GATE_DEADLINE_MS,
   RELEASE_GATE_POLL_MS,
   type ReleaseGateDeps,
-  waitForBackendRelease
+  waitForBackendRelease,
+  waitForInstallUnlock
 } from './backend-release-gate'
 
 /** A fake clock where sleep() advances time instantly. */
@@ -241,6 +242,7 @@ describe('install lock probe the gate polls', () => {
 
   it('stays locked when attribution fails', async () => {
     let t = 0
+
     const probe = createInstallLockGateProbe({
       now: () => t,
       probeLocks: () => ({ definite: [], shared: ['C:\\i\\venv\\shared.pyd'] }),
@@ -254,6 +256,7 @@ describe('install lock probe the gate polls', () => {
 
   it('reports unlocked without attribution when nothing is locked', async () => {
     const attributions: number[] = []
+
     const probe = createInstallLockGateProbe({
       probeLocks: () => ({ definite: [], shared: [] }),
       countAttributedHolders: async budgetMs => {
@@ -265,5 +268,90 @@ describe('install lock probe the gate polls', () => {
 
     expect(await probe()).toBe(false)
     expect(attributions).toEqual([])
+  })
+})
+
+describe('waiting for installation locks', () => {
+  it('polls until unlocked without authorizing mutation', async () => {
+    let probes = 0
+    let waits = 0
+
+    expect(
+      await waitForInstallUnlock({
+        isLocked: async () => ++probes < 3,
+        ownsClaim: () => true,
+        signal: new AbortController().signal,
+        wait: async () => {
+          waits++
+        }
+      })
+    ).toBe('clear')
+    expect(probes).toBe(3)
+    expect(waits).toBe(2)
+  })
+
+  it('cancellation wins over an in-flight probe reporting clear', async () => {
+    const controller = new AbortController()
+
+    expect(
+      await waitForInstallUnlock({
+        isLocked: async () => {
+          controller.abort()
+
+          return false
+        },
+        ownsClaim: () => true,
+        signal: controller.signal
+      })
+    ).toBe('cancelled')
+  })
+
+  it('rejects clearance after losing the claim during a probe', async () => {
+    let owned = true
+
+    expect(
+      await waitForInstallUnlock({
+        isLocked: async () => {
+          owned = false
+
+          return false
+        },
+        ownsClaim: () => owned,
+        signal: new AbortController().signal
+      })
+    ).toBe('claim-lost')
+  })
+
+  it('fails closed when the lock probe fails', async () => {
+    expect(
+      await waitForInstallUnlock({
+        isLocked: async () => {
+          throw new Error('probe failed')
+        },
+        ownsClaim: () => true,
+        signal: new AbortController().signal
+      })
+    ).toBe('probe-failed')
+  })
+
+  it('stops at its deadline even while the lock remains', async () => {
+    let now = 0
+    const waits: number[] = []
+
+    expect(
+      await waitForInstallUnlock({
+        isLocked: async () => true,
+        ownsClaim: () => true,
+        signal: new AbortController().signal,
+        pollMs: 10,
+        timeoutMs: 25,
+        now: () => now,
+        wait: async ms => {
+          waits.push(ms)
+          now += ms
+        }
+      })
+    ).toBe('timed-out')
+    expect(waits).toEqual([10, 10, 5])
   })
 })

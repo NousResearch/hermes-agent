@@ -1,4 +1,6 @@
 """Read-only verification at the Windows Desktop handoff receipt boundary."""
+import argparse
+import importlib
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -81,3 +83,28 @@ def verify_windows_desktop_update(project_root: Path) -> None:
     _verify_packaged_entry(executable.parent / "resources")
     if _desktop_build_needed(desktop, project_root, source_mode=False):
         raise RuntimeError("The updated Desktop build is stale, unstamped, or incomplete")
+
+
+VERIFICATION_SENTINEL = "HERMES_DESKTOP_UPDATE_VERIFY_OK_V1"
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Verify the updated runtime and Desktop build from an explicit checkout root.
+
+    The Windows hand-off invokes this as ``python -m hermes_cli.desktop_update_verify
+    <InstallRoot>``. Importing ``hermes_cli.main`` in that fresh process is the
+    runtime half of the receipt — a torn update that breaks the CLI entry point
+    must fail here, not at the next user launch. The versioned stdout sentinel is
+    what the hand-off keys on: an older copy of this module defines no entry point,
+    exits 0, and prints nothing, so it fails closed instead of verifying nothing.
+    """
+    importlib.import_module("hermes_cli.main")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("project_root", type=Path)
+    args = parser.parse_args(argv)
+    verify_windows_desktop_update(args.project_root)
+    print(VERIFICATION_SENTINEL)
+
+
+if __name__ == "__main__":
+    main()

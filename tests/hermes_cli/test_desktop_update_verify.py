@@ -18,6 +18,10 @@ def bundle(tmp_path, monkeypatch):
     (dist / 'assets/index.js').write_text('export {};', encoding='utf-8')
     entry = b'import "electron";'
     (dist / 'electron-main.mjs').write_bytes(entry)
+    # Keep one real source input outside the ignored release tree. Without it,
+    # the correct root and an empty cwd hash identically, so a cwd regression
+    # could pass this fixture while verifying the wrong checkout.
+    (desktop / 'package.json').write_text('{"name":"fixture"}', encoding='utf-8')
     package = json.dumps({'main': 'dist/electron-main.mjs'}).encode()
     header = json.dumps({'files': {'package.json': {'size': len(package), 'offset': '0'}, 'dist': {'files': {'electron-main.mjs': {'size': len(entry), 'unpacked': True}}}}}).encode()
     padded = header + b'\0' * (-len(header) % 4)
@@ -36,6 +40,35 @@ def bundle(tmp_path, monkeypatch):
 def test_readable_packaged_entry_passes(bundle):
     root, _, _ = bundle
     verify.verify_windows_desktop_update(root)
+
+
+def test_cli_verifies_explicit_root_from_an_unrelated_cwd(bundle, tmp_path, monkeypatch, capsys):
+    root, _, _ = bundle
+    unrelated = tmp_path / 'unrelated'
+    unrelated.mkdir()
+    monkeypatch.chdir(unrelated)
+
+    # This is the exact regression guard: substituting Path.cwd() for the
+    # explicit hand-off root must be red under the same fixture.
+    with pytest.raises(RuntimeError, match='stale, unstamped, or incomplete'):
+        verify.verify_windows_desktop_update(unrelated)
+
+    verify.main([str(root)])
+    assert capsys.readouterr().out.strip() == verify.VERIFICATION_SENTINEL
+
+
+def test_cli_fails_closed_when_updated_runtime_cannot_import(bundle, monkeypatch):
+    root, _, _ = bundle
+    real_import_module = verify.importlib.import_module
+
+    def fail_cli_entrypoint(name, package=None):
+        if name == 'hermes_cli.main':
+            raise ImportError('simulated torn CLI runtime')
+        return real_import_module(name, package)
+
+    monkeypatch.setattr(verify.importlib, 'import_module', fail_cli_entrypoint)
+    with pytest.raises(ImportError, match='simulated torn CLI runtime'):
+        verify.main([str(root)])
 
 
 @pytest.mark.parametrize('damage', ['archive', 'truncated', 'entry', 'empty-index', 'unreadable-index', 'no-module'])

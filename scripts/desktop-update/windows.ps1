@@ -1606,9 +1606,11 @@ try {
 
     # A zero-exit update is not proof that the runtime survived the update.
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
-        $verifyCode = "import hermes_cli.main; from pathlib import Path; from hermes_cli.desktop_update_verify import verify_windows_desktop_update; verify_windows_desktop_update(Path.cwd())"
-        $verify = Invoke-HermesStep $pythonExe @("-c", $verifyCode) "verify"
-        if ($verify.Code -ne 0) {
+        $verify = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.desktop_update_verify", $InstallRoot) "verify"
+        # The sentinel line proves the CURRENT verifier module ran to completion —
+        # a stale module (branch switch, torn update) predating the entry point
+        # exits 0 having verified nothing, and an empty/absent output must fail.
+        if ($verify.Code -ne 0 -or $verify.Output -notmatch "(?m)^HERMES_DESKTOP_UPDATE_VERIFY_OK_V1\r?$") {
             $finalCode = 8
             $finalMsg = "The updated Hermes runtime or Desktop build failed verification. Repair the installation and review antivirus quarantine before retrying."
             Write-HandoffLog $finalMsg

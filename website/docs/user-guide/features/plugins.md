@@ -144,7 +144,9 @@ Within each source, Hermes also recognizes sub-category directories that route p
 | `plugins/context_engine/<name>/` | Context-compression engines (`ctx.register_context_engine()`) | **Own loader** in `plugins/context_engine/__init__.py` (one active at a time) |
 | `plugins/model-providers/<name>/` | LLM provider profiles (`register_provider(ProviderProfile(...))`) | **Own loader** in `providers/__init__.py` (lazily scanned on first `get_provider_profile()` call) |
 
-User plugins at `~/.hermes/plugins/model-providers/<name>/` and `~/.hermes/plugins/memory/<name>/` override bundled plugins of the same name — last-writer-wins in `register_provider()` / `register_memory_provider()`. Drop a directory in, and it replaces the built-in without any repo edits.
+User plugins at `~/.hermes/plugins/model-providers/<name>/` override bundled profiles of the same name — last-writer-wins in `register_provider()`. Drop a directory in, and it replaces the built-in without any repo edits.
+
+Memory providers are the exception. Their loader resolves **bundled first**: a user-installed provider at `~/.hermes/plugins/<name>/` with the same name as a bundled provider is silently skipped, and `register_memory_provider()` is a recorded no-op rather than an activation path. Install a memory provider under a distinct name and select it with `memory.provider` in `~/.hermes/config.yaml`.
 
 ## Plugins are opt-in (with a few exceptions)
 

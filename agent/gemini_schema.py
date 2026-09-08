@@ -16,6 +16,12 @@ _GEMINI_SCHEMA_ALLOWED_KEYS = {
 }
 
 
+_GEMINI_STRUCTURAL_KEYS = {
+    "array": {"items", "minItems", "maxItems"},
+    "object": {"properties", "required", "minProperties", "maxProperties", "propertyOrdering"},
+}
+
+
 def _stringify_enum_value(item: Any) -> Any:
     """Gemini-safe string for a scalar enum entry, or None to drop it."""
     if isinstance(item, bool):
@@ -25,6 +31,30 @@ def _stringify_enum_value(item: Any) -> Any:
     return item if isinstance(item, str) else None
 
 
+def _normalize_gemini_type_array(type_array: list, cleaned: Dict[str, Any]) -> None:
+    """Keep union alternatives and their branch-local structural constraints."""
+    derived: Dict[str, Any] = {}
+    _normalize_type_array(type_array, derived)
+    if "anyOf" in derived:
+        constraints = {"anyOf": cleaned["anyOf"]} if "anyOf" in cleaned else {}
+        # Gemini requires items/properties on the typed branch itself, not
+        # its typeless parent. Keep required paired with those properties.
+        structural = {key: cleaned.pop(key) for keys in _GEMINI_STRUCTURAL_KEYS.values()
+                      for key in keys if key in cleaned}
+        cleaned["anyOf"] = [
+            sanitize_gemini_schema({**branch, **constraints, **{
+                key: value for key, value in structural.items()
+                if key in _GEMINI_STRUCTURAL_KEYS.get(branch["type"], ())
+            }}) for branch in derived["anyOf"]
+        ]
+    else:
+        cleaned["type"] = derived["type"]
+    if derived.get("nullable"):
+        # Derived from "null" in the array. Set AFTER the loop so it beats an input
+        # ``nullable: false`` regardless of which key the producer emitted first.
+        cleaned["nullable"] = True
+
+
 def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
     """Gemini-compatible copy of a tool parameter schema: keeps only the documented subset
     (drops e.g. ``$schema`` / ``additionalProperties``) and recursively sanitizes nested
@@ -32,7 +62,6 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
     if not isinstance(schema, dict):
         return {}
     cleaned: Dict[str, Any] = {}
-    type_array: Any = None
     for key, value in schema.items():
         if key not in _GEMINI_SCHEMA_ALLOWED_KEYS:
             continue
@@ -44,33 +73,21 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
         elif key == "anyOf":
             if isinstance(value, list):
                 cleaned[key] = [sanitize_gemini_schema(item) for item in value if isinstance(item, dict)]
-        elif key == "type" and isinstance(value, list):
-            type_array = value  # normalized after the loop, so the derived ``nullable`` wins
         else:
             cleaned[key] = value
 
-    # JSON Schema allows an array ``type`` (``["string", "null"]``, ``["string", "integer"]``).
-    # Gemini's ``Schema`` accepts only a single string, and the enum check below would evaluate
-    # ``[...] in {...}`` -> TypeError: unhashable type: 'list', aborting translation of the WHOLE
-    # tool catalog. Reuse the sanitizer's normalization so a multi-type array becomes an ``anyOf``
-    # of single-type branches (no branch dropped) rather than keeping only the first.
-    if type_array is not None:
-        derived: Dict[str, Any] = {}
-        _normalize_type_array(type_array, derived)
-        if "anyOf" in derived:
-            cleaned["anyOf"] = derived["anyOf"]
-        else:
-            cleaned["type"] = derived["type"]
-        if derived.get("nullable"):
-            # Derived from "null" in the array. Set AFTER the loop so it beats an input
-            # ``nullable: false`` regardless of which key the producer emitted first.
-            cleaned["nullable"] = True
+    type_array = cleaned.get("type")
+    if isinstance(type_array, list):
+        cleaned.pop("type")
+        _normalize_gemini_type_array(type_array, cleaned)
 
     # Gemini requires every ``enum`` entry to be a string even for
     # integer/number/boolean types; the declared type stays intact and Gemini
     # still emits typed tool arguments at runtime. dict.fromkeys = ordered dedupe.
     enum_val = cleaned.get("enum")
-    if isinstance(enum_val, list) and cleaned.get("type") in {"integer", "number", "boolean"}:
+    if isinstance(enum_val, list) and (
+        isinstance(type_array, list) or cleaned.get("type") in {"integer", "number", "boolean"}
+    ):
         if stringified := list(dict.fromkeys(v for v in map(_stringify_enum_value, enum_val) if v is not None)):
             cleaned["enum"] = stringified
         else:

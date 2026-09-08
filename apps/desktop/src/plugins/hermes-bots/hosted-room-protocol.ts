@@ -283,7 +283,7 @@ export function applyHostedPage(previous: HostedReplay, raw: unknown, room: Host
     }
 
     // Validate imported records at admission too, before they can poison the rendered cache.
-    if (kind === 'room.created') {legacyHistoryTranscript({ kind, payload, event_id: id })}
+    if (kind === 'room.created') {legacyHistoryTranscript({ kind, payload, event_id: id, seq })}
 
     if (typeof event.created_at !== 'number' || !Number.isFinite(event.created_at)) {throw new Error('Invalid hosted room timestamp')}
     const epoch = event.authority_epoch === null ? null : integer(event.authority_epoch, 1)
@@ -314,7 +314,7 @@ export function hostedMembers(room: HostedRoomSummary): GroupMember[] {
 
 /** Imported records are a read-only archive, not native turns or planner input.
  * Keep source order and isolate thread/entry identities across independent histories. */
-function legacyHistoryTranscript(event: Pick<HostedEvent, 'kind' | 'payload' | 'event_id'>): GroupMessage[] {
+function legacyHistoryTranscript(event: Pick<HostedEvent, 'kind' | 'payload' | 'event_id' | 'seq'>): GroupMessage[] {
   if (event.kind !== 'room.created' || !('legacy_history' in event.payload)) {return []}
   const history = hostedRecord(event.payload.legacy_history)
 
@@ -333,6 +333,7 @@ function legacyHistoryTranscript(event: Pick<HostedEvent, 'kind' | 'payload' | '
 
     if (!Array.isArray(source.records)) {throw new Error('Invalid legacy history records')}
     const ids = new Set<string>()
+    const threads = new Map<string, number>()
 
     for (const rawRecord of source.records) {
       const record = hostedRecord(rawRecord)
@@ -354,12 +355,16 @@ function legacyHistoryTranscript(event: Pick<HostedEvent, 'kind' | 'payload' | '
       }
 
       const provenance = surface === 'desktop' ? 'Desktop' : 'Telegram'
+      // Frozen source order gives arbitrary original IDs stable, bounded native reply IDs.
+      const thread = JSON.stringify(record.thread ?? 'legacy')
+
+      if (!threads.has(thread)) {threads.set(thread, threads.size)}
 
       result.push({
         id: JSON.stringify([event.event_id, surface, id]), at: record.at,
         from: { kind: author.kind as 'user' | 'member', name, source: `Imported ${provenance}` },
         text: `[Imported ${provenance} history, not a native turn]\n\n${record.text}`,
-        thread: JSON.stringify(['legacy-history', surface, record.thread ?? 'legacy'])
+        thread: `legacy-history:${event.seq}:${surface}:${threads.get(thread)}`
       })
     }
   }

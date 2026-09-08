@@ -5,7 +5,7 @@ import { defineLocale } from './define-locale'
 export const zhHant = defineLocale({
   sessionImport: {
     title: '從其他應用程式繼續',
-    subtitle: '將對話匯入 Hermes，接著上次的進度繼續。',
+    subtitle: '匯入已連線電腦上的本機對話。不包含僅儲存在雲端的工作階段。',
     action: '匯入工作階段',
     readingFrom: '讀取自',
     connectedComputer: '已連線的電腦',
@@ -16,7 +16,7 @@ export const zhHant = defineLocale({
     scanError: '無法尋找工作階段',
     scanHelp: '請檢查後端連線並重試。舊版後端可能需要更新。',
     empty: '找不到對話',
-    emptyHelp: '此後端上的 Claude Code 和 Codex 工作階段將顯示在這裡。',
+    emptyHelp: '本機 Claude Code、Claude Cowork 和 ChatGPT Work / Codex 工作階段將顯示在這裡。',
     noMatches: '沒有符合的對話',
     searchHelp: '嘗試其他標題或資料夾，或載入更多工作階段。',
     skipped: '部分記錄為空白、無法讀取或過大，已略過。',

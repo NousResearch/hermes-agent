@@ -5,7 +5,7 @@ import type { Translations } from './types'
 export const zh: Translations = {
   sessionImport: {
     title: '从其他应用继续',
-    subtitle: '将对话导入 Hermes，接着上次的进度继续。',
+    subtitle: '导入已连接计算机上的本地对话。不包含仅存储在云端的会话。',
     action: '导入会话',
     readingFrom: '读取自',
     connectedComputer: '已连接的计算机',
@@ -16,7 +16,7 @@ export const zh: Translations = {
     scanError: '无法查找会话',
     scanHelp: '请检查后端连接并重试。旧版后端可能需要更新。',
     empty: '未找到对话',
-    emptyHelp: '此后端上的 Claude Code 和 Codex 会话将显示在这里。',
+    emptyHelp: '本地 Claude Code、Claude Cowork 和 ChatGPT Work / Codex 会话将显示在这里。',
     noMatches: '没有匹配的对话',
     searchHelp: '尝试其他标题或文件夹，或加载更多会话。',
     skipped: '部分日志为空、无法读取或过大，已跳过。',

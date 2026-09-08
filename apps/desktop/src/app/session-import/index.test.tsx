@@ -29,6 +29,7 @@ const session = {
   source: 'claude',
   label: 'Claude Code',
   title: 'Repair imports',
+  project: 'Client Alpha',
   cwd: '/work/project',
   mtime: 1000,
   turn_count: 2,
@@ -65,6 +66,7 @@ it('browses without importing, then retries a failed import on the captured owne
   })
   const { onOpenSession } = mount()
   fireEvent.click(await screen.findByRole('button', { name: /Repair imports/ }))
+  expect(screen.getByText('Client Alpha')).toBeTruthy()
   await screen.findByText('Please repair this')
   expect(attempts).toBe(0)
   fireEvent.click(screen.getByRole('button', { name: 'Continue in Hermes' }))
@@ -99,4 +101,25 @@ it('does not navigate when an import finishes after the view has closed', async 
   finish({ session_id: 'existing', already_imported: true })
   await waitFor(() => expect(setSessionOwnerHint).toHaveBeenCalledWith('existing', owner))
   expect(onOpenSession).not.toHaveBeenCalled()
+})
+
+it('shows installed local sources and explains that cloud sessions are excluded', async () => {
+  vi.mocked(foreignRequest).mockImplementation(async (_owner, method) => {
+    if (method === 'list') {
+      return {
+        sessions: [],
+        sources: ['claude', 'cowork', 'codex'],
+        next_offset: null,
+        host: 'studio',
+        unreadable: 0
+      }
+    }
+
+    throw new Error(`Unexpected ${method}`)
+  })
+
+  mount()
+  expect(await screen.findByRole('button', { name: 'Claude Cowork' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'ChatGPT Work / Codex' })).toBeTruthy()
+  expect(screen.getByText(/Cloud-only sessions are not included/i)).toBeTruthy()
 })

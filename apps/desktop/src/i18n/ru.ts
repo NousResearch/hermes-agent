@@ -26,7 +26,7 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 export const ru = defineLocale({
   sessionImport: {
     title: 'Продолжить из другого приложения',
-    subtitle: 'Перенесите разговор в Hermes и продолжите с того места, где остановились.',
+    subtitle: 'Импортируйте локальные разговоры с подключённого компьютера. Облачные сессии не включены.',
     action: 'Импортировать сессию',
     readingFrom: 'Читаем с',
     connectedComputer: 'подключённого компьютера',
@@ -37,7 +37,7 @@ export const ru = defineLocale({
     scanError: 'Не удалось найти сессии',
     scanHelp: 'Проверьте подключение к серверу и повторите попытку. Старому серверу может требоваться обновление.',
     empty: 'Разговоров пока нет',
-    emptyHelp: 'Здесь появятся сессии Claude Code и Codex с этого сервера.',
+    emptyHelp: 'Здесь появятся локальные сессии Claude Code, Claude Cowork и ChatGPT Work / Codex.',
     noMatches: 'Совпадений нет',
     searchHelp: 'Попробуйте другой заголовок или папку либо загрузите ещё сессии.',
     skipped: 'Некоторые журналы пусты, недоступны или слишком велики для просмотра.',

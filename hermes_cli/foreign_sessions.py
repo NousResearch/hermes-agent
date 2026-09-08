@@ -1,4 +1,4 @@
-"""Import sessions from foreign coding agents (Claude Code, Codex CLI). Foreign files are only ever read;
+"""Import sessions from foreign agents. Foreign files are only ever read;
 imported history must satisfy the provider role-alternation invariant (see ``_merge_turns``)."""
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from stat import S_ISREG
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 # User-message texts that are really injected context wrappers, not typed input.
 _WRAPPER_TAG_RE = re.compile(
@@ -22,15 +22,19 @@ _WRAPPER_TAG_RE = re.compile(
     r"command-name|command-message|local-command-stdout|system-reminder)\b", re.IGNORECASE)
 
 _TITLE_MAX = 60
-_SOURCE_LABELS = {"claude": "Claude Code", "codex": "Codex CLI"}
-_SOURCE_DB_NAMES = {"claude": "claude-code", "codex": "codex-cli"}
+_SOURCE_LABELS = {
+    "claude": "Claude Code",
+    "cowork": "Claude Cowork",
+    "codex": "ChatGPT Work / Codex",
+}
+_SOURCE_DB_NAMES = {"claude": "claude-code", "cowork": "claude-cowork", "codex": "codex-cli"}
 
 
 @dataclass
 class ForeignSession:
     """A discoverable session in another tool's on-disk store."""
 
-    source: str  # "claude" | "codex"
+    source: str  # "claude" | "cowork" | "codex"
     path: Path
     mtime: float
     cwd: Optional[str] = None
@@ -166,25 +170,55 @@ def parse_codex_session(path: Path) -> Dict[str, Any]:
 # source -> (default root under ~, glob pattern, recursive, parser)
 _SOURCES = {
     "claude": ((".claude", "projects"), "*/*.jsonl", False, parse_claude_session),
+    "cowork": (("Library", "Application Support", "Claude", "local-agent-mode-sessions"),
+               "*/*/local_*/.claude/projects/*/*.jsonl", False, parse_claude_session),
     "codex": ((".codex", "sessions"), "rollout-*.jsonl", True, parse_codex_session),
 }
+
+
+def _source_roots(source: str, *, home: Optional[Path] = None, platform: Optional[str] = None,
+                  environ: Optional[Mapping[str, str]] = None) -> List[Path]:
+    """Default storage roots for one source. Cowork follows Claude Desktop's platform layout."""
+    default_root, _, _, _ = _SOURCES[source]
+    home = home or Path.home()
+    if source != "cowork":
+        return [home.joinpath(*default_root).resolve()]
+
+    platform = platform or sys.platform
+    if platform == "darwin":
+        return [(home / "Library" / "Application Support" / name / "local-agent-mode-sessions").resolve()
+                for name in ("Claude", "Claude-3p")]
+    if platform != "win32":
+        return []
+
+    environ = os.environ if environ is None else environ
+    appdata = Path(environ.get("APPDATA", str(home / "AppData" / "Roaming")))
+    local = Path(environ.get("LOCALAPPDATA", str(home / "AppData" / "Local")))
+    roots = [appdata / name / "local-agent-mode-sessions" for name in ("Claude", "Claude-3p")]
+    roots.append(local / "Claude-3p" / "local-agent-mode-sessions")
+    roots.extend(local.glob("Packages/Claude_*/LocalCache/Roaming/Claude/local-agent-mode-sessions"))
+    return list(dict.fromkeys(path.resolve() for path in roots))
 
 
 def _walk(source: str, root: Optional[Path] = None) -> List[Tuple[Path, os.stat_result]]:
     """Regular log files of *source* under *root* (default ``~/<tool dir>``) as ``(path, stat)``,
     newest first. Symlinks escaping the root and unreadable/rotated entries are skipped, so one
     bad file never hides the rest. Shared by the CLI picker and the desktop browser."""
-    default_root, pattern, recursive, _ = _SOURCES[source]
-    root = (Path(root) if root else Path.home().joinpath(*default_root)).resolve()
+    _, pattern, recursive, _ = _SOURCES[source]
+    roots = [Path(root).resolve()] if root else _source_roots(source)
     found: List[Tuple[Path, os.stat_result]] = []
-    for path in (root.rglob(pattern) if recursive else root.glob(pattern)) if root.is_dir() else ():
-        try:
-            resolved = path.resolve()
-            st = resolved.stat()
-        except OSError:
-            continue
-        if resolved.is_relative_to(root) and S_ISREG(st.st_mode):
-            found.append((resolved, st))
+    seen = set()
+    for source_root in roots:
+        for path in ((source_root.rglob(pattern) if recursive else source_root.glob(pattern))
+                     if source_root.is_dir() else ()):
+            try:
+                resolved = path.resolve()
+                st = resolved.stat()
+            except OSError:
+                continue
+            if resolved.is_relative_to(source_root) and resolved not in seen and S_ISREG(st.st_mode):
+                seen.add(resolved)
+                found.append((resolved, st))
     found.sort(key=lambda item: item[1].st_mtime, reverse=True)
     return found
 
@@ -250,7 +284,7 @@ def pick_foreign_session(source: Optional[str] = None, *, limit: int = 25) -> Op
     """Interactive numbered picker. Returns None when nothing was chosen."""
     sessions = gather_foreign_sessions(source, limit=limit)
     if not sessions:
-        where = _SOURCE_LABELS.get(source or "", "Claude Code or Codex CLI")
+        where = _SOURCE_LABELS.get(source or "", "Claude Code or ChatGPT Work / Codex")
         print(f"No {where} sessions found on this machine.")
         return None
     print("Foreign sessions (newest first):")

@@ -17,7 +17,13 @@ import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { OverlayView } from '../overlays/overlay-view'
 import { PanelEmpty } from '../overlays/panel'
 
-import { type ForeignImportResult, type ForeignPage, type ForeignPreview, foreignRequest } from './api'
+import {
+  type ForeignImportResult,
+  type ForeignPage,
+  type ForeignPreview,
+  foreignRequest,
+  type ForeignSource
+} from './api'
 
 interface SessionImportViewProps {
   owner: SessionOwnerRoute
@@ -29,7 +35,8 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
   const { t, locale } = useI18n()
   const copy = t.sessionImport
   const queryClient = useQueryClient()
-  const [source, setSource] = useState<'all' | 'claude' | 'codex'>('all')
+  const [source, setSource] = useState<'all' | ForeignSource>('all')
+  const [availableSources, setAvailableSources] = useState<ForeignSource[]>(['claude', 'codex'])
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
@@ -61,12 +68,22 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
     retry: false
   })
 
+  useEffect(() => {
+    const reported = sessions.data?.pages[0]?.sources
+
+    if (reported) {
+      setAvailableSources(reported)
+    }
+  }, [sessions.data])
+
   const rows = [
     ...new Map((sessions.data?.pages.flatMap(page => page.sessions) ?? []).map(row => [row.id, row])).values()
   ]
 
   const visible = rows.filter(row =>
-    `${row.title} ${row.cwd ?? ''} ${row.excerpt}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())
+    `${row.title} ${row.project ?? ''} ${row.cwd ?? ''} ${row.excerpt}`
+      .toLocaleLowerCase()
+      .includes(search.toLocaleLowerCase())
   )
 
   const current = rows.find(row => row.id === selected)
@@ -157,14 +174,15 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
             <div className="flex flex-col gap-5 px-6 pb-4 pt-6">
               <SegmentedControl
                 onChange={value => {
-                  setSource(value)
+                  setSource(value as 'all' | ForeignSource)
                   setSelected(null)
                   setError('')
                 }}
                 options={[
                   { id: 'all', label: copy.all },
-                  { id: 'claude', label: 'Claude Code' },
-                  { id: 'codex', label: 'Codex' }
+                  ...(availableSources.includes('claude') ? [{ id: 'claude', label: 'Claude Code' }] : []),
+                  ...(availableSources.includes('cowork') ? [{ id: 'cowork', label: 'Claude Cowork' }] : []),
+                  ...(availableSources.includes('codex') ? [{ id: 'codex', label: 'ChatGPT Work / Codex' }] : [])
                 ]}
                 value={source}
               />
@@ -233,7 +251,7 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
                         {row.title}
                       </span>
                       <span className="mt-1 block truncate text-xs leading-5 text-(--ui-text-secondary)">
-                        {row.cwd || row.excerpt}
+                        {row.project || row.cwd || row.excerpt}
                       </span>
                     </button>
                   </div>

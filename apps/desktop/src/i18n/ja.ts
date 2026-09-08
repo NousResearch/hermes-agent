@@ -5,7 +5,7 @@ import { defineLocale } from './define-locale'
 export const ja = defineLocale({
   sessionImport: {
     title: '別のアプリから続ける',
-    subtitle: '会話をHermesに取り込み、続きを始めましょう。',
+    subtitle: '接続先のコンピューターにあるローカルの会話を取り込みます。クラウドのみのセッションは含まれません。',
     action: 'セッションを取り込む',
     readingFrom: '読み込み元',
     connectedComputer: '接続先のコンピューター',
@@ -16,7 +16,7 @@ export const ja = defineLocale({
     scanError: 'セッションを取得できません',
     scanHelp: 'バックエンドの接続を確認して再試行してください。古いバックエンドは更新が必要な場合があります。',
     empty: '会話が見つかりません',
-    emptyHelp: 'このバックエンドのClaude CodeとCodexのセッションがここに表示されます。',
+    emptyHelp: 'ローカルのClaude Code、Claude Cowork、ChatGPT Work / Codexのセッションがここに表示されます。',
     noMatches: '一致する会話がありません',
     searchHelp: '別のタイトルやフォルダーを検索するか、セッションを追加で読み込んでください。',
     skipped: '空、読み込み不可、または大きすぎるログをスキップしました。',

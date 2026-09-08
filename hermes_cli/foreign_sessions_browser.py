@@ -1,13 +1,17 @@
 """Backend-local discovery and previews for the desktop session importer."""
 
 import hashlib
+import json
 import re
 import socket
 from pathlib import Path
+from stat import S_ISREG
 
-from hermes_cli.foreign_sessions import _SOURCE_DB_NAMES, _SOURCE_LABELS, _SOURCES, _walk
+from hermes_cli.foreign_sessions import _SOURCE_DB_NAMES, _SOURCE_LABELS, _SOURCES, _source_roots, _walk
 
 MAX_LOG_BYTES = 32 * 1024 * 1024
+MAX_COWORK_METADATA_BYTES = 8 * 1024 * 1024
+MAX_METADATA_TEXT = 180
 
 
 def _display_title(parsed, source):
@@ -17,6 +21,29 @@ def _display_title(parsed, source):
     request = re.split(r"(?im)^#{1,6}\s*My request:\s*$", first_user, maxsplit=1)
     title = request[-1].strip().splitlines()[0] if len(request) > 1 and request[-1].strip() else parsed["title_guess"]
     return (title or _SOURCE_LABELS[source]).lstrip("# ")[:180]
+
+
+def _cowork_metadata(path):
+    claude_dir = next((parent for parent in path.parents if parent.name == ".claude"), None)
+    session_dir = claude_dir.parent if claude_dir is not None else None
+    if session_dir is None or not session_dir.name.startswith("local_"):
+        return {}
+    try:
+        metadata_path = session_dir.with_suffix(".json").resolve()
+        st = metadata_path.stat()
+        if metadata_path.parent != session_dir.parent or not S_ISREG(st.st_mode) or st.st_size > MAX_COWORK_METADATA_BYTES:
+            return {}
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(metadata, dict):
+        return {}
+    folders = metadata.get("userSelectedFolders")
+    names = [re.split(r"[/\\]", folder.rstrip("/\\"))[-1]
+             for folder in folders if isinstance(folder, str) and folder.rstrip("/\\")] if isinstance(folders, list) else []
+    title = metadata.get("title")
+    return {"title": title.strip()[:MAX_METADATA_TEXT] if isinstance(title, str) and title.strip() else None,
+            "project": ", ".join(dict.fromkeys(names))[:MAX_METADATA_TEXT] or None}
 
 
 def _candidates(source=None):
@@ -56,18 +83,22 @@ def list_foreign_sessions(source=None, offset=0, limit=25):
     # Page candidates before parsing. Empty or oversized logs cannot turn a
     # request for 25 rows into an unbounded transcript scan.
     for candidate in candidates[offset:offset + limit]:
-        mtime, handle, name, _, _ = candidate
+        mtime, handle, name, path, _ = candidate
         try:
             parsed = _parse(candidate)
         except (ValueError, OSError):
             unreadable += 1
             continue
+        metadata = _cowork_metadata(path) if name == "cowork" else {}
         rows.append({"id": handle, "source": name, "label": _SOURCE_LABELS[name],
-                     "title": _display_title(parsed, name),
+                     "title": metadata.get("title") or _display_title(parsed, name),
+                     "project": metadata.get("project"),
                      "cwd": parsed["cwd"], "mtime": mtime, "turn_count": len(parsed["turns"]),
                      "excerpt": parsed["turns"][0]["content"][:200]})
     next_offset = offset + limit
-    return {"sessions": rows, "next_offset": next_offset if next_offset < len(candidates) else None,
+    available = [name for name in _SOURCES if any(root.is_dir() for root in _source_roots(name))]
+    return {"sessions": rows, "sources": available,
+            "next_offset": next_offset if next_offset < len(candidates) else None,
             "host": socket.gethostname(), "unreadable": unreadable}
 
 

@@ -5,7 +5,7 @@ import type { Translations } from './types'
 export const en: Translations = {
   sessionImport: {
     title: 'Continue from another app',
-    subtitle: 'Bring a conversation into Hermes and pick up where you left off.',
+    subtitle: 'Import local conversations from the connected computer. Cloud-only sessions are not included.',
     action: 'Import session',
     readingFrom: 'Reading from',
     connectedComputer: 'the connected computer',
@@ -16,7 +16,7 @@ export const en: Translations = {
     scanError: 'Could not find sessions',
     scanHelp: 'Check your backend connection, then try again. Older backends may need an update.',
     empty: 'No conversations found',
-    emptyHelp: 'Claude Code and Codex sessions on this backend will appear here.',
+    emptyHelp: 'Local Claude Code, Claude Cowork, and ChatGPT Work / Codex sessions will appear here.',
     noMatches: 'No matching conversations',
     searchHelp: 'Try another title or folder, or load more sessions.',
     skipped: 'Some logs were empty, unreadable, or too large to preview.',

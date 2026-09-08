@@ -3,7 +3,7 @@ import { defineLocale } from './define-locale'
 export const ar = defineLocale({
   sessionImport: {
     title: 'المتابعة من تطبيق آخر',
-    subtitle: 'انقل محادثة إلى Hermes وتابع من حيث توقفت.',
+    subtitle: 'استورد المحادثات المحلية من الكمبيوتر المتصل. لا يشمل الاستيراد الجلسات السحابية فقط.',
     action: 'استيراد جلسة',
     readingFrom: 'القراءة من',
     connectedComputer: 'الكمبيوتر المتصل',
@@ -14,7 +14,7 @@ export const ar = defineLocale({
     scanError: 'تعذر العثور على الجلسات',
     scanHelp: 'تحقق من اتصال الخادم ثم أعد المحاولة. قد تحتاج الخوادم القديمة إلى تحديث.',
     empty: 'لا توجد محادثات',
-    emptyHelp: 'ستظهر هنا جلسات Claude Code وCodex الموجودة على هذا الخادم.',
+    emptyHelp: 'ستظهر هنا جلسات Claude Code وClaude Cowork وChatGPT Work / Codex المحلية.',
     noMatches: 'لا توجد محادثات مطابقة',
     searchHelp: 'جرّب عنوانًا أو مجلدًا آخر، أو حمّل المزيد من الجلسات.',
     skipped: 'تم تجاوز بعض السجلات الفارغة أو غير المقروءة أو الكبيرة جدًا.',

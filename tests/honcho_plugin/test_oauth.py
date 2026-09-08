@@ -1,6 +1,7 @@
 """Tests for plugins/memory/honcho/oauth.py — OAuth grant storage + refresh."""
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -187,31 +188,22 @@ class TestInstallGrant:
     def test_reads_and_writes_under_the_refresh_locks(self, tmp_path, monkeypatch):
         path = tmp_path / "honcho.json"
         _write(path, {"hosts": {"other": _host_block()}})
-        seen = {}
-        real_read, real_persist = oauth._read_config_strict, oauth._persist_credential
-        locked_paths = []
+        seen, locked_paths = {}, []
 
-        @oauth.contextmanager
-        def spy_file_lock(p):
-            locked_paths.append(p)
-            yield
+        def spy(name, real):
+            def wrapped(*a, **k):
+                seen[name] = oauth._refresh_lock.locked()
+                return real(*a, **k)
+            return wrapped
 
-        def spy_read(p):
-            seen["read_locked"] = oauth._refresh_lock.locked()
-            return real_read(p)
-
-        def spy_persist(p, host, cred, raw=None):
-            seen["persist_locked"] = oauth._refresh_lock.locked()
-            return real_persist(p, host, cred, raw)
-
-        monkeypatch.setattr(oauth, "_config_refresh_lock", spy_file_lock)
-        monkeypatch.setattr(oauth, "_read_config_strict", spy_read)
-        monkeypatch.setattr(oauth, "_persist_credential", spy_persist)
+        monkeypatch.setattr(oauth, "_config_refresh_lock", lambda p: locked_paths.append(p) or nullcontext())
+        monkeypatch.setattr(oauth, "_read_config_strict", spy("read", oauth._read_config_strict))
+        monkeypatch.setattr(oauth, "_persist_credential", spy("persist", oauth._persist_credential))
         oauth.install_grant(
             path, "hermes", {"access_token": "hch-at-new", "refresh_token": "hch-rt-new", "expires_in": 60},
             client_id="c", token_endpoint="e",
         )
-        assert seen == {"read_locked": True, "persist_locked": True}
+        assert seen == {"read": True, "persist": True}
         assert locked_paths == [path]
         assert not oauth._refresh_lock.locked()
         assert "other" in json.loads(path.read_text())["hosts"]

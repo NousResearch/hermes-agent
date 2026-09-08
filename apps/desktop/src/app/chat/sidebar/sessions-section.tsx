@@ -526,7 +526,14 @@ export function SidebarSessionsSection({
       </>
     )
   } else if (groups?.length && groups.every(group => group.mode === 'profile' && group.profile)) {
-    inner = <GatewayProfileGroups groups={groups} onNewSessionSplit={onNewSessionSplit} renderRows={renderRows} sensors={dndSensors} />
+    inner = (
+      <GatewayProfileGroups
+        groups={groups}
+        onNewSessionSplit={onNewSessionSplit}
+        renderRows={renderRows}
+        sensors={dndSensors}
+      />
+    )
   } else if (groups?.length) {
     inner = groups.map(group => (
       <SidebarWorkspaceGroup

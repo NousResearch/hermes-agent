@@ -235,6 +235,16 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     // surfaces once the user focuses that chat.
     const command = typeof payload?.command === 'string' ? payload.command : ''
     const description = typeof payload?.description === 'string' ? payload.description : 'dangerous command'
+    const storedSessionId = typeof payload?.stored_session_id === 'string' ? payload.stored_session_id : undefined
+
+    if (sessionId) {
+      // Stamp the durable id into the runtime→stored mirror BEFORE parking the
+      // request below: on a multi-profile install this event's own sessionId
+      // is the ephemeral ui_session handle, which owns no tile/hint/row of its
+      // own, so approval.respond's owner-resolution ladder can only find a
+      // backend once storedSessionIdForRuntimeId can translate it (#105469).
+      updateSessionState(sessionId, state => ({ ...state, needsInput: true }), storedSessionId)
+    }
 
     void receiveApprovalRequest($gateway.get(), {
       // false only when a tirith warning forbids it; backend omits the field otherwise.
@@ -248,10 +258,6 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       sessionId: sessionId ?? null,
       smartDenied: payload?.smart_denied === true
     }).catch(() => undefined)
-
-    if (sessionId) {
-      updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
-    }
 
     dispatchNativeNotification({
       actions: [

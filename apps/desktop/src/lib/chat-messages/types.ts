@@ -159,6 +159,9 @@ export type GatewayEventPayload = {
   // session.info — the stored (durable) session id for this runtime session.
   // Lets the desktop app map runtime→stored for background sessions it hasn't
   // opened, so the sidebar working indicator updates without opening the chat.
+  // approval.request carries the same field for the same reason: the event's
+  // own session_id is the ephemeral ui_session handle, which owns no tile,
+  // hint or row of its own on a multi-profile install (#105469).
   stored_session_id?: string
   // moa.reference / moa.aggregating (Mixture of Agents per-model relay)
   label?: string

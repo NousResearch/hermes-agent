@@ -65,3 +65,42 @@ class TestTuiApprovalEmitRedaction:
 
         assert emitted["payload"]["choices"] == expected
 
+
+class TestTuiApprovalEmitStoredSessionId:
+    """#105469: the client's owner-resolution ladder can only route
+    `approval.respond` on a multi-profile install once it knows the durable
+    session key behind the event's ephemeral `sid` — neither a tile, hint nor
+    row is ever keyed by that handle. `_emit_approval_request` must carry the
+    key alongside `sid` so the client can bind the two."""
+
+    def test_emit_approval_request_carries_stored_session_id(self, monkeypatch):
+        from tui_gateway import server as tui_server
+
+        emitted = {}
+        monkeypatch.setattr(
+            tui_server, "_emit",
+            lambda event, sid, payload=None: emitted.update(
+                {"event": event, "sid": sid, "payload": payload}
+            ),
+        )
+
+        tui_server._emit_approval_request("ui-handle-1", {"command": "ls"}, stored_session_id="stored-durable-id")
+
+        assert emitted["sid"] == "ui-handle-1"
+        assert emitted["payload"]["stored_session_id"] == "stored-durable-id"
+
+    def test_emit_approval_request_omits_stored_session_id_when_unknown(self, monkeypatch):
+        from tui_gateway import server as tui_server
+
+        emitted = {}
+        monkeypatch.setattr(
+            tui_server, "_emit",
+            lambda event, sid, payload=None: emitted.update(
+                {"event": event, "sid": sid, "payload": payload}
+            ),
+        )
+
+        tui_server._emit_approval_request("ui-handle-1", {"command": "ls"})
+
+        assert "stored_session_id" not in emitted["payload"]
+

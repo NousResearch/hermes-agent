@@ -660,13 +660,20 @@ def _pending_approval_request_payload(session_key: str) -> dict | None:
     return _approval_request_payload(approval) if approval else None
 
 
-def _emit_approval_request(sid: str, data: dict | None) -> None:
+def _emit_approval_request(sid: str, data: dict | None, *, stored_session_id: str = "") -> None:
     """Emit ``approval.request`` with the command redacted: a credential-shaped value Tirith flagged would
     otherwise echo verbatim to the TUI (third egress alongside chat platforms and the SSE/API stream).
 
+    ``stored_session_id`` carries the durable session key alongside the ephemeral ``sid`` used for
+    routing/display — a multi-profile client has no other way to bind the two, and without it
+    ``approval.respond``'s owner-resolution ladder can't route the reply back (#105469).
+
     Reuse the shared gateway See #48456, #50767.
     """
-    _emit("approval.request", sid, _approval_request_payload(data))
+    payload = _approval_request_payload(data)
+    if stored_session_id:
+        payload["stored_session_id"] = stored_session_id
+    _emit("approval.request", sid, payload)
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -903,7 +910,7 @@ def _wire_session_agent(sid: str, key: str, agent) -> bool:
     notify_registered = False
     with contextlib.suppress(Exception):
         from tools.approval import load_permanent_allowlist, register_gateway_notify
-        register_gateway_notify(key, lambda data: _emit_approval_request(sid, data))
+        register_gateway_notify(key, lambda data: _emit_approval_request(sid, data, stored_session_id=key))
         notify_registered = True
         load_permanent_allowlist()
     _wire_callbacks(sid)

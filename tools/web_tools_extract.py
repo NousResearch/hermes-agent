@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from tools.tool_backend_helpers import selection_error, selection_exists
 from tools.url_safety import normalize_url_for_request, sensitive_query_param_name
@@ -139,11 +140,72 @@ def _resolve_extract_provider(backend: str):
     return provider, None
 
 
+def _url_key(url: Any, *, loose: bool = False) -> str:
+    """Pairing key for a requested/returned URL. Drops only what cannot change WHICH document was
+    fetched: case, userinfo, a default port, a trailing slash, the fragment. The query stays
+    (``?page=2`` is another page). ``loose`` also drops the scheme and a leading ``www.`` for
+    backends that report the post-redirect URL instead of the string they were handed."""
+    if not isinstance(url, str) or not url.strip():
+        return ""
+    try:
+        parts = urlsplit(normalize_url_for_request(url.strip()))
+        scheme, host, port = parts.scheme.lower(), (parts.hostname or "").lower(), parts.port
+    except ValueError:
+        return url.strip().lower()
+    if port == {"http": 80, "https": 443}.get(scheme):
+        port = None
+    if loose and host.startswith("www."):
+        host = host[4:]
+    prefix = "" if loose else f"{scheme}://"
+    query = f"?{parts.query}" if parts.query else ""
+    return f"{prefix}{host}{f':{port}' if port else ''}{parts.path.rstrip('/')}{query}"
+
+
+def _pair_results(urls: List[str], results: List[dict]) -> List[dict]:
+    """One entry per requested URL, in request order, paired by URL — never by list position:
+    Parallel appends failures after successes, Exa omits pages it could not fetch, the keyless ring
+    inherits both shapes, and a rescued batch comes back in ring order. Positional pairing cached one
+    page's text under another URL's key for the whole TTL (#97378).
+
+    Exact keys pair first, then loose ones (an exact pairing is never a loose candidate elsewhere).
+    A document beats an error stub for the same key — the keyless ring emits both when it rewrites a
+    URL. A lone leftover result goes to the lone unmatched URL (redirect to another host); any other
+    unmatched result is dropped rather than attached to some other URL. ``metadata.sourceURL`` is
+    indexed alongside ``url`` because Keenable reports the requested URL only there."""
+    entries = [r for r in results if isinstance(r, dict)]
+    by_key: Dict[tuple, List[int]] = {}
+    for index, entry in enumerate(entries):
+        meta = entry.get("metadata")
+        source = meta.get("sourceURL") if isinstance(meta, dict) else None
+        for loose in (False, True):
+            for key in {_url_key(entry.get("url"), loose=loose), _url_key(source, loose=loose)} - {""}:
+                by_key.setdefault((loose, key), []).append(index)
+
+    paired: Dict[int, dict] = {}
+    used: set[int] = set()
+    for loose in (False, True):
+        taken = set(used)
+        for position, url in enumerate(urls):
+            candidates = [i for i in by_key.get((loose, _url_key(url, loose=loose)), ()) if i not in taken]
+            if position in paired or not candidates:
+                continue
+            paired[position] = entries[next((i for i in candidates if not entries[i].get("error")), candidates[0])]
+            used.update(candidates)
+    missing = [position for position in range(len(urls)) if position not in paired]
+    leftover = [i for i in range(len(entries)) if i not in used]
+    if len(missing) == 1 and len(leftover) == 1:
+        paired[missing[0]] = entries[leftover[0]]
+    elif leftover:
+        logger.warning("web_extract: dropping %d result(s) matching no requested URL", len(leftover))
+    return [paired.get(position) or _result_entry(url, _NO_RESULT_ERROR) for position, url in enumerate(urls)]
+
+
 async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[str]) -> List[dict]:
     """Call ``provider.extract`` (async or sync-in-thread), with one-shot keyless rescue.
 
     Rescue fires on a raised exception or when the WHOLE batch failed (backend outage, not per-page
-    problems). Rescued batches are never cached.
+    problems). Rescued batches are never cached. Every batch, rescued or not, is paired to
+    ``fetch_urls`` by URL before it is returned or cached.
     """
     import inspect
     from tools.web_result_cache import extract_cache_put
@@ -155,12 +217,13 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     except Exception as exc:  # noqa: BLE001 — candidate for rescue
         if not _rescue_eligible(provider):
             raise
-        failed = [_result_entry(u, str(exc)) for u in fetch_urls]
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
+        results = [_result_entry(u, str(exc)) for u in fetch_urls]
     if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+        rescued = await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+        return _pair_results(fetch_urls, rescued)
 
-    # Cache each successful fetch's full clean text (best-effort; oversized skipped).
+    results = _pair_results(fetch_urls, results)
+    # Cache each successful fetch's full clean text under the REQUESTED url (best-effort; oversized skipped).
     for url, fetched in zip(fetch_urls, results):
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
         if _content and not fetched.get("error"):

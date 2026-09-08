@@ -509,19 +509,15 @@ def _same_path(left: Path, right: Path) -> bool:
 
 
 def _is_same_auth_store(left: Path, right: Path) -> bool:
-    """True when two auth paths name ONE store rather than two copies.
-    ``_same_path`` resolves symlinks and ``..``; ``samefile`` adds hardlinks and bind-mounts
-    (same inode under two resolved names). Used by the forked-grant heal: a shared store has
-    no "other side" to consolidate.
+    """True when two auth paths are proven to name ONE store rather than two copies.
+
+    Unknown probe/stat failures are not same. Destructive consumers must use
+    ``classify_auth_store_identity`` so unknown identity refuses mutation.
 
     See #101356.
     """
-    if _same_path(left, right):
-        return True
-    try:
-        return left.samefile(right)
-    except OSError:
-        return False
+    from hermes_cli.auth_store_identity import paths_are_same_auth_store
+    return paths_are_same_auth_store(left, right)
 
 
 def _resolved_key(path: Path) -> str:

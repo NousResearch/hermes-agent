@@ -619,3 +619,108 @@ def test_heal_same_store_skip_is_memoized_off_the_hot_path(fleet, monkeypatch):
     monkeypatch.setattr(auth_mod, "_is_same_auth_store", lambda *a: calls.append(a) or True)
     assert auth_mod.heal_forked_single_use_oauth_grants("openai-codex") is None
     assert calls == [], "same-store check ran again despite the clean mark"
+
+
+def test_heal_fails_closed_when_hardlink_identity_probe_errors(fleet, monkeypatch):
+    """A shared hardlink whose samefile() probe fails must not be treated as a
+    fork. On current main, OSError collapses to "different" and the heal writes
+    a stripped profile store through the hardlink into the root grant."""
+    from pathlib import Path
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    before = (root / "auth.json").read_text(encoding="utf-8")
+    shared = _shared_profile(fleet, "twin", link=lambda target, alias: os.link(target, alias))
+    fleet["use"](shared)
+
+    def boom(self, other):
+        raise OSError("injected samefile failure")
+
+    monkeypatch.setattr(Path, "samefile", boom)
+
+    assert heal_forked_single_use_oauth_grants("openai-codex") is None
+    after = (root / "auth.json").read_text(encoding="utf-8")
+    assert after == before
+    store = json.loads(after)
+    assert [r["id"] for r in store["credential_pool"]["openai-codex"]] == ["cdx001"]
+    assert store["providers"]["openai-codex"]["tokens"]["refresh_token"] == "cdx-RT0"
+
+
+def test_heal_fails_closed_when_symlink_resolve_and_stat_error(fleet, monkeypatch):
+    """A shared symlink whose resolve() and samefile() both fail is unknown
+    identity, not a fork. Destructive heal must refuse and leave the root
+    store byte-identical, including pool and provider blocks."""
+    from pathlib import Path
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    before = (root / "auth.json").read_text(encoding="utf-8")
+    shared = _shared_profile(fleet, "shared", link=lambda target, alias: alias.symlink_to(target))
+    fleet["use"](shared)
+
+    orig_resolve = Path.resolve
+
+    def boom_resolve(self, strict=False):
+        name = getattr(self, "name", "")
+        if name == "auth.json" or str(self).endswith("auth.json"):
+            raise OSError("injected resolve failure")
+        return orig_resolve(self, strict=strict)
+
+    def boom_samefile(self, other):
+        raise OSError("injected samefile failure")
+
+    monkeypatch.setattr(Path, "resolve", boom_resolve)
+    monkeypatch.setattr(Path, "samefile", boom_samefile)
+
+    assert heal_forked_single_use_oauth_grants("openai-codex") is None
+    after = (root / "auth.json").read_text(encoding="utf-8")
+    assert after == before
+    store = json.loads(after)
+    assert [r["id"] for r in store["credential_pool"]["openai-codex"]] == ["cdx001"]
+    assert store["providers"]["openai-codex"]["tokens"]["refresh_token"] == "cdx-RT0"
+
+
+def test_heal_leaves_aliased_singleton_alone_when_identity_probe_errors(fleet, monkeypatch):
+    """Sibling of the auth.json probe: an aliased `.anthropic_oauth.json`
+    whose identity cannot be proven must not be unlinked."""
+    from pathlib import Path
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    root = fleet["root"]
+    (root / ".anthropic_oauth.json").write_text(json.dumps({
+        "accessToken": "AT-shared", "refreshToken": "RT-shared",
+        "expiresAt": int((time.time() + 3600) * 1000),
+    }), encoding="utf-8")
+    kid = _profile(fleet, "kid")
+    kid.mkdir(parents=True, exist_ok=True)
+    (kid / "auth.json").write_text(
+        json.dumps({"providers": {}, "credential_pool": {}}), encoding="utf-8")
+    (kid / ".anthropic_oauth.json").symlink_to(root / ".anthropic_oauth.json")
+    before = (root / ".anthropic_oauth.json").read_text(encoding="utf-8")
+    fleet["use"](kid)
+
+    orig_resolve = Path.resolve
+    orig_samefile = Path.samefile
+
+    def _is_singleton(path):
+        return getattr(path, "name", "") == ".anthropic_oauth.json" or str(path).endswith(
+            ".anthropic_oauth.json")
+
+    def boom_resolve(self, strict=False):
+        if _is_singleton(self):
+            raise OSError("injected resolve failure")
+        return orig_resolve(self, strict=strict)
+
+    def boom_samefile(self, other):
+        if _is_singleton(self) or (other is not None and _is_singleton(other)):
+            raise OSError("injected samefile failure")
+        return orig_samefile(self, other)
+
+    monkeypatch.setattr(Path, "resolve", boom_resolve)
+    monkeypatch.setattr(Path, "samefile", boom_samefile)
+
+    assert heal_forked_single_use_oauth_grants("anthropic") is None
+    assert (kid / ".anthropic_oauth.json").is_symlink()
+    assert (root / ".anthropic_oauth.json").read_text(encoding="utf-8") == before

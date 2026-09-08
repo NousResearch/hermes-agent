@@ -3192,6 +3192,12 @@ _DYNAMIC_TOP_LEVEL_KEYS = frozenset({
 # both top-level and under ``gateway``; anything below the name is accepted (open ``extra``).
 _PLATFORM_CONTAINER_KEYS = frozenset({"platforms"})
 
+# Containers whose immediate child is user-named but whose descendants follow the schema of a
+# template child in DEFAULT_CONFIG. This keeps dynamic names open without making their fields open.
+_DYNAMIC_SCHEMA_TEMPLATES = {
+    ("moa", "presets"): "default",
+}
+
 
 # Top-level keys whose sub-keys are accepted without deep checking.
 _OPEN_SUBKEY_TOP_LEVEL_KEYS = _OPEN_DICT_TOP_LEVEL_KEYS | _DYNAMIC_TOP_LEVEL_KEYS | _SCHEMA_DEFINED_DICT_KEYS
@@ -3246,6 +3252,11 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     for seg in segments[1:]:
         if seg in _PLATFORM_CONTAINER_KEYS or not isinstance(node, dict):
             return True, None
+        template_key = _DYNAMIC_SCHEMA_TEMPLATES.get(tuple(consumed))
+        if template_key is not None:
+            node = node.get(template_key)
+            consumed.append(seg)
+            continue
         if seg not in node:
             sibling = _suggest_closest_key(seg, set(node.keys()))
             return False, ".".join(consumed + [sibling]) if sibling is not None else None

@@ -228,7 +228,7 @@ def get_moa_models(profile: Optional[str] = None):
 
 _MOA_PRESET_FIELDS = (
     "reference_temperature", "aggregator_temperature", "reference_timeout",
-    "degraded_reference_policy", "fanout", "enabled",
+    "reference_tool_result_budget", "degraded_reference_policy", "fanout", "enabled",
 )
 
 

@@ -1314,7 +1314,9 @@ DEFAULT_CONFIG = {
                     {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
                 ],
                 "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
-
+                # Max characters retained from each tool result in the advisory view.
+                # Applied as a head+tail preview; normalization clamps to [1000, 32000].
+                "reference_tool_result_budget": 4000,
                 "enabled": True,
             }
         },

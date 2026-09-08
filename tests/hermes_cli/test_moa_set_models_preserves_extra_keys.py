@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from hermes_cli.moa_config import normalize_moa_config
 from hermes_cli.web_models import MoaConfigPayload, MoaModelSlot, MoaPresetPayload
 from hermes_cli.web_routers.models import set_moa_models
 
@@ -80,5 +81,51 @@ class TestSetMoaModelsPreservesUndeclaredKeys:
         assert moa.get("trace_dir") == "/custom/traces", (
             "trace_dir was dropped by set_moa_models"
         )
+
+
+def _put_payload(payload: MoaConfigPayload) -> tuple[dict, dict]:
+    saved_cfg = {}
+
+    def fake_save_config(cfg):
+        saved_cfg.update(cfg)
+
+    with (
+        patch("hermes_cli.config.load_config", return_value={}),
+        patch("hermes_cli.config.save_config", side_effect=fake_save_config),
+        patch("hermes_cli.web_server_profiles._profile_scope"),
+    ):
+        response = set_moa_models(payload)
+    return response, saved_cfg
+
+
+def test_named_preset_put_round_trip_preserves_reference_tool_result_budget():
+    get_response = normalize_moa_config({
+        "default_preset": "review",
+        "presets": {
+            "review": {
+                "reference_models": [{"provider": "openai-codex", "model": "gpt-5.5"}],
+                "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                "reference_tool_result_budget": 12_000,
+            },
+        },
+    })
+
+    response, saved_cfg = _put_payload(MoaConfigPayload(**get_response))
+
+    assert response["presets"]["review"]["reference_tool_result_budget"] == 12_000
+    assert saved_cfg["moa"]["presets"]["review"]["reference_tool_result_budget"] == 12_000
+
+
+def test_legacy_flat_put_round_trip_preserves_reference_tool_result_budget():
+    payload = MoaConfigPayload(
+        reference_models=[MoaModelSlot(provider="openai-codex", model="gpt-5.5")],
+        aggregator=MoaModelSlot(provider="openrouter", model="anthropic/claude-opus-4.8"),
+        reference_tool_result_budget=12_000,
+    )
+
+    response, saved_cfg = _put_payload(payload)
+
+    assert response["reference_tool_result_budget"] == 12_000
+    assert saved_cfg["moa"]["presets"]["default"]["reference_tool_result_budget"] == 12_000
 
 

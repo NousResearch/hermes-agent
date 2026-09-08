@@ -6194,7 +6194,7 @@ def claim_workflow_events_for_subscription(
             # queued until this delivery is durably acknowledged.
             break
         cur = conn.execute(
-            "UPDATE kanban_workflow_subscriptions SET last_event_id=? "
+            "UPDATE kanban_workflow_subscriptions SET last_event_id=?,next_attempt_at=NULL "
             "WHERE workflow_id=? AND role=? AND last_event_id=?",
             (new_cursor, workflow_id, role, old_cursor),
         )
@@ -6205,17 +6205,23 @@ def claim_workflow_events_for_subscription(
 
 def complete_workflow_delivery(
     conn: sqlite3.Connection, *, workflow_id: str, role: str = "origin",
+    claimed_cursor: int,
 ) -> dict[str, Any]:
-    """Clear retry state after the publisher successfully sends a claimed event."""
+    """Acknowledge one matching claim without overwriting a newer retry state."""
     with write_txn(conn):
-        cur = conn.execute(
+        subscription = conn.execute(
+            "SELECT * FROM kanban_workflow_subscriptions WHERE workflow_id=? AND role=?",
+            (workflow_id, role),
+        ).fetchone()
+        if subscription is None or subscription["disabled_at"] is not None:
+            raise KeyError(f"unknown or disabled workflow subscription: {workflow_id}/{role}")
+        conn.execute(
             "UPDATE kanban_workflow_subscriptions SET retry_count=0,next_attempt_at=NULL,"
             "dead_lettered_at=NULL,last_error_class=NULL "
-            "WHERE workflow_id=? AND role=? AND disabled_at IS NULL",
-            (workflow_id, role),
+            "WHERE workflow_id=? AND role=? AND disabled_at IS NULL AND last_event_id=? "
+            "AND next_attempt_at IS NULL AND dead_lettered_at IS NULL",
+            (workflow_id, role, int(claimed_cursor)),
         )
-        if cur.rowcount != 1:
-            raise KeyError(f"unknown or disabled workflow subscription: {workflow_id}/{role}")
         return dict(conn.execute(
             "SELECT * FROM kanban_workflow_subscriptions WHERE workflow_id=? AND role=?",
             (workflow_id, role),

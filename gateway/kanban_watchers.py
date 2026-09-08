@@ -254,7 +254,7 @@ class GatewayKanbanWatchersMixin:
                 from hermes_cli import kanban_db_connect as kbc
 
                 conn = kbc.connect(board=board)
-                try: return kb.complete_workflow_delivery(conn, workflow_id=sub["workflow_id"], role=sub.get("role") or "origin")
+                try: return kb.complete_workflow_delivery(conn, workflow_id=sub["workflow_id"], role=sub.get("role") or "origin", claimed_cursor=delivery["cursor"])
                 finally: conn.close()
             await asyncio.to_thread(complete)
             return True

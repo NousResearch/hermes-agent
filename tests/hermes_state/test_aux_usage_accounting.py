@@ -74,6 +74,26 @@ class TestRecordAuxiliaryUsage:
             estimated_cost_usd=1.25,
         )
         db.create_session(
+            "anthropic-stale-continuation",
+            source="desktop",
+            parent_session_id="anthropic-session",
+        )
+        db.append_message("anthropic-stale-continuation", role="user", content="stale")
+        db.update_token_counts(
+            "anthropic-stale-continuation",
+            input_tokens=900_000,
+            estimated_cost_usd=9.00,
+        )
+        db.record_auxiliary_usage(
+            "anthropic-stale-continuation",
+            "compression",
+            model="claude-haiku-4-5",
+            billing_provider="anthropic",
+            input_tokens=90_000,
+            estimated_cost_usd=0.90,
+        )
+        db.end_session("anthropic-stale-continuation", end_reason="ws_orphan_reap")
+        db.create_session(
             "anthropic-branch",
             source="desktop",
             parent_session_id="anthropic-session",

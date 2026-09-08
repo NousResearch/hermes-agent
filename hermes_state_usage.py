@@ -11,6 +11,8 @@ import time
 import weakref
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_state_common import _sql_session_last_active
+
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
 
@@ -395,10 +397,14 @@ class SessionUsageMixin:
         if not include_archived:
             where.append("COALESCE(s.archived, 0) = 0")
         row = self._read_one(f"""
-            WITH RECURSIVE chain(session_id) AS (
-                SELECT s.id FROM sessions s WHERE {' AND '.join(where)}
-                UNION
-                SELECT child.id
+            WITH RECURSIVE chain(session_id, path, depth) AS (
+                SELECT s.id, json_array(s.id), 0
+                  FROM sessions s
+                 WHERE {' AND '.join(where)}
+                UNION ALL
+                SELECT child.id,
+                       json_insert(chain.path, '$[#]', child.id),
+                       chain.depth + 1
                   FROM chain
                   JOIN sessions parent ON parent.id = chain.session_id
                   JOIN sessions child ON child.parent_session_id = parent.id
@@ -406,6 +412,26 @@ class SessionUsageMixin:
                    AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
                    AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
                    AND COALESCE(child.source, '') != 'tool'
+                   AND child.id = (
+                       SELECT preferred.id
+                         FROM sessions preferred
+                        WHERE preferred.parent_session_id = parent.id
+                          AND json_extract(COALESCE(preferred.model_config, '{{}}'), '$._branched_from') IS NULL
+                          AND json_extract(COALESCE(preferred.model_config, '{{}}'), '$._delegate_from') IS NULL
+                          AND COALESCE(preferred.source, '') != 'tool'
+                        ORDER BY
+                          CASE
+                            WHEN preferred.end_reason = 'compression' THEN 0
+                            WHEN preferred.ended_at IS NULL THEN 1
+                            ELSE 2
+                          END,
+                          {_sql_session_last_active('preferred')} DESC,
+                          preferred.started_at DESC,
+                          preferred.id DESC
+                        LIMIT 1
+                   )
+                   AND chain.depth < 100
+                   AND child.id NOT IN (SELECT value FROM json_each(chain.path))
             )
             SELECT COALESCE(SUM({_billed_token_sql('sessions.')}), 0) + COALESCE((
                        SELECT SUM({_billed_token_sql('session_model_usage.')})

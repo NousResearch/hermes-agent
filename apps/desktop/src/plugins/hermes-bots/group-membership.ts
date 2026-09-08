@@ -380,33 +380,58 @@ export function groupMemberGroupNames(
 ): string[] {
   const names = new Set(botGroups(meta))
   const key = botRosterKey(member)
-  const nameKey = String(member?.name || '')
-    .trim()
-    .toLowerCase()
+  const memberConnection = String(member?.connectionId || '')
+
+  // The member's own identity tokens: bare slug + every friendly/display name
+  // (same surface resolveLegacyMemberDescriptor matches against).
+  const memberTokens = new Set<string>()
+
+  for (const token of [member?.name, member?.handle, member?.display_name, ...botFriendlyNames(member)]) {
+    const trimmed = String(token || '')
+      .trim()
+      .toLowerCase()
+
+    if (trimmed) {
+      memberTokens.add(trimmed)
+    }
+  }
+
+  const seatsMember = (descriptor: GroupMember | RosterRow | null | undefined): boolean => {
+    if (!descriptor) {
+      return false
+    }
+
+    if (botRosterKey(descriptor) === key) {
+      return true
+    }
+
+    // Legacy/friendly-name descriptors: match by name, but STRICTLY within the
+    // member's connection scope — never capture a same-named row on a foreign
+    // connection (two `default`s on different machines must not merge). A
+    // descriptor WITHOUT a connectionId predates connection scoping, so only
+    // local (non-remote) members are legal matches.
+    const descriptorConnection = String(descriptor?.connectionId || '')
+    const sameConnection = descriptorConnection
+      ? descriptorConnection === memberConnection
+      : !member?.remoteSource
+
+    if (!sameConnection) {
+      return false
+    }
+
+    const descriptorName = String(descriptor?.name || '')
+      .trim()
+      .toLowerCase()
+
+    return Boolean(descriptorName && memberTokens.has(descriptorName))
+  }
 
   for (const [group, room] of Object.entries(rooms || {})) {
     if (room?.tombstone) {
       continue
     }
 
-    const seated =
-      Array.isArray(room?.members) &&
-      room.members.some(descriptor => {
-        if (!descriptor) {
-          return false
-        }
-
-        if (botRosterKey(descriptor) === key) {
-          return true
-        }
-
-        // Legacy/friendly-name descriptors persist the display name under
-        // `name` — fall back to a case-insensitive name match so a room-seated
-        // member whose meta dropped the group still resolves to its room.
-        return nameKey && String(descriptor?.name || '').trim().toLowerCase() === nameKey
-      })
-
-    if (seated) {
+    if (Array.isArray(room?.members) && room.members.some(seatsMember)) {
       names.add(group)
     }
   }

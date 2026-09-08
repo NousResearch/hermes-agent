@@ -3231,6 +3231,8 @@ export const zhHant = defineLocale({
       success: platform => `已移交到 ${platform}。隨時可在此處恢復。`,
       systemNote: platform => `↻ 已移交到 ${platform} — 隨時可在此處恢復。`,
       failed: error => `移交失敗：${error}`,
+      continueHere: '在此裝置上繼續',
+      continued: '已在此裝置上繼續工作階段。',
       timedOut: '等待閘道逾時。`hermes gateway` 是否正在執行？'
     }
   },

@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
@@ -86,6 +87,29 @@ interface SubmitPromptDeps {
     setBusy: (busy: boolean) => void
     setMessages: (updater: (current: ChatMessage[]) => ChatMessage[]) => void
   }
+}
+
+interface SessionHandoffErrorData {
+  handoff_available?: boolean
+  owner_running?: boolean
+  reason?: string
+  session_id?: string
+}
+
+function sessionHandoffErrorData(error: unknown): SessionHandoffErrorData | null {
+  if (!(error instanceof JsonRpcGatewayError) || error.code !== 4090) {
+    return null
+  }
+
+  const data = error.data
+
+  if (typeof data !== 'object' || data === null) {
+    return null
+  }
+
+  const candidate = data as SessionHandoffErrorData
+
+  return candidate.reason === 'SESSION_NOT_OWNED' && candidate.handoff_available === true ? candidate : null
 }
 
 // Stable identity — a fresh default object per render would churn the
@@ -722,6 +746,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         seedOptimistic(sessionId)
       }
 
+      let handoffRetryInFlight = false
+      let retryOnThisDevice: (() => Promise<void>) | null = null
+
       try {
         // Attach runs BEFORE prompt.submit, so a stale runtime id fails there
         // first and submit's own recovery never runs — that asymmetry is why
@@ -771,6 +798,37 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // the live turn with text the user explicitly queued.
           ...(options?.fromQueue && { queued: true })
         })
+
+        retryOnThisDevice = async () => {
+          if (handoffRetryInFlight) {
+            return
+          }
+
+          handoffRetryInFlight = true
+
+          clearNotifications()
+
+          if (targetIsCurrentView()) {
+            setMutableRef(busyRef, true)
+            scope.setBusy(true)
+            scope.setAwaitingResponse(true)
+          }
+
+          try {
+            await requestGateway('session.handoff', { session_id: liveSessionId })
+            await withSessionBusyRetry(() =>
+              requestGateway('prompt.submit', submitParams(liveSessionId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+            )
+            notify({ kind: 'success', message: copy.handoff.continued })
+          } catch (retryError) {
+            releaseBusy()
+            if (targetIsCurrentView()) {
+              notifyError(retryError, copy.handoff.failed(''))
+            }
+          } finally {
+            handoffRetryInFlight = false
+          }
+        }
 
         // On sleep/wake the gateway's in-memory session may have been cleared
         // while the desktop app still holds the old session ID. The shared
@@ -850,6 +908,22 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // "session busy" (4009). Don't surface an error bubble/toast — the entry
         // stays queued and the composer's bounded auto-drain retries when idle.
         if (options?.fromQueue && isSessionBusyError(err)) {
+          return false
+        }
+
+        const handoff = sessionHandoffErrorData(err)
+        if (handoff && targetIsCurrentView() && retryOnThisDevice) {
+
+          notify({
+            kind: 'warning',
+            title: copy.promptFailed,
+            message: inlineErrorMessage(err, copy.promptFailed),
+            action: {
+              label: copy.handoff.continueHere,
+              onClick: () => void retryOnThisDevice?.()
+            }
+          })
+
           return false
         }
 

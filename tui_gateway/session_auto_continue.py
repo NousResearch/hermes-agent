@@ -281,14 +281,14 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
 def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     """Fire a queued next-turn prompt if one is waiting and the session is idle. True when dispatched: the caller
     skips lower-priority follow-ups this cycle (the user's message wins)."""
-    with session["history_lock"]:
-        if session.get("_closing") or not (queued := session.get("queued_prompt")) or session.get("running"):
-            return False
-        queue_generation = int(session.get("_queued_prompt_generation", 0))
-        _ac_set_queue(session, session.get("queued_prompts") or [])
-        session["running"] = True
-        if queued.get("transport") is not None:
-            session["transport"] = queued["transport"]
+    with _writer_lock(session):
+        with session["history_lock"]:
+            if session.get("_closing") or not (queued := session.get("queued_prompt")) or session.get("running"):
+                return False
+            queue_generation = int(session.get("_queued_prompt_generation", 0))
+            _ac_set_queue(session, session.get("queued_prompts") or [])
+            _prepare_queued_session_writer(session, queued.get("transport"))
+            session["running"] = True
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:

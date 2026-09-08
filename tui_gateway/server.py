@@ -2328,9 +2328,12 @@ def _init_session(
     session_db=None, source: str | None = None, profile_home: str | None = None,
     explicit_cwd: bool = False):
     now = time.time()
+    initial_transport = current_transport() or _stdio_transport
     with _sessions_lock:
         _sessions[sid] = {
             "agent": agent, "session_key": key, "history": history, "history_lock": threading.Lock(),
+            "_writer_lock": threading.RLock(), "_writer_transport": initial_transport,
+            "viewers": {initial_transport: now},
             "history_version": 0, "inflight_turn": None, "created_at": now, "last_active": now,
             "running": False, "attached_images": [], "image_counter": 0, "cwd": cwd or _completion_cwd(),
             "explicit_cwd": bool(explicit_cwd), "cols": cols, "slash_worker": None,
@@ -2341,7 +2344,7 @@ def _init_session(
             # In-session /model switch, honored on rebuild (/new, resume) — never leaks to siblings via env vars.
             "model_override": None,
             # Async events go to the transport that created the session (stdio for Ink, WS for the dashboard).
-            "transport": current_transport() or _stdio_transport,
+            "transport": initial_transport,
         }
         _session_todo_state(_sessions[sid])
     _hydrate_session_cwd(sid, key, session_db, profile_home)
@@ -2392,12 +2395,15 @@ def _deferred_session_record(
     explicit_cwd: bool = False) -> dict:
     """A live-session record whose AIAgent is built later (lazy watch / cold resume) — _init_session's shape minus the agent."""
     now = time.time()
+    initial_transport = current_transport() or _stdio_transport
     return {
         "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
         "close_on_disconnect": close_on_disconnect, "active_session_lease": lease, "cols": cols,
         "created_at": now, "cwd": cwd, "display_history_prefix": display_history_prefix or [],
         "edit_snapshots": {}, "explicit_cwd": bool(explicit_cwd), "history": history,
-        "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
+        "history_lock": threading.Lock(), "_writer_lock": threading.RLock(), "_writer_transport": initial_transport,
+        "viewers": {initial_transport: now},
+        "history_version": 0, "image_counter": 0,
         "inflight_turn": None, "last_active": now, "lazy": lazy, "model_override": model_override,
         "pending_title": None,
         "profile_home": str(profile_home) if profile_home is not None else None,
@@ -2405,7 +2411,7 @@ def _deferred_session_record(
         "running": False, "session_key": session_key, "show_reasoning": _load_show_reasoning(),
         "slash_worker": None, "source": source, "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {}, "todo_state": todo_state,
-        "transport": current_transport() or _stdio_transport,
+        "transport": initial_transport,
     }
 
 
@@ -2676,11 +2682,14 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
 def _live_session_payload(
     sid: str, session: dict, *, cols: int | None = None, touch: bool = False,
     transport: Transport | None = None, omit_messages: bool = False) -> dict:
+    if transport is not None:
+        _bind_session_viewer_transport(session, transport)
+        # See #83716.
+        if transport is not _detached_ws_transport:
+            _cancel_ws_orphan_reap(sid)  # the client is back — a pending ws-orphan reap must not fire
     with session["history_lock"]:
         if cols is not None:
             session["cols"] = cols
-        if transport is not None:
-            _rebind_live_transport(sid, session, transport)
         if touch:
             # #84417: do not re-fire the live turn's original user text from a stale server-queue
             # self-duplicate after settle.

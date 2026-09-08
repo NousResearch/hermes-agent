@@ -3776,6 +3776,8 @@ export const en: Translations = {
       success: platform => `Handed off to ${platform}. Resume here anytime.`,
       systemNote: platform => `↻ Handed off to ${platform} — resume here anytime.`,
       failed: error => `Handoff failed: ${error}`,
+      continueHere: 'Continue on this device',
+      continued: 'Session continued on this device.',
       timedOut: 'Timed out waiting for the gateway. Is `hermes gateway` running?'
     }
   },

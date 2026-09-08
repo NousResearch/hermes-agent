@@ -6,6 +6,7 @@ globals at install time (method_ctx.bind_module), so they reference server.py gl
 from __future__ import annotations
 
 import contextlib
+import threading
 
 from .method_ctx import bind_module
 
@@ -22,6 +23,148 @@ def _notify_session_boundary(event_type: str, session_id: str | None, platform: 
 
 _SESSION_OWNERSHIP_UNAVAILABLE = "Hermes could not safely reserve this session. Try again."
 _AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "idle_timeout", "lru_evict", "tui_shutdown"})
+
+
+def _writer_lock(session: dict):
+    """Return the per-session writer lock, including for records from older runtimes."""
+    return session.setdefault("_writer_lock", threading.RLock())
+
+
+def _writer_transport_is_dead(transport) -> bool:
+    return transport is None or transport is _detached_ws_transport or getattr(transport, "_closed", False) is True
+
+
+def _bind_session_viewer_transport(session: dict, transport) -> None:
+    """Register a viewer without silently stealing a live writer.
+
+    ``session["transport"]`` is the event sink; ``_writer_transport`` is the
+    submit authority. They are intentionally separate so a second Desktop
+    window can inspect a session without becoming a concurrent writer.
+    """
+    if transport is None:
+        return
+    with _writer_lock(session):
+        viewers = session.setdefault("viewers", {})
+        viewers[transport] = time.time()
+        if session.get("_writer_transport") is None:
+            # Records created before the handoff contract used the event sink as
+            # their implicit writer. Preserve that identity during migration.
+            session["_writer_transport"] = session.get("transport") or transport
+        writer = session.get("_writer_transport")
+        if writer is transport or _writer_transport_is_dead(writer):
+            session["_writer_transport"] = transport
+            session["transport"] = transport
+        elif session.get("transport") is _detached_ws_transport:
+            # Keep delivery on the live owner while a second client remains a
+            # viewer; an explicit session.handoff is required to promote it.
+            session["transport"] = writer
+
+
+def _prepare_queued_session_writer(session: dict, queued_transport=None):
+    """Keep an accepted queued turn on a live writer, never on its stale socket.
+
+    The queue entry records the transport that submitted it for diagnostics, but
+    that transport may disconnect before the current turn settles. A surviving
+    viewer can continue the queued work; with no viewer, the detached sentinel
+    preserves the turn in the gateway until a later resume.
+    """
+    with _writer_lock(session):
+        writer = session.get("_writer_transport")
+        if writer is None:
+            writer = session.get("transport")
+            if not _writer_transport_is_dead(writer):
+                session["_writer_transport"] = writer
+        if not _writer_transport_is_dead(writer):
+            if session.get("transport") is _detached_ws_transport:
+                session["transport"] = writer
+            return writer
+
+        viewers = dict(session.get("viewers") or {})
+        if queued_transport is not None and not _writer_transport_is_dead(queued_transport):
+            viewers.setdefault(queued_transport, 0.0)
+        event_transport = session.get("transport")
+        if event_transport is not None and not _writer_transport_is_dead(event_transport):
+            viewers.setdefault(event_transport, 0.0)
+        live = [
+            transport for transport, _seen_at in sorted(viewers.items(), key=lambda item: item[1])
+            if not _writer_transport_is_dead(transport)
+        ]
+        if live:
+            writer = live[-1]
+            session["_writer_transport"] = writer
+            session["transport"] = writer
+            return writer
+
+        session["_writer_transport"] = _detached_ws_transport
+        session["transport"] = _detached_ws_transport
+        return _detached_ws_transport
+
+
+def _writer_conflict(sid: str, session: dict, *, handoff_available: bool):
+    from hermes_cli.active_sessions import ActiveSessionRefusal, SESSION_NOT_OWNED
+
+    session_key = str(session.get("session_key") or sid)
+    running = bool(session.get("running"))
+    message = (
+        f"Session {session_key} is active on another device. "
+        "Continue on this device to transfer control when the current turn is idle."
+    )
+    return ActiveSessionRefusal(message, SESSION_NOT_OWNED), {
+        "handoff_available": bool(handoff_available),
+        "owner_running": running,
+        "reason": SESSION_NOT_OWNED,
+        "session_id": session_key,
+    }
+
+
+def _ensure_session_writer(sid: str, session: dict, transport=None, *, lock_held: bool = False):
+    """Require the request transport to own the session writer slot.
+
+    A dead/detached writer is reclaimable automatically (the reconnect case).
+    A live writer requires the explicit ``session.handoff`` RPC.
+    """
+    transport = transport or current_transport() or _stdio_transport
+    def check():
+        if "_writer_transport" not in session:
+            session["_writer_transport"] = session.get("transport") or transport
+        writer = session.get("_writer_transport")
+        if writer is transport:
+            return None, None
+        if _writer_transport_is_dead(writer):
+            session["_writer_transport"] = transport
+            session["transport"] = transport
+            return None, None
+        return _writer_conflict(sid, session, handoff_available=not bool(session.get("running")))
+
+    if lock_held:
+        return check()
+    with _writer_lock(session):
+        return check()
+
+
+def _handoff_session_writer(sid: str, session: dict, transport=None):
+    """Atomically transfer an idle session writer to the calling viewer."""
+    transport = transport or current_transport() or _stdio_transport
+    with _session_resume_lock:
+        with _sessions_lock:
+            if _sessions.get(sid) is not session:
+                return _writer_conflict(sid, session, handoff_available=False)
+            with _writer_lock(session):
+                viewers = session.setdefault("viewers", {})
+                if transport not in viewers and session.get("transport") is not transport:
+                    return _writer_conflict(sid, session, handoff_available=False)
+                if _writer_transport_is_dead(transport):
+                    return _writer_conflict(sid, session, handoff_available=False)
+                writer = session.get("_writer_transport")
+                if writer is transport:
+                    return None, {"session_id": sid, "status": "already_owner", "writer": True}
+                if writer is not None and not _writer_transport_is_dead(writer) and session.get("running"):
+                    return _writer_conflict(sid, session, handoff_available=False)
+                session["_writer_transport"] = transport
+                session["transport"] = transport
+                viewers[transport] = time.time()
+                session["_writer_generation"] = int(session.get("_writer_generation") or 0) + 1
+                return None, {"session_id": sid, "status": "transferred", "writer": True}
 
 
 def _claim_active_session_slot(
@@ -54,6 +197,9 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
         surface=_session_source(session), profile_home=session.get("profile_home"))
     if limit_message is None:
         session["active_session_lease"] = lease
+        with _writer_lock(session):
+            if session.get("_writer_transport") is None:
+                session["_writer_transport"] = session.get("transport") or current_transport() or _stdio_transport
     return limit_message
 
 
@@ -465,11 +611,8 @@ def _reattach_refusal(rid, sid: str, session: dict) -> dict | None:
 
 
 def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> None:
-    """Point a live session at ``transport`` (caller holds ``history_lock``)."""
-    session["transport"] = transport
-    # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
-    # viewer becomes the transport instead of the drop sentinel.
-    session.setdefault("viewers", {})[transport] = time.time()
+    """Register a live transport without stealing a different writer."""
+    _bind_session_viewer_transport(session, transport)
     # See #83716.
     if transport is not _detached_ws_transport:
         _cancel_ws_orphan_reap(sid)  # the client is back — a pending ws-orphan reap must not fire
@@ -594,7 +737,10 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
     re-point the rest at the detached transport (later emits miss the dead socket) for the grace-windowed WS-orphan
     reaper. Returns ``(reaped, detached)`` counts."""
     with _sessions_lock:
-        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
+        owned = [
+            (sid, s) for sid, s in _sessions.items()
+            if s.get("transport") is transport or transport in (s.get("viewers") or {})
+        ]
     reaped = detached = 0
     for sid, session in owned:
         claimed_for_teardown = None
@@ -605,6 +751,9 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
             current = _sessions.get(sid)
             if current is not session:
                 continue
+            if current.get("_writer_transport") is transport:
+                with _writer_lock(current):
+                    current["_writer_transport"] = _detached_ws_transport
             if current.get("transport") is not transport:
                 # The reconnect owns this session now; drop only the old viewer registration.
                 (current.get("viewers") or {}).pop(transport, None)

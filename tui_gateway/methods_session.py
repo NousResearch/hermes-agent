@@ -309,10 +309,13 @@ def _(rid, params: dict) -> dict:
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
     now = time.time()
+    initial_transport = current_transport() or _stdio_transport
     with _sessions_lock:
         _sessions[sid] = {
             "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
             "close_on_disconnect": _flag(params, "close_on_disconnect"),
+            "_writer_lock": threading.RLock(), "_writer_transport": initial_transport,
+            "viewers": {initial_transport: now},
             "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
             "cols": int(params.get("cols", 80)), "created_at": now, "edit_snapshots": {},
             "explicit_cwd": explicit_cwd,
@@ -327,7 +330,7 @@ def _(rid, params: dict) -> dict:
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
-            "transport": current_transport() or _stdio_transport}
+            "transport": initial_transport}
         _register_session_cwd(_sessions[sid])
     # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded branch children.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
@@ -528,10 +531,10 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
             return refusal
         live["last_active"] = time.time()
         if (transport := current_transport()) is not None:
-            with live.setdefault("history_lock", threading.Lock()):
-                _rebind_live_transport(live_sid, live, transport)
-        else:
-            _cancel_ws_orphan_reap(live_sid)
+            # Resume/attach adds a viewer. It must not silently replace a live
+            # writer belonging to the previous Desktop.
+            _bind_session_viewer_transport(live, transport)
+        _cancel_ws_orphan_reap(live_sid)
     history = live.get("history") or []
     return _ok(ctx.rid, _attach_todo_state({
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
@@ -898,10 +901,26 @@ def _(rid, params: dict, session: dict) -> dict:
     with _session_resume_lock:
         if (refusal := _reattach_refusal(rid, sid, session)) is not None:
             return refusal
-        with session["history_lock"]:
-            _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
+        transport = current_transport() or _stdio_transport
+        _bind_session_viewer_transport(session, transport)
+        _cancel_ws_orphan_reap(sid)
     return _ok(rid, _live_session_payload(
         sid, session, touch=True, omit_messages=is_truthy_value(params.get("omit_messages", False))))
+
+
+@method("session.handoff")
+def _(rid, params: dict) -> dict:
+    """Explicitly transfer an idle session writer to the calling Desktop viewer."""
+    sid = str(params.get("session_id") or "")
+    if not sid:
+        return _err(rid, 4006, "session_id required")
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    refusal, result = _handoff_session_writer(sid, session, current_transport())
+    if refusal is not None:
+        return _err(rid, 4090, str(refusal), result)
+    return _ok(rid, result)
 
 
 @method("session.delete")

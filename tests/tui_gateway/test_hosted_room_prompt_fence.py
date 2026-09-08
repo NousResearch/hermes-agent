@@ -12,18 +12,17 @@ import tui_gateway.server as server
 
 
 def _stub_session(monkeypatch, *, title, profile_home=None):
+    sess = {
+        "id": "session-1",
+        "title": title,
+        "source": "bot_room",
+        "profile_home": str(profile_home) if profile_home else None,
+    }
+    monkeypatch.setitem(server._sessions, "session-1", sess)
     monkeypatch.setattr(
         server,
         "_sess_nowait",
-        lambda _params, _rid: (
-            {
-                "id": "session-1",
-                "title": title,
-                "source": "bot_room",
-                "profile_home": str(profile_home) if profile_home else None,
-            },
-            None,
-        ),
+        lambda _params, _rid: (sess, None),
     )
 
 

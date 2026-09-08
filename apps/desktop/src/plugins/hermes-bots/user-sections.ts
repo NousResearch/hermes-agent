@@ -24,9 +24,10 @@
 import { atom } from 'nanostores'
 
 import { $botMeta, saveBotMeta } from './data'
+import { $groupChats, updateGroupChat } from './group-chat'
 import { botRosterMeta } from './routing'
 import { getPluginCtx } from './shared'
-import type { BotMeta, RosterRow } from './types'
+import type { BotMeta, GroupChat, RosterRow } from './types'
 
 export const UNASSIGNED_SECTION_KEY = 'section:unassigned'
 export const BOT_SECTIONS_KEY = 'bot-sections-v1'
@@ -185,6 +186,52 @@ export function botSectionId(bot: RosterRow, metaByName: Record<string, BotMeta>
   return id ? String(id) : null
 }
 
+// ── group chats ──────────────────────────────────────────────────────────────
+//
+// A group chat files into a section by the same membership-on-the-item rule as
+// a bot, but a group has no profile meta to carry the field — its room record
+// is its only durable identity. So the assignment is a field on the room and
+// rides the room's own persistence (plugin storage), which is also why it is
+// deliberately NOT part of the bounded gateway sync projection: that mirror
+// carries conversations to other clients, not this machine's sidebar layout —
+// the same local scope the section list itself has.
+
+/** The drag payload prefix that marks an in-flight GROUP row (vs a bot's
+ *  roster key). */
+export const GROUP_DRAG_PREFIX = 'group:'
+
+export function groupDragKey(name: string): string {
+  return `${GROUP_DRAG_PREFIX}${name}`
+}
+
+/** A group's section, off the live room record. */
+export function groupChatSectionId(name: string, rooms: Record<string, GroupChat>): null | string {
+  const id = rooms?.[name]?.sectionId
+
+  return id ? String(id) : null
+}
+
+/** File `groups` into a section (`null` clears, back to the group-chat
+ *  bucket). One room write per group whose assignment actually changes,
+ *  through `updateGroupChat` so the durable record and the atom move together. */
+export function moveGroupChatsToSection(groups: string[], sectionId: null | string): void {
+  for (const name of groups || []) {
+    if (!name || groupChatSectionId(name, $groupChats.get()) === (sectionId || null)) {
+      continue
+    }
+
+    updateGroupChat(
+      name,
+      (room: GroupChat) => ({
+        ...room,
+        sectionId: sectionId || null
+      }),
+      // Layout-only: no reason to publish the conversation projection.
+      { sync: false }
+    )
+  }
+}
+
 export interface SectionBlock<TRow> {
   id: null | string
   key: string
@@ -196,12 +243,15 @@ export interface SectionBlock<TRow> {
  * Split roster rows into section blocks, in section order, with Unassigned
  * last. Pure, and returns EVERY row exactly once: a row whose `sectionId`
  * names a section that no longer exists lands in Unassigned rather than
- * vanishing, which is what makes deleting a section safe.
+ * vanishing, which is what makes deleting a section safe. Group rows seat per
+ * their room record's `sectionId` (`rooms`); a group with no room yet is
+ * unassigned.
  */
 export function groupRowsBySection<TRow extends { bot?: RosterRow } | RosterRow>(
   rows: TRow[],
   sections: unknown,
-  metaByName: Record<string, BotMeta>
+  metaByName: Record<string, BotMeta>,
+  groupRooms: Record<string, GroupChat> = {}
 ): SectionBlock<TRow>[] {
   const list = normalizeBotSections(sections)
   const known = new Set(list.map(s => s.id))
@@ -209,8 +259,10 @@ export function groupRowsBySection<TRow extends { bot?: RosterRow } | RosterRow>
   const loose: TRow[] = []
 
   for (const row of rows || []) {
-    const bot = ((row as { bot?: RosterRow })?.bot || row) as RosterRow
-    const id = bot ? botSectionId(bot, metaByName) : null
+    const group = (row as { kind?: string; name?: string })?.kind === 'group' ? row : null
+    const id = group
+      ? groupChatSectionId(String((group as { name?: string }).name || ''), groupRooms)
+      : botSectionId((((row as { bot?: RosterRow })?.bot || row) as RosterRow), metaByName)
 
     if (id && known.has(id)) {
       byId.get(id)!.push(row)

@@ -178,6 +178,13 @@ export interface GroupChat {
   tombstone?: boolean
   /** Read when ordering rooms; no write site in the plugin today. */
   pinned?: boolean
+  /** Which user-made sidebar section this group chat is filed under
+   *  (`user-sections.ts`). Like a bot's `sectionId` it is membership on the
+   *  item, but a group's only durable identity is its room record, so the
+   *  field rides the room's plugin-storage persistence — local, like the
+   *  section list itself, and deliberately absent from the bounded gateway
+   *  sync projection, which carries conversations, not sidebar layout. */
+  sectionId?: null | string
   /** How far each `<thread>::<member>` has read into `log`. Required: unlike
    *  the gateway-sourced shapes above, a room record is plugin-owned — every
    *  writer (hydrate, server-sync merge, updateGroupChat, room reset) seeds

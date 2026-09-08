@@ -749,6 +749,8 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       // already carries.
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
       image: room.image || null,
+      // Sidebar filing (user-sections) is room-local; keep it across sync.
+      sectionId: room.sectionId ?? null,
       syncRevision: Math.max(0, Number(room.syncRevision || 0))
     }
   }
@@ -1348,6 +1350,8 @@ export function updateGroupChat(
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
         // Room picture (small data URL, same normalization as bot avatars).
         image: room.image || null,
+        // Sidebar filing (user-sections) is room-local; keep it durable.
+        sectionId: room.sectionId ?? null,
         syncRevision: Math.max(0, Number(room.syncRevision || 0))
       }
     }

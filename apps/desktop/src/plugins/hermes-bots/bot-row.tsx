@@ -65,7 +65,16 @@ import { openRosterBot } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { A2A_PREFIX_RE, botCanonicalSessionId, botRowOwnsWorkspace, previewKind, workerActiveAt } from './row-helpers'
 import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
-import { $botSections, $draggingBot, BOT_DRAG_MIME, botSectionId, moveBotsToSection } from './user-sections'
+import {
+  $botSections,
+  $draggingBot,
+  BOT_DRAG_MIME,
+  botSectionId,
+  groupChatSectionId,
+  groupDragKey,
+  moveBotsToSection,
+  moveGroupChatsToSection
+} from './user-sections'
 
 // ── bot row ──────────────────────────────────────────────────────────────────
 
@@ -455,13 +464,17 @@ interface GroupRowProps {
   members: GroupMember[]
   needsYou: boolean
   onDisband: (room: { members: GroupMember[]; name: string }) => void
+  /** Opens the New section dialog; the group is filed into it on create. */
+  onNewSection: (group: string) => void
   onOpen: (group: string) => void
 }
 
-export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }: GroupRowProps) {
+export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, onNewSection }: GroupRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms = useValue($groupChats)
+  const sections = useValue($botSections)
+  const currentSectionId = groupChatSectionId(group, rooms)
 
   const room = rooms[group] || {
     log: []
@@ -486,17 +499,30 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
   const availableMembers = members.filter(member => botSourceStatus(member).available).length
   const availabilityLabel = `${availableMembers} of ${members.length} available`
 
+  // Same drag contract as a bot row, under the group's own key shape so a
+  // drop zone can tell which kind landed without decoding roster keys.
+  const dragKey = groupDragKey(group)
+  const dragging = useValue($draggingBot) === dragKey
+
   const row = (
     <RowButton
       aria-label={`${group}, ${members.length} bots, ${availabilityLabel}`}
       className={cn(
         'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
         'hover:bg-(--chrome-action-hover)',
-        active && 'bg-(--ui-row-active-background)'
+        active && 'bg-(--ui-row-active-background)',
+        dragging && 'opacity-40'
       )}
+      draggable
       onClick={() => {
         haptic('tap')
         onOpen(group)
+      }}
+      onDragEnd={() => $draggingBot.set(null)}
+      onDragStart={event => {
+        event.dataTransfer.setData(BOT_DRAG_MIME, dragKey)
+        event.dataTransfer.effectAllowed = 'move'
+        $draggingBot.set(dragKey)
       }}
     >
       <div className="relative flex w-[34px] shrink-0 items-center justify-center">
@@ -554,6 +580,35 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => onOpen(group)}>Open Group Chat</ContextMenuItem>
+        <ContextMenuSeparator />
+        {/* Filing — the same submenu a bot row gets, driving the room-record
+            assignment instead of profile meta. */}
+        <ContextMenuSub>
+          <ContextMenuSubTrigger>{b.sections.moveTo}</ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            {sections.map(section => (
+              <ContextMenuItem
+                disabled={section.id === currentSectionId}
+                key={section.id}
+                onSelect={() => moveGroupChatsToSection([group], section.id)}
+              >
+                <Codicon className="mr-1.5" name="folder" />
+                {section.name}
+              </ContextMenuItem>
+            ))}
+            {sections.length ? <ContextMenuSeparator /> : null}
+            <ContextMenuItem onSelect={() => onNewSection(group)}>
+              <Codicon className="mr-1.5" name="new-folder" />
+              {b.sections.newSectionEllipsis}
+            </ContextMenuItem>
+            {currentSectionId ? (
+              <ContextMenuItem onSelect={() => moveGroupChatsToSection([group], null)}>
+                <Codicon className="mr-1.5" name="inbox" />
+                {b.sections.removeFromSection}
+              </ContextMenuItem>
+            ) : null}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
         <ContextMenuSeparator />
         <ContextMenuItem
           className="text-destructive focus:text-destructive"

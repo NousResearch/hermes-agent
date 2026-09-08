@@ -8,7 +8,6 @@ redirect ``_model_request_active`` bracket and the response-vs-redirect crossing
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 from dataclasses import dataclass
 import logging
 import time
@@ -114,14 +113,10 @@ def perform_api_call(
 
     from hermes_cli.middleware import run_llm_execution_middleware
 
-    # The ``_model_request_active`` bracket is taken under the redirect lock when one exists,
-    # so redirect() can't observe a half-toggled flag.
-    _model_request_active = getattr(agent, "_model_request_active", None)
+    # The lifecycle helper shares redirect and steer admission locks, so neither surface can
+    # commit a correction after request closure has won the race.
     _redirect_lock = getattr(agent, "_pending_redirect_lock", None)
-    _bracket = nullcontext() if _redirect_lock is None else _redirect_lock
-    with _bracket:
-        if _model_request_active is not None:
-            _model_request_active.set()
+    agent._set_model_request_active(True)
     try:
         response = run_llm_execution_middleware(
             api_kwargs, _perform_api_call, original_request=_original_api_kwargs,
@@ -131,13 +126,12 @@ def perform_api_call(
             api_call_count=api_call_count, middleware_trace=list(_llm_middleware_trace),
         )
     finally:
-        with _bracket:
-            if _model_request_active is not None:
-                _model_request_active.clear()
-            _redirect_crossed_response = (
-                bool(agent._pending_redirect) if _redirect_lock is not None
-                else agent._has_pending_redirect()
-            )
+        agent._set_model_request_active(False)
+        if _redirect_lock is not None:
+            with _redirect_lock:
+                _redirect_crossed_response = bool(agent._pending_redirect)
+        else:
+            _redirect_crossed_response = agent._has_pending_redirect()
     if _redirect_crossed_response:
         # Response and redirect can cross threads: discard the now-stale
         # response and rebuild from the correction rather than lose it.

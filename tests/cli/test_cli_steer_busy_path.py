@@ -122,6 +122,19 @@ class TestSteerBusyPathDispatch:
         cli.agent.steer.assert_called_once_with("focus on errors")
         cli._pending_input.put.assert_not_called()
 
+    def test_rejected_live_steer_queues_as_next_turn(self):
+        """A busy-path race with no live delivery window must not lose text."""
+        cli = _make_cli()
+        cli._agent_running = True
+        cli.agent = MagicMock()
+        cli.agent.steer = MagicMock(return_value=False)
+        cli._pending_input = MagicMock()
+
+        cli.process_command("/steer preserve this correction")
+
+        cli.agent.steer.assert_called_once_with("preserve this correction")
+        cli._pending_input.put.assert_called_once_with("preserve this correction")
+
     def test_idle_path_queues_as_next_turn(self):
         """Control — when the agent is NOT running, /steer correctly falls
         back to next-turn queue semantics.  Demonstrates why the fix was

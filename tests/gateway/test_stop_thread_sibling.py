@@ -57,6 +57,36 @@ def test_sibling_returns_empty_for_non_thread_source():
     assert runner._sibling_thread_run_keys(nonthread, "agent:main:discord:group:chan1:userA") == []
 
 
+def test_sibling_matches_named_profile_runs():
+    # Under multiplexing the sibling prefix must follow the source's profile namespace,
+    # so /stop finds another participant's run under the SAME named profile...
+    runner = object.__new__(GatewayRunner)
+    source = _thread_source("userA")
+    source.profile = "work"
+    key_b = build_session_key(
+        _thread_source("userB"), thread_sessions_per_user=True, profile="work"
+    )
+    runner._running_agents = {key_b: _FakeAgent()}
+    assert runner._sibling_thread_run_keys(
+        source, "agent:work:discord:forum:chan1:thr1:userA"
+    ) == [key_b]
+
+
+def test_sibling_does_not_cross_profiles():
+    # ...and never reaches a DIFFERENT profile's run in the same chat/thread.
+    runner = object.__new__(GatewayRunner)
+    source = _thread_source("userA")
+    source.profile = "work"
+    main_key = build_session_key(_thread_source("userB"), thread_sessions_per_user=True)
+    runner._running_agents = {main_key: _FakeAgent()}
+    assert (
+        runner._sibling_thread_run_keys(
+            source, "agent:work:discord:forum:chan1:thr1:userA"
+        )
+        == []
+    )
+
+
 # ---------------------------------------------------------------------------
 # _handle_stop_command fallback path
 # ---------------------------------------------------------------------------

@@ -158,15 +158,11 @@ HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
 )
 
 
-# Memory guidance (#95681, consolidated): ONE block from ONE builder. The opening frame adapts to which
-# stores config enables; everything else is written exactly once. Leads with the positive posture (save
-# proactively, replace when full) — the routing rules come after, as refinements, not as the headline. WHAT
-# belongs in memory is the memory tool schema's job and is never re-taught here.
-def build_memory_guidance(memory_enabled: bool = True, profile_enabled: bool = True) -> str:
-    """ONE memory-guidance block whose opening frame adapts to the enabled store(s); "" when both are off.
-
-    Positive posture first, routing rules as refinements. WHAT belongs in memory is the tool schema's job.
-    """
+# Keep the every-session memory scope even when task knowledge cannot be saved as a skill.
+def build_memory_guidance(
+    memory_enabled: bool = True, profile_enabled: bool = True, *, skill_manage_available: bool = True,
+) -> str:
+    """Adapt store and skill-write guidance without widening what belongs in memory."""
     if not memory_enabled and not profile_enabled:
         return ""
     if memory_enabled:
@@ -180,11 +176,17 @@ def build_memory_guidance(memory_enabled: bool = True, profile_enabled: bool = T
             "loaded into each new session's context; save durable facts about the user with the "
             "memory tool (target='user') — the built-in notes store is disabled, so never target='memory'. "
         )
-    return frame + (
+    skill_routing = (
         "Skills come first: when you learn something while doing a task — a "
         "procedure, a pitfall, and the user's preferences and corrections "
         "for that kind of work — record it in the skill you used or built "
         "for the task (skill_manage), where it loads only when relevant. "
+        if skill_manage_available else
+        "Task-specific knowledge — procedures, pitfalls, and the user's preferences "
+        "and corrections for that kind of work — belongs in skills, not in memory, "
+        "even when skill writing is unavailable. "
+    )
+    return frame + skill_routing + (
         "Memory is the narrow exception for facts that apply to EVERY "
         "session regardless of task (who the user is, environment facts, "
         "standing conventions with no task home); it has a hard character "

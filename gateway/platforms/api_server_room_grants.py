@@ -5,6 +5,8 @@ import time
 import uuid
 from typing import Any, Optional
 
+from gateway.hosted_room_passive_protocol import passive_capabilities
+
 try:
     from aiohttp import web
 except ImportError:
@@ -180,7 +182,7 @@ async def _handle_room_member_invitation(
         "authority_epoch",
         "member_id",
     }
-    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds", "replication", "work_records"}
+    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds", "replication", "work_records", "passive_only"}
     if set(body) - allowed or not required <= set(body):
         return web.json_response(
             _openai_error(
@@ -198,7 +200,9 @@ async def _handle_room_member_invitation(
         )
 
         profile, target_install_id = _local_target(None, _api_request_profile)
-        permissions = invitation_permissions(body.get("replication", False), body.get("work_records", False))
+        permissions = invitation_permissions(
+            body.get("replication", False), body.get("work_records", False),
+            passive_only=body.get("passive_only", False))
         ttl = float(body.get("ttl_seconds", 3600))
         if not 60 <= ttl <= 24 * 60 * 60:
             raise ValueError("ttl_seconds must be between 60 and 86400")
@@ -250,6 +254,7 @@ async def _handle_room_member_invitation(
             "grant": token,
             "target_profile": profile,
             "catalog": catalog,
+            "passive_replication": passive_capabilities(),
             "expires_at": float(claims["expires_at"]),
             "status_expires_at": float(claims["status_expires_at"]),
             "work_records_version": 1,
@@ -277,7 +282,7 @@ async def _handle_room_member_capabilities(
         )
     return web.json_response({
         "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
-        "target_profile": profile, "catalog": catalog,
+        "target_profile": profile, "catalog": catalog, "passive_replication": passive_capabilities(),
         "work_records_version": 1,
         **({"retirement_enrollment": enrollment} if enrollment is not None else {})})
 

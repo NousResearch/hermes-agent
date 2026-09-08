@@ -14,14 +14,14 @@ Read Reddit: subreddits, search, threads, users. No browser.
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/social-media/reddit-reading` |
+| Source | Optional — install with `hermes skills install official/social-media/reddit-reading` |
+| Path | `optional-skills/social-media/reddit-reading` |
 | Version | `1.0.0` |
 | Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Reddit`, `Social Media`, `Research`, `Discussions`, `Community` |
-| Related skills | [`rss-feeds`](/docs/user-guide/skills/bundled/research/research-rss-feeds), [`grounded-citations`](/docs/user-guide/skills/bundled/research/research-grounded-citations), [`blocked-page-recovery`](/docs/user-guide/skills/bundled/web/web-blocked-page-recovery), [`xurl`](/docs/user-guide/skills/bundled/social-media/social-media-xurl) |
+| Related skills | [`rss-feeds`](/docs/user-guide/skills/optional/research/research-rss-feeds), [`grounded-citations`](/docs/user-guide/skills/bundled/research/research-grounded-citations), [`blocked-page-recovery`](/docs/user-guide/skills/bundled/web/web-blocked-page-recovery), [`xurl`](/docs/user-guide/skills/bundled/social-media/social-media-xurl) |
 
 ## Reference: full SKILL.md
 

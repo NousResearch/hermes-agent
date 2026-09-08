@@ -285,7 +285,7 @@ async def test_retirement_reclaims_records_and_fences_older_raw_writers(setup, r
             assert old.execute(f"SELECT COUNT(*) FROM {records.TARGET_TABLE}").fetchone()[0] == 0
             for verb in ("INSERT", "INSERT OR REPLACE"):
                 with pytest.raises(sqlite3.IntegrityError):
-                    old.execute(f"{verb} INTO {records.TARGET_TABLE} VALUES (?,?,?,?)",
+                    old.execute(f"{verb} INTO {records.TARGET_TABLE} (room_id,revision,digest,record_json) VALUES (?,?,?,?)",
                                 ("room", record["revision"], record["digest"], records.encode(record)))
             assert old.execute("SELECT owner_kind FROM hosted_room_id_reservations WHERE room_id='room'").fetchone()[0] == "replica"
         with pytest.raises(PeerRunsHTTPError):
@@ -367,7 +367,7 @@ async def test_old_history_writer_reclaims_record_payload_without_removing_ident
             assert old.execute(f"SELECT COUNT(*) FROM {records.TARGET_TABLE}").fetchone()[0] == 0
             assert old.execute("SELECT owner_kind FROM hosted_room_id_reservations WHERE room_id='room'").fetchone()[0] == "replica"
             with pytest.raises(sqlite3.IntegrityError):
-                old.execute(f"INSERT INTO {records.TARGET_TABLE} VALUES (?,?,?,?)",
+                old.execute(f"INSERT INTO {records.TARGET_TABLE} (room_id,revision,digest,record_json) VALUES (?,?,?,?)",
                             ("room", record["revision"], record["digest"], records.encode(record)))
 
 

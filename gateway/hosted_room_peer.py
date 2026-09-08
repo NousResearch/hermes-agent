@@ -423,12 +423,20 @@ _GRANT_REFRESH_FIELDS = _GRANT_FIELDS | {"status_expires_at"}
 _GRANT_PERMISSIONS = {"approve", "attachment.stage", "artifact.ack", "artifact.read", "dispatch", "status", "stop", "replicate", "work_records"}
 
 
-def invitation_permissions(replication: Any = False, work_records: Any = False) -> tuple[str, ...]:
+def invitation_permissions(
+    replication: Any = False, work_records: Any = False, *, passive_only: Any = False,
+) -> tuple[str, ...]:
     """Keep opt-in semantics identical on JSON-RPC and HTTP invitations."""
     if type(replication) is not bool:
         raise HostedRoomGrantError("replication must be a boolean")
+    if type(passive_only) is not bool:
+        raise HostedRoomGrantError("passive_only must be a boolean")
     if type(work_records) is not bool or (work_records and not replication):
         raise HostedRoomGrantError("work_records requires an explicit replication opt-in")
+    if passive_only:
+        if not replication:
+            raise HostedRoomGrantError("passive_only requires explicit replication")
+        return ("status", "replicate", "work_records") if work_records else ("status", "replicate")
     normal = ("approve", "attachment.stage", "artifact.ack", "artifact.read", "dispatch", "status", "stop")
     return (*normal, "replicate", "work_records") if work_records else (*normal, "replicate") if replication else normal
 

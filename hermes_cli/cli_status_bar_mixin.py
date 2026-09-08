@@ -273,6 +273,8 @@ class CLIStatusBarMixin:
             # last_prompt_tokens parks at the -1 sentinel right after a compression until the
             # next real API call; clamp so the bar never renders "-1/200K".
             context_tokens = max(0, getattr(compressor, "last_prompt_tokens", 0) or 0)
+            from agent.context_breakdown import context_display_source
+            snapshot["context_estimated"] = context_display_source(compressor) != "provider_usage"
             # Display-only anchoring: on reasoning models a long tool loop replays the turn's
             # thinking on every request, so the LAST request's prompt_tokens can exceed the
             # durable transcript by hundreds of K and the bar sawtooths at the turn boundary.
@@ -288,6 +290,11 @@ class CLIStatusBarMixin:
                     charge_stale_thinking=False)
                 if _anchored is not None and _anchored > 0:
                     context_tokens = _anchored
+                    anchor = agent._turn_base_usage_anchor
+                    delta = _msgs[int(anchor["base_count"]):]
+                    if delta and delta[0].get("role") == "assistant":
+                        delta = delta[1:]
+                    snapshot["context_estimated"] = bool(delta)
             except Exception:
                 pass
             context_length = max(0, getattr(compressor, "context_length", 0) or 0)
@@ -1003,12 +1010,13 @@ class CLIStatusBarMixin:
             add("duration", _DIM, duration_label)
         else:
             percent = snapshot["context_percent"]
-            percent_label = f"{percent}%" if percent is not None else "--"
+            mark = "~" if snapshot.get("context_estimated") else ""
+            percent_label = f"{mark}{percent}%" if percent is not None else "--"
             if wide and _ok("context_detail"):
                 if snapshot["context_length"]:
                     ctx_total = _format_context_length(snapshot["context_length"])
                     ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                    context_label = f"{ctx_used}/{ctx_total}"
+                    context_label = f"{mark}{ctx_used}/{ctx_total}"
                 else:
                     context_label = "ctx --"
                 segs.append([(_DIM, context_label)])

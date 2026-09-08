@@ -282,14 +282,14 @@ class TestPreflightDeferral:
         assert compressor.should_defer_preflight_to_real_usage(80_000) is False
 
     def test_never_defers_when_real_usage_cannot_arrive_or_is_already_over(self, compressor):
-        """Deferral is one request, never a disable: a provider that omits usage, a real reading
-        already over threshold, or a rough figure past the whole window all compress now."""
+        """Only provider evidence ends deferral, not the magnitude of a rough estimate."""
         compressor.context_length = 100_000
         compressor.threshold_tokens = 85_000
         compressor.last_real_prompt_tokens = 90_000
         assert compressor.should_defer_preflight_to_real_usage(95_000) is False
         compressor.last_real_prompt_tokens = 50_000
-        assert compressor.should_defer_preflight_to_real_usage(150_000) is False
+        for rough in (compressor.context_length, 150_000, 10_000_000):
+            assert compressor.should_defer_preflight_to_real_usage(rough) is True
         compressor.note_usage_less_response()
         assert compressor.should_defer_preflight_to_real_usage(95_000) is False
         compressor.update_from_response({"prompt_tokens": 50_000})
@@ -2151,18 +2151,18 @@ class TestUpdateModelResetsCalibration:
         assert comp.awaiting_real_usage_after_compression is False
         assert comp._ineffective_compression_count == 0
 
-    def test_defer_no_longer_suppresses_after_switch(self):
-        """The exact #23767 failure: old model's 'it fit' must not defer
-        preflight on the new smaller model."""
+    def test_switch_waits_for_new_provider_evidence(self):
+        """A model switch clears old evidence; the new provider adjudicates pressure."""
         comp = self._comp()
         comp.last_real_prompt_tokens = 50_000
         # Before switch, a modest rough growth would defer.
         comp.threshold_tokens = 85_000
         assert comp.should_defer_preflight_to_real_usage(93_000) is True
 
-        # After switching to a 65K model the stale reading is gone; a rough estimate past the
-        # NEW window is a request certain to fail and is never deferred — preflight will run.
         comp.update_model("small-model", context_length=65_536)
+        assert comp.last_real_prompt_tokens == 0
+        assert comp.should_defer_preflight_to_real_usage(comp.context_length + 5_000) is True
+        comp.update_from_response({"prompt_tokens": comp.threshold_tokens + 1})
         assert comp.should_defer_preflight_to_real_usage(comp.context_length + 5_000) is False
 
 

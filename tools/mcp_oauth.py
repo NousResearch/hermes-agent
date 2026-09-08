@@ -444,6 +444,25 @@ class HermesTokenStorage:
         """True if we have tokens on disk (may be expired)."""
         return self._tokens_path().exists()
 
+    def has_durable_tokens(self) -> bool:
+        """Return whether cached OAuth state can survive access-token expiry.
+
+        A finite-lived access token without a refresh token is not a durable
+        authorization: it can pass an initial MCP probe and then fail
+        non-interactively as soon as the access token expires.  Treat that
+        shape as uncommissioned rather than reporting a false login success.
+        Tokens without expiry metadata may be provider-defined long-lived
+        bearer tokens, so their lack of a refresh token is not rejected here.
+        """
+        data = _read_json(self._tokens_path())
+        if not isinstance(data, dict) or not data.get("access_token"):
+            return False
+        finite_lifetime = (
+            data.get("expires_at") is not None
+            or data.get("expires_in") is not None
+        )
+        return not finite_lifetime or bool(data.get("refresh_token"))
+
 
 # Callback capture: the HTTP listener and the stdin paste reader share one result dict.
 def _authorization_code_result(code: str, state: "str | None", iss: "str | None" = None):

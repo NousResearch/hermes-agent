@@ -725,6 +725,21 @@ class TestMcpLogin:
         out = capsys.readouterr().out
         assert "not found" in out
 
+    def test_oauth_token_check_fails_closed_on_storage_error(self, monkeypatch):
+        from tools.mcp_oauth import HermesTokenStorage
+
+        def raise_storage_error(_self):
+            raise OSError("unreadable token state")
+
+        monkeypatch.setattr(
+            HermesTokenStorage,
+            "has_durable_tokens",
+            raise_storage_error,
+        )
+
+        from hermes_cli.mcp_config import _oauth_tokens_present
+
+        assert _oauth_tokens_present("unreadable") is False
 
     def test_login_false_success_no_token(self, tmp_path, capsys, monkeypatch):
         """Probe lists tools without auth (Google Drive), but no token landed.
@@ -752,9 +767,38 @@ class TestMcpLogin:
         cmd_mcp_login(_make_args(name="googledrive"))
         out = capsys.readouterr().out
 
-        assert "no OAuth token was obtained" in out
+        assert "no durable OAuth grant was obtained" in out
         assert "Authenticated" not in out
         assert "client_id" in out
+
+    def test_login_false_success_finite_token_without_refresh(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A one-hour access token without refresh is not commissioned."""
+        _seed_config(tmp_path, {
+            "fragile": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+        })
+        token_dir = tmp_path / "mcp-tokens"
+
+        def mock_probe(name, cfg, connect_timeout=30):
+            token_dir.mkdir(exist_ok=True)
+            (token_dir / "fragile.json").write_text(
+                '{"access_token":"x","expires_in":3600,"expires_at":9999999999}'
+            )
+            return [("a", "d")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="fragile"))
+        out = capsys.readouterr().out
+
+        assert "no durable OAuth grant was obtained" in out
+        assert "finite-lived access token has no refresh token" in out
+        assert "Authenticated" not in out
 
     def test_login_genuine_success_with_token(self, tmp_path, capsys, monkeypatch):
         """Probe lists tools AND a token exists → report real success."""

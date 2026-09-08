@@ -337,13 +337,15 @@ def _probe_single_server(
 
 
 def _oauth_tokens_present(name: str) -> bool:
-    """True if an OAuth token file exists for ``name`` (a clean probe alone is not proof of auth)."""
+    """True if a durable OAuth grant exists for ``name`` (a clean probe alone is not proof of auth)."""
     try:
         from tools.mcp_oauth import HermesTokenStorage
-        return HermesTokenStorage(name).has_cached_tokens()
+        return HermesTokenStorage(name).has_durable_tokens()
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("Could not check OAuth tokens for '%s': %s", name, exc)
-        return True  # permissive: don't block a real success
+        # Commissioning must fail closed: an unreadable grant is not proof of
+        # durable noninteractive authentication.
+        return False
 
 
 def _unwrap_exception_group(exc: BaseException) -> Exception:
@@ -674,7 +676,11 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
         # initialize + tools/list without auth, so the flow may have failed (e.g. DCR 400 for
         # providers without RFC 7591) while the probe still lists tools. Verify a token landed.
         if not _oauth_tokens_present(name):
-            _warning("Server responded, but no OAuth token was obtained — authentication did not complete.")
+            _warning(
+                "Server responded, but no durable OAuth grant was obtained — "
+                "authentication did not complete or the finite-lived access "
+                "token has no refresh token."
+            )
             print()
             _info(
                 "Some providers (e.g. Google Drive, Atlassian) do not support "

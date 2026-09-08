@@ -10,7 +10,7 @@ import {
   openAutomationComposerForEdit
 } from '@/store/automation-composer'
 import { $activeSessionId } from '@/store/session'
-import { $sessionControlBySession, runSessionControlAction } from '@/store/session-control'
+import { $sessionControlBySession, refreshSessionControl, runSessionControlAction } from '@/store/session-control'
 
 import { AutomationComposerDialog } from './automation-composer-dialog'
 
@@ -329,5 +329,117 @@ describe('AutomationComposerDialog', () => {
     vi.mocked($activeSessionId.get).mockReturnValueOnce('session-other')
     act(() => invalidateOnSessionSwitch())
     expect($automationComposer.get().open).toBe(false)
+  })
+
+  describe('edit-mode Pause button', () => {
+    const PAUSE_DISPATCH = { display: null, message: null, notice: '', output: '', type: 'exec' }
+
+    const GOAL_SNAPSHOT = {
+      capability: 'supported',
+      snapshot: {
+        goal: { title: 'Existing goal', status: 'active', subgoals: [], max_turns: 5 },
+        loop: null,
+        heartbeat: null
+      }
+    }
+
+    const LOOP_SNAPSHOT = {
+      capability: 'supported',
+      snapshot: {
+        goal: null,
+        loop: { prompt: 'Poll CI', interval_seconds: 300, times: 5, until: '', status: 'active', mode: 'interval', ticks_fired: 0, max_ticks: 5, current_delay: 0, next_due_at: 0, last_fired_at: 0, created_at: 0, awaiting_response: false, deferred_by_goal: false },
+        heartbeat: null
+      }
+    }
+
+    const HB_SNAPSHOT = {
+      capability: 'supported',
+      snapshot: {
+        goal: null,
+        loop: null,
+        heartbeat: { prompt: 'Health check', interval_seconds: 300, status: 'active', fire_count: 0, last_fired_at: 0, created_at: 0 }
+      }
+    }
+
+    it('shows a Pause button for goal in edit mode and dispatches goal.pause', async () => {
+      vi.mocked(runSessionControlAction).mockResolvedValueOnce(PAUSE_DISPATCH as never)
+      $sessionControlBySession.set({ 'session-123': GOAL_SNAPSHOT } as never)
+      await renderDialog()
+      act(() => openAutomationComposerForEdit('goal', 'session-123'))
+
+      const pauseBtn = await screen.findByRole('button', { name: /pause/i })
+      expect(pauseBtn).toBeTruthy()
+      expect((pauseBtn as HTMLButtonElement).disabled).toBe(false)
+
+      fireEvent.click(pauseBtn)
+      await waitFor(() =>
+        expect(runSessionControlAction).toHaveBeenCalledWith('session-123', 'goal.pause')
+      )
+      expect($automationComposer.get().open).toBe(true)
+    })
+
+    it('shows a Pause button for loop in edit mode and dispatches loop.pause', async () => {
+      vi.mocked(runSessionControlAction).mockResolvedValueOnce(PAUSE_DISPATCH as never)
+      $sessionControlBySession.set({ 'session-123': LOOP_SNAPSHOT } as never)
+      await renderDialog()
+      act(() => openAutomationComposerForEdit('loop', 'session-123'))
+
+      const pauseBtn = await screen.findByRole('button', { name: /pause/i })
+      expect(pauseBtn).toBeTruthy()
+
+      fireEvent.click(pauseBtn)
+      await waitFor(() =>
+        expect(runSessionControlAction).toHaveBeenCalledWith('session-123', 'loop.pause')
+      )
+      expect($automationComposer.get().open).toBe(true)
+    })
+
+    it('shows a Pause button for heartbeat in edit mode and dispatches heartbeat.pause', async () => {
+      vi.mocked(runSessionControlAction).mockResolvedValueOnce(PAUSE_DISPATCH as never)
+      $sessionControlBySession.set({ 'session-123': HB_SNAPSHOT } as never)
+      await renderDialog()
+      act(() => openAutomationComposerForEdit('heartbeat', 'session-123'))
+
+      const pauseBtn = await screen.findByRole('button', { name: /pause/i })
+      expect(pauseBtn).toBeTruthy()
+
+      fireEvent.click(pauseBtn)
+      await waitFor(() =>
+        expect(runSessionControlAction).toHaveBeenCalledWith('session-123', 'heartbeat.pause')
+      )
+      expect($automationComposer.get().open).toBe(true)
+    })
+
+    it('keeps typed draft intact after a successful goal pause', async () => {
+      vi.mocked(runSessionControlAction).mockResolvedValueOnce(PAUSE_DISPATCH as never)
+      $sessionControlBySession.set({ 'session-123': GOAL_SNAPSHOT } as never)
+      await renderDialog()
+      act(() => openAutomationComposerForEdit('goal', 'session-123'))
+
+      const prompt = await screen.findByLabelText(/goal prompt/i)
+      fireEvent.change(prompt, { target: { value: 'My unsaved objective' } })
+      fireEvent.change(screen.getByPlaceholderText('A testable condition for done'), { target: { value: 'My unsaved criterion' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Add criterion' }))
+
+      fireEvent.click(screen.getByRole('button', { name: /pause/i }))
+      await waitFor(() => expect(runSessionControlAction).toHaveBeenCalled())
+
+      expect((screen.getByLabelText(/goal prompt/i) as HTMLTextAreaElement).value).toBe('My unsaved objective')
+      expect(screen.getByText('My unsaved criterion')).toBeTruthy()
+      expect($automationComposer.get().open).toBe(true)
+    })
+
+    it('refreshes the session-control snapshot after a successful pause', async () => {
+      vi.mocked(runSessionControlAction).mockResolvedValueOnce(PAUSE_DISPATCH as never)
+      $sessionControlBySession.set({ 'session-123': GOAL_SNAPSHOT } as never)
+      await renderDialog()
+      act(() => openAutomationComposerForEdit('goal', 'session-123'))
+      vi.mocked(refreshSessionControl).mockClear()
+
+      fireEvent.click(screen.getByRole('button', { name: /pause/i }))
+      await waitFor(() => expect(runSessionControlAction).toHaveBeenCalled())
+
+      expect(refreshSessionControl).toHaveBeenCalledWith('session-123')
+    })
   })
 })

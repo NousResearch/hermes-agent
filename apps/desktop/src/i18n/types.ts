@@ -2658,6 +2658,9 @@ export interface Translations {
     cronExplain: string
     duplicateError: string
     submitError: string
+    pauseGoal: string
+    pauseLoop: string
+    pauseHeartbeat: string
   }
 
   statusStack: {

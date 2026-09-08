@@ -182,7 +182,7 @@ hermes doctor       # Diagnose any issues
 
 ## Drive class
 
-Every deployed North Forge drive carries a short **class label** in its volume name, so a recipient — or anyone helping them troubleshoot — can tell at a glance what kind of drive they're holding.
+A North Forge drive is prepared with a short **class label** in its volume name, so a recipient — or anyone helping them troubleshoot — can tell at a glance what kind of drive they're holding. What the drive is actually provisioned as (its tier and pinned edition) is recorded on the drive itself; check it any time with `scripts\nf-setup.ps1 -Show`.
 
 ---
 

@@ -52,9 +52,11 @@ def computer_use_config() -> dict[str, Any]:
     managed_dir = config.managed_scope.get_managed_dir()
     managed = _strict_block(managed_dir / "config.yaml") if managed_dir else {}
     selection = {**raw, **managed}
+    if isinstance(raw.get("remote"), dict) and isinstance(managed.get("remote"), dict):
+        selection["remote"] = {**raw["remote"], **managed["remote"]}
     # This architecture intentionally has no provider registry/selector. A config
     # copied from the provider-based alternative must not silently choose a host.
-    # Direct remote selection remains remote.enabled: true; URL alone is inert.
+    # Direct remote selection requires an authored remote.enabled choice.
     if "provider" in selection:
         raise RuntimeError(
             "computer_use.provider is unsupported by direct CUA; remove it and "
@@ -65,6 +67,8 @@ def computer_use_config() -> dict[str, Any]:
     # retaining a user's remote transport under a managed null).
     if "remote" in selection and not isinstance(selection["remote"], dict):
         raise RuntimeError("remote computer use configuration must be a mapping")
+    if "remote" in selection and "enabled" not in selection["remote"]:
+        raise RuntimeError("remote computer use configuration requires an explicit enabled: true or false")
     try:
         effective = config.load_config().get("computer_use", {})
         # An unrelated processing error can silently yield defaults or stale LKG.
@@ -73,7 +77,7 @@ def computer_use_config() -> dict[str, Any]:
         # agent/model, so this is the normal loader's computer_use result.
         intended = config._deep_merge(
             cast(dict[str, Any], config._expand_env_vars(
-                config._deep_merge(config.DEFAULT_CONFIG.get("computer_use", {}), raw),
+                config._deep_merge(cast(dict[str, Any], config.DEFAULT_CONFIG.get("computer_use", {})), raw),
             )),
             cast(dict[str, Any], config._expand_env_vars(managed)),
         )

@@ -473,6 +473,14 @@ HTTP proxies are disabled. Remote sessions support `standard` permissions only.
 They never fall back to the gateway's CLI, including when the remote host returns
 no windows.
 
+A written `remote` block requires an explicit boolean `enabled` choice; a URL
+without that choice is an error, not permission to drive the local screen. The
+current expanded configuration must match the normal loader's effective values,
+so an unrelated loader failure cannot substitute defaults or a deleted target
+from its last-known-good cache. This direct integration does not support a
+`computer_use.provider` selector; provider selection belongs to the provider-seam
+alternative.
+
 On the desktop host, use `hermes computer-use host-bridge --help`. Without a
 Hermes installation, copy `host_bridge_standalone.py`, `host_bridge.py` and
 `host_validation.py` from `tools/computer_use/` together. The standalone launcher

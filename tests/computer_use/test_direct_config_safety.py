@@ -97,11 +97,11 @@ def test_loader_fallback_cannot_authorize_a_desktop(profile_home, desktop, initi
 @pytest.mark.parametrize("selection,managed,expected", [
     (None, None, "local"),
     (LOCAL, None, "local"),
-    ("  remote:\n    url: https://disabled.example.test\n", None, "local"),
+    ("  remote:\n    enabled: false\n    url: https://disabled.example.test\n", None, "local"),
     (REMOTE.replace("https://desktop.example.test", "${CU_TEST_URL}"), None, "https://desktop.example.test/mcp"),
     ("  remote:\n    url: ${CU_TEST_URL}\n", "  remote:\n    enabled: true\n", "https://desktop.example.test/mcp"),
     (REMOTE, "  remote:\n    url: ${CU_MANAGED_URL}\n", "https://managed.example.test/mcp"),
-], ids=["absent", "disabled", "url-is-not-a-selector", "expanded", "managed-enable-inherits-url", "managed-url-wins"])
+], ids=["absent", "disabled", "explicit-disabled-url", "expanded", "managed-enable-inherits-url", "managed-url-wins"])
 @pytest.mark.parametrize("action", ["list_apps", "click"])
 def test_normal_config_preserves_direct_target_and_approval(profile_home, desktop, monkeypatch, selection, managed, expected, action):
     monkeypatch.setenv("CU_TEST_URL", "https://desktop.example.test")
@@ -219,3 +219,19 @@ def test_direct_remote_token_errors_are_sanitized(profile_home, desktop, monkeyp
     assert "HERMES_CUA_REMOTE_TOKEN" in json.loads(result)["error"]
     assert "do-not-leak" not in result
     assert not desktop[0]
+
+
+@pytest.mark.parametrize("managed", [False, True])
+@pytest.mark.parametrize("remote_block", ["{}", "\n    url: https://incomplete.example.test/mcp"])
+def test_incomplete_remote_intent_never_selects_local(profile_home, desktop, monkeypatch, managed, remote_block):
+    path = profile_home / "config.yaml"
+    if managed:
+        managed_dir = profile_home / "managed"
+        managed_dir.mkdir()
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+        path = managed_dir / "config.yaml"
+    path.write_text("computer_use:\n  remote: " + remote_block + "\n")
+    result = registry.dispatch("computer_use", {"action": "click", "element": 1}, session_id="incomplete")
+    assert isinstance(result, str)
+    assert not desktop[0], {"desktop_effects": desktop[0], "result": result}
+    assert "error" in json.loads(result)

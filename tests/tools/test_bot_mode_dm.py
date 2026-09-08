@@ -359,8 +359,7 @@ def test_named_profile_sender_prefix(tmp_path, monkeypatch):
 
 
 def test_delivery_command_author_json_survives_quoting_and_windows_slash_rewrite(tmp_path, monkeypatch):
-    """The author pair sits between ``--run-delivery`` and the mode; its JSON must come back
-    byte-exact through shlex, and the Windows forward-slash rewrite must leave it alone."""
+    """The author JSON sits between ``--run-delivery`` and the mode, survives shlex, and the Windows slash rewrite skips it."""
     author = {"id": "bot:default", "name": "hermes", "is_bot": True}
     command = bot_mode_dm._delivery_command(["hermes", "-p", "x"], str(tmp_path / "dm.txt"),
                                             stdin_file=False, author=author)
@@ -418,6 +417,7 @@ def test_live_dm_admitted_before_waiter_failure(tmp_path, monkeypatch):
     assert record is not None
     assert record["owner"] == owner
     assert record["message"] == "Message from 🤖 hermes (@hermes): hello"
+    assert record["author"] == {"id": "bot:default", "name": "hermes", "is_bot": True}
     assert "notification_error" in result
 
 
@@ -587,8 +587,14 @@ def test_delivery_main_rejects_invalid_cli(args, monkeypatch):
     assert not spawned
 
 
-@pytest.mark.parametrize("mode", ["stdin", "query-file"])
-def test_delivery_main_sets_turn_author_env_on_child(tmp_path, monkeypatch, mode):
+@pytest.mark.parametrize("mode, author", [
+    ("stdin", {"id": "bot:coder", "name": "coder", "is_bot": True}),
+    ("query-file", {"id": "bot:coder", "name": "coder", "is_bot": True}),
+    ("query-file", None),
+], ids=["stdin", "query-file", "no author"])
+def test_delivery_main_child_env_carries_only_the_argv_author(tmp_path, monkeypatch, mode, author):
+    """The ``--author`` payload becomes HERMES_TURN_AUTHOR on the child. Without it the runner drops the
+    variable it inherited from the sending bot's own turn instead of passing it on as the recipient's author."""
     from agent.turn_author import TURN_AUTHOR_ENV
 
     dm_file = tmp_path / "message.txt"
@@ -601,44 +607,22 @@ def test_delivery_main_sets_turn_author_env_on_child(tmp_path, monkeypatch, mode
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setenv("HERMES_DM_TEST_MARKER", "kept")
-    author = {"id": "bot:coder", "name": "coder", "is_bot": True}
+    monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
+    author_args = ["--author", json.dumps(author)] if author else []
 
     returncode = bot_mode_dm._delivery_main(
-        ["--run-delivery", "--author", json.dumps(author), mode, str(dm_file), "hermes", "-p", "researcher"]
-    )
+        ["--run-delivery", *author_args, mode, str(dm_file), "hermes", "-p", "researcher"])
 
     assert returncode == 0
-    assert len(calls) == 1
-    argv, kwargs = calls[0]
+    [(argv, kwargs)] = calls
     assert argv[:3] == ["hermes", "-p", "researcher"]
-    assert json.loads(kwargs["env"][TURN_AUTHOR_ENV]) == author
     assert kwargs["env"]["HERMES_DM_TEST_MARKER"] == "kept"
+    assert (json.loads(kwargs["env"][TURN_AUTHOR_ENV]) if TURN_AUTHOR_ENV in kwargs["env"] else None) == author
     assert not dm_file.exists()
 
 
-def test_delivery_main_without_author_drops_inherited_turn_author(tmp_path, monkeypatch):
-    """A runner spawned from inside a bot's own turn inherits that turn's HERMES_TURN_AUTHOR;
-    the legacy no-author shape must not pass it on as the recipient's author."""
-    from agent.turn_author import TURN_AUTHOR_ENV
-
-    dm_file = tmp_path / "message.txt"
-    dm_file.write_text("secret", encoding="utf-8")
-    calls = []
-
-    def fake_run(argv, **kwargs):
-        calls.append(kwargs)
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
-
-    assert bot_mode_dm._delivery_main(["--run-delivery", "query-file", str(dm_file), "hermes"]) == 0
-    assert TURN_AUTHOR_ENV not in calls[0]["env"]
-
-
 def test_real_delivery_command_round_trip_carries_author(tmp_path):
-    """End to end through a real subprocess: the runner argv built by ``_delivery_command`` puts
-    HERMES_TURN_AUTHOR into the transport child's environment."""
+    """Through a real subprocess, the runner argv built by ``_delivery_command`` sets HERMES_TURN_AUTHOR on the child."""
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
     observed = tmp_path / "observed.txt"

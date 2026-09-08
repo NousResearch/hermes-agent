@@ -127,7 +127,7 @@ jobs:
               VULN_DETAIL=$(python3 -c "
           import json, sys
           try:
-                  with open('osv-results/osv-results.sarif') as f:
+              with open('osv-results/osv-results.sarif', encoding='utf-8') as f:
                   data = json.load(f)
               vulns = []
               for run in data.get('runs', []):

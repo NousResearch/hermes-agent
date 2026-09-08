@@ -16,7 +16,7 @@ def manifest_path(worktree: Path) -> Path:
     if legacy.is_file():
         return legacy
     try:
-    project = tomllib.loads((worktree / 'pyproject.toml').read_text(encoding="utf-8"))['project']
+        project = tomllib.loads((worktree / 'pyproject.toml').read_text(encoding="utf-8"))['project']
         if project.get('name') == 'hermes-agent' and (worktree / 'scripts/run_tests.sh').is_file():
             return _HERMES_MANIFEST
     except (OSError, ValueError, KeyError):
@@ -53,7 +53,7 @@ def hermes_commands(worktree: Path, base_sha: str, head_sha: str, changed: tuple
             commands.append((('npm', 'ci', '--ignore-scripts'), root, {}))
         else:
             raise ValueError(f'Hermes CI package lock missing: {package}')
-    scripts = json.loads((root / 'package.json').read_text(encoding="utf-8")).get('scripts', {})
+        scripts = json.loads((root / 'package.json').read_text(encoding="utf-8")).get('scripts', {})
         if 'build:ink' in scripts:
             commands.append((('npm', 'run', 'build:ink'), root, {'CI': 'true'}))
         for name in ('lint', 'typecheck', 'test', 'build'):

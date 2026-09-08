@@ -459,7 +459,21 @@ def _refresh_turn_visibility(agent, state: _SdkTurnState) -> None:
     live_session = getattr(agent, "_claude_sdk_session", None)
     live_cwd = getattr(live_session, "_cwd", None) if live_session is not None else None
     if isinstance(live_cwd, str):
-        if _canonical_sdk_cwd(live_cwd) != _canonical_sdk_cwd():
+        try:
+            workspace_moved = _canonical_sdk_cwd(live_cwd) != _canonical_sdk_cwd()
+        except Exception:
+            # resolve_agent_cwd() raises for real: a deleted launch directory
+            # (its docstring keeps that OSError deliberate) and a refusal
+            # terminal scope both land here, and the reuse path never resolved
+            # a cwd before this fence existed. The fence is an optimisation —
+            # the resume binding still declines a foreign session — so keep the
+            # live session rather than killing the turn.
+            logger.debug(
+                "claude-agent-sdk: workspace fence skipped (cwd unresolvable)",
+                exc_info=True,
+            )
+            workspace_moved = False
+        if workspace_moved:
             logger.info(
                 "claude-agent-sdk: retiring live session after workspace change"
             )

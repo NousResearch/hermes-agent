@@ -229,6 +229,14 @@ evolves.
       (`https://github.com/forgeguard-ai/hermes-agent#readme`) — required by
       electron-builder's Linux `deb` target; its absence fails `dist:linux` with
       `Please specify project homepage`.
+- [ ] **`apps/desktop/electron/managed-ssh-update.test.ts`** resolves its
+      stand-in hermes binary (`TRUE_BINARY`: `/bin/true` else `/usr/bin/true`)
+      instead of hard-coding `/bin/true`. macOS ships `true` at `/usr/bin/true`
+      ONLY, so upstream's literal makes the POSIX launcher test exit 127 on the
+      fork's macOS desktop build (which upstream never runs — its only macOS
+      lane is Python). Blocked the v0.21.0 release, 2026-09-04. If an upstream
+      sync restores the literal, re-apply the resolver; better, check whether
+      upstream took the fix.
 
 ## Carried runtime patches (verify by running their test files)
 

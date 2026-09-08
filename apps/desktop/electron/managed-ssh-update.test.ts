@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { exec as execCallback } from 'node:child_process'
+import { accessSync, constants as fsConstants } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -29,6 +30,23 @@ import {
 import { createBootstrapCoordinator } from './ssh-bootstrap-coordinator'
 
 const CORRELATION = '12345678-1234-4678-9234-567812345678'
+
+// A no-op executable for the POSIX launcher to stand in as the hermes binary.
+// The launcher requires an ABSOLUTE path, and the one place `true` lives
+// differs by OS: Linux ships /bin/true (and usually /usr/bin/true through the
+// merged-usr link); macOS ships /usr/bin/true ONLY, so a hard-coded /bin/true
+// makes `env ... /bin/true update --yes` exit 127 on a mac runner and the
+// launcher faithfully publishes that as the update status.
+const TRUE_BINARY = ['/bin/true', '/usr/bin/true'].find(candidate => {
+  try {
+    accessSync(candidate, fsConstants.X_OK)
+
+    return true
+  } catch {
+    return false
+  }
+})
+
 const exec = promisify(execCallback)
 
 function observation(over: Record<string, unknown> = {}) {
@@ -288,7 +306,7 @@ test('POSIX managed launcher executes the updater command and atomically publish
       {
         ssh: { exec: async () => '' },
         platform: 'Linux',
-        hermesPath: '/bin/true',
+        hermesPath: TRUE_BINARY!,
         hermesHome: home
       },
       CORRELATION

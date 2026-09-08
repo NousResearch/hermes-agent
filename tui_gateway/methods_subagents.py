@@ -17,12 +17,12 @@ _SUBAGENT_TAIL_BYTES = 16384
 
 
 def _owned_subagent_records(session_id, transport, owner):
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock, _subagent_transport_matches
 
     with _active_subagents_lock:
         return [dict(r) for r in _active_subagents.values()
                 if r.get("owner_session_id") == session_id
-                and r.get("owner_transport") is transport
+                and _subagent_transport_matches(r, transport)
                 and r.get("owner_session_record") is owner]
 
 

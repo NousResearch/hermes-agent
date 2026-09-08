@@ -476,7 +476,7 @@ def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> Non
             if (record.get("owner_session_id") == sid
                     and record.get("owner_session_record") is session
                     and record.get("owner_transport") is not None):
-                record["owner_transport"] = transport
+                record["owner_transport"] = session["transport"]
     # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
     # viewer becomes the transport instead of the drop sentinel.
     session.setdefault("viewers", {})[transport] = time.time()

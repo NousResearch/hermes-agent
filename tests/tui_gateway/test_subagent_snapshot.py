@@ -181,8 +181,12 @@ def test_reattach_preserves_child_controls_including_late_registration(runtime, 
     popup = type(new)()
     with server._session_resume_lock, owner["history_lock"]:
         server._rebind_live_transport("ui-owner", owner, popup)
+    for peer in (new, popup):
+        assert {r["subagent_id"] for r in call("subagent.list", via=peer)["result"]["subagents"]} == {"before", "after"}
+        assert call("subagent.tail", via=peer, subagent_id="before")["result"]["text"] == "live child output"
     assert server._close_sessions_for_transport(popup) == (0, 0)
-    assert owner["transport"] is new
+    assert server._session_transport_contains(owner, new)
+    assert not server._session_transport_contains(owner, popup)
     assert {row["subagent_id"] for row in call("subagent.list", via=new)["result"]["subagents"]} == {"before", "after"}
     for sid in ("before", "after"):
         assert call("subagent.tail", via=new, subagent_id=sid)["result"]["text"] == "live child output"

@@ -303,13 +303,38 @@ _S6_INIT_ENTRYPOINTS = ("/init", "/package/admin/s6-overlay/command/init")
 _NO_NEW_PRIVILEGES_ARGS = ["--security-opt", "no-new-privileges"]
 
 
-def _build_security_args(run_as_host_user: bool, run_exec: bool = False, snap_compat: bool = False) -> list[str]:
+def _build_security_args(run_as_host_user: bool, run_exec: bool = False, snap_compat: bool = False,
+                         zero_cap: bool = False) -> list[str]:
     """Security/cap/tmpfs args for the privilege mode; ``run_exec`` mounts /run exec for s6 images.
     ``snap_compat`` drops no-new-privileges: snap-packaged Docker's AppArmor profile turns it into
-    "exec: operation not permitted" for every process in the container (#9730, LP#1908448)."""
+    "exec: operation not permitted" for every process in the container (#9730, LP#1908448).
+    ``zero_cap`` strips every ``--cap-add`` (opt-in strict posture); it composes with ``snap_compat``."""
     args = list(_BASE_SECURITY_ARGS) + ([] if snap_compat else list(_NO_NEW_PRIVILEGES_ARGS))
     args += list(_RUN_TMPFS_EXEC if run_exec else _RUN_TMPFS_NOEXEC)
+    if zero_cap:
+        clean = []
+        it = iter(args)
+        for arg in it:
+            if arg == "--cap-add":
+                next(it)
+            else:
+                clean.append(arg)
+        return clean
     return args if run_as_host_user else args + list(_PRIVDROP_CAP_ARGS)
+
+
+def _validate_zero_cap_extra_args(extra_args):
+    for i, arg in enumerate(extra_args or []):
+        if not isinstance(arg, str):
+            continue
+        flag, _, value = arg.partition("=")
+        if flag in {"--cap-add", "--privileged"}:
+            raise ValueError("zero-cap rejects capability/privileged overrides")
+        if flag == "--security-opt":
+            value = value or (extra_args[i + 1] if i + 1 < len(extra_args) else "")
+            normalized = str(value).lower().replace(":", "=", 1)
+            if normalized.startswith("no-new-privileges=") and normalized.split("=", 1)[1] not in {"true", "1", "t"}:
+                raise ValueError("zero-cap requires no-new-privileges")
 
 
 def _image_uses_init_entrypoint(docker_exe: str, image: str) -> bool:
@@ -513,7 +538,11 @@ class DockerEnvironment(BaseEnvironment):
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
         shared_container_key: str = "",
-        snap_compat: bool = False):
+        snap_compat: bool = False,
+        zero_cap: bool = False):
+        self._zero_cap = zero_cap
+        if zero_cap:
+            _validate_zero_cap_extra_args(extra_args)
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
@@ -560,7 +589,8 @@ class DockerEnvironment(BaseEnvironment):
                 "skipping --init and mounting /run with exec.",
                 image)
         security_args = _build_security_args(
-            run_as_host_user and bool(user_args), run_exec=image_uses_s6_init, snap_compat=snap_compat)
+            run_as_host_user and bool(user_args), run_exec=image_uses_s6_init, snap_compat=snap_compat,
+            zero_cap=zero_cap)
         self._snap_compat = snap_compat
         if snap_compat:
             logger.warning(
@@ -579,6 +609,10 @@ class DockerEnvironment(BaseEnvironment):
         # Egress posture gets its own label: env/CA mounts are immutable after
         # creation, so reusing a pre-egress container would bypass the firewall.
         profile_name = _container_identity(shared_container_key)
+        if zero_cap:
+            # Separate both directions, including recreation. Normal turns must
+            # never attach to a strict sandbox (nor strict turns to legacy caps).
+            profile_name += "-zero-cap"
         task_label = _sanitize_label_value(task_id)
         self._labels = {
             "hermes-agent": "1",
@@ -989,11 +1023,26 @@ class DockerEnvironment(BaseEnvironment):
             if len(parts) != 2:
                 continue
             cid, state = parts[0], parts[1].strip().lower()
+            if getattr(self, "_zero_cap", False) and not self._container_has_zero_cap(cid):
+                continue
             if first is None:
                 first = (cid, state)
             if state == "running" and running is None:
                 running = (cid, state)
         return running or first
+
+    def _container_has_zero_cap(self, container_id: str) -> bool:
+        result = _docker_query(
+            [self._docker_exe, "inspect", "--format", "{{json .HostConfig}}", container_id], timeout=10,
+            fail="zero-cap inspect failed: %s", nonzero="zero-cap inspect returned %d: %s")
+        try:
+            host = json.loads(result.stdout) if result is not None else None
+        except (ValueError, TypeError):
+            return False
+        return bool(isinstance(host, dict) and host.get("Privileged") is False
+                    and not host.get("CapAdd") and "ALL" in (host.get("CapDrop") or [])
+                    and any(str(opt).replace(":", "=") in {"no-new-privileges", "no-new-privileges=true"}
+                            for opt in (host.get("SecurityOpt") or [])))
 
     def _remove_bind_dirs(self) -> None:
         for d in (self._workspace_dir, self._home_dir):

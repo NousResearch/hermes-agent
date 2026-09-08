@@ -206,6 +206,14 @@ class ProviderProfile:
         """
         return None
 
+    def get_model_context_length(self, model: str) -> int | None:
+        """Provider-qualified context bound; explicit user overrides take precedence."""
+        return None
+
+    def get_usage_cost(self, model: str, usage: Any) -> Any | None:
+        """Optional CostResult from canonical usage; distinguish estimates from invoices."""
+        return None
+
     def get_max_tokens(self, model: str | None) -> int | None:
         """Return the default max_tokens cap for *model*.
 

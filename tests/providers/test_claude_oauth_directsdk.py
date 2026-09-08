@@ -47,7 +47,7 @@ for b in blocks:
 print(json.dumps({'type':'assistant','message':{'role':'assistant','content':blocks,'id':'msg_test','model':'sonnet','stop_reason':'tool_use' if len(blocks)>1 else 'end_turn'}}),flush=True)
 print(json.dumps({'type':'stream_event','event':{'type':'message_stop'}}),flush=True)
 u={'input_tokens':3,'output_tokens':5,'cache_read_input_tokens':7,'cache_creation_input_tokens':11}
-print(json.dumps({'type':'result','num_turns':2 if len(blocks)>1 else 1,'subtype':'error_max_turns' if len(blocks)>1 else 'success','is_error':len(blocks)>1,'usage':u}),flush=True)
+print(json.dumps({'type':'result','num_turns':2 if len(blocks)>1 else 1,'subtype':'error_max_turns' if len(blocks)>1 else 'success','is_error':len(blocks)>1,'usage':u,'total_cost_usd':.012345,'modelUsage':{'sonnet':{'costBasis':'list'}}}),flush=True)
 sys.exit(1 if len(blocks)>1 else 0)
 """
 
@@ -127,6 +127,7 @@ class Contract(unittest.TestCase):
                     self.assertEqual(msg["tool_calls"][0]["function"]["name"], "probe")
                 self.assertEqual(final.usage.prompt_tokens, 21)
                 self.assertEqual(final.usage.completion_tokens, 5)
+                self.assertEqual(final.usage.model_dump()['native_cost'], {'total_cost_usd': .012345, 'modelUsage': {'sonnet': {'costBasis': 'list'}}})
                 msg["content"] = (msg.get("content") or "").strip()
                 req["messages"] += [
                     msg,

@@ -497,7 +497,8 @@ class Client:
                 carrier = {'type': CARRIER, 'version': 1, 'messages': assistants, 'projection': projection(message)}
                 message['reasoning_details'] = [carrier]
                 inp = usage['input_tokens'] + usage.get('cache_read_input_tokens', 0) + usage.get('cache_creation_input_tokens', 0)
-                normalized_usage = {'prompt_tokens': inp, 'completion_tokens': usage['output_tokens'], 'total_tokens': inp + usage['output_tokens'], 'prompt_tokens_details': {'cached_tokens': usage.get('cache_read_input_tokens', 0)}, 'cache_creation_input_tokens': usage.get('cache_creation_input_tokens', 0), 'native_usage': usage}
+                normalized_usage = {'prompt_tokens': inp, 'completion_tokens': usage['output_tokens'], 'total_tokens': inp + usage['output_tokens'], 'prompt_tokens_details': {'cached_tokens': usage.get('cache_read_input_tokens', 0)}, 'cache_creation_input_tokens': usage.get('cache_creation_input_tokens', 0), 'native_usage': usage,
+                                    'native_cost': {'total_cost_usd': final.get('total_cost_usd'), 'modelUsage': final.get('modelUsage')}}
                 finish = 'tool_calls' if calls else ('length' if any(a.get('stop_reason') == 'max_tokens' for a in assistants) else 'stop')
                 response = obj({'id': assistants[-1].get('id', 'claude-native'), 'model': kwargs['model'], 'object': 'chat.completion', 'choices': [{'index': 0, 'finish_reason': finish, 'message': message}], 'usage': normalized_usage})
                 chunk = self._chunk(kwargs['model'], {'content': None, 'tool_calls': [dict(tc, index=i) for i, tc in enumerate(calls)] or None, 'reasoning_details': [carrier]}, finish, normalized_usage)

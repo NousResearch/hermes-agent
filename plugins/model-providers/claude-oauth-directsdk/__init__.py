@@ -21,6 +21,26 @@ class ClaudeOAuthDirectSDKProfile(ProviderProfile):
             return 200_000
         return None
 
+    def get_usage_cost(self, model, usage):
+        from decimal import Decimal, InvalidOperation
+        from agent.usage_pricing import CostResult, format_cost_label
+
+        native = (usage.raw_usage or {}).get('native_cost') or {}
+        unknown = CostResult(amount_usd=None, status='unknown', source='none', label='n/a',
+                             notes=('native final list-price accounting unavailable; subscription invoice unknown',))
+        amount = native.get('total_cost_usd')
+        models = native.get('modelUsage') or {}
+        if isinstance(amount, bool) or not models or any(row.get('costBasis') != 'list' for row in models.values()):
+            return unknown
+        try:
+            amount = Decimal(str(amount))
+        except InvalidOperation:
+            return unknown
+        if not amount.is_finite() or amount < 0:
+            return unknown
+        return CostResult(amount_usd=amount, status='estimated', source='provider_cost_api',
+                          label=format_cost_label(amount), notes=('native API list-price equivalent; not subscription invoice; extra usage unknown',))
+
     def create_client(self, **client_kwargs):
         from .directsdk import Client
         return Client(**client_kwargs)

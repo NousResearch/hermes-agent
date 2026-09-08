@@ -103,6 +103,11 @@ class TestFeishuMessageNormalization(unittest.TestCase):
         )
 
 
+
+async def _async_noop():
+    return None
+
+
 class TestFeishuAdapterMessaging(unittest.TestCase):
     @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
     def test_websocket_sdk_accepts_channel_ua_tag(self):
@@ -287,6 +292,60 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             captured["calls"][1].request_body.content,
             json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
         )
+
+
+    def test_delete_message_retries_transient_failure_and_converges(self):
+        """delete_message must retry transient rejections with backoff so the
+        stream consumer's preview cleanup converges; a definitive rejection
+        after the bounded attempts returns False."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _DeleteAPI:
+            def __init__(self, outcomes):
+                self._outcomes = outcomes
+                self.calls = 0
+
+            def delete(self, request):
+                outcome = self._outcomes[min(self.calls, len(self._outcomes) - 1)]
+                self.calls += 1
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+
+        def _adapter_with(outcomes):
+            api = _DeleteAPI(outcomes)
+            adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(delete=api.delete))))
+            return adapter, api
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        import plugins.platforms.feishu.adapter as feishu_adapter_mod
+
+        # Transient exception, then success -> True on retry
+        adapter_t, api_t = _adapter_with([
+            RuntimeError("flood control"),
+            SimpleNamespace(success=lambda: True, code=0, msg=""),
+        ])
+        with patch.object(feishu_adapter_mod.asyncio, "sleep", new=lambda *_a, **_k: _async_noop()), \
+             patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            ok = asyncio.run(adapter_t.delete_message("oc_chat", "om_preview"))
+        self.assertTrue(ok)
+        self.assertEqual(api_t.calls, 2)
+
+        # Definitive rejection every time -> False after bounded attempts
+        adapter_f, api_f = _adapter_with([
+            SimpleNamespace(success=lambda: False, code=99991400, msg="too many request"),
+        ])
+        with patch.object(feishu_adapter_mod.asyncio, "sleep", new=lambda *_a, **_k: _async_noop()), \
+             patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            ok = asyncio.run(adapter_f.delete_message("oc_chat", "om_preview"))
+        self.assertFalse(ok)
+        self.assertEqual(api_f.calls, 3)
+
 
 
 class TestAdapterModule(unittest.TestCase):

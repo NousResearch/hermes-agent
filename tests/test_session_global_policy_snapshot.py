@@ -41,6 +41,24 @@ def test_writable_legacy_sessions_table_is_reconciled_with_null_snapshot(tmp_pat
         db.close()
 
 
+def test_create_session_upsert_omitting_snapshot_preserves_stored_value(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session(
+            "snapshot-session",
+            "cli",
+            system_prompt="first prompt",
+            global_policy_snapshot="stored policy",
+        )
+
+        # Upsert metadata without supplying a replacement snapshot.
+        db.create_session("snapshot-session", "cli", system_prompt="second prompt")
+
+        assert db.get_session("snapshot-session")["global_policy_snapshot"] == "stored policy"
+    finally:
+        db.close()
+
+
 def test_global_policy_snapshot_distinguishes_value_empty_and_null_across_reopen(tmp_path):
     path = tmp_path / "state.db"
     db = SessionDB(db_path=path)

@@ -781,7 +781,8 @@ class SignalAdapter(BasePlatformAdapter):
         return file_path, None, None
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
-                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
+                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0,
+                                   reply_to: Optional[str] = None) -> SendResult:
         """Send a batch of images via chunked Signal RPC calls. Alt texts are dropped (one shared body
         per send); bad images are skipped with a warning; ``human_delay`` is ignored (scheduler paces).
         Returns success when at least one batch was accepted, so media-only turns report SUCCESS."""

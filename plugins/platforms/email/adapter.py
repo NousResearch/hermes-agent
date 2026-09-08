@@ -717,7 +717,8 @@ class EmailAdapter(BasePlatformAdapter):
         return await self.send(chat_id, f"{caption or ''}\n\nImage: {image_url}".strip(), reply_to)
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
-                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
+                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0,
+                                   reply_to: Optional[str] = None) -> SendResult:
         """One email per batch: local files attached, URL images linked in the body (no remote download); base-class fallback on failure."""
         if not images:
             return SendResult(success=False, error="no images to send")
@@ -738,7 +739,8 @@ class EmailAdapter(BasePlatformAdapter):
             message_id = await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths)
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
-            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay,
+                                                      reply_to=reply_to)
         return SendResult(success=True, message_id=message_id)
 
     def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str]) -> str:

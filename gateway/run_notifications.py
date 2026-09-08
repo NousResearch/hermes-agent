@@ -279,10 +279,11 @@ class GatewayNotificationsMixin:
             # paths in an already-streamed reply are text the user has seen (or stale inspected content),
             # not an attachment request.
             adapter.extract_images(cleaned)
+            _reply_anchor = self._reply_anchor_for_event(event)
             _thread_meta = (
                 dict(thread_metadata)
                 if thread_metadata is not None
-                else self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+                else self._thread_metadata_for_source(event.source, _reply_anchor)
             )
             chat_id = event.source.chat_id
             # Images go out as one batch (e.g. Signal's multi-attachment RPC) unless [[as_document]].
@@ -295,20 +296,23 @@ class GatewayNotificationsMixin:
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                    batch_kw = {"reply_to": _reply_anchor} if _reply_anchor else {}
+                    await adapter.send_multiple_images(
+                        chat_id=chat_id, images=images, metadata=_thread_meta, **batch_kw)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
-                            chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
-                        )
+                        sender, sender_kw = adapter.send_voice, {"audio_path": media_path, "is_voice": is_voice}
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
+                        sender, sender_kw = adapter.send_video, {"video_path": media_path}
                     else:
-                        await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
+                        sender, sender_kw = adapter.send_document, {"file_path": media_path}
+                    if _reply_anchor and BasePlatformAdapter._accepts_kwarg(sender, "reply_to"):
+                        sender_kw["reply_to"] = _reply_anchor
+                    await sender(chat_id=chat_id, metadata=_thread_meta, **sender_kw)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 

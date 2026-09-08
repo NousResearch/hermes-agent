@@ -2657,7 +2657,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
+        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0,
+        reply_to: Optional[str] = None) -> SendResult:
         """Send a batch of images as one message via ``files_upload_v2(file_uploads=...)`` (10 per
         call, Slack cap) instead of N posts; falls back to the base per-image loop on failure."""
         if self._suppressed_ignored(chat_id, "multi-image upload in"):
@@ -2671,8 +2672,9 @@ class SlackAdapter(BasePlatformAdapter):
             from urllib.parse import unquote as _unquote
             from tools.url_safety import create_ssrf_safe_async_client, is_safe_url as _is_safe_url
         except Exception:
-            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
-        thread_ts = self._resolve_thread_ts(None, metadata)
+            return await super().send_multiple_images(
+                chat_id, images, metadata, human_delay, reply_to=reply_to)
+        thread_ts = self._resolve_thread_ts(reply_to, metadata)
         CHUNK = 10
         chunks = [images[i : i + CHUNK] for i in range(0, len(images), CHUNK)]
         delivered = False
@@ -2698,7 +2700,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "[Slack] Multi-image files_upload_v2 failed (chunk %d/%d), falling back to per-image: %s",
                     chunk_idx + 1, len(chunks), e, exc_info=True)
                 fallback = await super().send_multiple_images(
-                    chat_id, chunk, metadata, human_delay=human_delay)
+                    chat_id, chunk, metadata, human_delay=human_delay, reply_to=reply_to)
                 delivered = delivered or fallback.success
         return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 

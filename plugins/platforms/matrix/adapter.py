@@ -1530,7 +1530,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send_multiple_images(
         self, chat_id: str, images: list[tuple[str, str]], metadata: Optional[Dict[str, Any]] = None,
-        human_delay: float = 0.0) -> SendResult:
+        human_delay: float = 0.0, reply_to: Optional[str] = None) -> SendResult:
         if not images:
             return SendResult(success=False, error="no images to send")
         from urllib.parse import unquote as _unquote
@@ -1542,9 +1542,11 @@ class MatrixAdapter(BasePlatformAdapter):
             caption = f"{alt_text} ({idx}/{total})" if alt_text and total > 1 else (alt_text or None)
             if image_url.startswith("file://"):
                 result = await self.send_image_file(
-                    chat_id=chat_id, image_path=_unquote(image_url[7:]), caption=caption, metadata=metadata)
+                    chat_id=chat_id, image_path=_unquote(image_url[7:]), caption=caption, metadata=metadata,
+                    reply_to=reply_to)
             else:
-                result = await self.send_image(chat_id=chat_id, image_url=image_url, caption=caption, metadata=metadata)
+                result = await self.send_image(chat_id=chat_id, image_url=image_url, caption=caption, metadata=metadata,
+                                               reply_to=reply_to)
             if not result.success:
                 logger.warning("Matrix: failed to send image %d/%d: %s", idx, total, result.error)
             delivered = delivered or result.success

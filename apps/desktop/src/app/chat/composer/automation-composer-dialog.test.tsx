@@ -441,5 +441,65 @@ describe('AutomationComposerDialog', () => {
 
       expect(refreshSessionControl).toHaveBeenCalledWith('session-123')
     })
+
+    it('disables Save and blocks submit while Pause is pending', async () => {
+      let releasePause!: () => void
+      vi.mocked(runSessionControlAction).mockImplementationOnce(
+        () => new Promise(resolve => { releasePause = () => resolve({ type: 'exec', display: null, message: null, notice: '', output: '' } as never) })
+      )
+      $sessionControlBySession.set({ 'session-123': GOAL_SNAPSHOT } as never)
+      await renderDialog()
+      act(() => openAutomationComposerForEdit('goal', 'session-123'))
+
+      const prompt = await screen.findByLabelText(/goal prompt/i)
+      fireEvent.change(prompt, { target: { value: 'Draft while pausing' } })
+
+      fireEvent.click(screen.getByRole('button', { name: /pause/i }))
+
+      // Pause is in flight — Save must be disabled.
+      await waitFor(() => expect((screen.getByRole('button', { name: 'Save goal' }) as HTMLButtonElement).disabled).toBe(true))
+
+      // A submit click while pausing must not dispatch an update action.
+      fireEvent.click(screen.getByRole('button', { name: 'Save goal' }))
+      expect(runSessionControlAction).toHaveBeenCalledTimes(1)
+      expect(runSessionControlAction).toHaveBeenCalledWith('session-123', 'goal.pause')
+
+      // Release the pending Pause; Save re-enables.
+      act(() => releasePause())
+      await waitFor(() => expect((screen.getByRole('button', { name: 'Save goal' }) as HTMLButtonElement).disabled).toBe(false))
+    })
+
+    it('shows a visible error when Pause fails, keeps the dialog open, and preserves the draft', async () => {
+      vi.mocked(runSessionControlAction).mockRejectedValueOnce(
+        new Error('Session is busy with a live turn. Pause after it finishes.')
+      )
+      $sessionControlBySession.set({ 'session-123': GOAL_SNAPSHOT } as never)
+      await renderDialog()
+      act(() => openAutomationComposerForEdit('goal', 'session-123'))
+
+      const prompt = await screen.findByLabelText(/goal prompt/i)
+      fireEvent.change(prompt, { target: { value: 'My unsaved objective' } })
+      fireEvent.change(screen.getByPlaceholderText('A testable condition for done'), { target: { value: 'My unsaved criterion' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Add criterion' }))
+
+      fireEvent.click(screen.getByRole('button', { name: /pause/i }))
+      await waitFor(() => expect(runSessionControlAction).toHaveBeenCalled())
+
+      // The session-control store surfaces the rejection as actionError; the
+      // component must render it inline so the user sees the failure.
+      act(() => {
+        $sessionControlBySession.set({
+          'session-123': {
+            ...GOAL_SNAPSHOT,
+            actionError: 'Session is busy with a live turn. Pause after it finishes.'
+          }
+        } as never)
+      })
+
+      expect(await screen.findByText(/busy with a live turn/i)).toBeTruthy()
+      expect(screen.getByRole('dialog')).toBeTruthy()
+      expect((screen.getByLabelText(/goal prompt/i) as HTMLTextAreaElement).value).toBe('My unsaved objective')
+      expect(screen.getByText('My unsaved criterion')).toBeTruthy()
+    })
   })
 })

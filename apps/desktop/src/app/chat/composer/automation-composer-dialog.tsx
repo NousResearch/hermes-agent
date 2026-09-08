@@ -175,7 +175,7 @@ export function AutomationComposerDialog({
   }, [sessionId, pausing, submitting, unavailable, type])
 
   const handleSubmit = async () => {
-    if (submitting || !sessionId || (!isEdit && existing) || unavailable) {
+    if (submitting || pausing || !sessionId || (!isEdit && existing) || unavailable) {
       return
     }
 
@@ -417,6 +417,7 @@ export function AutomationComposerDialog({
             <Button onClick={closeAutomationComposer} type="button" variant="secondary">{copy.manageExisting}</Button>
           </div>}
           {state.error && <FieldHint error>{state.error}</FieldHint>}
+          {entry?.actionError && <FieldHint error>{entry.actionError}</FieldHint>}
 
           {!isEdit && <div className="grid gap-1.5">
             <p className="text-[0.66rem] leading-4 text-muted-foreground">{copy.cronExplain}</p>
@@ -448,7 +449,7 @@ export function AutomationComposerDialog({
                 {type === 'goal' ? copy.pauseGoal : type === 'loop' ? copy.pauseLoop : copy.pauseHeartbeat}
               </Button>
             )}
-            <Button disabled={submitting || !sessionId || (!isEdit && !!existing) || unavailable || !prompt.trim()} type="submit">
+            <Button disabled={submitting || pausing || !sessionId || (!isEdit && !!existing) || unavailable || !prompt.trim()} type="submit">
               {submitLabel}
             </Button>
           </DialogFooter>

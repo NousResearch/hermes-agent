@@ -1422,6 +1422,24 @@ try {
     Show-ProgressWindow
     Write-HandoffLog "hand-off start: root=$InstallRoot branch=$Branch desktopPid=$DesktopPid pid=$PID"
 
+    # Run FROM the install root, mirroring posix.sh (`cd "$INSTALL_ROOT"`):
+    # `hermes update`, the desktop-build child, and the verification child
+    # all resolve the project tree from the current working directory
+    # (verify_windows_desktop_update(Path.cwd()), project_root probing).
+    # Without this the wrapper's own cwd (wherever the Desktop spawned it)
+    # propagates to every CreateProcess child via inherited-current-directory,
+    # so verification reads the WRONG tree and reports the desktop executable
+    # missing after a perfectly good build.
+    if (Test-Path -LiteralPath $InstallRoot -PathType Container) {
+        Set-Location -LiteralPath $InstallRoot -ErrorAction Stop
+        Write-HandoffLog "working directory set to $InstallRoot"
+    } else {
+        $finalCode = 3
+        $finalMsg = "Update aborted: install root $InstallRoot is missing. Repair the installation before retrying."
+        Write-HandoffLog $finalMsg
+        exit $finalCode
+    }
+
     # -- 0. Claim the update marker with OUR pid ---------------------------
     try {
         $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()

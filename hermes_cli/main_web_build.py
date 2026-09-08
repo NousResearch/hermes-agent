@@ -114,7 +114,10 @@ def _hash_source_tree(project_root: Path, tree_dir: Path) -> str:
     spec = PathSpec.from_lines("gitignore", lines)
 
     def _ignored(path: Path) -> bool:
-        return spec.match_file(str(path.relative_to(project_root)))
+        rel = str(path.relative_to(project_root))
+        # pathspec treats trailing-/ patterns as directory-only; a bare path
+        # without the slash does not match them, so test both forms.
+        return spec.match_file(rel) or spec.match_file(rel + "/")
 
     for name in ("package.json", "package-lock.json"):
         p = project_root / name

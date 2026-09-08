@@ -617,7 +617,7 @@ export interface SubagentListResponse {
     started_at?: number | null
     status?: string | null
     tool_count?: number | null
-    current_tool?: string | null
+    last_tool?: string | null
   }[]
   delegations: AsyncDelegationRecord[]
 }

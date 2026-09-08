@@ -43,10 +43,11 @@ existing topical sibling, registered in the table — no `if method == ...` chai
 
 `subagent.list({session_id})` returns `{subagents, delegations}` for the calling
 transport's live session. Live child records are pinned to the exact session
-record and transport; background records use their captured `origin_ui_session_id`
-so compression does not hide ongoing work. Both lists are allowlisted projections:
-no dispatch context, results, callbacks, or routing keys are sent. Clients hydrate
-from this snapshot on their existing poll and avoid updates when unchanged.
+record and transport. `last_tool` is the last started tool, not an in-flight
+indicator. Async completion units are not agents and lack exact generation authority;
+`delegations` remains an empty array for wire compatibility. No dispatch context,
+results, callbacks, or routing keys are sent. Clients hydrate from this snapshot
+on their existing poll and avoid updates when unchanged.
 
 `subagent.tail({session_id, subagent_id})` returns
 `{subagent_id, available, text, truncated}`: the last 16 KiB of the live child's
@@ -56,6 +57,10 @@ This is live-only, not persisted completion history. Invalid session/transport
 returns error 4001. `subagent.steer({session_id, subagent_id, text})` remains the
 shared control: `status: queued` acknowledges acceptance, not delivery; final
 boundary races are reported by the existing runtime as `missed_steer`.
+`subagent.interrupt({session_id, subagent_id})` requires the same exact live
+session/transport/generation ownership, including for subtree members. Missing
+RPC session authority is rejected; direct in-process `interrupt_subagent(id)`
+retains its legacy unscoped contract.
 
 ## Slash command flow
 

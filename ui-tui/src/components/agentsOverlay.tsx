@@ -696,7 +696,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     }
   }
 
-  const interrupt = (id: string) => gw.request<SubagentInterruptResponse>('subagent.interrupt', { subagent_id: id })
+  const interrupt = (id: string) => gw.request<SubagentInterruptResponse>('subagent.interrupt', { session_id: sid, subagent_id: id })
 
   const killOne = (id: string) =>
     guardLive(() => {

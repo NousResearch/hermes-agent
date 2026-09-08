@@ -11,10 +11,7 @@ method = _registry.method
 
 _SUBAGENT_SNAPSHOT_FIELDS = (
     "subagent_id", "parent_id", "depth", "goal", "delegation_id", "model",
-    "started_at", "status", "tool_count", "current_tool", "accepting_steer",
-)
-_ASYNC_SNAPSHOT_FIELDS = (
-    "delegation_id", "goal", "role", "model", "status", "dispatched_at", "completed_at", "is_batch",
+    "started_at", "status", "tool_count", "last_tool", "accepting_steer",
 )
 _SUBAGENT_TAIL_BYTES = 16384
 
@@ -35,23 +32,35 @@ def _(rid, params):
     transport, owner = _current_session_steer_authority(session_id)
     if transport is None or owner is None:
         return _err(rid, 4001, "session not found or not owned by this transport")
-    from tools.async_delegation import _records, _records_lock
-
     live = _owned_subagent_records(session_id, transport, owner)
-    # Read only projected fields, without invoking unrelated sessions' progress callbacks.
-    with _records_lock:
-        delegations = []
-        for record in _records.values():
-            if record.get("origin_ui_session_id") != session_id:
-                continue
-            item = {key: record.get(key) for key in _ASYNC_SNAPSHOT_FIELDS}
-            item["subagent_ids"] = [r["subagent_id"] for r in live
-                                    if r.get("delegation_id") == record.get("delegation_id")]
-            delegations.append(item)
     return _ok(rid, {
         "subagents": [{key: r.get(key) for key in _SUBAGENT_SNAPSHOT_FIELDS} for r in live],
-        "delegations": delegations,
+        "delegations": [],
     })
+
+
+@method("subagent.interrupt")
+def _(rid, params):
+    from agent.interrupt_compat import request_hard_interrupt
+
+    subagent_id = _str_param(params, "subagent_id")
+    if not subagent_id:
+        return _err(rid, 4000, "subagent_id required")
+    session_id = _str_param(params, "session_id")
+    transport, owner = _current_session_steer_authority(session_id)
+    if transport is None or owner is None:
+        return _err(rid, 4001, "session not found or not owned by this transport")
+    record = next((r for r in _owned_subagent_records(session_id, transport, owner)
+                   if r.get("subagent_id") == subagent_id), None)
+    agent = record.get("agent") if record else None
+    # Interrupt the authorized object, never re-resolve a globally recyclable id.
+    found = False
+    if agent is not None:
+        try:
+            found = bool(request_hard_interrupt(agent, f"Interrupted via TUI ({subagent_id})"))
+        except Exception:
+            logger.debug("subagent interrupt failed", exc_info=True)
+    return _ok(rid, {"found": found, "subagent_id": subagent_id})
 
 
 @method("subagent.tail")

@@ -38,7 +38,7 @@ export function mergeAgentRoster(events: SubagentProgress[], data: SubagentListR
       // Snapshot replies may predate progress/completion events already rendered.
       status: previous && previous.status !== 'queued' ? previous.status : s.status === 'queued' ? 'queued' : 'running',
       toolCount: Math.max(s.tool_count ?? 0, previous?.toolCount ?? 0),
-      tools: previous?.tools.length ? previous.tools : s.current_tool ? [s.current_tool] : []
+      tools: previous?.tools.length ? previous.tools : s.last_tool ? [s.last_tool] : []
     })
   }
 

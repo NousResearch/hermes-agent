@@ -30,6 +30,7 @@ def test_snapshot_projects_only_this_sessions_runtime_records(runtime):
     from tools import async_delegation as bg
     from tools.delegate_tool_child_run import _register_child
     from tools.delegate_tool_registry import _unregister_subagent
+    from tools.delegate_tool_progress import _build_child_progress_callback
 
     server, owner, transport, call = runtime
     release = threading.Event()
@@ -52,11 +53,16 @@ def test_snapshot_projects_only_this_sessions_runtime_records(runtime):
     foreign = SimpleNamespace(_subagent_id="foreign", _delegate_depth=1, model="test")
     _register_child(foreign, None, "foreign secret", owner_session_id="other",
                          owner_transport=transport, owner_session_record={})
+    progress = _build_child_progress_callback(0, "owned task",
+        SimpleNamespace(tool_progress_callback=lambda *a, **kw: None), subagent_id="child")
+    progress("tool.started", "read_file")
+    progress("tool.completed", "read_file")
     try:
         snapshot = call("subagent.list")["result"]
         assert [s["subagent_id"] for s in snapshot["subagents"]] == ["child"]
-        assert snapshot["delegations"][0]["delegation_id"] == did
-        assert snapshot["delegations"][0]["subagent_ids"] == ["child"]
+        assert snapshot["subagents"][0]["last_tool"] == "read_file"
+        assert snapshot["delegations"] == []
+        assert snapshot["subagents"][0]["tool_count"] == 1
         wire = json.dumps(snapshot)
         assert "private handoff" not in wire and "foreign secret" not in wire
         assert "owner_transport" not in wire and "session_key" not in wire
@@ -107,5 +113,38 @@ def test_live_tail_and_steer_share_exact_owner_and_end_with_child(runtime):
         _unregister_subagent("child")
         assert call("subagent.tail", subagent_id="child")["result"] == {
             "subagent_id": "child", "available": False, "text": "", "truncated": False}
+    finally:
+        _unregister_subagent("child")
+
+
+
+def test_interrupt_requires_exact_live_owner_but_direct_helper_stays_legacy(runtime):
+    from tools.delegate_tool_child_run import _register_child
+    from tools.delegate_tool_registry import interrupt_subagent, _unregister_subagent
+
+    server, owner, transport, call = runtime
+    stopped = []
+    child = SimpleNamespace(_subagent_id="child", _delegate_depth=1, model="test",
+                            hard_interrupt=lambda message: stopped.append(message))
+    _register_child(child, None, "owned", owner_session_id="ui-owner",
+                    owner_transport=transport, owner_session_record=owner)
+    try:
+        for params in ({"session_id": ""}, {"session_id": "missing"},
+                       {"via": SimpleNamespace(write=lambda frame: True)}):
+            reply = call("subagent.interrupt", subagent_id="child", **params)
+            assert "error" in reply or not reply["result"]["found"]
+            assert stopped == []
+        server._sessions["foreign"] = {**owner}
+        assert not call("subagent.interrupt", session_id="foreign", subagent_id="child")["result"]["found"]
+        server._sessions["ui-owner"] = {**owner}
+        assert not call("subagent.interrupt", subagent_id="child")["result"]["found"]
+        assert stopped == []
+        server._sessions["ui-owner"] = owner
+        assert call("subagent.interrupt", subagent_id="child")["result"]["found"]
+        assert len(stopped) == 1
+        assert interrupt_subagent("child")
+        assert len(stopped) == 2
+        _unregister_subagent("child")
+        assert not call("subagent.interrupt", subagent_id="child")["result"]["found"]
     finally:
         _unregister_subagent("child")

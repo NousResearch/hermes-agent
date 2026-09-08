@@ -84,6 +84,21 @@ class TestClassifyBoundaries(unittest.TestCase):
     def test_compound_factual_requests_never_downshift(self):
         for text in (
             "Which tests failed and fix them?",
+            "Which tests failed — fix them?",
+            "Which tests failed: fix them?",
+            "Which tests failed - fix them?",
+            "Which tests failed (fix them)?",
+            "Which tests failed fix them?",
+            "What failed so we can repair it?",
+            "What is the capital of France: book a flight?",
+            "What time is it in Tokyo — notify me?",
+            "Show me the readme: fix it",
+            "Read README.md — fix it",
+            "List the files in /tmp remove them",
+            "Print the current config to decide what to change",
+            "What is required to fix this?",
+            "Who knows how to fix this?",
+            "Show me how to fix this",
             "What failed then repair it?",
             "Where is the issue, fix it?",
             "Who owns this plus notify them?",
@@ -104,6 +119,30 @@ class TestClassifyBoundaries(unittest.TestCase):
                     with adaptive_reasoning_turn(agent, text):
                         self.assertEqual(agent.reasoning_config["effort"], baseline)
                         self.assertEqual(agent._notices, [])
+                    self.assertIs(agent.reasoning_config, original)
+
+    def test_complete_simple_requests_downshift_high_baselines(self):
+        # Closed lookup/retrieval shapes still save effort; denying every
+        # factual/mechanical request would hide the compound-classifier bug.
+        for text in (
+            "What is the capital of France?",
+            "what time is it in Tokyo?",
+            "What is the current date?",
+            "Which tests failed?",
+            "Where is the config file?",
+            "show me the readme",
+            "list the files in /tmp",
+            "print the current config",
+            "thanks!",
+        ):
+            for baseline in ("high", "xhigh"):
+                with self.subTest(text=text, baseline=baseline):
+                    agent = _make_agent(baseline=baseline, min_effort="low")
+                    original = agent.reasoning_config
+                    with adaptive_reasoning_turn(agent, text):
+                        self.assertEqual(agent.reasoning_config["effort"], "low")
+                        self.assertEqual(len(agent._notices), 1)
+                        self.assertIn("lowered to Low", agent._notices[0].text)
                     self.assertIs(agent.reasoning_config, original)
 
     def test_signal_bearing_action_stays_medium_not_low(self):

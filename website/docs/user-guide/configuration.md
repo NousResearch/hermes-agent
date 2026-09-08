@@ -1789,12 +1789,25 @@ turn's level, and unrelated trivial turns drop straight back to the baseline.
 
 **Downshift is opt-in and conservative.** Without `min_effort`, adaptive is
 escalation-only and your baseline is the floor. With `min_effort: "low"`,
-turns with *positive* evidence of simplicity — casual chatter, a short
-factual question, a single read-only mechanical step — run at `low`. Any
-complexity signal (error output, code, multiple questions, multi-step or
-compound requests, infrastructure/debugging keywords) keeps the turn at the
-baseline or above, and anything ambiguous stays at the baseline. `none` is
-never selected: thinking stays enabled at every adaptive level. An invalid
+turns matching a small set of complete simple-request shapes — casual
+chatter, concrete factual lookups, or single read-only retrievals — can run
+at `low`. For example, `What is the capital of France?`, `Which tests failed?`,
+and `list the files in /tmp` qualify when no complexity signal is present.
+A question word or read-only verb alone is not enough: the entire request
+must match, including its subject/operand. Compound requests such as
+`Which tests failed — fix them?` or `Which tests failed: fix them?` retain
+baseline or above; unrecognized wording also retains baseline rather than
+being assumed simple. Error output, code, multiple questions, multi-step
+structure and infrastructure/debugging keywords block downshift.
+
+This heuristic is not a natural-language parser or a proof of simplicity.
+It intentionally misses many genuinely simple questions (including unsupported
+subjects, multiword place names and retrieval paths containing spaces).
+It cannot determine the actual cost of a lookup from its wording or infer all
+implicit context. Leave `min_effort` unset for a strict no-downshift guarantee,
+or use an explicit `/reasoning` pin for a particular session.
+
+`none` is never selected: thinking stays enabled at every adaptive level. An invalid
 floor (an unknown level, `none`, or a floor above `max_effort`) is ignored
 and the feature stays escalation-only.
 

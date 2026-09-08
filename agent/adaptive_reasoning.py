@@ -241,16 +241,21 @@ _XHIGH_THRESHOLD = 6
 # complexity signals. Each pattern is a fullmatch on the normalized text and
 # is only consulted when the turn carries zero category/structural signals.
 
-# Fact lookups: interrogatives that ask for a single concrete answer. "how do
-# I ..." / "why ..." are deliberately excluded — those ask for procedure or
-# explanation, which is ordinary (medium) work.
+# Recognize complete lookup shapes, not an interrogative plus arbitrary text.
+# A short unknown tail can contain another task even without a conjunction or
+# punctuation ("Which tests failed fix them?"). A denylist cannot establish
+# simplicity. Keep subjects closed and variable operands to a single token;
+# unrecognized wording deliberately falls back to the baseline. These are
+# useful heuristics, not a proof of natural-language task complexity.
 _SIMPLE_FACTUAL_RE = re.compile(
-    r"(?:what|what's|who|who's|whom|whose|when|where|which"
-    r"|how\s+(?:many|much|old|long|far|big|tall|often))\b"
-    r"[^?.!;\n]{0,80}\??",
+    r"(?:what(?: is|'s) the (?:current )?(?:time|date|day|version|working directory)"
+    r"|what(?: is|'s) the capital of [a-z][a-z'-]{0,39}"
+    r"|what time is it(?: in [a-z][a-z'-]{0,39})?"
+    r"|which tests (?:failed|passed)"
+    r"|where is the (?:config file|readme|log file)"
+    r")\??",
     re.IGNORECASE,
 )
-_SIMPLE_FACTUAL_MAX_WORDS = 12
 
 # Clause joins, sequencing, conditionals and judgment questions are not
 # positive evidence of a single simple fact or retrieval. Reject before every
@@ -261,13 +266,16 @@ _NOT_SIMPLE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Single mechanical retrieval steps: read-only imperatives with one clause.
-# State-changing verbs (restart/delete/deploy/...) are deliberately excluded.
+# The same closed-shape rule applies to retrievals: a read-only verb alone
+# does not make its unrestricted tail mechanical ("show me how to fix this").
+# File operands admit one path token, never additional prose or shell syntax.
 _MECHANICAL_RE = re.compile(
-    r"(?:please\s+)?(?:show|list|open|display|print|read|cat)\b[^,;.!?\n]{0,60}[.!]?",
+    r"(?:please )?(?:show|list|open|display|print|read|cat) (?:me )?"
+    r"(?:(?:the )?(?:readme|(?:current )?config|files(?: in /[a-z0-9_./-]{1,60})?)"
+    r"|[a-z0-9_/-]{1,40}\.[a-z0-9]{1,10}"
+    r"|/[a-z0-9_./-]{1,60})[.!]?",
     re.IGNORECASE,
 )
-_MECHANICAL_MAX_WORDS = 8
 
 
 def parse_adaptive_reasoning_config(raw: Any) -> Optional[Dict[str, Any]]:
@@ -342,13 +350,9 @@ def _positively_simple_reason(stripped: str, norm: str) -> str:
         return ""
     if _CASUAL_RE.fullmatch(norm):
         return "casual message"
-    words = len(stripped.split())
-    if words <= _SIMPLE_FACTUAL_MAX_WORDS and _SIMPLE_FACTUAL_RE.fullmatch(norm):
+    if _SIMPLE_FACTUAL_RE.fullmatch(norm):
         return "simple factual request"
-    if (
-        words <= _MECHANICAL_MAX_WORDS
-        and _MECHANICAL_RE.fullmatch(norm)
-    ):
+    if _MECHANICAL_RE.fullmatch(norm):
         return "single mechanical step"
     return ""
 

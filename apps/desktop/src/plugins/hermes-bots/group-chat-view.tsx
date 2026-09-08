@@ -64,11 +64,13 @@ import {
   $groupChatWorkspace,
   $groupClarify,
   $groupNeedsYou,
+  groupChatLimits,
   groupThreadOf,
   rememberGroupChatTombstone,
   scheduleGroupChatServerSync,
   setGroupChatHoldDetection,
   setGroupChatImage,
+  setGroupChatLimits,
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
@@ -211,6 +213,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
           sessions: room.sessions || {},
           sessionOwners: room.sessionOwners || {},
           members: Array.isArray(room.members) ? room.members : [],
+          limits: groupChatLimits(room),
           roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
           image: room.image || null,
           syncRevision: Math.max(0, Number(room.syncRevision || 0))
@@ -381,9 +384,7 @@ interface GroupChatSettingsDialogProps {
   open: boolean
 }
 
-/** Edit an existing group chat's name and picture. Renames re-key the room
- *  and every local member's membership (renameGroupChat); the picture rides
- *  the room record. Both apply on Save so a cancelled dialog changes nothing. */
+/** Edit an existing group chat's name, picture and per-send ceilings. */
 function GroupChatSettingsDialog({
   group,
   members,
@@ -397,18 +398,43 @@ function GroupChatSettingsDialog({
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const current = (rooms[group] || {}).image || null
   const currentHoldDetection = (rooms[group] || {}).holdDetection !== false
+  const currentLimits = groupChatLimits(rooms[group])
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
   const [holdDetection, setHoldDetection] = useState(currentHoldDetection)
+  const [maxRounds, setMaxRounds] = useState(String(currentLimits.maxRounds))
+  const [maxMessages, setMaxMessages] = useState(String(currentLimits.maxMessages))
+  const [maxContinuations, setMaxContinuations] = useState(String(currentLimits.maxContinuations))
   const [compressing, setCompressing] = useState<null | string>(null)
   useEffect(() => {
     if (open) {
       setName(group)
       setImage(current)
       setHoldDetection(currentHoldDetection)
+      setMaxRounds(String(currentLimits.maxRounds))
+      setMaxMessages(String(currentLimits.maxMessages))
+      setMaxContinuations(String(currentLimits.maxContinuations))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
+
+  const parseLimit = (value: string, minimum: number) => {
+    if (!value.trim()) {
+      return null
+    }
+
+    const parsed = Number(value)
+
+    return Number.isSafeInteger(parsed) && parsed >= minimum ? parsed : null
+  }
+
+  const parsedLimits = {
+    maxRounds: parseLimit(maxRounds, 1),
+    maxMessages: parseLimit(maxMessages, 1),
+    maxContinuations: parseLimit(maxContinuations, 0)
+  }
+
+  const limitsValid = Object.values(parsedLimits).every(value => value !== null)
 
   // Per-member "Compress history" (#102291): the member's hidden plumbing
   // session is reachable from nowhere else, so the room that shows the
@@ -441,6 +467,10 @@ function GroupChatSettingsDialog({
   }
 
   const save = async () => {
+    if (!limitsValid) {
+      return
+    }
+
     const finalName = await renameGroupChat(group, name, members)
 
     if (finalName === null) {
@@ -454,6 +484,12 @@ function GroupChatSettingsDialog({
     if (holdDetection !== currentHoldDetection) {
       setGroupChatHoldDetection(finalName, holdDetection)
     }
+
+    setGroupChatLimits(finalName, {
+      maxRounds: parsedLimits.maxRounds!,
+      maxMessages: parsedLimits.maxMessages!,
+      maxContinuations: parsedLimits.maxContinuations!
+    })
 
     onClose()
 
@@ -502,6 +538,50 @@ function GroupChatSettingsDialog({
           label={b.group.holdDetection}
           onChange={setHoldDetection}
         />
+        <div className="space-y-3">
+          <div className="text-sm font-medium">{b.group.limitsTitle}</div>
+          <div className="grid grid-cols-[1fr_5rem] items-center gap-x-4 gap-y-3">
+            <label className="text-sm" htmlFor="group-max-rounds">
+              <span className="block">{b.group.maxRoundsLabel}</span>
+              <span className="text-xs text-(--ui-text-tertiary)">{b.group.maxRoundsDesc}</span>
+            </label>
+            <Input
+              id="group-max-rounds"
+              inputMode="numeric"
+              min={1}
+              onChange={event => setMaxRounds(event.target.value)}
+              step={1}
+              type="number"
+              value={maxRounds}
+            />
+            <label className="text-sm" htmlFor="group-max-messages">
+              <span className="block">{b.group.maxMessagesLabel}</span>
+              <span className="text-xs text-(--ui-text-tertiary)">{b.group.maxMessagesDesc}</span>
+            </label>
+            <Input
+              id="group-max-messages"
+              inputMode="numeric"
+              min={1}
+              onChange={event => setMaxMessages(event.target.value)}
+              step={1}
+              type="number"
+              value={maxMessages}
+            />
+            <label className="text-sm" htmlFor="group-max-continuations">
+              <span className="block">{b.group.maxContinuationsLabel}</span>
+              <span className="text-xs text-(--ui-text-tertiary)">{b.group.maxContinuationsDesc}</span>
+            </label>
+            <Input
+              id="group-max-continuations"
+              inputMode="numeric"
+              min={0}
+              onChange={event => setMaxContinuations(event.target.value)}
+              step={1}
+              type="number"
+              value={maxContinuations}
+            />
+          </div>
+        </div>
         {(members || []).length > 0 ? (
           <ul className="flex flex-col gap-1" data-testid="group-settings-members">
             {(members || []).map(member => {
@@ -545,7 +625,7 @@ function GroupChatSettingsDialog({
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
           </Button>
-          <Button disabled={!name.trim()} onClick={() => void save()}>
+          <Button disabled={!name.trim() || !limitsValid} onClick={() => void save()}>
             {t.common.save}
           </Button>
         </DialogFooter>

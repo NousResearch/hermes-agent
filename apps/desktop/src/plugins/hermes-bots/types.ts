@@ -187,6 +187,12 @@ export interface GroupHold {
   noted?: boolean
 }
 
+export interface GroupChatLimits {
+  maxContinuations: number
+  maxMessages: number
+  maxRounds: number
+}
+
 export interface GroupChat {
   /** Whether user text may create sticky member holds. Defaults to true for
    *  rooms written by older builds; the room settings switch can disable it. */
@@ -198,6 +204,8 @@ export interface GroupChat {
   heldMessages?: Record<string, string[]>
   holds?: Record<string, GroupHold>
   image?: null | string
+  /** Per-user-send safety ceilings. Missing values use the room defaults. */
+  limits?: GroupChatLimits
   log: GroupMessage[]
   members?: GroupMember[]
   /** Immutable identity, so a rename doesn't fork the room. */

@@ -463,6 +463,56 @@ describe('durable projection', () => {
     expect(rooms.Legacy.roomId).toBeNull()
   })
 
+  it('normalizes, persists and syncs per-room limits with safe legacy defaults', async () => {
+    const { chat } = await loadRoom()
+
+    expect(chat.groupChatLimits()).toEqual({ maxContinuations: 2, maxMessages: 10, maxRounds: 3 })
+    expect(chat.groupChatLimits({ limits: { maxContinuations: -1, maxMessages: 0, maxRounds: 4 } })).toEqual({
+      maxContinuations: 2,
+      maxMessages: 10,
+      maxRounds: 4
+    })
+
+    const rooms = chat.durableGroupChatRooms({
+      Team: {
+        limits: { maxContinuations: 5, maxMessages: 40, maxRounds: 8 },
+        log: [{ at: 1, from: { kind: 'user' }, text: 'hi' }],
+        watermarks: {}
+      }
+    } as unknown as Record<string, GroupChat>)
+
+    expect(rooms.Team.limits).toEqual({ maxContinuations: 5, maxMessages: 40, maxRounds: 8 })
+
+    const merged = chat.mergeGroupChatSyncSnapshots(
+      {
+        rooms: {
+          'id:room-1': {
+            limits: { maxContinuations: 4, maxMessages: 30, maxRounds: 7 },
+            log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'remote' }],
+            name: 'Team',
+            revision: 5,
+            roomId: 'room-1'
+          }
+        },
+        version: 3
+      },
+      {
+        rooms: {
+          'id:room-1': {
+            limits: { maxContinuations: 1, maxMessages: 2, maxRounds: 1 },
+            log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'local' }],
+            name: 'Team',
+            revision: 4,
+            roomId: 'room-1'
+          }
+        },
+        version: 3
+      }
+    )
+
+    expect(merged.rooms['id:room-1'].limits).toEqual({ maxContinuations: 4, maxMessages: 30, maxRounds: 7 })
+  })
+
   it('never persists a tombstone that a remote merge forwarded', async () => {
     const room = await loadRoom()
     // A drive still mid-turn at disband time leaves a live tombstone.

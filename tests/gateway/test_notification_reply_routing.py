@@ -474,3 +474,89 @@ def test_desktop_owner_poller_continues_existing_surface_once(tmp_path, monkeypa
     assert original['source'] == 'desktop'
     with sqlite3.connect(tmp_path / 'notification-replies.db') as db:
         assert db.execute('SELECT status FROM notification_routes').fetchone()[0] == 'dispatched'
+
+
+def test_owner_mailbox_uses_real_prompt_admission_and_persists_visible_turn(tmp_path, monkeypatch):
+    """Only the model call is substituted; owner admission, turn runner, events,
+    session history, and SQLite persistence use their production implementations.
+    """
+    import threading
+    from types import SimpleNamespace
+    from tui_gateway import server
+    from tui_gateway.session_notification_replies import poll_replies
+
+    class InlineThread:
+        def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+            self.target, self.args, self.kwargs = target, args, kwargs or {}
+
+        def start(self):
+            if self.target:
+                self.target(*self.args, **self.kwargs)
+
+        def is_alive(self):
+            return False
+
+        def join(self, timeout=None):
+            return None
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.delenv('HERMES_PROFILE', raising=False)
+    monkeypatch.setattr(server.threading, 'Thread', InlineThread)
+    monkeypatch.setattr(server, '_wire_callbacks', lambda sid: None)
+    monkeypatch.setattr(server, '_sync_agent_model_with_config', lambda sid, session: None)
+    monkeypatch.setattr(server, '_sync_agent_compression_with_config', lambda sid, session: None)
+    monkeypatch.setattr(server, '_sync_bot_capabilities', lambda sid, session: None)
+    monkeypatch.setattr(server, '_session_cwd', lambda session: str(tmp_path))
+    monkeypatch.setattr(server, '_register_session_cwd', lambda session: None)
+    monkeypatch.setattr(server, '_tts_stream_begin', lambda: None)
+    monkeypatch.setattr(server, '_sync_session_key_after_compress', lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, '_get_usage', lambda agent: {})
+    emitted = []
+    monkeypatch.setattr(server, '_emit', lambda kind, sid, payload=None: emitted.append((kind, sid, payload)))
+
+    send_notification(tmp_path, monkeypatch)
+    asyncio.run(inbound_runner(monkeypatch)._handle_message(event()))
+    state = SessionDB(db_path=tmp_path / 'state.db')
+
+    def deterministic_model_boundary(message, **kwargs):
+        state.append_message(ORIGIN, 'user', kwargs['persist_user_message'])
+        state.append_message(ORIGIN, 'assistant', 'Deterministic owner acknowledgement')
+        return {'final_response': 'Deterministic owner acknowledgement', 'messages': [
+            *kwargs['conversation_history'],
+            {'role': 'user', 'content': kwargs['persist_user_message']},
+            {'role': 'assistant', 'content': 'Deterministic owner acknowledgement'},
+        ]}
+
+    agent = SimpleNamespace(
+        session_id=ORIGIN, model='test/model', provider='test',
+        run_conversation=deterministic_model_boundary, clear_interrupt=lambda: None,
+    )
+    owner = {
+        'session_key': ORIGIN, 'source': 'desktop',
+        'history_lock': threading.Lock(), 'running': False, 'agent': agent,
+        'history': [{'role': 'assistant', 'content': 'Original work'}],
+        'history_version': 0, 'attached_images': [], 'image_counter': 0,
+        'cols': 80, 'slash_worker': None, 'show_reasoning': False,
+        'tool_progress_mode': 'all', 'inflight_turn': None,
+    }
+    server._sessions['real-owner-tab'] = owner
+    try:
+        poll_replies('real-owner-tab', owner, tmp_path, server._run_prompt_submit)
+    finally:
+        server._sessions.pop('real-owner-tab', None)
+        server._release_active_session_slot(owner)
+        state.close()
+
+    assert [message['content'] for message in owner['history'][-2:]] == [
+        'Go ahead', 'Deterministic owner acknowledgement']
+    persisted = SessionDB(db_path=tmp_path / 'state.db')
+    try:
+        assert [(message['role'], message['content']) for message in persisted.get_messages(ORIGIN)[-2:]] == [
+            ('user', 'Go ahead'), ('assistant', 'Deterministic owner acknowledgement')]
+    finally:
+        persisted.close()
+    assert any(kind == 'message.start' and sid == 'real-owner-tab' for kind, sid, _ in emitted)
+    assert any(kind == 'message.complete' and payload['text'] == 'Deterministic owner acknowledgement'
+               for kind, _, payload in emitted)
+    with sqlite3.connect(tmp_path / 'notification-replies.db') as db:
+        assert db.execute('SELECT status FROM notification_reply_queue').fetchone()[0] == 'dispatched'

@@ -1166,6 +1166,14 @@ KANBAN_APPROVE_SCHEMA = {
 }
 
 
+def _approver_profile_from_env() -> Optional[str]:
+    raw = os.environ.get("HERMES_PROFILE")
+    if not raw:
+        return None
+    text = str(raw).strip()
+    return text or None
+
+
 def _handle_approve(args: dict, **kw) -> str:
     """Reviewer tool: three-outcome approval."""
     guard = _require_orchestrator_tool("kanban_approve")

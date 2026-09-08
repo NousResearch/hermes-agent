@@ -254,6 +254,32 @@ def test_worker_guidance_distinguishes_same_card_and_downstream_review() -> None
     assert "escalate" in skill_text.lower()
 
 
+def test_cli_request_changes_without_active_review_points_operator_to_reopen_review(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="manual review", assignee="builder")
+        assert kb.request_review(conn, task_id, summary="ready for operator")
+
+    output = kc.run_slash(f"request-changes {task_id} 'needs more tests'")
+
+    assert "cannot request changes" in output
+    assert "reopen-review" in output
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "review"
+        assert task.assignee == "builder"
+
+
 def test_cli_reopen_review_is_transition_first_and_redacts_reason(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

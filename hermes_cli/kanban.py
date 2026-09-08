@@ -982,6 +982,8 @@ def _cmd_request_changes(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
         ok, detail = kb.request_changes(conn, tid, reason=reason, expected_run_id=_worker_run_id_for(tid))
         if not ok:
+            if detail == "task is not in an active review run":
+                detail += "; operator/manual review changes use reopen-review"
             return _err(f"cannot request changes for {tid}: {detail or 'invalid review state'}")
         print(f"Requested changes for {tid}" + (f"; routed to {detail}" if detail else ""))
     return 0
@@ -1264,7 +1266,7 @@ Common subcommands:
   `comment <id> <msg>`  Append a comment
   `attach <id> <path>`  Attach a local file; `attachments <id>` to list
   `complete <id>…`      Mark task(s) done
-  `request-review <id>` Enter first-class review; `request-changes <id> <reason>` returns an active review to its implementer
+  `request-review <id>` Enter first-class review; `request-changes <id> <reason>` returns an active reviewer run; `reopen-review <id>` handles operator changes
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards

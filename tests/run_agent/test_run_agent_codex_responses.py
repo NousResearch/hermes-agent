@@ -18,14 +18,13 @@ def _no_codex_backoff(monkeypatch):
     """Short-circuit retry backoff so Codex retry tests don't block on real
     wall-clock waits (5s jittered_backoff base delay + tight time.sleep loop)."""
     import time as _time
-    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
+    monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *a, **k: 0.0)
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
 
 
 def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(
-        run_agent,
-        "get_tool_definitions",
+        "model_tools.get_tool_definitions",
         lambda **kwargs: [
             {
                 "type": "function",
@@ -37,7 +36,7 @@ def _patch_agent_bootstrap(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
 
 
 def _build_agent(monkeypatch):
@@ -512,8 +511,8 @@ def _build_xai_agent_with_slash_enum_tool(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(run_agent, "get_tool_definitions", _fake_get_tool_definitions)
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("model_tools.get_tool_definitions", _fake_get_tool_definitions)
+    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
 
     agent = run_agent.AIAgent(
         model="grok-4.3",
@@ -1352,7 +1351,7 @@ def test_try_refresh_codex_client_credentials_handles_xai_oauth(monkeypatch):
         "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
         _fake_resolve,
     )
-    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai)
 
     existing = _ExistingClient()
     agent.client = existing
@@ -1458,7 +1457,7 @@ def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
         "hermes_cli.copilot_auth.get_copilot_api_token",
         lambda _raw: ("tid=exchanged-ide-token", None),
     )
-    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai)
 
     agent.client = _ExistingClient()
     ok = agent._try_refresh_copilot_client_credentials()
@@ -1497,7 +1496,7 @@ def test_try_refresh_copilot_client_credentials_rebuilds_even_if_token_unchanged
         "hermes_cli.copilot_auth.get_copilot_api_token",
         lambda _raw: ("tid=fresh-exchanged", None),
     )
-    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai)
 
     ok = agent._try_refresh_copilot_client_credentials()
 
@@ -1531,7 +1530,7 @@ def test_try_refresh_copilot_client_credentials_falls_back_when_exchange_unavail
         lambda _raw: None,
     )
     monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token", _boom)
-    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai)
 
     ok = agent._try_refresh_copilot_client_credentials()
 

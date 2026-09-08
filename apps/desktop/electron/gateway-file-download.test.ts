@@ -397,9 +397,9 @@ test('filenameFromContentDisposition prefers filename* and reduces to a basename
   assert.equal(filenameFromContentDisposition(undefined), '')
 })
 
-test('gatewayFilePath normalizes bare paths and file:// URLs', () => {
+test('gatewayFilePath preserves bare paths and file:// URLs for gateway-native conversion', () => {
   assert.equal(gatewayFilePath('/Users/me/report.md'), '/Users/me/report.md')
-  assert.equal(gatewayFilePath('file:///Users/me/a%20b.md'), '/Users/me/a b.md')
+  assert.equal(gatewayFilePath('file:///Users/me/a%20b.md'), 'file:///Users/me/a%20b.md')
   assert.equal(gatewayFilePath(''), '')
   assert.equal(gatewayFilePath(null), '')
 })

@@ -14,7 +14,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_state import SessionDB, StateDbCorruptError, _on_disk_journal_mode
+from hermes_state import SessionDB, StateDbCorruptError
+from hermes_state_wal import _on_disk_journal_mode
 
 
 class _NotADbOnce:

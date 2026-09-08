@@ -17,13 +17,15 @@ from unittest.mock import patch, MagicMock
 from tools.file_tools import (
     read_file_tool,
     write_file_tool,
-    reset_file_dedup,
     _is_blocked_device,
-    _invalidate_dedup_for_path,
-    _READ_DEDUP_STATUS_MESSAGE,
     _DEFAULT_MAX_READ_CHARS,
-    _read_tracker,
+)
+from tools.file_tools_write_guards import _READ_DEDUP_STATUS_MESSAGE
+from tools.file_tools_read_tracking import _read_tracker
+from tools.file_tools_read_tracking import (
+    _invalidate_dedup_for_path,
     notify_other_tool_call,
+    reset_file_dedup,
 )
 
 

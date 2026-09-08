@@ -364,6 +364,7 @@ def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
     """A nested in-process dispatch inside a worker (e.g. a script running
     ``hermes cron run <other>``) must not queue under the OUTER execution id."""
     import cron.scheduler as scheduler
+    import cron.scheduler_delivery as scheduler_delivery
 
     queued = []
     monkeypatch.setattr(
@@ -374,6 +375,11 @@ def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
     )
     monkeypatch.setattr(
         scheduler,
+        "_resolve_delivery_targets",
+        lambda job, for_failure=False: [{"platform": "telegram", "chat_id": "123"}],
+    )
+    monkeypatch.setattr(
+        scheduler_delivery,
         "_resolve_delivery_targets",
         lambda job, for_failure=False: [{"platform": "telegram", "chat_id": "123"}],
     )
@@ -420,7 +426,7 @@ def test_gateway_tool_run_without_adapter_objects_hands_off(monkeypatch):
 
     assert scheduler.run_one_job(job, adapters=None) is True
 
-    created.assert_called_once_with("tool-job", source="direct")
+    created.assert_called_once_with("tool-job", source="direct", scheduled_instant=None)
     assert job["execution_id"] == "exec-tool"
     launch.assert_called_once_with(job)
     run.assert_not_called()
@@ -437,7 +443,7 @@ def test_shared_run_path_creates_execution_before_managed_handoff(monkeypatch):
 
     assert scheduler.run_one_job(job, adapters={"discord": object()}) is True
 
-    created.assert_called_once_with("manual-job", source="direct")
+    created.assert_called_once_with("manual-job", source="direct", scheduled_instant=None)
     assert job["execution_id"] == "exec-new"
     launch.assert_called_once_with(job)
 

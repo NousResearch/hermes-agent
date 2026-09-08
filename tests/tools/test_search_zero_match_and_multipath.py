@@ -71,7 +71,10 @@ class TestZeroMatchProbe:
         (d / ".gitignore").write_text("node_modules/\n.project-local/\n")
 
         # Drive the public search seam while recording the commands that the
-        # zero-match probe actually executes. The real rg calls still run.
+        # zero-match probe actually executes. The real rg calls still run. This
+        # observes shell command text, so pin the shell lane (native rg runs
+        # argv directly and never passes through ``_exec``).
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
         from tools.file_tools import _get_file_ops
 
         task_id = "t-zm-pruned-hidden"
@@ -109,6 +112,7 @@ class TestZeroMatchProbe:
         (dependency / "dependency.js").write_text("EXPLICIT_ROOT_TOKEN = true\n")
         (d / ".gitignore").write_text("node_modules/\n")
 
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")  # shell-observer test
         from tools.file_tools import _get_file_ops
 
         task_id = "t-zm-explicit-pruned-root"

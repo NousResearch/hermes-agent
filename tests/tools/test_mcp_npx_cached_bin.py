@@ -185,7 +185,7 @@ def test_windows_selects_launchers_never_the_sh_script():
     `os.name`, which breaks path handling process-wide (it took pytest's own
     traceback formatting down when I tried).
     """
-    from tools.mcp_tool import _npx_bin_candidates
+    from tools.mcp_tool_config import _npx_bin_candidates
 
     win = _npx_bin_candidates("/c/bin", "mcp-linear", windows=True)
     assert win == ["/c/bin/mcp-linear.cmd", "/c/bin/mcp-linear.exe"]

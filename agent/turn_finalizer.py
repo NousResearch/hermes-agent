@@ -495,6 +495,18 @@ def finalize_turn(
     # Response transforms apply only to real, uninterrupted responses.
     if final_response and not interrupted:
         final_response = _append_file_mutation_footer(agent, final_response, logger)
+
+    # -- MEDIA: carry-forward -------------------------------------------
+    # Only the FINAL assistant message reaches the chat platform. When the
+    # model emits MEDIA:/path and THEN calls a tool (mem0_add, memory, ...),
+    # the tag lands in an intermediate turn and the attachment is silently
+    # dropped while the closing message claims the file was sent. Re-attach
+    # any MEDIA: tag emitted earlier in THIS turn that didn't survive.
+    if final_response and not interrupted:
+        try:
+            final_response = _carry_forward_media_tags(final_response, messages)
+        except Exception as _mc_err:
+            logger.debug("MEDIA carry-forward failed: %s", _mc_err)
     if not interrupted:
         final_response = _explain_abnormal_exit(
             agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
@@ -638,3 +650,44 @@ def finalize_turn(
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False
     return result
+
+
+def _carry_forward_media_tags(final_response, messages):
+    """Re-append MEDIA: tags emitted earlier in this turn but lost from the final text.
+
+    Scans assistant messages back to the most recent user message (this turn
+    only), collects MEDIA: tags that are absent from ``final_response``, and
+    appends them so the platform's extract_media() can deliver them. Order is
+    preserved and duplicates are dropped.
+    """
+    import re as _re
+    from agent.conversation_loop import logger  # lazy: module-level import is circular
+    _MEDIA_TAG_RE = _re.compile(r"^\s*MEDIA:\S+\s*$", _re.MULTILINE)
+    if not messages:
+        return final_response
+    # This turn = everything after the last user message.
+    start = 0
+    for idx in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[idx], dict) and messages[idx].get("role") == "user":
+            start = idx + 1
+            break
+    already = set(m.group(0).strip() for m in _MEDIA_TAG_RE.finditer(final_response or ""))
+    missing = []
+    for msg in messages[start:]:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or "MEDIA:" not in content:
+            continue
+        for m in _MEDIA_TAG_RE.finditer(content):
+            tag = m.group(0).strip()
+            if tag not in already:
+                already.add(tag)
+                missing.append(tag)
+    if not missing:
+        return final_response
+    logger.info(
+        "MEDIA carry-forward: re-attaching %d tag(s) lost to a trailing tool call: %s",
+        len(missing), missing,
+    )
+    return (final_response or "").rstrip() + "\n" + "\n".join(missing)

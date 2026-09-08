@@ -74,6 +74,34 @@ def _read(store, manifest):
     ).data
 
 
+@pytest.mark.parametrize("viewer", [False, True], ids=["member", "viewer"])
+def test_committed_bytes_read_while_unrelated_writer_holds_transaction(tmp_path, viewer):
+    db, store, manifest, args = _staged(tmp_path)
+    hosted_rooms.append_event(db, **args)
+    writer = sqlite3.connect(db)
+    try:
+        assert writer.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        writer.execute("CREATE TABLE unrelated_state (value TEXT)")
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("INSERT INTO unrelated_state VALUES ('pending')")
+        # The writer stays open throughout the real metadata and blob read.
+        if viewer:
+            data = store.read_viewer(
+                room_id="files",
+                attachment_id=manifest[0]["attachment_id"],
+                event_id="message",
+                authority_gateway_id="home",
+                authority_epoch=1,
+            ).data
+        else:
+            data = _read(store, manifest)
+        assert data == b"exact output"
+        assert writer.in_transaction
+    finally:
+        writer.rollback()
+        writer.close()
+
+
 @pytest.mark.parametrize("kind", ["message.user", "message.member"])
 @pytest.mark.parametrize("publish_first", [False, True])
 def test_rollback_and_canonical_append_have_one_winner(tmp_path, kind, publish_first):

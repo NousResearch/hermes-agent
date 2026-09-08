@@ -325,8 +325,9 @@ class HostedRoomAttachmentStore:
         self.gateway_quota_count = max(1, int(gateway_quota_count))
         self._lock = threading.RLock()
         self._prepare_private_root()
-        conn = self._connect()
-        conn.close()
+        # Serialize additive migrations once per store, not on read connections.
+        with self._transaction(immediate=True) as conn:
+            self._initialize(conn)
         self.reconcile_room_events()
         self.prune()
 
@@ -426,9 +427,6 @@ class HostedRoomAttachmentStore:
         try:
             apply_wal_with_fallback(conn, db_label="state.db (hosted room attachments)")
             conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("BEGIN IMMEDIATE")
-            self._initialize(conn)
-            conn.commit()
         except Exception:
             conn.rollback()
             conn.close()

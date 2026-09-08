@@ -96,9 +96,8 @@ class SessionAuthMixin:
 
     def _force_reauth(self, failed_access_token: str | None = None) -> bool:
         """Rotate the token after a 401 and rebind the client. False for a static API key, a dead
-        grant, or a failed exchange. ``failed_access_token`` is the bearer the failing operation
-        sent, snapshotted by ``_authed_call`` before it ran: the live client's ``api_key`` is
-        rotated in place by sibling waiters, so reading it here would defeat the adopt check."""
+        grant, or a failed exchange. ``failed_access_token`` is the bearer the operation sent; sibling
+        waiters rotate the live client's ``api_key`` in place, so it cannot be read back here."""
         try:
             from plugins.memory.honcho import oauth
             from plugins.memory.honcho.client import reset_honcho_client
@@ -106,9 +105,7 @@ class SessionAuthMixin:
             host = getattr(self._config, "host", "") or ""
             if not host:
                 return False
-            token = oauth.force_refresh_token(
-                self._bound_config_path(), host, failed_access_token=failed_access_token
-            )
+            token = oauth.force_refresh_token(self._bound_config_path(), host, failed_access_token=failed_access_token)
             if not token:
                 return False
             if not oauth.apply_token_to_client(self.honcho, token):

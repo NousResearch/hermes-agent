@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
@@ -65,23 +66,20 @@ def _local_config_path() -> Path:
 
 
 class _ReadConfig(dict):
-    """The config a command works on, carrying what disk held when it was read (``snapshot``) and where
-    (``path``), so _write_config() can apply only the command's edits onto a fresh read."""
+    """A command's config, with the ``snapshot`` and ``path`` _write_config() needs to apply only its edits."""
 
-    snapshot: dict
-    path: Path
+    def __init__(self, raw: dict, path: Path):
+        super().__init__(raw)
+        self.snapshot, self.path = copy.deepcopy(raw), path
 
 
 def _read_config() -> dict:
-    import copy
     path = _config_path()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         raw = {}
-    cfg = _ReadConfig(raw)
-    cfg.snapshot, cfg.path = copy.deepcopy(raw), path
-    return cfg
+    return _ReadConfig(raw, path)
 
 
 class ConfigWriteRefused(Exception):
@@ -89,8 +87,7 @@ class ConfigWriteRefused(Exception):
 
 
 def _refuse_unparseable(path: Path) -> None:
-    """Raise ConfigWriteRefused when ``path`` exists but cannot be parsed: writing back the ``{}`` a
-    tolerant read returns would drop every other host."""
+    """Raise ConfigWriteRefused when ``path`` exists but cannot be parsed; writing back ``{}`` would drop every host."""
     from plugins.memory.honcho.oauth import _read_config_strict
     try:
         _read_config_strict(path)
@@ -100,10 +97,8 @@ def _refuse_unparseable(path: Path) -> None:
 
 
 def _apply_edits(base: dict, edited: dict, current: dict) -> dict:
-    """Return ``current`` with every root key and ``hosts.<h>.<k>`` the command changed between ``base``
-    and ``edited`` applied. Keys the command left alone keep their on-disk value, so a token rotation
-    that landed while the command ran survives; a key the command set deliberately wins."""
-    import copy
+    """Return ``current`` with the root keys and ``hosts.<h>.<k>`` the command changed (``base`` to ``edited``)
+    applied. An untouched key keeps its on-disk value, so a rotation that landed while the command ran survives."""
     out = copy.deepcopy(current)
     for key in (set(base) | set(edited)) - {"hosts"}:
         if key in edited and edited[key] != base.get(key):
@@ -127,9 +122,8 @@ def _apply_edits(base: dict, edited: dict, current: dict) -> dict:
 
 
 def _write_config(cfg: dict, path: Path | None = None) -> None:
-    """Persist ``cfg`` under the same cross-process lock the token refresh holds. When ``cfg`` is the
-    object _read_config() returned for this path, only the command's edits are applied onto a fresh read
-    of disk; a plain dict is written whole."""
+    """Persist ``cfg`` under the token refresh's cross-process lock. The object _read_config() returned
+    for this path has only its edits applied onto a fresh read of disk; a plain dict is written whole."""
     from plugins.memory.honcho.oauth import _config_refresh_lock, _read_config_strict
     from utils import atomic_json_write
     path = path or _local_config_path()
@@ -178,8 +172,7 @@ def _default_block_and_key(cfg: dict) -> tuple[dict, bool]:
 def _resolve_api_key(cfg: dict, block: dict | None = None, *, env: bool = True) -> str:
     """API key for ``block`` (default: the active host's block), host -> root -> env. A self-hosted
     http(s) or host:port ``baseUrl`` without a key yields "local" so credential guards accept it.
-    ``env=False`` counts only what is on disk: a write that enables a block must not rely on a variable
-    that can vanish from the next process."""
+    ``env=False`` counts only what is on disk: a variable can vanish from the next process."""
     block = _host_block(cfg, _host_key()) if block is None else block
     key = (block.get("apiKey") or cfg.get("apiKey", "") or (os.environ.get("HONCHO_API_KEY", "") if env else ""))
     if key:
@@ -334,13 +327,6 @@ def sync_honcho_profiles_quiet() -> int:
     return _sync_profiles(verbose=False)
 
 
-def _no_credential_hint(host: str) -> str:
-    profile = _active_profile_name()
-    setup = "hermes honcho setup" + (f" --target-profile {profile}" if profile != "default" else "")
-    return (f"Honcho stays disabled: no API key or base URL is configured for this profile, and the default "
-            f"profile's key is not shared.\n  Run '{setup}' to sign in, or set apiKey on hosts.{host} in {_config_path()}.")
-
-
 def cmd_enable(args) -> None:
     """Enable Honcho for the active profile; refuses a block that cannot authenticate."""
     cfg = _read_config()
@@ -348,7 +334,10 @@ def cmd_enable(args) -> None:
     label = _label(host)
     block = cfg.setdefault("hosts", {}).setdefault(host, {})
     if not _resolve_api_key(cfg, block, env=False):
-        return print(f"  {label}{_no_credential_hint(host)}\n")
+        profile = _active_profile_name()
+        setup = "hermes honcho setup" + (f" --target-profile {profile}" if profile != "default" else "")
+        return print(f"  {label}Honcho stays disabled: no API key or base URL is configured for this profile, and the default "
+                     f"profile's key is not shared.\n  Run '{setup}' to sign in, or set apiKey on hosts.{host} in {_config_path()}.\n")
     if block.get("enabled") is True:
         return print(f"  {label}Honcho is already enabled.\n")
     block["enabled"] = True

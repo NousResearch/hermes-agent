@@ -168,9 +168,12 @@ def _build_sandbox_env(env_type, *, image, cwd, timeout, cc, task_id, **_):
     return cls()(**kwargs)
 
 
-_build_singularity_env = functools.partial(_build_sandbox_env, "singularity")
-_build_daytona_env = functools.partial(_build_sandbox_env, "daytona")
-_build_vercel_env = functools.partial(_build_sandbox_env, "vercel_sandbox")
+# Bind env_type by keyword: _create_environment invokes every builder with
+# ``env_type=<type>`` by keyword, so a positional partial collides and raises
+# ``TypeError: _build_sandbox_env() got multiple values for argument 'env_type'`` (#105414).
+_build_singularity_env = functools.partial(_build_sandbox_env, env_type="singularity")
+_build_daytona_env = functools.partial(_build_sandbox_env, env_type="daytona")
+_build_vercel_env = functools.partial(_build_sandbox_env, env_type="vercel_sandbox")
 
 
 def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):

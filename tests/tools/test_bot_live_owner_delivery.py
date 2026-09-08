@@ -1,6 +1,7 @@
 """Durable mailbox invariants, using real disk and exec boundaries."""
 import json
 import os
+import stat
 import subprocess
 import sys
 
@@ -61,6 +62,21 @@ def test_existing_mailbox_lock_does_not_fsync_unchanged_parent_dirs(tmp_path, mo
         pass
 
     assert calls == []
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize("mode", [0o500, 0o600, 0o700, 0o1700])
+def test_existing_mailbox_lock_restores_owner_permissions(tmp_path, mode):
+    from tools import bot_live_delivery as mailbox
+
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    root.mkdir(parents=True)
+    root.chmod(mode)
+    try:
+        with mailbox._locked(tmp_path):
+            assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    finally:
+        root.chmod(0o700)
 
 
 def test_fifo_survives_clock_rollback(tmp_path, monkeypatch):

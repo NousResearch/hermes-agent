@@ -689,7 +689,9 @@ def replica_state(db_path: Path | str, *, room_id: Any) -> dict[str, Any]:
             if row is None
             else None
         )
-        from gateway.hosted_room_work_records import summary_locked
+        from gateway.hosted_room_work_records import audit_replica_locked, summary_locked
+        if row is not None:
+            audit_replica_locked(conn, room_id)
         work_records = summary_locked(conn, room_id) if row is not None and row["quarantine_reason"] is None else {
             "availability": "unavailable", "source_loss_safe": False}
     if row is None:

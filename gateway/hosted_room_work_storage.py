@@ -73,48 +73,36 @@ def _initialize_locked(conn):
             if pending:
                 fields += ["target_install_id", "route_generation", "status"]
                 values += [row[k] for k in fields[-3:]]
+            values[6] = scope_disposition(conn, table, dict(zip(fields, values)))
             conn.execute(f"INSERT INTO {table} ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})", values)
         for trigger in triggers:
             conn.execute(trigger[0])
     _guards(conn, work, tables)
     _invalid_guards(conn)
     initialize_lineage_guards(conn)
-    # Validate before disposition reconciliation: metadata corruption is not a
-    # legitimate authority transition. Keep its original outcome and bytes.
-    for table in tables:
-        for row in conn.execute(f"SELECT * FROM {table} WHERE disposition='current'").fetchall():
-            try:
-                validate_stored(row)
-            except work.InvalidStoredWorkRecord:
-                key = "room_id=? AND producer_gateway_id=? AND producer_epoch=?"
-                args = (row["room_id"], row["producer_gateway_id"], row["producer_epoch"])
-                if table == work.PENDING_TABLE:
-                    key += " AND target_install_id=?"
-                    args += (row["target_install_id"],)
-                conn.execute(f"UPDATE {table} SET disposition='invalid' WHERE {key}", args)
-    reconcile_locked(conn)
+    # Ordinary initialization owns schema/guards only. Each consuming operation
+    # validates its own row; authority/enrollment triggers freeze exact-room old
+    # scopes. Legacy dispositions were resolved at insertion above.
     work.initialize_target_guards(conn)
 
 
-def reconcile_locked(conn):
+def scope_disposition(conn, table, row):
+    """Read-only authority projection, also used when inserting migrated rows."""
     from gateway import hosted_room_work_records as work
-    for table in (work.SOURCE_TABLE, work.PENDING_TABLE):
-        if not table_exists(conn, table):
-            continue
-        disposition = "'superseded_authority'" if table == work.PENDING_TABLE else "'historical'"
-        if table == work.PENDING_TABLE:
-            disposition = "CASE WHEN status='acked' THEN 'historical' ELSE 'superseded_authority' END"
-        conn.execute(f"""UPDATE {table} SET disposition={disposition} WHERE disposition='current'
-            AND EXISTS (SELECT 1 FROM hosted_rooms r WHERE r.room_id={table}.room_id AND
-                (r.authority_gateway_id!={table}.producer_gateway_id OR r.authority_epoch!={table}.producer_epoch))""")
-    if table_exists(conn, work.TARGET_TABLE):
-        # A newly enrolled sender need not have filled its prefix yet.
+    if row["disposition"] != "current":
+        return row["disposition"]
+    current = None
+    if table == work.TARGET_TABLE:
         from gateway.hosted_room_passive_lineage import ENROLLMENTS
         if table_exists(conn, ENROLLMENTS):
-            conn.execute(f"""UPDATE {work.TARGET_TABLE} SET disposition='historical' WHERE disposition='current'
-                AND EXISTS (SELECT 1 FROM {ENROLLMENTS} e WHERE e.room_id={work.TARGET_TABLE}.room_id AND e.is_current=1
-                    AND (e.authority_gateway_id!={work.TARGET_TABLE}.producer_gateway_id
-                        OR e.authority_epoch!={work.TARGET_TABLE}.producer_epoch))""")
+            current = conn.execute(f"SELECT authority_gateway_id,authority_epoch FROM {ENROLLMENTS} "
+                                   "WHERE room_id=? AND is_current=1", (row["room_id"],)).fetchone()
+    else:
+        current = conn.execute("SELECT authority_gateway_id,authority_epoch FROM hosted_rooms WHERE room_id=?",
+                               (row["room_id"],)).fetchone()
+    if current is None or tuple(current) == (row["producer_gateway_id"], row["producer_epoch"]):
+        return "current"
+    return "superseded_authority" if table == work.PENDING_TABLE and row["status"] != "acked" else "historical"
 
 
 def _guards(conn, work, tables):
@@ -264,6 +252,34 @@ def validate_stored(row):
     except (ValueError, TypeError, KeyError, RecursionError) as exc:
         raise work.InvalidStoredWorkRecord("stored work evidence is invalid") from exc
     return record
+
+
+def validate_stored_locked(conn, table, row):
+    """Validate the consumed row; invalidate only its unchanged current version.
+
+    The savepoint owns a standalone classification or joins the caller's write
+    transaction. A caller catching InvalidStoredWorkRecord must commit that
+    transaction before reporting controlled failure. Historical rows are never
+    rewritten, and read-only projections use validate_stored instead.
+    """
+    from gateway import hosted_room_work_records as work
+    try:
+        return validate_stored(row)
+    except work.InvalidStoredWorkRecord:
+        if row["disposition"] == "current":
+            # Match all examined values, not merely a key that may since have
+            # been replaced. IS preserves NULL/BLOB distinctions in old stores.
+            fields = list(row.keys())
+            where = " AND ".join(f'"{k}" IS ?' for k in fields)
+            conn.execute("SAVEPOINT work_record_invalidate")
+            try:
+                conn.execute(f"UPDATE {table} SET disposition='invalid' WHERE {where}", [row[k] for k in fields])
+            except BaseException:
+                conn.execute("ROLLBACK TO work_record_invalidate")
+                conn.execute("RELEASE work_record_invalidate")
+                raise
+            conn.execute("RELEASE work_record_invalidate")
+        raise
 
 
 def scope(record):

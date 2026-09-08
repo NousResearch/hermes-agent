@@ -79,7 +79,7 @@ fixed at the mount, not by adding a tool.
 Spawns a subagent with isolated context + terminal session; the parent waits for the summary unless
 `background=true`, which returns a delegation id and re-enters the result via the async-delegation
 completion queue. Shapes: single (`goal` + optional `context`, `toolsets`) or batch (`tasks: [...]`,
-concurrency capped by `delegation.max_concurrent_children`, default 3). A background batch returns as ONE
+concurrency capped by `delegation.max_concurrent_children`, default 10). A background batch returns as ONE
 completion by default; with `delegation.independent_completions` it is split into completion **units**
 (`delegate_tool_dispatch._units_of`): tasks sharing a `group` join and report together; each ungrouped
 task reports alone as it finishes. Units of one call share ONE pool slot (`slot_key` in

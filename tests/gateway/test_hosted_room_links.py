@@ -5,6 +5,8 @@ from __future__ import annotations
 import stat
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 from gateway.hosted_room_links import (
     load_room_links,
     make_stored_link,
@@ -22,7 +24,7 @@ def _catalog(installation="install-peer"):
     )
 
 
-def test_room_link_store_is_private_transactional_and_upserted(tmp_path):
+def test_room_link_store_is_transactional_and_upserted(tmp_path):
     path = tmp_path / "state.db"
     first = make_stored_link(
         room_id="room-1",
@@ -35,7 +37,6 @@ def test_room_link_store_is_private_transactional_and_upserted(tmp_path):
         trace_id="trace-1",
     )
     save_room_link(path, first)
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert load_room_links(path) == (first,)
 
     replacement = make_stored_link(
@@ -50,6 +51,28 @@ def test_room_link_store_is_private_transactional_and_upserted(tmp_path):
     )
     save_room_link(path, replacement)
     assert load_room_links(path) == (replacement,)
+
+
+@pytest.mark.parametrize(
+    "_platform",
+    [
+        pytest.param("linux", marks=pytest.mark.linux_only),
+        pytest.param("macos", marks=pytest.mark.macos_only),
+    ],
+)
+def test_room_link_store_has_private_posix_mode(tmp_path, _platform):
+    # NTFS permissions are ACLs, not the POSIX mode bits checked here.
+    path = tmp_path / "state.db"
+    save_room_link(
+        path,
+        make_stored_link(
+            room_id="room-1", member_id="member-1",
+            target_url="https://peer.example.test", target_profile="reviewer",
+            grant="grant.fixture", catalog=_catalog(),
+            cancellation_scope_id="cancel-1", trace_id="trace-1",
+        ),
+    )
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_room_link_store_keeps_distinct_room_member_routes(tmp_path):

@@ -6,8 +6,11 @@ import json
 import hashlib
 import multiprocessing
 import sqlite3
+import sys
 import threading
 import time
+import traceback
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -117,15 +120,21 @@ class _BlockingFirstRPC(_PromptRecordingRPC):
         super().__init__()
         self.first_started = threading.Event()
         self.release_first = threading.Event()
+        self.trace = []
 
     def submit(self, **kwargs):
         self.prompts.append((kwargs["profile"], kwargs["prompt"]))
+        self.trace.append(("submit", len(self.prompts), time.monotonic()))
         if len(self.prompts) == 1:
             self.first_started.set()
-            assert self.release_first.wait(timeout=2)
+            released = self.release_first.wait(timeout=2)
+            self.trace.append(("first_gate", released, time.monotonic()))
+            assert released, "fixture first RPC gate timed out before release"
+        self.trace.append(("callback_enter", time.monotonic()))
         kwargs["on_terminal"](
             {"status": "settled", "text": f"reply from {kwargs['profile']}"}
         )
+        self.trace.append(("callback_exit", time.monotonic()))
         return {"accepted": True}
 
 
@@ -162,13 +171,33 @@ def _server():
     return SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
 
 
-def _wait_for(predicate, timeout=2.0):
+def _runtime_diagnostics(service, db):
+    runtime = service.runtime
+    with runtime._status_lock:
+        threads = [runtime._thread, *runtime._room_threads.values()]
+    frames = sys._current_frames()
+    stacks = "\n".join(
+        f"{thread.name}:\n{''.join(traceback.format_stack(frames[thread.ident], limit=18))}"
+        for thread in threads if thread and thread.ident in frames
+    )
+    tasks = [
+        (row["identity"].task_id, row["status"], row["execution_generation"])
+        for row in driver.list_tasks(db, room_id="room-1")
+    ]
+    return (
+        f"status={runtime.status()!r}; tasks={tasks!r}; trace={service.rpc.trace!r}; "
+        f"ambiguous={runtime._ambiguous_rooms!r}; reschedule={runtime._rooms_needing_reschedule!r}\n{stacks}"
+    )
+
+
+def _wait_for(predicate, timeout=2.0, diagnostics=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return
         time.sleep(0.01)
-    raise AssertionError("condition was not reached")
+    detail = diagnostics() if diagnostics else ""
+    raise AssertionError(f"condition was not reached\n{detail}")
 
 
 def _approve_room_task_process(
@@ -938,28 +967,38 @@ def test_active_same_thread_followup_waits_for_current_task(tmp_path: Path):
     )
 
     service.start()
-    service.send(
-        room_id="room-1",
-        event_id="user-1",
-        payload={"text": "@ops start", "thread_id": "thread-1"},
-    )
-    assert service.rpc.first_started.wait(timeout=2)
-    service.send(
-        room_id="room-1",
-        event_id="user-2",
-        payload={"text": "@hermes follow up", "thread_id": "thread-1"},
-    )
-    assert len(service.rpc.prompts) == 1
-    service.rpc.release_first.set()
-    _wait_for(lambda: len(service.rpc.prompts) == 2)
-    _wait_for(
-        lambda: any(
-            event["kind"] == "room.activity"
-            and event["payload"]["discussion_event_id"] == "user-2"
-            for event in service._events("room-1")
+    try:
+        service.send(
+            room_id="room-1",
+            event_id="user-1",
+            payload={"text": "@ops start", "thread_id": "thread-1"},
         )
-    )
-    assert service.stop(timeout=1.0)
+        assert service.rpc.first_started.wait(timeout=2), _runtime_diagnostics(service, db)
+        service.rpc.trace.append(("send2_enter", time.monotonic()))
+        service.send(
+            room_id="room-1",
+            event_id="user-2",
+            payload={"text": "@hermes follow up", "thread_id": "thread-1"},
+        )
+        service.rpc.trace.append(("send2_return", time.monotonic()))
+        assert len(service.rpc.prompts) == 1
+        service.rpc.trace.append(("release", time.monotonic()))
+        service.rpc.release_first.set()
+        _wait_for(
+            lambda: len(service.rpc.prompts) == 2,
+            diagnostics=lambda: _runtime_diagnostics(service, db),
+        )
+        _wait_for(
+            lambda: any(
+                event["kind"] == "room.activity"
+                and event["payload"]["discussion_event_id"] == "user-2"
+                for event in service._events("room-1")
+            ),
+            diagnostics=lambda: _runtime_diagnostics(service, db),
+        )
+    finally:
+        service.rpc.release_first.set()
+        assert service.stop(timeout=5.0)
     assert "User (user): @hermes follow up" in service.rpc.prompts[1][1]
 
 

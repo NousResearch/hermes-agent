@@ -33,17 +33,36 @@ function spawnSleeper(): { pid: number; kill: () => void } {
 
   return {
     pid: child.pid,
-    kill: () => {
+    kill: async () => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        return
+      }
+
+      const exited = once(child, 'exit')
+      let timer: ReturnType<typeof setTimeout> | undefined
+
       try {
-        child.kill()
-      } catch {
-        /* already gone */
+        if (child.exitCode === null && !child.killed) {
+          child.kill()
+        }
+
+        await Promise.race([
+          exited,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Owned sleeper did not exit during cleanup')), 5_000)
+          })
+        ])
+      } finally {
+        clearTimeout(timer)
       }
     }
   }
 }
 
-function taskkillTree(pid: number): void {
+async function taskkillOwned(pid: number, tree: boolean): Promise<void> {
+  const args = ['/PID', String(pid), '/F', ...(tree ? ['/T'] : [])]
+  const binary = path.join(process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows', 'System32', 'taskkill.exe')
+
   try {
     execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
   } catch {

@@ -81,6 +81,31 @@ class TestClassifyBoundaries(unittest.TestCase):
         ):
             self.assertEqual(classify_reasoning_effort(msg)[0], "low", msg)
 
+    def test_compound_factual_requests_never_downshift(self):
+        for text in (
+            "Which tests failed and fix them?",
+            "What failed then repair it?",
+            "Where is the issue, fix it?",
+            "Who owns this plus notify them?",
+            "Which option works or should we build another?",
+            "What changed & revert it?",
+            "Where is the file / delete it?",
+            "What failed before fixing it?",
+            "Which tests failed after updating dependencies?",
+            "Which approach should we use?",
+            "What would you change?",
+            "What is the best option?",
+            "Which tests run if I update this?",
+        ):
+            for baseline in ("high", "xhigh"):
+                with self.subTest(text=text, baseline=baseline):
+                    agent = _make_agent(baseline=baseline, min_effort="low")
+                    original = agent.reasoning_config
+                    with adaptive_reasoning_turn(agent, text):
+                        self.assertEqual(agent.reasoning_config["effort"], baseline)
+                        self.assertEqual(agent._notices, [])
+                    self.assertIs(agent.reasoning_config, original)
+
     def test_signal_bearing_action_stays_medium_not_low(self):
         # nginx is an infrastructure signal: a complexity signal always
         # overrides low, even for a short imperative.

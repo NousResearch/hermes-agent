@@ -316,8 +316,15 @@ def _set_reasoning(rid, params, key, value, session):
             # can't resurrect them. (Global process state is still never touched — see the
             # cross-session-contamination note in _apply_model_switch.)
             session.pop("create_reasoning_override", None)
+            session.pop("reasoning_user_override", None)
+            # A lazy resume must not resurrect its stored pin after a global reset.
+            resumed = session.get("resume_runtime_overrides")
+            if isinstance(resumed, dict):
+                resumed.pop("reasoning_config_override", None)
+                resumed.pop("reasoning_user_override", None)
     else:  # session-scoped like the gateway's `/reasoning <level>`; a menu pick must not rewrite the global
         session["create_reasoning_override"] = parsed
+        session["reasoning_user_override"] = True
     if session and session.get("agent") is not None:
         session["agent"].reasoning_config = parsed
         # Session-scoped picks are explicit user overrides and suppress adaptive escalation; a global

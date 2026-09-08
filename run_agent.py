@@ -1210,11 +1210,22 @@ class AIAgent(
             self._tool_guardrail_halt_decision = decision
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
+        # User-visible final reply. Must NOT point at "the last tool result" (issue #105404):
+        # messaging surfaces such as Telegram do not render tool results, so that reference is
+        # invisible to the user. Surface only the safely-known, code-derived reason — never raw
+        # arguments, payloads, credentials or private URLs (fail-closed for unknown codes).
+        tool = decision.tool_name or "a tool"
+        if decision.code == "identical_call_streak_halt":
+            reason = f"the same call returned the same result {decision.count} times without progress"
+        elif decision.code == "loop_web_search_cap":
+            reason = f"the per-turn web search limit was reached after {decision.count} searches"
+        elif decision.code == "loop_subagent_cap":
+            reason = f"the per-turn subagent limit was reached after {decision.count} delegations"
+        else:
+            reason = "it made no progress after repeated attempts"
         return (
-            f"I stopped retrying {decision.tool_name or 'a tool'} because it hit the tool-call guardrail "
-            f"({decision.code}) after {decision.count} repeated non-progressing "
-            "attempts. The last tool result explains the blocker; the next step is "
-            "to change strategy instead of repeating the same call."
+            f"I stopped retrying {tool} because {reason}. "
+            "Change the request or use a different approach instead of repeating the same call."
         )
 
     def _append_guardrail_observation(self, tool_name: str, function_args: dict, function_result: str, *,

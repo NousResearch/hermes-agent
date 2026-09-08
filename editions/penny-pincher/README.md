@@ -7,9 +7,12 @@ Warm, plain-language, one-step-at-a-time. Built to be somebody's pinned front do
 - **Base persona** (always): repo-root [`../../SOUL.md`](../../SOUL.md) — the generic
   North Forge chassis voice.
 - **This overlay**: [`SOUL.md`](SOUL.md) — first-person, plainer register: "I help you
-  keep an eye on the household money." Tracks bills and due dates, answers
-  "what's left this month?" / "can we afford it?", flags spending changes calmly.
-  No jargon, no nagging, no investment advice.
+  keep an eye on the household money." Writes down bills and due dates as you say
+  them, reasons from what you've told it to talk through "what's left this month?"
+  / "can we afford it?" — always naming what it doesn't know — and flags changes
+  in numbers you've mentioned, calmly. Works only from what you tell it: no bank
+  connection, no transaction feed, no ledger of its own. No jargon, no nagging, no
+  investment advice.
 
 ## Who it's for
 

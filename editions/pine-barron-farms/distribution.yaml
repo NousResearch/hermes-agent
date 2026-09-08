@@ -21,11 +21,14 @@ hermes_requires: ">=0.12.0"
 env_requires: []
 
 # Only these exact paths are copied on install and replaced on `hermes profile
-# update`. canon/README.md (the placeholder) is listed so it ships; the canon
-# DIRECTORY is not, so a real canon packet dropped in at deploy
-# (canon/PINE_BARRON_FARMS_CANON.md) is never touched by an update.
+# update`. canon/README.md (the placeholder) + canon/load_canon.py (the loader)
+# are listed so they ship; the canon PACKET itself is not, so a real
+# canon/PINE_BARRON_FARMS_CANON.md dropped in at deploy is never touched by an
+# update.
 distribution_owned:
   - SOUL.md
   - distribution.yaml
   - README.md
   - canon/README.md
+  - canon/load_canon.py
+  - skills/pbf-canon/SKILL.md

@@ -342,6 +342,16 @@ def _build_anthropic_client_with_bearer_hook(
     return _new_sdk_client(sdk, kwargs, headers)
 
 
+def _sdk_omit_sentinel(sdk) -> Optional[Any]:
+    """``anthropic._types.Omit`` instance from the caller's SDK, or ``None`` when unavailable
+    (SDK too old / exotic import layout) so the caller can skip the copy-safe guard."""
+    try:
+        from anthropic._types import Omit
+    except Exception:
+        return None
+    return Omit()
+
+
 def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
     """``sdk.Anthropic(**kwargs)`` with ``headers`` attached. Bearer-only construction leaves
     ``api_key`` unset, so the SDK fills it from ANTHROPIC_API_KEY (loaded from ~/.hermes/.env) and
@@ -352,11 +362,19 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
     alongside x-api-key — clear it whenever we intentionally authenticated via api_key."""
     if headers:
         kwargs["default_headers"] = headers
+    if "api_key" in kwargs and "auth_token" not in kwargs:
+        # Copy-safe sentinel: a None attribute clear does not survive with_options(), which
+        # re-runs the constructor and re-reads ANTHROPIC_AUTH_TOKEN from the environment.
+        # An Omit() default header propagates through client copies, so the sentinel Bearer
+        # never reaches the wire on the original client or on any with_options() copy.
+        omit = _sdk_omit_sentinel(sdk)
+        if omit is not None:
+            merged = dict(kwargs.get("default_headers") or {})
+            merged["Authorization"] = omit
+            kwargs["default_headers"] = merged
     client = sdk.Anthropic(**kwargs)
     if "auth_token" in kwargs and "api_key" not in kwargs:
         client.api_key = None
-    if "api_key" in kwargs and "auth_token" not in kwargs:
-        client.auth_token = None
     return client
 
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { notify, notifyError } from '@/store/notifications'
 
 import type { VoiceActivityState, VoiceStatus } from '../types'
@@ -73,6 +74,9 @@ export function useVoiceRecorder({
       notifyError(error, voiceCopy.transcriptionFailed)
     } finally {
       setVoiceStatus('idle')
+      // The transcript settled (or failed): this session no longer needs the
+      // engine held. The backend keeps the shared model resident regardless.
+      void syncSttLease(VOICE_INPUT_LEASE, false)
       focusInput()
     }
   }
@@ -86,6 +90,11 @@ export function useVoiceRecorder({
 
     try {
       await handle.start({ onError: error => notifyError(error, voiceCopy.recordingFailed) })
+      // The mic is open, so a transcript is coming: warm the backend's STT
+      // engine now so a cold local model loads while the user is still
+      // speaking instead of inside the transcription timeout (#105955).
+      // Fire-and-forget — recording must not wait on (or fail with) warm-up.
+      void syncSttLease(VOICE_INPUT_LEASE, true)
       startedAtRef.current = Date.now()
       setElapsedSeconds(0)
       setVoiceStatus('recording')

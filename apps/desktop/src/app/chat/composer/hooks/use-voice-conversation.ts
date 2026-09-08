@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
 import {
@@ -246,6 +247,10 @@ export function useVoiceConversation({
         onSilence: () => void handleTurn()
       })
       setStatus('listening')
+      // Same warm-up as push-to-talk dictation: a cold local model loads while
+      // the user speaks instead of inside the transcription timeout (#105955).
+      // Deduped with the recorder's lease — one warm-up per renderer.
+      void syncSttLease(VOICE_INPUT_LEASE, true)
       // Clear any prior turn-timeout before arming a fresh one. Each listen
       // cycle reassigns turnTimeoutRef; without clearing first, a stale 60s
       // timer from an earlier cycle survives and later fires handleTurn() in
@@ -608,6 +613,10 @@ export function useVoiceConversation({
     awaitingSpokenResponseRef.current = false
     dropSpeechSession()
     consumePendingResponse()
+    // Conversation over: drop the STT lease. One lease is shared per renderer,
+    // so a concurrent dictation session re-acquires on its next start; the
+    // backend keeps the model resident regardless of the count.
+    void syncSttLease(VOICE_INPUT_LEASE, false)
     setMuted(false)
     setStatus('idle')
   }, [consumePendingResponse, handle])

@@ -269,8 +269,10 @@ class TestStartRun:
     @pytest.mark.parametrize("body, expected", [
         ({"input": "hello", "author": {"id": "bot:dixie", "name": " dixie ", "is_bot": True, "role": "admin"}},
          {"id": "bot:dixie", "name": "dixie", "is_bot": True}),
+        ({"input": "hello", "author": {"id": "bot:dixie", "name": "dixie", "is_bot": True, "origin": "cloud-1"}},
+         {"id": "bot:cloud-1/dixie", "name": "dixie", "is_bot": True}),
         ({"input": "hello"}, "absent"),
-    ], ids=["author", "no author"])
+    ], ids=["author", "author with origin", "no author"])
     async def test_start_passes_normalized_author_to_run_conversation(self, adapter, body, expected):
         """A body ``author`` reaches ``run_conversation`` normalized; it labels memory only. Without one the
         call keeps today's shape."""

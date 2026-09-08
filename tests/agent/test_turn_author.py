@@ -26,8 +26,13 @@ class TestParseTurnAuthor:
         ({"id": "bot:\x00al\x1bpha\n", "name": "Al\tpha\r"}, {"id": "bot:alpha", "name": "Alpha", "is_bot": False}),
         ({"id": "bot:alpha", "name": f"{FAMILY} Al\u00a0pha\u00a0"}, {"id": "bot:alpha", "name": f"{FAMILY} Al\u00a0pha", "is_bot": False}),
         ({"id": "x" * 500, "name": "y" * 201}, {"id": "x" * 200, "name": "y" * 200, "is_bot": False}),
+        ({"id": "bot:cloud-1/alpha", "name": "Alpha", "is_bot": True}, {"id": "bot:cloud-1/alpha", "name": "Alpha", "is_bot": True}),
+        ({"id": "bot:alpha", "name": "Alpha", "is_bot": True, "origin": " cloud-1 "}, {"id": "bot:cloud-1/alpha", "name": "Alpha", "is_bot": True}),
+        ({"id": "bot:cloud-1/alpha", "name": "Alpha", "is_bot": True, "origin": "cloud-2"}, {"id": "bot:cloud-1/alpha", "name": "Alpha", "is_bot": True}),
+        ({"id": "5551234", "name": "Alpha", "is_bot": True, "origin": "cloud-1"}, {"id": "5551234", "name": "Alpha", "is_bot": True}),
     ], ids=["dict", "json string", "missing id", "non-string id", "empty id", "control characters stripped",
-            "format characters and nbsp survive", "oversize fields capped"])
+            "format characters and nbsp survive", "oversize fields capped", "connection-qualified id survives",
+            "origin qualifies a bare bot id", "origin never requalifies", "origin leaves a platform id alone"])
     def test_fields_are_normalized(self, raw, expected):
         assert parse_turn_author(raw) == expected
 
@@ -70,6 +75,7 @@ class TestEnvCarrier:
 
 @pytest.mark.parametrize("author, expected", [
     ({"id": "bot:coder", "name": "coder", "is_bot": True}, "a2a:bot:coder"),
+    ({"id": "bot:cloud-1/coder", "name": "coder", "is_bot": True}, "a2a:bot:cloud-1/coder"),
     ({"id": "5551234", "name": "SomeBot", "is_bot": True}, "a2a:5551234"),
     ({"id": "111222", "name": "Alice", "is_bot": False}, None),
     ({"id": None, "name": "mystery", "is_bot": True}, None),

@@ -37,9 +37,17 @@ def _bot_flag(value: Any) -> bool:
     return isinstance(value, (bool, int)) and bool(value)
 
 
+def bot_author_id(profile: str, origin: Optional[str] = None) -> str:
+    """``bot:<profile>`` for a bot on this machine, ``bot:<origin>/<profile>`` for one reached through a Desktop connection."""
+    origin = (origin or "").strip()
+    return f"bot:{origin}/{profile}" if origin else f"bot:{profile}"
+
+
 def parse_turn_author(raw: Any) -> Optional[Dict[str, Any]]:
     """Normalize a dict or JSON string into ``{"id", "name", "is_bot"}``; None for anything else or without id and name.
-    The id is whatever the transport knows the sender by: ``bot:<profile>`` on bot-mode deliveries, the platform user id elsewhere."""
+    The id is whatever the transport knows the sender by: ``bot:<profile>`` on bot-mode deliveries,
+    ``bot:<connection>/<profile>`` when the Desktop relayed it from another machine, the platform user id elsewhere.
+    An ``origin`` field qualifies a bare ``bot:<profile>`` id the same way."""
     try:
         if isinstance(raw, (str, bytes)):
             raw = json.loads(raw)
@@ -52,6 +60,9 @@ def parse_turn_author(raw: Any) -> Optional[Dict[str, Any]]:
         }
         if author["id"] is None and author["name"] is None:
             return None
+        origin = _clean_text(raw.get("origin"))
+        if origin and author["id"] and author["id"].startswith("bot:") and "/" not in author["id"]:
+            author["id"] = _clean_text(bot_author_id(author["id"][len("bot:"):], origin))
         return author
     except Exception:
         return None

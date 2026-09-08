@@ -21,6 +21,7 @@ from agent.memory_provider import MemoryProvider, is_trivial_prompt
 from agent.turn_author import a2a_key
 from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path, spawn_context_thread
 from plugins.memory.honcho.dialectic import DialecticMixin
+from plugins.memory.honcho.session_peers import assistant_peer_id_for, sanitize_peer_id
 from plugins.memory.honcho.tool_schemas import ALL_TOOL_SCHEMAS
 from tools.registry import tool_error
 
@@ -700,10 +701,12 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     def _a2a_session_key(self, author: Dict[str, Any]) -> str:
         """Honcho session for one sender bot's turns into this agent, named from core's ``a2a_key``.
 
-        The digest keeps two ids apart when sanitizing would make them equal."""
+        This agent's ``aiPeer`` is in the key because two profiles can share a workspace and a session
+        key. The digest keeps two ids apart when sanitizing would make them equal."""
         prefix, _, ident = (a2a_key(author) or "").partition(":")
         digest = hashlib.sha256(ident.encode("utf-8")).hexdigest()[:8]
-        key = f"{self._session_key}:{prefix}:{re.sub(r'[^a-zA-Z0-9_-]', '-', ident)}-{digest}"
+        recipient = assistant_peer_id_for(self._config)
+        key = f"{self._session_key}:{prefix}:{recipient}:{sanitize_peer_id(ident)}-{digest}"
         return HonchoClientConfig._enforce_session_id_limit(key, key)
 
     def _bot_turn_write_refusal(self) -> Optional[str]:

@@ -17,12 +17,21 @@ _PEER_ID_HASH_ESCALATION_LENGTHS = (8, 12, 16, 24, 32, 64)
 BOT_AUTHOR_PREFIX = "bot:"
 
 
+def sanitize_peer_id(id_str: str) -> str:
+    """Sanitize an ID to match Honcho's pattern: ^[a-zA-Z0-9_-]+"""
+    return re.sub(r'[^a-zA-Z0-9_-]', '-', id_str)
+
+
+def assistant_peer_id_for(config: Any) -> str:
+    """The agent's own peer ID from ``aiPeer``, as the session builder derives it."""
+    return sanitize_peer_id(getattr(config, "ai_peer", None) or "hermes-assistant")
+
+
 class SessionPeersMixin:
     """Resolve user/assistant/observer peer IDs. Reads ``self._config`` and runtime identities only."""
 
     def _sanitize_id(self, id_str: str) -> str:
-        """Sanitize an ID to match Honcho's pattern: ^[a-zA-Z0-9_-]+"""
-        return re.sub(r'[^a-zA-Z0-9_-]', '-', id_str)
+        return sanitize_peer_id(id_str)
 
     def _cfg(self, name: str, default: Any = None) -> Any:
         return getattr(self._config, name, default) if self._config is not None else default
@@ -121,7 +130,7 @@ class SessionPeersMixin:
 
     def assistant_peer_id(self) -> str:
         """This agent's own peer ID, as the session builder derives it from ``aiPeer``."""
-        return self._sanitize_id(self._cfg("ai_peer") or "hermes-assistant")
+        return assistant_peer_id_for(self._config)
 
     def resolve_author_peer_id(
         self, key: str, author_id: str | None, author_name: str | None = None, *, is_bot: bool = False,

@@ -20,6 +20,7 @@ from typing import Any
 from hermes_cli.active_sessions import _FileLock
 
 DELIVERY_DIR_NAME = "bot_live_delivery"
+_SEQUENCE_FILE = ".sequence"
 _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
@@ -106,6 +107,27 @@ def _read(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _next_sequence(root: Path) -> int:
+    """Advance the durable FIFO high-water mark without rescanning permanent receipts."""
+    path = root / _SEQUENCE_FILE
+    try:
+        current = int(path.read_text(encoding="ascii"))
+    except (FileNotFoundError, ValueError):
+        current = max((record.get("sequence", record.get("created_at", 0))
+                       for candidate in root.glob("*.json")
+                       if (record := _read(candidate)) is not None), default=0)
+    fd, temporary = tempfile.mkstemp(dir=root, prefix=".sequence-")
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as stream:
+            stream.write(str(current + 1))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return current + 1
+
+
 def _write(path: Path, record: dict[str, Any]) -> None:
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".delivery-")
     try:
@@ -139,11 +161,9 @@ def deliver_to_live_owner(
             if existing["owner"] != pinned or existing["message"] != message:
                 raise ValueError("delivery id already belongs to a different payload")
             return existing
-        # Wall time can roll back. Permanent receipts retain the admission
-        # high-water mark, allocated while holding the cross-process lock.
-        sequence = max((record.get("sequence", record["created_at"])
-                        for candidate in root.glob("*.json")
-                        if (record := _read(candidate)) is not None), default=0) + 1
+        # Wall time can roll back. The durable high-water mark preserves FIFO
+        # without rereading every permanent receipt for each new admission.
+        sequence = _next_sequence(root)
         record = dict(delivery_id=key, id=key, owner=pinned, **pinned,
                       message=message, status="queued", created_at=time.time_ns(),
                       sequence=sequence)

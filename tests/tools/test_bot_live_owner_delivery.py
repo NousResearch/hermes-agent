@@ -49,6 +49,22 @@ def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
             assert path.stat().st_mode & 0o077 == 0
 
 
+def test_admission_does_not_reread_permanent_receipts_for_sequence(tmp_path, monkeypatch):
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    for i in range(3):
+        mailbox.deliver_to_live_owner(tmp_path, owner, f"old-{i}", delivery_id=f"{i + 1:032x}")
+    reads = []
+    real_read = mailbox._read
+    monkeypatch.setattr(mailbox, "_read", lambda path: reads.append(path) or real_read(path))
+
+    mailbox.deliver_to_live_owner(tmp_path, owner, "new", delivery_id="f" * 32)
+
+    assert [path.name for path in reads] == ["f" * 32 + ".json"]
+
+
 def test_fifo_survives_clock_rollback(tmp_path, monkeypatch):
     from tools import bot_live_delivery as mailbox
 

@@ -23,6 +23,7 @@ import {
 } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
+import { withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
@@ -1023,9 +1024,24 @@ let pollerStarted = false
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
 let connectionUnsub: (() => void) | null = null
 let lastConnectionMode: string | undefined
+let lastPreferenceConnection = ''
 let automaticUpdatePreferenceLoaded = false
 let automaticUpdatePreferenceRevision = 0
 let automaticUpdateSaveChain: Promise<void> = Promise.resolve()
+let confirmedAutomaticUpdateChecks: boolean | undefined
+let preferenceRead: Promise<void> | null = null
+let preferenceReadGeneration = 0
+let preferenceRetryTimer: ReturnType<typeof setTimeout> | null = null
+let preferenceRetryAttempt = 0
+const PREFERENCE_READ_TIMEOUT_MS = 5000
+const PREFERENCE_RETRY_DELAYS_MS = [1000, 3000, 10_000] as const
+
+function clearPreferenceRetry(): void {
+  if (preferenceRetryTimer !== null) {
+    clearTimeout(preferenceRetryTimer)
+    preferenceRetryTimer = null
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -1045,30 +1061,68 @@ function configuredAutomaticUpdateChecks(config: Record<string, unknown>): boole
     : undefined
 }
 
-async function hydrateAutomaticUpdateChecks(): Promise<void> {
-  const revision = automaticUpdatePreferenceRevision
-
-  try {
-    const config = await getHermesConfigRecord()
-
-    if (revision !== automaticUpdatePreferenceRevision) {
-      return
-    }
-
-    const value = configuredAutomaticUpdateChecks(config)
-
-    if (value !== undefined) {
-      $automaticUpdateChecksEnabled.set(value)
-    }
-  } catch {
-    // Keep the safe default when the config endpoint is unavailable; the
-    // update poller itself remains usable and the next toggle retries a write.
-  } finally {
-    if (pollerStarted && revision === automaticUpdatePreferenceRevision) {
-      automaticUpdatePreferenceLoaded = true
-      syncBackgroundTimer()
-    }
+function hydrateAutomaticUpdateChecks(restartRetries = false): void {
+  if (!pollerStarted || automaticUpdatePreferenceLoaded) {
+    return
   }
+
+  if (restartRetries) {
+    clearPreferenceRetry()
+    preferenceRetryAttempt = 0
+  }
+
+  if (preferenceRead) {
+    return
+  }
+
+  const revision = automaticUpdatePreferenceRevision
+  const generation = preferenceReadGeneration
+
+  const isCurrent = () =>
+    pollerStarted && generation === preferenceReadGeneration && revision === automaticUpdatePreferenceRevision
+
+  preferenceRead = (async () => {
+    try {
+      const config = await withTimeout(
+        Promise.resolve().then(() => getHermesConfigRecord()),
+        PREFERENCE_READ_TIMEOUT_MS,
+        'Update preference read timed out'
+      )
+
+      if (!isCurrent()) {
+        return
+      }
+
+      const value = configuredAutomaticUpdateChecks(config) ?? AUTO_UPDATE_CHECKS_DEFAULT
+
+      confirmedAutomaticUpdateChecks = value
+      automaticUpdatePreferenceLoaded = true
+      $automaticUpdateChecksEnabled.set(value)
+      clearPreferenceRetry()
+      syncBackgroundTimer()
+    } catch {
+      if (!isCurrent()) {
+        return
+      }
+
+      // Unknown is not opt-in. A cold backend must not silently override a
+      // saved opt-out with the default. Retry a bounded burst, then wait for
+      // a new connection or a throttled focus event instead of polling forever.
+      $automaticUpdateChecksEnabled.set(confirmedAutomaticUpdateChecks ?? false)
+      const delay = PREFERENCE_RETRY_DELAYS_MS[preferenceRetryAttempt++]
+
+      if (delay !== undefined) {
+        preferenceRetryTimer = setTimeout(() => {
+          preferenceRetryTimer = null
+          hydrateAutomaticUpdateChecks()
+        }, delay)
+      }
+    } finally {
+      if (generation === preferenceReadGeneration) {
+        preferenceRead = null
+      }
+    }
+  })()
 }
 
 function runBackgroundChecks(): void {
@@ -1101,6 +1155,7 @@ function syncBackgroundTimer(): void {
 export function setAutomaticUpdateChecksEnabled(enabled: boolean): void {
   automaticUpdatePreferenceRevision += 1
   automaticUpdatePreferenceLoaded = true
+  clearPreferenceRetry()
   $automaticUpdateChecksEnabled.set(enabled)
   syncBackgroundTimer()
 
@@ -1126,18 +1181,37 @@ export function setAutomaticUpdateChecksEnabled(enabled: boolean): void {
       }
 
       const desktop = isRecord(config.desktop) ? config.desktop : {}
+      confirmedAutomaticUpdateChecks = configuredAutomaticUpdateChecks(config) ?? AUTO_UPDATE_CHECKS_DEFAULT
 
-      await saveHermesConfigRecord({
+      const result = await saveHermesConfigRecord({
         ...config,
         desktop: {
           ...desktop,
           [AUTO_UPDATE_CHECKS_CONFIG_KEY]: enabled
         }
       })
+
+      if (!result.ok) {
+        throw new Error('Update preference was not saved')
+      }
+
+      // A completed older write is still the last confirmed server value,
+      // but it must never repaint over a newer optimistic choice.
+      confirmedAutomaticUpdateChecks = enabled
     })
     .catch(() => {
-      // A transient config write failure must not break the update poller;
-      // the UI remains usable and a later toggle retries the write.
+      if (revision !== automaticUpdatePreferenceRevision) {
+        return
+      }
+
+      automaticUpdatePreferenceLoaded = confirmedAutomaticUpdateChecks !== undefined
+      $automaticUpdateChecksEnabled.set(confirmedAutomaticUpdateChecks ?? false)
+      syncBackgroundTimer()
+      notify({
+        kind: 'error',
+        title: translateNow('settings.about.automaticUpdates'),
+        message: translateNow('updates.automaticUpdatesSaveFailed')
+      })
     })
 }
 
@@ -1174,6 +1248,10 @@ export function startUpdatePoller(): void {
   }
 
   pollerStarted = true
+  const connection = $connection.get()
+  lastPreferenceConnection = connection
+    ? JSON.stringify([connection.mode, connection.baseUrl, connection.connectionId, connection.profile])
+    : ''
   void refreshDesktopVersion()
 
   if (!automaticUpdatePreferenceLoaded) {
@@ -1188,6 +1266,24 @@ export function startUpdatePoller(): void {
   // backend check above sees mode≠remote and no-ops. Re-check once the
   // connection resolves to remote.
   connectionUnsub = $connection.subscribe(conn => {
+    const preferenceConnection = conn ? JSON.stringify([conn.mode, conn.baseUrl, conn.connectionId, conn.profile]) : ''
+
+    if (preferenceConnection !== lastPreferenceConnection) {
+      lastPreferenceConnection = preferenceConnection
+
+      if (!automaticUpdatePreferenceLoaded) {
+        // Invalidate the old source even if its request has not settled.
+        // A late response must not opt this new connection into checks.
+        preferenceReadGeneration += 1
+        preferenceRead = null
+        clearPreferenceRetry()
+
+        if (conn) {
+          hydrateAutomaticUpdateChecks(true)
+        }
+      }
+    }
+
     if (conn?.mode === lastConnectionMode) {
       return
     }
@@ -1203,6 +1299,11 @@ export function startUpdatePoller(): void {
 }
 
 export function stopUpdatePoller(): void {
+  clearPreferenceRetry()
+  preferenceReadGeneration += 1
+  preferenceRead = null
+  preferenceRetryAttempt = 0
+
   if (backgroundTimer !== null) {
     clearInterval(backgroundTimer)
     backgroundTimer = null
@@ -1211,15 +1312,12 @@ export function stopUpdatePoller(): void {
   connectionUnsub?.()
   connectionUnsub = null
   lastConnectionMode = undefined
+  lastPreferenceConnection = ''
   window.removeEventListener('focus', onFocus)
   pollerStarted = false
 }
 
 function onFocus() {
-  if (!automaticUpdatePreferenceLoaded || !$automaticUpdateChecksEnabled.get()) {
-    return
-  }
-
   const now = Date.now()
 
   if (now - lastFocusAt < 5 * 60 * 1000) {
@@ -1227,6 +1325,17 @@ function onFocus() {
   }
 
   lastFocusAt = now
+
+  if (!automaticUpdatePreferenceLoaded) {
+    hydrateAutomaticUpdateChecks(true)
+
+    return
+  }
+
+  if (!$automaticUpdateChecksEnabled.get()) {
+    return
+  }
+
   runBackgroundChecks()
   void refreshDesktopVersion()
 

@@ -1306,6 +1306,12 @@ export const ar = defineLocale({
     loadingStatus: 'جار تحميل الحالة',
     recentLogs: 'السجلات الأخيرة',
     noLogs: 'لا توجد سجلات',
+    logFile: 'ملف السجل',
+    logLevel: 'مستوى السجل',
+    allLogLevels: 'كل المستويات',
+    noMatchingLogs: 'لا توجد سطور تطابق البحث.',
+    logTailHint: count => `يُعرض آخر ${count} سطر كحد أقصى من الملف والمستوى المحددين.`,
+    logSearchPlaceholder: 'البحث في سطور السجل...',
     days: count => `${count} يوم`,
     statSessions: 'الجلسات',
     statApiCalls: 'نداءات API',
@@ -2248,6 +2254,7 @@ export const ar = defineLocale({
     }
   },
   updates: {
+    automaticUpdatesSaveFailed: 'تعذّر تأكيد حفظ الإعداد. أعد المحاولة.',
     stages: {
       idle: 'جار التحضير...',
       prepare: 'جار التحضير...',

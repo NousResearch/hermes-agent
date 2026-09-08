@@ -27,66 +27,14 @@ import * as path from 'node:path'
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
 
 import { resolveElectronBinary } from './electron-binary'
-import { startMockServer, type MockServerOptions } from './mock-server'
+import { buildAppEnvFromParent } from './fixtures-env'
+import { type MockServerOptions, startMockServer } from './mock-server'
 import { installErrorBannerGuard } from './test'
+import { waitForPageWindowVisible } from './window-visibility'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
 const REPO_ROOT = path.resolve(DESKTOP_ROOT, '..', '..')
 const RELEASE_ROOT = path.join(DESKTOP_ROOT, 'release')
-
-// ─── Credential stripping (matches launch.spec.ts) ──────────────────────
-
-const CREDENTIAL_SUFFIXES: string[] = [
-  '_API_KEY',
-  '_TOKEN',
-  '_SECRET',
-  '_PASSWORD',
-  '_CREDENTIALS',
-  '_ACCESS_KEY',
-  '_PRIVATE_KEY',
-  '_OAUTH_TOKEN',
-]
-
-const CREDENTIAL_NAMES = new Set([
-  'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_TOKEN',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-  'CUSTOM_API_KEY',
-  'GEMINI_BASE_URL',
-  'OPENAI_BASE_URL',
-  'OPENROUTER_BASE_URL',
-  'OLLAMA_BASE_URL',
-  'GROQ_BASE_URL',
-  'XAI_BASE_URL',
-])
-
-function isCredentialEnvVar(name: string): boolean {
-  if (CREDENTIAL_NAMES.has(name)) {
-    return true
-  }
-
-  return CREDENTIAL_SUFFIXES.some((suffix) => name.endsWith(suffix))
-}
-
-function stripCredentials(env: Record<string, string | undefined>): Record<string, string> {
-  const clean: Record<string, string> = {}
-
-  for (const [key, value] of Object.entries(env)) {
-    if (!value) {
-      continue
-    }
-
-    if (isCredentialEnvVar(key)) {
-      continue
-    }
-
-    clean[key] = value
-  }
-
-  return clean
-}
 
 // ─── Sandbox creation ──────────────────────────────────────────────────
 
@@ -244,35 +192,7 @@ function writeEmptyConfig(hermesHome: string): void {
  *  - XDG_RUNTIME_DIR → ensure Electron has a writable runtime dir on Linux
  */
 export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}): Record<string, string> {
-  const clean = stripCredentials(process.env)
-
-  // XDG_RUNTIME_DIR is needed for Electron on Linux when running in a
-  // headless/CI context — without it the zygote may fail to initialize.
-  if (!clean.XDG_RUNTIME_DIR && process.env.XDG_RUNTIME_DIR) {
-    clean.XDG_RUNTIME_DIR = process.env.XDG_RUNTIME_DIR
-  }
-
-  // DISPLAY — needed for Electron to open a window.
-  if (!clean.DISPLAY && process.env.DISPLAY) {
-    clean.DISPLAY = process.env.DISPLAY
-  }
-
-  return {
-    ...clean,
-    HERMES_HOME: sandbox.hermesHome,
-    HERMES_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
-    HERMES_DESKTOP_IGNORE_EXISTING: '1',
-    HERMES_DESKTOP_HERMES_ROOT: REPO_ROOT,
-    HERMES_DESKTOP_APP_NAME: `HermesE2E-${Date.now()}`,
-    // `app.close()` in teardown must exit even when a spec leaves a turn
-    // mid-flight — otherwise the quit confirmation waits on a click that no
-    // one is there to make, and the worker dies on a teardown timeout.
-    HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1',
-    // Clear dev-server override — we want the built dist/, not a vite server.
-    // The dev-server check in main.ts looks for this env var; if it's set,
-    // it loads from the vite URL instead of the local file.
-    ...extra,
-  }
+  return buildAppEnvFromParent(process.env, sandbox, REPO_ROOT, extra)
 }
 
 // ─── Electron launch ────────────────────────────────────────────────────
@@ -323,10 +243,12 @@ export function findElectron(): string {
  *
  * @param sandbox  - isolated HERMES_HOME + userData
  * @param env      - the process environment (already has HERMES_HOME etc.)
+ * @param onLaunched - optional early handle for specs that own setup-failure cleanup
  * @returns the ElectronApplication + first Page
  */
 export async function launchDesktop(
   env: Record<string, string>,
+  onLaunched?: (app: ElectronApplication) => void,
 ): Promise<{ app: ElectronApplication; page: Page }> {
   assertDistBuilt()
 
@@ -345,7 +267,25 @@ export async function launchDesktop(
     cwd: DESKTOP_ROOT,
   })
 
+  // Lifecycle-owning specs need the handle even if firstWindow fails.
+  onLaunched?.(app)
   const page = await app.firstWindow()
+
+  if (env.HERMES_DESKTOP_APP_NAME?.startsWith('HermesE2E')) {
+    // Clearly distinguish only our owned test windows. Keep document.title
+    // and renderer/tab captions untouched; retain the native title after a
+    // single prefix even when Chromium later updates the page title.
+    await app.evaluate(({ BrowserWindow }) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        const label = (title: string) => title.startsWith('[E2E] ') ? title : `[E2E] ${title}`
+        window.setTitle(label(window.getTitle()))
+        window.on('page-title-updated', (event, title) => {
+          event.preventDefault()
+          window.setTitle(label(title))
+        })
+      }
+    })
+  }
 
   // Install the error-banner guard so any [role="alert"] that appears
   // during a test is collected and surfaced in afterEach.
@@ -376,6 +316,8 @@ export interface MockBackendOptions {
   extraConfig?: string
   /** Override the mock model's context window for compression scenarios. */
   modelContextLength?: number
+  /** Customize the mock inference server for an E2E scenario. */
+  mockServer?: MockServerOptions
 }
 
 /**
@@ -385,10 +327,6 @@ export interface MockBackendOptions {
  *   3. Launch the desktop app
  *   4. Return handles for test interaction
  */
-export interface MockBackendOptions {
-  mockServer?: MockServerOptions
-}
-
 export async function setupMockBackend(options: MockBackendOptions = {}): Promise<MockBackendFixture> {
   // 1. Start mock server
   const mock = await startMockServer(options.mockServer)
@@ -643,6 +581,7 @@ export async function waitForAppReady(fixture: MockBackendFixture | NoProviderFi
       // `position: fixed; inset: 0`. If the hit element or an ancestor
       // is a full-viewport fixed overlay, we're still covered.
       let node: Element | null = el
+
       while (node) {
         const cs = window.getComputedStyle(node)
 
@@ -670,18 +609,7 @@ export async function waitForAppReady(fixture: MockBackendFixture | NoProviderFi
   // ready before that lands. Poll until the window is actually visible so
   // interactions (click, screenshot) don't hit a hidden surface.
   if (app) {
-    const deadline = Date.now() + timeoutMs
-
-    while (Date.now() < deadline) {
-      const visible = await app.evaluate(({ BrowserWindow }) => {
-        const w = BrowserWindow.getAllWindows()[0]
-
-        return w ? w.isVisible() : false
-      }).catch(() => false)
-
-      if (visible) {break}
-      await page.waitForTimeout(500)
-    }
+    await waitForPageWindowVisible(app, page, timeoutMs)
   }
 }
 

@@ -1656,6 +1656,9 @@ export const ja = defineLocale({
     loadingStatus: 'ステータスを読み込み中...',
     recentLogs: '最近のログ',
     noLogs: 'ログはまだ読み込まれていません。',
+    allLogLevels: 'すべてのレベル',
+    noMatchingLogs: '検索に一致するログ行はありません。',
+    logTailHint: count => `選択したファイルとレベルの最新ログを最大${count}行表示しています。`,
     days: count => `${count}日`,
     statSessions: 'セッション',
     statApiCalls: 'API コール',
@@ -2639,6 +2642,7 @@ export const ja = defineLocale({
   },
 
   updates: {
+    automaticUpdatesSaveFailed: '設定の保存を確認できませんでした。もう一度お試しください。',
     stages: {
       idle: '準備中…',
       prepare: '準備中…',

@@ -1797,6 +1797,9 @@ export interface Translations {
     actions: (count: string) => string
     logFile: string
     logLevel: string
+    allLogLevels: string
+    noMatchingLogs: string
+    logTailHint: (count: number) => string
     logSearchPlaceholder: string
     maintenance: {
       runOps: string
@@ -2745,6 +2748,7 @@ export interface Translations {
   }
 
   updates: {
+    automaticUpdatesSaveFailed: string
     stages: Record<string, string>
     checking: string
     checkFailedTitle: string

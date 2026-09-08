@@ -1667,6 +1667,9 @@ export const zhHant = defineLocale({
     loadingStatus: '正在載入狀態…',
     recentLogs: '最近記錄',
     noLogs: '尚未載入記錄。',
+    allLogLevels: '所有層級',
+    noMatchingLogs: '沒有符合搜尋的記錄行。',
+    logTailHint: count => `顯示所選檔案和層級的最近記錄，最多 ${count} 行。`,
     days: count => `${count} 天`,
     statSessions: '工作階段',
     statApiCalls: 'API 呼叫',
@@ -2619,6 +2622,7 @@ export const zhHant = defineLocale({
   },
 
   updates: {
+    automaticUpdatesSaveFailed: '無法確認設定已儲存。請重試。',
     stages: {
       idle: '準備中…',
       prepare: '準備中…',

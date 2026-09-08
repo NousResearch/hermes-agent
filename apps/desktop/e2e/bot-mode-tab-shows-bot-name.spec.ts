@@ -11,6 +11,7 @@ import {
   writeMockProviderConfig
 } from './fixtures'
 import { MOCK_REPLY, startMockServer } from './mock-server'
+import { setupOwnedBotFixture } from './owned-bot-fixture'
 import { RealSessionBuilder } from './real-session-builder'
 import { expect, test } from './test'
 
@@ -49,12 +50,13 @@ async function openUntil(action: () => Promise<void>, expected: () => Promise<vo
   }
 }
 
-async function seedBot(hermesHome: string, mockUrl: string, name: string): Promise<void> {
+async function seedBot(hermesHome: string, mockUrl: string, name: string, markChildAttempted: () => void): Promise<void> {
   const dir = path.join(hermesHome, 'profiles', name)
   fs.mkdirSync(dir, { recursive: true })
   writeMockProviderConfig(dir, mockUrl)
   writeEnvFile(dir)
 
+  markChildAttempted()
   const builder = await RealSessionBuilder.start(dir)
 
   try {
@@ -73,29 +75,24 @@ function mainStripTabTitles(page: Page): Promise<string[]> {
   )
 }
 
+// Seeding two durable sessions and booting the real Electron/backend chain can
+// exceed Playwright's default 90-second hook budget on a cold Windows install.
 test.beforeAll(async () => {
-  const mock = await startMockServer()
+  test.setTimeout(300_000)
   const sandbox = createSandbox('bots-tabname')
-  writeMockProviderConfig(sandbox.hermesHome, mock.url)
-  writeEnvFile(sandbox.hermesHome)
-  await seedBot(sandbox.hermesHome, mock.url, 'alpha')
-  await seedBot(sandbox.hermesHome, mock.url, 'beta')
-
-  const { app, page } = await launchDesktop(buildAppEnv(sandbox))
-
-  fixture = {
-    app,
-    page,
-    mock,
-    mockUrl: mock.url,
+  fixture = await setupOwnedBotFixture({
     sandbox,
-    cleanup: async () => {
-      await app.close().catch(() => undefined)
-      await mock.close()
-      sandbox.cleanup()
-    }
-  }
-  await waitForAppReady(fixture, 120_000)
+    startMock: startMockServer,
+    seed: async (mockUrl, markChildAttempted) => {
+      writeMockProviderConfig(sandbox.hermesHome, mockUrl)
+      writeEnvFile(sandbox.hermesHome)
+      await seedBot(sandbox.hermesHome, mockUrl, 'alpha', markChildAttempted)
+      await seedBot(sandbox.hermesHome, mockUrl, 'beta', markChildAttempted)
+    },
+    launch: onLaunched => launchDesktop(buildAppEnv(sandbox), onLaunched),
+    ready: current => waitForAppReady(current, 120_000),
+    onRetained: async () => {}
+  })
 })
 
 test.afterAll(async () => {

@@ -542,22 +542,32 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                   <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
                     {cc.recentLogs}
                   </span>
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <ResponsiveTabs
-                      align="end"
-                      onChange={id => setLogFile(id as (typeof LOG_FILES)[number])}
-                      tabs={LOG_FILES.map(value => ({ id: value, label: value }))}
-                      value={logFile}
-                    />
-                    <ResponsiveTabs
-                      align="end"
-                      onChange={id => setLogLevel(id as (typeof LOG_LEVELS)[number])}
-                      tabs={LOG_LEVELS.map(value => ({
-                        id: value,
-                        label: value === 'ALL' ? 'all' : value.toLowerCase()
-                      }))}
-                      value={logLevel}
-                    />
+                  <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                    <div aria-label={cc.logFile} className="flex flex-wrap items-center gap-x-2" role="group">
+                      <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                        {cc.logFile}
+                      </span>
+                      <ResponsiveTabs
+                        align="end"
+                        onChange={id => setLogFile(id as (typeof LOG_FILES)[number])}
+                        tabs={LOG_FILES.map(value => ({ id: value, label: `${value}.log` }))}
+                        value={logFile}
+                      />
+                    </div>
+                    <div aria-label={cc.logLevel} className="flex flex-wrap items-center gap-x-2" role="group">
+                      <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                        {cc.logLevel}
+                      </span>
+                      <ResponsiveTabs
+                        align="end"
+                        onChange={id => setLogLevel(id as (typeof LOG_LEVELS)[number])}
+                        tabs={LOG_LEVELS.map(value => ({
+                          id: value,
+                          label: value === 'ALL' ? cc.allLogLevels : value.toLowerCase()
+                        }))}
+                        value={logLevel}
+                      />
+                    </div>
                     <SearchField
                       containerClassName="w-44"
                       onChange={next => setLogQuery(next)}
@@ -572,9 +582,12 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                     </span>
                   )}
                 </div>
+                <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  {cc.logTailHint(LOG_TAIL_LINES)}
+                </p>
                 <LogTail
                   className="flex-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary)"
-                  emptyLabel={cc.noLogs}
+                  emptyLabel={logQuery.trim() && logs.length > 0 ? cc.noMatchingLogs : cc.noLogs}
                   lines={systemLoading && logs.length === 0 ? null : visibleLogs}
                 />
               </div>

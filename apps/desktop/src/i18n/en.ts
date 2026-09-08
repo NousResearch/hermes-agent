@@ -1974,6 +1974,9 @@ export const en: Translations = {
     actions: count => `${count} actions`,
     logFile: 'Log file',
     logLevel: 'Level',
+    allLogLevels: 'All levels',
+    noMatchingLogs: 'No log lines match the search.',
+    logTailHint: count => `Showing up to ${count} recent lines from the selected file and level.`,
     logSearchPlaceholder: 'Filter log lines...',
     maintenance: {
       runOps: 'Diagnostics',
@@ -3125,6 +3128,7 @@ export const en: Translations = {
   },
 
   updates: {
+    automaticUpdatesSaveFailed: 'Could not confirm the setting was saved. Please try again.',
     stages: {
       idle: 'Getting ready…',
       prepare: 'Getting ready…',

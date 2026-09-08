@@ -20,6 +20,7 @@ from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
     DEFAULT_FALLBACK_CONTEXT,
+    MINIMUM_CONTEXT_LENGTH,
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
@@ -217,6 +218,29 @@ class TestEstimateRequestTokensRough:
 # =========================================================================
 
 class TestDefaultContextLengths:
+    def test_solar_mini4_is_not_a_solar_mini_variant(self):
+        """solar-mini4 is a 1M family, not a solar-mini (32K) dated variant.
+
+        api.upstage.ai is a known provider, so the live /models probe is skipped and
+        resolution lands on DEFAULT_CONTEXT_LENGTHS. Without its own key solar-mini4
+        matched the solar-mini catch-all and returned 32,768 — under
+        MINIMUM_CONTEXT_LENGTH, so Hermes refused the session outright instead of
+        running at the model's real 1M window.
+        """
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            upstage = dict(provider="upstage", base_url="https://api.upstage.ai/v1")
+            for model in ("solar-mini4", "solar-mini4-preview"):
+                context = get_model_context_length(model, **upstage)
+                assert context == 1_048_576, model
+                assert context >= MINIMUM_CONTEXT_LENGTH, model
+            # The 32K family it used to be confused with keeps its window.
+            for model in ("solar-mini", "solar-mini-250422"):
+                assert get_model_context_length(model, **upstage) == 32_768, model
+
     def test_nvidia_deepseek_v4_pro_context_is_endpoint_scoped(self):
         """NVIDIA's 262K NIM window must not lower DeepSeek V4 globally."""
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \

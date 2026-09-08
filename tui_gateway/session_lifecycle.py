@@ -466,7 +466,17 @@ def _reattach_refusal(rid, sid: str, session: dict) -> dict | None:
 
 def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> None:
     """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``)."""
-    _attach_session_transport(session, transport)
+    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+
+    # Transfer only this exact live generation's capabilities at the authenticated
+    # attachment seam, including records spawned through an older dispatch context.
+    with _active_subagents_lock:
+        _attach_session_transport(session, transport)
+        for record in _active_subagents.values():
+            if (record.get("owner_session_id") == sid
+                    and record.get("owner_session_record") is session
+                    and record.get("owner_transport") is not None):
+                record["owner_transport"] = transport
     # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
     # viewer becomes the transport instead of the drop sentinel.
     session.setdefault("viewers", {})[transport] = time.time()
@@ -632,7 +642,7 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
                 viewers.pop(transport, None)
                 live = [vt for vt, ts in sorted(viewers.items(), key=lambda kv: kv[1]) if not _transport_is_dead(vt)]
                 if live:
-                    current["transport"] = live[-1]
+                    _rebind_live_transport(sid, current, live[-1])
                 else:
                     current["transport"] = _detached_ws_transport
                     current.pop("_client_gone_interrupt_requested", None)

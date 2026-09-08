@@ -53,6 +53,11 @@ def _register_subagent(record: Dict[str, Any]) -> None:
         return
     record.setdefault("accepting_steer", True)
     with _active_subagents_lock:
+        owner = record.get("owner_session_record")
+        if owner is not None and record.get("owner_transport") is not None:
+            # Child construction can finish after its captured dispatch transport
+            # was replaced. The exact session object retains generation authority.
+            record["owner_transport"] = owner.get("transport")
         _active_subagents[sid] = record
 
 def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:

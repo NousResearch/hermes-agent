@@ -43,7 +43,9 @@ existing topical sibling, registered in the table — no `if method == ...` chai
 
 `subagent.list({session_id})` returns `{subagents, delegations}` for the calling
 transport's live session. Live child records are pinned to the exact session
-record and transport. `last_tool` is the last started tool, not an in-flight
+record and transport. Authenticated live reattachment transfers that exact generation's
+child authority to the new transport (also for late child registration and surviving
+viewers); foreign or retired generations remain inaccessible. `last_tool` is the last started tool, not an in-flight
 indicator. Async completion units are not agents and lack exact generation authority;
 `delegations` remains an empty array for wire compatibility. No dispatch context,
 results, callbacks, or routing keys are sent. Clients hydrate from this snapshot

@@ -58,6 +58,7 @@ import {
   toggleShowAllProfiles
 } from '@/store/profile'
 import { runImportProfileFlow } from '@/store/profile-share'
+import { $projectSessionPreview, PROJECT_PREVIEW_OPTIONS, setProjectSessionPreview } from '@/store/project-session-preview'
 import { $projectTree } from '@/store/projects'
 import type { PullRequestBucket } from '@/store/pull-requests'
 import { $unreadFinishedSessionIds, markAllSessionsRead } from '@/store/session'
@@ -155,6 +156,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const ordering = useStore($sidebarOrdering)
   const rowMeta = useStore($sidebarRowMeta)
   const cardRows = useStore($sidebarCardRows)
+  const projectPreview = useStore($projectSessionPreview)
   const statusFilter = useStore($sidebarStatusFilter)
   const projectFilter = useStore($sidebarProjectFilter)
   const profileFilter = useStore($sidebarProfileFilter)
@@ -281,6 +283,28 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
                   option={option}
                 />
               ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              Sessions per project
+              <span className="ml-auto flex items-center gap-1 pl-4 text-(--ui-text-tertiary)">
+                {projectPreview === 'all' ? 'All' : projectPreview}
+                <Codicon name="chevron-right" size="1rem" />
+              </span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <DropdownMenuRadioGroup
+                onValueChange={value => setProjectSessionPreview(value === 'all' ? 'all' : (Number(value) as 3 | 4 | 5 | 8))}
+                value={String(projectPreview)}
+              >
+                {PROJECT_PREVIEW_OPTIONS.map(option => (
+                  <DropdownMenuRadioItem key={String(option)} onSelect={keepOpen} value={String(option)}>
+                    {option === 'all' ? 'All' : String(option)}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
             </DropdownMenuSubContent>
           </DropdownMenuSub>
 

@@ -6,6 +6,7 @@ import type { SessionInfo } from '@/hermes'
 import { desktopGit } from '@/lib/desktop-git'
 import { mapPool } from '@/lib/pool'
 import { $sidebarWorkspaceNodeOpen, toggleWorkspaceNodeCollapsed } from '@/store/layout'
+import { $projectSessionPreview } from '@/store/project-session-preview'
 import { $worktreeRefreshToken } from '@/store/projects'
 
 import { sessionRecency, type SidebarProjectTree } from './workspace-groups'
@@ -13,7 +14,8 @@ import { sessionRecency, type SidebarProjectTree } from './workspace-groups'
 // Page size when revealing more already-loaded rows within a workspace group.
 export const SIDEBAR_GROUP_PAGE = 5
 
-// Recent sessions previewed under each project in the overview.
+// Recent sessions previewed under each project in the overview. The shipped
+// default; users can raise it (or lift it entirely) in Settings → Appearance.
 export const PROJECT_PREVIEW_COUNT = 3
 
 // Max concurrent `git worktree list` probes when a project spans many repos.
@@ -174,4 +176,13 @@ export function useWorkspaceNodeOpen(id: string, defaultOpen = true): [boolean, 
   const state = useStore($sidebarWorkspaceNodeOpen)
 
   return [state[id] ?? defaultOpen, () => toggleWorkspaceNodeCollapsed(id, defaultOpen)]
+}
+
+// How many recent sessions a project/profile preview shows. Reads the
+// Appearance setting ('all' = no cap, everything scrolls); falls back to the
+// shipped default so tests and previews that never touch the store stay 3.
+export function useProjectPreviewCount(): number | null {
+  const value = useStore($projectSessionPreview)
+
+  return value === 'all' ? null : value
 }

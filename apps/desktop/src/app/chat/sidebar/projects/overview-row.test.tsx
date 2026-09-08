@@ -27,6 +27,7 @@ vi.mock('@/i18n', () => ({
 vi.mock('./model', () => ({
   PROJECT_PREVIEW_COUNT: 3,
   latestProjectSessions: () => [],
+  useProjectPreviewCount: () => 3,
   useWorkspaceNodeOpen: () => [false, vi.fn()]
 }))
 

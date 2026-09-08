@@ -86,10 +86,10 @@ def test_list_empty_prints_a2a_disambiguation(monkeypatch, capsys):
 
     assert peer_cmd.cmd_peer(SimpleNamespace(peer_action="list")) == 0
 
-    out = capsys.readouterr().out
-    assert "No peers registered" in out
-    assert "not A2A agents" in out
-    assert "a2a_list" in out
+    captured = capsys.readouterr()
+    assert "No peers registered" in captured.out
+    assert "not A2A agents" in captured.err
+    assert "a2a_list" in captured.err
 
 
 def test_list_footer_prints_a2a_disambiguation(monkeypatch, capsys):
@@ -98,11 +98,13 @@ def test_list_footer_prints_a2a_disambiguation(monkeypatch, capsys):
 
     assert peer_cmd.cmd_peer(SimpleNamespace(peer_action="list")) == 0
 
-    lines = capsys.readouterr().out.splitlines()
+    captured = capsys.readouterr()
+    lines = captured.out.splitlines()
     assert any(line.startswith("spark\t") for line in lines)
-    assert lines[-1].startswith("Note:")
-    assert "not A2A agents" in lines[-1]
-    assert "a2a_list" in lines[-1]
+    # stdout stays machine-parseable: only peer rows, no advisory footer.
+    assert not any(line.startswith("Note:") for line in lines)
+    assert "not A2A agents" in captured.err
+    assert "a2a_list" in captured.err
 
 
 def test_dm_unknown_peer_and_missing_key(monkeypatch):

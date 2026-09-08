@@ -14,7 +14,6 @@ import json
 import logging
 import time
 import threading
-from typing import Callable
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -458,23 +457,24 @@ def _validate_subgoal_remove(rid, args):
     return {"index": index}, None
 
 
-_VALIDATOR_TABLE: dict[str, Callable] = {
-    "goal.create": _validate_goal_create_args,
-    "goal.update": _validate_goal_update_args,
-    "loop.create": _validate_loop_create_args,
-    "loop.update": _validate_loop_update_args,
-    "heartbeat.create": _validate_heartbeat_create_args,
-    "heartbeat.update": _validate_heartbeat_update_args,
-    "subgoal.add": _validate_subgoal_add,
-    "subgoal.remove": _validate_subgoal_remove,
-}
-
-
 def _validate_action_args(rid, action: str, args: dict):
     """Validate the only actions with input before any manager is constructed."""
-    validator = _VALIDATOR_TABLE.get(action)
-    if validator is not None:
-        return validator(rid, args)
+    if action == "goal.create":
+        return _validate_goal_create_args(rid, args)
+    if action == "goal.update":
+        return _validate_goal_update_args(rid, args)
+    if action == "loop.create":
+        return _validate_loop_create_args(rid, args)
+    if action == "loop.update":
+        return _validate_loop_update_args(rid, args)
+    if action == "heartbeat.create":
+        return _validate_heartbeat_create_args(rid, args)
+    if action == "heartbeat.update":
+        return _validate_heartbeat_update_args(rid, args)
+    if action == "subgoal.add":
+        return _validate_subgoal_add(rid, args)
+    if action == "subgoal.remove":
+        return _validate_subgoal_remove(rid, args)
     return {}, None
 
 
@@ -635,21 +635,20 @@ def _execute_heartbeat_update(session_key: str, args: dict) -> dict:
     return {"result": {"type": "exec", "output": notice}}
 
 
-_EXECUTOR_TABLE: dict[str, Callable] = {
-    "goal.create": _execute_goal_create,
-    "goal.update": _execute_goal_update,
-    "loop.create": _execute_loop_create,
-    "loop.update": _execute_loop_update,
-    "heartbeat.create": _execute_heartbeat_create,
-    "heartbeat.update": _execute_heartbeat_update,
-}
-
-
 def _execute_manager_action(session_key: str, action: str, args: dict) -> dict:
     """Use manager APIs for controls that have no TUI command handler."""
-    executor = _EXECUTOR_TABLE.get(action)
-    if executor is not None:
-        return executor(session_key, args)
+    if action == "goal.create":
+        return _execute_goal_create(session_key, args)
+    if action == "goal.update":
+        return _execute_goal_update(session_key, args)
+    if action == "loop.create":
+        return _execute_loop_create(session_key, args)
+    if action == "loop.update":
+        return _execute_loop_update(session_key, args)
+    if action == "heartbeat.create":
+        return _execute_heartbeat_create(session_key, args)
+    if action == "heartbeat.update":
+        return _execute_heartbeat_update(session_key, args)
     if action.startswith("subgoal."):
         return _execute_subgoal_action(session_key, action, args)
     return _execute_heartbeat_action(session_key, action)

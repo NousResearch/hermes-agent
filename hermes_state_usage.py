@@ -390,6 +390,33 @@ class SessionUsageMixin:
         self._insert_session_row(session_id, "unknown")
         self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
 
+    def _auxiliary_usage_totals_batch(self, session_ids) -> Dict[str, Dict[str, float]]:
+        """Auxiliary billed-token and estimated-cost totals keyed by session id."""
+        ids = list(dict.fromkeys(session_id for session_id in session_ids if session_id))
+        if len(ids) > 900:
+            totals: Dict[str, Dict[str, float]] = {}
+            for start in range(0, len(ids), 900):
+                totals.update(self._auxiliary_usage_totals_batch(ids[start:start + 900]))
+            return totals
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self._read_rows(f"""
+            SELECT session_id,
+                   SUM({_billed_token_sql()}),
+                   SUM(estimated_cost_usd)
+              FROM session_model_usage
+             WHERE task <> '' AND session_id IN ({placeholders})
+             GROUP BY session_id
+            """, ids)
+        return {
+            row["session_id"]: {
+                "tokens": int(row[1] or 0),
+                "cost_usd": float(row[2] or 0.0),
+            }
+            for row in rows
+        }
+
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
         """Billed tokens and spend across the whole store, including cache and auxiliary calls."""
         where = ["s.parent_session_id IS NULL", "s.message_count >= ?"]

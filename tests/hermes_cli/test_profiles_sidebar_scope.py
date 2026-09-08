@@ -192,6 +192,9 @@ class TestCrossProfileProjectTree:
         db.append_message("tip", role="user", content="after compression")
         db.update_token_counts(
             "tip", input_tokens=200, cache_read_tokens=300, estimated_cost_usd=2.0)
+        db.record_auxiliary_usage(
+            "tip", "title_generation", input_tokens=40, output_tokens=10,
+            estimated_cost_usd=0.5)
         db.close()
         _seed_project(home, "Shared", shared)
 
@@ -199,8 +202,8 @@ class TestCrossProfileProjectTree:
         project = next(p for p in payload["projects"] if not p["isNoProject"])
 
         assert project["sessionCount"] == 1
-        assert project["totalTokens"] == 600
-        assert project["totalCostUsd"] == pytest.approx(3.0)
+        assert project["totalTokens"] == 650
+        assert project["totalCostUsd"] == pytest.approx(3.5)
 
     def test_profile_usage_covers_sessions_past_the_window(self, client, profiles_on_disk):
         # The whole point of aggregating in SQL: the total must not be a sum of

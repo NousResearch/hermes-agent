@@ -56,14 +56,30 @@ def test_corrupt_receipt_does_not_block_other_pending_delivery(tmp_path):
                  lease_id="lease", live_session_id="live")
     queued = mailbox.deliver_to_live_owner(tmp_path, owner, "healthy")
     root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
-    (root / ("d" * 32 + ".json")).write_text("{truncated", encoding="utf-8")
-    (root / ("e" * 32 + ".json")).write_text("[]", encoding="utf-8")
-    (root / ("f" * 32 + ".json")).write_text("{}", encoding="utf-8")
+    damaged = {
+        root / ("d" * 32 + ".json"): "{truncated",
+        root / ("e" * 32 + ".json"): "[]",
+        root / ("f" * 32 + ".json"): "{}",
+        root / ("a" * 32 + ".json"): json.dumps(dict(
+            delivery_id="a" * 32, id="a" * 32, status="queued", created_at=1,
+            sequence=1, owner=None, message="damaged-owner")),
+        root / ("b" * 32 + ".json"): json.dumps(dict(
+            delivery_id="b" * 32, id="b" * 32, status="queued", created_at=2,
+            sequence="old", owner=owner, message="damaged-sequence", **owner)),
+        root / ("c" * 32 + ".json"): json.dumps(dict(
+            delivery_id="../wrong", id="../wrong", status="queued", created_at=3,
+            sequence=3, owner=owner, message="damaged-id", **owner)),
+    }
+    for path, contents in damaged.items():
+        path.write_text(contents, encoding="utf-8")
 
+    admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "also healthy")
     claimed = mailbox.claim_pending_delivery(tmp_path, owner)
 
+    assert admitted["sequence"] == queued["sequence"] + 1
     assert claimed is not None
     assert claimed["delivery_id"] == queued["delivery_id"]
+    assert {path: path.read_text(encoding="utf-8") for path in damaged} == damaged
 
 
 def test_fifo_survives_clock_rollback(tmp_path, monkeypatch):

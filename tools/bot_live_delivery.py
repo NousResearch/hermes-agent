@@ -110,8 +110,26 @@ def _read_for_scan(path: Path) -> dict[str, Any] | None:
     """Read one mailbox record while isolating damage to a corrupt receipt."""
     try:
         record = _read(path)
-        required = ("delivery_id", "status", "created_at", "owner")
-        return record if isinstance(record, dict) and all(key in record for key in required) else None
+        if not isinstance(record, dict):
+            return None
+        raw_delivery_id = record.get("delivery_id")
+        if not isinstance(raw_delivery_id, str):
+            return None
+        delivery_id = _delivery_id(raw_delivery_id)
+        owner = record.get("owner")
+        created_at = record.get("created_at")
+        sequence = record.get("sequence", created_at)
+        if (path.name != f"{delivery_id}.json"
+                or record.get("id") != delivery_id
+                or record.get("status") not in ({"queued", "claimed"} | _TERMINAL)
+                or not isinstance(created_at, int) or isinstance(created_at, bool)
+                or not isinstance(sequence, int) or isinstance(sequence, bool)
+                or not isinstance(record.get("message"), str)
+                or not isinstance(owner, dict)
+                or any(not isinstance(owner.get(key), str) or not owner[key]
+                       or record.get(key) != owner[key] for key in _OWNER_KEYS)):
+            return None
+        return record
     except (OSError, ValueError):
         return None
 

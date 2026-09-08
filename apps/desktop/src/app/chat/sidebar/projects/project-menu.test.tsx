@@ -25,6 +25,7 @@ vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
       common: { cancel: 'Cancel', confirm: 'Confirm', done: 'Done', loading: 'Loading…' },
+      titlebar: { search: 'Search' },
       sidebar: {
         projects: {
           copyPath: 'Copy path',

@@ -19,6 +19,7 @@ import {
   $reviewFiles,
   $reviewIsRepo,
   $reviewLoading,
+  $reviewReadOnly,
   $reviewRevertTarget,
   $reviewSelectedPath,
   $reviewTreeMode,
@@ -50,6 +51,7 @@ export function ReviewPane() {
   const files = useStore($reviewFiles)
   const loading = useStore($reviewLoading)
   const isRepo = useStore($reviewIsRepo)
+  const readOnly = useStore($reviewReadOnly)
   const selectedPath = useStore($reviewSelectedPath)
   const diff = useStore($reviewDiff)
   const diffLoading = useStore($reviewDiffLoading)
@@ -75,7 +77,7 @@ export function ReviewPane() {
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
     >
-      {(loading || isRepo) && (
+      {(loading || isRepo || readOnly) && (
         <RightSidebarSectionHeader data-suppress-pane-reveal-side="">
           <div className="flex min-w-0 flex-1">
             {/* Pure self-naming label — redundant under a zone tab that already
@@ -94,30 +96,34 @@ export function ReviewPane() {
               <Codicon name={treeMode === 'tree' ? 'list-flat' : 'list-tree'} size="0.8125rem" />
             </Button>
           </Tip>
-          <Tip label={c.stageAll}>
-            <Button
-              aria-label={c.stageAll}
-              className={ACTION_BTN}
-              disabled={!hasFiles}
-              onClick={() => void stageReviewFile(null).catch(err => notifyError(err, c.stageAll))}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <Codicon name="add" size="0.8125rem" />
-            </Button>
-          </Tip>
-          <Tip label={c.revertAll}>
-            <Button
-              aria-label={c.revertAll}
-              className={ACTION_BTN}
-              disabled={!hasFiles}
-              onClick={() => requestRevert(null)}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <Codicon name="discard" size="0.8125rem" />
-            </Button>
-          </Tip>
+          {!readOnly && (
+            <>
+              <Tip label={c.stageAll}>
+                <Button
+                  aria-label={c.stageAll}
+                  className={ACTION_BTN}
+                  disabled={!hasFiles}
+                  onClick={() => void stageReviewFile(null).catch(err => notifyError(err, c.stageAll))}
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <Codicon name="add" size="0.8125rem" />
+                </Button>
+              </Tip>
+              <Tip label={c.revertAll}>
+                <Button
+                  aria-label={c.revertAll}
+                  className={ACTION_BTN}
+                  disabled={!hasFiles}
+                  onClick={() => requestRevert(null)}
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <Codicon name="discard" size="0.8125rem" />
+                </Button>
+              </Tip>
+            </>
+          )}
           <Tip label={t.rightSidebar.refreshTree}>
             <Button
               aria-label={t.rightSidebar.refreshTree}
@@ -135,7 +141,7 @@ export function ReviewPane() {
         </RightSidebarSectionHeader>
       )}
 
-      {loading || isRepo ? (
+      {loading || isRepo || readOnly ? (
         hasFiles ? (
           <ReviewFileTree />
         ) : showTreeSkeleton ? (
@@ -161,21 +167,23 @@ export function ReviewPane() {
               {displayPath(selectedFile.path)}
             </span>
             <DiffCount added={selectedFile.added} className="text-[0.64rem] leading-4" removed={selectedFile.removed} />
-            <Tip label={selectedFile.staged ? c.unstage : c.stage}>
-              <Button
-                aria-label={selectedFile.staged ? c.unstage : c.stage}
-                className={ACTION_BTN}
-                onClick={() =>
-                  void (
-                    selectedFile.staged ? unstageReviewFile(selectedFile.path) : stageReviewFile(selectedFile.path)
-                  ).catch(err => notifyError(err, c.stage))
-                }
-                size="icon-xs"
-                variant="ghost"
-              >
-                <Codicon name={selectedFile.staged ? 'remove' : 'add'} size="0.8rem" />
-              </Button>
-            </Tip>
+            {!readOnly && (
+              <Tip label={selectedFile.staged ? c.unstage : c.stage}>
+                <Button
+                  aria-label={selectedFile.staged ? c.unstage : c.stage}
+                  className={ACTION_BTN}
+                  onClick={() =>
+                    void (
+                      selectedFile.staged ? unstageReviewFile(selectedFile.path) : stageReviewFile(selectedFile.path)
+                    ).catch(err => notifyError(err, c.stage))
+                  }
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <Codicon name={selectedFile.staged ? 'remove' : 'add'} size="0.8rem" />
+                </Button>
+              </Tip>
+            )}
             <Button
               aria-label={c.close}
               className={ACTION_BTN}
@@ -200,7 +208,7 @@ export function ReviewPane() {
         </div>
       )}
 
-      <ReviewShipBar />
+      {!readOnly && <ReviewShipBar />}
 
       <ConfirmDialog
         confirmLabel={revertingAll ? c.revertAll : c.revert}

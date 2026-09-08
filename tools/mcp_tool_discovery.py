@@ -168,10 +168,8 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
     # The cached manifest may advertise tools the live server no longer serves.
     phantom_names = [n for n in cached_names if n not in live_names]
     if phantom_names:
-        from tools.registry import registry
         for tool_name in phantom_names:
-            registry.deregister(tool_name, scope=_core._server_registry_scope(server_name))
-            _registration._forget_mcp_tool_server(tool_name)
+            _registration._deregister_mcp_tool_all_scopes(server_name, tool_name)
         logger.info("MCP server '%s': deregistered %d phantom cached tool(s) not served live (stale schema-cache "
                     "fingerprint %s): %s", server_name, len(phantom_names), stale_fingerprint, ", ".join(phantom_names))
     return server is not None and server.session is not None
@@ -375,10 +373,13 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.debug("MCP SDK not available -- skipping explicit MCP registration")
         return []
     servers = _config._filter_suspicious_mcp_servers(servers)
+    scoped_healed = _registration.register_connected_into_current_scope(servers)
     if not servers:
         logger.debug("No explicit MCP servers provided")
-        return []
+        return _registration._existing_tool_names() if _core._mcp_registry_scope() is not None else []
     new_servers = _select_new_servers(servers)
+    if scoped_healed:
+        logger.info("MCP: registered %d already-connected server(s) into this profile scope", scoped_healed)
     if not new_servers:
         return _registration._existing_tool_names()
     new_servers, lazy_registered, lazy_server_count = _register_lazy_from_cache(new_servers)

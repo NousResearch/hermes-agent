@@ -179,6 +179,109 @@ def test_scope_visibility_rejects_a_foreign_server_route(
     assert mcp_tool._server_tool_scopes["shared"] == {launch_scope}
 
 
+def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent.secret_scope import set_multiplex_active
+    from hermes_constants import (
+        hermes_home_key,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from tools import mcp_tool
+    from tools import mcp_tool_config as _mcp_config
+    from tools import mcp_tool_discovery as _mcp_discovery
+    from tools.registry import registry
+
+    worker_home = tmp_path / "profiles" / "worker"
+    launch_home = tmp_path / "default"
+    worker_home.mkdir(parents=True)
+    launch_home.mkdir()
+    worker_token = set_hermes_home_override(worker_home)
+    previous_multiplex = set_multiplex_active(True)
+    worker_scope = hermes_home_key()
+    launch_scope = hermes_home_key(launch_home)
+    tool = SimpleNamespace(
+        name="echo",
+        description="Echo a value",
+        inputSchema={"type": "object", "properties": {}},
+        annotations=None,
+    )
+    server = SimpleNamespace(
+        name="shared",
+        session=object(),
+        _tools=[tool],
+        tool_timeout=30,
+        _registered_tool_names=[],
+        _config={},
+        initialize_result=None,
+    )
+    owner_tool_name = "mcp__shared__echo"
+    registry.register(
+        owner_tool_name,
+        "mcp-shared",
+        {"name": owner_tool_name, "description": "Echo a value", "type": "object"},
+        lambda **_kwargs: None,
+        scope=launch_scope,
+    )
+    registry.register_toolset_alias("shared", "mcp-shared")
+    server._registered_tool_names = [owner_tool_name]
+    with mcp_tool._lock:
+        saved = {
+            "_servers": dict(mcp_tool._servers),
+            "_server_scope_keys": dict(mcp_tool._server_scope_keys),
+            "_server_tool_scopes": dict(mcp_tool._server_tool_scopes),
+            "_mcp_tool_server_names": dict(mcp_tool._mcp_tool_server_names),
+        }
+        mcp_tool._servers.clear()
+        mcp_tool._server_scope_keys.clear()
+        mcp_tool._server_tool_scopes.clear()
+        mcp_tool._mcp_tool_server_names.clear()
+        mcp_tool._servers["shared"] = server
+        mcp_tool._server_scope_keys["shared"] = launch_scope
+        mcp_tool._server_tool_scopes["shared"] = {launch_scope}
+
+    try:
+        monkeypatch.setattr(mcp_tool, "_ensure_mcp_sdk", lambda: True)
+        monkeypatch.setattr(_mcp_config, "_filter_suspicious_mcp_servers", lambda servers: servers)
+        assert _mcp_discovery.register_mcp_servers({"shared": {}})
+        tool_names = registry.get_tool_names_for_toolset("mcp-shared")
+        assert tool_names
+        assert callable(registry.get_entry(tool_names[0]).handler)
+
+        # Changing the worker route removes only the worker overlay; the shared
+        # live connection and launch owner remain intact.
+        assert _mcp_discovery.register_mcp_servers(
+            {"shared": {"url": "https://worker.example/mcp"}}
+        ) == []
+        assert registry.get_tool_names_for_toolset("mcp-shared") == []
+        with mcp_tool._lock:
+            assert mcp_tool._server_scope_keys["shared"] == launch_scope
+            assert mcp_tool._server_tool_scopes["shared"] == {launch_scope}
+            assert mcp_tool._servers["shared"] is server
+        assert registry.snapshot_registration(owner_tool_name, scope=launch_scope) is not None
+        assert registry.get_toolset_alias_target("shared") == "mcp-shared"
+
+        # Removing the server from the worker config has the same scoped cleanup.
+        assert _mcp_discovery.register_mcp_servers({}) == []
+        assert registry.get_tool_names_for_toolset("mcp-shared") == []
+        with mcp_tool._lock:
+            assert mcp_tool._server_scope_keys["shared"] == launch_scope
+            assert mcp_tool._server_tool_scopes["shared"] == {launch_scope}
+            assert mcp_tool._servers["shared"] is server
+    finally:
+        for tool_name in list(registry.get_tool_names_for_toolset("mcp-shared")):
+            registry.deregister(tool_name, scope=worker_scope)
+        registry.deregister(owner_tool_name, scope=launch_scope)
+        with mcp_tool._lock:
+            for name, value in saved.items():
+                target = getattr(mcp_tool, name)
+                target.clear()
+                target.update(value)
+        set_multiplex_active(previous_multiplex)
+        reset_hermes_home_override(worker_token)
+
+
 def test_deregister_scope_kwarg_targets_overlay_and_keeps_plugin_confinement() -> None:
     from tools.registry import ToolRegistry
 

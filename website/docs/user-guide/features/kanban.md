@@ -10,6 +10,22 @@ description: "Durable SQLite-backed task board for coordinating multiple Hermes 
 
 Hermes Kanban is a durable task board, shared across all your Hermes profiles, that lets multiple named agents collaborate on work without fragile in-process subagent swarms. Every task is a row in `~/.hermes/kanban.db`; every handoff is a row anyone can read and write; every worker is a full OS process with its own identity.
 
+### Completion checkpoints before the iteration cap
+
+Dispatcher-owned workers get one checkpoint notice near 90% of their finite iteration
+budget, attached to a fresh tool result while another tool-capable call remains. Use
+`agent.budget_warning_ratio` to choose an earlier threshold. Tiny budgets warn no later
+than their penultimate iteration; a one-iteration run has no pre-cap checkpoint window.
+The notice is saved in the session transcript before the next request. Workers should
+call `kanban_complete` only after verifying the task contract, or persist a progress
+comment and continue. A commit or diff alone never automatically completes a task.
+
+The hard cap, toolless final summary, and consecutive-failure circuit breaker are
+unchanged: workers that still exhaust their budget remain subject to bounded retries.
+This is a reporting opportunity, not a guarantee that a model will heed the notice.
+Ordinary conversations and delegated children do not inherit the automatic Kanban
+checkpoint; their iteration warning remains opt-in.
+
 ### Two surfaces: the model talks through tools, you talk through the CLI
 
 The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
@@ -936,6 +952,21 @@ bot> ✓ t_9fc1a3 completed by transcriber
 
 Subscriptions survive a task reaching `done` — completion is reversible (a reviewer or controller can reopen a done task), so the origin session keeps getting notified through reopen cycles. They auto-remove on `archived` (the irreversible end state). On boards that never archive, a GC sweep purges subscriptions for tasks that have sat in `done` or `blocked` with no new activity for `kanban.done_sub_retention_days` days (default 30; set 0 to disable), so stale rows don't accumulate forever. If you script a create with `--json` (machine output) the auto-subscribe is skipped — the assumption is that scripted callers want to manage subscriptions explicitly via `/kanban notify-subscribe`.
 
+Dispatcher workers creating tasks through `kanban_create` or `hermes kanban create`
+copy the owning task's durable notification subscriptions even without `parents`
+dependency links. Destinations, route anchors, and delivery modes are preserved;
+a passive subscription is not upgraded to a wake by auto-subscribe. This copies
+existing subscriptions independently of `auto_subscribe_on_create`, which controls
+adding the current conversation as a new destination. No destination is invented
+for a bare CLI session or a worker whose owning task has no subscriptions.
+
+For `kanban_create`, session lineage resolves in this order: explicit `session_id`,
+the owning worker task's durable session, request-scoped API origin, then the
+current process session. Built-in decomposition also inherits its root's durable
+session. Session lineage is not itself a notification destination: changing
+`session_id` does not replace existing subscriptions; use `notify-subscribe` and
+`notify-unsubscribe` to change where events are delivered.
+
 A chat-originated auto-subscribe is created in `notify+wake` mode: on a terminal event the destination agent both receives the passive message **and** takes a real turn, so it can read the board context and reply in its own voice. See [Delivery modes](#delivery-modes) below.
 
 ### Output truncation in messaging
@@ -1080,6 +1111,8 @@ A subscription removes itself automatically once the task reaches `done` or `arc
 | `notify+wake` | yes | yes | You also want the destination agent to take a real turn — read the board context and reply in its own voice. Chat-originated auto-subscribes use this. |
 | `wake` | no | yes | You only want the agent to act on the event, with no separate ping. |
 
+For `notify+wake`, delivery completes only once the wake is admitted to the adapter's turn queue as well as the passive ping being sent. Missing handlers, rejected routes, and full queues are retried on later notifier ticks without expiring the subscription. Sent pings are checkpointed separately in SQLite, so a rejected wake does not repeat an already checkpointed ping. `notify` remains passive and never starts a turn. Admission is not a guarantee of model execution or a successful reply; normal turn gates still apply. This is not exactly-once delivery: a process crash between a send and its checkpoint can repeat the ping, and the existing claim-before-delivery cursor is not a crash-recoverable queue.
+
 A "wake" forges a synthetic inbound message to the destination gateway agent so it takes a normal turn (reads the comment + result, reasons, replies) instead of getting a one-line passive notification. It only fires when the notifier runs inside a live gateway process; otherwise a `notify+wake` subscription still delivers its passive message, while a `wake`-only subscription does nothing in that process.
 
 **Which events wake.** The ones that hand a decision back to the origin: `completed`, `blocked`, `gave_up`, `crashed`, `timed_out`, `review_requested` (a worker finished the implementation and handed off via `kanban_request_review`) and `block_loop_detected` (the task was routed to `triage` after repeated blocks). `status`, `archived` and `unblocked` are delivered but never wake — they are bookkeeping transitions, not decisions. When a `completed` or `review_requested` event carries a summary, that handoff rides the wake turn, so the woken agent sees what the worker actually did.
@@ -1102,6 +1135,14 @@ dispatch and delivery have separate owners:
   `writer` profile's Telegram gets its `completed`/`blocked` message delivered
   by the `writer` gateway, even though the `default` gateway did the
   dispatching.
+- **Route-only multiplex profiles** can use the primary adapter when the
+  subscription's persisted platform, chat, thread, scope and parent-channel
+  anchors resolve to that exact served profile through `gateway.profile_routes`.
+  A connected secondary adapter remains authoritative; a partial secondary
+  adapter registry never falls back to the primary bot. Unmatched, reassigned,
+  disabled or ambiguous routes remain undelivered and retryable. Old rows
+  missing required routing anchors are not guessed into a profile. Wake turns keep
+  the destination profile's runtime scope and the authorized transport.
 - **Legacy subscriptions** created before profile stamping (no
   `notifier_profile` on the row) are delivered only by the gateway that holds
   the actual dispatcher singleton lock, so two gateways never race for them.

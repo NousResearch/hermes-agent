@@ -4530,6 +4530,11 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     if _absorb:
         _absorb_windows_console_controls()
 
+    # A system-level unit execs us without XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS; adopt our own
+    # user bus before any worker env snapshot so `systemd-run --user --scope` works (#104893).
+    if is_linux() and os.environ.get("INVOCATION_ID"):
+        _ensure_user_systemd_env()
+
     # Refresh the systemd unit on every boot so restart settings stay current even after an
     # exit-code-75 respawn (stale-code or /restart), which bypasses `hermes gateway restart`.
     if supports_systemd_services():

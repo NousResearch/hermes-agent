@@ -622,14 +622,16 @@ def _(rid, params: dict) -> dict:
         request_transport = current_transport()
         if preserve_session_transport:
             delivery_transport = session.get("transport")
-            if not is_live_transport(delivery_transport):
+            if not any(
+                    is_live_transport(peer)
+                    for peer in _session_live_transports(session)):
                 return _err(
                     rid, 4093,
                     "session has no live client transport to receive an external submission")
         else:
             delivery_transport = request_transport or session.get("transport")
             if request_transport is not None:
-                session["transport"] = request_transport
+                _attach_session_transport(session, request_transport)
                 _cancel_ws_orphan_reap(sid)
     # Claim the turn against a possibly-running session (busy/queued reply, else fall
     # through once ``running`` is observed False).  The provider interrupt happens after

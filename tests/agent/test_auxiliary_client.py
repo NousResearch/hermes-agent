@@ -1724,6 +1724,7 @@ class TestStaleFallbackCandidateSkip:
 
         stale_fb = MagicMock()
         stale_fb.base_url = "https://api.anthropic.com"
+        stale_fb.api_key = "expired-anthropic-token"
         stale_fb.chat.completions.create.side_effect = _AuxAuth401("Invalid bearer token")
 
         fresh_fb = MagicMock()
@@ -1752,7 +1753,7 @@ class TestStaleFallbackCandidateSkip:
             )
 
         assert result.choices[0].message.content == "fresh-fallback"
-        mock_refresh.assert_called_once_with("anthropic")
+        mock_refresh.assert_called_once_with("anthropic", failed_api_key=stale_fb.api_key)
         assert stale_fb.chat.completions.create.call_count == 1
         assert fresh_fb.chat.completions.create.call_count == 1
 
@@ -2772,7 +2773,7 @@ class TestAuxiliaryAuthRefreshRetry:
         ):
             from agent.auxiliary_client import _refresh_provider_credentials
 
-            assert _refresh_provider_credentials("anthropic") is True
+            assert _refresh_provider_credentials("anthropic", failed_api_key="expired-token") is True
 
         mock_refresh_oauth.assert_called_once_with("refresh-token", use_json=False)
         mock_write.assert_called_once_with("fresh-token", "refresh-token-2", 9999999999999)
@@ -3182,6 +3183,29 @@ class TestCodexAdapterPromptCacheKey:
             {"role": "user", "content": "hi"},
         ])
         assert "prompt_cache_retention" not in captured
+
+    def test_astra_auxiliary_request_uses_official_contract(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://api.openai.com/v1",
+            model="gpt-6-astra",
+        )
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "none"}},
+        )
+        assert captured["reasoning"]["effort"] == "low"
+        assert "prompt_cache_retention" not in captured
+
+    def test_astra_auxiliary_proxy_keeps_legacy_effort_contract(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://responses.example.com/v1",
+            model="gpt-6-astra",
+        )
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "none"}},
+        )
+        assert captured["reasoning"]["effort"] == "none"
 
     def test_codex_backend_forwards_auxiliary_service_tier(self):
         adapter, captured = self._build_adapter(

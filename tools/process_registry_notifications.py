@@ -4,9 +4,45 @@ watch_match, watch_disabled, watch_overflow_*, async_delegation) into the
 TUI inject into the agent conversation."""
 
 import time
+from dataclasses import dataclass
 from contextlib import suppress
 
 _DONE = ("completed", "success")
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessNotificationBatch:
+    """Keep completion identity until the owning surface starts its turn."""
+
+    notifications: tuple[tuple[dict, str], ...]
+
+    def render(self, registry) -> str | None:
+        messages = [text for event, text in self.notifications
+                    if not registry.is_completion_consumed(event.get("session_id", ""))]
+        if not messages:
+            return None
+        if len(messages) == 1:
+            return messages[0]
+        header = (f"[IMPORTANT: {len(messages)} background processes completed. "
+                  "Treat these results as one batch and give one consolidated response; "
+                  "preserve failures and actionable results.]")
+        return "\n\n".join((header, *messages))
+
+
+def group_process_notifications(notifications):
+    """Group consecutive completions only; watches and delegations are barriers."""
+    batch = []
+    for event, text in notifications:
+        if event.get("type", "completion") == "completion":
+            batch.append((event, text))
+        else:
+            if batch:
+                yield tuple(batch)
+                batch = []
+            yield ((event, text),)
+    if batch:
+        yield tuple(batch)
+
 
 
 def _format_age(seconds: float) -> str:
@@ -176,7 +212,27 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
             lines.append(f"(no summary — status={r_status}" + (f": {r_error}" if r_error else "") + ")")
         if r.get("live_transcript"):
             lines.append(f"Full live transcript (complete tool/assistant trace): {r['live_transcript']}")
+        lines += _process_accounting_lines(r)
     return "\n".join(lines)
+
+
+def _process_accounting_lines(r: dict) -> list:
+    """Runtime-truth lines about a child's background processes: what it handed to you (you own it now, its
+    completion lands here) and what it left running (terminated at teardown — never trust a child's "watcher running")."""
+    lines = []
+    for h in r.get("handed_off_processes") or []:
+        lines.append(f"Handed off to you: {h.get('session_id')} ({h.get('command', '')[:120]}) — {h.get('note', '')}. "
+                     "You own it now; its completion notice will arrive here.")
+    orphans = r.get("orphaned_processes") or []
+    if orphans:
+        lines.append(f"Child left {len(orphans)} background process(es) running that were TERMINATED with it "
+                     "(subagent process notices never reach you): "
+                     + "; ".join(f"{o.get('session_id')} `{o.get('command', '')[:100]}` ({o.get('runtime_seconds')}s)" for o in orphans)
+                     + ". Re-launch in this session anything you still need.")
+    for u in r.get("unread_completions") or []:
+        lines.append(f"Child's process {u.get('session_id')} `{u.get('command', '')[:100]}` finished (exit code "
+                     f"{u.get('exit_code')}) but the child never read its result; output tail:\n{u.get('output_tail', '')}")
+    return lines
 
 
 def _format_async_delegation(evt: dict) -> str:
@@ -295,6 +351,8 @@ def format_process_notification(evt: dict) -> "str | None":
         return _format_async_delegation(evt)
     _sid, _cmd = evt.get("session_id", "unknown"), evt.get("command", "unknown")
     _attribution = _delegation_attribution_line(evt)
+    if evt.get("handoff_note"):
+        _attribution = f"Handed off to you by a subagent before it finished. Purpose: {evt['handoff_note']}"
     attribution = f"{_attribution}\n" if _attribution else ""
     if evt_type == "watch_match":
         _sup = evt.get("suppressed", 0)

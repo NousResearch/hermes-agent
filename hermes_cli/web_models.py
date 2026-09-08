@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, SecretStr, field_validator
+from pydantic import BaseModel, SecretStr, StrictBool, field_validator
 
 
 class ConfigUpdate(BaseModel):
@@ -278,6 +278,8 @@ class SessionPrune(BaseModel):
     dry_run: bool = False
 
 class CronJobCreate(BaseModel):
+    paused: StrictBool = False
+    paused_reason: Optional[str] = None
     prompt: str = ""
     schedule: str
     name: str = ""

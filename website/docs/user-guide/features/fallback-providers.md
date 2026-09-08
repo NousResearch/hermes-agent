@@ -39,6 +39,11 @@ fallback_providers:
 
 Each entry requires both `provider` and `model`. Entries missing either field are ignored.
 
+Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
+`google-ai-studio`. On Google's native API endpoint, all use the native Gemini
+client, including its `generationConfig.thinkingConfig` translation. A custom
+OpenAI-compatible base URL continues to use the compatible client instead.
+
 :::note `fallback_model` vs `fallback_providers`
 `fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
 :::
@@ -180,7 +185,7 @@ fallback_providers:
 |---------|-------------------|
 | CLI sessions | ✔ |
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
-| Subagent delegation | ✔ (subagents inherit the parent fallback chain) |
+| Subagent delegation | ✔ (`delegation.fallback_providers` when set; otherwise only unpinned children inherit the parent chain; `[]` disables) |
 | Cron jobs | ✔ (cron agents inherit configured fallback providers) |
 | Auxiliary tasks on `provider: auto` | ✔ (try per-task fallback, then the main fallback chain before built-in aux discovery) |
 
@@ -435,5 +440,5 @@ See [Scheduled Tasks (Cron)](/user-guide/features/cron) for full configuration d
 | Approval classification | Layered (see above) | `auxiliary.approval` |
 | Title generation | Layered (see above) | `auxiliary.title_generation` |
 | Triage specifier | Layered (see above) | `auxiliary.triage_specifier` |
-| Delegation | Inherits the parent's `fallback_providers` chain; optional provider/model override | `delegation.provider` / `delegation.model` |
+| Delegation | Uses `delegation.fallback_providers` when declared; otherwise only unpinned children inherit the parent chain | `delegation.provider` / `delegation.model` / `delegation.fallback_providers` |
 | Cron jobs | Inherit the configured `fallback_providers` chain; optional per-job provider override | Per-job `provider` / `model` |

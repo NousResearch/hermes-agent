@@ -152,6 +152,24 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Update Behavior
 
+### Background checks and SSH authentication
+
+The startup update check reads the origin URL with the same isolated Git
+configuration used for its network calls. Global `url.*.insteadOf` rewrites
+therefore cannot hide an official SSH remote from the public HTTPS check.
+
+Hermes's isolated internal Git commands default to `ssh -o BatchMode=yes`:
+unknown host keys, passwords, and encrypted keys needing a passphrase fail
+instead of opening a terminal prompt. Trusted hosts with usable keys or an
+SSH agent continue to authenticate. This does not change your Git or SSH
+configuration on disk, or commands you run in the terminal tool.
+
+The internal default overrides repository `core.sshCommand` settings. An
+explicit `GIT_SSH_COMMAND` environment variable still takes precedence, so
+custom identity or transport commands can be retained there. Include
+`-o BatchMode=yes` in such an override if it must remain non-interactive;
+an override that permits prompting can still interrupt a background check.
+
 `hermes update` settings live under `updates` in `config.yaml`:
 
 ```yaml
@@ -1115,10 +1133,13 @@ agent:
   max_turns: none              # Iterations per conversation turn (default: none = unlimited)
                                # Set a positive integer to cap; "none"/"null"/
                                # "unlimited"/"inf"/"infinity"/"infinite"/0/-1 = no limit
+  budget_warning_ratio: null   # Optional one-time checkpoint warning, e.g. 0.75
   api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
 ```
 
 `agent.max_turns` is **unlimited by default** — the turn cap caused more problems than it solved (silent mid-task truncation), so out of the box Hermes runs a conversation turn to completion. To impose a cap, set a positive integer. To be explicit about "no limit", any of these case-insensitive spellings work: `"none"`, `"null"`, `"unlimited"`, `"infinite"`, `"infinity"`, `"inf"`, `0`, `-1` (they resolve to a `sys.maxsize` sentinel so the loop never exits on a turn count).
+
+`agent.budget_warning_ratio` is off by default for ordinary and delegated conversations. When set to a value strictly between `0` and `1` alongside a finite `max_turns`, Hermes appends one model-visible checkpoint notice to the latest tool result after the threshold is reached. The notice rearms each conversation turn and uses each agent's own iteration budget. It only appends to a current tool-result tail, never an older turn, and does not add a synthetic user/system message or change the existing exhaustion grace call. Dispatcher-owned Kanban workers receive a completion checkpoint at 90% by default (an explicit ratio changes that threshold), while their tools are still available. The checkpoint asks for verified completion or a durable progress comment, not premature success.
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
@@ -2055,6 +2076,8 @@ In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in mess
 
 Tool progress requires a gateway adapter that can display progress updates safely. Platforms without message editing support, including Signal, suppress tool-progress bubbles even if `/verbose` saves a non-`off` mode.
 
+`off` hides tool-call *chrome* only. Application state that has its own surface in the Desktop app and TUI — the task list (`todo_list`), subagent progress, clarify questions, and MCP consent cards — keeps flowing regardless of this setting.
+
 ### Focus view (`/focus`, CLI + TUI)
 
 `display.focus_view: true` enables **focus view** — a reduced-output display mode for when you want the answer, not the play-by-play. It is a thin layer over the same `tool_progress` machinery rather than a second suppression path:
@@ -2681,6 +2704,8 @@ delegation:
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 
+**Subagent fallback chain:** Set `delegation.fallback_providers` to give workers their own chain (same entry shape as the top-level list). An explicitly pinned child (by provider, endpoint, or model) uses that chain only when it is declared; otherwise it fails loudly instead of borrowing the parent agent's route. For an unpinned child, an absent or `null` setting preserves parent-chain inheritance. Use `fallback_providers: []` under `delegation:` to disable child fallback entirely.
+
 **Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only. When `delegation.provider` is set alongside `delegation.base_url`, the explicit endpoint and key still win, but that provider's request settings (`extra_body` overrides and max output tokens from your `custom_providers` entry) are carried into the subagent.
 
 **Per-child request settings (`request_overrides`):** `delegation.request_overrides` is a dict of request settings sent on every subagent API call. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. It is honored on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit — so the key always takes effect. Precedence: explicit `request_overrides` values merge **over** any runtime- or parent-derived overrides — top-level explicit keys win, and `extra_body` is deep-merged one level so runtime `extra_body` keys (e.g. a provider's `thinking: {type: disabled}` personality) survive unless your key redefines them. The canonical use case is OpenRouter routing hints for delegation children:
@@ -2695,7 +2720,6 @@ delegation:
       provider:
         sort: throughput   # route children to the fastest OpenRouter provider
 ```
-
 **Wire protocol (`api_mode`):** Hermes auto-detects the wire protocol from `delegation.base_url` (e.g. paths ending in `/anthropic` → `anthropic_messages`; Codex / native Anthropic / Kimi-coding hostnames keep their existing detection). For endpoints the heuristic can't classify — for example Azure AI Foundry, MiniMax, Zhipu GLM, or LiteLLM proxies fronting an Anthropic-shaped backend — set `delegation.api_mode` explicitly to one of `chat_completions`, `codex_responses`, or `anthropic_messages`. Leave it empty (the default) to keep auto-detection.
 
 The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `copilot`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.

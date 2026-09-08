@@ -65,6 +65,8 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
     home = _session_home(session)
     if (marker := read_turn_marker(home, session_key)) is None:
         return None
+    if not marker.get("auto_continue", True):
+        return None  # The mailbox owns recovery and receipt identity for imported turns.
     enabled, freshness_secs, max_attempts = _auto_continue_config()
     age = time.time() - marker["started_at"]
     if not enabled or age > freshness_secs or marker["attempts"] >= max_attempts:
@@ -371,10 +373,13 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             if external_submission_id:
                 # The Desktop owner may have reconnected while this envelope waited.
                 # Never restore the controller's stale transport provenance.
-                if not is_live_transport(session.get("transport")):
+                if not any(
+                        is_live_transport(peer)
+                        for peer in _session_live_transports(session)):
                     missing_external_owner = True
-            elif queued.get("transport") is not None:
-                session["transport"] = queued["transport"]
+            elif (queued_transport := queued.get("transport")) is not None:
+                if not _transport_is_dead(queued_transport):
+                    _attach_session_transport(session, queued_transport)
             if not missing_external_owner:
                 session["running"] = True
     if closing_external_ids:

@@ -15,7 +15,15 @@ import types
 
 import tools.async_delegation as ad
 from tui_gateway import server
-from tui_gateway.transport import bind_transport, reset_transport
+from tui_gateway.transport import FanoutTransport, bind_transport, reset_transport
+
+
+class _FakeTransport:
+    def write(self, obj: dict) -> bool:
+        return True
+
+    def close(self) -> None:
+        return None
 
 
 def _session(agent=None, **extra):
@@ -154,6 +162,35 @@ def test_external_queue_drain_uses_reconnected_owner_and_stays_in_process(monkey
     assert session["attached_images"] == ["/private/staged-image.png"]
 
 
+def test_external_queue_drain_accepts_a_live_fanout_owner(monkeypatch):
+    owner_a, owner_b = _FakeTransport(), _FakeTransport()
+    owners = FanoutTransport(owner_a, owner_b)
+    session = _session(
+        running=False,
+        transport=owners,
+        queued_prompt={
+            "text": "wake",
+            "transport": _FakeTransport(),
+            "external_submission_id": "gas-city-request-1",
+        },
+    )
+    dispatched = []
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda *_args, **kwargs: dispatched.append(
+            (session["transport"], kwargs["external_submission_id"])
+        ),
+    )
+    server.register_live_transport(owner_a)
+    try:
+        assert server._drain_queued_prompt("r1", "sid", session) is True
+    finally:
+        server.unregister_live_transport(owner_a)
+
+    assert dispatched == [(owners, "gas-city-request-1")]
+
+
 def test_external_queue_drain_records_correlated_error_without_live_owner(monkeypatch):
     followup_transport = object()
     session = _session(
@@ -195,7 +232,7 @@ def test_external_queue_drain_records_correlated_error_without_live_owner(monkey
         ),
     ]
     assert dispatched[0][0][3] == "interactive follow-up"
-    assert session["transport"] is followup_transport
+    assert server._session_transport_contains(session, followup_transport)
 
 
 def test_external_submit_preserves_desktop_owner_transport(monkeypatch):
@@ -238,6 +275,39 @@ def test_external_submit_preserves_desktop_owner_transport(monkeypatch):
     assert session["queued_prompt"]["transport"] is owner_transport
     assert "image_paths" not in session["queued_prompt"]
     assert session["attached_images"] == ["/private/staged-image.png"]
+
+
+def test_external_submit_preserves_live_fanout_owner_transport(monkeypatch):
+    owner_a, owner_b = _FakeTransport(), _FakeTransport()
+    owners = FanoutTransport(owner_a, owner_b)
+    session = _session(running=True, transport=owners)
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *args: None)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *args: False)
+    server._sessions["sid-external"] = session
+    server.register_live_transport(owner_a)
+    token = bind_transport(_FakeTransport())
+    try:
+        response = server.handle_request(
+            {
+                "id": "r1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid-external",
+                    "text": "external wake",
+                    "queued": True,
+                    "preserve_session_transport": True,
+                    "external_submission_id": "gas-city-request-1",
+                },
+            }
+        )
+    finally:
+        reset_transport(token)
+        server.unregister_live_transport(owner_a)
+        server._sessions.pop("sid-external", None)
+
+    assert response["result"]["status"] == "queued"
+    assert session["transport"] is owners
+    assert session["queued_prompt"]["transport"] is owners
 
 
 def test_idle_external_submit_does_not_consume_staged_desktop_attachments(monkeypatch):

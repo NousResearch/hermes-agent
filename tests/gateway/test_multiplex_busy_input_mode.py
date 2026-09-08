@@ -9,12 +9,11 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
     SendResult,
     SessionSource,
     build_session_key,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.profile_routing import ProfileRoute
 from gateway.run import GatewayRunner
 

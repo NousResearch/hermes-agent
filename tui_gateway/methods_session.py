@@ -519,7 +519,7 @@ def _find_live_unpersisted(needle: str, home) -> str:
 
 def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
     """Reattach a LIVE lazy session with no state.db row yet (every fresh Bot Chat; a 404 here killed messaging
-    for never-spoken bots). Rebind the transport and cancel the armed orphan-reap Timer (a WS drop may have
+    for never-spoken bots). Attach the transport and cancel the armed orphan-reap Timer (a WS drop may have
     sentinel-parked the record) or it fires against this client."""
     if ctx.owns_db:
         _release_db(ctx.db)
@@ -628,7 +628,8 @@ def _resume_guard(ctx: _Resume) -> dict | None:
 
 def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
     """Reattach an already-live session under the resume lock (held across the client-gone check,
-    transport rebind and reap cancel so grace expiry is atomic)."""
+    transport attach and reap cancel so grace expiry is atomic). _live_session_payload ATTACHES this
+    caller alongside the client(s) already streaming instead of taking the slot from them."""
     with _session_resume_lock:
         return _resume_reuse_live_locked(ctx, sid, session)
 
@@ -1150,7 +1151,9 @@ def _(rid, params: dict, session: dict) -> dict:
             "categories": [], "context_max": usage.get("context_max", 0) or 0,
             "context_percent": usage.get("context_percent", 0) or 0,
             "context_used": usage.get("context_used", 0) or 0,
-            "estimated_total": usage.get("context_used", 0) or usage.get("total", 0) or 0,
+            "estimated_total": 0,
+            "context_estimated": usage.get("context_estimated", False),
+            "context_source": usage.get("context_source", "provider_usage"),
             "model": _metadata_mirror(session).get("model", "")})
     with session["history_lock"]:
         history = list(session.get("history", []))

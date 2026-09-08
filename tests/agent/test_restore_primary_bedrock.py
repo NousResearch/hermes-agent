@@ -104,3 +104,83 @@ class TestRestorePrimaryBedrock:
         assert result is True
         mock_build.assert_called_once_with("ap-southeast-2")
         assert agent._bedrock_region == "ap-southeast-2"
+
+
+class TestTryRecoverBedrock:
+    """try_recover_primary_transport must route api_mode=bedrock_converse through
+    the Bedrock client builder — the same carve-out _rebuild_primary_client has
+    (#102860 class); otherwise the recovery path calls _create_openai_client
+    for a provider that has no OpenAI key."""
+
+    def _bedrock_agent(self, *, region="eu-west-1"):
+        from unittest.mock import MagicMock
+
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        agent.model = "anthropic.claude-sonnet-4-6"
+        agent.provider = "bedrock"
+        agent.base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
+        agent.api_mode = "bedrock_converse"
+        agent.api_key = ""
+        agent._client_kwargs = {}
+        agent._credential_pool = None
+        agent._fallback_activated = False
+        agent.client = None
+        agent._bedrock_region = region
+        agent._primary_runtime = {
+            "model": agent.model,
+            "provider": "bedrock",
+            "base_url": agent.base_url,
+            "api_mode": "bedrock_converse",
+            "api_key": "",
+            "client_kwargs": {},
+        }
+        agent._vprint = lambda *a, **k: None
+        agent.log_prefix = ""
+        agent._retire_shared_openai_client = MagicMock()
+        agent._create_openai_client = MagicMock(
+            side_effect=AssertionError("_create_openai_client must not be called for bedrock")
+        )
+        return agent
+
+    def test_bedrock_recovery_rebuilds_bedrock_client(self):
+        from unittest.mock import patch
+
+        from agent.agent_runtime_helpers import try_recover_primary_transport
+
+        agent = self._bedrock_agent(region="eu-west-1")
+        ReadTimeout = type("ReadTimeout", (Exception,), {})
+
+        with patch(
+            "agent.anthropic_adapter.build_anthropic_bedrock_client"
+        ) as mock_build, patch("agent.agent_runtime_helpers.time.sleep"):
+            mock_build.return_value = object()
+            ok = try_recover_primary_transport(
+                agent, ReadTimeout("boom"), retry_count=0, max_retries=2
+            )
+
+        assert ok is True
+        mock_build.assert_called_once_with("eu-west-1")
+        assert agent._anthropic_client is not None
+        assert agent.client is None
+        agent._create_openai_client.assert_not_called()
+
+    def test_bedrock_recovery_never_touches_openai_client(self):
+        from unittest.mock import patch
+
+        from agent.agent_runtime_helpers import try_recover_primary_transport
+
+        agent = self._bedrock_agent()
+        ReadTimeout = type("ReadTimeout", (Exception,), {})
+
+        with patch(
+            "agent.anthropic_adapter.build_anthropic_bedrock_client"
+        ) as mock_build, patch("agent.agent_runtime_helpers.time.sleep"):
+            mock_build.return_value = object()
+            ok = try_recover_primary_transport(
+                agent, ReadTimeout("boom"), retry_count=0, max_retries=2
+            )
+
+        assert ok is True
+        agent._create_openai_client.assert_not_called()

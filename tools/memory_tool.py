@@ -41,7 +41,7 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (  # noqa: E402,F401  (re-exports)
-    ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content)
+    ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content, _scan_operations)
 
 
 def load_on_disk_store() -> "MemoryStore":
@@ -123,6 +123,11 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
             "current_entries": store._entries_for(target), "usage": store._usage(target)}, ensure_ascii=False)
     if action == "replace" and not content:
         return tool_error("content is required for 'replace' action.", success=False)
+    # Threat scan belongs here, not in the store: the store runs AFTER the approval gate,
+    # so a poisoned entry was staged to pending/ and only refused at approve time -- where
+    # a failed apply is never discarded, leaving it stuck in the queue forever.
+    if action in ("add", "replace") and (scan_error := _scan_memory_content((content or "").strip())):
+        return tool_error(scan_error, success=False)
     return None
 
 
@@ -144,6 +149,9 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
+        # Refuse poisoned ops before the gate can stage them (see _validate_single_op).
+        if scan_error := _scan_operations(operations):
+            return tool_error(scan_error, success=False)
         # Approval gate: stages (background/gateway) or prompts inline (CLI); off by default.
         gate_result = _apply_write_gate("batch", target, None, None, operations)
         if gate_result is not None:

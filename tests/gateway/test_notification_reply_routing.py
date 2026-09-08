@@ -16,7 +16,7 @@ from hermes_state import SessionDB
 
 
 CHAT = '15551234567@s.whatsapp.net'
-ORIGIN = '20260907_171053_a1fb73'
+ORIGIN = '20260101_120000_a1b2c3'
 
 
 def send_notification(home, monkeypatch, *, wire_result=None, message='Publication needs approval',
@@ -264,7 +264,7 @@ def event(text='Go ahead', quote='notice-1', sender=CHAT, chat=CHAT):
         message_id='reply-1', reply_to_message_id=quote, reply_to_is_own_message=bool(quote))
 
 
-def install_lid_alias(home, lid='243993266942172', phone='15551234567'):
+def install_lid_alias(home, lid='999991234567890', phone='15551234567'):
     mapping_dir = home / 'whatsapp' / 'session'
     mapping_dir.mkdir(parents=True, exist_ok=True)
     (mapping_dir / f'lid-mapping-{lid}.json').write_text(json.dumps(phone), encoding='utf-8')
@@ -275,7 +275,7 @@ def test_phone_target_accepts_authenticated_lid_alias(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     install_lid_alias(tmp_path)
     path = send_notification(tmp_path, monkeypatch)
-    lid = '243993266942172@lid'
+    lid = '999991234567890@lid'
     incoming = event(sender=lid, chat=lid)
     runner = inbound_runner(monkeypatch)
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')

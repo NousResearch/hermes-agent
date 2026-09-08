@@ -12,6 +12,8 @@ import {
   isHideOnlyPane,
   revealTreePane,
   setStripTabHidden,
+  setTreeGroupTabStrip,
+  tabStripVisibleForGroup,
   treeTabCloseTargets
 } from './store'
 
@@ -100,6 +102,16 @@ describe('hide-only strip tabs', () => {
       { hidden: true, id: 'hermes-bots:pane', title: 'hermes-bots:pane' }
     ])
     expect(hideOnlyZoneTabs('g-main')).toEqual([])
+  })
+
+  it('refuses to hide the strip that is the only handle for hide-only tabs', () => {
+    sessionsBotsTree()
+    setTreeGroupTabStrip('g-side', 'never')
+
+    const side = $layoutTree.get()
+    const group = side && side.type === 'split' ? side.children[0] : side
+
+    expect(group && group.type === 'group' ? tabStripVisibleForGroup(group) : false).toBe(true)
   })
 
   it('excludes hide-only tabs from every close verb', () => {

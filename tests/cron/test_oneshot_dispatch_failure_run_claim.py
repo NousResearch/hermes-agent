@@ -39,7 +39,7 @@ def cron_store(tmp_path, monkeypatch):
 
 
 def _make_oneshot(claimed: bool = True) -> dict:
-    job = jobs_mod.create_job(prompt="remind me", schedule="30m")
+    job = jobs_mod.create_job(prompt="remind me", schedule="in 30m")
     if claimed:
         jobs = jobs_mod.load_jobs()
         for j in jobs:
@@ -112,8 +112,7 @@ class TestDispatchFailurePathsClearClaim:
                 raise RuntimeError("cannot schedule new futures")
 
         pool = _ExplodingPool()
-        with patch.object(sched, "_get_parallel_pool", return_value=pool), \
-             patch.object(sched, "_get_sequential_pool", return_value=pool):
+        with patch.object(sched, "_get_parallel_pool", return_value=pool):
             self._tick_one(job)
         reloaded = [j for j in jobs_mod.load_jobs() if j["id"] == job["id"]][0]
         assert reloaded.get("run_claim") is None

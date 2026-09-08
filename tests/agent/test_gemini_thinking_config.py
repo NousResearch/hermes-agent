@@ -35,6 +35,12 @@ class TestBuildGeminiThinkingConfigDisabled:
         assert config.get("includeThoughts") is False
         assert config.get("thinkingBudget") == 0
 
+    def test_disabled_sets_thinking_budget_zero_flash_latest_alias(self):
+        config = _build_gemini_thinking_config("gemini-flash-latest", {"enabled": False})
+        assert config is not None
+        assert config.get("includeThoughts") is False
+        assert config.get("thinkingBudget") == 0
+
     def test_disabled_no_thinking_budget_on_older_gemini(self):
         """Older Gemini models (pre-2.5) don't support thinkingBudget; only
         includeThoughts: False should be set."""

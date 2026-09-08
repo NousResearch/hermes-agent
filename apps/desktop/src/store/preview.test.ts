@@ -11,6 +11,7 @@ import {
   closePreviewMatching,
   closeRightRail,
   closeRightRailTab,
+  commitBrowserTabLocation,
   newBrowserTab,
   openPreview,
   previewTabId,
@@ -82,6 +83,18 @@ describe('preview store', () => {
     expect(urlTabs).toHaveLength(1)
     expect(urlTabs[0].target.url).toBe('https://www.reddit.com')
     expect($rightRailActiveTabId.get()).toBe(urlTabs[0].id)
+  })
+
+  it('commits the live page onto a Browser tab without changing its id', () => {
+    openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
+    const id = $previewTabs.get()[0].id
+
+    commitBrowserTabLocation(id, 'https://news.ycombinator.com/item?id=1', 'Item')
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTabs.get()[0].id).toBe(id)
+    expect($previewTabs.get()[0].target.url).toBe('https://news.ycombinator.com/item?id=1')
+    expect($previewTabs.get()[0].target.label).toBe('Item')
   })
 
   it('opens more than one Browser on request, each holding its own page', () => {

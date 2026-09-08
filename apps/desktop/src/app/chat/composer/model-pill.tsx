@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { useTourMarker } from '@/app/chat/tour-marker'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -44,6 +45,8 @@ export function ModelPill({
   model: ChatBarState['model']
 }) {
   const copy = useI18n().t.shell.statusbar
+  // Two return branches below, one handle: only ever one of them mounts.
+  const tourMarker = useTourMarker('model-pill')
   const view = useSessionView()
   // Prefer the chat-bar snapshot (already view-scoped by ChatView); fall back
   // to the live SessionView atoms so a mid-flight session.info still paints.
@@ -136,6 +139,7 @@ export function ModelPill({
         <Button
           aria-label={copy.openModelPicker}
           className={pillClass}
+          data-tour={tourMarker}
           disabled={disabled}
           onClick={() => setModelPickerOpen(true)}
           type="button"
@@ -162,7 +166,14 @@ export function ModelPill({
     <DropdownMenu onOpenChange={setMenuOpen} open={open}>
       <Tip label={title} side="top">
         <DropdownMenuTrigger asChild>
-          <Button aria-label={title} className={pillClass} disabled={disabled} type="button" variant="ghost">
+          <Button
+            aria-label={title}
+            className={pillClass}
+            data-tour={tourMarker}
+            disabled={disabled}
+            type="button"
+            variant="ghost"
+          >
             {label}
           </Button>
         </DropdownMenuTrigger>

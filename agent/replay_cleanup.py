@@ -1,19 +1,8 @@
-"""Replay-history sanitization shared across resume code paths.
+"""Replay-history sanitization shared by EVERY resume surface (messaging gateway, TUI/WebUI gateway).
 
-When a session's last turn dies mid-tool-loop — the process is killed by a
-restart/shutdown command, a stale-timeout fires, or an interrupt lands before
-the tool result is written — the persisted transcript can end with a dangling
-``assistant(tool_calls)`` (no matching ``tool`` answer) or an interrupted
-``assistant→tool`` block.  On resume the model sees that broken tail and
-re-issues the unanswered call, producing an endless "thinking"/reboot loop
-(#49201, #29086).
-
-These pure helpers strip those tails before the history is replayed to the
-model.  They were originally local to ``gateway/run.py`` (which fixed the
-messaging-gateway path) and are extracted here so every resume surface — the
-messaging gateway AND the TUI/WebUI gateway — shares the same cleanup instead
-of the WebUI path silently skipping it.
-"""
+A turn that died mid-tool-loop (restart command, stale timeout, interrupt before the result was written)
+persists a dangling ``assistant(tool_calls)`` or interrupted ``assistant→tool`` tail; on resume the model
+re-issues the unanswered call → endless "thinking"/reboot loop. These pure helpers strip those tails."""
 
 from __future__ import annotations
 
@@ -26,212 +15,133 @@ from agent.turn_context import drop_stale_api_content
 
 logger = logging.getLogger(__name__)
 
+# Orphan-recovery notices: (side-effecting, read-only) for an interrupted block vs a dangling tail.
+_INTERRUPTED_NOTICES = (
+    "[Orphan recovery: interrupted side-effecting tool may have executed; its effect is UNKNOWN. Inspect state before retrying.]",
+    "[Orphan recovery: interrupted read-only tool did not complete.]",
+)
+_DANGLING_NOTICES = (
+    "[Orphan recovery: this tool may have executed before Hermes stopped; its effect is UNKNOWN. Inspect current state before retrying.]",
+    "[Orphan recovery: this read-only tool did not complete and had no effect.]",
+)
+
 
 def is_interrupted_tool_result(content: Any) -> bool:
     """Return True if a tool result indicates the tool was interrupted."""
     if not isinstance(content, str):
         return False
     lowered = content.lower()
-    if "[command interrupted]" in lowered:
-        return True
-    if "exit_code" in lowered and ("130" in lowered or "-1" in lowered):
-        return "interrupt" in lowered
-    return False
+    return "[command interrupted]" in lowered or ("exit_code" in lowered and ("130" in lowered or "-1" in lowered) and "interrupt" in lowered)
 
 
-def strip_interrupted_tool_tails(
-    agent_history: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Strip interrupted assistant→tool sequences from replay history.
+def _call_name(call: Dict[str, Any]) -> str:
+    return str((call.get("function") or {}).get("name") or "")
 
-    Older interrupted gateway turns can be followed by a queued real user
-    message, so the interrupted assistant/tool block is not necessarily the
-    final tail by the time we rebuild replay history.  Remove any contiguous
-    assistant(tool_calls) + tool-result block that contains an interrupted tool
-    result, while preserving successful tool-call sequences intact.
-    """
+
+def _call_id(call: Dict[str, Any]) -> str:
+    return str(call.get("id") or call.get("call_id") or "")
+
+
+def _any_side_effecting(calls: List[Dict[str, Any]]) -> bool:
+    return any(tool_may_have_side_effect(_call_name(call)) for call in calls)
+
+
+def _orphan_recovery(name: str, notices: tuple) -> tuple:
+    """(effect_disposition, content) for an interrupted/dangling call named ``name``."""
+    if tool_may_have_side_effect(name):
+        return "unknown", notices[0]
+    return "none", notices[1]
+
+
+def strip_interrupted_tool_tails(agent_history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Strip interrupted assistant→tool blocks anywhere in history (a queued user message may follow one).
+    Read-only blocks are dropped; blocks with a side-effecting call are KEPT with the interrupted results
+    rewritten as orphan-recovery notices, since the effect may have happened."""
     if not agent_history:
         return agent_history
-
     cleaned: List[Dict[str, Any]] = []
-    i = 0
-    n = len(agent_history)
+    i, n = 0, len(agent_history)
     while i < n:
         msg = agent_history[i]
         if msg.get("role") == "assistant" and "tool_calls" in msg:
             j = i + 1
-            tool_results: List[Dict[str, Any]] = []
             while j < n and agent_history[j].get("role") == "tool":
-                tool_results.append(agent_history[j])
                 j += 1
-            if tool_results and any(
-                is_interrupted_tool_result(m.get("content", ""))
-                for m in tool_results
-            ):
+            tool_results = agent_history[i + 1:j]
+            if any(is_interrupted_tool_result(m.get("content", "")) for m in tool_results):
                 calls = msg.get("tool_calls") or []
-                if any(
-                    tool_may_have_side_effect(
-                        str((call.get("function") or {}).get("name") or "")
-                    )
-                    for call in calls
-                ):
-                    call_names = {
-                        str(call.get("id") or call.get("call_id") or ""): str(
-                            (call.get("function") or {}).get("name") or ""
-                        )
-                        for call in calls
-                    }
+                if _any_side_effecting(calls):
+                    call_names = {_call_id(call): _call_name(call) for call in calls}
                     cleaned.append(msg)
                     for tool_result in tool_results:
-                        if not is_interrupted_tool_result(tool_result.get("content", "")):
-                            cleaned.append(tool_result)
-                            continue
-                        recovered = dict(tool_result)
-                        name = call_names.get(str(tool_result.get("tool_call_id") or ""), "")
-                        recovered["effect_disposition"] = (
-                            "unknown" if tool_may_have_side_effect(name) else "none"
-                        )
-                        recovered["content"] = (
-                            "[Orphan recovery: interrupted side-effecting tool may have "
-                            "executed; its effect is UNKNOWN. Inspect state before retrying.]"
-                            if recovered["effect_disposition"] == "unknown"
-                            else "[Orphan recovery: interrupted read-only tool did not complete.]"
-                        )
-                        cleaned.append(recovered)
-                    i = j
-                    continue
-                logger.debug(
-                    "Stripping interrupted read-only assistant→tool replay block "
-                    "(indices %d–%d, tool_results=%d)",
-                    i, j - 1, len(tool_results),
-                )
+                        if is_interrupted_tool_result(tool_result.get("content", "")):
+                            name = call_names.get(str(tool_result.get("tool_call_id") or ""), "")
+                            disposition, content = _orphan_recovery(name, _INTERRUPTED_NOTICES)
+                            tool_result = {**tool_result, "effect_disposition": disposition, "content": content}
+                        cleaned.append(tool_result)
+                else:
+                    logger.debug("Stripping interrupted read-only assistant→tool replay block (indices %d–%d, tool_results=%d)",
+                                 i, j - 1, len(tool_results))
                 i = j
                 continue
         if msg.get("role") == "tool" and is_interrupted_tool_result(msg.get("content", "")):
             logger.debug("Stripping orphan interrupted tool result from replay history")
-            i += 1
-            continue
-        cleaned.append(msg)
+        else:
+            cleaned.append(msg)
         i += 1
-
     return cleaned
 
 
-def strip_dangling_tool_call_tail(
-    agent_history: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Strip a trailing ``assistant(tool_calls)`` block left with NO answers.
+def strip_dangling_tool_call_tail(agent_history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Strip a trailing ``assistant(tool_calls)`` with NO answers — a call that killed the gateway itself
+    (``docker restart``) left zero ``tool`` rows, invisible to ``strip_interrupted_tool_tails``. A partially
+    answered block still resumes. Read-only tails are dropped; side-effecting ones get UNKNOWN-effect results.
 
-    When a tool call itself kills the gateway process (``docker restart``,
-    ``systemctl restart``, ``kill``, ``hermes gateway restart``), the process
-    is terminated by SIGKILL *mid-call* — before the tool result is ever
-    written and before the orderly shutdown rewind
-    (``_drop_trailing_empty_response_scaffolding``) can run.  The last thing
-    persisted is the ``assistant`` message that issued the ``tool_calls``,
-    with zero matching ``tool`` rows.
-
-    On resume the model sees an unanswered tool call at the tail and naturally
-    re-issues it — which restarts the gateway again, producing the infinite
-    reboot loop in #49201.  ``strip_interrupted_tool_tails`` does not catch
-    this because there is no tool result to inspect for an interrupt marker.
-
-    This strips that dangling tail at the source so there is nothing for the
-    model to re-execute.  It only acts when the tail is an
-    ``assistant(tool_calls)`` whose calls have NO corresponding ``tool``
-    results — a completed assistant→tool pair (any tool answers present) is
-    left untouched so genuine mid-progress tool loops still resume.
+    On resume the model sees an unanswered tool call at the tail and naturally re-issues it — which restarts
+    the gateway again, producing the infinite reboot loop in #49201. ``strip_interrupted_tool_tails`` does
+    not catch this because there is no tool result to inspect for an interrupt marker.
     """
     if not agent_history:
         return agent_history
-
     last = agent_history[-1]
-    if not (
-        isinstance(last, dict)
-        and last.get("role") == "assistant"
-        and last.get("tool_calls")
-    ):
+    if not (isinstance(last, dict) and last.get("role") == "assistant" and last.get("tool_calls")):
         return agent_history
-
     tool_calls = last.get("tool_calls") or []
-    if any(
-        tool_may_have_side_effect(
-            str((call.get("function") or {}).get("name") or "")
-        )
-        for call in tool_calls
-    ):
+    if _any_side_effecting(tool_calls):
         recovered = list(agent_history)
         for call in tool_calls:
-            function = call.get("function") or {}
-            name = str(function.get("name") or "unknown")
-            call_id = str(call.get("id") or call.get("call_id") or "")
-            disposition = "unknown" if tool_may_have_side_effect(name) else "none"
-            content = (
-                "[Orphan recovery: this tool may have executed before Hermes stopped; "
-                "its effect is UNKNOWN. Inspect current state before retrying.]"
-                if disposition == "unknown"
-                else "[Orphan recovery: this read-only tool did not complete and had no effect.]"
-            )
-            recovered.append(make_tool_result_message(
-                name, content, call_id, effect_disposition=disposition,
-            ))
-        logger.warning(
-            "Recovered dangling side-effecting tool call(s) as UNKNOWN instead of erasing them"
-        )
+            name = _call_name(call) or "unknown"
+            disposition, content = _orphan_recovery(name, _DANGLING_NOTICES)
+            recovered.append(make_tool_result_message(name, content, _call_id(call), effect_disposition=disposition))
+        logger.warning("Recovered dangling side-effecting tool call(s) as UNKNOWN instead of erasing them")
         return recovered
-
-    logger.debug(
-        "Stripping dangling unanswered read-only assistant(tool_calls) tail (%d call(s))",
-        len(tool_calls),
-    )
+    logger.debug("Stripping dangling unanswered read-only assistant(tool_calls) tail (%d call(s))", len(tool_calls))
     return agent_history[:-1]
 
 
-def sanitize_replay_history(
-    agent_history: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Apply both replay-tail strippers in the canonical order.
-
-    Convenience entry point for resume code paths: removes interrupted
-    assistant→tool blocks anywhere in the history, then removes a dangling
-    unanswered ``assistant(tool_calls)`` tail.  Returns the same list object
-    when there is nothing to strip.
-    """
+def sanitize_replay_history(agent_history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Both strippers in canonical order (interrupted blocks, then dangling tail); same list object when nothing strips."""
     if not agent_history:
         return agent_history
     return strip_dangling_tool_call_tail(strip_interrupted_tool_tails(agent_history))
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Stale dangerous-confirmation text expiry (#59607)
-# ──────────────────────────────────────────────────────────────────────
+# --- Stale dangerous-confirmation text expiry ---
 
-# How long a high-risk confirmation phrase remains valid.
-# Short on purpose: dangerous side effects should not survive any restart
-# or session resumption gap. The user can always re-confirm if needed.
+# Short on purpose: a dangerous confirmation must not survive any restart or resume gap.
+# ────────────────────────────────────────────────────────────────────── Stale dangerous-confirmation text
+# expiry (#59607) ──────────────────────────────────────────────────────────────────────
 _DANGEROUS_CONFIRMATION_EXPIRY_SECONDS = 60.0
 
-# Confirmation phrases that unlock destructive host actions.
-# Substring match (case-insensitive) so that user variants (e.g. trailing
-# punctuation, additional context) still match. Add new patterns here when
-# new high-risk actions are introduced.
+# Phrases that unlock destructive host actions; case-insensitive substring match so trailing punctuation /
+# extra context still matches. Includes i18n variants from the original incident.
 _DANGEROUS_CONFIRMATION_PATTERNS: tuple = (
-    "confirm forced restart",
-    "confirm forced reboot",
-    "confirm shutdown",
-    "confirm reboot",
-    "confirm power off",
-    "yes, delete everything",
-    "confirm wipe",
-    "confirm factory reset",
-    # i18n variants observed in the original incident
-    "確認強制重開機",
-    "確認強制重開",
-    "確認重啟",
+    "confirm forced restart", "confirm forced reboot", "confirm shutdown", "confirm reboot", "confirm power off",
+    "yes, delete everything", "confirm wipe", "confirm factory reset",
+    "確認強制重開機", "確認強制重開", "確認重啟",
 )
 
-# Replacement text for an expired confirmation. Redacting in place (rather
-# than deleting the message) preserves strict user/assistant role
-# alternation in the replayed history.
+# Redacting in place (not deleting the message) preserves strict user/assistant alternation in the replay.
 _EXPIRED_CONFIRMATION_SENTINEL = (
     "[A high-risk confirmation previously given here has EXPIRED and must "
     "not be acted on. Ask the user to re-confirm explicitly before "
@@ -240,16 +150,8 @@ _EXPIRED_CONFIRMATION_SENTINEL = (
 
 
 def is_dangerous_confirmation(content: Any) -> bool:
-    """Return True if a user-message text matches a known dangerous confirmation.
-
-    Used by ``strip_stale_dangerous_confirmations`` to decide which
-    transcript rows to expire. Substring + case-insensitive so that
-    ``"Please confirm forced restart, the host is critical"`` still matches.
-    """
-    if not isinstance(content, str):
-        return False
-    text = content.strip().lower()
-    return any(pattern in text for pattern in _DANGEROUS_CONFIRMATION_PATTERNS)
+    """True if user-message text contains a known dangerous confirmation phrase."""
+    return isinstance(content, str) and any(pattern in content.strip().lower() for pattern in _DANGEROUS_CONFIRMATION_PATTERNS)
 
 
 def strip_stale_dangerous_confirmations(
@@ -258,66 +160,30 @@ def strip_stale_dangerous_confirmations(
     now: float,
     expiry_seconds: float = _DANGEROUS_CONFIRMATION_EXPIRY_SECONDS,
 ) -> List[Dict[str, Any]]:
-    """Expire stale dangerous-confirmation text in user messages (#59607).
+    """Redact IN PLACE dangerous-confirmation text older than ``expiry_seconds`` in user messages: a confirmation
+    surviving a restart reads as a fresh re-confirmation minutes later. Untimestamped messages (legacy
+    transcripts, test scaffolding) are left untouched.
 
-    When a high-risk side effect (e.g. host restart via ``shutdown.exe``)
-    runs, the user's plain-text confirmation phrase is persisted in the
-    conversation transcript.  If the host restart killed the gateway
-    process before the assistant's tool result was written, the
-    transcript tail ends on the assistant's text response — and the
-    dangerous confirmation text remains in the user role.
-
-    On the next inbound message — possibly a casual "are you there?" from
-    the user minutes later — the LLM sees the stale confirmation and may
-    interpret the new turn as a fresh re-confirmation, re-executing the
-    destructive action.  This is the failure mode reported in #59607.
-
-    Expired confirmations are REDACTED IN PLACE, not removed: deleting a
-    user message from the incident tail (``user(confirm) →
-    assistant("OK, restarting")``) would leave two consecutive assistant
-    messages, violating the strict role-alternation invariant providers
-    enforce.  The message survives with its role intact; only the trigger
-    text is replaced by a sentinel that tells the model the confirmation
-    has expired.
-
-    Messages without a timestamp are left untouched (backward
-    compatibility: legacy transcripts and in-memory test scaffolding have
-    no timestamps).  User messages that contain dangerous confirmation
-    text but are within the expiry window are also left untouched — they
-    represent a fresh confirmation that has not yet been acted on.
-
-    Complements 75ed07ace (which strips the *assistant* side of the
-    broken tail) by handling the *user* side: a stale plain-text
-    confirmation that the assistant has not yet responded to in a way
-    the resume logic recognises.
+    See #59607.
+    On the next inbound message — possibly a casual "are you there?" from the user minutes later — the LLM
+    sees the stale confirmation and may interpret the new turn as a fresh re-confirmation, re-executing the
+    destructive action. This is the failure mode reported in #59607.
     """
     if not agent_history:
         return agent_history
-
     cleaned: List[Dict[str, Any]] = []
     for msg in agent_history:
-        if (
-            isinstance(msg, dict)
-            and msg.get("role") == "user"
-            and is_dangerous_confirmation(msg.get("content", ""))
-        ):
-            ts = msg.get("timestamp")
-            if ts is not None and (now - float(ts)) > expiry_seconds:
-                logger.debug(
-                    "Redacting stale dangerous-confirmation text in user "
-                    "message (age=%.1fs, expiry=%.1fs): %r",
-                    now - float(ts),
-                    expiry_seconds,
-                    (msg.get("content") or "")[:80],
-                )
-                redacted = dict(msg)
-                redacted["content"] = _EXPIRED_CONFIRMATION_SENTINEL
-                # Drop the api_content sidecar: it carries the exact bytes
-                # previously sent — i.e. the dangerous confirmation this
-                # redaction exists to expire. Replaying it verbatim would
-                # undo the redaction on the wire.
-                drop_stale_api_content(redacted)
-                cleaned.append(redacted)
-                continue
-        cleaned.append(msg)
+        ts = msg.get("timestamp") if isinstance(msg, dict) and msg.get("role") == "user" else None
+        if ts is None or not is_dangerous_confirmation(msg.get("content", "")) or (now - float(ts)) <= expiry_seconds:
+            cleaned.append(msg)
+            continue
+        logger.debug(
+            "Redacting stale dangerous-confirmation text in user message (age=%.1fs, expiry=%.1fs): %r",
+            now - float(ts), expiry_seconds, (msg.get("content") or "")[:80],
+        )
+        redacted = dict(msg)
+        redacted["content"] = _EXPIRED_CONFIRMATION_SENTINEL
+        # The api_content sidecar carries the exact bytes sent — the confirmation itself; replaying it would undo the redaction.
+        drop_stale_api_content(redacted)
+        cleaned.append(redacted)
     return cleaned

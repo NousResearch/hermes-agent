@@ -11,6 +11,14 @@ interface SessionStateCacheLimits {
 interface SessionStateCacheCallbacks {
   isReferenced: (runtimeId: string, state: ClientSessionState) => boolean
   onEvict: (runtimeId: string, state: ClientSessionState) => void
+  /** Optional liveness check for a cached snapshot's in-flight claims. A
+   *  connection death mid-turn orphans snapshots: the respawned backend
+   *  re-mints runtime ids, so their frozen busy/awaitingResponse flags never
+   *  receive a settling publish (#95189) and would pin megabytes of warm
+   *  transcript per reconnect cycle until restart. When wired, those flags
+   *  only block eviction while the authoritative store still claims work for
+   *  the same runtime id; without the probe they always block. */
+  isAuthoritativelyActive?: (runtimeId: string, state: ClientSessionState) => boolean
 }
 
 function transcriptBytes(state: ClientSessionState): number {
@@ -117,11 +125,20 @@ export class SessionStateCache extends Map<string, ClientSessionState> {
   }
 
   #isWarmSettled(runtimeId: string, state: ClientSessionState): boolean {
+    // In-flight claims pin a transcript only while they are trustworthy: with
+    // an authority probe wired, a frozen busy/awaitingResponse on an orphaned
+    // snapshot stops blocking eviction (see callback docs). Without one, the
+    // legacy behavior holds and the flags always block.
+    if (
+      (state.busy || state.awaitingResponse) &&
+      this.#callbacks.isAuthoritativelyActive?.(runtimeId, state) !== false
+    ) {
+      return false
+    }
+
     return (
       Boolean(state.storedSessionId) &&
       state.messages.length > 0 &&
-      !state.busy &&
-      !state.awaitingResponse &&
       !state.needsInput &&
       !hasDraftOrInFlightMessage(state) &&
       !this.#callbacks.isReferenced(runtimeId, state)

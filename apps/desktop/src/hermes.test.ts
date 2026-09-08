@@ -140,6 +140,57 @@ describe('Hermes REST helpers', () => {
     expect(api).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'local', path: '/api/profiles' }))
   })
 
+  it('routes the batched sidebar refresh through the active backend scope', async () => {
+    setApiRequestConnection('cubi')
+    setApiRequestProfile('default')
+    api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } })
+
+    await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: ['cron'],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: ['cron', 'desktop']
+    })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: 'cubi',
+        profile: 'default',
+        path: expect.stringContaining('/api/profiles/sessions/sidebar?recents_profile=default')
+      })
+    )
+  })
+
+  it('routes legacy profile-session slices through the active backend scope', async () => {
+    setApiRequestConnection('cubi')
+    setApiRequestProfile('default')
+
+    await listAllProfileSessions(20, 1, 'exclude', 'recent', 'default')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: 'cubi',
+        profile: 'default',
+        path: expect.stringContaining('/api/profiles/sessions?')
+      })
+    )
+  })
+
+  it('does not stamp ambient profile onto unscoped helpers', async () => {
+    setApiRequestProfile('iris')
+
+    await getProfiles()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/profiles'
+      })
+    )
+    expect(api.mock.calls[0][0]).not.toHaveProperty('profile')
+  })
+
   it('preserves ambient and explicit-local ownership for session and profile requests', async () => {
     setApiRequestConnection('remote-a')
 
@@ -237,6 +288,41 @@ describe('Hermes REST helpers', () => {
     expect(paths.some(path => path.includes('profile=all'))).toBe(false)
     expect(paths).toContainEqual(expect.stringContaining('source=cron'))
     expect(paths).toContainEqual(expect.stringContaining('exclude_sources=cron%2Ctool'))
+  })
+
+  it('keeps per-slice errors on the legacy fallback so a cron failure does not taint recents', async () => {
+    resetSidebarBatchCapability()
+    const row = (id: string) => ({ id, title: id, profile: 'default' })
+
+    api.mockImplementation(({ path }: { path: string }) => {
+      if (path.startsWith('/api/profiles/sessions/sidebar')) {
+        return Promise.reject(new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}'))
+      }
+
+      if (path.includes('source=cron')) {
+        return Promise.resolve({
+          ...emptySessionsResponse,
+          sessions: [],
+          errors: [{ profile: 'default', error: 'disk I/O error' }]
+        })
+      }
+
+      return Promise.resolve({ ...emptySessionsResponse, sessions: [row('recent-1')] })
+    })
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: []
+    })
+
+    expect(result.recents.sessions.map(s => s.id)).toEqual(['recent-1'])
+    expect(result.recents.errors).toBeUndefined()
+    expect(result.cron.errors).toEqual([{ profile: 'default', error: 'disk I/O error' }])
+    expect(result.errors).toBeUndefined()
   })
 
   it('remembers endpoint-missing and skips re-probing the batched route on later refreshes', async () => {

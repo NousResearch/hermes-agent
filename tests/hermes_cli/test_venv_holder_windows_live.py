@@ -250,3 +250,223 @@ class TestAncestorExclusion:
             "gateway ancestor invisible to venv scan — /update from the "
             f"gateway can never pause it (#87594): {payload}"
         )
+
+
+class TestConcurrentGateClassification:
+    """#37039 — the pre-update concurrent-instance gate must classify LIVE
+    processes: gateway runtimes drop out of the abort list (the pause
+    machinery owns them), everything else keeps aborting the update."""
+
+    def test_live_gateway_process_classified_gateway(self):
+        """A real process whose argv carries `-m hermes_cli.main gateway run`
+        classifies as ``gateway`` via real psutil against the live table."""
+        from hermes_cli.update_cmd import _classify_concurrent_instance
+
+        proc = _spawn(["-m", "hermes_cli.main", "gateway", "run"])
+        try:
+            assert _classify_concurrent_instance(proc.pid) == "gateway"
+        finally:
+            _kill(proc)
+
+    def test_live_non_gateway_processes_keep_the_abort(self):
+        """A REPL-shaped process and a gateway MANAGEMENT command both
+        classify as ``non-gateway`` — they stay in the abort list."""
+        from hermes_cli.update_cmd import _classify_concurrent_instance
+
+        repl = _spawn(["-m", "hermes_cli.main"])
+        mgmt = _spawn(["-m", "hermes_cli.main", "gateway", "status"])
+        try:
+            assert _classify_concurrent_instance(repl.pid) == "non-gateway"
+            assert _classify_concurrent_instance(mgmt.pid) == "non-gateway"
+        finally:
+            _kill(repl, mgmt)
+
+    def test_live_filter_drops_only_the_gateway(self):
+        """End-to-end filter over a mixed live process set: the gateway PID
+        drops, the serve-backend PID stays, a dead PID stays (unknown)."""
+        from hermes_cli.update_cmd import (
+            _filter_non_gateway_concurrent_instances,
+        )
+
+        gw = _spawn(["-m", "hermes_cli.main", "gateway", "run"])
+        backend = _spawn(["-m", "hermes_cli.main", "serve", "--port", "8127"])
+        dead = _spawn([])
+        _kill(dead)  # reaped → unreadable cmdline → unknown → kept
+        try:
+            matches = [
+                (gw.pid, "hermes.exe"),
+                (backend.pid, "hermes.exe"),
+                (dead.pid, "hermes.exe"),
+            ]
+            kept = _filter_non_gateway_concurrent_instances(matches)
+            kept_pids = {pid for pid, _ in kept}
+            assert gw.pid not in kept_pids, "gateway must drop from abort list"
+            assert backend.pid in kept_pids, "serve backend must keep aborting"
+            assert dead.pid in kept_pids, "unknown must keep aborting"
+        finally:
+            _kill(gw, backend)
+
+
+class TestUpdaterOwnedBackendDeferral:
+    """#98336 — ledger-verified serve/dashboard holders defer to the CLI
+    updater's stop/relaunch rungs instead of dead-ending the Desktop
+    hand-off (and leaving hermes.exe locked → quarantine os error 32)."""
+
+    @staticmethod
+    def _ledger_write(pid: int, purpose: str, spawner_pid: int | None,
+                      spawner_create: float | None) -> None:
+        import psutil
+
+        from hermes_cli.process_identity import (
+            LedgerEntry,
+            _append_entry,
+            install_id,
+        )
+
+        entry = LedgerEntry(
+            pid=pid,
+            create_time=float(psutil.Process(pid).create_time()),
+            purpose=purpose,
+            install=install_id(),
+            spawner_pid=spawner_pid,
+            spawner_create=spawner_create,
+            registered_at=time.time(),
+            argv="",
+        )
+        assert _append_entry(entry)
+
+    def test_dead_spawner_serve_is_deferred_live(self, tmp_path, monkeypatch):
+        """A REAL serve-argv process, ledger-registered with a provably dead
+        spawner, must classify as updater-owned (deferred, not a blocker)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        import psutil
+
+        # A real spawner that has already exited — its (pid, create_time)
+        # pair is provably dead.
+        spawner = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(0.1)"],
+        )
+        spawner_create = float(psutil.Process(spawner.pid).create_time())
+        spawner.wait(timeout=30)
+
+        backend = _spawn(["-m", "hermes_cli.main", "serve", "--host", "127.0.0.1"])
+        try:
+            self._ledger_write(backend.pid, "serve", spawner.pid, spawner_create)
+
+            from hermes_cli._scan_venv_blockers import _is_updater_owned_backend
+
+            cmdline = " ".join(psutil.Process(backend.pid).cmdline())
+            assert _is_updater_owned_backend(backend.pid, cmdline) is True, (
+                "dead-spawner ledger serve must be deferred to the updater "
+                "rungs (#98336)"
+            )
+        finally:
+            _kill(backend)
+
+    def test_live_foreign_spawner_serve_still_blocks_live(self, tmp_path, monkeypatch):
+        """Same real serve process, but its recorded spawner is a LIVE
+        process outside this scan's ancestry — must keep blocking."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        import psutil
+
+        supervisor = _spawn(["fake-supervisor"])
+        backend = _spawn(["-m", "hermes_cli.main", "serve", "--host", "127.0.0.1"])
+        try:
+            self._ledger_write(
+                backend.pid,
+                "serve",
+                supervisor.pid,
+                float(psutil.Process(supervisor.pid).create_time()),
+            )
+
+            from hermes_cli._scan_venv_blockers import _is_updater_owned_backend
+
+            cmdline = " ".join(psutil.Process(backend.pid).cmdline())
+            assert _is_updater_owned_backend(backend.pid, cmdline) is False, (
+                "live foreign supervisor would respawn the backend — the "
+                "scan must keep refusing"
+            )
+        finally:
+            _kill(supervisor, backend)
+
+    def test_unregistered_serve_still_blocks_live(self, tmp_path, monkeypatch):
+        """A serve-argv process with NO ledger entry keeps blocking —
+        positive identity only, never argv-shape alone."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        import psutil
+
+        backend = _spawn(["-m", "hermes_cli.main", "serve", "--host", "127.0.0.1"])
+        try:
+            from hermes_cli._scan_venv_blockers import _is_updater_owned_backend
+
+            cmdline = " ".join(psutil.Process(backend.pid).cmdline())
+            assert _is_updater_owned_backend(backend.pid, cmdline) is False
+        finally:
+            _kill(backend)
+
+    def test_handoff_desktop_ancestor_spawner_is_deferred_live(self, tmp_path, monkeypatch):
+        """The #98336 field topology: the recorded spawner is the scan's own
+        ANCESTOR (the Desktop performing the hand-off). Run the check in a
+        real child process whose parent chain contains the spawner."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        import json as _json
+
+        import psutil
+
+        backend = _spawn(["-m", "hermes_cli.main", "serve", "--host", "127.0.0.1"])
+
+        check_file = tmp_path / "check_owned.py"
+        check_file.write_text(
+            "import json, sys\n"
+            f"sys.path.insert(0, {str(PROJECT_ROOT)!r})\n"
+            "import psutil\n"
+            "from hermes_cli._scan_venv_blockers import _is_updater_owned_backend\n"
+            "pid = int(sys.argv[1])\n"
+            "cmdline = ' '.join(psutil.Process(pid).cmdline())\n"
+            "print(json.dumps({'owned': _is_updater_owned_backend(pid, cmdline)}))\n",
+            encoding="utf-8",
+        )
+        # Fake-desktop parent: registers the backend in the ledger with
+        # ITSELF as spawner, then runs the check in a child — exactly the
+        # Desktop → scan-subprocess topology of the update preflight.
+        parent_file = tmp_path / "fake_desktop.py"
+        parent_file.write_text(
+            "import json, os, subprocess, sys, time\n"
+            f"sys.path.insert(0, {str(PROJECT_ROOT)!r})\n"
+            "import psutil\n"
+            "from hermes_cli.process_identity import LedgerEntry, _append_entry, install_id\n"
+            "backend_pid = int(sys.argv[1])\n"
+            "entry = LedgerEntry(pid=backend_pid,\n"
+            "    create_time=float(psutil.Process(backend_pid).create_time()),\n"
+            "    purpose='serve', install=install_id(),\n"
+            "    spawner_pid=os.getpid(),\n"
+            "    spawner_create=float(psutil.Process().create_time()),\n"
+            "    registered_at=time.time(), argv='')\n"
+            "assert _append_entry(entry)\n"
+            f"r = subprocess.run([sys.executable, {str(check_file)!r}, sys.argv[1]],\n"
+            f"    capture_output=True, text=True, cwd={str(PROJECT_ROOT)!r})\n"
+            "print(r.stdout.strip())\n"
+            "sys.stderr.write(r.stderr[-500:])\n",
+            encoding="utf-8",
+        )
+        try:
+            result = subprocess.run(
+                [sys.executable, str(parent_file), str(backend.pid)],
+                capture_output=True,
+                text=True,
+                cwd=str(PROJECT_ROOT),
+                timeout=120,
+                env={**os.environ, "HERMES_HOME": str(tmp_path)},
+            )
+            line = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "{}"
+            payload = _json.loads(line)
+            assert payload.get("owned") is True, (
+                "hand-off Desktop ancestor spawner must defer the backend "
+                f"(#98336): stdout={result.stdout!r} stderr={result.stderr[-500:]!r}"
+            )
+        finally:
+            _kill(backend)

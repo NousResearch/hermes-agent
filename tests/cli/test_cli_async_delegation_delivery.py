@@ -26,6 +26,9 @@ def test_cli_completion_drain_uses_visible_session_identity(monkeypatch, event_t
             calls.append((session_key, owns_event(event)))
             return [(event, "completion payload")]
 
+        def is_completion_consumed(self, session_id):
+            return False
+
     claimed = []
     completed = []
 
@@ -45,7 +48,8 @@ def test_cli_completion_drain_uses_visible_session_identity(monkeypatch, event_t
     cli._drain_process_notifications("cli-idle")
 
     assert calls == [("visible-session", True)]
-    queued = cli._pending_input.get_nowait()
+    queued, is_voice, is_seeded = cli._tui_unwrap_input(cli._pending_input.get_nowait())
+    assert not is_voice and not is_seeded
     assert queued == "completion payload"
     expected_kind = (
         "async_delegation_complete" if event_type == "async_delegation" else None

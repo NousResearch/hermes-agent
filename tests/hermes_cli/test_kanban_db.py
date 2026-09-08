@@ -581,14 +581,25 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
 
 
 
-def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
-    """Completion artifacts from scratch workspaces survive workspace cleanup."""
+@pytest.mark.parametrize(
+    ("filename", "expected_content_type"),
+    [
+        ("report.html", "text/html"),
+        ("report.pdf", "application/pdf"),
+        ("chart.png", "image/png"),
+        ("artifact.hermes_unknown_extension", None),
+    ],
+)
+def test_complete_task_persists_scratch_artifacts_before_cleanup(
+    kanban_home, filename, expected_content_type,
+):
+    """Completion artifacts survive scratch cleanup with their inferred type."""
     with kbc.connect() as conn:
         t = kb.create_task(conn, title="render chart")
         task = kb.get_task(conn, t)
         ws = kbw.resolve_workspace(task)
         kbw.set_workspace_path(conn, t, ws)
-        artifact = ws / "chart.png"
+        artifact = ws / filename
         artifact.write_bytes(b"png-bytes")
 
         assert kb.complete_task(
@@ -605,15 +616,15 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     assert not ws.exists(), "scratch workspace should still be cleaned up"
     assert persisted.exists(), "artifact copy should survive scratch cleanup"
     assert persisted.parent == kb.task_attachments_dir(t)
-    assert persisted.name == "chart.png"
+    assert persisted.name == filename
     assert persisted.read_bytes() == b"png-bytes"
     assert str(persisted) != str(artifact)
     assert run is not None
     assert run.metadata["artifacts"] == [str(persisted)]
     with kbc.connect() as conn:
         attachments = kb.list_attachments(conn, t)
-    assert [(a.filename, a.stored_path) for a in attachments] == [
-        ("chart.png", str(persisted.resolve()))
+    assert [(a.filename, a.stored_path, a.content_type) for a in attachments] == [
+        (filename, str(persisted.resolve()), expected_content_type)
     ]
 
 

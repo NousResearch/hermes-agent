@@ -47,18 +47,25 @@ gains a `Superseded-by:` / `Supersedes:` link.
 - **Owner:** Kenneth C. Walker Jr.
 - **Status:** OPEN
 
+---
+
+## Resolved
+
 ### DECISION-2026-09-06-003 — Install model — drive-native run-in-place vs machine-local managed install?
 
 - **Opened:** 2026-09-07 · **Base:** hermes@693641aa8b (0 behind upstream/main)
-- **Run:** RUN-2026-09-07-001
+- **Run:** RUN-2026-09-07-001 (opened) · RUN-2026-09-07-011 (ratified)
 - **Id note:** the `2026-09-06` date in the id is kept at the owner's request, for
   continuity with the `-001` / `-002` rebrand batch; the entry was actually opened
   2026-09-07. (The daily-reset id rule in `README.md` is relaxed here by owner call.)
 - **Source:** the consolidated pass of 2026-09-07 (step 4); the "portable-first"
   principle in [[north-forge-architecture]]; the minimal bootstrap shipped this
   pass (`CHG-2026-09-07-005`).
-- **Confidence:** Field-Reasoned — the two shapes and their trade-offs are as
-  stated; nothing here is implemented or ratified beyond the *minimal* bootstrap.
+- **Confidence:** Confirmed Fact — the two shapes and their trade-offs are as
+  stated; the shipped implementation named under **Decided** was read in the tree
+  and exercised across `RUN-2026-09-07-005` … `-010`, and independently reviewed by
+  two Codex audits (`logs/CODEX-AUDIT-2026-09-07.md`;
+  `logs/CODEX-HERMES-EDITION-REUSE-CHECK-2026-09-07.md`).
 - **Supersedes:** —
 - **The call:** when North Forge is deployed on a drive, does it **run in place
   from the drive** (portable, self-contained, nothing installed on the host) or
@@ -75,7 +82,7 @@ gains a `Superseded-by:` / `Supersedes:` link.
     portable; contradicts portable-first.
   - **C — Hybrid:** drive-native by default, an opt-in flag for a machine install.
     Most flexible; more surface to build and document.
-- **Leaning:** **A (drive-native)**, provisionally — consistent with the
+- **Leaning at open:** **A (drive-native)**, provisionally — consistent with the
   portable-first principle already established. **Explicitly not ratified.** The
   *hardened* form of A — sealing the drive, the dual-volume
   `NORTHFORGE` / `NORTHFORGE-DATA` split, and the certify / verify / audit
@@ -84,21 +91,53 @@ gains a `Superseded-by:` / `Supersedes:` link.
   `scripts/bootstrap-north-forge.ps1` + `north-forge.cmd`) is only the *minimal*
   single-drive, single-folder-tree bootstrap + launcher: enough to make a fresh
   clone launch, deliberately **not** built on the unratified hardened design.
-- **Blocking:** the hardened install / seal / dual-volume / certification work —
-  do not start it until this is `DECIDED`. **Not** blocking: the minimal
-  bootstrap, which ships now.
+- **Decided:** 2026-09-07 (`RUN-2026-09-07-011`) — **ratified A (drive-native
+  run-in-place)**, owner call. The sibling-venv layout (venv + `HERMES_HOME` data
+  folder as siblings of the checkout on the same drive, nothing written to the
+  host), the launch-readiness probe (`scripts/nf-preflight.ps1` +
+  `scripts/lib/nf-readiness.ps1` — detects a moved or re-lettered drive and
+  rebuilds the venv **in place**, never on the host), and the tier / pin system
+  (`hermes_cli/nf_tier.py` + on-drive `provisioning.json` / `.nf-key`, `NF-v0.6.0`)
+  together are already a **working, tested implementation of exactly this model** —
+  no machine-local state, portable between machines by design. Two separate Codex
+  audits reviewed this surface independently and both found the implementation
+  matches the drive-native shape: the `F-01`…`F-10` baseline audit
+  (`logs/CODEX-AUDIT-2026-09-07.md`) and the hermes-edition reuse check
+  (`logs/CODEX-HERMES-EDITION-REUSE-CHECK-2026-09-07.md` — *"north-forge-agent
+  already has working equivalents: `bootstrap-north-forge.ps1`, `north-forge.cmd`,
+  `nf-preflight.ps1`, `make-drive-root-shortcut.ps1`"*).
+  - **Implementing commits — `NF-v0.5.1` → `NF-v0.6.0`:** `CHG-2026-09-07-015`
+    (bootstrap path-safety guard — venv/data may not equal, sit inside, or contain
+    the checkout), `CHG-2026-09-07-020` (four-check launch-time readiness probe +
+    silent in-place venv-only rebuild), `CHG-2026-09-07-022` (tier / pinned-edition
+    control, all state on the drive) are the load-bearing ones; built on the
+    original minimal bootstrap `CHG-2026-09-07-005` (`NF-v0.3.0`).
+  - **B and C rejected:** B (machine-local managed install) leaves state on every
+    host and contradicts portable-first; C (hybrid opt-in machine install) adds
+    surface with no established need.
+- **Hardened form — now unblocked, not mandated:** the sealed-drive / dual-volume
+  `NORTHFORGE` + `NORTHFORGE-DATA` split / certify-verify-audit work this entry
+  parked is no longer gated on an unratified decision. Ratifying A does **not**
+  order that work built — starting it is a separate scheduling call. This remains
+  the ratified home `DECISION-2026-09-07-003` named for a future non-drive-resident
+  key store.
+- **Blocking:** the hardened install / seal / dual-volume / certification work was
+  blocked until this was `DECIDED` — **cleared 2026-09-07** (`RUN-2026-09-07-011`);
+  see "Hardened form" above. The minimal bootstrap was never blocked and shipped in
+  `NF-v0.3.0`.
 - **Owner:** Kenneth C. Walker Jr.
-- **Status:** OPEN
+- **Status:** DECIDED
 
 ### DECISION-2026-09-06-002 — Attic clone — keep or delete it?
 
 - **Opened:** 2026-09-06 · **Base:** hermes@693641aa8b (0 behind upstream/main)
-- **Run:** RUN-2026-09-06-001
+- **Run:** RUN-2026-09-06-001 (opened) · RUN-2026-09-07-011 (decided)
 - **Source:** `AUDIT-2026-09-06-001` F-01 (`CHG-2026-09-06-002`) and its open-item #5;
   restated in `AUDIT-2026-09-06-002` open-item #5.
 - **Confidence:** Confirmed Fact — `D:\north-forge-agent-attic\nested-clone-2026-09-06\`
   is a pristine second clone (~869 MB, `.git` ≈ 713 MB), zero unique commits,
   same `origin`/`upstream` remotes; it was moved there out of the checkout, never deleted.
+  Re-confirmed present and unchanged 2026-09-07 (`RUN-2026-09-07-011`).
 - **Supersedes:** — (this was never an `ERR-` row; it lived only as an audit
   finding + recommendation).
 - **The call:** now that `origin/main` carries the real work (`e6c97b43ef`, pushed
@@ -108,15 +147,23 @@ gains a `Superseded-by:` / `Supersedes:` link.
     ~869 MB. `origin/main` + a fresh `git clone` fully reconstruct it.
   - **B — Keep** it as a cold offline backup (useful only if GitHub is
     unreachable *and* the working `.git` is also lost — a narrow scenario).
-- **Leaning:** **A (delete)** — the pushed, verified `origin/main` removes the
+- **Leaning at open:** **A (delete)** — the pushed, verified `origin/main` removes the
   reason it was kept. Low urgency (disk is 76% free).
+- **Decided:** 2026-09-07 (`RUN-2026-09-07-011`) — chose **A (delete)**, owner call,
+  same batch and same reasoning as the ratification of `DECISION-2026-09-06-003`:
+  `origin/main` carries everything, the attic copy holds zero unique commits, and a
+  fresh `git clone` plus the pushed history fully reconstruct it. B's narrow
+  "GitHub unreachable *and* the local `.git` also lost" scenario does not justify
+  ~869 MB.
+  - **Implementing step (owed, low urgency):** the physical
+    `Remove-Item -Recurse -Force "D:\north-forge-agent-attic\nested-clone-2026-09-06"`
+    is an external one-liner, not a repo change — this was a ledger-only pass, so it
+    is recorded here as outstanding. The sibling file
+    `D:\north-forge-agent-attic\marguerite-and-penny-suno.txt` is **not** in scope
+    and must not be touched. Disk is 76 % free; no deadline.
 - **Blocking:** nothing — disk space only.
 - **Owner:** Kenneth C. Walker Jr.
-- **Status:** OPEN
-
----
-
-## Resolved
+- **Status:** DECIDED
 
 ### DECISION-2026-09-07-003 — Edition / tier mechanism — what is an "edition", and how is Basic tier enforced?
 
@@ -299,8 +346,8 @@ gains a `Superseded-by:` / `Supersedes:` link.
 | ID | Date | Area | Question | Status | Decided |
 | --- | --- | --- | --- | --- | --- |
 | DECISION-2026-09-06-001 | 2026-09-06 | Fork identity | Rebrand vs thin downstream? | DECIDED — B (full rebrand), landed `NF-v0.2.0` (CHG-2026-09-06-020..024) | 2026-09-06 |
-| DECISION-2026-09-06-002 | 2026-09-06 | Repo hygiene | Keep or delete the attic clone? | OPEN — leaning A (delete) | — |
-| DECISION-2026-09-06-003 | 2026-09-07 | Install model | Drive-native run-in-place vs machine-local managed install? | OPEN — leaning A (drive-native); hardened form (seal / dual-volume / certify) awaits ratification | — |
+| DECISION-2026-09-06-002 | 2026-09-06 | Repo hygiene | Keep or delete the attic clone? | DECIDED — A (delete), `RUN-2026-09-07-011` / `CHG-2026-09-07-023`. `origin/main` carries all work, zero unique commits in the copy; physical `rm` of `D:\north-forge-agent-attic\nested-clone-2026-09-06\` still owed (low urgency) | 2026-09-07 |
+| DECISION-2026-09-06-003 | 2026-09-07 | Install model | Drive-native run-in-place vs machine-local managed install? | DECIDED — A (drive-native run-in-place), `RUN-2026-09-07-011` / `CHG-2026-09-07-023`. Sibling-venv + `nf-preflight.ps1` + `nf_tier.py` (`NF-v0.5.1`→`NF-v0.6.0`) already implement it; two Codex audits concur. Hardened form (seal / dual-volume / certify) now unblocked, not mandated | 2026-09-07 |
 | DECISION-2026-09-07-001 | 2026-09-07 | Branding | Keep the stock Hermes launch splash, or swap it? | DECIDED — C (swap via a North Forge skin), landed `CHG-2026-09-07-012`; reaffirmed `RUN-2026-09-07-006` (deferral floated then withdrawn, never executed) | 2026-09-07 |
 | DECISION-2026-09-07-003 | 2026-09-07 | Access architecture | What is an "edition", and how is Basic tier enforced? | DECIDED — A (edition = Hermes profile; HMAC-signed `provisioning.json` + gates at every profile-selection path), landed `CHG-2026-09-07-022` (`NF-v0.6.0`). Signature is tamper-evident not tamper-proof; hardened key store deferred to `DECISION-2026-09-06-003` | 2026-09-07 |
 | DECISION-2026-09-07-002 | 2026-09-07 | Branding wording | "engine used unmodified" / "full rebrand" broader than the code (Codex F-07) | OPEN — leaning A (tighten wording, no identifier churn); logged only | — |

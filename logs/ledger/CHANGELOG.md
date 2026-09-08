@@ -8,6 +8,56 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.6.1] — 2026-09-07 — hermes@2237be3559 (0 behind upstream/main)
+
+`RUN-2026-09-07-011`. **Ledger-only** — two owner decisions ratified; no
+tracked-file change outside `logs/ledger/`. **PATCH** (ledger-only per the version
+table). Not pushed (local-review hold, as with the `NF-v0.4.x` / `NF-v0.5.x`
+line). The working tree carried unrelated in-flight edits from a separate pass
+(`north-forge.cmd`, `scripts/bootstrap-north-forge.ps1`,
+`tests/test_bootstrap_launcher_hardening.py`) — deliberately **not** staged or
+committed here; only `logs/ledger/` is in this commit.
+
+### Ledger
+
+- **CHG-2026-09-07-023** — resolved two long-standing `OPEN` decisions in one
+  batch, owner call:
+  - **`DECISION-2026-09-06-003` (install model — drive-native run-in-place vs
+    machine-local managed install) → DECIDED — A (drive-native run-in-place).**
+    Rationale: the sibling-venv layout (venv + `HERMES_HOME` data folder as
+    siblings of the checkout on the same drive, nothing on the host), the
+    launch-readiness probe (`scripts/nf-preflight.ps1` +
+    `scripts/lib/nf-readiness.ps1` — rebuilds the venv **in place** when the
+    drive/path moves), and the tier / pin system (`hermes_cli/nf_tier.py` +
+    on-drive `provisioning.json` / `.nf-key`, `NF-v0.6.0`) already are a working,
+    tested implementation of exactly this model — confirmed independently by two
+    Codex audits (`logs/CODEX-AUDIT-2026-09-07.md`,
+    `logs/CODEX-HERMES-EDITION-REUSE-CHECK-2026-09-07.md`). Implementing range
+    **`NF-v0.5.1` → `NF-v0.6.0`** (load-bearing: `CHG-2026-09-07-015`
+    path-safety guard, `CHG-2026-09-07-020` readiness probe, `CHG-2026-09-07-022`
+    tier/pin), built on the original minimal bootstrap `CHG-2026-09-07-005`
+    (`NF-v0.3.0`). B (machine-local) and C (hybrid) rejected — both leave host
+    state / contradict portable-first. The parked **hardened** form (drive seal /
+    dual-volume `NORTHFORGE` + `NORTHFORGE-DATA` split / certify-verify-audit) is
+    now **unblocked but not mandated** — it was gated only on this ratification;
+    starting it is a separate scheduling call. It stays the named home for the
+    non-drive-resident key store `DECISION-2026-09-07-003` deferred here.
+  - **`DECISION-2026-09-06-002` (attic clone — keep or delete) → DECIDED — A
+    (delete).** Same reasoning as at open: `origin/main` carries everything, zero
+    unique commits in `D:\north-forge-agent-attic\nested-clone-2026-09-06\`
+    (~869 MB), fully reconstructible by `git clone`. The physical
+    `Remove-Item -Recurse -Force` is an external one-liner recorded as **owed —
+    low urgency** (disk 76 % free); this pass was ledger-only. The sibling file
+    `D:\north-forge-agent-attic\marguerite-and-penny-suno.txt` is **out of scope**.
+  - Both blocks moved `## Open` → `## Resolved` in `DECISION-LOG.md` (`Leaning:`
+    renamed `Leaning at open:`, a `Decided:` section added, `Blocking:` on -003
+    marked cleared); the Register quick-scan rows and `INDEX.md` (open- /
+    resolved-decision tables + version and latest-run coordinates) updated to
+    match.
+  - Paths: `logs/ledger/decisions/DECISION-LOG.md`, `logs/ledger/INDEX.md`,
+    `logs/ledger/CHANGELOG.md`. Ref: `DECISION-2026-09-06-002`,
+    `DECISION-2026-09-06-003`. Run: RUN-2026-09-07-011.
+
 ## [NF-v0.6.0] — 2026-09-07 — hermes@2237be3559 (0 behind upstream/main)
 
 `RUN-2026-09-07-010`. Written on the `NF-v0.5.5` commit (`13fd25e063`), then

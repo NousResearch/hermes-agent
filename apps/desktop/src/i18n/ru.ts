@@ -1660,6 +1660,10 @@ export const ru = defineLocale({
     resetToMine: 'Вернуться к моей карте'
   },
   agents: {
+    extendedTranscript: 'Подробный журнал',
+    transcriptTruncated: 'Последние 16 КиБ',
+    transcriptUnavailable: 'Текущий журнал недоступен',
+
     close: 'Закрыть агентов',
     title: 'Дерево запусков',
     subtitle: 'Активные субагенты текущего хода в реальном времени.',
@@ -1671,6 +1675,14 @@ export const ru = defineLocale({
     streaming: 'Стримится',
     files: 'Файлы',
     moreFiles: count => `+ещё ${count} ${RU_NOUN(count, 'файл', 'файла', 'файлов')}`,
+    moreAgents: count => `Ещё ${count} агентов`,
+    queued: 'В очереди',
+    waitingActivity: 'Ожидание активности',
+    steer: 'Направить',
+    steerPlaceholder: 'Инструкции этому субагенту',
+    steerQueued: 'В очереди до следующей контрольной точки',
+    stopRequested: 'Запрошена остановка',
+    requestRejected: 'Субагент не принял запрос',
     delegation: index => `Делегирование ${index}`,
     workers: count => `${count} ${RU_NOUN(count, 'воркер', 'воркера', 'воркеров')}`,
     workersActive: count => `${count} ${RU_NOUN(count, 'активен', 'активно', 'активных')}`,

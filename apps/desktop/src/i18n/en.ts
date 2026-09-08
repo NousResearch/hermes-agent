@@ -1582,6 +1582,10 @@ export const en: Translations = {
     resetToMine: 'Back to my map'
   },
   agents: {
+    extendedTranscript: 'Extended transcript',
+    transcriptTruncated: 'Showing the latest 16 KiB',
+    transcriptUnavailable: 'Live transcript unavailable',
+
     close: 'Close agents',
     title: 'Spawn tree',
     subtitle: 'Live subagent activity for the current turn.',
@@ -1593,6 +1597,14 @@ export const en: Translations = {
     streaming: 'Streaming',
     files: 'Files',
     moreFiles: count => `+${count} more files`,
+    moreAgents: count => `+${count} more agents`,
+    queued: 'Queued',
+    waitingActivity: 'Waiting for activity',
+    steer: 'Steer',
+    steerPlaceholder: 'Instructions for this subagent',
+    steerQueued: 'Queued for the next checkpoint',
+    stopRequested: 'Stop requested',
+    requestRejected: 'The subagent did not accept the request',
     delegation: index => `Delegation ${index}`,
     workers: count => `${count} workers`,
     workersActive: count => `${count} active`,

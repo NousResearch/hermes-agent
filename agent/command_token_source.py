@@ -16,7 +16,7 @@ import logging
 import subprocess
 import threading
 import time
-from typing import Callable, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,11 @@ class CommandTokenSource:
         self._token = ""
         self._expires_at: float = 0.0
 
+    @property
+    def cache_identity(self) -> str:
+        """Stable catalog identity; token rotation must not mint on cache reads."""
+        return f"cmd:{self._command}"
+
     def __call__(self) -> str:
         with self._lock:
             if self._token and time.monotonic() < self._expires_at:
@@ -132,7 +137,7 @@ class CommandTokenSource:
             return token
 
 
-def build_command_token_provider(key_cmd: str, provider_label: str = "custom") -> Optional[Callable[[], str]]:
+def build_command_token_provider(key_cmd: str, provider_label: str = "custom") -> Optional[CommandTokenSource]:
     """A per-request token provider for *key_cmd*, or ``None`` when unset."""
     command = str(key_cmd or "").strip()
     return CommandTokenSource(command, provider_label) if command else None

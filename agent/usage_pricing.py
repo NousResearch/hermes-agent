@@ -66,6 +66,7 @@ CostSource = Literal[
     "official_docs_snapshot",
     "user_override",
     "custom_contract",
+    "modelark-proxy",
     "none",
 ]
 
@@ -1216,6 +1217,57 @@ def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     )
 
 
+# ModelArk (BytePlus ARK coding-plan BYOK) proxy pricing — 2026-09-08.
+#
+# The fleet runs the ModelArk flat-rate subscription (manifest
+# modelark-fleet-20260908), so these prices are NOT what we pay. They exist so
+# the per-card dollar caps (kanban max_cost), the cost ledger and the
+# watchdogs keep working: without a price the estimator records $0 and the
+# whole cap machine goes inert (measured: every ModelArk call landed with
+# estimated_cost_usd=0.0, cost_status="unknown"). Rates mirror the closest
+# bundled family entries and are a proxy for quota burn, calibrated to the
+# family list prices the fleet was previously tuned against.
+_MODELARK_PROXY: Dict[str, tuple[str, str]] = {
+    "deepseek-v4-flash-ga-260731": ("deepseek", "deepseek-v4-flash"),
+    "deepseek-v4-flash-260425": ("deepseek", "deepseek-v4-flash"),
+    "deepseek-v4-pro-ga-260813": ("deepseek", "deepseek-v4-pro"),
+    "deepseek-v4-pro-260425": ("deepseek", "deepseek-v4-pro"),
+    "glm-5-2-260617": ("fireworks", "glm-5p2"),
+    "gpt-oss-120b-250805": ("fireworks", "gpt-oss-120b"),
+    # seed-2-0-lite has no bundled family entry; gpt-oss-120b is the closest
+    # "general-purpose production" tier. Explicit proxy, documented as such.
+    "seed-2-0-lite-260228": ("fireworks", "gpt-oss-120b"),
+}
+
+
+def _modelark_proxy_entry(route: BillingRoute) -> Optional[PricingEntry]:
+    """Static proxy price for ModelArk ids on the coding-plan BYOK endpoint.
+
+    Scoped to the exact Ark host so a custom provider pointed anywhere else
+    keeps the existing unknown/unpriced behaviour.
+    """
+    if route.provider != "custom":
+        return None
+    if not base_url_host_matches(route.base_url or "", "ark.ap-southeast.bytepluses.com"):
+        return None
+    fam = _MODELARK_PROXY.get(route.model.lower())
+    if not fam:
+        return None
+    entry = _OFFICIAL_DOCS_PRICING.get(fam)
+    if entry is None:
+        return None
+    return PricingEntry(
+        input_cost_per_million=entry.input_cost_per_million,
+        output_cost_per_million=entry.output_cost_per_million,
+        cache_read_cost_per_million=entry.cache_read_cost_per_million,
+        cache_write_cost_per_million=entry.cache_write_cost_per_million,
+        request_cost=entry.request_cost,
+        source="modelark-proxy",
+        source_url="flat-rate BYOK — proxy for cap accounting, not billed",
+        pricing_version="modelark-proxy-2026-09",
+    )
+
+
 def _pricing_entry_from_metadata(
     metadata: Dict[str, Dict[str, Any]],
     model_id: str,
@@ -1282,6 +1334,9 @@ def get_pricing_entry(
     bundled_entry = _lookup_official_docs_pricing(route)
     if bundled_entry:
         return bundled_entry
+    proxy_entry = _modelark_proxy_entry(route)
+    if proxy_entry:
+        return proxy_entry
     if route.base_url:
         entry = _pricing_entry_from_metadata(
             fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),

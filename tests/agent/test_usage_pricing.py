@@ -909,3 +909,102 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+# ── ModelArk (BytePlus ARK coding-plan BYOK) proxy pricing — 2026-09-08 ──────
+# The fleet runs the ModelArk flat-rate subscription, so these prices are NOT
+# what we pay. They exist so the per-card dollar caps (kanban max_cost), the
+# cost ledger and the watchdogs keep working: without a price the estimator
+# records $0 and the whole cap machine goes inert. Each test pins both the
+# amount AND the cost_source so a regression that drops back to "unknown"
+# fails loudly instead of silently.
+
+
+def test_modelark_deepseek_v4_flash_ga_returns_proxy_price():
+    """deepseek-v4-flash-ga-260731 on the Ark endpoint prices as the deepseek
+    family entry ($0.14 in / $0.28 out / $0.0035 cache-read per 1M)."""
+    result = estimate_usage_cost(
+        "deepseek-v4-flash-ga-260731",
+        CanonicalUsage(input_tokens=10_000, output_tokens=1_000, cache_read_tokens=5_000),
+        provider="custom",
+        base_url="https://ark.ap-southeast.bytepluses.com/api/coding/v3",
+    )
+    # cache_read=$0.0028/M (deepseek pricing). 10k*$0.14 + 5k*$0.0028 + 1k*$0.28 per million
+    assert result.amount_usd == Decimal("0.001694")
+    assert result.status == "estimated"
+    assert result.source == "modelark-proxy"
+
+
+def test_modelark_deepseek_v4_pro_ga_returns_proxy_price():
+    """deepseek-v4-pro-ga-260813 prices at the pro family rate."""
+    result = estimate_usage_cost(
+        "deepseek-v4-pro-ga-260813",
+        CanonicalUsage(input_tokens=10_000, output_tokens=1_000),
+        provider="custom",
+        base_url="https://ark.ap-southeast.bytepluses.com/api/coding/v3",
+    )
+    # 10k*$0.435 + 1k*$0.87 (per million) = $0.00522
+    assert result.amount_usd == Decimal("0.00522")
+
+
+def test_modelark_glm_5_2_returns_proxy_price():
+    """glm-5-2-260617 proxies the glm-5p2 fireworks entry ($1.40 in / $4.40 out)."""
+    result = estimate_usage_cost(
+        "glm-5-2-260617",
+        CanonicalUsage(input_tokens=1_000, output_tokens=100),
+        provider="custom",
+        base_url="https://ark.ap-southeast.bytepluses.com/api/coding/v3",
+    )
+    # 1k*$1.40 + 100*$4.40 (per million) = $0.00184
+    assert result.amount_usd == Decimal("0.00184")
+
+
+def test_modelark_gpt_oss_120b_returns_proxy_price():
+    """gpt-oss-120b-250805 proxies the fireworks gpt-oss-120b entry."""
+    result = estimate_usage_cost(
+        "gpt-oss-120b-250805",
+        CanonicalUsage(input_tokens=1_000, output_tokens=100),
+        provider="custom",
+        base_url="https://ark.ap-southeast.bytepluses.com/api/coding/v3",
+    )
+    # 1k*$0.15 + 100*$0.60 (per million) = $0.00021
+    assert result.amount_usd == Decimal("0.00021")
+
+
+def test_modelark_seed_2_0_lite_returns_proxy_price():
+    """seed-2-0-lite-260228 has no family entry; explicitly documented to proxy
+    gpt-oss-120b (closest general-purpose tier)."""
+    result = estimate_usage_cost(
+        "seed-2-0-lite-260228",
+        CanonicalUsage(input_tokens=1_000, output_tokens=100),
+        provider="custom",
+        base_url="https://ark.ap-southeast.bytepluses.com/api/coding/v3",
+    )
+    assert result.amount_usd == Decimal("0.00021")
+    assert result.source == "modelark-proxy"
+
+
+def test_modelark_proxy_only_fires_on_ark_host():
+    """A custom provider pointed at any other base_url must NOT use the proxy.
+    Otherwise the unknown custom providers in the fleet get wrongly priced."""
+    result = estimate_usage_cost(
+        "deepseek-v4-flash-ga-260731",
+        CanonicalUsage(input_tokens=1_000, output_tokens=100),
+        provider="custom",
+        base_url="http://localhost:8080/api/v1",
+    )
+    assert result.amount_usd is None
+    assert result.status == "unknown"
+
+
+def test_modelark_proxy_unknown_model_returns_unknown():
+    """A ModelArk id that is not in the proxy map stays unknown — no silently
+    made-up number, no surprise billing."""
+    result = estimate_usage_cost(
+        "seed-2-0-pro-260328",
+        CanonicalUsage(input_tokens=1_000, output_tokens=100),
+        provider="custom",
+        base_url="https://ark.ap-southeast.bytepluses.com/api/coding/v3",
+    )
+    assert result.amount_usd is None
+    assert result.status == "unknown"

@@ -247,11 +247,31 @@ agent:main:{platform}:{chat_type}[:{chat_id}][:{thread_id}][:{participant_id}]
 - `participant_id` = `user_id_alt` or `user_id` (in that priority).
 - WhatsApp identifiers are canonicalized to handle JID/LID alias flips.
 
-### Special Case: WhatApp
+### Special Case: WhatsApp
 
 WhatsApp phone numbers go through `canonical_whatsapp_identifier()` which strips the
 `@s.whatsapp.net` suffix and normalizes to E.164 format. This prevents session fragmentation
 when the bridge returns different alias forms of the same phone number.
+
+### WhatsApp Notification Reply Ownership
+
+When a live Desktop or TUI session sends a WhatsApp notification through `hermes send`, Hermes
+stores every transport-confirmed outbound message ID with the originating session in a
+profile-local `notification-replies.db`. An authenticated native WhatsApp reply that quotes one
+of those messages is delivered to that existing owner session instead of becoming a turn in the
+ordinary WhatsApp chat session.
+
+The quote is an address, not authorization. Approval, clarification, and tool-safety checks still
+run in the owner session. Unquoted approval-like text is not assigned by proximity: while a live
+notification route exists, Hermes asks the sender to quote the specific notification. Ordinary
+unquoted chat continues in the normal WhatsApp session.
+
+Routes expire after seven days. Phone and LID forms are matched through the established WhatsApp
+identity mapping; Hermes does not guess that unknown identifiers are equivalent. Unknown or stale
+quotes do not acquire approval authority. Distinct native reply IDs may create distinct follow-up
+turns, while transport replay of the same reply ID is deduplicated. Delivery is currently supported
+for Desktop and TUI owner sessions; unsupported or closed owners retain a durable queued reply for
+an explicit supported resume rather than creating a new agent in the messaging gateway.
 
 ---
 

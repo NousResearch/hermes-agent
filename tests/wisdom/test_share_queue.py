@@ -491,6 +491,19 @@ def test_publication_receipt_links_to_portal_without_expanding_checks(
     assert view.actions[0].url == "https://portal.example/review/draft"
 
 
+@pytest.mark.parametrize("operation,title", [("install", "Installed"), ("update", "Updated")])
+def test_install_and_update_receipts_are_compact(operation, title):
+    view = interaction_view({
+        "state": "completed",
+        "operation": operation,
+        "facts": {"editorial_name": "Release Evidence Brief"},
+        "result": {},
+    })
+    assert view.summary == title
+    assert view.items[0].title == "Release Evidence Brief"
+    assert not view.items[0].detail
+
+
 def test_packaging_prompt_contains_full_schema(sharing):
     from hermes_wisdom.agent_led.agent import package_for_share
 

@@ -224,7 +224,7 @@ def interaction_view(result: dict, *, checks_expanded: bool = False) -> WisdomVi
         else:
             summary, detail = (
                 ("Installed" if result["operation"] == "install" else "Updated"),
-                "The requested operation is complete.",
+                "",
             )
         actions = []
         if outcome.get("portal_url"):

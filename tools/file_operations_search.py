@@ -218,7 +218,12 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
             if ':' in line:
                 path, n = line.rsplit(':', 1)
                 try:
-                    counts[path] = int(n)
+                    count = int(n)
+                    # GNU grep emits zero-count rows for files it inspected,
+                    # while ripgrep omits them. Keep count mode semantically
+                    # aligned across the fallback engines.
+                    if count:
+                        counts[path] = count
                 except ValueError:
                     pass
         return SearchResult(

@@ -8,6 +8,7 @@ import base64
 import hashlib
 import logging
 import mimetypes
+import os
 import re
 import uuid
 from pathlib import Path
@@ -30,6 +31,9 @@ FILE_MAX_BYTES = 20 * 1024 * 1024
 ABSOLUTE_MAX_BYTES = FILE_MAX_BYTES
 UPLOAD_CHUNK_SIZE = 512 * 1024
 MAX_UPLOAD_CHUNKS = 100
+# Chunked media uploads (init/chunk/finish) carry hundreds of KB of base64 per request and must not
+# share the short per-request control timeout, or ~1 MB+ files reliably time out (#105900). Env-tunable.
+DEFAULT_MEDIA_UPLOAD_TIMEOUT_SECONDS = 120.0
 VOICE_SUPPORTED_MIMES = {"audio/amr"}
 
 _IMAGE_MAGIC = ((b"\x89PNG\r\n\x1a\n", ".png"), (b"\xff\xd8\xff", ".jpg"), ((b"GIF87a", b"GIF89a"), ".gif"))
@@ -48,6 +52,25 @@ def _dict_at(container: Dict[str, Any], key: str) -> Dict[str, Any]:
 
 def _media_body(media_type: str, media_id: str) -> Dict[str, Any]:
     return {"msgtype": media_type, media_type: {"media_id": media_id}}
+
+
+def _media_upload_timeout_seconds() -> float:
+    """Per-request timeout for the chunked media upload flow (env ``WECOM_MEDIA_UPLOAD_TIMEOUT``).
+
+    Read at call time so ops can tune it without a code change; a missing, malformed, or non-positive
+    value falls back to the default rather than crashing the upload.
+    """
+    raw = os.getenv("WECOM_MEDIA_UPLOAD_TIMEOUT", "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning("[wecom] Ignoring invalid WECOM_MEDIA_UPLOAD_TIMEOUT=%r; using %.0fs", raw, DEFAULT_MEDIA_UPLOAD_TIMEOUT_SECONDS)
+        else:
+            if value > 0:
+                return value
+            logger.warning("[wecom] Ignoring non-positive WECOM_MEDIA_UPLOAD_TIMEOUT=%r; using %.0fs", raw, DEFAULT_MEDIA_UPLOAD_TIMEOUT_SECONDS)
+    return DEFAULT_MEDIA_UPLOAD_TIMEOUT_SECONDS
 
 
 class WeComMediaMixin:
@@ -246,8 +269,9 @@ class WeComMediaMixin:
         detected_type = self._detect_wecom_media_type(content_type)
         return {"data": data, "content_type": content_type, "file_name": resolved_name, "detected_type": detected_type, **self._apply_file_size_limits(len(data), detected_type, content_type)}
 
-    async def _checked_request(self, cmd: str, body: Dict[str, Any], operation: str) -> Dict[str, Any]:
-        self._raise_for_wecom_error(response := await self._send_request(cmd, body), operation)
+    async def _checked_request(self, cmd: str, body: Dict[str, Any], operation: str, *, timeout: Optional[float] = None) -> Dict[str, Any]:
+        request_kwargs = {} if timeout is None else {"timeout": timeout}
+        self._raise_for_wecom_error(response := await self._send_request(cmd, body, **request_kwargs), operation)
         return response
 
     async def _upload_media_bytes(self, data: bytes, media_type: str, filename: str) -> Dict[str, Any]:
@@ -256,15 +280,16 @@ class WeComMediaMixin:
         total_size, total_chunks = len(data), (len(data) + UPLOAD_CHUNK_SIZE - 1) // UPLOAD_CHUNK_SIZE
         if total_chunks > MAX_UPLOAD_CHUNKS:
             raise ValueError(f"File too large: {total_chunks} chunks exceeds maximum of {MAX_UPLOAD_CHUNKS} chunks")
+        upload_timeout = _media_upload_timeout_seconds()
         init_payload = {"type": media_type, "filename": filename, "total_size": total_size, "total_chunks": total_chunks, "md5": hashlib.md5(data).hexdigest()}
-        init_response = await self._checked_request(APP_CMD_UPLOAD_MEDIA_INIT, init_payload, "media upload init")
+        init_response = await self._checked_request(APP_CMD_UPLOAD_MEDIA_INIT, init_payload, "media upload init", timeout=upload_timeout)
         upload_id = str(_dict_at(init_response, "body").get("upload_id") or "").strip()
         if not upload_id:
             raise RuntimeError(f"media upload init failed: missing upload_id in response {init_response}")
         for chunk_index, start in enumerate(range(0, total_size, UPLOAD_CHUNK_SIZE)):  # official SDK uses 0-based chunk indexes
             chunk_b64 = base64.b64encode(data[start : start + UPLOAD_CHUNK_SIZE]).decode("ascii")
-            await self._checked_request(APP_CMD_UPLOAD_MEDIA_CHUNK, {"upload_id": upload_id, "chunk_index": chunk_index, "base64_data": chunk_b64}, f"media upload chunk {chunk_index}")
-        finish_response = await self._checked_request(APP_CMD_UPLOAD_MEDIA_FINISH, {"upload_id": upload_id}, "media upload finish")
+            await self._checked_request(APP_CMD_UPLOAD_MEDIA_CHUNK, {"upload_id": upload_id, "chunk_index": chunk_index, "base64_data": chunk_b64}, f"media upload chunk {chunk_index}", timeout=upload_timeout)
+        finish_response = await self._checked_request(APP_CMD_UPLOAD_MEDIA_FINISH, {"upload_id": upload_id}, "media upload finish", timeout=upload_timeout)
         finish_body = _dict_at(finish_response, "body")
         media_id = str(finish_body.get("media_id") or "").strip()
         if not media_id:

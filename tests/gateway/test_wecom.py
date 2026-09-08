@@ -355,6 +355,65 @@ class TestMediaUpload:
 
         assert connect_attempts == []
 
+    @staticmethod
+    def _upload_send_request_mock():
+        async def _fake_send_request(cmd, body, *, timeout=None):
+            if cmd == "aibot_upload_media_init":
+                return {"body": {"upload_id": "upload-1"}}
+            if cmd == "aibot_upload_media_finish":
+                return {"body": {"media_id": "media-1", "type": "file"}}
+            return {}
+
+        return AsyncMock(side_effect=_fake_send_request)
+
+    @pytest.mark.asyncio
+    async def test_upload_media_bytes_uses_generous_timeout(self, monkeypatch):
+        """init/chunk/finish must not share the short 15s control timeout (#105900)."""
+        from plugins.platforms.wecom.adapter import REQUEST_TIMEOUT_SECONDS, WeComAdapter
+        from plugins.platforms.wecom.media import DEFAULT_MEDIA_UPLOAD_TIMEOUT_SECONDS
+
+        monkeypatch.delenv("WECOM_MEDIA_UPLOAD_TIMEOUT", raising=False)
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_request = self._upload_send_request_mock()
+
+        # >1 chunk so an oversized file exercises multiple chunk requests.
+        data = b"x" * (512 * 1024 + 10)
+        result = await adapter._upload_media_bytes(data, "file", "report.xlsx")
+
+        assert result["media_id"] == "media-1"
+        timeouts = [call.kwargs.get("timeout") for call in adapter._send_request.await_args_list]
+        assert timeouts, "no upload requests were issued"
+        assert all(t == DEFAULT_MEDIA_UPLOAD_TIMEOUT_SECONDS for t in timeouts), timeouts
+        assert DEFAULT_MEDIA_UPLOAD_TIMEOUT_SECONDS != REQUEST_TIMEOUT_SECONDS
+        # init + 2 chunks + finish
+        assert len(timeouts) == 4
+
+    @pytest.mark.asyncio
+    async def test_upload_media_bytes_timeout_env_override(self, monkeypatch):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        monkeypatch.setenv("WECOM_MEDIA_UPLOAD_TIMEOUT", "250")
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_request = self._upload_send_request_mock()
+
+        await adapter._upload_media_bytes(b"tiny", "file", "note.txt")
+
+        timeouts = [call.kwargs.get("timeout") for call in adapter._send_request.await_args_list]
+        assert timeouts and all(t == 250.0 for t in timeouts), timeouts
+
+    @pytest.mark.asyncio
+    async def test_upload_media_bytes_invalid_timeout_env_falls_back(self, monkeypatch):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from plugins.platforms.wecom.media import DEFAULT_MEDIA_UPLOAD_TIMEOUT_SECONDS
+
+        for bad in ("not-a-number", "0", "-5"):
+            monkeypatch.setenv("WECOM_MEDIA_UPLOAD_TIMEOUT", bad)
+            adapter = WeComAdapter(PlatformConfig(enabled=True))
+            adapter._send_request = self._upload_send_request_mock()
+            await adapter._upload_media_bytes(b"tiny", "file", "note.txt")
+            timeouts = [call.kwargs.get("timeout") for call in adapter._send_request.await_args_list]
+            assert all(t == DEFAULT_MEDIA_UPLOAD_TIMEOUT_SECONDS for t in timeouts), (bad, timeouts)
+
 
 class TestSend:
 

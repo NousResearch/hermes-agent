@@ -31,6 +31,7 @@ import {
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
+import { BotSessionsList } from './bot-sessions'
 import {
   $botChatFocused,
   $focusedBotOwner,
@@ -307,9 +308,10 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   )
 
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
-      <ContextMenuContent>
+    <div>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+        <ContextMenuContent>
         <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
@@ -443,6 +445,8 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         )}
       </ContextMenuContent>
     </ContextMenu>
+      <BotSessionsList bot={bot} />
+    </div>
   )
 }
 

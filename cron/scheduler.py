@@ -46,7 +46,7 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
 from cron.scheduler_identity import (
-    clear_cron_job_identity, cron_job_identity_scope, set_cron_job_identity)
+    cron_job_identity_scope, reset_cron_job_identity, set_cron_job_identity)
 
 logger = logging.getLogger(__name__)
 
@@ -2141,7 +2141,7 @@ class _CronRunScope:
         )
         for name in _CRON_DELIVERY_VARS:
             _VAR_MAP[name].set("")
-        set_cron_job_identity(job, job_id)
+        self._cron_identity_tokens = set_cron_job_identity(job, job_id)
         # Workdir binds to the per-run task id (tool-layer cwd authority) instead of mutating
         # global TERMINAL_CWD; _SESSION_CWD above remains the prompt/context-file authority.
         self.task_id = f"cron:{job_id}:{execution_id or job.get('execution_id') or uuid.uuid4().hex}"
@@ -2173,7 +2173,7 @@ class _CronRunScope:
             exit_non_dispatcher_owned_context(self._non_dispatcher_token)
         for name in _CRON_DELIVERY_VARS:
             self._var_map[name].set("")
-        clear_cron_job_identity()
+        reset_cron_job_identity(self._cron_identity_tokens)
 
 
 def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:

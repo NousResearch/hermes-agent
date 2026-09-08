@@ -208,6 +208,25 @@ def test_agent_backed_cron_subprocesses_inject_stored_origin_without_leaking(
         scope.enter()
         env = build_subprocess_env()
         assert {name: env.get(name, "") for name in names} == expected
+
+        inner = _CronRunScope(
+            {"origin": {"platform": "signal", "user_id": "987654321"}},
+            "inner-job",
+            "inner-execution",
+        )
+        try:
+            inner.enter()
+            inner_env = build_subprocess_env()
+            assert {name: inner_env.get(name, "") for name in names} == {
+                "HERMES_CRON_JOB_ID": "inner-job",
+                "HERMES_CRON_JOB_ORIGIN_USER_ID": "987654321",
+                "HERMES_CRON_JOB_ORIGIN_PLATFORM": "signal",
+            }
+        finally:
+            inner.exit()
+
+        restored = build_subprocess_env()
+        assert {name: restored.get(name, "") for name in names} == expected
     finally:
         scope.exit()
 

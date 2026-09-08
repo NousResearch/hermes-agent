@@ -6,13 +6,6 @@ from contextlib import contextmanager
 from typing import Iterator
 
 
-CRON_JOB_IDENTITY_VARS = (
-    "HERMES_CRON_JOB_ID",
-    "HERMES_CRON_JOB_ORIGIN_USER_ID",
-    "HERMES_CRON_JOB_ORIGIN_PLATFORM",
-)
-
-
 def cron_job_identity_values(job: dict, job_id: str) -> dict[str, str]:
     """Identity persisted with a cron job, distinct from live sender-session state."""
     raw_origin = job.get("origin")
@@ -26,20 +19,21 @@ def cron_job_identity_values(job: dict, job_id: str) -> dict[str, str]:
     }
 
 
-def set_cron_job_identity(job: dict, job_id: str) -> None:
-    """Bind one job's persisted identity in the current task context."""
+def set_cron_job_identity(job: dict, job_id: str) -> list[tuple]:
+    """Bind one job's persisted identity and return tokens for exact restoration."""
     from gateway.session_context import _VAR_MAP
 
+    tokens = []
     for name, value in cron_job_identity_values(job, job_id).items():
-        _VAR_MAP[name].set(value)
+        var = _VAR_MAP[name]
+        tokens.append((var, var.set(value)))
+    return tokens
 
 
-def clear_cron_job_identity() -> None:
-    """Clear cron identity so later work cannot inherit a completed job."""
-    from gateway.session_context import _VAR_MAP
-
-    for name in CRON_JOB_IDENTITY_VARS:
-        _VAR_MAP[name].set("")
+def reset_cron_job_identity(tokens: list[tuple]) -> None:
+    """Restore the task-local identity that preceded this cron run."""
+    for var, token in reversed(tokens):
+        var.reset(token)
 
 
 @contextmanager

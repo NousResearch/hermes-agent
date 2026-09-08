@@ -124,3 +124,19 @@ def test_desktop_relaunch_waits_for_an_in_place_rebuild() -> None:
     assert "if ((Get-Date) -ge $relaunchDeadline)" in body
     assert "Start-Sleep -Milliseconds 500" in body
     assert "[System.Windows.Forms.Application]::DoEvents()" in body
+
+
+def test_desktop_verification_uses_install_root_not_process_cwd() -> None:
+    source = _read()
+
+    assert "$verifyRoot = $InstallRoot -replace" in source
+    assert "verify_windows_desktop_update(Path(r'$verifyRoot'))" in source
+    assert "verify_windows_desktop_update(Path.cwd())" not in source
+
+
+def test_desktop_verification_retries_transient_publication_failures() -> None:
+    source = _read()
+
+    assert "for ($attempt = 1; $attempt -le 15; $attempt++)" in source
+    assert "desktop verification not ready yet" in source
+    assert "Start-Sleep -Seconds 2" in source

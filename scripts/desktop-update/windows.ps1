@@ -1606,8 +1606,21 @@ try {
 
     # A zero-exit update is not proof that the runtime survived the update.
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
-        $verifyCode = "import hermes_cli.main; from pathlib import Path; from hermes_cli.desktop_update_verify import verify_windows_desktop_update; verify_windows_desktop_update(Path.cwd())"
-        $verify = Invoke-HermesStep $pythonExe @("-c", $verifyCode) "verify"
+        # Invoke-HermesStep inherits the hand-off host's working directory,
+        # which is not guaranteed to be the Hermes checkout. Path.cwd() made
+        # the verifier inspect the wrong tree and report a false missing exe.
+        $verifyRoot = $InstallRoot -replace '\\', '/'
+        $verifyCode = "import hermes_cli.main; from pathlib import Path; from hermes_cli.desktop_update_verify import verify_windows_desktop_update; verify_windows_desktop_update(Path(r'$verifyRoot'))"
+        $verify = $null
+        for ($attempt = 1; $attempt -le 15; $attempt++) {
+            $verify = Invoke-HermesStep $pythonExe @("-c", $verifyCode) "verify"
+            if ($verify.Code -eq 0) { break }
+            if ($verify.Output -notmatch "updated Desktop executable is missing|updated Desktop archive or main entry is invalid") { break }
+            if ($attempt -lt 15) {
+                Write-HandoffLog "desktop verification not ready yet (attempt $attempt/15); retrying in 2s"
+                Start-Sleep -Seconds 2
+            }
+        }
         if ($verify.Code -ne 0) {
             $finalCode = 8
             $finalMsg = "The updated Hermes runtime or Desktop build failed verification. Repair the installation and review antivirus quarantine before retrying."

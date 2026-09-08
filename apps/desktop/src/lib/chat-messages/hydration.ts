@@ -170,7 +170,7 @@ function messageReactions(metadata: SessionMessage['display_metadata']): Message
 
 // Only parse producer-owned boundaries, never render the model's task preamble.
 // Older backends can persist an unwrapped result rather than an envelope.
-function asyncResultBody(content: string): string | undefined {
+export function asyncResultBody(content: string): string | undefined {
   let bodies = [content]
 
   if (content.startsWith('[ASYNC DELEGATION')) {

@@ -64,7 +64,8 @@ def test_explicit_display_kind_wins_over_legacy_marker():
 
 
 @pytest.mark.parametrize("shutdown", [False, True])
-def test_completion_start_is_typed_only_at_dispatch(monkeypatch, shutdown):
+@pytest.mark.parametrize("status", ["completed", "failed"])
+def test_completion_start_is_typed_only_at_dispatch(monkeypatch, shutdown, status):
     import queue
     import threading
 
@@ -83,8 +84,9 @@ def test_completion_start_is_typed_only_at_dispatch(monkeypatch, shutdown):
         "type": "async_delegation",
         "session_key": "owner",
         "delegation_id": "deleg_live",
-        "status": "completed",
-        "summary": "Result",
+        "status": status,
+        "summary": "A **useful finding** with [evidence](https://example.com/evidence).",
+        "error": "Worker failed: run `npm test` to reproduce.",
     }
     pending = queue.Queue()
     pending.put(event)
@@ -122,14 +124,15 @@ def test_completion_start_is_typed_only_at_dispatch(monkeypatch, shutdown):
 
     assert len(dispatched) == 1
     starts = [payload for kind, payload in emitted if kind == "message.start"]
-    assert starts == [
-        {
-            "display_kind": "async_delegation_complete",
-            "display_metadata": server._async_delegation_display_metadata(event),
-        }
-    ]
-    assert dispatched[0][1] == starts[0]
-    assert dispatched[0][0] == format_process_notification(event)
+    assert len(starts) == 1
+    text = format_process_notification(event)
+    assert starts[0].get("text") == text
+    display = {
+        "display_kind": "async_delegation_complete",
+        "display_metadata": server._async_delegation_display_metadata(event),
+    }
+    assert {key: starts[0][key] for key in display} == display
+    assert dispatched[0] == (text, display)
     assert completed == [(event, "claim")]
 
 

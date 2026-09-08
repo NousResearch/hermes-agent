@@ -1,9 +1,13 @@
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { chatMessageText } from '@/lib/chat-messages'
+import { toRuntimeMessage } from '@/lib/chat-runtime'
+
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
 const SID = 'timeline-session'
+const hydrateFromStoredSession = vi.fn(async () => undefined)
 
 let stream: MessageStreamHarness
 
@@ -18,6 +22,7 @@ describe('live transcript timeline events', () => {
     event('status.update', 13, { kind: 'process', text: 'An internal notification is queued.' })
     expect(stream.state(SID).messages.some(message => message.displayKind)).toBe(false)
     event('message.start', 14, { display_kind: 'async_delegation_complete', display_metadata: { task_count: 1 } })
+    expect(stream.state(SID).messages.at(-1)?.asyncResult).toBeUndefined()
     event('message.delta', 15, { text: 'Review finished.' })
     event('message.complete', 16, { text: 'Review finished.' })
     expect(stream.state(SID).messages.map(message => [message.role, message.displayKind])).toEqual([
@@ -27,8 +32,57 @@ describe('live transcript timeline events', () => {
     ])
   })
 
+  it.each([
+    ['completed', 'A **useful finding** with [evidence](https://example.com/evidence).'],
+    [
+      'failed',
+      'The subagent did not complete successfully (status=failed).\nWorker failed: run `npm test` to reproduce.'
+    ]
+  ])('keeps %s worker output through live events before history hydration', async (status, result) => {
+    const content = [
+      '[ASYNC DELEGATION COMPLETE — deleg_live]',
+      'A background subagent you dispatched earlier has finished.',
+      'Original goal: Inspect the change',
+      `Status: ${status}   API calls: 1   Duration: 1s`,
+      '--- RESULT ---',
+      result,
+      'Full live transcript (complete tool/assistant trace): /tmp/worker-transcript.jsonl'
+    ].join('\n')
+
+    const payload = {
+      text: content,
+      display_kind: 'async_delegation_complete',
+      display_metadata: {
+        task_count: 1,
+        completed_count: status === 'completed' ? 1 : 0,
+        failed_count: status === 'failed' ? 1 : 0
+      }
+    }
+
+    event('message.start', 20, payload)
+
+    const boundary = stream.state(SID).messages[0]
+    expect(boundary.asyncResult).toBe(result)
+    expect(boundary.role).toBe('system')
+    expect(chatMessageText(boundary)).toBe('1 background agent finished')
+    expect(toRuntimeMessage(boundary).metadata.custom?.asyncResult).toBe(result)
+    expect(payload.text).toBe(content)
+
+    // Even a no-delta failure of the follow-up must not erase the worker result.
+    await event('message.complete', 21, {
+      status: 'error',
+      error: 'Follow-up provider unavailable',
+      text: 'Error: Follow-up provider unavailable'
+    })
+    expect(stream.state(SID).messages[0]).toBe(boundary)
+    expect(stream.state(SID).messages.at(-1)?.error).toBeTruthy()
+    expect(stream.state(SID).messages.map(chatMessageText).join('\n')).not.toContain('[ASYNC DELEGATION')
+    expect(hydrateFromStoredSession).not.toHaveBeenCalled()
+  })
+
   beforeEach(async () => {
-    stream = renderMessageStream(SID)
+    hydrateFromStoredSession.mockClear()
+    stream = renderMessageStream(SID, { hydrateFromStoredSession })
   })
 
   afterEach(() => {

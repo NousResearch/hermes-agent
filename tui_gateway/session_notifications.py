@@ -141,7 +141,8 @@ def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwa
     try:
         display = {key: kwargs[key] for key in ("display_kind", "display_metadata") if key in kwargs}
         if display:
-            _emit("message.start", sid, display)
+            # Reuse the history display projection without changing the model turn.
+            _emit("message.start", sid, {**display, "text": text})
         else:
             _emit("message.start", sid)
         _run_prompt_submit(rid, sid, session, text, **kwargs)

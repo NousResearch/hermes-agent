@@ -10,23 +10,36 @@ interface BackgroundUpdatesProps {
   indices: number[]
 }
 
-/** Presentation only: keep the actual handoff replies available through the
- * existing message renderer. Never guess from prose whether a result matters. */
+/** Only internal notifications are collapsible. Their assistant replies stay
+ * in the transcript, regardless of what triggered them or what they say. */
 export function BackgroundUpdates({ components, count, indices }: BackgroundUpdatesProps) {
   const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
 
-  const needsAttention = useAuiState(
-    s =>
-      (s.thread.isRunning && indices.includes(s.thread.messages.length - 1)) ||
-      indices.some(index => {
-        const message = s.thread.messages[index]
+  const needsAttention = useAuiState(s => {
+    let replyIndex = indices[indices.length - 1] + 1
+    let hasReply = false
 
-        return (
-          message?.role === 'assistant' && (message.status?.type === 'running' || message.status?.type === 'incomplete')
-        )
-      })
-  )
+    // A settled tool/reasoning row is not a deliverable. Check the whole
+    // response sequence, stopping at the next user or system boundary.
+    for (; replyIndex < s.thread.messages.length; replyIndex++) {
+      const reply = s.thread.messages[replyIndex]
+
+      if (reply.role !== 'assistant') {
+        break
+      }
+
+      if (reply.status?.type !== 'complete') {
+        return true
+      }
+
+      hasReply ||=
+        reply.metadata?.custom?.interim !== true &&
+        reply.content.some(part => part.type === 'text' && part.text.trim().length > 0)
+    }
+
+    return !hasReply || (s.thread.isRunning && replyIndex === s.thread.messages.length)
+  })
 
   const open = expanded || needsAttention
 

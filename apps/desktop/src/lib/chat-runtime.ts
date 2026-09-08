@@ -4,7 +4,7 @@ import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
-import { isLegacyDelegationCompletion } from '@/lib/chat-messages/hydration'
+import { asyncResultBody, isLegacyDelegationCompletion } from '@/lib/chat-messages/hydration'
 import { normalize } from '@/lib/text'
 import type { ComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
@@ -430,6 +430,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       ...message,
       role: 'system',
       displayKind: 'async_delegation_complete',
+      asyncResult: message.asyncResult ?? asyncResultBody(chatMessageText(message).trimStart()),
       parts: [textPart('background agent work finished')]
     }
   }

@@ -131,7 +131,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
                 ...toChatMessages([
                   {
                     role: 'user',
-                    content: '',
+                    content: coerceGatewayText(payload.text),
                     display_kind: payload.display_kind,
                     display_metadata: payload.display_metadata,
                     timestamp: occurredAt

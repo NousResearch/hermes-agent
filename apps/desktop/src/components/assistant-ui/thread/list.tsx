@@ -233,14 +233,13 @@ export function buildGroups(signature: string): MessageGroup[] {
       let weight = message.weight
       let count = 1
 
-      while (i + 1 < messages.length && ['assistant', 'background'].includes(messages[i + 1].role)) {
+      // A completion can trigger the user's actual final answer, not just an
+      // acknowledgement. Only notification rows belong behind the disclosure.
+      while (i + 1 < messages.length && messages[i + 1].role === 'background') {
         const next = messages[++i]
         indices.push(next.index)
         weight += next.weight
-
-        if (next.role === 'background') {
-          count++
-        }
+        count++
       }
 
       groups.push({ id: message.id, indices, kind: 'background', count, weight })

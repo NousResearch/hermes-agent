@@ -102,6 +102,93 @@ def _is_path_redirect(path: Path) -> bool:
         return False
 
 
+def _validate_publish_target(skill_dir: Path) -> Optional[str]:
+    """Last-line guard before the first mutation in ``_create_skill``.
+
+    Runs INSIDE ``live_skill_publish_guard`` so the check and the write it
+    protects are serialized against a concurrent publisher (checking before
+    the lock would be a TOCTOU window).
+
+    A symlink/junction planted at the category directory (or at the skill
+    directory itself) makes ``mkdir(parents=True, exist_ok=True)`` +
+    ``atomic_write_text`` publish THROUGH the redirect into content outside
+    every skills root. Refuse fail-closed instead. Two checks:
+
+      (1) any component strictly below an approved skills root that is a
+          symlink or junction;
+      (2) a target whose resolved path escapes every approved skills root.
+
+    An "approved skills root" is anything ``_resolve_skill_dir`` is willing
+    to return: the local skills dir and the configured ``skills.create_dir``
+    (even if it does not yet exist as a directory — it is about to be
+    created on first write). External skill dirs (``skills.external_dirs``)
+    are intentionally EXCLUDED: they are discovery-only by policy and
+    ``_resolve_skill_dir`` never targets them. This matches the test that
+    ``test_skill_create_dir::TestCreateRouting`` relies on: a fresh
+    ``skills.create_dir`` is accepted as a publication target on the very
+    first write, while an external skill tree remains read-only to the
+    agent.
+
+    The refusal wording is deliberately distinct from the duplicate-name
+    refusal so the caller can tell "poisoned tree" from "name taken".
+
+    Returns an error string to refuse on, or ``None`` when publication is
+    safe. No filesystem mutation.
+    """
+    # Build the approved-roots set: everything _resolve_skill_dir accepts.
+    approved_roots: list[Path] = []
+    from tools import skill_manager_tool as _smt
+    approved_roots.append(_smt._skills_dir())
+    try:
+        from agent.skill_utils import get_skill_create_dir
+        create_dir = get_skill_create_dir()
+        if create_dir is not None:
+            approved_roots.append(create_dir)
+    except Exception:
+        logger.debug("approved-roots enumeration failed", exc_info=True)
+    # Resolve once for the (2) check
+    try:
+        resolved_skill_dir = skill_dir.resolve()
+    except OSError:
+        resolved_skill_dir = skill_dir
+    resolved_approved: list[Path] = []
+    for r in approved_roots:
+        try:
+            resolved_approved.append(r.resolve())
+        except OSError:
+            resolved_approved.append(r)
+    # (1) Reject a redirect on any component strictly below an approved root.
+    # The root itself is excluded: legitimate setups symlink HERMES_HOME (or
+    # /tmp on macOS), and that is not an escape.
+    for approved_root, resolved_root in zip(approved_roots, resolved_approved):
+        try:
+            relative = skill_dir.relative_to(approved_root)
+        except ValueError:
+            continue
+        probe = approved_root
+        for part in relative.parts:
+            probe = probe / part
+            if _is_path_redirect(probe):
+                return (
+                    f"Refusing to publish '{skill_dir}': the path component "
+                    f"'{probe}' is a symlink/junction redirect. Publication "
+                    f"would write outside the skills root. Remove the link "
+                    f"if this location is intended."
+                )
+    # (2) Reject a target whose resolved location escapes every approved root.
+    for resolved_root in resolved_approved:
+        try:
+            resolved_skill_dir.relative_to(resolved_root)
+            return None  # strictly inside at least one root → safe
+        except ValueError:
+            continue
+    return (
+        f"Refusing to publish '{skill_dir}': resolved to "
+        f"'{resolved_skill_dir}', outside every approved skills root. "
+        f"Publication is refused fail-closed."
+    )
+
+
 def _validate_delete_target(skill_dir: Path) -> Optional[str]:
     """Last-line guard before rmtree: even a poisoned tree must never delete (1) a path outside
     every known skills root, (2) a skills root itself, (3) a symlink/junction (rmtree follows it).

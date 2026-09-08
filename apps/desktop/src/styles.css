@@ -2224,6 +2224,10 @@ button[data-slot='aui_msg-reactions'] svg {
 .tool-ticker {
   height: var(--conversation-line-height);
   overflow: hidden;
+  /* clip beats hidden when an ancestor opacity stacking context would
+     otherwise let the transformed reel paint old rows through the window. */
+  overflow: clip;
+  isolation: isolate;
 }
 
 .tool-ticker__reel {

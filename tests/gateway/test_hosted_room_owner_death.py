@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 
 import pytest
 
@@ -102,6 +103,57 @@ def _proof(store, task, **overrides) -> state.OwnerDeathProof:
 
 
 # --- the column ---------------------------------------------------------------
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize("proven", [False, True])
+def test_not_admitted_deferral_clears_only_its_proven_attempt(store, proven):
+    from gateway.hosted_room_owner_probe import ALIVE, probe_owner_incarnation
+
+    db, identity, lease, clock = store["db"], store["identity"], store["lease"], store["clock"]
+    attempt = store["attempt"]
+    if proven:
+        task = state.defer_not_admitted_task(db, attempt, reason="member_unavailable", clock=clock)
+    else:
+        uncertain = _make_indeterminate(store)
+        attempt = replace(attempt, cancel_generation=uncertain["cancel_generation"])
+        task = state.defer_indeterminate_task(
+            db, identity, lease, expected_execution_generation=attempt.execution_generation,
+            expected_cancel_generation=attempt.cancel_generation, reason="member_unavailable", clock=clock)
+    # Replays are read-only, including old/ambiguous deferred rows with the same reason.
+    replay = state.defer_not_admitted_task(db, attempt, reason="member_unavailable", clock=clock)
+    assert replay["idempotent"] is True
+    assert state.get_task(db, identity) == task
+    if not proven:
+        assert probe_owner_incarnation(task["owner_descriptor"]) == ALIVE
+        with pytest.raises(state.InvalidTaskTransitionError, match="without proof"):
+            state.requeue_deferred_task(
+                db, identity, lease, expected_execution_generation=attempt.execution_generation,
+                expected_cancel_generation=attempt.cancel_generation, clock=clock)
+        assert state.get_task(db, identity) == task
+        return
+    assert task["admitted_at"] is None and task["owner_descriptor"] is None
+    state.requeue_deferred_task(
+        db, identity, lease, expected_execution_generation=attempt.execution_generation,
+        expected_cancel_generation=attempt.cancel_generation, clock=clock)
+    successor = state.start_task(db, identity, lease, expected_cancel_generation=0, clock=clock)
+    state.fence_task_admission(db, successor, clock=clock, owner_descriptor=store["native"])
+    before = state.get_task(db, identity)
+    with pytest.raises(state.StaleTaskError):
+        state.defer_not_admitted_task(db, attempt, reason="member_unavailable", clock=clock)
+    assert state.get_task(db, identity) == before
+    # Even matching execution/cancel generations cannot borrow a successor's run lease.
+    store["clock_value"][0] = lease.expires_at + 1
+    next_lease = state.acquire_lease(
+        db, room_id=ROOM_ID, gateway_id=GATEWAY, authority_epoch=1,
+        process_generation="successor", ttl_seconds=10_000, clock=clock)
+    with pytest.raises(state.StaleLeaseError):
+        state.defer_not_admitted_task(db, successor, reason="member_unavailable", clock=clock)
+    with pytest.raises(state.StaleTaskError):
+        state.defer_not_admitted_task(
+            db, replace(successor, lease=next_lease), reason="member_unavailable", clock=clock)
+    assert state.get_task(db, identity) == before
+
 
 def test_admission_stamps_the_descriptor_and_the_stamp_together(store):
     task = state.get_task(store["db"], store["identity"])

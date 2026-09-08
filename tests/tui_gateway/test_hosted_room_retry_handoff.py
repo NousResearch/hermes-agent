@@ -12,6 +12,8 @@ from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
+from tests.tui_gateway.test_hosted_room_native_phase1 import native as native
+from tests.tui_gateway.test_hosted_room_produced_media import room as native_room
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC, _server
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 from tui_gateway.hosted_room_service import HostedRoomService
@@ -33,6 +35,59 @@ def test_legacy_admission_does_not_gain_previously_omitted_member_files():
 class RefusingRPC(_FakeRPC):
     def submit(self, **kwargs):
         raise PeerRunsHTTPError("synthetic unavailable", not_admitted=True, retryable=True)
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize("handoff", [False, True])
+def test_native_not_admitted_deferral_retries_with_live_owner(native, native_room, monkeypatch, handoff):
+    from gateway.hosted_room_owner_probe import ALIVE, probe_owner_incarnation
+
+    service = native_room
+    binding = service.bindings()[0]
+    service.send(room_id=binding.room_id, event_id="retry-proof", payload={"text": "@default check this"})
+    task = driver.list_tasks(service.db_path, room_id=binding.room_id, status="queued")[0]
+    session_key = service.session_key
+    agent = native.make_agent("retry-proof")
+    agent.session_id = session_key
+    native.ready_agent(service.session_id)
+    submit = native.srv._methods["prompt.submit"]
+    fenced = []
+
+    def busy_submit(rid, params):
+        session = native.record(params["session_id"])
+        assert session["session_key"] == session_key
+        fenced.append(driver.get_task(service.db_path, task["identity"]))
+        # A session becomes busy after resolution, at the actual native submit boundary.
+        with session["history_lock"]:
+            session["running"] = True
+        try:
+            response = submit(rid, params)
+            assert response["error"]["code"] == 4091
+            return response
+        finally:
+            with session["history_lock"]:
+                session["running"] = False
+
+    monkeypatch.setitem(native.srv._methods, "prompt.submit", busy_submit)
+    service.runtime._process_room(binding)
+    assert len(fenced) == 1
+    descriptor = fenced[0]["owner_descriptor"]
+    assert fenced[0]["admitted_at"] is not None
+    assert descriptor["runtime_session_id"] == service.session_id
+    assert descriptor["stored_session_key"] == session_key
+    assert probe_owner_incarnation(descriptor) == ALIVE
+    deferred = driver.get_task(service.db_path, task["identity"])
+    assert deferred["status"] == "deferred"
+    assert not agent.invocations
+    if handoff:
+        lease = service.runtime._leases[binding.room_id]
+        driver.release_lease(service.db_path, lease, clock=service.runtime.clock)
+        service = HostedRoomService(native.srv, db_path=service.db_path)
+        monkeypatch.setattr(service, "local_profiles", lambda: ("default", "peer-profile"))
+    retried = service.retry_room_task(binding.room_id, task_id=task["identity"].task_id)
+    assert retried["status"] == "queued"
+    assert deferred["admitted_at"] is None and deferred["owner_descriptor"] is None
+    assert probe_owner_incarnation(descriptor) == ALIVE
 
 
 def _service(tmp_path, monkeypatch):

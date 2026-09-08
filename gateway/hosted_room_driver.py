@@ -1376,18 +1376,24 @@ def defer_not_admitted_task(
 ) -> dict[str, Any]:
     """Publish a proven pre-admission outage without blocking later members."""
 
+    _check_same_room(attempt.lease, attempt.identity)
     reason = _identifier(reason, label="defer_reason")
     result_json = _canonical_json({"reason": reason, "retryable": True})
     now = _timestamp(clock)
     with _transaction(db_path) as conn:
         _require_active_lease(conn, attempt.lease, now=now)
         row = _load_task(conn, attempt.identity)
+        if row is None or (
+            row["run_gateway_id"], row["run_process_generation"], row["run_lease_generation"]
+        ) != _run_fence(attempt.lease):
+            raise StaleTaskError("not-admitted task attempt lost its fence")
         if (
             row["status"] == "deferred"
             and int(row["execution_generation"]) == attempt.execution_generation
             and int(row["cancel_generation"]) == attempt.cancel_generation
             and row["result_json"] == result_json
         ):
+            # Replay is read-only: a persisted deferral alone is not negative admission proof.
             return _task_from_row(row, idempotent=True)
         if (
             row["status"] != "running"
@@ -1396,10 +1402,11 @@ def defer_not_admitted_task(
         ):
             raise StaleTaskError("running task generation changed during deferral")
         updated = conn.execute(
-            """UPDATE hosted_room_driver_tasks
-                  SET status='deferred', result_json=?, terminal_at=?, updated_at=?
+            f"""UPDATE hosted_room_driver_tasks
+                  SET status='deferred', result_json=?, terminal_at=?, updated_at=?,
+                      admitted_at=NULL, owner_descriptor=NULL
                 WHERE room_id=? AND task_id=? AND status='running'
-                  AND execution_generation=? AND cancel_generation=?""",
+                  AND execution_generation=? AND cancel_generation=? AND {_RUN_FENCE}""",
             (
                 result_json,
                 now,
@@ -1408,6 +1415,7 @@ def defer_not_admitted_task(
                 attempt.identity.task_id,
                 attempt.execution_generation,
                 attempt.cancel_generation,
+                *_run_fence(attempt.lease),
             ),
         )
         if updated.rowcount != 1:

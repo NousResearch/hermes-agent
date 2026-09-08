@@ -2295,6 +2295,8 @@ export interface Translations {
     agents: string
     background: (count: number) => string
     goalActive: string
+    needsYou: string
+    needsYouCount: (count: number) => string
     goalBlocked: string
     goalDone: string
     goalPaused: string
@@ -3115,6 +3117,8 @@ export interface Translations {
       lateAnswer: (question: string, choice: string) => string
       lateAnswerTip: string
       lateAnswerHint: string
+      answerBelow: string
+      answerBelowCount: (count: number) => string
     }
     mcpSetup: {
       installTitle: (server: string) => string

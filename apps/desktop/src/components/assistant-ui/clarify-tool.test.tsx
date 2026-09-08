@@ -9,7 +9,7 @@ import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { hiddenPaneProps } from '@/components/pane-shell/pane-visibility'
 import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { I18nProvider } from '@/i18n'
-import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
+import { $clarifyDockedSessions, clearClarifyRequest, registerClarifyDock, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
 import { $activeSessionId, _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
@@ -172,6 +172,48 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     expect(screen.getByText('Which deployment target?')).toBeTruthy()
     expect(screen.queryByRole('status', { name: /loading question/i })).toBeNull()
     expect(screen.getByRole('button', { name: /Continue/ }).hasAttribute('disabled')).toBe(true)
+  })
+})
+
+describe('ClarifyTool inline card while the composer docks the question', () => {
+  afterEach(() => {
+    $clarifyDockedSessions.set({})
+  })
+
+  it('collapses to a marker with no live form or shortcut ownership when the session is docked', () => {
+    const release = registerClarifyDock('session-1')
+    renderLiveClarify()
+
+    // The question is still readable where the agent asked it…
+    expect(screen.getByText('Which deployment target?')).toBeTruthy()
+    expect(document.querySelector('[data-clarify-docked]')).toBeTruthy()
+    // …but the ONE live form (choices, Continue, key shortcuts) lives in the panel.
+    expect(document.querySelector('[data-clarify-choices]')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /Answer below/ })).toBeTruthy()
+
+    release()
+  })
+
+  it('restores the full inline form once the dock releases (transcript with no composer)', () => {
+    const release = registerClarifyDock('session-1')
+    renderLiveClarify()
+
+    expect(document.querySelector('[data-clarify-choices]')).toBeNull()
+
+    act(() => release())
+
+    expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Continue/ })).toBeTruthy()
+  })
+
+  it('keeps the full inline form for a session that is NOT the docked one', () => {
+    const release = registerClarifyDock('session-other')
+    renderLiveClarify()
+
+    expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
+
+    release()
   })
 })
 

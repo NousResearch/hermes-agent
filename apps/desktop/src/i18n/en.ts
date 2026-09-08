@@ -2701,6 +2701,8 @@ export const en: Translations = {
     agents: 'Agents',
     background: count => `${count} Background`,
     goalActive: 'Goal active',
+    needsYou: 'Needs you',
+    needsYouCount: count => `Needs you · ${count} questions`,
     goalBlocked: 'Goal blocked',
     goalDone: 'Goal done',
     goalPaused: 'Goal paused',
@@ -3578,7 +3580,9 @@ export const en: Translations = {
       questionProgress: (answered, total) => `${answered} of ${total} answered`,
       lateAnswer: (question, choice) => `Re: "${question}" — my answer: ${choice}`,
       lateAnswerTip: 'Draft this answer as a follow-up message',
-      lateAnswerHint: 'This prompt is no longer waiting. Pick an option to draft it as a follow-up message.'
+      lateAnswerHint: 'This prompt is no longer waiting. Pick an option to draft it as a follow-up message.',
+      answerBelow: 'Answer below, next to the input',
+      answerBelowCount: count => `${count} questions — answer below, next to the input`
     },
     mcpSetup: {
       installTitle: server => `Add the ${server} MCP server?`,

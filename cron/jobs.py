@@ -2216,7 +2216,17 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
             _complete_job_record(job)
             return
 
-    job["next_run_at"] = compute_next_run(job["schedule"], now)
+    # Compute next run — protect against exceptions so the caller still reaches
+    # save_jobs() and the job doesn't get stuck with a null next_run_at.
+    try:
+        job["next_run_at"] = compute_next_run(job["schedule"], now)
+    except Exception as exc:
+        # logger.exception preserves the traceback — this broad catch is the
+        # primary signal for diagnosing bad schedule payloads / croniter failures.
+        logger.exception(
+            "Job '%s': compute_next_run failed (%s); keeping previous next_run_at",
+            job.get("id", "?"), exc,
+        )
     if job["next_run_at"] is not None:
         if job.get("state") != "paused":
             job["state"] = "scheduled"

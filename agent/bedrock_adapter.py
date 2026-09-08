@@ -583,7 +583,16 @@ def convert_messages_to_converse(messages: List[Dict]) -> Tuple[Optional[List[Di
             append_turn("user", [{"toolResult": {
                 "toolUseId": msg.get("tool_call_id", ""), "content": [{"text": _safe_text(result_content)}]}}])
         elif role == "assistant":
-            append_turn("assistant", _assistant_blocks(msg, content) or [dict(_PLACEHOLDER_BLOCK)])
+            blocks = _assistant_blocks(msg, content)
+            if blocks and all("reasoningContent" in b for b in blocks):
+                # Bedrock Sonnet 5 / Fable 5.1 reject an assistant turn whose only
+                # payload is reasoningContent (no text/toolUse) as illegal prefill
+                # (#105780). Drop the turn: Bedrock does not need its own prior
+                # reasoning replayed (it stays in the trajectory's reasoning_details
+                # sidecar), and the following user turn (or the tail pad below)
+                # remains the last message Bedrock sees.
+                continue
+            append_turn("assistant", blocks or [dict(_PLACEHOLDER_BLOCK)])
         elif role == "user":
             append_turn("user", _convert_content_to_converse(content))
     if converse_msgs and converse_msgs[0]["role"] != "user":

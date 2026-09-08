@@ -1305,6 +1305,7 @@ class TestSystemUnitHermesHome:
         monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
 
         system_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+        monkeypatch.setattr(gateway_cli, "_build_user_local_paths", lambda home, existing: [])
         user_unit = gateway_cli.generate_systemd_unit(system=False)
 
         unit_section = system_unit.split("[Service]")[0]

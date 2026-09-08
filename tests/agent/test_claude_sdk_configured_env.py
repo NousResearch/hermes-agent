@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.transports import claude_agent_sdk_session as M
+from agent.transports import claude_agent_sdk_session_config as M
 
 
 @pytest.fixture

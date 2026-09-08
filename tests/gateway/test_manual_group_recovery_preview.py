@@ -11,9 +11,37 @@ from gateway import hosted_room_manual_recovery as recovery
 from gateway import hosted_room_replicas as replicas
 from gateway import hosted_room_work_records as records
 from gateway import hosted_rooms as rooms
+from tests.gateway.test_api_server_room_replicas import setup  # noqa: F401
 from tests.gateway.test_hosted_room_replica_ingress import (
     HOME, TARGET, SECRET, grant, ingest, pair as pair,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix_only", [False, True])
+async def test_http_v2_evidence_keeps_unknown_tail_and_pending_lineage(setup, prefix_only):
+    from aiohttp.test_utils import TestClient, TestServer
+    from tests.gateway.test_work_record_v2_admission_closure import enrolled_work
+    from tests.gateway.test_api_server_room_work_records import deliver
+    from tests.gateway.test_api_server_room_replicas import TARGET as HTTP_TARGET
+    source, target, app = setup
+    async with TestClient(TestServer(app)) as http:
+        client, token, record = await enrolled_work(http, source, prefix_only=prefix_only)
+        if not prefix_only:
+            record = {**record, "tasks": [], "receipts": []}
+            record["digest"] = records.digest({k: v for k, v in record.items() if k not in {"revision", "digest"}})
+            await deliver(client, token, record)
+        result = recovery.prepare_recovery(target, room_id="room", target_gateway_id=HTTP_TARGET)
+        assert result["reconciliation_required"] is True
+        assert result["accepted_tail"] == "unverified"
+        assert result["execution_authorized"] is False
+        if prefix_only:
+            assert "lineage_unverified" in result["blockers"]
+            assert "work_records_unavailable" in result["blockers"]
+        else:
+            assert result["blockers"] == []
+            assert result["work_records"]["tasks"] == []
+            assert result["work_records"]["incompleteness"] == ["prior_authority_work_unknown"]
 
 
 def preview(pair, target_id=TARGET):
@@ -25,6 +53,26 @@ def copy_records(pair, token):
     records.ingest(pair[1], record=record, token=token, secret=SECRET,
                    target_install_id=TARGET, target_profile="reviewer")
     return record
+
+
+def test_archive_bytes_not_public_summary_bind_selection(pair):
+    import sqlite3
+    from gateway.hosted_room_work_storage import INVALID_TABLE
+    token, _ = grant(pair[1], permissions=("replicate", "work_records"))
+    ingest(pair, token)
+    copy_records(pair, token)
+    first = preview(pair)
+    with sqlite3.connect(pair[1]) as conn:
+        conn.execute("DROP TRIGGER trg_work_invalid_insert")
+        conn.execute(f"INSERT INTO {INVALID_TABLE}(source_table,room_id,revision,digest,record_json,disposition) VALUES(?, 'room',1,'opaque','PRIVATE_INVALID','invalid')", (records.TARGET_TABLE,))
+    second = preview(pair)
+    with sqlite3.connect(pair[1]) as conn:
+        conn.execute("DROP TRIGGER trg_work_invalid_update")
+        conn.execute(f"UPDATE {INVALID_TABLE} SET record_json='OTHER_PRIVATE_INVALID'")
+    third = preview(pair)
+    assert first["snapshot_id"] != second["snapshot_id"] != third["snapshot_id"]
+    assert "PRIVATE_INVALID" not in json.dumps(third)
+    assert third["reconciliation_required"] is True
 
 
 def test_missing_work_is_unknown_not_an_empty_execution_clearance(pair):

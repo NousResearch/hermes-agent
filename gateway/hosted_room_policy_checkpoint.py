@@ -265,6 +265,8 @@ class HostedRoomPolicyCheckpoint:
                     "authority_epoch": record["source_epoch"] + 1,
                 }.items())):
             raise RuntimeError("The Group Chat recovery record is missing, changed, or not ready.")
+        from gateway.hosted_room_recovery_evidence import validate_decision
+        validate_decision(record)
         return int(event["seq"])
 
     def _apply_authority_claim(self, conn, event, payload):

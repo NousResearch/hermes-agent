@@ -90,6 +90,8 @@ def _initialize_locked(conn):
     # validates its own row; authority/enrollment triggers freeze exact-room old
     # scopes. Legacy dispositions were resolved at insertion above.
     work.initialize_target_guards(conn)
+    from gateway.hosted_room_work_record_budget import install_recovery_budget_guards
+    install_recovery_budget_guards(conn)
 
 
 def scope_disposition(conn, table, row):
@@ -171,9 +173,12 @@ def _historical_delete_guard(conn, work, table):
             return
         parent = "hosted_room_replicas"
         retired = f" AND NOT EXISTS (SELECT 1 FROM {RETIREMENT_TABLE} WHERE room_id=OLD.room_id)"
-    conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_delete_v2 BEFORE DELETE ON {table}
+    from gateway.hosted_room_recovery_evidence import transfer_permission_sql
+    transfer = transfer_permission_sql(conn, table) if table == work.TARGET_TABLE else "0"
+    conn.execute(f"DROP TRIGGER IF EXISTS trg_{table}_delete_v2")
+    conn.execute(f"""CREATE TRIGGER trg_{table}_delete_v2 BEFORE DELETE ON {table}
         WHEN OLD.disposition!='current' AND EXISTS (SELECT 1 FROM {parent} WHERE room_id=OLD.room_id
-            AND disbanded_at IS NULL) {retired}
+            AND disbanded_at IS NULL) {retired} AND NOT ({transfer})
         BEGIN SELECT RAISE(ABORT, 'historical work record is immutable'); END""")
 
 
@@ -224,6 +229,8 @@ def _invalid_guards(conn):
     from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
     retired = (f"OR (OLD.source_table='{work.TARGET_TABLE}' AND EXISTS (SELECT 1 FROM {RETIREMENT_TABLE} WHERE room_id=OLD.room_id))"
                if table_exists(conn, RETIREMENT_TABLE) else "")
+    from gateway.hosted_room_recovery_evidence import transfer_permission_sql
+    transfer = transfer_permission_sql(conn, INVALID_TABLE)
     conn.execute("DROP TRIGGER IF EXISTS trg_work_invalid_delete")
     conn.execute(f"""CREATE TRIGGER trg_work_invalid_delete BEFORE DELETE ON {INVALID_TABLE}
         WHEN NOT ((OLD.source_table IN ('{work.SOURCE_TABLE}','{work.PENDING_TABLE}') AND (
@@ -233,7 +240,7 @@ def _invalid_guards(conn):
             OR (OLD.source_table='{work.TARGET_TABLE}' AND (
                 EXISTS (SELECT 1 FROM hosted_room_replicas WHERE room_id=OLD.room_id AND disbanded_at IS NOT NULL)
                 OR (EXISTS (SELECT 1 FROM hosted_room_id_reservations WHERE room_id=OLD.room_id AND owner_kind='replica')
-                    AND NOT EXISTS (SELECT 1 FROM hosted_room_replicas WHERE room_id=OLD.room_id)))) {retired})
+                    AND NOT EXISTS (SELECT 1 FROM hosted_room_replicas WHERE room_id=OLD.room_id)))) {retired}) AND NOT ({transfer})
         BEGIN SELECT RAISE(ABORT, 'invalid work evidence is immutable'); END""")
     for parent, kind in (("hosted_rooms", f"source_table IN ('{work.SOURCE_TABLE}','{work.PENDING_TABLE}')"),
                          ("hosted_room_replicas", f"source_table='{work.TARGET_TABLE}'")):

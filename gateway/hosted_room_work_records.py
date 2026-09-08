@@ -212,7 +212,8 @@ def initialize_retirement_guards(conn):
 
 
 def _budget(conn, table, proposed):
-    total_sql, count_sql = storage.usage_sql((SOURCE_TABLE, TARGET_TABLE, PENDING_TABLE, storage.INVALID_TABLE))
+    from gateway.hosted_room_work_record_budget import usage_sql
+    total_sql, count_sql = usage_sql(conn)
     total, count = conn.execute(f"SELECT {total_sql}, {count_sql}").fetchone()
     keys = ["room_id", "producer_gateway_id", "producer_epoch"]
     if table == PENDING_TABLE:

@@ -62,7 +62,7 @@ def prepare_recovery(
         return prepare_recovery_locked(conn, room_id=room_id, target_gateway_id=target_gateway_id)
 
 
-def prepare_recovery_locked(conn, *, room_id: str, target_gateway_id: str) -> dict[str, Any]:
+def prepare_recovery_locked(conn, *, room_id: str, target_gateway_id: str, evidence=False) -> dict[str, Any]:
     """Use the caller's audited transaction for the preview and later decision."""
     state = replicas._replica_state_locked(conn, room_id)
     blockers = []
@@ -77,10 +77,13 @@ def prepare_recovery_locked(conn, *, room_id: str, target_gateway_id: str) -> di
     candidates, host_members = _member_origins(state, target_gateway_id)
     if not candidates:
         blockers.append("target_not_a_participant")
+    from gateway import hosted_room_recovery_evidence as retained
+    rows, enrollment, origins, evidence_blockers = retained.selection_locked(conn, state, target_gateway_id)
+    blockers.extend(evidence_blockers)
     records = state["work_records"]
     if records.get("availability") != "available":
         blockers.append("work_records_unavailable")
-    if records.get("stop", {}).get("closing"):
+    if any(scope.get("stop", {}).get("closing") for scope in records.get("scopes", [records])):
         blockers.append("group_closing")
     history_digest = _history_digest(conn, room_id) if state["safety_status"] == "passive" else None
     # Retransmission timestamps are not a new decision. Bind actual content,
@@ -89,7 +92,9 @@ def prepare_recovery_locked(conn, *, room_id: str, target_gateway_id: str) -> di
         "room_id": room_id, "target_gateway_id": target_gateway_id,
         "source_authority": state["authority"], "members": state["members"],
         "saved_through_seq": state["last_seq"], "advertised_latest_seq": state["latest_seq"],
-        "history_digest": history_digest, "work_records": records,
+        "history_digest": history_digest, "inventory_sha256": retained.fingerprint(rows),
+        "enrollment": enrollment, "member_origins": origins,
+        "lineage": {k: state.get(k) for k in ("replica_version", "lineage_sha256", "authority_history", "source_authority", "lineage_status")},
         "safety_status": state["safety_status"], "disbanded_at": state["disbanded_at"],
         "copy_retired_at": state.get("copy_retired_at"),
     }
@@ -99,9 +104,13 @@ def prepare_recovery_locked(conn, *, room_id: str, target_gateway_id: str) -> di
         "snapshot_id": snapshot_id, "source_authority": state["authority"],
         "target_gateway_id": target_gateway_id, "saved_through_seq": state["last_seq"],
         "advertised_latest_seq": state["latest_seq"], "copy_updated_at": state["updated_at"],
-        "work_records": records, "blockers": blockers,
+        "work_records": records, "blockers": list(dict.fromkeys(blockers)),
+        "member_origins": origins,
+        **({"evidence": retained.envelope(binding, rows)} if evidence else {}),
         "candidate_member_ids": candidates, "previous_host_member_ids": host_members,
-        "reconciliation_required": records.get("availability") != "available" or bool(records.get("tasks") or records.get("receipts")),
+        "reconciliation_required": records.get("availability") != "available" or any(
+            scope.get("availability") != "available" or scope.get("tasks") or scope.get("receipts") or scope.get("incompleteness")
+            for scope in records.get("scopes", [records])),
         "accepted_tail": "unverified", "execution_authorized": False,
         "requirements": ["operator_confirms_previous_host_fenced", "reconcile_recorded_work",
                          "confirm_saved_recovery_point", "preserve_bot_installation_identity"],

@@ -119,6 +119,30 @@ def test_warm_projection_still_requires_durable_recovery_record(staged, lost_flo
         assert any(event["event_id"] == old["event_id"] for event in restored.events)
 
 
+@pytest.mark.parametrize("lost_floor", [False, True])
+@pytest.mark.parametrize("damage", ["missing_rows", "changed_bytes"])
+def test_warm_row_present_requires_bound_evidence(staged, lost_floor, damage):
+    target, _old, _pending = staged
+    expose_to_planner(target)
+    checkpoint = HostedRoomPolicyCheckpoint(target)
+    latest = rooms.room_state(target, room_id="room")["latest_seq"]
+    checkpoint.snapshot(room_id="room", latest_seq=latest)
+    with sqlite3.connect(target) as conn:
+        # Simulated on-disk damage, not an allowed ordinary writer.
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name=?", (TABLE,)).fetchall():
+            conn.execute(f'DROP TRIGGER "{name}"')
+        data = json.loads(conn.execute(f"SELECT work_record_json FROM {TABLE}").fetchone()[0])
+        if damage == "missing_rows":
+            data["rows"] = {}
+        else:
+            data["rows"][records.TARGET_TABLE][0]["record_json"] += " "
+        conn.execute(f"UPDATE {TABLE} SET work_record_json=?", (json.dumps(data),))
+        if lost_floor:
+            conn.execute("UPDATE hosted_room_policy_cursors SET stopped_through_seq=0")
+    with pytest.raises(RuntimeError, match="recovery record"):
+        checkpoint.snapshot(room_id="room", latest_seq=latest)
+
+
 def test_ordinary_authority_claim_does_not_discard_pending_work(saved):
     source = saved[0]
     old = request(source, "existing-work", "@reviewer Keep this request.", HOME, 1)

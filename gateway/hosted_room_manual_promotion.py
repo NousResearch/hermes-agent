@@ -12,7 +12,9 @@ from gateway import hosted_rooms as rooms, hosted_room_replicas as replicas
 from gateway.hosted_room_authority_history import read_history_locked
 from gateway.hosted_room_manual_promotion_schema import TABLE, initialize
 from gateway.hosted_room_manual_recovery import prepare_recovery_locked
-from gateway.hosted_room_work_records import TARGET_TABLE, validate as validate_work_record, _budget
+from gateway.hosted_room_work_records import TARGET_TABLE, encode
+from gateway.hosted_room_recovery_evidence import validate_decision
+from gateway.hosted_room_work_storage import INVALID_TABLE
 from gateway.hosted_rooms_common import table_exists
 
 _FENCE = "manual_recovery_pending"
@@ -64,26 +66,25 @@ def stage_manual_recovery(db_path, *, room_id, recovery_id, snapshot_id,
                 fence = conn.execute("SELECT reason FROM hosted_room_quarantine WHERE room_id=?", (room_id,)).fetchone()
                 if prior["status"] != "pending_reconciliation" or fence is None or fence["reason"] != _FENCE:
                     raise ManualRecoveryError("This recovery decision is no longer pending.")
+                validate_decision(prior)
                 return _receipt(prior, idempotent=True)
-        preview = prepare_recovery_locked(conn, room_id=room_id, target_gateway_id=target)
+        preview = prepare_recovery_locked(conn, room_id=room_id, target_gateway_id=target, evidence=True)
         if preview["blockers"] or not hmac.compare_digest(preview["snapshot_id"], snapshot_id):
             raise ManualRecoveryError("The saved Group Chat changed or is incomplete. Refresh before continuing.")
         copy = conn.execute("SELECT * FROM hosted_room_replicas WHERE room_id=?", (room_id,)).fetchone()
         if conn.execute("SELECT COUNT(*) FROM hosted_rooms WHERE disbanded_at IS NULL").fetchone()[0] >= rooms.MAX_ACTIVE_ROOMS:
             raise ManualRecoveryError("This host has reached its Group Chat limit.")
-        record = conn.execute(f"SELECT record_json FROM {TARGET_TABLE} WHERE room_id=?", (room_id,)).fetchone()
-        if record is None:
-            raise ManualRecoveryError("Saved work records are unavailable.")
-        validate_work_record(json.loads(record[0]))
         initialize(conn)
         timestamp = rooms._now(now)
-        # Transfer the existing metadata charge rather than temporarily keeping
-        # two charged copies. The writer transaction restores both on failure.
-        conn.execute(f"DELETE FROM {TARGET_TABLE} WHERE room_id=?", (room_id,))
-        _budget(conn, TABLE, room_id, record[0])
-        conn.execute(f"INSERT INTO {TABLE} VALUES(?,?,?,?,?,?,?,?,?,?)", (
+        data = encode(preview["evidence"])
+        fields = "room_id,recovery_id,snapshot_id,source_gateway_id,source_epoch,target_gateway_id,history_seq,work_record_json,created_at,status"
+        conn.execute(f"INSERT INTO {TABLE} ({fields}) VALUES(?,?,?,?,?,?,?,?,?,?)", (
             room_id, recovery_id, snapshot_id, copy["authority_gateway_id"], copy["authority_epoch"],
-            target, copy["last_seq"], record[0], timestamp, "transferring"))
+            target, copy["last_seq"], data, timestamp, "transferring"))
+        for table in (TARGET_TABLE, INVALID_TABLE):
+            for original in preview["evidence"]["rows"][table]:
+                where = " AND ".join(f'"{key}" IS ?' for key in original)
+                conn.execute(f"DELETE FROM {table} WHERE {where}", tuple(original.values()))
         conn.execute("""INSERT INTO hosted_rooms(room_id,name,members_json,authority_gateway_id,authority_epoch,
             next_seq,event_bytes,revision,created_at,updated_at,disbanded_at) VALUES(?,?,?,?,?,?,?,?,?,?,NULL)""", (
             room_id, copy["name"], copy["members_json"], target, copy["authority_epoch"] + 1,

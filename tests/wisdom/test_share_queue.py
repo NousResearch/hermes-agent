@@ -305,6 +305,7 @@ def test_share_copy_and_controls_keep_publication_separate(sharing):
     _, _, _, shown, _, _, _ = sharing
     view = interaction_view(shown)
     assert [action.label for action in view.actions] == [
+        "Show checks",
         "Not Now",
         "Review first",
         "Share",
@@ -322,14 +323,14 @@ def test_share_copy_and_controls_keep_publication_separate(sharing):
     ])
     assert "You can review the skill before publishing" in view.to_text()
     assert "handoff package" not in view.to_text()
-    assert "Security (local preflight): ✅ Pass" in view.to_text()
+    assert "✅ Security check (local preflight)" in view.to_text()
     assert "will be scanned" not in view.to_text()
     expanded = advice_view([
         {"advice": {"title": "Skill", "explanation": "Useful", "relevance": "recommend"},
          "interaction": shown}
     ], checks_expanded=True)
-    assert "Private keys: ✅ Pass" in expanded.to_text()
-    assert "Harmful instruction patterns: ✅ Pass" in expanded.to_text()
+    assert "✅ Private keys" in expanded.to_text()
+    assert "✅ Harmful instruction patterns" in expanded.to_text()
     assert "Pending" not in expanded.to_text()
 
 
@@ -394,6 +395,42 @@ def test_checks_toggle_is_read_only_and_preserves_consent(sharing):
     )
 
 
+def test_stale_checks_toggle_does_not_restore_actionable_advice(sharing):
+    from hermes_wisdom.mediation_view import resolve_surface_action
+
+    service, _, actor, shown, model, _, _ = sharing
+    with service.store.transaction() as db:
+        db.execute("UPDATE wisdom_consent SET state='stale' WHERE id=?", (shown["id"],))
+    for mode in ("show", "hide"):
+        view = resolve_surface_action(
+            service, f"wi:agent:checks.{mode}:{shown['id']}",
+            platform=actor.platform, actor_id=actor.actor_id,
+            chat_id=actor.chat_id, thread_id=actor.thread_id,
+        )
+        assert view.summary == "Stale"
+        assert len(view.actions) == 1
+        assert view.actions[0].label == ("Hide checks" if mode == "show" else "Show checks")
+        assert ("Private keys" in view.to_text()) == (mode == "show")
+        assert "Pass" not in view.to_text()
+        assert not any(action.primary for action in view.actions)
+    model.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["install", "update"])
+def test_install_update_review_collapses_rows_without_hiding_warnings(sharing, operation):
+    _, _, _, shown, _, _, _ = sharing
+    shown = {**shown, "operation": operation, "facts": {**shown["facts"],
+        "security_check": {"status": "advisory", "summary": "Review the policy finding.",
+                           "checks": [{"label": "Organization policy", "status": "advisory"}]}}}
+    collapsed = interaction_view(shown)
+    assert "⚠️ Security check: Advisory" in collapsed.to_text()
+    assert "Review the policy finding." in collapsed.to_text()
+    assert "Organization policy" not in collapsed.to_text()
+    assert collapsed.actions[0].label == "Show checks"
+    assert collapsed.actions[-1].primary
+    expanded = interaction_view(shown, checks_expanded=True)
+    assert "⚠️ Organization policy: Advisory" in expanded.to_text()
+    assert expanded.actions[0].label == "Hide checks"
 def test_private_review_pages_cover_exact_files_without_consuming_consent(sharing):
     service, mediation, actor, shown, _, _, _ = sharing
     mediation.consent.resolve("org", shown["id"], actor, "confirm")

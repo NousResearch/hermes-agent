@@ -27,6 +27,14 @@ def review_status_text(status: object) -> str:
     return f"{icon} {label}"
 
 
+def review_check_line(label: str, status: object) -> str:
+    """Lead with the status icon; retain explicit labels for non-passing checks."""
+    icon, state = _STATUS_PRESENTATION.get(
+        str(status or "unavailable").lower(), _STATUS_PRESENTATION["unavailable"]
+    )
+    return f"{icon} {label}" + (f": {state}" if state != "Pass" else "")
+
+
 def aggregate_review_text(
     security: dict[str, Any] | None,
     professionalism: dict[str, Any] | None,
@@ -41,6 +49,8 @@ def aggregate_review_text(
 def full_review_text(
     security: dict[str, Any] | None,
     professionalism: dict[str, Any] | None,
+    *,
+    status_first: bool = False,
 ) -> str:
     """Render both checklists with labels, statuses, counts, and bounded detail."""
 
@@ -50,11 +60,13 @@ def full_review_text(
             security,
             labels={},
             note="No known matches detected is not a security certification.",
+            status_first=status_first,
         ),
         _checklist_text(
             "Professionalism check (agent-assessed, advisory)",
             professionalism,
             labels=CHECK_LABELS,
+            status_first=status_first,
         ),
     ]
     return "\n\n".join(sections)
@@ -72,9 +84,11 @@ def _checklist_text(
     *,
     labels: dict[str, str],
     note: str | None = None,
+    status_first: bool = False,
 ) -> str:
     value = check or {}
-    lines = [f"{title}: {review_status_text(value.get('status'))}"]
+    lines = [review_check_line(title, value.get("status")) if status_first
+             else f"{title}: {review_status_text(value.get('status'))}"]
     summary = value.get("summary")
     if isinstance(summary, str) and summary.strip():
         lines.append(summary[:512])
@@ -88,7 +102,8 @@ def _checklist_text(
             count = int(row.get("finding_count") or 0)
             suffix = f" ({count} finding{'s' if count != 1 else ''})" if count else ""
             lines.append(
-                f"{label}: {review_status_text(row.get('status'))}{suffix}"
+                (review_check_line(label, row.get("status")) if status_first
+                 else f"{label}: {review_status_text(row.get('status'))}") + suffix
             )
             for detail in row.get("details") or []:
                 lines.append(f"  {str(detail)[:256]}")

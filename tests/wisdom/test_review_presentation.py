@@ -2,7 +2,34 @@ from hermes_wisdom.review_presentation import (
     aggregate_review_text,
     full_review_text,
     review_status_text,
+    review_check_line,
 )
+import pytest
+
+
+@pytest.mark.parametrize("status,expected", [
+    ("pass", "✅ Security check"),
+    ("advisory", "⚠️ Security check: Advisory"),
+    ("blocked", "❌ Security check: Blocked"),
+    ("pending", "⏳ Security check: Pending"),
+    ("unavailable", "➖ Security check: Unavailable"),
+])
+def test_card_status_leads_with_icon_and_keeps_nonpass_meaning(status, expected):
+    assert review_check_line("Security check", status) == expected
+
+
+def test_expanded_card_rows_keep_summary_and_findings_without_pass_labels():
+    text = full_review_text({
+        "status": "advisory", "summary": "Review a policy match.",
+        "checks": [{"label": "Private keys", "status": "pass"},
+                   {"label": "Organization policy", "status": "advisory",
+                    "finding_count": 1, "details": ["Policy match details"]}],
+    }, {"status": "pass"}, status_first=True)
+    assert "✅ Private keys" in text
+    assert "⚠️ Organization policy: Advisory (1 finding)" in text
+    assert "Review a policy match." in text
+    assert "Policy match details" in text
+    assert "Pass" not in text
 
 
 def test_review_status_text_covers_every_presented_state():

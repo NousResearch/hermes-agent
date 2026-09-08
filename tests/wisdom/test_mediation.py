@@ -212,6 +212,7 @@ def test_replacement_legacy_review_uses_native_actor_bound_controls(
     view = current_action_view("wa:install:untrusted-old-id", instance.service, context)
     controls = [action for item in view.items for action in item.actions]
     assert [action.callback_data for action in controls] == [
+        f"wi:agent:checks.show:{shown['id']}",
         f"wi:agent:defer:{shown['id']}",
         f"wi:agent:inspect:{shown['id']}",
         f"wi:agent:confirm:{shown['id']}",
@@ -426,7 +427,7 @@ def test_presentation_keeps_canonical_warnings_and_primary_last(consent):
     }
     view = advice_view([item], introduction=True)
     assert "organisation has enabled" in view.summary
-    assert "Security: ✅ Pass" in view.items[0].detail
+    assert "✅ Security check" in view.items[0].detail
     assert [a.label for a in view.items[0].actions] == [
         "Show checks",
         "Not Now",
@@ -540,7 +541,7 @@ def test_unavailable_assessment_offers_review_not_install(consent):
         }
     ])
     assert view.summary == "Assessment unavailable"
-    assert "Security: ✅ Pass" in view.to_text()
+    assert "✅ Security check" in view.to_text()
     assert "recommendation" not in view.to_text().lower()
     assert [action.label for action in view.items[0].actions] == [
         "Show checks",

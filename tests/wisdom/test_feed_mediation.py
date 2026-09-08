@@ -141,9 +141,9 @@ def test_qualified_candidate_uses_professionalism_not_installation_assessor(
     ]
     assert view.items[0].actions[-1].primary
     assert "repeated use" in view.to_text()
-    assert review_status.capitalize() in view.to_text()
+    assert ("✅ Professionalism" if review_status == "pass" else review_status.capitalize()) in view.to_text()
     assert "Hermes recommendation:" not in view.to_text()
-    assert "Security (local preflight): ✅ Pass" in view.to_text()
+    assert "✅ Security check (local preflight)" in view.to_text()
     assert "will be scanned" not in view.to_text()
     instance.service.candidate_security_check.assert_called_once_with(
         skill_id="local", content_hash="hash"

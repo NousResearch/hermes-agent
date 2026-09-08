@@ -1,11 +1,11 @@
-"""Monitor navigation and controls run without borrowing the chat composer."""
+"""Monitor navigation keeps controls pinned while live children finish."""
 import asyncio
 from types import SimpleNamespace
 
 
-def test_monitor_keys_navigate_steer_and_preserve_chat_draft(monkeypatch):
+def test_monitor_keys_pin_controls_across_roster_changes(monkeypatch):
     from hermes_cli.cli_subagent_monitor import SubagentMonitor, build_monitor_application
-    from prompt_toolkit.buffer import Buffer
+
     from prompt_toolkit.input import create_pipe_input
     from prompt_toolkit.output import DummyOutput
     from tools import delegate_tool_registry as registry
@@ -16,8 +16,7 @@ def test_monitor_keys_navigate_steer_and_preserve_chat_draft(monkeypatch):
     for sid in ['first', 'second']:
         registry._register_subagent(dict(subagent_id=sid, goal=sid, owner_agent_session_id='owner',
             started_at=1, status='running', agent=child))
-    composer = Buffer()
-    composer.text = 'my unfinished draft'
+
     dock = SubagentMonitor(SimpleNamespace(agent=SimpleNamespace(session_id='owner')))
     dock.refresh()
 
@@ -29,24 +28,28 @@ def test_monitor_keys_navigate_steer_and_preserve_chat_draft(monkeypatch):
             app = build_monitor_application(dock, input=pipe, output=output)
             footer = app.layout.container.children[-1].content.text()
             assert 'F6' in footer and len(footer) <= 32
+            rendered = asyncio.Event()
+            app.after_render += lambda app: rendered.set()
             task = asyncio.create_task(app.run_async())
-            await asyncio.sleep(0.1)
-            pipe.send_text('\x1b[B\rsFocus on tests\r')
-            await asyncio.sleep(0.2)
-            pipe.send_text('x')
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(rendered.wait(), 3)
+
+            async def send(text):
+                rendered.clear()
+                pipe.send_text(text)
+                await asyncio.wait_for(rendered.wait(), 3)
+
+            await send('\x1b[B\rsFocus on tests\r')
+            await send('x')
             registry._active_subagents.pop('second')
             dock.refresh()
-            pipe.send_text('y')
-            await asyncio.sleep(0.1)
-            pipe.send_text('\x1b')
-            await asyncio.sleep(0.6)
+            await send('y')
+            await send('\x1b')
             pipe.send_text('q')
             await asyncio.wait_for(task, 3)
     asyncio.run(run())
     assert dock.selected_id == 'first'
     assert received == ['Focus on tests']
-    assert composer.text == 'my unfinished draft'
+
 
 
 def test_extended_tail_is_bounded_and_literal(tmp_path):

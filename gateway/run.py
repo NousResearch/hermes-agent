@@ -363,6 +363,22 @@ def _gateway_surface_passes_raw_text(platform: Any) -> bool:
     return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
 
 
+# Transient backend outages, as classified by the agent retry loop. Do NOT infer this from
+# exceptions at the adapter layer, where a connection failure may equally belong to Slack,
+# Telegram, media delivery, storage or another subsystem.
+_BACKEND_UNAVAILABLE_FAILURE_REASONS = frozenset({"overloaded", "server_error", "timeout"})
+_BACKEND_UNAVAILABLE_NOTICE = (
+    "The AI backend is temporarily unavailable. "
+    "Please try sending your message again in a moment.")
+
+
+def _is_backend_unavailable_agent_result(agent_result: dict) -> bool:
+    """Whether a failed agent result represents a transient backend outage."""
+    return bool(
+        agent_result.get("failed")
+        and agent_result.get("failure_reason") in _BACKEND_UNAVAILABLE_FAILURE_REASONS)
+
+
 _GATEWAY_PROVIDER_POLICY_RE = re.compile(
     r"("  # raw provider policy/safety bodies are noisy and may be sensitive
     r"cybersecurity\s+risk"
@@ -2108,6 +2124,8 @@ from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.platforms.base import (
+    BackendNoticeState,
+    BackendUnavailableReply,
     BasePlatformAdapter,
     _reply_anchor_for_event,
 )
@@ -3376,6 +3394,9 @@ class GatewayRunner(
         # channel(s) after connecting so the user learns persistence is broken before /resume fails.
         # See #88235.
         self._session_db_init_error: Optional[str] = None
+        # Runner-owned backend-notice cooldown/claims, shared with every adapter generation so
+        # a reconnect mid-outage cannot re-post a notice this session already saw.
+        self._backend_notice_state = BackendNoticeState()
         # Non-default profiles' adapters by profile then Platform; self.adapters stays the default's map.
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
         self._warn_if_docker_media_delivery_is_risky()

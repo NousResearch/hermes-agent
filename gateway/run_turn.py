@@ -1717,6 +1717,17 @@ class GatewayTurnMixin:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
             response = ""
 
+        # The retry loop already classified provider failures. Mark transient backend outages
+        # explicitly so the adapter suppresses only this safe notice and arms its cooldown
+        # after delivery, instead of the delivery layer guessing from an exception.
+        from gateway.run import (
+            _gateway_surface_passes_raw_text, _is_backend_unavailable_agent_result,
+            BackendUnavailableReply, _BACKEND_UNAVAILABLE_NOTICE,
+        )
+        if (not _gateway_surface_passes_raw_text(source.platform)
+                and _is_backend_unavailable_agent_result(agent_result)):
+            return BackendUnavailableReply(_BACKEND_UNAVAILABLE_NOTICE)
+
         adapter = self._adapter_for_source(source)
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
         _streaming_tts_done = adapter is not None and bool(

@@ -15,7 +15,7 @@ import pytest
 
 from gateway import delivery_ledger as dl
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BackendUnavailableReply, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
@@ -151,6 +151,14 @@ class TestProducerHook:
             Platform.SLACK, profile="reviewer"
         )
 
+
+    @pytest.mark.asyncio
+    async def test_backend_notice_is_not_durably_replayed_as_plain_text(self):
+        adapter = _Adapter()
+        await _run(adapter, _event(), BackendUnavailableReply("backend unavailable"))
+
+        assert adapter.sent == ["backend unavailable"]
+        assert _rows() == []
 
     @pytest.mark.asyncio
     async def test_slow_ledger_record_does_not_block_event_loop(self):

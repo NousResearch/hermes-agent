@@ -1029,14 +1029,37 @@ class GatewayAdapterLifecycleMixin:
             logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
         return connected
 
+    def _backend_notice_state_for_adapters(self):
+        """Return the runner-owned notice state, tolerating partially-built test runners."""
+        from gateway.platforms.base import BackendNoticeState
+        state = self.__dict__.get("_backend_notice_state")
+        if state is None:
+            state = BackendNoticeState()
+            self.__dict__["_backend_notice_state"] = state
+        return state
+
+    def _share_backend_notice_state(
+        self, adapter: BasePlatformAdapter, profile_name: Optional[str] = None) -> None:
+        """Wire runner routing and profile-scoped notice state so the cooldown survives a
+        reconnect replacing this adapter generation."""
+        # Every adapter participates in replacement routing, including built-ins created
+        # outside plugin factories.
+        adapter.gateway_runner = self
+        if not profile_name:
+            profile_name = getattr(adapter, "_owner_profile", None)
+        setter = getattr(adapter, "set_backend_notice_state", None)
+        if callable(setter):
+            setter(self._backend_notice_state_for_adapters(), profile_name=profile_name)
+
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,
         busy_session_handler=None, authorization_check=None, platform_event_handler=None,
-        busy_text_mode: Optional[str] = None,
+        busy_text_mode: Optional[str] = None, profile_name: Optional[str] = None,
     ) -> None:
         """Install the runner callbacks every adapter needs (defaults = primary handlers;
         secondary wiring passes profile-scoped variants). ``set_reaction_handler`` is optional."""
         adapter.set_message_handler(message_handler or self._primary_message_handler())
+        self._share_backend_notice_state(adapter, profile_name)
         adapter.set_fatal_error_handler(fatal_error_handler or self._handle_adapter_fatal_error)
         adapter.set_session_store(self.session_store)
         adapter.set_busy_session_handler(busy_session_handler or self._handle_active_session_busy_message)
@@ -1076,6 +1099,7 @@ class GatewayAdapterLifecycleMixin:
                 if isinstance(text_modes, dict)
                 else self._busy_text_mode
             ),
+            profile_name=profile_name,
         )
         # Voice transcripts from this bot's channels dispatch through THIS adapter.
         self._bind_voice_input_callback(adapter)

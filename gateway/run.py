@@ -984,8 +984,9 @@ def _warm_turn_machinery_sync() -> int:
         # caches (codex OAuth, OpenRouter) so AIAgent construction on the first turn is a cache hit.
         from gateway.run_model_context import _resolve_gateway_model_context
 
-        ctx = _resolve_gateway_model_context()
-        logger.info("Model context warmed: %s -> %d tokens (%s)", ctx.model, ctx.context_length, ctx.context_source)
+        ctx = _resolve_gateway_model_context(warmup=True)
+        if ctx is not None:
+            logger.info("Model context warmed: %s -> %d tokens (%s)", ctx.model, ctx.context_length, ctx.context_source)
     except Exception:
         logger.debug("model-context warm-up failed (non-fatal)", exc_info=True)
     return len(tool_defs)

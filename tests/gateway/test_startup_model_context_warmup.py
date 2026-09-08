@@ -25,8 +25,8 @@ def test_model_context_warmup_primes_default_route(monkeypatch):
     """Warm-up resolves the default gateway route's model context exactly once."""
     resolved: list = []
 
-    def fake_resolve(model=None, route=None):
-        resolved.append((model, route))
+    def fake_resolve(model=None, route=None, *, warmup=False):
+        resolved.append((model, route, warmup))
         return model_context._GatewayModelContext(
             model="m", provider="p", base_url="", context_length=128000, context_source="detected")
 
@@ -34,13 +34,13 @@ def test_model_context_warmup_primes_default_route(monkeypatch):
     _quiet_tool_side(monkeypatch, 3)
 
     assert gateway_run._warm_turn_machinery_sync() == 3
-    assert resolved == [(None, None)]
+    assert resolved == [(None, None, True)]
 
 
 def test_model_context_warmup_failure_is_non_fatal(monkeypatch):
     """A resolver failure degrades to lazy init — warm-up still returns the tool count."""
 
-    def boom(model=None, route=None):
+    def boom(model=None, route=None, *, warmup=False):
         raise RuntimeError("catalog unreachable")
 
     monkeypatch.setattr(model_context, "_resolve_gateway_model_context", boom)

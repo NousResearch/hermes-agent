@@ -330,6 +330,7 @@ class ComputeHost:
             agent = server._make_agent(
                 sid, key, session_id=key, model_override=frame.get("model_override"),
                 reasoning_config_override=frame.get("reasoning_config_override"),
+                reasoning_user_override=frame.get("reasoning_user_override"),
                 service_tier_override=frame.get("service_tier_override"),
                 platform_override=frame.get("source"),
                 cwd_override=str(frame.get("cwd") or "") or None,
@@ -375,6 +376,8 @@ class ComputeHost:
                 "source": server._sanitize_client_source(frame.get("source")),
                 "transport": self._transport}
         session = server._sessions[sid]
+        session["create_reasoning_override"] = frame.get("reasoning_config_override")
+        session["reasoning_user_override"] = getattr(agent, "reasoning_user_override", False)
         session["transport"] = self._transport
         # The host pipe names no login; the record carries the one the gateway stamped at creation.
         session["auth_user_id"] = frame.get("auth_user_id")

@@ -4,6 +4,8 @@ Experimental bundled Hermes provider: `claude-oauth-directsdk`, displayed as **C
 
 ## Status
 
+**Blocked for strict Hermes loop/budget ownership.** In native 2.1.263, output-limit recovery can issue additional model requests inside one Hermes call even with HTTP retries disabled and `--max-turns 1`. The loopback qualification observed one normal request, two after a single output-limit response, and four when every response hit the limit. The larger live task also contained two native generations in one Hermes call. No recovery-off switch was found in the inspected native branch. A higher output budget reduces incidence but does not enforce ownership; this requires a supported native boundary before claiming full parity.
+
 A real subscription-backed Hermes task built and tested a CSV auditor. Separate live qualifications exercised streaming tool rounds, restart/resume, host-side denial, authentic steering, cancellation during generation, and a real CLI subagent completion. This is a review build, not a full-parity or production-readiness claim. See the remaining limitations below.
 
 Requires Python 3.10+, POSIX, and a separately installed official Claude Code CLI. Native **2.1.263** is qualified. Replay acknowledgments and extra-body behavior are version-sensitive interfaces, not a public arbitrary-history SDK guarantee. This review PR includes both the provider and its generic host support; no external plugin installation is needed.
@@ -42,7 +44,13 @@ Auxiliary/fallback routing remains owned by Hermes. Configure those routes expli
 
 Each `chat.completions.create` starts a fresh process in a private temporary directory. Native tools, skills and setting sources are disabled. MCP advertises only the current Hermes tool inventory, has inert callbacks, and is denied execution by native `dontAsk`. Full descriptions and schemas are supplied through tools plus validated generation fields in `CLAUDE_CODE_EXTRA_BODY`, applied from a private native settings file; the system prompt uses a private file too. This avoids the OS per-argument/environment-string limit. Authentication and identity fields are never replaced.
 
-Canonical history is replayed in order. Historical user frames use `shouldQuery:false`, each with a zero-turn acknowledgment; the final user/tool-result frame queries. There is no parked native session, synthetic continue prompt, or native approval wait. Native date/budget reminders and cache annotations remain present, so the wire prompt is not byte-identical Hermes-only context.
+Canonical history is replayed in order. Historical user frames use `shouldQuery:false`, each with a zero-turn acknowledgment; the final user/tool-result frame queries. There is no parked native session or native approval wait, and the adapter adds no synthetic continue prompt. Native output recovery is the exception described above. The native token-budget reminder is disabled because Hermes owns budgets and replay reconstructs that reminder across the cache boundary. Other native annotations remain present, so the wire prompt is not byte-identical Hermes-only context.
+
+### Long-context caching qualification
+
+A real Sonnet 5 Hermes review task reproduced poor cache reuse: its first request had 187,049 input tokens; the next tool round read only 6,989 of 190,840 input tokens from cache (3.66%), rewriting 183,849 tokens into the one-hour cache. Identical-request testing at 179K tokens had passed, but did not exercise this replay boundary.
+
+Disabling the native reminder restored stable prefixes without adding cache markers or changing cache TTL. A completed seven-call review used ten real Hermes tool executions, ran six offline tests, and wrote its review artifacts. Context grew from 187K to 212K; follow-up requests averaged 97.99% cache reads, or 85.45% including the cold start. Native list-price accounting totalled $1.1030034, not a verified subscription charge. These are Sonnet 5 results: Fable 5.1 required usage credits on the qualification account and was not exercised with paid credits. Model entitlement and allowance consumption remain native-account dependent.
 
 Text streams incrementally. A complete tool batch is published only after assistant completion, `message_stop`, final usage and native exit. Hermes then applies its own hooks, approvals, tools and persistence. Tool names map through `mcp__hermes__`; original names must be unique ASCII alphanumeric/underscore/hyphen identifiers of at most 50 characters.
 

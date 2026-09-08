@@ -46,7 +46,7 @@ for b in blocks:
   print(json.dumps({'type':'stream_event','event':{'type':'content_block_delta','delta':{'type':'text_delta','text':b['text']}}}),flush=True)
 print(json.dumps({'type':'assistant','message':{'role':'assistant','content':blocks,'id':'msg_test','model':'sonnet','stop_reason':'tool_use' if len(blocks)>1 else 'end_turn'}}),flush=True)
 print(json.dumps({'type':'stream_event','event':{'type':'message_stop'}}),flush=True)
-u={'input_tokens':3,'output_tokens':5,'cache_read_input_tokens':7,'cache_creation_input_tokens':11}
+u={'input_tokens':3,'output_tokens':5,'cache_read_input_tokens':7,'cache_creation_input_tokens':11,'output_tokens_details':{'thinking_tokens':4}}
 print(json.dumps({'type':'result','num_turns':2 if len(blocks)>1 else 1,'subtype':'error_max_turns' if len(blocks)>1 else 'success','is_error':len(blocks)>1,'usage':u,'total_cost_usd':.012345,'modelUsage':{'sonnet':{'costBasis':'list'}}}),flush=True)
 sys.exit(1 if len(blocks)>1 else 0)
 """
@@ -127,6 +127,9 @@ class Contract(unittest.TestCase):
                     self.assertEqual(msg["tool_calls"][0]["function"]["name"], "probe")
                 self.assertEqual(final.usage.prompt_tokens, 21)
                 self.assertEqual(final.usage.completion_tokens, 5)
+                from agent.usage_pricing import normalize_usage
+                canonical = normalize_usage(final.usage, api_mode='chat_completions')
+                self.assertEqual(canonical.reasoning_tokens, 4)
                 self.assertEqual(final.usage.model_dump()['native_cost'], {'total_cost_usd': .012345, 'modelUsage': {'sonnet': {'costBasis': 'list'}}})
                 msg["content"] = (msg.get("content") or "").strip()
                 req["messages"] += [

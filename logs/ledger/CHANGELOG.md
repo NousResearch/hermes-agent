@@ -27,7 +27,11 @@ in `CHG-2026-09-08-008..016` (verified with `git rev-list --count <mb>..origin/m
 Closed this pass: `ERR-2026-09-07-004`, `ERR-2026-09-07-007` (filename half),
 `DECISION-2026-09-07-002`; opened + resolved same run: `ERR-2026-09-08-001..004`
 (Codex `PC-2026-09-08-001..005`). `ERR-2026-09-06-001` (the live `.env` key)
-**left untouched** — accepted, owner-decided, time-limited risk.
+**left untouched** — accepted, owner-decided, time-limited risk. End-of-pass
+`collect-logs.ps1` self-check: **COMPLETE, 0 FAIL, 1 WARN** — the WARN is 9
+uncommitted files from a separate concurrent pass (`CONTRIBUTING.md`,
+`cron/jobs.py`, `hermes_time.py`, `hermes_cli/{voice,auth_model_picker}.py`, +
+tests), deliberately not staged here.
 
 ### Added
 

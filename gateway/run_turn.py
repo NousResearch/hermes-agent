@@ -2099,7 +2099,7 @@ class GatewayTurnMixin:
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from gateway.run import (
-            _checkpoint_agent_kwargs, _current_max_iterations, _load_gateway_config,
+            _checkpoint_agent_kwargs, _current_max_iterations, _float_env, _load_gateway_config,
             _platform_config_key,
         )
         from run_agent import AIAgent
@@ -2110,6 +2110,41 @@ class GatewayTurnMixin:
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
             return
         _thread_metadata = self._thread_metadata_for_source(source, event_message_id)
+
+        agent_holder: list = [None]
+        _executor_task = None
+
+        def _finalize_executor_task() -> None:
+            """Best-effort: consume the worker future's eventual result.
+
+            The gateway-owned worker thread can't be force-killed, so on
+            inactivity-timeout or cancellation we interrupt the agent
+            (signalling it to unwind) and attach this so the late
+            result/exception is retrieved rather than surfacing as a
+            "Future exception was never retrieved" warning once the
+            interrupted worker finally returns.
+            """
+            task = _executor_task
+            if task is None:
+                return
+
+            def _swallow(_t) -> None:
+                if _t.cancelled():
+                    return
+                try:
+                    _exc = _t.exception()
+                except Exception:
+                    return
+                if _exc is not None:
+                    logger.debug(
+                        "Background task %s executor unwound after "
+                        "timeout/cancellation: %s", task_id, _exc,
+                    )
+
+            if task.done():
+                _swallow(task)
+            else:
+                task.add_done_callback(_swallow)
 
         try:
             user_config = _load_gateway_config()
@@ -2172,12 +2207,89 @@ class GatewayTurnMixin:
                     # See #60955.
                     fallback_model=self._refresh_fallback_model(),
                 )
+                agent_holder[0] = agent
+
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
                 finally:
                     self._cleanup_agent_resources(agent)
 
-            result = await self._run_in_executor_with_context(run_sync)
+            # _float_env falls back to the default on a malformed/empty value
+            # instead of raising and failing the whole background run.
+            _bg_timeout_raw = _float_env("HERMES_AGENT_TIMEOUT", 1800)
+            _bg_timeout = _bg_timeout_raw if _bg_timeout_raw > 0 else None
+            _bg_warning_raw = _float_env("HERMES_AGENT_TIMEOUT_WARNING", 900)
+            _bg_warning = _bg_warning_raw if _bg_warning_raw > 0 else None
+            _bg_warning_fired = False
+            _POLL_INTERVAL = _float_env("HERMES_BG_POLL_INTERVAL", 5.0)
+
+            # Poll the gateway-owned executor with session contextvars preserved
+            # (via _run_in_executor_with_context) instead of the default loop
+            # executor — matches the non-background path. Wrap in a Task so we
+            # can watch it for inactivity without blocking.
+            _executor_task = asyncio.ensure_future(
+                self._run_in_executor_with_context(run_sync)
+            )
+
+            _inactivity_timeout = False
+            result = None
+            while True:
+                done, _ = await asyncio.wait({_executor_task}, timeout=_POLL_INTERVAL)
+                if done:
+                    result = _executor_task.result()
+                    break
+                if _bg_timeout is None:
+                    continue
+                _idle_secs = self._agent_activity_summary(agent_holder[0]).get(
+                    "seconds_since_activity", 0.0)
+                if (not _bg_warning_fired and _bg_warning is not None
+                        and _idle_secs >= _bg_warning):
+                    _bg_warning_fired = True
+                    _elapsed_warn = int(_bg_warning // 60) or 1
+                    with suppress(Exception):
+                        await adapter.send(
+                            source.chat_id,
+                            f"⚠️ Background task {task_id}: no activity for "
+                            f"{_elapsed_warn} min. Will time out soon if it "
+                            f"remains idle.",
+                            metadata=_thread_metadata,
+                        )
+                if _idle_secs >= _bg_timeout:
+                    _inactivity_timeout = True
+                    break
+
+            if _inactivity_timeout:
+                _timed_out_agent = agent_holder[0]
+                _activity = self._agent_activity_summary(_timed_out_agent)
+                _cur_tool = _activity.get("current_tool")
+                _secs_ago = _activity.get("seconds_since_activity", 0)
+                _timeout_mins = int(_bg_timeout // 60) or 1
+
+                logger.error(
+                    "Background task %s idle for %.0fs (timeout %.0fs) | tool=%s",
+                    task_id, _secs_ago, _bg_timeout, _cur_tool or "none",
+                )
+
+                if _timed_out_agent and hasattr(_timed_out_agent, "interrupt"):
+                    _timed_out_agent.interrupt("Execution timed out (inactivity)")
+
+                # Detach and consume the still-running worker future so the
+                # interrupted agent's eventual return isn't reported as an
+                # unretrieved exception (thread can't be force-killed).
+                _finalize_executor_task()
+
+                _diag_parts = [
+                    f"⏱️ Background task {task_id} timed out — no activity "
+                    f"for {_timeout_mins} min.",
+                ]
+                if _cur_tool:
+                    _diag_parts.append(f"Last active tool: `{_cur_tool}`.")
+                _diag_parts.append("Use /background to retry with a different prompt.")
+
+                await adapter.send(
+                    source.chat_id, "\n".join(_diag_parts), metadata=_thread_metadata,
+                )
+                return
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
@@ -2224,6 +2336,23 @@ class GatewayTurnMixin:
                         )
                         await sender(chat_id=source.chat_id, metadata=_thread_metadata, **{key: media_path})
 
+        except asyncio.CancelledError:
+            logger.warning("Background task %s cancelled (gateway shutdown?)", task_id)
+            # Best-effort: interrupt the in-flight agent so provider/tool work
+            # stops instead of running on past the cancelled awaiter, then
+            # consume the worker future so its late return isn't reported as an
+            # unretrieved exception during shutdown.
+            _bg_agent = agent_holder[0]
+            if _bg_agent is not None and hasattr(_bg_agent, "interrupt"):
+                with suppress(Exception):
+                    _bg_agent.interrupt("Background task cancelled (gateway shutdown)")
+            _finalize_executor_task()
+            with suppress(Exception):
+                await adapter.send(
+                    chat_id=source.chat_id,
+                    content=f"⚠️ Background task {task_id} was cancelled (gateway restart or shutdown).",
+                    metadata=_thread_metadata,
+                )
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
             with suppress(Exception):

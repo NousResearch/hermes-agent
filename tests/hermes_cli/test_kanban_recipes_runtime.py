@@ -55,6 +55,31 @@ def test_missing_recipe_profile_blocks_durably_but_external_lanes_unchanged(env)
         assert instantiate(conn, prepared, bindings, 'missing')['tasks'] == result['tasks']
 
 
+@pytest.mark.parametrize('lane', ['ready', 'review'])
+def test_recipe_reassignment_to_external_lane_retains_native_claiming(env, lane):
+    with kbc.connect_closing() as conn:
+        prepared, bindings = recipe()
+        result = instantiate(conn, prepared, bindings, 'external-reassignment')
+        task_id = result['tasks']['root']
+        if lane == 'review':
+            claimed = kb.claim_task(conn, task_id)
+            assert claimed is not None
+            assert kb.request_review(conn, task_id, summary='Ready for external review',
+                                     expected_run_id=claimed.current_run_id)
+        kb.assign_task(conn, task_id, 'external-lane')
+        tick = dispatch.dispatch_once(
+            conn, reconcile_orphans=False,
+            spawn_fn=lambda *a, **k: pytest.fail('external lane spawned locally'),
+        )
+        task = kb.get_task(conn, task_id)
+        assert task.status == lane
+        assert task.block_kind is None
+        assert task_id in tick.skipped_nonspawnable
+        assert show_instance(conn, result['instance_id'])['bindings'] == bindings
+        claim = kb.claim_review_task if lane == 'review' else kb.claim_task
+        assert claim(conn, task_id) is not None
+
+
 def test_inputs_are_delivered_as_separate_untrusted_data(env):
     with kbc.connect_closing() as conn:
         prepared, bindings = recipe()

@@ -20,15 +20,25 @@ def block_missing_profile(conn, task_id, assignee):
     Recheck status and assignee under the write lock so this admission failure
     cannot revoke another dispatcher's claim or an operator's reassignment.
     """
+    import json
     from hermes_cli import kanban_db as kb
 
     with kb.write_txn(conn):
         row = conn.execute(
-            "SELECT t.status FROM tasks t JOIN recipe_instance_tasks m ON m.task_id=t.id "
+            "SELECT t.status,m.node_key,i.effective_plan_json FROM tasks t "
+            "JOIN recipe_instance_tasks m ON m.task_id=t.id "
+            "JOIN recipe_instances i ON i.id=m.instance_id "
             "WHERE t.id=? AND t.assignee=? AND t.status IN ('ready','review') "
             "AND t.claim_lock IS NULL", (task_id, assignee),
         ).fetchone()
         if row is None:
+            return
+        plan = json.loads(row['effective_plan_json'])
+        bound_assignee = next(node['assignee'] for node in plan['nodes']
+                              if node['key'] == row['node_key'])
+        # Membership is historical provenance, not a ban on native reassignment
+        # (including a handoff to an external reviewer/control-plane lane).
+        if assignee != bound_assignee:
             return
         conn.execute("UPDATE tasks SET status='blocked',block_kind='capability' WHERE id=?", (task_id,))
         kb.add_comment(conn, task_id, 'dispatcher', 'Bound recipe profile is not installed')

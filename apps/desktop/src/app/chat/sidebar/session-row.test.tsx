@@ -8,6 +8,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
+import { $sidebarRowMeta } from '@/store/layout'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
@@ -34,6 +35,7 @@ vi.mock('@/i18n', () => ({
           handoffOrigin: (platform: string) => `Started on ${platform}`,
           messageCount: (count: number) => `${count} messages`,
           needsInput: 'Needs input',
+          runningSince: (since: string) => `Running since ${since}`,
           sessionActions: 'Session actions',
           sessionRunning: 'Running',
           todoProgress: 'Tasks completed',
@@ -227,6 +229,66 @@ describe('SidebarSessionRow running arc', () => {
 
     expect(sessionTitle).toHaveBeenCalledTimes(1)
     expect(sessionTitle).toHaveBeenCalledWith(expect.objectContaining({ id: 's1' }))
+  })
+})
+
+// The Show menu's "Elapsed" figure: a live clock in the row's age seat while
+// the turn runs, driven by the same per-session turnStartedAt the statusbar
+// timer reads. Off by default; on, it only appears on rows that are running.
+describe('SidebarSessionRow elapsed clock', () => {
+  const clock = (container: HTMLElement) => container.querySelector('time[aria-label^="Running since"]')
+
+  afterEach(() => {
+    clearAllSessionStates()
+    $sidebarRowMeta.set(['preview', 'updated'])
+    vi.useRealTimers()
+  })
+
+  it('shows nothing extra while the option is off', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true, turnStartedAt: Date.now() - 65_000 })
+
+    const { container } = renderRow(makeSession({ title: 'Running' }))
+
+    expect(clock(container)).toBeNull()
+  })
+
+  it('shows how long the running turn has been going, in place of the age', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 2, 5, 12, 0, 0))
+    $sidebarRowMeta.set(['updated', 'elapsed'])
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true, turnStartedAt: Date.now() - 65_000 })
+
+    const { container } = renderRow(makeSession({ started_at: Math.floor(Date.now() / 1000) - 300, title: 'Running' }))
+
+    const el = clock(container)
+    expect(el?.textContent).toBe('1:05')
+    expect(el?.getAttribute('aria-label')).toMatch(/^Running since Today at /)
+    // The age is "now" on a running row anyway; the clock takes its seat.
+    expect(screen.queryByText('5m')).toBeNull()
+  })
+
+  it('gives the seat back to the age once the turn settles', () => {
+    $sidebarRowMeta.set(['updated', 'elapsed'])
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true, turnStartedAt: Date.now() - 65_000 })
+
+    const { container } = renderRow(makeSession({ started_at: Math.floor(Date.now() / 1000) - 300, title: 'Settling' }))
+    expect(clock(container)).toBeTruthy()
+
+    act(() => {
+      publishSessionState('rt1', { ...createClientSessionState('s1'), busy: false, turnStartedAt: null })
+    })
+
+    expect(clock(container)).toBeNull()
+    expect(screen.getByText('5m')).toBeTruthy()
+  })
+
+  it('stays quiet for a running turn whose start is unknown', () => {
+    $sidebarRowMeta.set(['elapsed'])
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true, turnStartedAt: null })
+
+    const { container } = renderRow(makeSession({ title: 'Running, no clock' }))
+
+    expect(clock(container)).toBeNull()
   })
 })
 

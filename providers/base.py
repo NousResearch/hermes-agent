@@ -80,6 +80,11 @@ class ProviderProfile:
     # top-level fields rather than ignoring them.
     supports_prompt_cache_key: bool = False
 
+    # Private replay carriers use a namespaced '<provider>.native_assistant' type
+    # in reasoning_details. Only this profile may receive its matching carrier;
+    # other providers (including an unregistered fallback) get ordinary details only.
+    native_reasoning_details_type: str | None = None
+
     # ── External-process providers (auth_type="external_process") ──
     # An agent CLI driven over stdio (ACP) rather than an HTTP endpoint. These
     # describe how to launch it; hermes_cli/auth.py's
@@ -342,3 +347,4 @@ class ProviderProfile:
         except Exception as exc:
             logger.debug("fetch_models(%s): %s", self.name, exc)
             return None
+

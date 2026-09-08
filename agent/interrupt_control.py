@@ -320,3 +320,4 @@ class InterruptControlMixin:
             text = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = None
         return text
+

@@ -5,6 +5,7 @@ from hermes_cli.config import (
     DEFAULT_CONFIG,
     _EXTRA_KNOWN_ROOT_KEYS,
     _KNOWN_ROOT_KEYS,
+    _set_nested,
     validate_config_structure,
     ConfigIssue,
 )
@@ -153,30 +154,65 @@ class TestStringifiedContainers:
     def test_container_typed_values_stored_as_strings_are_reported(self):
         cases = (
             ({"model_catalog": {"excluded_providers": '["openai-api", "copilot"]'}},
-             "model_catalog.excluded_providers", "list"),
+             "model_catalog.excluded_providers", "model_catalog.excluded_providers", "list"),
             ({"plugins": {"enabled": "['state', 'status']"}},
-             "plugins.enabled", "list"),
+             "plugins.enabled", "plugins.enabled", "list"),
             ({"model_overrides": '{"custom": {"model": {"supports_tools": false}}}'},
-             "model_overrides", "mapping"),
+             "model_overrides", "model_overrides", "mapping"),
             ({"custom_providers": [{
                 "name": "local",
                 "base_url": "http://localhost:8000/v1",
                 "extra_body": "{temperature: 0}",
-             }]}, "custom_providers[0].extra_body", "mapping"),
+             }]}, "custom_providers[0].extra_body", "custom_providers.0.extra_body", "mapping"),
             ({"custom_providers": [{
                 "name": "local",
                 "base_url": "http://localhost:8000/v1",
                 "extra_headers": "{X-Service-Token: secret}",
-             }]}, "custom_providers[0].extra_headers", "mapping"),
+             }]}, "custom_providers[0].extra_headers", "custom_providers.0.extra_headers", "mapping"),
         )
 
-        for config, path, kind in cases:
+        for config, display_path, set_path, kind in cases:
             issues = self._quoted_string_issues(config)
             assert len(issues) == 1
             assert issues[0].severity == "warning"
-            assert path in issues[0].message
+            assert display_path in issues[0].message
             assert kind in issues[0].message
-            assert f"hermes config set {path}" in issues[0].hint
+            assert f"hermes config set {set_path}" in issues[0].hint
+
+    def test_indexed_repair_hint_targets_the_list_member(self):
+        config = {"custom_providers": [{"extra_body": "{temperature: 0}"}]}
+        issue = self._quoted_string_issues(config)[0]
+        set_path = issue.hint.split("hermes config set ", 1)[1].split(" ", 1)[0]
+
+        _set_nested(config, set_path, {"temperature": 0})
+
+        assert config["custom_providers"][0]["extra_body"] == {"temperature": 0}
+        assert "custom_providers[0]" not in config
+
+    def test_dynamic_model_override_containers_are_reported(self):
+        cases = (
+            ({"model_overrides": {"openai": '{gpt-5: {supports_tools: false}}'}},
+             "model_overrides.openai"),
+            ({"model_overrides": {"openai": {"gpt-5": "{supports_tools: false}"}}},
+             "model_overrides.openai.gpt-5"),
+            ({"model_overrides": {"_default": "{supports_tools: false}"}},
+             "model_overrides._default"),
+        )
+
+        for config, path in cases:
+            issues = self._quoted_string_issues(config)
+            assert len(issues) == 1
+            assert path in issues[0].message
+
+    def test_bracket_like_model_family_string_is_not_reported(self):
+        config = {
+            "model_overrides": {
+                "openai": {"gpt-5": {"model_family": "[reasoning]"}},
+                "_default": {"model_family": "{unknown}"},
+            },
+        }
+
+        assert self._quoted_string_issues(config) == []
 
     def test_legitimate_strings_and_real_containers_are_not_reported(self):
         config = {

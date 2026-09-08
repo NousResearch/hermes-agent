@@ -1217,9 +1217,24 @@ def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) ->
 
 
 _MISSING_CONTAINER_SCHEMA = object()
+_MODEL_OVERRIDE_FIELDS_SCHEMA = {
+    "context_window": 0,
+    "max_output_tokens": 0,
+    "supports_tools": False,
+    "supports_vision": False,
+    "supports_reasoning": False,
+    "model_family": "",
+}
 _EXTRA_CONTAINER_SCHEMA = {
     "custom_providers": [{"extra_body": {}, "extra_headers": {}}],
     "model_catalog": {"excluded_providers": []},
+    "model_overrides": {
+        "_default": _MODEL_OVERRIDE_FIELDS_SCHEMA,
+        "*": {
+            "_default": _MODEL_OVERRIDE_FIELDS_SCHEMA,
+            "*": _MODEL_OVERRIDE_FIELDS_SCHEMA,
+        },
+    },
     "plugins": {"enabled": [], "disabled": []},
     "providers": {"*": {"extra_body": {}, "extra_headers": {}}},
 }
@@ -1239,12 +1254,15 @@ def _validate_stringified_containers(
     path: str = "",
     default_schema: Any = DEFAULT_CONFIG,
     extra_schema: Any = _EXTRA_CONTAINER_SCHEMA,
+    set_path: Optional[str] = None,
 ) -> None:
     """Flag list/mapping settings stored as one quoted string.
 
     Readers that require a container silently ignore these strings. Schema-declared strings remain
     valid even when their contents use brackets or braces.
     """
+    if set_path is None:
+        set_path = path
     expected_type = next(
         (kind for kind in (dict, list)
          if isinstance(default_schema, kind) or isinstance(extra_schema, kind)),
@@ -1269,7 +1287,7 @@ def _validate_stringified_containers(
             "warning",
             f"{path} is a quoted string that looks like a container — Hermes expects a real YAML "
             f"{kind} here and ignores the string",
-            f"Re-run: hermes config set {path} '<value>' (stored as a real {kind}), or rewrite "
+            f"Re-run: hermes config set {set_path} '<value>' (stored as a real {kind}), or rewrite "
             f"it in config.yaml using YAML {kind} syntax",
         )
         return
@@ -1283,6 +1301,7 @@ def _validate_stringified_containers(
                 child_path,
                 _container_schema_child(default_schema, key),
                 _container_schema_child(extra_schema, key),
+                f"{set_path}.{key}" if set_path else str(key),
             )
     elif isinstance(value, list) and expected_type is list:
         for index, child in enumerate(value):
@@ -1292,6 +1311,7 @@ def _validate_stringified_containers(
                 f"{path}[{index}]",
                 _container_schema_child(default_schema, index),
                 _container_schema_child(extra_schema, index),
+                f"{set_path}.{index}" if set_path else str(index),
             )
 
 

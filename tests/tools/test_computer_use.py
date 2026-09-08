@@ -2503,33 +2503,35 @@ class TestCapturePayloadBudget:
 class TestBoundsSpaceNote:
     def test_note_present_when_bounds_exceed_image(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
+        from tools.computer_use.tool import _bounds_hints
 
         # Live repro: 1455x791 screenshot, element bounds out to x=3840
-        # (native 4K desktop space).
+        # (raw desktop space). The mismatch must stay a warning — no scale
+        # inference, and the note steers back to element indices/screenshot.
         elems = [UIElement(index=0, role="Button", label="Close",
                            bounds=(3771, 0, 69, 60), app="")]
-        note = _bounds_space_note(elems, 1455, 791)
+        note = _bounds_hints(elems, 1455, 791)
         assert note is not None
-        assert "native desktop coordinates" in note
+        assert "cannot be converted to screenshot pixels" in note
+        assert "do not copy, subtract, or scale raw element bounds" in note
 
     def test_no_note_when_spaces_match(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
+        from tools.computer_use.tool import _bounds_hints
 
         elems = [UIElement(index=0, role="Button", label="OK",
                            bounds=(10, 10, 50, 20), app="")]
-        assert _bounds_space_note(elems, 1455, 791) is None
+        assert _bounds_hints(elems, 1455, 791) is None
 
     def test_no_note_for_empty_or_degenerate(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
+        from tools.computer_use.tool import _bounds_hints
 
-        assert _bounds_space_note([], 1455, 791) is None
+        assert _bounds_hints([], 1455, 791) is None
         zero = [UIElement(index=0, role="B", label="x",
                           bounds=(0, 0, 0, 0), app="")]
-        assert _bounds_space_note(zero, 1455, 791) is None
-        assert _bounds_space_note(zero, 0, 0) is None
+        assert _bounds_hints(zero, 1455, 791) is None
+        assert _bounds_hints(zero, 0, 0) is None
 
 
 class TestElementSpillFile:
@@ -2646,28 +2648,49 @@ class TestCaptureScreenshotPersistence:
         assert len(captures) == 2
 
 
-class TestBoundsScaleField:
-    def test_scale_reported_when_spaces_diverge(self, tmp_path, monkeypatch):
+class TestBoundsScaleRemoved:
+    """A raw-bounds/screenshot space mismatch must never expose a bounds_scale: the
+    schema's coordinate= is window-local screenshot pixels and no linear conversion
+    from raw UIA frames exists (offset/clipping/stale geometry also diverge)."""
+    def test_no_scale_reported_when_spaces_diverge(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         from tools.computer_use.backend import CaptureResult, UIElement
         from tools.computer_use.tool import _capture_response
 
-        # Live repro geometry: 1455x791 screenshot, native bounds to 3799.
+        # Live repro geometry: 1455x791 screenshot, raw bounds to 3799. A space
+        # mismatch must not leak a bounds_scale or scale-derived guidance.
         elems = [UIElement(index=0, role="Button", label="Close",
                            bounds=(3730, 0, 69, 60), app="")]
         cap = CaptureResult(mode="som", width=1455, height=791, png_b64=None,
                             elements=elems, app="chrome.exe",
                             window_title="", png_bytes_len=0)
         out = json.loads(_capture_response(cap))
-        assert out["bounds_scale"] == pytest.approx(3799 / 1455, abs=0.01)
-        assert f"~{out['bounds_scale']}x" in out["summary"]
+        assert "bounds_scale" not in out
+        assert "estimated scale" not in out["summary"]
+        assert "cannot be converted to screenshot pixels" in out["summary"]
 
-    def test_no_scale_when_spaces_match(self):
+    def test_multimodal_meta_has_no_scale_when_spaces_diverge(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.computer_use.backend import CaptureResult, UIElement
+        from tools.computer_use import tool as cu_tool
+
+        fake_png = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAADUlEQVR4nGNgGAUgAAABCAABgukLHQAAAABJRU5ErkJggg=="
+        elems = [UIElement(index=0, role="Button", label="Close",
+                           bounds=(3730, 0, 69, 60), app="")]
+        cap = CaptureResult(mode="som", width=1455, height=791, png_b64=fake_png,
+                            elements=elems, app="chrome.exe",
+                            window_title="", png_bytes_len=100)
+        with patch.object(cu_tool, "_should_route_through_aux_vision", return_value=False):
+            out = cu_tool._capture_response(cap)
+        assert out["_multimodal"] is True
+        assert "bounds_scale" not in out["meta"]
+
+    def test_no_note_when_spaces_match(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_scale
+        from tools.computer_use.tool import _bounds_hints
 
         elems = [UIElement(index=0, role="Button", label="OK",
                            bounds=(10, 10, 50, 20), app="")]
-        assert _bounds_scale(elems, 1455, 791) is None
-        assert _bounds_scale([], 1455, 791) is None
-        assert _bounds_scale(elems, 0, 0) is None
+        assert _bounds_hints(elems, 1455, 791) is None
+        assert _bounds_hints([], 1455, 791) is None
+        assert _bounds_hints(elems, 0, 0) is None

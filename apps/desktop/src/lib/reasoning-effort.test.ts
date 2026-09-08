@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   DEFAULT_REASONING_EFFORT,
+  isInheritedEffortSelection,
   isReasoningEffort,
   isThinkingEnabled,
   REASONING_EFFORT_VALUES,
@@ -49,5 +50,25 @@ describe('reasoning-effort', () => {
     // Off selects nothing on the scale.
     expect(resolveReasoningEffort('none')).toBe('')
     expect(resolveReasoningEffort('bogus')).toBe(DEFAULT_REASONING_EFFORT)
+  })
+
+  it('treats a composer selection mirroring the profile default as inherited', () => {
+    // The defect scenario: useHermesConfig seeds the composer with the
+    // profile default — session.create must not record it as an explicit
+    // override (which disables adaptive reasoning escalation).
+    expect(isInheritedEffortSelection('medium', 'medium')).toBe(true)
+    expect(isInheritedEffortSelection(' High ', 'high')).toBe(true)
+    expect(isInheritedEffortSelection('none', 'none')).toBe(true)
+    expect(isInheritedEffortSelection('', 'high')).toBe(true)
+  })
+
+  it('treats a distinct composer selection as an explicit override', () => {
+    expect(isInheritedEffortSelection('high', 'medium')).toBe(false)
+    expect(isInheritedEffortSelection('none', 'medium')).toBe(false)
+    expect(isInheritedEffortSelection('high', '')).toBe(false)
+  })
+
+  it('reads an empty profile default as the backend fallback (medium)', () => {
+    expect(isInheritedEffortSelection(DEFAULT_REASONING_EFFORT, '')).toBe(true)
   })
 })

@@ -1190,6 +1190,19 @@ agent:
   #   "deepseek/deepseek-v4-pro": "xhigh" # dots and dashes are interchangeable
   reasoning_overrides: {}
 
+  # Opt-in per-turn reasoning adjustment (local heuristic, no classifier LLM call).
+  # Requires reasoning_effort above; unset/disabled thinking stays untouched.
+  # Ordinary/ambiguous work keeps that baseline. Complex work may use high/xhigh.
+  # min_effort: low permits downshift only for positively simple requests; omit
+  # it for escalation-only. Never selects none or toggles thinking presence.
+  # Effort lasts the entire tool loop, then restores without rewriting config.
+  # Session /reasoning picks and --reasoning win. Children inherit this policy
+  # and reclassify their goal unless delegation.reasoning_effort pins them.
+  adaptive_reasoning:
+    enabled: false
+    max_effort: "xhigh"  # high or xhigh
+    min_effort: ""      # optional low floor
+
   # Fast mode (OpenAI Priority Processing / xAI Grok 4.6 / Anthropic Fast Mode
   # on Opus 4.8+). Premium pricing; only sent to first-party endpoints.
   #   "" / "normal" - off (default)

@@ -434,6 +434,14 @@ def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) 
     return normalized or default
 
 
+def _delegation_reasoning_pin(delegation_cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Parse an explicit child effort; YAML false pins thinking off, not inheritance."""
+    from hermes_constants import parse_reasoning_effort
+
+    raw = delegation_cfg.get("reasoning_effort")
+    return parse_reasoning_effort(raw) if raw or raw is False else None
+
+
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
@@ -491,14 +499,14 @@ def _resolve_child_runtime(
         # Forced ACP transport requires provider copilot-acp for run_agent to init the client.
         effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
 
-    # Reasoning: delegation.reasoning_effort > parent. Keep the raw value — a
-    # YAML ``false`` must disable thinking, not coerce to "" and inherit.
+    # Reasoning: delegation.reasoning_effort > the parent's current effective level.
+    # Propagate the adaptive policy separately from route/fallback ownership: an unpinned
+    # child reclassifies its own goal even when auxiliary.review owns its provider route.
     child_reasoning = getattr(parent_agent, "reasoning_config", None)
     try:
         delegation_effort = delegation_cfg.get("reasoning_effort")
         if delegation_effort or delegation_effort is False:
-            from hermes_constants import parse_reasoning_effort
-            parsed = parse_reasoning_effort(delegation_effort)
+            parsed = _delegation_reasoning_pin(delegation_cfg)
             if parsed is None:
                 logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)
             else:
@@ -512,6 +520,7 @@ def _resolve_child_runtime(
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,
+        "adaptive_reasoning": getattr(parent_agent, "adaptive_reasoning", None),
         # Resolve routing and recovery policy from the same configuration owner. A pinned provider, endpoint, or
         # model never borrows the parent's chain; an explicitly declared child chain still remains available.
         "fallback_model": _resolve_child_fallback_chain(

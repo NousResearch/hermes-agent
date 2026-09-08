@@ -476,7 +476,7 @@ class CLIAgentSetupMixin:
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
-        from cli import ChatConsole, _cprint, _prepare_deferred_agent_startup, logger
+        from cli import CLI_CONFIG, ChatConsole, _cprint, _prepare_deferred_agent_startup, logger
         from run_agent import AIAgent
         if self.agent is not None:
             return True
@@ -525,7 +525,9 @@ class CLIAgentSetupMixin:
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
-                reasoning_config=self.reasoning_config, service_tier=self.service_tier,
+                reasoning_config=self.reasoning_config,
+                adaptive_reasoning=CLI_CONFIG.get("agent", {}).get("adaptive_reasoning"),
+                service_tier=self.service_tier,
                 request_overrides=request_overrides, providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore, providers_order=self._providers_order,
                 provider_sort=self._provider_sort,
@@ -560,6 +562,9 @@ class CLIAgentSetupMixin:
             # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
             # subagent/background completion notice never splits the reply mid-paragraph.
             self.agent._print_fn = self._agent_status_print
+            # A session-scoped /reasoning pick (or --reasoning flag) is an explicit user choice —
+            # it suppresses adaptive escalation.
+            self.agent.reasoning_user_override = bool(getattr(self, "_session_reasoning_override", False))
             # Hydrate credits notices at session OPEN (parity with the TUI) so a depletion
             # warning shows before the first message. Idempotent + fail-open in the helper.
             try:

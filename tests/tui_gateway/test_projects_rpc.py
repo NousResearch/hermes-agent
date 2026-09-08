@@ -512,6 +512,37 @@ def test_explicit_desktop_and_terminal_cwds_are_context_workspaces():
     ) is False
 
 
+def test_configured_local_terminal_cwd_is_a_context_workspace(tmp_path, monkeypatch):
+    """A profile-configured local ``terminal.cwd`` is deliberate intent, so a desktop
+    session on it is NOT a launch artifact — its AGENTS.md must load (#106012)."""
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    assert server._context_cwd_is_launch_artifact({"source": "desktop", "cwd": str(tmp_path)}) is False
+
+
+def test_missing_configured_terminal_cwd_stays_launch_artifact(tmp_path, monkeypatch):
+    """A configured cwd that does not exist falls back to the launch dir, so it stays an
+    artifact — keeping this gate in agreement with resolve_context_cwd()."""
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "does-not-exist"))
+    assert server._context_cwd_is_launch_artifact({"source": "desktop", "cwd": "/opt/hermes"}) is True
+
+
+def test_trivial_terminal_cwd_stays_launch_artifact(monkeypatch):
+    """Sentinel values (``.``/``auto``/``cwd``) carry no workspace intent."""
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "local")
+    monkeypatch.setenv("TERMINAL_CWD", "auto")
+    assert server._context_cwd_is_launch_artifact({"source": "desktop", "cwd": "/opt/hermes"}) is True
+
+
+def test_non_local_backend_terminal_cwd_stays_launch_artifact(tmp_path, monkeypatch):
+    """Non-local backends (docker/ssh) keep the launch-artifact classification: their cwd lives
+    inside the target environment and the fallback can be a previous session's launch dir."""
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "docker")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    assert server._context_cwd_is_launch_artifact({"source": "desktop", "cwd": str(tmp_path)}) is True
+
+
 @pytest.mark.parametrize(
     ("explicit_cwd", "launch_artifact"),
     [(True, False), (False, True)],

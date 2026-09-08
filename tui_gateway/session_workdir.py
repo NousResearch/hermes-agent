@@ -77,9 +77,35 @@ def _session_cwd(session: dict | None) -> str:
 _LAUNCH_CWD_NOT_A_WORKSPACE = {"desktop"}
 
 
+def _configured_terminal_cwd_intent() -> bool:
+    """A deliberate, existing local ``terminal.cwd`` (env bridge or profile config) — the same
+    workspace intent as launching the CLI in that directory, so its context files must load even
+    when a desktop session never set ``explicit_cwd`` (#106012). Mirrors the resolution in
+    ``_terminal_task_cwd_with_source``. Non-local backends are excluded (their cwd lives inside the
+    target environment, and under docker isolation the fallback is a PREVIOUS session's launch
+    artifact); trivial ``.``/``auto``/``cwd`` values carry no intent; a missing directory is left to
+    the launch-dir fallback so ``resolve_context_cwd`` and this gate agree on what actually loads."""
+    if _effective_terminal_backend() != "local":
+        return False
+    raw = (os.environ.get("TERMINAL_CWD", "").strip() or _workdir_terminal_cfg("cwd")).strip()
+    if not raw or raw in {".", "auto", "cwd"}:
+        return False
+    with contextlib.suppress(Exception):
+        return os.path.isdir(os.path.expanduser(raw))
+    return False
+
+
 def _context_cwd_is_launch_artifact(session: dict | None) -> bool:
-    """Whether the session cwd came from app launch rather than user intent."""
-    return bool(session and not session.get("explicit_cwd") and _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE)
+    """Whether the session cwd came from app launch rather than user intent. A profile-configured
+    ``terminal.cwd`` is deliberate intent, not a launch artifact, so it does not count (#106012):
+    without this, a desktop session on such a profile advertised the workspace's AGENTS.md in its
+    snapshot but never injected its contents."""
+    return bool(
+        session
+        and not session.get("explicit_cwd")
+        and _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE
+        and not _configured_terminal_cwd_intent()
+    )
 
 
 def _persisted_session_cwd(session: dict) -> str | None:

@@ -211,9 +211,16 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
                           lambda e: logger.debug("computer_use stale startup teardown failed: %s", e))
             raise RuntimeError("computer_use session released during backend startup")
         except BaseException:
+            stale, stale_lock = None, None
             with _backend_lock:
                 if _backend_start_locks.get(owner) is start_lock:
                     _backend_start_locks.pop(owner)
+                    stale, stale_lock = _detach_locked(owner)
+                    with _approval_lock:
+                        _session_auto_approve.pop(owner, None), _always_allow.pop(owner, None)
+            if stale is not None:
+                _stop_backend(stale, stale_lock,
+                              lambda e: logger.debug("computer_use failed acquisition teardown: %s", e))
             raise
 
 def release_computer_use_session(session_id: str) -> bool:

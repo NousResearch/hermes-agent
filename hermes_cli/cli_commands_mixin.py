@@ -2542,6 +2542,29 @@ class CLICommandsMixin:
         _persist_display_choice("display.tui_status_indicator", arg, "Busy-indicator style",
                                 "The TUI picks up the new style on its next render.")
 
+    def _handle_language_command(self, cmd: str):
+        """Handle /language [<code>|status] — set or show the UI language for static messages."""
+        import os
+
+        from agent.i18n import SUPPORTED_LANGUAGES, get_language, normalize_language, reset_language_cache
+        current = get_language()  # effective: HERMES_LANGUAGE > display.language > en
+        arg = _command_arg(cmd, lower=True)
+        usage = _dim_line(f"Usage: /language [{'|'.join(SUPPORTED_LANGUAGES)}|status]")
+        if not arg or arg == "status":
+            return _cp(_accent_line(f"UI language: {current}"),
+                       _dim_line(f"Supported: {', '.join(SUPPORTED_LANGUAGES)}"), usage)
+        resolved = normalize_language(arg)
+        if resolved is None:
+            return _cp(_dim_line(f"(._.) Unknown language: {arg}"),
+                       _dim_line(f"Supported: {', '.join(SUPPORTED_LANGUAGES)}"),
+                       usage)
+        self.config.setdefault("display", {})["language"] = resolved
+        _persist_display_choice("display.language", resolved, "UI language",
+                                "Static UI messages (approval prompts, some gateway replies) switch immediately; agent replies follow the language you write in.")
+        reset_language_cache()
+        if os.environ.get("HERMES_LANGUAGE"):
+            _cp(_dim_line("Note: HERMES_LANGUAGE is set and overrides display.language for this session."))
+
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode).
         Session-scoped by default; ``--global`` persists agent.service_tier to config.yaml

@@ -23,7 +23,7 @@ OLD_CHAIN_COMMANDS = [
     "reload-skills", "bundles", "browser", "plugins", "rollback", "snapshot",
     "export", "import", "stop", "agents", "journey", "bg", "btw", "queue",
     "steer", "goal", "heartbeat", "refine", "review", "loop", "plan", "moa",
-    "subgoal", "skin", "voice", "wake", "busy", "indicator",
+    "subgoal", "skin", "voice", "wake", "busy", "indicator", "language",
 ]
 
 

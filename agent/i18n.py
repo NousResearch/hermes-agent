@@ -70,9 +70,24 @@ def _locales_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "locales"
 
 
+def normalize_language(value: str | None) -> str | None:
+    """Map a user-supplied language value to a supported code, or None if unknown/empty."""
+    if not value or not isinstance(value, str):
+        return None
+    key = value.strip().lower().replace("_", "-")
+    if not key:
+        return None
+    if key in SUPPORTED_LANGUAGES:
+        return key
+    if key in _LANGUAGE_ALIASES:
+        return _LANGUAGE_ALIASES[key]
+    base = key.split("-", 1)[0]
+    return base if base in SUPPORTED_LANGUAGES else None
+
+
 def _normalize_lang(value: Any) -> str:
     """Map a user-supplied value (code, alias, or regional tag like ``zh-CN``) to a supported code, else default."""
-    key = value.strip().lower() if isinstance(value, str) else ""
+    key = value.strip().lower().replace("_", "-") if isinstance(value, str) else ""
     if key in SUPPORTED_LANGUAGES:
         return key
     if key in _LANGUAGE_ALIASES:
@@ -165,4 +180,4 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
         return value
 
 
-__all__ = ["SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "t", "get_language", "reset_language_cache"]
+__all__ = ["SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "t", "get_language", "reset_language_cache", "normalize_language"]

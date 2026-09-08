@@ -2056,9 +2056,11 @@ If writes to Hermes state (cron jobs, skills, scripts under `~/.hermes/`) are fa
 
 The `display.language` setting translates a small set of static user-facing messages — the CLI approval prompt, a handful of gateway slash-command replies (e.g. restart-drain notices, "approval expired", "goal cleared"). It does **not** translate agent responses, log lines, tool output, error tracebacks, or slash-command descriptions — those stay in English. If you want the agent itself to reply in another language, just tell it in your prompt or system message.
 
-Supported values: `en` (default), `zh` (Simplified Chinese), `zh-hant` (Traditional Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian), `af` (Afrikaans), `ko` (Korean), `it` (Italian), `ga` (Irish), `pt` (Portuguese), `ru` (Russian), `hu` (Hungarian). Unknown values fall back to English.
+Supported values — 17 shipped locales (`locales/*.yaml`): `en`, `zh`, `zh-hant`, `ja`, `de`, `es`, `fr`, `tr`, `uk`, `af`, `ko`, `it`, `ga`, `pt`, `ru`, `hu`, `ar`. The authoritative list is the file set in `locales/`; `en` is the default and unknown codes fall back to it. Common aliases also resolve: `zh-cn` / `zh-hans` / `chinese` / `mandarin` → `zh`; `zh-tw` / `zh-hk` / `traditional-chinese` → `zh-hant`; `jp` / `ja-jp` → `ja`; `de-de` / `deutsch` → `de`; `es-mx` / `español` → `es`; `pt-br` / `português` / `brazilian` → `pt`, etc. The command accepts either a code or a natural alias; if the value does not match a supported code or recognized alias, the command prints the supported list and makes no change.
 
-You can also set this per-session with the `HERMES_LANGUAGE` env var, which overrides the config value.
+Switch at runtime with the CLI `/language` command: `/language` or `/language status` shows the current active language (from config or `HERMES_LANGUAGE`) plus the supported list; `/language zh` (or an alias like `zh-cn` or `chinese`) switches `display.language` immediately, persists the new value to `config.yaml`, and reloads the locale catalog. Unknown values print the supported list and change nothing. The command changes the same `display.language` setting — nothing else is translated (agent responses, logs, tool output, and error tracebacks stay in English).
+
+You can also override per-session with the `HERMES_LANGUAGE` env var, which takes precedence over the config value.
 
 ```yaml
 display:

@@ -140,3 +140,26 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result.name == "locales"
 
 
+def test_normalize_language_maps_codes_and_aliases():
+    from agent.i18n import normalize_language, SUPPORTED_LANGUAGES
+    assert normalize_language("zh-CN") == "zh"
+    assert normalize_language("zh_CN") == "zh"  # POSIX-style underscore locales
+    assert normalize_language("chinese") == "zh"
+    assert normalize_language("ZH") == "zh"
+    assert normalize_language("zh-TW") == "zh-hant"
+    assert normalize_language("en") == "en"
+    assert normalize_language("jp") == "ja"
+    assert normalize_language(None) is None
+    assert normalize_language("") is None
+    assert normalize_language("klingon") is None
+    # Regional tag with unsupported base
+    assert normalize_language("xx-YY") is None
+    # POSIX-style underscores resolve too (config values like "zh_CN")
+    from agent.i18n import _normalize_lang
+    assert _normalize_lang("zh_CN") == "zh"
+    assert _normalize_lang("en_US") == "en"
+    # All canonical codes pass
+    for code in SUPPORTED_LANGUAGES:
+        assert normalize_language(code) == code
+
+

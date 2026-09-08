@@ -1208,11 +1208,11 @@ _INLINE_REASONING_PATTERNS = tuple(
 def extract_reasoning(agent, assistant_message) -> Optional[str]:
     """Reasoning text from ``reasoning`` / ``reasoning_content`` / ``reasoning_details``
     (OpenRouter unified), else inline thinking blocks in the content; None when absent."""
+    from agent.message_content import flatten_message_text
+
     parts: List[str] = []
 
     def _add(text) -> None:
-        from agent.message_content import flatten_message_text
-
         text = flatten_message_text(text, sep="")
         if text and text not in parts:
             parts.append(text)
@@ -1230,7 +1230,10 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
         # Refs #21944.
         for block in content:
             if isinstance(block, dict) and block.get("type") == "thinking":
-                _add((block.get("thinking") or block.get("text") or "").strip())
+                # Non-strict OpenAI-compatible backends (Mistral via custom provider)
+                # deliver the thinking value as a JSON array, not a string (#106006);
+                # flatten first so .strip() never sees a list.
+                _add(flatten_message_text(block.get("thinking") or block.get("text") or "", sep="").strip())
     if not parts and isinstance(content, str) and content:
         for pattern in _INLINE_REASONING_PATTERNS:
             for block in pattern.findall(content):

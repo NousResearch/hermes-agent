@@ -224,6 +224,11 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     calls = _capture_spawn(monkeypatch)
     home = _managed_home(tmp_path, teammates=("researcher",))
     agent = _FakeAgent(home, title="Bot Chat")
+    target_repo = tmp_path / "recipient's repo $(printf injected); $HOME"
+    target_repo.mkdir()
+    (home / "profiles" / "researcher" / "config.yaml").write_text(
+        json.dumps({"terminal": {"cwd": str(target_repo)}}), encoding="utf-8"
+    )
 
     result = json.loads(
         bot_mode_dm.message_agent_tool(
@@ -255,7 +260,7 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
         "researcher",
         "chat",
         "--in",
-        "~",
+        str(target_repo),
         "-c",
         "Bot Chat",
         "--create-if-missing",
@@ -263,7 +268,7 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     ]
     # message body rides the temp file, never the command line
     assert "PAYLOAD_SENTINEL_7A91" not in command
-    assert "$(" not in command
+    assert "$(and this is not shell)" not in command
 
     # attribution prefix applied server-side; body verbatim inside the file
     content = Path(dm_file).read_text(encoding="utf-8")
@@ -499,6 +504,7 @@ def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
 def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
     calls = []
@@ -519,6 +525,7 @@ def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
 
     assert returncode == 0
     assert len(calls) == 2
+    assert all("_HERMES_GATEWAY" not in kwargs["env"] for _argv, kwargs in calls)
     assert [kwargs["stdin"] for _argv, kwargs in calls] == [
         subprocess.DEVNULL,
         subprocess.DEVNULL,

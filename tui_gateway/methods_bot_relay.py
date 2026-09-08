@@ -30,10 +30,10 @@ TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
 
 
 def _run_delivery(profile: str, tmp: str) -> subprocess.CompletedProcess:
-    from tools.bot_relay import local_delivery_command
+    from tools.bot_relay import bot_chat_subprocess_env, local_delivery_command
     return subprocess.run(
         local_delivery_command(profile, tmp), capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=TURN_ATTEMPT_TIMEOUT_SECONDS)
+        errors="replace", timeout=TURN_ATTEMPT_TIMEOUT_SECONDS, env=bot_chat_subprocess_env())
 
 
 @method("bot_relay.roster.sync")

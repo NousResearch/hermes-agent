@@ -62,6 +62,7 @@ def test_outbox_drain_returns_each_envelope_once(home):
 
 def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
     calls = {}
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
 
     class _Proc:
         returncode = 0
@@ -84,6 +85,7 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
     # byte from raising instead of delivering.
     assert calls["kwargs"]["encoding"] == "utf-8"
     assert calls["kwargs"]["errors"] == "replace"
+    assert "_HERMES_GATEWAY" not in calls["kwargs"]["env"]
     argv = calls["argv"]
     # argv[0] may be a resolved venv path (#93590) — match by basename.
     assert argv[1:3] == ["-p", "ops"]

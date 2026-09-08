@@ -38,7 +38,7 @@ The built-in forward quotes source text. Do not assume original attachments are 
 
 ## Store a draft
 
-Appending and sending are separate actions:
+Appending and sending are separate actions. The following shared append requires a backend that supports it. **Gmail REST and Graph do not implement shared `message add` in v2.1.0**, including through `--save`; use native draft creation below:
 
 ```bash
 himalaya --account work --json message add --mailbox drafts --flag draft < draft.eml
@@ -46,9 +46,20 @@ himalaya --account work --json message add --mailbox drafts --flag draft < draft
 
 Using stdin avoids the variadic `--flag` argument swallowing a following file path. To supply a positional path after options, separate it with `--`.
 
-`compose/reply/forward --save drafts` appends a copy, but in v2.1 the shared routing helper saves it with the **seen** flag, not automatically the draft flag. Prefer `message add --flag draft` when actual draft state matters. Native Gmail draft APIs may be required for the provider's draft resource.
+`compose/reply/forward --save drafts` appends a copy, but in v2.1 the shared routing helper saves it with the **seen** flag, not automatically the draft flag. Prefer `message add --flag draft` when actual draft state matters. Gmail REST requires native draft APIs; see below.
 
 Capture the returned backend ID and account/mailbox. Saving twice can create duplicate drafts. A local `draft.eml` alone is not a server-side draft.
+
+### Gmail REST and Graph drafts
+
+After inspecting the local MIME and verifying native command help:
+
+```bash
+himalaya --account work gmail drafts create < draft.eml
+himalaya --account work msgraph message create --folder drafts < draft.eml
+```
+
+Choose the command matching the account backend, not both. Both store a draft without sending. Native draft creation reports a success message containing its ID; do not assume the shared `{id, sent}` output schema. Keep Gmail draft IDs distinct from message IDs and thread IDs. For an existing Gmail draft, use `gmail drafts update DRAFT_ID < draft.eml` after verifying its identity; repeated `create` makes additional drafts. See [Gmail workflows](gmail-workflows.md).
 
 ## Submit an authorized message
 

@@ -18,6 +18,8 @@ Contents: choose shared or native; command-family map; integration utilities; la
 | pimdir | Shared offline browsing and staged replica mutations, selected with `--backend pimdir`. V2.1 has no top-level `pimdir` command. Synchronization is performed by Neverest, not Himalaya. |
 | SMTP | Native submission or raw SMTP access. Raw protocol access can send mail or change state; it is not an authorization bypass. |
 
+In v2.1.0, Gmail REST and Graph do not implement shared `envelope search` or shared `message add`. Use native search and draft creation. Gmail-specific operational recipes are in [gmail-workflows.md](gmail-workflows.md).
+
 Native queries are not interchangeable: the shared DSL, IMAP search keys, Gmail search syntax, JMAP filters and Graph query options differ. Inspect help for the selected native operation and preserve its pagination tokens/state where applicable. History/delta-like resources are not a generic local sync command.
 
 ## Complete v2.1 command-family map

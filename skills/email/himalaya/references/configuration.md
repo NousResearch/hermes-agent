@@ -93,7 +93,7 @@ For trusted session proxies such as Sirup, IMAP/SMTP accept `unix:///path/to/soc
 - Missing backend: distinguish an omitted build feature from a missing account block or unsupported operation.
 - Authentication: check the selected account, secret command, token validity/scopes, advertised mechanism, host and TLS mode. Keep command output containing credentials private.
 - Mailbox failure: list actual IDs, verify aliases and role semantics. A syntactically valid TOML file can still have irrelevant keys.
-- Search failure: shared queries have backend-specific accepted subsets; native queries use their own grammar.
+- Search failure: distinguish local parse errors from unsupported backend operations. CLI v2.1.0 Gmail REST and Graph reject shared search entirely; use native commands. Native queries have their own grammar. Do not diagnose authentication solely from a parse/option error. Follow the bounded recovery procedure in [execution and validation](execution-and-validation.md).
 - Partial mutation: inspect returned action/count/IDs and mailbox state before retrying. See composition for send ambiguity.
 - Need diagnostic logs: use `--log-level debug` and optionally `--log-file PATH`; `RUST_LOG` works when the flag is absent. Use trace only for a concrete unresolved issue and redact tokens and message content before sharing logs.
 

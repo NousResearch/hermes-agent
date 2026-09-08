@@ -20,7 +20,9 @@ Use `--json` for machine output. Generate schemas into a new directory with `him
 
 ## Search and pagination
 
-V2 filtering and sorting belong to `envelope search`; `envelope list` lists newest first. Page numbering begins at 1 and the default size falls back to 25. Set page size explicitly for bounded retrieval; paginate until the requested scope is satisfied. Mailbox updates can change page boundaries, so deduplicate by scoped ID during long scans.
+**Backend gate:** v2.1.0 Gmail REST and Graph reject shared `envelope search` entirely. This is not a quoting or authentication error. Use [Gmail workflows](gmail-workflows.md) or the native Graph command help. Gmail accessed over IMAP uses the IMAP backend.
+
+V2 filtering and sorting belong to `envelope search`; `envelope list` lists newest first. Page numbering begins at 1 and the default size falls back to 25. Set page size explicitly for bounded retrieval. Shared results use `envelopes` and numeric pages, not Gmail cursor fields. For a complete scan, continue until an empty successful page; do not treat a nonempty short page or a page budget as proof of exhaustion. A repeated page or failure means incomplete. A bounded request can finish at its requested limit without exhausting the mailbox. Mailbox updates can change page boundaries, so deduplicate by scoped ID during long scans.
 
 ```bash
 himalaya --account work --json envelope search --mailbox inbox \
@@ -34,7 +36,7 @@ Shared conditions: `date YYYY-MM-DD`, `after YYYY-MM-DD`, `from PATTERN`, `to PA
 
 Quote the whole query for the shell; keep options before the trailing query. Use explicit Boolean operators, unlike the original adjacent-condition example. Text matching is case-insensitive substring matching; dates target the message's Date header. V2.1 has no shared `before` clause. Check exact boundary semantics and backend support for date-sensitive work; do not silently relax filters when one is unsupported.
 
-`--has-attachment` on list/search populates attachment information; it is not a filter that returns only messages with attachments. `--recipient` displays To instead of From. Native IMAP/JMAP/Gmail/Graph searches expose additional features and different grammars; see capabilities.
+`--has-attachment` on list/search populates attachment information; it is not a filter that returns only messages with attachments. `--recipient` displays To instead of From. Native IMAP/JMAP/Gmail/Graph searches expose additional features and different grammars; see capabilities. Preserve every scope constraint when translating: `--mailbox inbox` does not carry into native Gmail; pass the resolved label, such as `--label INBOX`, on every page. See [Gmail workflows](gmail-workflows.md) for exact output shapes, dates and body access, and [execution and validation](execution-and-validation.md) for progress and count evidence.
 
 ## Move, copy and delete
 

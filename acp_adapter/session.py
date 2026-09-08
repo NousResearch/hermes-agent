@@ -388,10 +388,22 @@ class SessionManager:
             name for name, cfg in (config.get("mcp_servers") or {}).items()
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
+        effective_model = model or default_model
+        # Same chokepoint as CLI/TUI/gateway/cron (per-model override > global
+        # agent.reasoning_effort). Without it, ACP sessions silently pinned to
+        # medium and ignored user config.
+        try:
+            from hermes_constants import resolve_reasoning_config
+
+            reasoning_config = resolve_reasoning_config(config, effective_model)
+        except Exception:
+            logger.debug("Could not resolve reasoning config for ACP session", exc_info=True)
+            reasoning_config = None
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
             "enabled_toolsets": _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers),
-            "model": model or default_model,
+            "model": effective_model,
+            "reasoning_config": reasoning_config,
         }
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)

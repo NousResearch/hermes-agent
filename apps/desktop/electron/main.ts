@@ -346,6 +346,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { fetchRosterSourceData } from './roster-source-fetch'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -15726,11 +15727,13 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             )
           )
 
-          const body: any = await getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })
+          const { body, installId } = await fetchRosterSourceData(
+            () => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 }),
+            () => probeConnectionInstallId(connection.id, descriptor)
+          )
 
-          // Cached with a TTL, so the 5s roster poll usually pays zero extra
-          // requests for the backend-identity probe.
-          const installId = await probeConnectionInstallId(connection.id, descriptor)
+          // The install-id probe is TTL-cached, so the 5s roster poll usually
+          // pays zero extra requests; on a miss it runs beside /api/profiles.
 
           const profiles = Array.isArray(body?.profiles)
             ? body.profiles.map(p => String(p?.name || '').trim()).filter(Boolean)

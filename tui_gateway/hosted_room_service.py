@@ -84,7 +84,7 @@ class HostedRoomService:
         self._policy_lock = threading.RLock()
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(self.db_path)
-        self.rpc = HostedRoomServerRPC(server)
+        self.rpc = HostedRoomServerRPC(server, db_path=self.db_path)
         self._link_load_error = None
         self._peer_route_status: dict[tuple[str, str], str] = {}
         self._peer_renewals: dict[tuple[str, str], tuple[str, float, float]] = {}

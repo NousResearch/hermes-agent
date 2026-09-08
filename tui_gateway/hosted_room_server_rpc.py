@@ -8,6 +8,7 @@ import itertools
 import threading
 from collections.abc import Mapping, Sequence
 from types import ModuleType
+from pathlib import Path
 from typing import Any, Callable
 
 from gateway import hosted_room_driver as state
@@ -27,8 +28,9 @@ class HostedRoomSessionError(RuntimeError):
 class HostedRoomServerRPC:
     """Normalize the installed server handlers for :class:`HostedRoomRuntime`."""
 
-    def __init__(self, server: ModuleType) -> None:
+    def __init__(self, server: ModuleType, *, db_path: Path | str | None = None) -> None:
         self.server = server
+        self.db_path = db_path
         self._ids = itertools.count(1)
 
     def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -47,6 +49,13 @@ class HostedRoomServerRPC:
 
     def resolve_exact(self, *, profile: str, title: str, source: str) -> Mapping[str, Any] | None:
         del source
+        if self.db_path is not None:
+            from gateway.hosted_room_local_sessions import LocalSessionBindingError, lookup_binding
+            if not title.startswith("Group: "):
+                raise LocalSessionBindingError("The Group Chat session title is invalid.")
+            binding = lookup_binding(self.db_path, room_id=title.removeprefix("Group: "), profile=profile)
+            if binding is not None:
+                return {"session_id": binding["session_id"], "title": title}
         result = self._call(
             "session.list", {"profile": profile, "title": title, "include_hidden": True})
         rows = result.get("sessions")
@@ -70,17 +79,49 @@ class HostedRoomServerRPC:
         execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
     ) -> Mapping[str, Any]:
         try:
-            return self._call("prompt.submit", {
+            params = {
                 "profile": profile, "session_id": session_id, "text": prompt, "source": source,
                 "_hosted_task": {
                     "room_id": task.room_id, "task_id": task.task_id, "thread_id": task.thread_id,
                     "turn_id": task.turn_id, "execution_generation": execution_generation},
-                "_hosted_terminal_callback": on_terminal})
+                "_hosted_terminal_callback": on_terminal}
+            if self.db_path is not None:
+                params["_hosted_session_guard"] = lambda session: self._record_session_binding(
+                    session, profile=profile, task=task, execution_generation=execution_generation)
+            return self._call("prompt.submit", params)
         except HostedRoomSessionError as exc:
             # In-process prompt.submit error envelopes come back before the background turn is
             # admitted; keep that proof so the driver can defer/requeue without an ambiguity lease.
             exc.not_admitted = True
             raise
+
+    def _record_session_binding(self, session, *, profile, task, execution_generation):
+        """Called by prompt.submit while it owns the actual session's history lock."""
+        from gateway.hosted_room_local_sessions import LocalSessionBindingError, lookup_binding, record_binding
+        if session.get("source") != "bot_room" or self.server._response_profile_name(profile) != profile:
+            raise LocalSessionBindingError("The Bot session does not match the requested profile.")
+        with self.server._session_db(session) as db, self.server._profile_db({"profile": profile}) as expected_db:
+            if db is None or expected_db is None or Path(db.db_path).resolve() != Path(expected_db.db_path).resolve():
+                raise LocalSessionBindingError("The Bot session's profile store is unavailable or changed.")
+            stored_id = session.get("session_key")
+            binding = lookup_binding(self.db_path, room_id=task.room_id, profile=profile)
+            current = db.get_session(stored_id) if isinstance(stored_id, str) else None
+            if current is None and binding is None and not session.get("lazy") and session.get("room_plumbing") is True:
+                # Ordinary drafts stay lazy. This is the first real hosted submit,
+                # and only its freshly created session may be persisted here.
+                if session.get("pending_title") != f"Group: {task.room_id}" or self.server._ensure_session_db_row(session) is False:
+                    raise LocalSessionBindingError("The new Group Chat session could not be saved.")
+                current = db.get_session(stored_id)
+            if current is None or current.get("source") != "bot_room" or current.get("archived"):
+                raise LocalSessionBindingError("The private Bot session is unavailable.")
+            anchor = binding["session_id"] if binding is not None else stored_id
+            original = db.get_session(anchor)
+            if (original is None or original.get("source") != "bot_room" or original.get("archived")
+                    or db.get_compression_tip(anchor) != stored_id
+                    or (binding is not None and original.get("started_at") != binding["session_started_at"])):
+                raise LocalSessionBindingError("The private Bot context no longer matches its recorded identity.")
+            record_binding(self.db_path, task=task, execution_generation=execution_generation,
+                           profile=profile, session_id=anchor, session_started_at=original["started_at"])
 
     def history(self, *, profile: str, session_id: str, source: str) -> Sequence[Mapping[str, Any]]:
         del source

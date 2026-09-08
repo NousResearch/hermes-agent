@@ -190,7 +190,7 @@ def _typed_stop_phrase_response(rid, text):
 _HOSTED_TASK_FIELDS = {"room_id", "task_id", "thread_id", "turn_id", "execution_generation"}
 
 
-def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback):
+def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback, hosted_session_guard=None):
     """Validate the hosted-room turn proof carried by an internal submit."""
     if session.get("source") != "bot_room":
         return _err(rid, 4120, "hosted room turns require a bot_room session")
@@ -199,7 +199,8 @@ def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback):
         and set(hosted_task) == _HOSTED_TASK_FIELDS
         and all(isinstance(hosted_task.get(f), str) and hosted_task[f]
                 for f in _HOSTED_TASK_FIELDS - {"execution_generation"})
-        and isinstance(hosted_task.get("execution_generation"), int))
+        and isinstance(hosted_task.get("execution_generation"), int)
+        and (hosted_session_guard is None or callable(hosted_session_guard)))
     return None if valid else _err(rid, 4120, "invalid hosted room turn proof")
 
 
@@ -503,15 +504,23 @@ _TRUNCATION_PARAMS = (
 
 
 def _lock_in_submit_turn(
-    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task):
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, hosted_session_guard=None):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
     with session["history_lock"]:
+        if hosted_session_guard is not None and session.get("running"):
+            return _err(rid, 4009, "The Bot is already working in this conversation."), fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
             return _err(rid, 4009, "subagent still running — wait for it to finish"), fields
+        if hosted_session_guard is not None:
+            try:
+                hosted_session_guard(session)
+            except Exception as exc:
+                logger.warning("Group Chat session binding refused: %s", type(exc).__name__)
+                return _err(rid, 4120, "Group Chat session identity is unavailable or changed."), fields
         if is_truthy_value(params.get("confirm_truncate")) and not has_truncation:
             return _err(
                 rid, 4004,
@@ -551,9 +560,10 @@ def _(rid, params: dict) -> dict:
         return err
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
-    internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
+    hosted_session_guard = params.get("_hosted_session_guard")
+    internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None or hosted_session_guard is not None
     err = (
-        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
+        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback, hosted_session_guard)
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
@@ -585,6 +595,8 @@ def _(rid, params: dict) -> dict:
         with session["history_lock"]:
             if not session.get("running"):
                 break
+            if hosted_session_guard is not None:
+                return _err(rid, 4009, "The Bot is already working in this conversation.")
             if internal_hosted_submit:
                 return _err(rid, 4091, "hosted room member session is busy")
             busy_transport = t or session.get("transport")
@@ -597,7 +609,7 @@ def _(rid, params: dict) -> dict:
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
     err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, hosted_session_guard)
     if err is not None:
         return err
     if turn_isolation:

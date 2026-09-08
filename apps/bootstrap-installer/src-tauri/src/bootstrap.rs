@@ -208,16 +208,42 @@ async fn run_bootstrap(
     args: StartBootstrapArgs,
     cancel_rx_holder: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
 ) -> Result<BootstrapDone> {
-    // 1. Resolve the checkout.
-    let info = match args.repo_root.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(picked) => repo::describe(Some(PathBuf::from(picked)), "picked"),
-        None => repo::detect_repo(),
-    };
-
     let fail = |app: &AppHandle, msg: String| -> anyhow::Error {
         emit_event(app, BootstrapEvent::Failed { error: msg.clone() });
         anyhow!(msg)
     };
+
+    // 1. Resolve the checkout, then run the SAME pre-spawn gate the picker
+    //    uses (`repo::validate_target`) so a frontend-supplied `repoRoot`
+    //    cannot skip the "real checkout, not the system drive" checks
+    //    (PC-2026-09-08-002). Auto-detection that comes back empty or
+    //    ambiguous stops here with an explicit "choose a location" message
+    //    (PC-2026-09-08-003).
+    let candidate = match args.repo_root.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(picked) => PathBuf::from(picked),
+        None => {
+            let detected = repo::detect_repo();
+            match detected.repo_root.clone() {
+                Some(root) => PathBuf::from(root),
+                None => {
+                    let msg = if detected.source == "ambiguous" {
+                        "More than one North Forge checkout is visible. Use \
+                         \"Choose location\" to pick the exact one to set up."
+                    } else {
+                        "Couldn't find a North Forge checkout. Use \"Choose location\" \
+                         to pick the drive or folder that holds it."
+                    };
+                    return Err(fail(&app, msg.to_string()));
+                }
+            }
+        }
+    };
+
+    let repo_root = match repo::validate_target(&candidate) {
+        Ok(root) => root.to_string_lossy().into_owned(),
+        Err(msg) => return Err(fail(&app, msg)),
+    };
+    let info = repo::describe(Some(PathBuf::from(&repo_root)), "picked");
 
     let Some(repo_root) = info.repo_root.clone() else {
         return Err(fail(

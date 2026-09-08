@@ -77,12 +77,39 @@ fn system_drive_prefix() -> String {
         .to_ascii_uppercase()
 }
 
+/// Case-insensitive "is `path` the drive named by `sys_prefix` (e.g. `C:`) or
+/// under it". Pure — split out so the policy is testable without touching the
+/// real `SystemDrive` env var.
+fn is_under_drive_prefix(path: &Path, sys_prefix: &str) -> bool {
+    let up = path.to_string_lossy().to_ascii_uppercase();
+    let sp = sys_prefix.trim_end_matches('\\').to_ascii_uppercase();
+    up == sp || up.starts_with(&format!("{sp}\\"))
+}
+
 fn on_system_drive(path: &Path) -> bool {
-    let sys = system_drive_prefix();
-    path.to_string_lossy()
-        .to_ascii_uppercase()
-        .starts_with(&format!("{sys}\\"))
-        || path.to_string_lossy().to_ascii_uppercase() == sys
+    is_under_drive_prefix(path, &system_drive_prefix())
+}
+
+/// Pure pre-spawn policy, given the facts already gathered. Kept separate from
+/// [`validate_target`] so the "real checkout, not the system drive" rules can
+/// be unit-tested without a real filesystem or a real system drive.
+fn target_policy(root: &Path, is_checkout: bool, on_system_drive: bool) -> Result<(), String> {
+    if !is_checkout {
+        return Err(format!(
+            "{} is missing scripts\\bootstrap-north-forge.ps1 or pyproject.toml — \
+             the checkout looks incomplete.",
+            root.display()
+        ));
+    }
+    if on_system_drive {
+        return Err(format!(
+            "{} is on the system drive. North Forge is meant to run from a separate \
+             drive that can travel between machines — move the checkout to another \
+             drive and pick it there.",
+            root.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Enumerate `A:\` .. `Z:\` that exist. No winapi — a bare `is_dir()` on the
@@ -110,27 +137,34 @@ pub fn list_drives() -> Vec<DriveInfo> {
     out
 }
 
-/// The drive root itself, or exactly one immediate child, that is a checkout.
-fn find_checkout_on_drive(root: &Path) -> Option<PathBuf> {
+/// Every checkout at `root` itself or one level under it. `root` first: if the
+/// picked path *is* a checkout that's the answer regardless of its children.
+fn checkouts_under(root: &Path) -> Vec<PathBuf> {
     if is_checkout(root) {
-        return Some(root.to_path_buf());
+        return vec![root.to_path_buf()];
     }
-    let mut found: Option<PathBuf> = None;
-    let entries = std::fs::read_dir(root).ok()?;
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if !p.is_dir() {
-            continue;
-        }
-        if is_checkout(&p) {
-            if found.is_some() {
-                // More than one — ambiguous; let the user pick explicitly.
-                return None;
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() && is_checkout(&p) {
+                out.push(p);
             }
-            found = Some(p);
         }
     }
-    found
+    out
+}
+
+/// The drive root itself, or exactly one immediate child, that is a checkout.
+/// `None` for zero *or* more than one (ambiguous — the caller must make the
+/// user choose).
+fn find_checkout_on_drive(root: &Path) -> Option<PathBuf> {
+    let mut found = checkouts_under(root);
+    if found.len() == 1 {
+        found.pop()
+    } else {
+        None
+    }
 }
 
 /// Walk up from `start` (inclusive) up to `max_up` levels looking for a checkout.
@@ -152,6 +186,13 @@ fn walk_up_for_checkout(start: &Path, max_up: usize) -> Option<PathBuf> {
 
 /// Resolve the checkout by env override → exe-relative walk-up → drive scan.
 /// Returns `(repo_root, source_tag)`.
+///
+/// The drive scan auto-picks **only when exactly one checkout exists across
+/// every visible drive**. Zero → `None` ("none"); two or more → `None`
+/// ("ambiguous") so the UI forces an explicit choice instead of silently
+/// grabbing the first drive letter (PC-2026-09-08-003). The env override and
+/// the exe-relative walk-up are explicit, unambiguous signals and still win
+/// outright.
 fn resolve_checkout() -> Option<(PathBuf, String)> {
     for var in ["NORTH_FORGE_REPO_ROOT", "HERMES_SETUP_DEV_REPO_ROOT"] {
         if let Ok(v) = std::env::var(var) {
@@ -170,13 +211,54 @@ fn resolve_checkout() -> Option<(PathBuf, String)> {
         }
     }
 
-    for d in list_drives() {
-        if let Some(path) = d.checkout_path {
-            return Some((PathBuf::from(path), "scan".to_string()));
-        }
+    let mut candidates: Vec<PathBuf> = list_drives()
+        .into_iter()
+        .filter_map(|d| d.checkout_path.map(PathBuf::from))
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+    match candidates.len() {
+        1 => Some((candidates.pop().unwrap(), "scan".to_string())),
+        _ => None,
+    }
+}
+
+/// Shared pre-spawn gate. A target path — auto-detected or handed in by the
+/// frontend — must be canonicalized, must resolve to a real North Forge
+/// checkout (`scripts/bootstrap-north-forge.ps1` **and** `pyproject.toml`),
+/// and must not sit on the OS system drive. Both `set_repo_root` (the picker)
+/// and `run_bootstrap` (immediately before spawning PowerShell) call this, so
+/// a value coming from the webview can never skip the checks
+/// (PC-2026-09-08-002).
+pub fn validate_target(picked: &Path) -> Result<PathBuf, String> {
+    if !picked.is_dir() {
+        return Err(format!("{} is not a folder.", picked.display()));
     }
 
-    None
+    let found = checkouts_under(picked);
+    let root = match found.len() {
+        1 => found.into_iter().next().unwrap(),
+        0 => {
+            return Err(format!(
+                "No North Forge checkout in {}. Pick the folder that contains \
+                 scripts\\bootstrap-north-forge.ps1 and pyproject.toml (or its parent).",
+                picked.display()
+            ));
+        }
+        n => {
+            return Err(format!(
+                "{n} North Forge checkouts under {} — pick the exact folder, not its parent.",
+                picked.display()
+            ));
+        }
+    };
+
+    let root = std::fs::canonicalize(&root)
+        .map(strip_unc_prefix)
+        .unwrap_or(root);
+
+    target_policy(&root, is_checkout(&root), on_system_drive(&root))?;
+    Ok(root)
 }
 
 /// Build a full [`RepoInfo`] for a known (or unknown) checkout root.
@@ -258,44 +340,157 @@ fn strip_unc_prefix(p: PathBuf) -> PathBuf {
 // ---------------------------------------------------------------------------
 
 /// Auto-detect the checkout (env → exe → drive scan) and describe it.
+///
+/// When nothing is auto-resolved, the `source` tag tells the UI *why*:
+/// `"ambiguous"` (more than one checkout across the drives — the user must
+/// choose) vs `"none"` (nothing found).
 #[tauri::command]
 pub fn detect_repo() -> RepoInfo {
     match resolve_checkout() {
         Some((root, source)) => describe(Some(root), &source),
-        None => describe(None, "none"),
+        None => {
+            let total: usize = list_drives().iter().filter(|d| d.has_checkout).count();
+            describe(None, if total > 1 { "ambiguous" } else { "none" })
+        }
     }
 }
 
 /// Accept a user-picked folder (from the Browse dialog or a drive quick-pick).
 /// The path may be the checkout itself or a drive/parent containing exactly
-/// one. Rejects the system drive as an explicit target.
+/// one. Runs the shared [`validate_target`] gate — real checkout, not the
+/// system drive — so the picker and the bootstrap enforce identical rules.
 #[tauri::command]
 pub fn set_repo_root(path: String) -> Result<RepoInfo, String> {
-    let picked = PathBuf::from(path.trim());
-    if !picked.is_dir() {
-        return Err(format!("{} is not a folder.", picked.display()));
-    }
-
-    let root = if is_checkout(&picked) {
-        picked.clone()
-    } else if let Some(found) = find_checkout_on_drive(&picked) {
-        found
-    } else {
-        return Err(format!(
-            "No North Forge checkout found in {}. Pick the folder that contains \
-             scripts\\bootstrap-north-forge.ps1 (or its parent).",
-            picked.display()
-        ));
-    };
-
-    if on_system_drive(&root) {
-        return Err(format!(
-            "{} is on the system drive. North Forge is meant to run from a \
-             separate drive that can travel between machines — move the checkout \
-             to another drive and pick it there.",
-            root.display()
-        ));
-    }
-
+    let root = validate_target(&PathBuf::from(path.trim()))?;
     Ok(describe(Some(root), "picked"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Throwaway dir under the OS temp root; removed on drop.
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new(tag: &str) -> Self {
+            let base = std::env::temp_dir().join(format!(
+                "nf-setup-test-{tag}-{}-{:?}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&base).unwrap();
+            TmpDir(base)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Make `dir` look like a real North Forge checkout.
+    fn seed_checkout(dir: &Path) {
+        std::fs::create_dir_all(dir.join("scripts")).unwrap();
+        std::fs::write(dir.join(BOOTSTRAP_REL), b"# stub").unwrap();
+        std::fs::write(dir.join("pyproject.toml"), b"[project]\n").unwrap();
+    }
+
+    #[test]
+    fn is_checkout_needs_both_marker_files() {
+        let tmp = TmpDir::new("ischeck");
+        let d = tmp.path();
+        assert!(!is_checkout(d));
+        std::fs::create_dir_all(d.join("scripts")).unwrap();
+        std::fs::write(d.join(BOOTSTRAP_REL), b"x").unwrap();
+        assert!(!is_checkout(d), "bootstrap script alone is not enough");
+        std::fs::write(d.join("pyproject.toml"), b"x").unwrap();
+        assert!(is_checkout(d));
+    }
+
+    #[test]
+    fn is_under_drive_prefix_is_case_insensitive_and_boundary_safe() {
+        assert!(is_under_drive_prefix(Path::new("c:\\Users\\x"), "C:"));
+        assert!(is_under_drive_prefix(Path::new("C:"), "c:"));
+        assert!(is_under_drive_prefix(Path::new("C:\\"), "C:"));
+        assert!(!is_under_drive_prefix(Path::new("D:\\north-forge-agent"), "C:"));
+        // "C:" must not match a "CX:" drive by prefix.
+        assert!(!is_under_drive_prefix(Path::new("CX:\\thing"), "C:"));
+    }
+
+    #[test]
+    fn target_policy_rejects_non_checkout() {
+        let err = target_policy(Path::new("D:\\somewhere"), false, false).unwrap_err();
+        assert!(err.contains("incomplete"), "{err}");
+    }
+
+    #[test]
+    fn target_policy_rejects_system_drive_checkout() {
+        let err = target_policy(Path::new("C:\\north-forge-agent"), true, true).unwrap_err();
+        assert!(err.contains("system drive"), "{err}");
+    }
+
+    #[test]
+    fn target_policy_accepts_real_offsystem_checkout() {
+        assert!(target_policy(Path::new("E:\\north-forge-agent"), true, false).is_ok());
+    }
+
+    #[test]
+    fn checkouts_under_counts_zero_one_many() {
+        let tmp = TmpDir::new("count");
+        let root = tmp.path();
+        assert_eq!(checkouts_under(root).len(), 0);
+        assert!(find_checkout_on_drive(root).is_none());
+
+        seed_checkout(&root.join("alpha"));
+        assert_eq!(checkouts_under(root).len(), 1);
+        assert_eq!(
+            find_checkout_on_drive(root).unwrap().file_name().unwrap(),
+            "alpha"
+        );
+
+        seed_checkout(&root.join("beta"));
+        assert_eq!(checkouts_under(root).len(), 2);
+        assert!(
+            find_checkout_on_drive(root).is_none(),
+            "two checkouts under one root must be ambiguous, not first-wins"
+        );
+    }
+
+    #[test]
+    fn validate_target_errors_are_total_over_bad_input() {
+        // not a dir
+        assert!(validate_target(Path::new("D:\\nf-setup-test-does-not-exist-xyz")).is_err());
+
+        // a dir, but no checkout in it
+        let tmp = TmpDir::new("nocheck");
+        let e = validate_target(tmp.path()).unwrap_err();
+        assert!(e.contains("No North Forge checkout"), "{e}");
+
+        // a parent holding two checkouts → explicit-choice error, never a silent pick
+        let tmp2 = TmpDir::new("two");
+        seed_checkout(&tmp2.path().join("one"));
+        seed_checkout(&tmp2.path().join("two"));
+        let e2 = validate_target(tmp2.path()).unwrap_err();
+        assert!(e2.contains("pick the exact folder"), "{e2}");
+    }
+
+    #[test]
+    fn validate_target_accepts_a_real_checkout_when_not_on_system_drive() {
+        let tmp = TmpDir::new("accept");
+        let root = tmp.path().join("north-forge-agent");
+        seed_checkout(&root);
+        // Skip on machines whose temp dir is the system drive — the policy
+        // (correctly) refuses that; `target_policy_*` tests cover the rule.
+        if on_system_drive(&root) {
+            return;
+        }
+        let ok = validate_target(&root).expect("real off-system checkout should validate");
+        assert!(is_checkout(&ok));
+    }
 }

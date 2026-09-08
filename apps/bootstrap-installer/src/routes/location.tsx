@@ -29,7 +29,10 @@ export default function Location() {
   const note = useStore($locationNote)
 
   const resolved = repo?.repoRoot ?? null
-  const canInstall = Boolean(resolved && repo?.bootstrapScript)
+  // Matches the Rust pre-spawn gate (repo::validate_target): a real checkout,
+  // and never the system drive.
+  const canInstall = Boolean(resolved && repo?.bootstrapScript && !repo?.onSystemDrive)
+  const ambiguous = repo?.source === 'ambiguous'
 
   async function browse() {
     const picked = await open({ directory: true, multiple: false, title: 'Choose the North Forge checkout (or its drive)' })
@@ -44,6 +47,7 @@ export default function Location() {
     exe: 'found next to Setup',
     scan: 'found by scanning your drives',
     picked: 'you chose this',
+    ambiguous: '',
     none: ''
   }
 
@@ -85,9 +89,16 @@ export default function Location() {
               <p className="mt-3 flex items-start gap-1.5 text-xs text-(--dt-destructive,#c0473a)">
                 <AlertTriangle className="mt-0.5 shrink-0" size={13} />
                 This checkout is on the system drive. North Forge is meant to run from a separate
-                drive that can travel between machines.
+                drive that can travel between machines &mdash; setup won&rsquo;t run here. Move the
+                checkout to another drive and pick it there.
               </p>
             )}
+          </div>
+        ) : ambiguous ? (
+          <div className="rounded-md border border-dashed border-(--dt-destructive,#c0473a) p-4 text-sm text-muted-foreground">
+            More than one North Forge checkout is visible on your drives. Pick the exact one to set
+            up &mdash; choose its drive below, or browse to the folder that contains{' '}
+            <code className="font-mono text-xs">scripts\bootstrap-north-forge.ps1</code>.
           </div>
         ) : (
           <div className="rounded-md border border-dashed border-(--stroke-nous) p-4 text-sm text-muted-foreground">

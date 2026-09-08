@@ -7,6 +7,7 @@ from .consent import ConsentActor, WisdomConsent
 from .review_presentation import (
     full_review_text,
     review_check_line,
+    review_summary_text,
 )
 
 
@@ -26,7 +27,7 @@ def _review_summary(facts: dict, expanded: bool) -> str:
         status = check.get("local_status") if local else check.get("status")
         lines.append(review_check_line(f"{label} (local preflight)" if local else label, status))
         if check.get("summary"):
-            lines.append(str(check["summary"])[:512])
+            lines.append(review_summary_text(str(check["summary"])))
     return "\n".join(lines)
 
 

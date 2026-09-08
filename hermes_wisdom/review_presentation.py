@@ -35,6 +35,12 @@ def review_check_line(label: str, status: object) -> str:
     return f"{icon} {label}" + (f": {state}" if state != "Pass" else "")
 
 
+def review_summary_text(summary: str) -> str:
+    if summary.strip() == "No known matches detected.":
+        return "No issues detected"
+    return summary[:512]
+
+
 def aggregate_review_text(
     security: dict[str, Any] | None,
     professionalism: dict[str, Any] | None,
@@ -91,7 +97,7 @@ def _checklist_text(
              else f"{title}: {review_status_text(value.get('status'))}"]
     summary = value.get("summary")
     if isinstance(summary, str) and summary.strip():
-        lines.append(summary[:512])
+        lines.append(review_summary_text(summary))
     rows = value.get("checks")
     if isinstance(rows, list):
         for row in rows:

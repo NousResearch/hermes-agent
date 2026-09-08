@@ -3,8 +3,18 @@ from hermes_wisdom.review_presentation import (
     full_review_text,
     review_status_text,
     review_check_line,
+    review_summary_text,
 )
 import pytest
+
+
+def test_clean_summary_copy_preserves_findings_and_safety_disclaimer():
+    assert review_summary_text("No known matches detected.") == "No issues detected"
+    assert review_summary_text("Review the policy finding.") == "Review the policy finding."
+    for expanded in (False, True):
+        text = full_review_text({"status": "pass", "summary": "No known matches detected."}, None, status_first=expanded)
+        assert "No issues detected" in text
+        assert "No known matches detected is not a security certification." in text
 
 
 @pytest.mark.parametrize("status,expected", [

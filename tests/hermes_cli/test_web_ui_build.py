@@ -12,6 +12,7 @@ freshness check is a no-op and the OOM rebuild always runs.
 """
 
 import os
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -44,6 +45,22 @@ def _make_web_dir(tmp_path: Path) -> tuple[Path, Path]:
     (web_dir / "package.json").touch()
     dist_dir = tmp_path / "hermes_cli" / "web_dist"
     return web_dir, dist_dir
+
+
+def test_npm_install_restores_lockfile_rewritten_by_npm(tmp_path):
+    lockfile = tmp_path / "package-lock.json"
+    original = b'{"packages":{"node_modules/example":{"peer":true}}}\n'
+    lockfile.write_bytes(original)
+
+    def npm_ci(*_args, **_kwargs):
+        lockfile.write_bytes(b'{"packages":{"node_modules/example":{}}}\n')
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    with patch("hermes_cli.main_web_build._run_npm_watching_for_engine_failure", side_effect=npm_ci):
+        result = _run_npm_install_deterministic("npm", tmp_path)
+
+    assert result.returncode == 0
+    assert lockfile.read_bytes() == original
 
 
 class TestWebUIBuildNeeded:

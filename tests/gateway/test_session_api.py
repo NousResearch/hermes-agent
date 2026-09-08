@@ -66,6 +66,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
+    assert features["session_model_clear"] is True
     assert features["run_steer"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
@@ -461,6 +462,121 @@ async def test_session_chat_stream_treats_pre_existing_poisoned_row_as_no_model(
 
 def _register_session_model_route(app, adapter):
     app.router.add_post("/api/sessions/{session_id}/model", adapter._handle_session_model_lock)
+
+
+@pytest.mark.asyncio
+async def test_session_model_null_clear_is_scoped_and_invalidates_prompt_snapshot(adapter, session_db):
+    session_id = session_db.create_session(
+        "clear-model", "api_server", model="old/model",
+        model_config={
+            "browser_model_lock": {"provider": "old", "model": "old/model", "confirmed": True},
+            "provider": "old", "base_url": "https://old.example/v1",
+            "_branched_from": "parent", "unrelated": "keep",
+        },
+        system_prompt="Model: old/model\nProvider: old",
+    )
+    other_id = session_db.create_session("other-model", "api_server", model="keep/model")
+    app = _create_session_app(adapter)
+    _register_session_model_route(app, adapter)
+    async with TestClient(TestServer(app)) as cli:
+        missing = await cli.post(f"/api/sessions/{session_id}/model", json={})
+        assert missing.status == 400
+        assert (await missing.json())["error"]["code"] == "missing_model"
+        for value in ("", "  ", False, [], {}):
+            invalid = await cli.post(f"/api/sessions/{session_id}/model", json={"model": value})
+            assert invalid.status == 400
+            assert (await invalid.json())["error"]["code"] == "invalid_model"
+        cleared = await cli.post(f"/api/sessions/{session_id}/model", json={"model": None})
+        assert cleared.status == 200
+        assert (await cleared.json())["runtime"]["model_lock"] == "cleared"
+        # Idempotent clears are still successful and remain session-scoped.
+        assert (await cli.post(f"/api/sessions/{session_id}/model", json={"model": None})).status == 200
+
+    row = session_db.get_session(session_id)
+    assert row["model"] is None
+    assert row["system_prompt"] is None
+    assert row["system_prompt_hash"] is None
+    assert session_db.get_session(other_id)["model"] == "keep/model"
+    config = row["model_config"]
+    if isinstance(config, str):
+        import json
+        config = json.loads(config)
+    assert config == {"_branched_from": "parent", "unrelated": "keep"}
+
+
+@pytest.mark.asyncio
+async def test_session_model_clear_preserves_non_lock_config_and_history_after_reopen(tmp_path):
+    db = SessionDB(tmp_path / "state.db")
+    sid = db.create_session(
+        "reopen-clear", "api_server", model="old/model",
+        model_config={"browser_model_lock": {"model": "old/model"}, "model_options": {"stale": True},
+                      "lineage": "parent", "unrelated": {"keep": True}},
+        system_prompt="stale model footer",
+    )
+    db.append_message(sid, "user", "history survives")
+    db.clear_session_model(sid)
+    assert db.get_messages_as_conversation(sid)[0]["content"] == "history survives"
+    db.close()
+    reopened = SessionDB(tmp_path / "state.db")
+    try:
+        row = reopened.get_session(sid)
+        assert row["model"] is None
+        config = row["model_config"]
+        if isinstance(config, str):
+            import json
+            config = json.loads(config)
+        assert config == {"lineage": "parent", "unrelated": {"keep": True}}
+    finally:
+        reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_session_model_clear_routes_global_then_allows_new_lock(adapter, session_db, monkeypatch):
+    """The real lock/chat handlers must stop reusing A after clear, then accept Y."""
+    _patch_api_server_runtime(monkeypatch)
+    session_id = session_db.create_session("route-clear-chat", "api_server")
+    calls = []
+
+    async def fake_run(**kwargs):
+        calls.append(kwargs)
+        return {"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    _register_session_model_route(app, adapter)
+    with patch.object(adapter, "_resolve_route", return_value=None), patch.object(
+        adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            pinned_a = await cli.post(f"/api/sessions/{session_id}/model", json={
+                "provider": "nous", "model": "A", "require_model_lock": True})
+            assert pinned_a.status == 200, await pinned_a.text()
+            first = await cli.post(f"/api/sessions/{session_id}/chat", json={"message": "first"})
+            assert first.status == 200, await first.text()
+
+            cleared = await cli.post(f"/api/sessions/{session_id}/model", json={"model": None})
+            assert cleared.status == 200
+            after_clear = await cli.get(f"/api/sessions/{session_id}")
+            assert after_clear.status == 200
+            assert (await after_clear.json())["session"]["model"] is None
+            second = await cli.post(f"/api/sessions/{session_id}/chat", json={"message": "second"})
+            assert second.status == 200, await second.text()
+
+            pinned_y = await cli.post(f"/api/sessions/{session_id}/model", json={
+                "provider": "nous", "model": "Y", "require_model_lock": True})
+            assert pinned_y.status == 200, await pinned_y.text()
+            third = await cli.post(f"/api/sessions/{session_id}/chat", json={"message": "third"})
+            assert third.status == 200, await third.text()
+
+    assert calls[0]["confirmed_runtime_lock"] is True
+    assert calls[0]["route_source"] == "session_model_lock"
+    assert calls[0]["route"] == {"provider": "nous", "model": "A"}
+    assert calls[1]["confirmed_runtime_lock"] is False
+    assert calls[1]["route_source"] == "global"
+    assert calls[1]["session_model"] is None
+    assert calls[1]["route"] is None
+    assert calls[2]["confirmed_runtime_lock"] is True
+    assert calls[2]["route_source"] == "session_model_lock"
+    assert calls[2]["route"] == {"provider": "nous", "model": "Y"}
+    assert session_db.get_session(session_id)["model"] == "Y"
 
 
 def _patch_api_server_runtime(monkeypatch):

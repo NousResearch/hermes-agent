@@ -135,10 +135,11 @@ def test_sequential_session_search_forwards_detail(monkeypatch):
 
 
 @pytest.mark.parametrize("execution_path", ["inline", "sequential"])
+@pytest.mark.parametrize("profile", ["llm-wiki", "missing-profile"])
 def test_session_search_uses_requested_profile_database(
-    monkeypatch, tmp_path, execution_path
+    monkeypatch, tmp_path, execution_path, profile
 ):
-    """Both public agent dispatch paths search only the requested profile."""
+    """Both public dispatch paths honor explicit profiles without falling back."""
     from hermes_state import SessionDB
 
     hermes_home = tmp_path / ".hermes"
@@ -163,7 +164,7 @@ def test_session_search_uses_requested_profile_database(
     profile_db.close()
 
     agent = _make_agent(current_db, platform="acp")
-    tool_args = {"query": "weekly report", "profile": "llm-wiki"}
+    tool_args = {"query": "weekly report", "profile": profile}
 
     try:
         if execution_path == "inline":
@@ -184,6 +185,13 @@ def test_session_search_uses_requested_profile_database(
         current_db.close()
 
     result = json.loads(raw_result)
+    if profile == "missing-profile":
+        assert result["success"] is False
+        assert "profile 'missing-profile' does not exist" in result["error"]
+        assert not result.get("results")
+        assert "default-session" not in raw_result
+        return
+
     assert result["success"] is True
     assert [entry["session_id"] for entry in result["results"]] == ["profile-session"]
     assert result["results"][0]["link"] == "@session:llm-wiki/profile-session"

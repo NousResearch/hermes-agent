@@ -63,7 +63,7 @@ class TestSystemPromptAppend:
         return hermes_home
 
     def test_soul_first_and_user_content_present(self, tmp_path, monkeypatch):
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
 
         self._home(
             tmp_path, monkeypatch,
@@ -81,7 +81,7 @@ class TestSystemPromptAppend:
         # R2 (#65982, romain-bury): the native composer treats
         # $HERMES_HOME/SOUL.md as identity slot #1; W2 composer parity means
         # this path must load it too when no explicit append_file overrides.
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
 
         home = self._home(tmp_path, monkeypatch)
         (home / "SOUL.md").write_text("# Native soul identity")
@@ -91,7 +91,7 @@ class TestSystemPromptAppend:
 
     def test_append_file_wins_over_native_soul_md(self, tmp_path, monkeypatch):
         # append_file stays the explicit operator override.
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
 
         home = self._home(
             tmp_path, monkeypatch, soul="# Override persona"
@@ -104,7 +104,7 @@ class TestSystemPromptAppend:
 
     def test_workspace_context_file_is_in_sdk_append(self, tmp_path, monkeypatch):
         """SDK turns must receive the same Hermes project instructions as native turns."""
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
 
         self._home(tmp_path, monkeypatch)
         workspace = tmp_path / "workspace"
@@ -125,7 +125,7 @@ class TestSystemPromptAppend:
 
     def test_coding_workspace_snapshot_is_in_sdk_append(self, tmp_path, monkeypatch):
         """SDK turns retain the workspace and operator tail, not false tool guidance."""
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
         import agent.coding_context as coding_context
 
         self._home(tmp_path, monkeypatch)
@@ -150,7 +150,7 @@ class TestSystemPromptAppend:
 
     def test_project_context_preserves_native_fallback_policy(self, tmp_path, monkeypatch):
         """A fallback cwd stays None so prompt_builder can guard install trees."""
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
         import agent.coding_context as coding_context
         import agent.prompt_builder as prompt_builder
 
@@ -176,7 +176,7 @@ class TestSystemPromptAppend:
 
     def test_skip_project_context_keeps_coding_snapshot(self, tmp_path, monkeypatch):
         """skip_context_files does not disable the independent coding snapshot."""
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
         import agent.coding_context as coding_context
         import agent.prompt_builder as prompt_builder
 
@@ -205,7 +205,7 @@ class TestSystemPromptAppend:
 
     def test_workspace_snapshot_survives_large_project_context(self, tmp_path, monkeypatch):
         """A large project file must not silently evict the SDK workspace snapshot."""
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
         import agent.coding_context as coding_context
         import agent.prompt_builder as prompt_builder
 
@@ -228,7 +228,7 @@ class TestSystemPromptAppend:
 
     def test_oversized_workspace_snapshot_is_capped_not_dropped(self, tmp_path, monkeypatch):
         """An oversized coding snapshot remains represented within the workspace cap."""
-        from agent.claude_sdk_runtime import (
+        from agent.claude_sdk_runtime_prompt import (
             _APPEND_TOTAL_MAX_CHARS,
             build_system_prompt_append,
         )
@@ -250,7 +250,7 @@ class TestSystemPromptAppend:
 
     def test_workspace_snapshot_survives_capped_soul(self, tmp_path, monkeypatch):
         """The workspace block must fit after the maximum-size SDK soul block."""
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
         import agent.coding_context as coding_context
         import agent.prompt_builder as prompt_builder
 
@@ -269,7 +269,7 @@ class TestSystemPromptAppend:
 
     def test_project_context_warning_queue_drains_after_builder_error(self, tmp_path, monkeypatch):
         """A failed SDK context build cannot leak warnings into later native prompts."""
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
         import agent.prompt_builder as prompt_builder
 
         self._home(tmp_path, monkeypatch)
@@ -289,7 +289,7 @@ class TestSystemPromptAppend:
         # Byte-pin: the memory/user blocks are EXACTLY what the native
         # composer injects (MemoryStore.format_for_system_prompt output,
         # gauge header included) — never a re-implementation.
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
         from tools.memory_tool import load_on_disk_store
 
         self._home(
@@ -308,7 +308,7 @@ class TestSystemPromptAppend:
         assert expected_user in out
 
     def test_mcp_inspection_preference_is_in_effective_sdk_prompt(self, tmp_path, monkeypatch):
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
 
         self._home(tmp_path, monkeypatch)
         out = build_system_prompt_append() or ""
@@ -325,7 +325,7 @@ class TestSystemPromptAppend:
         # 2026-09 rewording) names the skill_manage write tool, which this runtime
         # cannot call: the sentence that instructs it is dropped, everything else
         # is carried verbatim. The skills-index boilerplate is filtered the same way.
-        from agent.claude_sdk_runtime import (
+        from agent.claude_sdk_runtime_prompt import (
             _strip_uncallable_tool_guidance,
             build_system_prompt_append,
         )
@@ -354,14 +354,14 @@ class TestSystemPromptAppend:
 
     def test_skills_guidance_never_injected(self, tmp_path, monkeypatch):
         # SKILLS_GUIDANCE instructs skill_manage — unexposed by design.
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
 
         self._home(tmp_path, monkeypatch, memory="a fact")
         out = build_system_prompt_append()
         assert "skill_manage" not in out
 
     def test_session_search_guidance_always_present(self, tmp_path, monkeypatch):
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
         from agent.prompt_builder import SESSION_SEARCH_GUIDANCE
 
         self._home(tmp_path, monkeypatch)  # no memory files at all
@@ -372,7 +372,7 @@ class TestSystemPromptAppend:
         assert "ALL terms must match" in out
 
     def test_memory_disabled_removes_blocks_and_guidance(self, tmp_path, monkeypatch):
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
         import hermes_cli.config as cfg
 
         self._home(tmp_path, monkeypatch, memory="should not appear")
@@ -394,7 +394,7 @@ class TestSystemPromptAppend:
         # remain readable. Proven red-first against the enabled-only gate.
         import agent.prompt_builder as pb
         import hermes_cli.config as cfg
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
 
         self._home(tmp_path, monkeypatch, memory="a durable fact")
         monkeypatch.setattr(
@@ -424,7 +424,7 @@ class TestSystemPromptAppend:
         assert "session_search" in tools
 
     def test_session_line_and_platform_hint(self, tmp_path, monkeypatch):
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
         from agent.prompt_builder import PLATFORM_HINTS
 
         self._home(tmp_path, monkeypatch)
@@ -438,7 +438,7 @@ class TestSystemPromptAppend:
         assert PLATFORM_HINTS["telegram"].strip() in out
 
     def test_unknown_platform_no_hint_and_none_safe(self, tmp_path, monkeypatch):
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
 
         self._home(tmp_path, monkeypatch)
         out = build_system_prompt_append(platform="faxmachine")
@@ -450,7 +450,7 @@ class TestSystemPromptAppend:
         # still make it in. An oversized hand-edited MEMORY.md must not
         # evict the guidance. (Deliberate pin update from W1's 8000-char
         # raw-file cap: the store renders whole blocks; the budget governs.)
-        from agent.claude_sdk_runtime import (
+        from agent.claude_sdk_runtime_prompt import (
             _APPEND_TOTAL_MAX_CHARS,
             build_system_prompt_append,
         )
@@ -470,7 +470,7 @@ class TestSystemPromptAppend:
         # MCP-inspection block with nothing in the log to say so.
         import logging
 
-        from agent.claude_sdk_runtime import (
+        from agent.claude_sdk_runtime_prompt import (
             _APPEND_TOTAL_MAX_CHARS,
             build_system_prompt_append,
         )
@@ -497,7 +497,7 @@ class TestSystemPromptAppend:
     ):
         # The ceiling is a per-box cost decision, so it must be reachable from
         # config without a code edit.
-        from agent.claude_sdk_runtime import (
+        from agent.claude_sdk_runtime_prompt import (
             _APPEND_TOTAL_MAX_CHARS,
             build_system_prompt_append,
         )
@@ -526,7 +526,7 @@ class TestSystemPromptAppend:
         # change: 0 would strip the entire append, identity included.
         import logging
 
-        from agent.claude_sdk_runtime import (
+        from agent.claude_sdk_runtime_prompt import (
             _APPEND_TOTAL_MAX_CHARS,
             _append_total_max_chars,
         )
@@ -547,7 +547,7 @@ class TestSystemPromptAppend:
         # (memory 8400) so the identity block genuinely pushes the total past
         # the historical 20000 ceiling — at 20000 this test is RED, which is
         # the whole point of the raised default.
-        from agent.claude_sdk_runtime import (
+        from agent.claude_sdk_runtime_prompt import (
             _MCP_INSPECTION_PREFERENCE,
             build_system_prompt_append,
         )
@@ -580,7 +580,7 @@ class TestSystemPromptAppend:
         import logging
 
         import agent.prompt_builder as pb
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
 
         secret = "private skill detail that must never reach logs"
         self._home(tmp_path, monkeypatch, budget=1000)
@@ -601,7 +601,7 @@ class TestSystemPromptAppend:
         # The index rides the NATIVE builder; we pin OUR wiring — called
         # with the honest MCP-exposed tool set (shims included).
         import agent.prompt_builder as pb
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
         from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
 
         self._home(tmp_path, monkeypatch)
@@ -632,7 +632,7 @@ class TestSystemPromptAppend:
     def test_root_files_are_not_read(self, tmp_path, monkeypatch):
         # Negative control (W1): ONE canonical location. Files left at the
         # HERMES_HOME root must NOT be injected.
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
 
         hermes_home = tmp_path / "hermes"
         (hermes_home / "memories").mkdir(parents=True)
@@ -643,7 +643,7 @@ class TestSystemPromptAppend:
     def test_memory_shim_write_is_visible_to_next_append(self, tmp_path, monkeypatch):
         # The loop closes: a fact saved through the stateless MCP shim must
         # appear in the next session's system-prompt append.
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
         from agent.transports.hermes_tools_mcp_server_shims import dispatch_memory
 
         self._home(tmp_path, monkeypatch)
@@ -658,7 +658,7 @@ class TestSystemPromptAppend:
         # Deliberate pin update (was: no sources → None). Since W2 the
         # append always carries the recall/memory behavior contract — a
         # brand-new box still gets guidance, so the brain knows its tools.
-        from agent.claude_sdk_runtime import build_system_prompt_append
+        from agent.claude_sdk_runtime_prompt import build_system_prompt_append
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # empty dir
         out = build_system_prompt_append()

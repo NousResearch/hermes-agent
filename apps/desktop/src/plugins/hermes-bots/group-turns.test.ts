@@ -369,7 +369,8 @@ describe('clarify and approvals (#90694)', () => {
       // on $groupNeedsYou/$groupClarify AFTER the turn lands proves nothing:
       // the clarify has already resolved and its mirror is gone by then.
       onResumePoll: () => {
-        sawPendingAttention = sawPendingAttention || live!.turns.groupHasPendingClarify(live!.chat.$groupClarify.get(), 'Core')
+        sawPendingAttention =
+          sawPendingAttention || live!.turns.groupHasPendingClarify(live!.chat.$groupClarify.get(), 'Core')
       },
       turn: () => 'targeting staging'
     })
@@ -506,17 +507,24 @@ describe('clarify and approvals (#90694)', () => {
   it('keeps late prompt snapshots on the live room and never revives a disbanded room', async ({ onTestFinished }) => {
     for (const roomId of ['stable-room', undefined]) {
       for (const disband of [false, true]) {
-        const room = await loadRoom({ turn: ({ n }) => n === 1 ? 'Completed reply' : '(pass)' })
+        const room = await loadRoom({ turn: ({ n }) => (n === 1 ? 'Completed reply' : '(pass)') })
         const view = await import('./group-chat-view')
         const member = { name: 'research', title: '' }
         room.chat.updateGroupChat('Core', current => ({
-          ...current, roomId, running: true, epoch: 1,
+          ...current,
+          roomId,
+          running: true,
+          epoch: 1,
           log: [{ id: 'input', at: 1, from: { kind: 'user', name: 'You' }, text: '@research check', thread: 'thread' }]
         }))
         let entered!: () => void
         let release!: () => void
-        const polled = new Promise<void>(resolve => { entered = resolve })
-        const held = new Promise<void>(resolve => { release = resolve })
+        const polled = new Promise<void>(resolve => {
+          entered = resolve
+        })
+        const held = new Promise<void>(resolve => {
+          release = resolve
+        })
         const original = host.request as (method: string, params: Record<string, unknown>) => Promise<any>
         let submitted = false
         let answered = false
@@ -525,12 +533,19 @@ describe('clarify and approvals (#90694)', () => {
         host.request = async (method: string, params: Record<string, unknown>) => {
           const result = await original(method, params)
 
-          if (method === 'prompt.submit') {submitted = true}
+          if (method === 'prompt.submit') {
+            submitted = true
+          }
 
-          if (method === 'clarify.respond') {answered = true}
+          if (method === 'clarify.respond') {
+            answered = true
+          }
 
           if (method === 'session.resume' && submitted && !answered) {
-            if (++polls === 1) { entered(); await held }
+            if (++polls === 1) {
+              entered()
+              await held
+            }
 
             return { ...result, pending_clarify: CLARIFY }
           }
@@ -546,14 +561,19 @@ describe('clarify and approvals (#90694)', () => {
           release()
           await drive
           expect(Object.values(room.chat.$groupClarify.get())).toHaveLength(0)
-          expect(room.chat.$groupChats.get().Core === undefined || room.chat.$groupChats.get().Core.tombstone).toBe(true)
+          expect(room.chat.$groupChats.get().Core === undefined || room.chat.$groupChats.get().Core.tombstone).toBe(
+            true
+          )
           expect(room.chat.$groupChats.get().Core?.log || []).toHaveLength(0)
         } else {
           await view.renameGroupChat('Core', 'Renamed', [])
 
           const mirrored = new Promise<void>(resolve => {
             const stop = room.chat.$groupClarify.listen(entries => {
-              if (Object.keys(entries).length) { stop(); resolve() }
+              if (Object.keys(entries).length) {
+                stop()
+                resolve()
+              }
             })
           })
 
@@ -566,7 +586,12 @@ describe('clarify and approvals (#90694)', () => {
           expect(correctRoom).toBe('Renamed')
           expect(Object.keys(room.chat.$groupChats.get())).toEqual(['Renamed'])
           expect(room.chat.$groupChats.get().Renamed.running).toBe(false)
-          expect(room.chat.$groupChats.get().Renamed.log.filter(entry => entry.from.kind === 'member').map(entry => entry.text)).toEqual(['Completed reply'])
+          expect(
+            room.chat.$groupChats
+              .get()
+              .Renamed.log.filter(entry => entry.from.kind === 'member')
+              .map(entry => entry.text)
+          ).toEqual(['Completed reply'])
           expect(Object.values(room.chat.$groupClarify.get())).toHaveLength(0)
         }
       }
@@ -581,10 +606,20 @@ describe('clarify and approvals (#90694)', () => {
         const data = await import('./data')
         const members = [{ name: 'research' }, { name: 'ops' }]
         room.chat.updateGroupChat('Core', current => ({
-          ...current, roomId: 'old-rejection-room', running: true,
+          ...current,
+          roomId: 'old-rejection-room',
+          running: true,
           log: continuation
-            ? [{ id: 'handoff', at: 1, from: { kind: 'member', name: 'research' }, text: '@ops check', thread: 'thread' },
-                { id: 'input', at: 2, from: { kind: 'user', name: 'You' }, text: '@research check', thread: 'thread' }]
+            ? [
+                {
+                  id: 'handoff',
+                  at: 1,
+                  from: { kind: 'member', name: 'research' },
+                  text: '@ops check',
+                  thread: 'thread'
+                },
+                { id: 'input', at: 2, from: { kind: 'user', name: 'You' }, text: '@research check', thread: 'thread' }
+              ]
             : [{ id: 'input', at: 1, from: { kind: 'user', name: 'You' }, text: 'check', thread: 'thread' }],
           watermarks: { 'thread::research': continuation ? 2 : 0 }
         }))
@@ -592,23 +627,47 @@ describe('clarify and approvals (#90694)', () => {
         // handoff is driven by the continuation phase.
         let phaseEntered!: () => void
         let release!: () => void
-        const entered = new Promise<void>(resolve => { phaseEntered = resolve })
-        const held = new Promise<void>(resolve => { release = resolve })
+        const entered = new Promise<void>(resolve => {
+          phaseEntered = resolve
+        })
+        const held = new Promise<void>(resolve => {
+          release = resolve
+        })
         const original = host.request as (method: string, params: Record<string, unknown>) => Promise<any>
+
         host.request = async (method: string, params: Record<string, unknown>) => {
-          if (method === rejectedMethod) { phaseEntered(); await held; throw new Error('401 unauthorized late rejection') }
+          if (method === rejectedMethod) {
+            phaseEntered()
+            await held
+            throw new Error('401 unauthorized late rejection')
+          }
 
           return original(method, params)
         }
+
         const drive = room.rounds.runGroupChatRounds('Core', members, 'thread')
         await entered
         await view.disbandGroupChat('Core', [])
-        room.chat.updateGroupChat('Core', current => ({ ...current, roomId: 'replacement-rejection-room', tombstone: false }))
+        room.chat.updateGroupChat('Core', current => ({
+          ...current,
+          roomId: 'replacement-rejection-room',
+          tombstone: false
+        }))
         room.chat.appendGroupChatEntry('Core', { kind: 'member', name: 'research' }, '@user replacement needs you')
-        const before = structuredClone({ rooms: room.chat.$groupChats.get(), activity: activity.$groupActivity.get(), attention: data.$botAttention.get(), needsYou: room.chat.$groupNeedsYou.get() })
+        const before = structuredClone({
+          rooms: room.chat.$groupChats.get(),
+          activity: activity.$groupActivity.get(),
+          attention: data.$botAttention.get(),
+          needsYou: room.chat.$groupNeedsYou.get()
+        })
         release()
         await drive
-        expect({ rooms: room.chat.$groupChats.get(), activity: activity.$groupActivity.get(), attention: data.$botAttention.get(), needsYou: room.chat.$groupNeedsYou.get() }).toEqual(before)
+        expect({
+          rooms: room.chat.$groupChats.get(),
+          activity: activity.$groupActivity.get(),
+          attention: data.$botAttention.get(),
+          needsYou: room.chat.$groupNeedsYou.get()
+        }).toEqual(before)
         expect(room.gateway.rpcFor('prompt.submit')).toHaveLength(0)
       }
     }
@@ -624,8 +683,12 @@ describe('clarify and approvals (#90694)', () => {
       room.chat.updateGroupChat('Core', current => ({ ...current, roomId: 'retired-room' }))
       let entered!: () => void
       let release!: () => void
-      const polled = new Promise<void>(resolve => { entered = resolve })
-      const held = new Promise<void>(resolve => { release = resolve })
+      const polled = new Promise<void>(resolve => {
+        entered = resolve
+      })
+      const held = new Promise<void>(resolve => {
+        release = resolve
+      })
       const original = host.request as (method: string, params: Record<string, unknown>) => Promise<any>
       let submitted = false
 
@@ -638,7 +701,9 @@ describe('clarify and approvals (#90694)', () => {
 
         const result = await original(method, params)
 
-        if (method === 'prompt.submit') { submitted = true }
+        if (method === 'prompt.submit') {
+          submitted = true
+        }
 
         return result
       }
@@ -667,30 +732,47 @@ describe('clarify and approvals (#90694)', () => {
     const view = await import('./group-chat-view')
     const members = [{ name: 'research' }, { name: 'ops' }]
     room.chat.updateGroupChat('Core', current => ({
-      ...current, roomId: 'old-harvest-room', running: true,
+      ...current,
+      roomId: 'old-harvest-room',
+      running: true,
       stranded: { research: 0, ops: 0 }
     }))
     let tick!: () => void
     const previousWindow = globalThis.window
-    vi.stubGlobal('window', { setTimeout: (callback: () => void) => { tick = callback;
+    vi.stubGlobal('window', {
+      setTimeout: (callback: () => void) => {
+        tick = callback
 
- return 0 } })
-    onTestFinished(() => { vi.stubGlobal('window', previousWindow) })
+        return 0
+      }
+    })
+    onTestFinished(() => {
+      vi.stubGlobal('window', previousWindow)
+    })
     let entered!: () => void
     let release!: () => void
-    const polled = new Promise<void>(resolve => { entered = resolve })
-    const held = new Promise<void>(resolve => { release = resolve })
+    const polled = new Promise<void>(resolve => {
+      entered = resolve
+    })
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
     let background = false
     const backgroundProfiles: unknown[] = []
     const original = host.request as (method: string, params: Record<string, unknown>) => Promise<any>
 
     host.request = async (method: string, params: Record<string, unknown>) => {
-      if (method !== 'session.resume') { return original(method, params) }
+      if (method !== 'session.resume') {
+        return original(method, params)
+      }
 
       if (background) {
         backgroundProfiles.push(params.profile)
 
-        if (params.profile === 'research') { entered(); await held }
+        if (params.profile === 'research') {
+          entered()
+          await held
+        }
       }
 
       return { running: true, pending_clarify: CLARIFY }
@@ -704,7 +786,9 @@ describe('clarify and approvals (#90694)', () => {
     const { setImmediate } = await import('node:timers/promises')
     await setImmediate()
     room.chat.updateGroupChat('Core', current => ({
-      ...current, roomId: 'new-harvest-room', stranded: { research: 0, ops: 0 }
+      ...current,
+      roomId: 'new-harvest-room',
+      stranded: { research: 0, ops: 0 }
     }))
     const roomsBefore = structuredClone(room.chat.$groupChats.get())
     const promptsBefore = structuredClone(room.chat.$groupClarify.get())
@@ -723,7 +807,8 @@ describe('clarify and approvals (#90694)', () => {
     const room = await loadRoom({
       approvalUntil: { research: { payload: APPROVAL, until: 3 } },
       onResumePoll: () => {
-        sawPendingAttention = sawPendingAttention || live!.turns.groupHasPendingClarify(live!.chat.$groupClarify.get(), 'Core')
+        sawPendingAttention =
+          sawPendingAttention || live!.turns.groupHasPendingClarify(live!.chat.$groupClarify.get(), 'Core')
       },
       turn: () => 'build cleaned'
     })

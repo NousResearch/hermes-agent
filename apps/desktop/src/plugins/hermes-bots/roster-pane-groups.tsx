@@ -43,7 +43,12 @@ export function RosterGroupRowView({
       activity: groupLastActivity(current[name])
     }))
 
-    const order = reorderGroupRows(sortGroupRosterRows(rows, current), name, delta, sortedGroupRows.map(row => row.name))
+    const order = reorderGroupRows(
+      sortGroupRosterRows(rows, current),
+      name,
+      delta,
+      sortedGroupRows.map(row => row.name)
+    )
 
     order?.forEach((name, rosterOrder) => {
       updateGroupChat(name, room => ({ ...room, rosterOrder }), { sync: false })

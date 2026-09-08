@@ -28,8 +28,8 @@ export function followGroupChat(group: string, onRename: (name: string) => void)
       return
     }
 
-    const moved = Object.entries(rooms).find(([, room]) =>
-      !room.tombstone && (prior.roomId ? room.roomId === prior.roomId : room === prior)
+    const moved = Object.entries(rooms).find(
+      ([, room]) => !room.tombstone && (prior.roomId ? room.roomId === prior.roomId : room === prior)
     )
 
     if (!moved) {

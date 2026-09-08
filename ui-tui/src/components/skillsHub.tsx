@@ -6,8 +6,8 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overlayControls.js'
-import { chipRowProps } from './overlayPrimitives.js'
-import { clampOverlayWidth } from './overlayPrimitives.js'
+import { chipRowProps, clampOverlayWidth } from './overlayPrimitives.js'
+import { SelectableRow } from './selectableRow.js'
 
 const VISIBLE = 12
 const MIN_WIDTH = 40
@@ -221,10 +221,32 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
           const idx = offset + i
 
           return (
-            <Text color={t.color.muted} {...chipRowProps(t, catIdx === idx)} key={row} wrap="truncate-end">
-              {catIdx === idx ? '▸ ' : '  '}
-              {i + 1}. {row}
-            </Text>
+            <SelectableRow
+              index={idx}
+              isActive={catIdx === idx}
+              key={row}
+              onActivate={n => {
+                if (installing) {
+                  return
+                }
+
+                const cat = cats[n]
+
+                if (cat) {
+                  setSelectedCat(cat)
+                  setCatIdx(n)
+                  setSkillIdx(0)
+                  setStage('skill')
+                }
+              }}
+              onSelect={setCatIdx}
+              width={width}
+            >
+              <Text color={t.color.muted} {...chipRowProps(t, catIdx === idx)} wrap="truncate-end">
+                {catIdx === idx ? '▸ ' : '  '}
+                {i + 1}. {row}
+              </Text>
+            </SelectableRow>
           )
         })}
 
@@ -251,10 +273,31 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
           const idx = offset + i
 
           return (
-            <Text color={t.color.muted} {...chipRowProps(t, skillIdx === idx)} key={row} wrap="truncate-end">
-              {skillIdx === idx ? '▸ ' : '  '}
-              {i + 1}. {row}
-            </Text>
+            <SelectableRow
+              index={idx}
+              isActive={skillIdx === idx}
+              key={row}
+              onActivate={n => {
+                if (installing) {
+                  return
+                }
+
+                const name = skills[n]
+
+                if (name) {
+                  setSkillIdx(n)
+                  setStage('actions')
+                  inspect(name)
+                }
+              }}
+              onSelect={setSkillIdx}
+              width={width}
+            >
+              <Text color={t.color.muted} {...chipRowProps(t, skillIdx === idx)} wrap="truncate-end">
+                {skillIdx === idx ? '▸ ' : '  '}
+                {i + 1}. {row}
+              </Text>
+            </SelectableRow>
           )
         })}
 

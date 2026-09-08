@@ -9,6 +9,7 @@ import type { Theme } from '../theme.js'
 
 import { listRowStyle } from './overlayPrimitives.js'
 import { OverlayScrollbar } from './overlayScrollbar.js'
+import { SelectableRow } from './selectableRow.js'
 
 interface MutationResult {
   message: string
@@ -494,9 +495,40 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
       </Box>
 
       <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0} overflow="hidden">
-        {tree.slice(start, start + listH).map((row, i) => (
-          <TreeLine active={start + i === cursor} key={start + i} palette={palette} row={row} t={t} />
-        ))}
+        {tree.slice(start, start + listH).map((row, i) => {
+          const rowIdx = start + i
+
+          return (
+            <SelectableRow
+              index={rowIdx}
+              isActive={rowIdx === cursor}
+              key={rowIdx}
+              onActivate={n => {
+                if (busy) {
+                  return
+                }
+
+                const snapped = snapRow(n)
+
+                setCursor(snapped)
+
+                // Mirror Enter: only memory nodes carry body text to drill into.
+                const target = tree[snapped]
+
+                if (target?.kind === 'node' && target.node.body) {
+                  setMode('item')
+                }
+              }}
+              onSelect={n => {
+                if (!busy) {
+                  setCursor(snapRow(n))
+                }
+              }}
+            >
+              <TreeLine active={rowIdx === cursor} palette={palette} row={row} t={t} />
+            </SelectableRow>
+          )
+        })}
       </Box>
 
       <Footer>

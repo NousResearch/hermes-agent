@@ -15,6 +15,7 @@ name: CI
 # main-only automation uses protected environments in its own workflows.
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
@@ -37,7 +38,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   detect:
     name: Detect affected areas
-    if: github.event_name == 'pull_request' || github.repository == 'NousResearch/hermes-agent'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     # Fork PRs with deep merged history can spend over a minute in checkout
     # before classification starts. Keep this bounded without cancelling a
@@ -225,7 +226,7 @@ jobs:
 
   osv-scanner:
     name: OSV scan
-    if: github.event_name == 'pull_request' || github.repository == 'NousResearch/hermes-agent'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.repository == 'NousResearch/hermes-agent'
     uses: ./.github/workflows/osv-scanner.yml
 
   # ─────────────────────────────────────────────────────────────────────
@@ -268,7 +269,7 @@ jobs:
       # its own check. It was never required here, because it is too slow
       # to block a merge. A separate run also stops it from holding this
       # run open. That is what blocked ``gh run rerun``.
-    if: always() && (github.event_name == 'pull_request' || github.repository == 'NousResearch/hermes-agent')
+    if: always() && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.repository == 'NousResearch/hermes-agent')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -314,7 +315,7 @@ jobs:
   ci-timings:
     name: CI timing report
     needs: [all-checks-pass]
-    if: always() && (github.event_name == 'pull_request' || github.repository == 'NousResearch/hermes-agent')
+    if: always() && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.repository == 'NousResearch/hermes-agent')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

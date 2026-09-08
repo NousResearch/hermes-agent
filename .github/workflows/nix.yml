@@ -11,6 +11,7 @@ name: Nix flake check
 # fast required jobs beside it. A separate run reruns and cancels on its own.
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
@@ -33,7 +34,7 @@ jobs:
   # flake inputs. On push the classifier fails open and every lane is true.
   detect:
     name: Detect affected areas
-    if: github.event_name == 'pull_request' || github.repository == 'NousResearch/hermes-agent'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

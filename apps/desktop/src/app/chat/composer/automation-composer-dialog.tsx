@@ -70,7 +70,19 @@ export function AutomationComposerDialog({
   // A rejected control action (such as a busy Goal) is kept separately as actionError and stays
   // retryable. Connection/read errors and an unsupported backend remain unavailable.
   const unavailable = !!entry && (entry.capability === 'unsupported' || !!entry.error)
+
+  const [prompt, setPrompt] = useState('')
+  const [criteria, setCriteria] = useState<string[]>([])
+  const [draftCriterion, setDraftCriterion] = useState('')
+  const [maxTurns, setMaxTurns] = useState('')
+  const [interval, setInterval] = useState('')
+  const [runLimit, setRunLimit] = useState('')
+  const [stopCondition, setStopCondition] = useState('')
+  const [pausing, setPausing] = useState(false)
   const [prefilledEditKey, setPrefilledEditKey] = useState<string | null>(null)
+
+  const loopMinInterval = entry?.snapshot?.loop_min_interval_seconds
+  const loopIntervalBelowMin = type === 'loop' && interval !== '' && loopMinInterval !== undefined && Number(interval) < loopMinInterval
 
   useEffect(() => {
     if (open && sessionId) {void refreshSessionControl(sessionId)}
@@ -128,15 +140,6 @@ export function AutomationComposerDialog({
     setPrefilledEditKey(editKey)
   }, [open, isEdit, sessionId, type, entry?.snapshot, prefilledEditKey])
 
-  const [prompt, setPrompt] = useState('')
-  const [criteria, setCriteria] = useState<string[]>([])
-  const [draftCriterion, setDraftCriterion] = useState('')
-  const [maxTurns, setMaxTurns] = useState('')
-  const [interval, setInterval] = useState('')
-  const [runLimit, setRunLimit] = useState('')
-  const [stopCondition, setStopCondition] = useState('')
-  const [pausing, setPausing] = useState(false)
-
   const toggleType = useCallback(
     (next: SegmentedValue) => {
       setAutomationComposerType(next)
@@ -175,7 +178,7 @@ export function AutomationComposerDialog({
   }, [sessionId, pausing, submitting, unavailable, type])
 
   const handleSubmit = async () => {
-    if (submitting || pausing || !sessionId || (!isEdit && existing) || unavailable) {
+    if (submitting || pausing || !sessionId || (!isEdit && existing) || unavailable || loopIntervalBelowMin) {
       return
     }
 
@@ -337,13 +340,14 @@ export function AutomationComposerDialog({
                 <Input
                   id="automation-loop-interval"
                   max="604800"
-                  min="1"
+                  min={loopMinInterval ?? 1}
                   onChange={e => setInterval(e.target.value)}
                   required
                   type="number"
                   value={interval}
                 />
                 <FieldHint>{copy.intervalSeconds}</FieldHint>
+                {loopMinInterval !== undefined && loopIntervalBelowMin && <FieldHint error>{copy.loopMinIntervalError(loopMinInterval)}</FieldHint>}
               </Field>
 
               <Field
@@ -449,7 +453,7 @@ export function AutomationComposerDialog({
                 {type === 'goal' ? copy.pauseGoal : type === 'loop' ? copy.pauseLoop : copy.pauseHeartbeat}
               </Button>
             )}
-            <Button disabled={submitting || pausing || !sessionId || (!isEdit && !!existing) || unavailable || !prompt.trim()} type="submit">
+            <Button disabled={submitting || pausing || !sessionId || (!isEdit && !!existing) || unavailable || !prompt.trim() || loopIntervalBelowMin} type="submit">
               {submitLabel}
             </Button>
           </DialogFooter>

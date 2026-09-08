@@ -151,6 +151,8 @@ def _safe_heartbeat_snapshot(state) -> dict | None:
 
 def _snapshot_control(session_key: str) -> dict:
     """Serialize persisted session-control state once, without wall-clock churn."""
+    from hermes_cli.loops import min_interval_seconds
+
     goal_state = _load_goal_state(session_key)
     loop_state = _load_loop_state(session_key)
     heartbeat_state = _load_heartbeat_state(session_key)
@@ -168,6 +170,7 @@ def _snapshot_control(session_key: str) -> dict:
         "goal": goal,
         "loop": loop,
         "heartbeat": heartbeat,
+        "loop_min_interval_seconds": min_interval_seconds(),
         "revision": _snapshot_revision(goal, loop, heartbeat),
         "updated_at": _snapshot_updated_at(goal_state, loop_state, heartbeat_state),
     }
@@ -372,12 +375,17 @@ def _validate_goal_create_args(rid, args):
 
 
 def _validate_loop_create_args(rid, args):
+    from hermes_cli.loops import min_interval_seconds
+
     prompt = args.get("prompt")
     if not isinstance(prompt, str) or not (prompt := prompt.strip()):
         return None, _err(rid, 4004, "loop prompt is required")
     interval = args.get("interval_seconds")
     if type(interval) is not int or interval < 1:
         return None, _err(rid, 4004, "interval_seconds must be a positive integer")
+    floor = min_interval_seconds()
+    if interval < floor:
+        return None, _err(rid, 4004, f"interval_seconds must be at least {floor}")
     if interval > _INTERVAL_CEILING:
         return None, _err(rid, 4004, f"interval_seconds must be <= {_INTERVAL_CEILING}")
     run_limit = args.get("run_limit")

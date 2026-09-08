@@ -494,3 +494,50 @@ class TestCreateInputPreserved:
             "prompt": literal, "interval_seconds": 300,
         })
         assert response["result"]["control"]["heartbeat"]["prompt"] == literal
+
+
+class TestLoopMinInterval:
+    def test_snapshot_exposes_loop_min_interval_seconds_default(self, server, session, monkeypatch):
+        sid, _, _ = session
+        _forbid_dispatch(server, monkeypatch)
+        control = _control(server, sid)
+        assert control["loop_min_interval_seconds"] == 30
+
+    def test_snapshot_exposes_loop_min_interval_seconds_from_config(self, server, session, monkeypatch):
+        from hermes_cli import config
+        sid, _, _ = session
+        _forbid_dispatch(server, monkeypatch)
+        monkeypatch.setattr(config, "load_config", lambda: {"loops": {"min_interval_seconds": 10}})
+        server._cfg_cache = None
+        control = _control(server, sid)
+        assert control["loop_min_interval_seconds"] == 10
+
+    def test_loop_create_rejects_interval_below_backend_minimum(self, server, session, monkeypatch):
+        sid, _, _ = session
+        _forbid_dispatch(server, monkeypatch)
+        err = _error(_call(server, "session.control", session_id=sid, action="loop.create", args={
+            "prompt": "Check deploy", "interval_seconds": 10,
+        }))
+        assert err["code"] == 4004
+        assert "30" in err["message"]
+
+    def test_loop_create_allows_interval_at_backend_minimum(self, server, session, monkeypatch):
+        sid, _, _ = session
+        _forbid_dispatch(server, monkeypatch)
+        response = _call(server, "session.control", session_id=sid, action="loop.create", args={
+            "prompt": "Check deploy", "interval_seconds": 30,
+        })
+        assert "error" not in response
+        assert response["result"]["control"]["loop"]["interval_seconds"] >= 30
+
+    def test_loop_create_rejects_interval_below_configured_minimum(self, server, session, monkeypatch):
+        from hermes_cli import config
+        sid, _, _ = session
+        _forbid_dispatch(server, monkeypatch)
+        monkeypatch.setattr(config, "load_config", lambda: {"loops": {"min_interval_seconds": 10}})
+        server._cfg_cache = None
+        err = _error(_call(server, "session.control", session_id=sid, action="loop.create", args={
+            "prompt": "Check deploy", "interval_seconds": 5,
+        }))
+        assert err["code"] == 4004
+        assert "10" in err["message"]

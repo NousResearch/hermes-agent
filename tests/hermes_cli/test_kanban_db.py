@@ -612,6 +612,51 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     ]
 
 
+def test_complete_task_stores_repeated_artifact_path_once(kanban_home):
+    """A repeated artifact path yields one attachment, not a ``_1`` twin.
+
+    Regression: a single worker run that named the same deliverable twice in
+    ``metadata['artifacts']`` had it copied once per entry, so the attachment
+    dir held ``report.md`` and a byte-identical ``report_1.md`` and the card
+    showed two rows for one file. Distinct artifacts must still be preserved.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="research writeup")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        report = ws / "report.md"
+        report.write_bytes(b"report-bytes")
+        notes = ws / "notes.md"
+        notes.write_bytes(b"notes-bytes")
+
+        assert kb.complete_task(
+            conn,
+            t,
+            result="ok",
+            metadata={
+                "artifacts": [str(report), str(notes), str(report)],
+            },
+        )
+
+        completed = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1]
+        event_artifacts = completed.payload["artifacts"]
+        run = kb.latest_run(conn, t)
+
+    attachment_dir = kb.task_attachments_dir(t)
+    assert sorted(p.name for p in attachment_dir.iterdir()) == ["notes.md", "report.md"]
+    assert (attachment_dir / "report.md").read_bytes() == b"report-bytes"
+    assert (attachment_dir / "notes.md").read_bytes() == b"notes-bytes"
+
+    assert len(event_artifacts) == 2
+    assert run is not None
+    assert run.metadata["artifacts"] == event_artifacts
+
+    with kb.connect() as conn:
+        attachments = kb.list_attachments(conn, t)
+    assert sorted(a.filename for a in attachments) == ["notes.md", "report.md"]
+
+
 
 
 # ---------------------------------------------------------------------------

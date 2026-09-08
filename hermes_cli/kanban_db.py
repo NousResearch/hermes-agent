@@ -5439,6 +5439,7 @@ def complete_task(
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
+    metadata = _deduplicate_completion_artifacts(metadata)
     with write_txn(conn):
         # Parent completion is a hard invariant even for direct human review
         # approval. A parent may have been reopened after this task entered
@@ -5762,6 +5763,44 @@ def _persist_scratch_completion_artifacts(
         metadata["_staged_artifacts"] = [
             path for path in persisted if path.startswith(str(attachment_dir.resolve()))
         ]
+
+
+def _deduplicate_completion_artifacts(metadata: Optional[dict]) -> Optional[dict]:
+    """Keep one declaration for each completion artifact, in input order.
+
+    A repeated artifact must not be mistaken for a second version during
+    scratch staging, where the collision-safe destination helper would append
+    ``_1`` and create a duplicate attachment. Resolve existing path aliases so
+    an absolute path and a symlink to it are treated as the same artifact.
+    """
+    if not isinstance(metadata, dict):
+        return metadata
+    artifacts = metadata.get("artifacts")
+    if not isinstance(artifacts, (list, tuple)):
+        return metadata
+
+    deduplicated: list[object] = []
+    seen: set[str] = set()
+    for artifact in artifacts:
+        if not isinstance(artifact, str):
+            deduplicated.append(artifact)
+            continue
+        path = artifact.strip()
+        if not path:
+            continue
+        try:
+            key = str(Path(path).expanduser().resolve(strict=False))
+        except OSError:
+            key = path
+        if key not in seen:
+            seen.add(key)
+            deduplicated.append(path)
+
+    if len(deduplicated) == len(artifacts):
+        return metadata
+    updated = dict(metadata)
+    updated["artifacts"] = deduplicated
+    return updated
 
 
 def _insert_completion_attachment(

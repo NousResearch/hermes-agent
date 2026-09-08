@@ -390,26 +390,36 @@ class SessionUsageMixin:
 
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
         """Billed tokens and spend across the whole store, including cache and auxiliary calls."""
-        where = ["parent_session_id IS NULL", "message_count >= ?"]
+        where = ["s.parent_session_id IS NULL", "s.message_count >= ?"]
         params: List[Any] = [min_message_count]
         if not include_archived:
-            where.append("COALESCE(archived, 0) = 0")
+            where.append("COALESCE(s.archived, 0) = 0")
         row = self._read_one(f"""
-            WITH eligible AS (
-                SELECT * FROM sessions WHERE {' AND '.join(where)}
+            WITH RECURSIVE chain(session_id) AS (
+                SELECT s.id FROM sessions s WHERE {' AND '.join(where)}
+                UNION
+                SELECT child.id
+                  FROM chain
+                  JOIN sessions parent ON parent.id = chain.session_id
+                  JOIN sessions child ON child.parent_session_id = parent.id
+                 WHERE parent.end_reason = 'compression'
+                   AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
+                   AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                   AND COALESCE(child.source, '') != 'tool'
             )
-            SELECT COALESCE(SUM({_billed_token_sql()}), 0) + COALESCE((
+            SELECT COALESCE(SUM({_billed_token_sql('sessions.')}), 0) + COALESCE((
                        SELECT SUM({_billed_token_sql('session_model_usage.')})
                          FROM session_model_usage
-                         JOIN eligible ON eligible.id = session_model_usage.session_id
+                         JOIN chain ON chain.session_id = session_model_usage.session_id
                         WHERE session_model_usage.task <> ''
                    ), 0),
-                   COALESCE(SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)), 0) + COALESCE((
+                   COALESCE(SUM(COALESCE(sessions.actual_cost_usd, sessions.estimated_cost_usd, 0)), 0) + COALESCE((
                        SELECT SUM(session_model_usage.estimated_cost_usd)
                          FROM session_model_usage
-                         JOIN eligible ON eligible.id = session_model_usage.session_id
+                         JOIN chain ON chain.session_id = session_model_usage.session_id
                         WHERE session_model_usage.task <> ''
                    ), 0)
-              FROM eligible
+              FROM sessions
+              JOIN chain ON chain.session_id = sessions.id
             """, params)
         return {"tokens": int(row[0] or 0), "cost_usd": float(row[1] or 0.0)}

@@ -45,6 +45,17 @@ class TestRecordAuxiliaryUsage:
         db.append_message("anthropic-session", role="user", content="hi")
         db.update_token_counts(
             "anthropic-session",
+            input_tokens=100,
+            model="claude-opus-4-6",
+            billing_provider="anthropic",
+            estimated_cost_usd=1.00,
+        )
+        db.end_session("anthropic-session", end_reason="compression")
+        db.create_session(
+            "anthropic-continuation", source="desktop", parent_session_id="anthropic-session")
+        db.append_message("anthropic-continuation", role="user", content="continue")
+        db.update_token_counts(
+            "anthropic-continuation",
             input_tokens=600_000,
             output_tokens=75_964,
             cache_read_tokens=3_000_000,
@@ -54,7 +65,7 @@ class TestRecordAuxiliaryUsage:
             estimated_cost_usd=2.00,
         )
         db.record_auxiliary_usage(
-            "anthropic-session",
+            "anthropic-continuation",
             "compression",
             model="claude-haiku-4-5",
             billing_provider="anthropic",
@@ -62,10 +73,18 @@ class TestRecordAuxiliaryUsage:
             output_tokens=100,
             estimated_cost_usd=1.25,
         )
+        db.create_session(
+            "anthropic-branch",
+            source="desktop",
+            parent_session_id="anthropic-session",
+            model_config={"_branched_from": "anthropic-session"},
+        )
+        db.append_message("anthropic-branch", role="user", content="branch")
+        db.update_token_counts("anthropic-branch", input_tokens=999_999, estimated_cost_usd=99.0)
 
         totals = db.usage_totals()
-        assert totals["tokens"] == 4_041_832
-        assert totals["cost_usd"] == 3.25
+        assert totals["tokens"] == 4_041_932
+        assert totals["cost_usd"] == 4.25
 
     def test_records_task_row(self, db):
         db.create_session("s1", source="cli")

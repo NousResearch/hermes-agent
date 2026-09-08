@@ -175,6 +175,33 @@ class TestCrossProfileProjectTree:
         assert project["totalTokens"] == 240
         assert project["totalCostUsd"] == pytest.approx(0.5)
 
+    def test_group_totals_include_the_whole_compression_lineage(
+        self, client, profiles_on_disk, tmp_path
+    ):
+        from hermes_state import SessionDB
+
+        shared = tmp_path / "repos" / "shared"
+        shared.mkdir(parents=True)
+        home = profiles_on_disk["worker"]
+        db = SessionDB(db_path=home / "state.db")
+        db.create_session("root", source="cli", cwd=str(shared))
+        db.append_message("root", role="user", content="before compression")
+        db.update_token_counts("root", input_tokens=100, estimated_cost_usd=1.0)
+        db.end_session("root", end_reason="compression")
+        db.create_session("tip", source="cli", parent_session_id="root")
+        db.append_message("tip", role="user", content="after compression")
+        db.update_token_counts(
+            "tip", input_tokens=200, cache_read_tokens=300, estimated_cost_usd=2.0)
+        db.close()
+        _seed_project(home, "Shared", shared)
+
+        payload = client.get("/api/profiles/projects/tree").json()
+        project = next(p for p in payload["projects"] if not p["isNoProject"])
+
+        assert project["sessionCount"] == 1
+        assert project["totalTokens"] == 600
+        assert project["totalCostUsd"] == pytest.approx(3.0)
+
     def test_profile_usage_covers_sessions_past_the_window(self, client, profiles_on_disk):
         # The whole point of aggregating in SQL: the total must not be a sum of
         # whichever page the sidebar happens to have asked for.

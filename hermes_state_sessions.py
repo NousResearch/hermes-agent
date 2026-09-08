@@ -948,15 +948,16 @@ class SessionSessionsMixin:
                 chain = self.get_compression_chain(s["id"])
                 if chain and chain[-1] != s["id"]:
                     chain_by_root[s["id"]] = chain
-        tip_rows = (
+        chain_rows = (
             self._get_session_rich_rows_batch(
-                {chain[-1] for chain in chain_by_root.values()}, compact_rows=compact_rows,
+                {session_id for chain in chain_by_root.values() for session_id in chain},
+                compact_rows=compact_rows,
             ) if chain_by_root else {}
         )
         projected = []
         for s in sessions:
             chain = chain_by_root.get(s["id"])
-            tip_row = tip_rows.get(chain[-1]) if chain else None
+            tip_row = chain_rows.get(chain[-1]) if chain else None
             if not tip_row:
                 projected.append(s)
                 continue
@@ -967,6 +968,18 @@ class SessionSessionsMixin:
             ):
                 if key in tip_row:
                     merged[key] = tip_row[key]
+            lineage_rows = [chain_rows[session_id] for session_id in chain if session_id in chain_rows]
+            for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+                merged[key] = sum(row.get(key) or 0 for row in lineage_rows)
+            merged["actual_cost_usd"] = sum(
+                float(
+                    row.get("actual_cost_usd")
+                    if row.get("actual_cost_usd") is not None
+                    else row.get("estimated_cost_usd") or 0
+                )
+                for row in lineage_rows
+            )
+            merged["estimated_cost_usd"] = None
             merged["_lineage_root_id"] = s["id"]
             merged["_lineage_ids"] = chain
             projected.append(merged)

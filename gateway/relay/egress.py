@@ -168,11 +168,18 @@ def _is_missing_gateway_relay(exc: ImportError) -> bool:
 
 
 def _live_relay_fronted() -> Optional[Set[str]]:
-    """The connected relay adapter's OWN fronted set, or None when there is no
-    live adapter to ask.
+    """The connected relay adapter's OWN fronted set.
 
-    This is the exact signal `resolve_delivery_transport` routes on, so asking
-    it here removes the possibility of the guard and the router disagreeing.
+    Returns None ONLY for genuine absence — no runner, or no relay adapter in
+    it. A live adapter that cannot answer raises `RelayRouteUnknown`.
+
+    ABSENCE vs FAULT, again. `None` here means "fall back to the config
+    snapshot", so letting a FAULT return it re-created the bypass this function
+    exists to close: with a live adapter whose `fronts_platform()` raised and an
+    empty/stale config snapshot, the guard concluded "not relay-routed" and
+    authorized an unattested destination, while `resolve_delivery_transport`
+    asks that same adapter and still routes over the relay. Measured:
+    `relay_routed=False`, verdict `None`.
     """
     try:
         from gateway.config import Platform
@@ -185,13 +192,24 @@ def _live_relay_fronted() -> Optional[Set[str]]:
         fronts = getattr(relay, "fronts_platform", None)
         if relay is None or not callable(fronts):
             return None
+    except Exception:  # noqa: BLE001 - no live runner ⇒ genuine absence
+        logger.debug("no live relay runner to consult", exc_info=True)
+        return None
+
+    # From here a LIVE adapter exists, so any failure is a fault: it must not
+    # degrade into the config fallback.
+    try:
         return {
             str(p.value).strip().lower()
             for p in Platform
             if str(getattr(p, "value", "")).lower() != "relay" and fronts(p)
         }
-    except Exception:  # noqa: BLE001 - no live runner ⇒ fall back to config
-        return None
+    except Exception as exc:  # noqa: BLE001 - a live adapter that cannot answer
+        logger.exception("live relay adapter failed to report its fronted set")
+        raise RelayRouteUnknown(
+            "the connected relay adapter could not report which platforms it "
+            "fronts, so this destination's routing could not be determined"
+        ) from exc
 
 
 def _relay_fronted() -> Set[str]:
@@ -485,10 +503,22 @@ def authorize_relay_target(
     if target in attested:
         # The CHAT is attested. If the caller also named a thread, that thread
         # is the real destination on thread-addressed platforms, so it needs an
-        # attestation of its own.
+        # attestation OF ITS OWN, BOUND TO THIS PARENT.
+        #
+        # A bare `thread in attested` arm used to satisfy this, and it proved
+        # nothing about parentage: any attested chat whose id happened to equal
+        # the requested thread id vouched for it. Measured — attested
+        # `{"-100A", "7"}`, request `(-100A, thread 7)` → authorized, though no
+        # session ever existed in thread 7 of -100A.
+        #
+        # The bound form is always available, so nothing legitimate needs the
+        # bare one: `_session_entry_id` records a threaded origin as
+        # f"{chat_id}:{thread_id}", and a platform whose thread IS its own
+        # channel (a Discord thread addressed directly) arrives as `chat_id`
+        # and is authorized by the `target in attested` check above.
         thread = str(thread_id or "").strip()
         if thread and thread != target:
-            if thread in attested or f"{target}:{thread}" in attested:
+            if f"{target}:{thread}" in attested:
                 return None
             return (
                 f"Refusing to send to relay target '{name}:{target}:{thread}': "

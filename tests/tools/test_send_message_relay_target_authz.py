@@ -766,19 +766,52 @@ def test_arbitrary_thread_under_an_attested_parent_is_refused(relay_env, monkeyp
     assert eg.authorize_relay_target("discord", "111", "999") is not None
 
 
-@pytest.mark.parametrize("attested", [{"111", "999"}, {"111", "111:999"}])
-def test_attested_thread_is_allowed(relay_env, monkeypatch, attested):
+def test_attested_thread_is_allowed(relay_env, monkeypatch):
     """Control: a thread the gateway HAS a provenance for must still send.
 
-    Both shapes count — the bare thread id, and the `chat:thread` form a
-    session origin produces.
+    Only the BOUND `chat:thread` form counts. This test used to also accept a
+    bare `{"111", "999"}` and so pinned a real defect: an unrelated attested
+    chat whose id equalled the requested thread id authorized that thread. The
+    bound form is what `_session_entry_id` actually records, so nothing
+    legitimate is lost.
     """
     import gateway.relay as gr
     import gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
-    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: attested)
+    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"111", "111:999"})
     assert eg.authorize_relay_target("discord", "111", "999") is None
+
+
+def test_unrelated_attested_chat_does_not_vouch_for_a_thread(relay_env, monkeypatch):
+    """An attested chat id equal to the requested THREAD id proves nothing.
+
+    Reproduced against the pre-fix code: attested `{"-100A", "7"}` plus a
+    request for thread `7` under parent `-100A` returned None (authorized),
+    though no session ever existed in that thread. `7` is a sibling CHAT, not
+    a thread of `-100A`.
+    """
+    import gateway.relay as gr
+    import gateway.relay.egress as eg
+
+    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
+    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"-100A", "7"})
+    denial = eg.authorize_relay_target("discord", "-100A", "7")
+    assert denial is not None and "no record of" in denial
+
+
+def test_a_thread_attested_under_another_parent_is_refused(relay_env, monkeypatch):
+    """`B:55` must not authorize thread 55 under parent A."""
+    import gateway.relay as gr
+    import gateway.relay.egress as eg
+
+    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
+    monkeypatch.setattr(
+        eg, "attested_relay_targets", lambda p: {"-100A", "-100B", "-100B:55"}
+    )
+    assert eg.authorize_relay_target("discord", "-100A", "55") is not None
+    # Control: the same thread under its OWN parent still sends.
+    assert eg.authorize_relay_target("discord", "-100B", "55") is None
 
 
 def test_tool_guard_forwards_the_thread_id(monkeypatch):
@@ -908,6 +941,75 @@ def test_guard_falls_back_to_config_when_no_live_adapter(monkeypatch):
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
     monkeypatch.setattr(eg, "attested_relay_targets", lambda p: set())
 
+    assert eg.authorize_relay_target("discord", "999") is not None
+
+
+def test_a_live_adapter_that_cannot_answer_is_a_fault_not_an_absence(monkeypatch):
+    """A LIVE relay adapter whose `fronts_platform()` raises must fail closed.
+
+    This was a real bypass. `_live_relay_fronted` caught every exception and
+    returned None, which means "no live adapter — use the config snapshot". So
+    a live adapter that could not report its routing PLUS an empty/stale config
+    snapshot made the guard conclude "not relay-routed" and authorize an
+    unattested destination, while `resolve_delivery_transport` asks that same
+    adapter and still routes over the relay. Measured before the fix:
+    `relay_routed=False`, verdict `None` for chat `999`.
+    """
+    from types import SimpleNamespace
+
+    import gateway.relay as gr
+    import gateway.relay.egress as eg
+    import gateway.run as gr_run
+    from gateway.config import Platform
+
+    class Exploding:
+        def fronts_platform(self, platform):
+            raise RuntimeError("descriptor lookup failed")
+
+    monkeypatch.setattr(
+        gr_run,
+        "_gateway_runner_ref",
+        lambda: SimpleNamespace(adapters={Platform.RELAY: Exploding()}),
+        raising=False,
+    )
+    # An EMPTY config snapshot: the fallback the fault used to reach.
+    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: set())
+    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
+
+    with pytest.raises(eg.RelayRouteUnknown):
+        eg._live_relay_fronted()
+    with pytest.raises(eg.RelayRouteUnknown):
+        eg.relay_routed_platform("discord")
+
+    # And the tool-facing guard must refuse rather than authorize.
+    from tools.send_message_tool import _authorize_relay_target
+
+    denial = _authorize_relay_target("discord", "999")
+    assert denial is not None
+    assert "could not" in denial or "unavailable" in denial or "refus" in denial.lower()
+
+
+def test_a_missing_relay_adapter_is_still_an_absence(monkeypatch):
+    """Positive control for the split above: genuine ABSENCE keeps the config path.
+
+    A runner with no relay adapter at all must NOT raise — otherwise the fix
+    above would have turned every native-only deployment into a hard failure.
+    """
+    from types import SimpleNamespace
+
+    import gateway.relay as gr
+    import gateway.relay.egress as eg
+    import gateway.run as gr_run
+
+    monkeypatch.setattr(
+        gr_run, "_gateway_runner_ref", lambda: SimpleNamespace(adapters={}), raising=False
+    )
+    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
+    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
+
+    assert eg._live_relay_fronted() is None
+    assert eg.relay_routed_platform("discord") is True
+    assert eg.authorize_relay_target("discord", "123") is None
     assert eg.authorize_relay_target("discord", "999") is not None
 
 

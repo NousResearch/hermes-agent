@@ -42,7 +42,7 @@ delegate_task(
 
 ## Parallel Batch
 
-Up to 3 concurrent subagents by default (configurable, no hard ceiling):
+Up to 10 concurrent subagents by default (configurable, no hard ceiling):
 
 ```python
 delegate_task(tasks=[
@@ -51,6 +51,29 @@ delegate_task(tasks=[
     {"goal": "Fix the build", "context": "Project root: /home/user/project"}
 ])
 ```
+
+## Structured Output (`output_schema`)
+
+Each task can carry an optional `output_schema`, a JSON Schema object the child's final answer must validate against. The child sees the schema up front as an output contract; when the answer comes back the parent validates it, and on failure sends the child exactly one bounded correction turn carrying the validation errors verbatim (the schema is not re-pasted). The task's result then gains `schema_valid` (true/false) and, on failure, `schema_errors`.
+
+```python
+delegate_task(
+    tasks=[{
+        "goal": "Check which of these three endpoints return 200",
+        "context": "https://a.example, https://b.example, https://c.example",
+        "output_schema": {
+            "type": "object",
+            "properties": {
+                "healthy": {"type": "array", "items": {"type": "string"}},
+                "failing": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["healthy", "failing"]
+        }
+    }]
+)
+```
+
+Keep schemas forgiving: require only the fields you will actually read. Tasks without an `output_schema` are unaffected.
 
 ## How Subagent Context Works
 
@@ -161,7 +184,7 @@ This is off by default because every unit is a new turn for the orchestrator: a 
 
 The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_indexes`); unit ids are the call's id suffixed `-1`, `-2`, …, and every unit of one call shares a single slot of `delegation.max_concurrent_children`, so grouping never changes capacity accounting (the worker pool grows to the number of live units so no unit waits behind a full pool). An orchestrator subagent waits for its whole batch in the current turn so it can synthesize the results.
 
-- **Maximum concurrency:** 3 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
+- **Maximum concurrency:** 10 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback. CLI and TUI completion notices use task-first titles such as `Subagent Task Completed: Review changes`; multi-task groups use the group name and task count. Unsuccessful or incomplete work gets a corresponding status label. These compact notices do not replace the full results delivered to the parent agent.
 - **Result ordering:** Within a unit, results are sorted by task index to match input order regardless of completion order; `TASK i/N` labels index the whole call
@@ -294,15 +317,15 @@ Both roles retain `execute_code` (programmatic tool calling) so children can bat
 
 ## Max Iterations
 
-Each subagent has an iteration limit (default: 50) that controls how many tool-calling turns it can take:
+Each subagent has an iteration limit (default: 250) that controls how many tool-calling turns it can take. The limit is set globally in `config.yaml` and applies to every child; it is not a per-call parameter of `delegate_task`:
 
-```python
-delegate_task(
-    goal="Quick file check",
-    context="Check if /etc/nginx/nginx.conf exists and print its first 10 lines",
-    max_iterations=10  # Simple task, don't need many turns
-)
+```yaml
+# In ~/.hermes/config.yaml
+delegation:
+  max_iterations: 60   # lower it for fleets of simple tasks, raise it for long investigations
 ```
+
+A child that exhausts its budget returns with `exit_reason: max_iterations` and `truncated: true`, so the parent can tell a budget stop from a completed task.
 
 ## Child Timeout
 
@@ -565,7 +588,7 @@ error.
 | **Reasoning** | Full LLM reasoning loop | Just Python code execution |
 | **Context** | Fresh isolated conversation | No conversation, just script |
 | **Tool access** | All non-blocked tools with reasoning | 7 tools via RPC, no reasoning |
-| **Parallelism** | 3 concurrent subagents by default (configurable) | Single script |
+| **Parallelism** | 10 concurrent subagents by default (configurable) | Single script |
 | **Best for** | Complex tasks needing judgment | Mechanical multi-step pipelines |
 | **Token cost** | Higher (full LLM loop) | Lower (only stdout returned) |
 | **User interaction** | None (subagents can't clarify) | None |
@@ -577,8 +600,8 @@ error.
 ```yaml
 # In ~/.hermes/config.yaml
 delegation:
-  max_iterations: 50                        # Max turns per child (default: 50)
-  # max_concurrent_children: 3              # Parallel children per batch (default: 3)
+  max_iterations: 250                       # Max turns per child (default: 250)
+  # max_concurrent_children: 10             # Parallel children per batch (default: 10)
   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.

@@ -172,6 +172,30 @@ _MULTIMODAL_TOOL_CONTENT_PATTERNS = (
     "tool_call.content must be string",
 )
 
+# Local-inference memory/resource-ceiling rejections (oMLX/MLX memory guard,
+# llama.cpp/vLLM OOM, Metal/CUDA allocation ceilings). The server aborts on a
+# prefill memory PEAK, not a window limit, yet its remediation tail says
+# "reduce context length" — so without this list the request routes into
+# compression, which cannot lower a prefill peak: it burns the compression
+# budget, re-hits the wedged server each attempt and ends in a session reset.
+# Every token names memory/allocation in BYTES, never a token count, so the
+# list is disjoint from _CONTEXT_OVERFLOW_PATTERNS. Must be checked BEFORE
+# both overflow AND the usage-limit disambiguation ("memory limit exceeded"
+# contains "limit exceeded", which would otherwise read as billing). oMLX
+# reworded the accounting sentence in 0.5.7 ("predicted peak would require /
+# exceed"); the 0.5.6 wording is still in the field, so both stay. (#52261)
+_MEMORY_CEILING_PATTERNS = (
+    "memory guard", "memory limit exceeded", "memory_guard_tier", "dynamic ceiling",
+    "memory ceiling", "available memory", "out of memory", "insufficient memory",
+    "prefill would require", "predicted peak would", "prefill safety cap", "metal_cap",
+)
+
+# Structured codes identifying the same rejection at the source, before an
+# OpenAI-compatible proxy flattens the body and drops the wording.
+_MEMORY_CEILING_ERROR_CODES = frozenset({
+    "prefill_memory_exceeded", "prefill_memory_aborted", "omlx_prefill_memory_exceeded",
+})
+
 # Bare "max_tokens" is load-bearing: the output-cap-retry path keys off it;
 # empty-response advisories mentioning it are intercepted earlier. Groups:
 # generic; vLLM; Ollama; llama.cpp; Chinese; Z.AI (1210); Bedrock; Together.
@@ -380,7 +404,8 @@ _IMAGE_TOOL_RULES = (
 # Overflow signals arriving as 5xx (llama.cpp reports overflow as 500; busy /
 # model-load OOM as 503). Empty-response advisories must not enter compression.
 _OVERFLOW_AS_5XX_RULES = (
-    (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR), (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW),
+    (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR), (_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
+    (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW),
 )
 
 # 404: Nous API surfaces credit depletion as a paid model vanishing from the
@@ -398,7 +423,8 @@ _400_TAIL_RULES = _OVERFLOW_AS_5XX_RULES + (
 )
 
 # Status-less message path, head (before usage-limit disambiguation).
-_MESSAGE_HEAD_RULES = ((_PAYLOAD_TOO_LARGE_PATTERNS, _V_PAYLOAD_TOO_LARGE),) + _IMAGE_TOOL_RULES
+_MESSAGE_HEAD_RULES = ((_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
+                       (_PAYLOAD_TOO_LARGE_PATTERNS, _V_PAYLOAD_TOO_LARGE)) + _IMAGE_TOOL_RULES
 
 # Status-less tail. Overload before rate_limit/billing so "overloaded" backs off
 # instead of rotating; policy block before model_not_found; timeout/connection
@@ -419,6 +445,7 @@ _ERROR_CODE_VERDICTS: Dict[str, Verdict] = {
     **dict.fromkeys(_BILLING_ERROR_CODES, _V_BILLING),
     **dict.fromkeys(("model_not_found", "model_not_available", "invalid_model"), _V_MODEL_NOT_FOUND),
     **dict.fromkeys(("context_length_exceeded", "max_tokens_exceeded"), _V_CONTEXT_OVERFLOW),
+    **dict.fromkeys(_MEMORY_CEILING_ERROR_CODES, _V_OVERLOADED),
     "invalid_encrypted_content": _V_INVALID_ENCRYPTED,
 }
 
@@ -713,6 +740,10 @@ def _classify_400(c: _Ctx) -> Verdict:
             "error=%.200s", c.num_messages, c.approx_tokens, msg,
         )
         return _V_FORMAT_ERROR
+    # Memory ceiling by code: _by_status runs before _by_error_code, so a
+    # 400 whose wording a proxy stripped would fall through to format_error.
+    if code in _MEMORY_CEILING_ERROR_CODES:
+        return _V_OVERLOADED
     verdict = _first_match(msg, _400_TAIL_RULES)
     if verdict is not None:
         return verdict

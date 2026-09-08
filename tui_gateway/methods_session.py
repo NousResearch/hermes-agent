@@ -2033,14 +2033,6 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"paused": set_spawn_paused(bool(params.get("paused", True)))})
 
 
-@method("subagent.interrupt")
-def _(rid, params: dict) -> dict:
-    from tools.delegate_tool import interrupt_subagent
-    if not (subagent_id := _str_param(params, "subagent_id")):
-        return _err(rid, 4000, "subagent_id required")
-    return _ok(rid, {"found": interrupt_subagent(subagent_id), "subagent_id": subagent_id})
-
-
 @method("subagent.steer")
 def _(rid, params: dict) -> dict:
     """Queue steering text into a live delegated child (the in-flight tool call is never cut). "queued"

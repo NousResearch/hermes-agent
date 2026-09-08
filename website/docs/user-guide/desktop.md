@@ -121,6 +121,10 @@ A real terminal lives in the right sidebar, next to the file browser:
 - **Shells persist while hidden.** Closing or hiding the panel doesn't kill your shell — every open terminal stays mounted with its scrollback and running processes intact until you explicitly close it.
 - **Add to chat** — select terminal output and send it into the composer as context for your next message.
 
+### Live subagents
+
+While delegated workers are live, a **Subagents** frame appears above the composer with their count, task names, elapsed time, and latest activity. It previews up to three workers; expand the header for the roster, then select a worker for details and **Steer** / **Stop** controls. Each frame belongs to its chat, including in split panes. Steering acknowledges that guidance is queued for a checkpoint, not that the child has already read it. See [Monitoring subagents](/user-guide/features/delegation#monitoring-running-subagents-agents).
+
 ### Git review & worktrees
 
 For sessions running inside a Git repository, the app has a built-in source-control surface:

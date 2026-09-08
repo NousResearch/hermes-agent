@@ -19,7 +19,7 @@ Checks
 - Authority suite: 18 passed.
 - Post-commit authority rerun: 7 passed.
 - Five toolset failures reproduce unchanged on the Phase 3 endpoint and are excluded as pre-existing.
-- 22 mock DB files and 36 lock/WAL artefacts are preserved under evidence; message/session/async rows are zero.
+- Generated mock DB/WAL/SHM test residue was inspected (message/session/async rows were zero) and removed during final repository cleanup; the text test evidence remains committed.
 - No provider-routing or completion-unit code changed.
 - No merge, push, restart, activation or deployment occurred.
 

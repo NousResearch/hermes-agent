@@ -7,13 +7,7 @@
   "branch": "delegate-task-phase-6-memory",
   "worktree": "/home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-6",
   "changed_files": [
-    "MagicMock/mock._delegate_profile_home/136810619659280/SOUL.md",
-    "MagicMock/mock._delegate_profile_home/136810619897872/SOUL.md",
-    "MagicMock/mock._delegate_profile_home/136810621370064/SOUL.md",
     "docs/evidence/delegate-task/phase-6/audit.md",
-    "docs/evidence/delegate-task/phase-6/generated-mock-soul/136810619659280-SOUL.md",
-    "docs/evidence/delegate-task/phase-6/generated-mock-soul/136810619897872-SOUL.md",
-    "docs/evidence/delegate-task/phase-6/generated-mock-soul/136810621370064-SOUL.md",
     "docs/evidence/delegate-task/phase-6/manifest.json",
     "docs/evidence/delegate-task/phase-6/memory-guard.txt",
     "docs/evidence/delegate-task/phase-6/protocol.md",
@@ -21,13 +15,7 @@
   ],
   "production_source_changes": [],
   "evidence_hashes": {
-    "MagicMock/mock._delegate_profile_home/136810619659280/SOUL.md": "36c1f5a2e92cd1d018311eaf4c8f1e8886672eae78212e033c681d0e3d5d506f",
-    "MagicMock/mock._delegate_profile_home/136810619897872/SOUL.md": "36c1f5a2e92cd1d018311eaf4c8f1e8886672eae78212e033c681d0e3d5d506f",
-    "MagicMock/mock._delegate_profile_home/136810621370064/SOUL.md": "36c1f5a2e92cd1d018311eaf4c8f1e8886672eae78212e033c681d0e3d5d506f",
     "docs/evidence/delegate-task/phase-6/audit.md": "bcd2099927d84666933b956c8426b2fe83786eaba7c392ddbf4e94b5053f2c87",
-    "docs/evidence/delegate-task/phase-6/generated-mock-soul/136810619659280-SOUL.md": "36c1f5a2e92cd1d018311eaf4c8f1e8886672eae78212e033c681d0e3d5d506f",
-    "docs/evidence/delegate-task/phase-6/generated-mock-soul/136810619897872-SOUL.md": "36c1f5a2e92cd1d018311eaf4c8f1e8886672eae78212e033c681d0e3d5d506f",
-    "docs/evidence/delegate-task/phase-6/generated-mock-soul/136810621370064-SOUL.md": "36c1f5a2e92cd1d018311eaf4c8f1e8886672eae78212e033c681d0e3d5d506f",
     "docs/evidence/delegate-task/phase-6/memory-guard.txt": "adbd39f2126f8679f65d3590788b5449e38799778717a7fcca8288680960a20f",
     "docs/evidence/delegate-task/phase-6/protocol.md": "b3d0e0399dae98b07bdf72cf4903977ce298256aa6210ef9414416721214ee3e",
     "docs/evidence/delegate-task/phase-6/results.md": "3773ccbc411e492de5e04e4c26928fc47257da0b46f6590d085e246894b755c7"
@@ -36,5 +24,10 @@
     "memory_guard": "32 passed"
   },
   "decision": "NO-GO",
-  "reason": "No backend-neutral inline read-only adapter or frozen comparable experiment exists; retain memoryless children."
+  "reason": "No backend-neutral inline read-only adapter or frozen comparable experiment exists; retain memoryless children.",
+  "post_release_cleanup": {
+    "status": "complete",
+    "removed": "MagicMock path leakage and quarantined generated SOUL duplicates",
+    "reason": "Incidental mock-path test residue; no production source or durable child-memory evidence depended on these files."
+  }
 }

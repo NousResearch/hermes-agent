@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import random
+import sys
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict
@@ -19,6 +20,65 @@ from agent.display import KawaiiSpinner
 from agent.turn_context import reanchor_current_turn_user_idx
 
 logger = logging.getLogger("agent.conversation_loop")
+
+ITERATION_BUDGET_WARNING_TEMPLATE = (
+    "[SYSTEM NOTICE — iteration budget checkpoint] You have used {used} of {maximum} "
+    "iterations. Checkpoint durable progress now, then continue the task; do not stop "
+    "solely because of this warning."
+)
+
+
+def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
+    """Append the opt-in one-shot warning to the newest tool result."""
+    import os
+    from agent.delegation_context import is_dispatcher_owned_worker_context
+
+    # Cancellation results still need persistence, but must not urge more work.
+    if getattr(agent, "_interrupt_requested", False):
+        return False
+
+    ratio = getattr(agent, "budget_warning_ratio", None)
+    kanban_worker = (
+        bool(os.environ.get("HERMES_KANBAN_TASK"))
+        and is_dispatcher_owned_worker_context()
+        and "kanban_complete" in getattr(agent, "valid_tool_names", ())
+    )
+    if ratio is None and kanban_worker:
+        ratio = 0.9
+    budget = getattr(agent, "iteration_budget", None)
+    if (
+        ratio is None
+        or budget is None
+        or budget.max_total <= 1
+        or budget.max_total >= sys.maxsize
+        or getattr(agent, "_iteration_budget_warning_injected", False)
+        or budget.used < min(ratio * budget.max_total, budget.max_total - 1)
+    ):
+        return False
+    notice = ITERATION_BUDGET_WARNING_TEMPLATE.format(
+        used=budget.used, maximum=budget.max_total
+    )
+    if kanban_worker:
+        notice += (
+            " While tools are still available, call kanban_complete only if all task "
+            "requirements are verified; otherwise persist a kanban_comment handoff and "
+            "continue. A diff or commit alone is not completion evidence."
+        )
+    # Only the current tool-result tail is mutable; an older turn may already be cached.
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    if (not messages or messages[-1].get("role") != "tool"
+            or messages[-1].get(_DB_PERSISTED_MARKER)):
+        return False
+    message = messages[-1]
+    content = message.get("content", "")
+    if isinstance(content, str):
+        message["content"] = content + f"\n\n{notice}"
+    elif isinstance(content, list) or content is None:
+        message["content"] = [*(content or []), {"type": "text", "text": notice}]
+    else:
+        return False
+    agent._iteration_budget_warning_injected = True
+    return True
 
 
 @dataclass
@@ -39,6 +99,12 @@ def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> Itera
         _INTERRUPT_SCAFFOLD_MARKER, _maybe_inject_run_budget_wrapup
     )
 
+    # nous.anthropic_wire=auto: a wire switch decided from the previous response lands here,
+    # before this iteration's request is built and with nothing in flight.
+    if getattr(agent, "_nous_wire_pending", None):
+        from agent.nous_wire import apply_pending_wire_switch
+        apply_pending_wire_switch(agent)
+
     # Fire step_callback for gateway hooks (agent:step event).
     if agent.step_callback is not None:
         try:
@@ -50,6 +116,15 @@ def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> Itera
     if agent._skill_nudge_interval > 0 and "skill_manage" in agent.valid_tool_names:
         agent._iters_since_skill += 1
 
+    # Nous agent keys live ~1 h and a single turn can run for hours: adopt the keepalive's fresh
+    # key before the one in hand expires (local JWT exp read; no network unless inside the skew)
+    # instead of letting this iteration's request 401. With many agents sharing the hour that
+    # 401 was a storm, and the pool benched the sole credential for all of them.
+    try:
+        agent._adopt_nous_key_before_expiry()
+    except Exception:
+        logger.debug("Nous key pre-expiry adoption failed", exc_info=True)
+
     # Drain a /steer sent during the last API call into the newest tool message so
     # it lands THIS iteration. Never put in a user message (breaks alternation).
     _pre_api_steer = agent._drain_pending_steer()
@@ -60,6 +135,9 @@ def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> Itera
     # same cache-safe channel as /steer (newest tool result); off with no budget.
     if getattr(agent, "run_budget_seconds", None):
         _maybe_inject_run_budget_wrapup(agent, messages)
+
+    # Use the same cache-safe channel as /steer; never add a synthetic user/system row.
+    _maybe_inject_iteration_budget_warning(agent, messages)
 
     request_logger = getattr(agent, "logger", None) or logger  # same name as the origin module
     # Per-agent validation cursor skips re-parsing tool_call args already validated.
@@ -273,11 +351,8 @@ def begin_iteration(
     # Grace call: budget exhausted but the model gets one more call. Consume the
     # flag so the loop exits after this iteration regardless of outcome.
     if agent._budget_grace_call:
-        # Iteration budget: the LLM is only notified when it actually exhausts the iteration budget
-        # (api_call_count >= max_iterations). At that point we inject ONE message, allow one final API call,
-        # and if the model doesn't produce a text response, force a user-message asking it to summarise. No
-        # intermediate pressure warnings — they caused models to "give up" prematurely on complex tasks
-        # (#7915).
+        # Exhaustion retains one toolless grace call regardless of whether an opt-in
+        # checkpoint was emitted; the warning never extends the hard budget.
         agent._budget_grace_call = False
     elif not agent.iteration_budget.consume():
         _turn_exit_reason = "budget_exhausted"

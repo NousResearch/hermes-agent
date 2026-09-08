@@ -1956,7 +1956,10 @@ class TestSystemdCgroupIsolation:
             if value == "--property"
         ]
         assert "MemoryAccounting=yes" in properties
-        assert "OOMPolicy=kill" in properties
+        # systemd rejects OOMPolicy= on transient --scope units across the versions
+        # users run (239/245/249, #102486); emitting it fails the probe and every
+        # cron worker dispatch. MemoryMax + MemoryAccounting carry the isolation.
+        assert not any(p.startswith("OOMPolicy=") for p in properties), properties
         memory_max = next(
             value for value in properties if value.startswith("MemoryMax=")
         )
@@ -2365,6 +2368,61 @@ class TestSystemdCgroupIsolation:
         assert first is True
         assert second is True
         assert len(probe_calls) == 1, "probe must run only once (cached)"
+        # The probe must not carry OOMPolicy= either: that is the argv systemd
+        # rejected on scope units and cached as "unavailable" (#102486).
+        probe_argv = probe_calls[0][0]
+        assert not any(
+            value.startswith("OOMPolicy=") for value in probe_argv if isinstance(value, str)
+        ), probe_argv
+
+    @pytest.mark.linux_only
+    def test_systemd_probe_derives_owned_user_bus_env_for_system_gateway(
+        self, registry, monkeypatch, request
+    ):
+        """A system service running as an unprivileged user has no login env,
+        but may still have a valid lingering user manager and D-Bus socket."""
+        import socket
+        import tempfile
+
+        import tools.process_registry as pr
+
+        # Short path: AF_UNIX socket paths are capped at ~104 bytes, longer than most tmp_path values.
+        runtime_dir = pr.Path(tempfile.mkdtemp(prefix="hbus-", dir="/tmp"))
+        runtime_dir.chmod(0o700)
+        bus_path = runtime_dir / "bus"
+        bus_socket = socket.socket(socket.AF_UNIX)
+        bus_socket.bind(str(bus_path))
+
+        def _cleanup():
+            bus_socket.close()
+            bus_path.unlink(missing_ok=True)
+            runtime_dir.rmdir()
+
+        request.addfinalizer(_cleanup)
+
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_default_user_runtime_dir", lambda: runtime_dir)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        derived = pr.systemd_user_bus_env(
+            {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/untrusted-bus"}
+        )
+        assert derived["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_path}"
+        probe_kwargs = []
+
+        def fake_run(*args, **kwargs):
+            probe_kwargs.append(kwargs)
+            return subprocess.CompletedProcess(args=args[0], returncode=0)
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is True
+        env = probe_kwargs[0]["env"]
+        assert env["XDG_RUNTIME_DIR"] == str(runtime_dir)
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_path}"
+        assert "XDG_RUNTIME_DIR" not in os.environ
+        assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
 
     def test_systemd_scope_first_probe_is_serialized(self, monkeypatch):
         """Concurrent first-use callers must wait for one definitive probe.

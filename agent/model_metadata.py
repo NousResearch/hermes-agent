@@ -416,8 +416,9 @@ def _normalize_base_url(base_url: str) -> str:
     return (base_url or "").strip().rstrip("/")
 
 
-def _auth_headers(api_key: str = "") -> Dict[str, str]:
-    token = str(api_key or "").strip()
+def _auth_headers(api_key: object = "") -> Dict[str, str]:
+    from agent.command_token_source import materialize_probe_api_key
+    token = materialize_probe_api_key(api_key)
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
@@ -919,7 +920,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         return {}
     alternate = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized + "/v1"
     candidates = [normalized] + ([alternate] if alternate != normalized else [])
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    headers = _auth_headers(api_key)
     verify = _resolve_requests_verify(normalized)
     last_error: Optional[Exception] = None
     if local:
@@ -1437,6 +1438,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
 # Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
 # slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
 _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
+    "gpt-6-astra": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
@@ -1448,13 +1450,16 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
 # The bump fires ONLY when the resolved value is exactly the stale 272,000. ``gpt-5.6`` is a FAMILY
 # PREFIX (``-pro`` slugs aren't routable on Codex); ``gpt-5.4`` is EXACT because gpt-5.4-mini enforces 272K.
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {"gpt-5.6": 900_000}  # sol / terra / luna
-_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {"gpt-5.4": 900_000, "gpt-daybreak-blue-latest": 900_000}
+_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
+    "gpt-5.4": 900_000, "gpt-daybreak-blue-latest": 900_000,
+    "gpt-6-astra": 900_000,  # advertised 272K; 920,043 input OK, 1,000,043 rejected (live 2026-09-04)
+}
 _CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000  # the only advertised value the bump may override
 CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"  # picker-only opt-in suffix; never sent on the wire
 # The ONLY bases eligible for ``-900k``: routable, live-verified. No family prefixing (it would synthesize
 # dead ``-pro`` variants); dated snapshots of the 5.6 bases are allowed. gpt-daybreak-blue-latest is a verified Sol alias.
 _CODEX_900K_SNAPSHOT_BASES = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
-_CODEX_900K_ELIGIBLE_BASES = frozenset({*_CODEX_900K_SNAPSHOT_BASES, "gpt-5.4", "gpt-daybreak-blue-latest"})
+_CODEX_900K_ELIGIBLE_BASES = frozenset({*_CODEX_900K_SNAPSHOT_BASES, "gpt-5.4", "gpt-daybreak-blue-latest", "gpt-6-astra"})
 _CODEX_900K_SNAPSHOT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -1977,15 +1982,18 @@ def estimate_tokens_rough(text: str) -> int:
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> int:
-    """Rough token estimate for a message list (pre-flight only). Images cost a flat ~1500 tokens
-    each rather than their base64 length. ``charge_stale_thinking=False`` mirrors the tail-budget
+    """Rough token estimate for a message list (pre-flight only). Images cost the per-image price
+    learned from provider usage (``agent.image_token_cost``; flat default before calibration)
+    rather than their base64 length. ``charge_stale_thinking=False`` mirrors the tail-budget
     walk (``context_compressor._estimate_msg_budget_tokens``): on non-echo routes stale reasoning
     rides the wire only for the NEWEST assistant turn, so excluding it keeps the compaction TRIGGER
     in the same size class as the walk — otherwise reasoning-heavy sessions fire preflight forever."""
-    _IMAGE_TOKEN_COST = 1500
+    from agent.image_token_cost import current_image_token_cost
+
+    image_cost = current_image_token_cost()
     if not charge_stale_thinking:
         messages = _strip_stale_thinking_for_estimate(messages)
-    return sum(_estimate_message_tokens_cached(msg, _IMAGE_TOKEN_COST) for msg in messages)
+    return sum(_estimate_message_tokens_cached(msg, image_cost) for msg in messages)
 
 
 # Thinking-text keys replayed for at most the newest assistant turn on non-echo routes — must stay
@@ -2020,7 +2028,7 @@ def _strip_stale_thinking_for_estimate(messages: List[Dict[str, Any]]) -> List[D
 # estimate. Because the api_messages build shallow-copies history dicts each iteration, the copies share the
 # same content strings — so unchanged history messages hit the memo even though the outer dicts are fresh
 # objects every turn.
-_MSG_TOKENS_CACHE: Dict[Any, Tuple[list, int]] = {}
+_MSG_TOKENS_CACHE: Dict[Any, Tuple[list, int, int]] = {}  # pins, text tokens, image count
 _MSG_TOKENS_CACHE_MAX = 4096
 
 
@@ -2041,19 +2049,23 @@ def _msg_fingerprint(value: Any, pins: list) -> Any:
 
 
 def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
-    def _compute() -> int:
-        return _estimate_message_tokens_without_images(msg) + _count_image_tokens(msg, image_cost)
+    """Text tokens + images x ``image_cost``; the memo holds text and image COUNT so a recalibrated
+    per-image price re-prices cached rows without invalidating them."""
+    def _compute() -> Tuple[int, int]:
+        return _estimate_message_tokens_without_images(msg), _count_image_tokens(msg, 1)
     try:
         pins: list = []
         key = _msg_fingerprint(msg, pins)
         hash(key)
     except Exception:
-        return _compute()
+        text, images = _compute()
+        return text + images * image_cost
     cached = _MSG_TOKENS_CACHE.get(key)
     if cached is not None:
-        return cached[1]
-    tokens = _compute()
-    _MSG_TOKENS_CACHE[key] = (pins, tokens)
+        return cached[1] + cached[2] * image_cost
+    text, images = _compute()
+    tokens = text + images * image_cost
+    _MSG_TOKENS_CACHE[key] = (pins, text, images)
     while len(_MSG_TOKENS_CACHE) > _MSG_TOKENS_CACHE_MAX:
         try:
             _MSG_TOKENS_CACHE.pop(next(iter(_MSG_TOKENS_CACHE)))
@@ -2079,6 +2091,18 @@ def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
     return count * cost_per_image
 
 
+def strip_opaque_replay_items(items: Any) -> Any:
+    """``codex_reasoning_items`` with ``encrypted_content`` blanked for local token estimation.
+    The ciphertext is priced by the provider's own count, never by its bytes (a compaction
+    checkpoint alone can be 5M chars, #100611); only real usage prices it."""
+    if not isinstance(items, list):
+        return items
+    return [
+        {k: ("" if k == "encrypted_content" else v) for k, v in item.items()} if isinstance(item, dict) else item
+        for item in items
+    ]
+
+
 def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     """Shadow of a message holding only what the provider actually receives.
     * ``api_content`` SUBSTITUTES ``content`` (mirrors ``turn_context.substitute_api_content`` exactly):
@@ -2086,7 +2110,11 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
       other shape would UNDERcount — the dangerous direction.
     * Base64 images become a placeholder; ``_count_image_tokens`` charges them flat.
     * ``reasoning`` never ships as-is (request builds pop it after optionally promoting it into
-      ``reasoning_content``); counting both inflated estimates up to +53%."""
+      ``reasoning_content``); counting both inflated estimates up to +53%.
+    * Opaque provider blobs (``encrypted_content`` on codex reasoning / compaction items) are
+      ciphertext the provider prices by its OWN token count, never by bytes; a native compaction
+      checkpoint alone can be 5M chars (#100611). They contribute 0 here: only real usage ever
+      prices them, and the usage anchor carries that price forward."""
     sidecar = msg.get("api_content")
     sidecar_wins = isinstance(sidecar, str) and bool(sidecar) and msg.get("role") in ("user", "assistant")
     _rc = msg.get("reasoning_content")
@@ -2108,6 +2136,10 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
             ]
         elif k == "content" and isinstance(v, dict) and v.get("_multimodal"):
             shadow[k] = v.get("text_summary", "")
+        elif k == "codex_reasoning_items":
+            shadow[k] = strip_opaque_replay_items(v)
+        elif k == "encrypted_content":  # a Responses reasoning/compaction item passed as a row
+            shadow[k] = ""
         else:
             shadow[k] = v
     return shadow
@@ -2130,54 +2162,6 @@ def estimate_request_tokens_rough(
         total += estimate_messages_tokens_rough(messages) if charge_stale_thinking else estimate_messages_tokens_rough(messages, charge_stale_thinking=False)
     if tools:
         total += _estimate_tools_tokens_rough(tools)
-    return total
-
-
-# Usage-anchored accounting: ``usage.prompt_tokens`` is EXACT for everything sent on that request, so
-# anchoring shrinks chars/4 estimation to the messages appended since. Fields: prompt_tokens /
-# completion_tokens (provider usage at capture); base_count (len(messages) at capture — the reply is
-# not yet appended and is covered by completion_tokens, so the delta walk skips it at index base_count);
-# base_last_id / base_last_role (identity of the last message; compaction/splices replace it -> full estimation).
-
-
-def capture_usage_anchor(prompt_tokens: Any, completion_tokens: Any, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Build a usage anchor from provider-reported usage, or None."""
-    try:
-        pt = int(prompt_tokens or 0)
-        ct = int(completion_tokens or 0)
-    except (TypeError, ValueError):
-        return None
-    if pt <= 0 or not isinstance(messages, list):
-        return None  # no usable usage (some endpoints omit it) — caller keeps its anchor
-    last = messages[-1] if messages else None
-    return {
-        "prompt_tokens": pt,
-        "completion_tokens": max(0, ct),
-        "base_count": len(messages),
-        "base_last_id": id(last) if last is not None else None,
-        "base_last_role": last.get("role") if isinstance(last, dict) else None,
-    }
-
-
-def anchored_context_tokens(messages: List[Dict[str, Any]], anchor: Optional[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> Optional[int]:
-    """Anchored prompt+completion tokens plus a rough estimate of ONLY the messages appended since;
-    None when the anchor is missing or stale. The anchored response's own reply is skipped (already
-    in completion_tokens). ``charge_stale_thinking`` is forwarded to the delta estimate."""
-    if not isinstance(anchor, dict) or not isinstance(messages, list):
-        return None
-    base_count = anchor.get("base_count") or 0
-    if base_count <= 0 or len(messages) < base_count:
-        return None
-    base_msg = messages[base_count - 1]
-    base_role = base_msg.get("role") if isinstance(base_msg, dict) else None
-    if id(base_msg) != anchor.get("base_last_id") or base_role != anchor.get("base_last_role"):
-        return None
-    total = int(anchor["prompt_tokens"]) + int(anchor.get("completion_tokens") or 0)
-    delta = messages[base_count:]
-    if delta and isinstance(delta[0], dict) and delta[0].get("role") == "assistant":
-        delta = delta[1:]
-    if delta:
-        total += estimate_messages_tokens_rough(delta, charge_stale_thinking=charge_stale_thinking)
     return total
 
 

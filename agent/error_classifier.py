@@ -113,7 +113,8 @@ _BILLING_ERROR_CODES = frozenset({
 # contains an overflow phrase; rate limit is matched first so throttle wins.
 _RATE_LIMIT_PATTERNS = (
     "rate limit", "rate_limit", "too many requests", "throttled", "requests per minute",
-    "tokens per minute", "requests per day", "try again in", "please retry after", "resource_exhausted",
+    "tokens per minute", "requests per day", "try again in", "please retry after",
+    "resource exhausted", "resource_exhausted", "resource-exhausted", "resourceexhausted",
     "rate increased too quickly", "throttlingexception", "too many concurrent requests",
     "servicequotaexceededexception", "throttling",
 )
@@ -486,6 +487,13 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # to format_error and a status-less block isn't left retryable (#18028).
     if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):
         return _V_CONTENT_BLOCKED
+    # ChatGPT Codex masks a rejected encrypted-reasoning replay behind the same bare
+    # ``invalid_prompt: Request blocked.`` it uses for real blocks (#92353). Exact envelope
+    # + provider only. The verdict keeps format_error's abort-and-fallback hints; the one
+    # extra thing it buys is turn_recovery's replay strip, which still requires cached
+    # ``codex_reasoning_items`` — a genuine block with nothing to strip behaves as before.
+    if _is_codex_masked_replay_rejection(c):
+        return _v(_R.invalid_encrypted_content, **_ABORT_FALLBACK)
     # Anthropic thinking-block 400s (signature mismatch after transcript
     # mutation). Not gated on provider — OpenRouter proxies Anthropic errors.
     if status == 400 and "thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS):
@@ -775,6 +783,22 @@ def _is_server_injected_param_rejection(error_msg: str, provider: str) -> bool:
         if error_msg and param in error_msg and any(w in error_msg for w in _PARAM_REJECTION_WORDS):
             return not any(sender in provider_slug for sender in senders)
     return False
+
+
+_CODEX_MASKED_REPLAY_MESSAGE = "request blocked."
+
+
+def _is_codex_masked_replay_rejection(c: "_Ctx") -> bool:
+    """HTTP 400 / status-less ``{code: invalid_prompt, message: "Request blocked."}`` from
+    ``openai-codex`` — as an SDK error body, a Responses ``error`` SSE frame, or the
+    ``response.failed`` text ``"invalid_prompt: Request blocked."``."""
+    if c.provider_slug != "openai-codex" or c.status_code not in (None, 400):
+        return False
+    # The OpenAI SDK unwraps ``body["error"]`` on status errors; stream frames keep the envelope.
+    body_msg = next((str(m).strip().lower() for m in _body_message_candidates(c.body or {}) if m), "")
+    return (c.code == "invalid_prompt" and body_msg == _CODEX_MASKED_REPLAY_MESSAGE) or (
+        c.msg.strip() == f"invalid_prompt: {_CODEX_MASKED_REPLAY_MESSAGE}"
+    )
 
 
 def _error_obj(body: Any) -> dict:

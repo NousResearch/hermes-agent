@@ -32,6 +32,7 @@ from agent.context_engine import automatic_compaction_status_message, sanitize_m
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
+from agent.usage_anchor import set_usage_anchor
 
 logger = logging.getLogger(__name__)
 
@@ -3114,8 +3115,7 @@ def _finish_compaction_boundary(
     compressor.awaiting_real_usage_after_compression = True
     # Transcript rewritten: invalidate the usage anchor's base snapshot explicitly
     # (its structural check would fail closed anyway); estimate until re-anchored.
-    agent._usage_anchor = None
-    agent._turn_base_usage_anchor = None
+    set_usage_anchor(agent, None)
     # Arm the effectiveness verdict only after a completed rewrite crosses the
     # boundary so later usage isn't charged to an attempt that changed nothing.
     if compression_made_progress:
@@ -3812,7 +3812,7 @@ def _compress_context_via_codex_app_server(
         # An empty usage report must consume the pending verdict, not leave deferral
         # armed until a later turn; minimal test engines may lack update_from_response.
         if hasattr(agent.context_compressor, "update_from_response"):
-            _record_codex_app_server_usage(agent, result)
+            _record_codex_app_server_usage(agent, result, messages=messages)
     _reset_read_dedup_caches(task_id, skills=False)
     logger.info(
         "codex app-server compaction done: session=%s thread=%s turn=%s", _sid,

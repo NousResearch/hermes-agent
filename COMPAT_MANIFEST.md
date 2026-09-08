@@ -1024,7 +1024,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `Any` | import | `typing` |
 | `HISTORY_UNREADABLE` | moved-lazy | `gateway.slash_commands_status` |
-| `MessageType` | moved-lazy | `gateway.platforms.base` |
+| `MessageType` | moved-lazy | `gateway.platforms.event` |
 | `SessionSource` | moved-lazy | `gateway.session` |
 | `base_url_host_matches` | moved-lazy | `utils` |
 | `build_session_key` | moved-lazy | `gateway.session` |
@@ -2546,7 +2546,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `DINGTALK_TYPE_MAPPING` | moved-lazy | `plugins.platforms.dingtalk.inbound` |
 | `EXT_MAP` | restored-def | `(deleted; BASE body restored)` |
-| `MessageType` | moved-lazy | `gateway.platforms.base` |
+| `MessageType` | moved-lazy | `gateway.platforms.event` |
 
 ### `plugins.platforms.discord.adapter`
 
@@ -2601,7 +2601,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `ProcessingOutcome` | moved-lazy | `gateway.platforms.base` |
+| `ProcessingOutcome` | moved-lazy | `gateway.platforms.event` |
 | `resolve_sidecar_dir` | moved-lazy | `plugins.platforms.photon.sidecar_paths` |
 
 ### `plugins.platforms.photon.auth`

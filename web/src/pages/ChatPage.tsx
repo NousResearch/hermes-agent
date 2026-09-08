@@ -32,6 +32,7 @@ import { useSearchParams } from "react-router";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
+import { ProjectBotLauncher } from "@/components/ProjectBotLauncher";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -1794,6 +1795,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
+            <ProjectBotLauncher
+              className="border-b border-current/10 py-2"
+              onPicked={closeMobilePanel}
+            />
             <div className="border-b border-current/10 px-1 py-2">
               <ChatSidebar
                 channel={channel}
@@ -1965,6 +1970,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 <X />
               </Button>
             </div>
+            <ProjectBotLauncher className="shrink-0 border-b border-current/10 pb-3" />
             {/* Model picker — keeps the rail thin. */}
             <div className="shrink-0">
               <ChatSidebar

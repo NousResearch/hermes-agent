@@ -16,7 +16,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formataddr, formatdate
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -341,6 +341,14 @@ class EmailAdapter(BasePlatformAdapter):
         setting = lambda env, key: _get_secret(env, "") or extra.get(key, "")  # noqa: E731
         tls_verify = lambda env, key: _esecret_bool(env, is_truthy_value(extra.get(key), default=True))  # noqa: E731
         self._address = setting("EMAIL_ADDRESS", "address").strip()
+        # Display name for the From: header. Defaults to "Hermes" so the
+        # header reads "Hermes <addr>" instead of just the bare address.
+        # Override via config.yaml (`platforms.email.extra.sender_name`) or
+        # `EMAIL_SENDER_NAME` env. Use `formataddr` so RFC 2047 encoding kicks
+        # in for non-ASCII names.
+        self._sender_name = (
+            os.getenv("EMAIL_SENDER_NAME", "") or extra.get("sender_name", "Hermes")
+        ).strip()
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = setting("EMAIL_IMAP_HOST", "imap_host").strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
@@ -662,6 +670,14 @@ class EmailAdapter(BasePlatformAdapter):
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""
         return (self._address.rsplit("@", 1)[-1] if "@" in self._address else "") or "localhost"
 
+    def _from_header(self) -> str:
+        """Build the From: header value, including display name.
+
+        Returns ``"Hermes <addr>"`` (or the configured sender name) instead of the
+        bare address, so mail clients display a readable sender name.
+        """
+        return formataddr((self._sender_name, self._address))
+
     def _new_reply(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
                    attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
         """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
@@ -672,7 +688,7 @@ class EmailAdapter(BasePlatformAdapter):
         original_msg_id = reply_to_msg_id or ctx.get("message_id")
         threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
-        for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,
+        for key, value in (("From", self._from_header()), ("To", to_addr), ("Subject", subject), *threading,
                            ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
             msg[key] = value
         if body or attach_empty_body:
@@ -772,7 +788,11 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
+        sender_name = (
+            os.getenv("EMAIL_SENDER_NAME", "") or extra.get("sender_name", "Hermes")
+        ).strip()
+        from_header = formataddr((sender_name, address))
+        for key, value in (("From", from_header), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)

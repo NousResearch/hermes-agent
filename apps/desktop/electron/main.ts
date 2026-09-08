@@ -6999,6 +6999,8 @@ function buildApplicationMenu() {
         : {
             label: '退出',
             click: () => {
+              // Only allow quit when no tray is present (macOS) or via tray menu
+              if (systemTray && !IS_MAC) return
               if (mainWindow) { mainWindow.destroy(); mainWindow = null }
               app.quit()
             }

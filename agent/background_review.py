@@ -842,39 +842,21 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
     return kwargs
 
 
-# Sentinel generation above any live registry generation. Mid-review compaction
-# boundaries re-run refresh_agent_mcp_tools(content_aware=True); freezing the
-# snapshot generation prevents compaction from rebuilding agent.tools and dropping
-# inherited provider tools (#103579).
-_FROZEN_TOOL_SNAPSHOT_GENERATION: int = 2_147_483_647
+# Above any live registry generation: _publish_tool_snapshot refuses an older-generation rebuild,
+# so the compaction-boundary refresh_agent_mcp_tools(content_aware=True) cannot rebuild the fork's
+# tools[] from the live registry and drop the inherited provider/plugin tools (#103579).
+_FROZEN_TOOL_SNAPSHOT_GENERATION = 2_147_483_647
 
 
 def _inherit_parent_tool_surface(review_agent: Any, agent: Any) -> None:
-    """Copy the parent's advertised tools for a same-model cache-parity fork.
-
-    The parent's array is the last outbound payload: ``agent.tools`` is read
-    directly at request time and is not mutated between review turns because
-    ``_skip_mcp_refresh`` blocks the between-turn MCP refresh. Dispatch remains
-    restricted by the thread whitelist. Copying the whole surface covers every
-    dynamically injected tool (memory-provider, late MCP, and plugin-registered),
-    not just memory tools.
-
-    Freezes ``_tool_snapshot_generation`` so mid-review compaction boundaries
-    (which invoke ``refresh_agent_mcp_tools(content_aware=True)``) refuse the
-    rebuild and do not clobber the inherited tools (#103579).
-    """
-    parent_tools = getattr(agent, "tools", None)
-    if not isinstance(parent_tools, (list, tuple)):
-        return
-    review_agent.tools = copy.deepcopy(list(parent_tools))
-    review_agent.valid_tool_names = {
-        entry["function"]["name"]
-        for entry in review_agent.tools
-        if isinstance(entry, dict)
-        and isinstance(entry.get("function"), dict)
-        and isinstance(entry["function"].get("name"), str)
-    }
+    """Same-model fork: advertise the parent's exact tools[] (its last outbound payload — an
+    empty list included) so the request prefix matches byte-for-byte, then freeze the snapshot
+    generation. Dispatch stays behind the review whitelist; advertising is not permission."""
+    # getattr: /btw and review callers build bare object.__new__ agents in tests without ``tools``.
+    review_agent.tools = copy.deepcopy(getattr(agent, "tools", None) or [])
+    review_agent.valid_tool_names = {tool["function"]["name"] for tool in review_agent.tools}
     review_agent._tool_snapshot_generation = _FROZEN_TOOL_SNAPSHOT_GENERATION
+
 
 
 def build_cache_parity_fork(

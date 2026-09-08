@@ -4,7 +4,9 @@ Covers:
   - SKILL.md frontmatter meets the authoring standards (<=60-char description, fields,
     human-first author credit).
   - scripts/buzz_install.py imports with the standard library only.
-  - bech32 (NIP-19) and BIP-340 Schnorr against published test vectors.
+  - bech32 (NIP-19) and BIP-340 Schnorr against *published* test vectors
+    (not sign-then-verify with the same code), plus a byte-exact cross-check
+    against Hermes' in-tree ``plugins/platforms/buzz/nostr_auth.py``.
   - NIP-98 header construction and signature validity.
   - Input resolution, .env key handling, config writes, invite flow, gateway verification,
     and --dry-run, all with subprocess/network mocked out.
@@ -28,21 +30,73 @@ REPO = Path(__file__).resolve().parents[2]
 SKILL_DIR = REPO / "optional-skills" / "devops" / "buzz-hermes-profile-setup"
 SCRIPT = SKILL_DIR / "scripts" / "buzz_install.py"
 
-# NIP-19 reference vectors.
+# Published NIP-19 bech32 examples (nsec / npub) from
+# https://github.com/nostr-protocol/nips/blob/master/19.md
 NSEC_VECTOR = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5"
 NSEC_HEX = "67dea2ed018072d675f5415ecfaed7d2597555e202d85b3d65ea4e58d2d92ffa"
 NPUB_VECTOR = "npub10elfcs4fr0l0r8af98jlmgdh9c8tcxjvz9qkw038js35mp4dma8qzvjptg"
 NPUB_HEX = "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e"
 
-# BIP-340 test vector index 1 (deterministic auxiliary randomness).
-BIP340_SK = bytes.fromhex("B7E151628AED2A6ABF7158809CF4F3C762E7160F38B4DA56A784D9045190CFEF")
-BIP340_PK = "dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba659"
-BIP340_AUX = bytes.fromhex("0000000000000000000000000000000000000000000000000000000000000001")
-BIP340_MSG = bytes.fromhex("243F6A8885A308D313198A2E03707344A4093822299F31D0082EFA98EC4E6C89")
-BIP340_SIG = (
-    "6896bd60eeae296db48a229ff71dfe071bde413e6d43f917dc8dcf8c78de3341"
-    "8906d11ac976abccb20b091292bff4ea897efcb639ea871cfa95f6de339e4b0a"
-)
+# Official BIP-340 Schnorr vectors 0, 1, 2 from
+# https://github.com/bitcoin/bips/blob/master/bip-0340/test-vectors.csv
+# (32-byte messages, valid keys, deterministic aux). Compared byte-for-byte
+# against the BIP — a sign-then-verify loop on this same module would not
+# catch a systematic deviation that relays would reject.
+BIP340_VECTORS = [
+    {
+        "index": 0,
+        "sk": bytes.fromhex("00" * 31 + "03"),
+        "pk": "F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9",
+        "aux": bytes(32),
+        "msg": bytes(32),
+        "sig": (
+            "E907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA8215"
+            "25F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0"
+        ),
+    },
+    {
+        "index": 1,
+        "sk": bytes.fromhex("B7E151628AED2A6ABF7158809CF4F3C762E7160F38B4DA56A784D9045190CFEF"),
+        "pk": "DFF1D77F2A671C5F36183726DB2341BE58FEAE1DA2DECED843240F7B502BA659",
+        "aux": bytes.fromhex("00" * 31 + "01"),
+        "msg": bytes.fromhex("243F6A8885A308D313198A2E03707344A4093822299F31D0082EFA98EC4E6C89"),
+        "sig": (
+            "6896BD60EEAE296DB48A229FF71DFE071BDE413E6D43F917DC8DCF8C78DE3341"
+            "8906D11AC976ABCCB20B091292BFF4EA897EFCB639EA871CFA95F6DE339E4B0A"
+        ),
+    },
+    {
+        "index": 2,
+        "sk": bytes.fromhex("C90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B14E5C9"),
+        "pk": "DD308AFEC5777E13121FA72B9CC1B7CC0139715309B086C960E18FD969774EB8",
+        "aux": bytes.fromhex("C87AA53824B4D7AE2EB035A2B5BBBCCC080E76CDC6D1692C4B0B62D798E6D906"),
+        "msg": bytes.fromhex("7E2D58D8B3BCDF1ABADEC7829054F90DDA9805AAB56C77333024B9D0A508B75C"),
+        "sig": (
+            "5831AAEED7B44BB74E5EAB94BA9D4294C49BCF2A60728D8B4C200F50DD313C1B"
+            "AB745879A5AD954A72C45A91C3A51D3C7ADEA98D82F8481E0E1E03674A6F3FB7"
+        ),
+    },
+    {
+        "index": 3,
+        "sk": bytes.fromhex("0B432B2677937381AEF05BB02A66ECD012773062CF3FA2549E44F58ED2401710"),
+        "pk": "25D1DFF95105F5253C4022F628A996AD3A0D95FBF21D468A1B33F8C160D8F517",
+        "aux": bytes.fromhex("FF" * 32),
+        "msg": bytes.fromhex("FF" * 32),
+        "sig": (
+            "7EB0509757E246F19449885651611CB965ECC1A187DD51B64FDA1EDC9637D5EC"
+            "97582B9CB13DB3933705B32BA982AF5AF25FD78881EBB32771FC5922EFC66EA3"
+        ),
+    },
+]
+
+
+def _load_nostr_auth():
+    """Hermes' production BIP-340 signer — an independent implementation."""
+    path = REPO / "plugins" / "platforms" / "buzz" / "nostr_auth.py"
+    spec = importlib.util.spec_from_file_location("hermes_nostr_auth", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture(scope="module")
@@ -168,19 +222,38 @@ def test_decode_private_key_accepts_nsec_and_hex(mod) -> None:
         mod.decode_private_key("not-a-key")
 
 
-def test_bip340_public_key_and_signature_vector(mod) -> None:
-    assert mod.pubkey_x(BIP340_SK).hex() == BIP340_PK
-    sig = mod.schnorr_sign(BIP340_MSG, BIP340_SK, aux=BIP340_AUX)
-    assert sig.hex() == BIP340_SIG
+@pytest.mark.parametrize("vec", BIP340_VECTORS, ids=lambda v: f"bip340-{v['index']}")
+def test_schnorr_matches_official_bip340_vector(mod, vec) -> None:
+    """Byte-exact against the BIP CSV — not against a verifier we wrote."""
+    assert mod.pubkey_x(vec["sk"]).hex().upper() == vec["pk"]
+    sig = mod.schnorr_sign(vec["msg"], vec["sk"], aux=vec["aux"])
+    assert sig.hex().upper() == vec["sig"]
 
 
-def test_generate_keypair_round_trips_and_signs(mod) -> None:
+def test_signer_matches_in_tree_nostr_auth(mod) -> None:
+    """Same bytes as Hermes' production signer (independent implementation)."""
+    nostr_auth = _load_nostr_auth()
+    for vec in BIP340_VECTORS:
+        theirs = nostr_auth.schnorr_sign(
+            vec["msg"], vec["sk"].hex(), auxiliary_randomness=vec["aux"]
+        )
+        ours = mod.schnorr_sign(vec["msg"], vec["sk"], aux=vec["aux"])
+        assert ours == theirs
+        assert nostr_auth.public_key_hex(vec["sk"].hex()).upper() == vec["pk"]
+        assert theirs.hex().upper() == vec["sig"]
+
+
+def test_generate_keypair_round_trips_and_matches_nostr_auth(mod) -> None:
+    nostr_auth = _load_nostr_auth()
     nsec, npub, pub_hex = mod.generate_keypair()
     secret = mod.bech32_decode("nsec", nsec)
     assert mod.bech32_decode("npub", npub).hex() == pub_hex
-    assert mod.pubkey_x(secret).hex() == pub_hex
+    assert nostr_auth.public_key_hex(nsec) == pub_hex
     msg = hashlib.sha256(b"hello buzz").digest()
-    assert _verify_schnorr(mod, msg, bytes.fromhex(pub_hex), mod.schnorr_sign(msg, secret))
+    aux = bytes(range(32))
+    assert mod.schnorr_sign(msg, secret, aux=aux) == nostr_auth.schnorr_sign(
+        msg, nsec, auxiliary_randomness=aux
+    )
 
 
 def test_nip98_header_structure_and_signature(mod) -> None:
@@ -199,6 +272,8 @@ def test_nip98_header_structure_and_signature(mod) -> None:
         [0, event["pubkey"], event["created_at"], 27235, event["tags"], ""], separators=(",", ":")
     ).encode()
     assert event["id"] == hashlib.sha256(serialized).hexdigest()
+    # Signature is a valid BIP-340 Schnorr over the event id (own-code verifier
+    # is fine here — the signer itself is pinned to official vectors above).
     assert _verify_schnorr(mod, bytes.fromhex(event["id"]), bytes.fromhex(event["pubkey"]), bytes.fromhex(event["sig"]))
 
 

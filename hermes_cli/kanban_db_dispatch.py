@@ -1580,10 +1580,20 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    host_cycle: Optional["HostCyclePressure"] = None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
     skip is recorded on ``result``.
+
+    ``host_cycle``, when supplied and currently reading ``"elevated"``, has its
+    shared ``remaining_elevated_spawns`` slot reserved (decremented) immediately
+    before ``spawn_fn`` is invoked below -- the point the spawn attempt is
+    authorized, before any post-launch operation (PID persistence, the spawned
+    hook) can fail. The reservation is never refunded on an exception from
+    ``spawn_fn``/PID persistence, because a child process may already exist by
+    then; a task that never reaches this point (guard-blocked, claim lost,
+    workspace resolution failed) never touches the shared slot.
     """
     task_id = row["id"]
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
@@ -1652,6 +1662,11 @@ def _dispatch_lane_task(
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
     try:
+        if host_cycle is not None and host_cycle.cpu_pressure == "elevated":
+            # Reserve now, before the spawn attempt: a child may already exist
+            # even if spawn_fn raises or the PID fails to persist below, so once
+            # reserved this slot is never refunded on those paths.
+            host_cycle.remaining_elevated_spawns = max(host_cycle.remaining_elevated_spawns - 1, 0)
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
             _set_worker_pid(conn, claimed.id, int(pid))
@@ -1883,9 +1898,11 @@ def _dispatch_once_locked(
     the PID so later ticks catch crashes before the TTL. Cap semantics:
     :func:`_tick_spawn_budget`. ``host_cycle`` carries the shared host-cycle
     CPU-pressure decision (see :class:`HostCyclePressure`); its remaining
-    elevated-admission slot is decremented in place by however many workers
-    THIS board actually spawns, so the next board in the same cycle sees the
-    reduced budget."""
+    elevated-admission slot is reserved (decremented) by :func:`_dispatch_lane_task`
+    at the moment each individual spawn attempt is authorized -- before
+    ``spawn_fn`` runs, never refunded afterward -- so the next board (or the
+    next row in this same board's own loops) sees the reduced budget even when
+    the attempt's outcome is an ambiguous or post-launch failure."""
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
@@ -1931,11 +1948,17 @@ def _dispatch_once_locked(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        host_cycle=host_cycle,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
+            break
+        if host_cycle is not None and host_cycle.cpu_pressure == "elevated" and host_cycle.remaining_elevated_spawns <= 0:
+            # The cycle's shared slot was already spent by an earlier attempt
+            # (this board or an earlier one) -- including one whose outcome
+            # was an ambiguous/post-launch failure, which never refunds it.
             break
         row_assignee = row["assignee"]
         if not row_assignee:
@@ -1958,16 +1981,13 @@ def _dispatch_once_locked(
     for row in review_rows:
         if spawn_budget is not None and spawned >= spawn_budget:
             break
+        if host_cycle is not None and host_cycle.cpu_pressure == "elevated" and host_cycle.remaining_elevated_spawns <= 0:
+            break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
         if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
             spawned += 1
-    if host_cycle is not None and result.cpu_pressure == "elevated" and spawned:
-        # Consume this board's spawns from the cycle-shared elevated budget so
-        # the next board dispatched in this same host cycle sees the reduced
-        # remainder rather than a freshly-reset 1.
-        host_cycle.remaining_elevated_spawns = max(host_cycle.remaining_elevated_spawns - spawned, 0)
     return result
 
 

@@ -126,6 +126,55 @@ def test_tick_once_elevated_cpu_pressure_spawns_at_most_one_across_all_boards(
             assert result.cpu_pressure in ("elevated", None)
 
 
+def test_tick_once_elevated_cpu_pressure_with_pid_persistence_fault_still_launches_at_most_one(
+    kanban_home, dispatcher, monkeypatch,
+):
+    """Regression for the t_194e18d6 review finding: the shared elevated slot
+    must be reserved BEFORE ``spawn_fn`` is invoked, not after PID persistence
+    succeeds. Inject ``_set_worker_pid`` raising ``OSError`` after ``spawn_fn``
+    returns a real PID (4242) -- a real ambiguous/post-launch failure, since
+    the child process was already created. The actual spawn CALLBACK count
+    (not ``DispatchResult.spawned``, which undercounts this exact failure) must
+    stay <= 1 across the whole cycle, and later boards must still reclaim and
+    promote their stale/blocked work."""
+    monkeypatch.setattr(kbd, "_system_cpu_sample", lambda: _cpu_sample("elevated"))
+    launch_calls = []
+
+    def fake_default_spawn(task, workspace, *, board=None):
+        launch_calls.append((board, task.id))
+        return 4242
+
+    monkeypatch.setattr(kbd, "_default_spawn", fake_default_spawn)
+
+    def failing_set_worker_pid(conn, task_id, pid):
+        raise OSError("simulated PID persistence fault")
+
+    monkeypatch.setattr(kbd, "_set_worker_pid", failing_set_worker_pid)
+
+    results = dispatcher.tick_once()
+    results_by_slug = dict(results)
+
+    # The bug: DispatchResult.spawned undercounts here, since the failing
+    # board's attempt raises inside the try/except and is recorded as a
+    # failure, not a spawn. The invariant under test is on the real callback
+    # invocation count, which is what actually matters for host load.
+    assert len(launch_calls) <= 1, launch_calls
+    assert _total_spawned(results) <= len(launch_calls)
+
+    # Later boards (after the one that consumed the shared slot, whether its
+    # attempt "succeeded" from DispatchResult's point of view or not) must
+    # still run reclaim/promotion and keep their affected tasks retained.
+    for slug in BOARDS:
+        result = results_by_slug[slug]
+        assert result is not None
+        assert result.reclaimed >= 1
+        assert result.promoted >= 1
+        with kbc.connect(board=slug) as conn:
+            for task_id in (kanban_home[slug]["stale"], kanban_home[slug]["child"]):
+                row = kb.get_task(conn, task_id)
+                assert row is not None and row.status == "ready", (slug, task_id, row and row.status)
+
+
 def test_tick_once_critical_cpu_pressure_spawns_nothing_but_still_reclaims_and_promotes(
     kanban_home, dispatcher, monkeypatch,
 ):

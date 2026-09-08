@@ -6,6 +6,8 @@ import dataclasses
 from contextlib import suppress
 from typing import Optional
 
+from utils import base_url_host_matches, base_url_hostname
+
 
 @dataclasses.dataclass(frozen=True)
 class _GatewayModelContext:
@@ -18,13 +20,17 @@ class _GatewayModelContext:
     context_source: str
 
 
-def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModelContext:
-    """Resolve the configured gateway route and effective context window. Call off-loop (may block)."""
+def _resolve_gateway_model_context(
+    model: Optional[str] = None, *, warmup: bool = False,
+) -> Optional[_GatewayModelContext]:
+    """Resolve the route and context window off-loop. Warm-up skips inference-based discovery."""
     from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
     from gateway.run import (
         _best_effort, _load_gateway_config, _resolve_gateway_model, _resolve_runtime_agent_kwargs,
     )
     resolved_model = model or _resolve_gateway_model()
+    if warmup and not resolved_model:
+        return None
     config_context_length = provider = base_url = api_key = custom_providers = None
     configured_model = configured_provider = configured_base_url = None
 
@@ -49,12 +55,13 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
         except Exception:
             custom_providers = data.get("custom_providers")
 
-    def _read_runtime() -> None:
+    def _read_runtime() -> bool:
         nonlocal provider, base_url, api_key
         runtime = _resolve_runtime_agent_kwargs()
         provider = runtime.get("provider") or provider
         base_url = runtime.get("base_url") or base_url
         api_key = runtime.get("api_key")
+        return True
 
     def _pin_still_applies() -> bool:
         # Drop a configured context_length pin when the effective route no longer matches (or on error).
@@ -68,7 +75,17 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
             model=resolved_model, base_url=base_url, custom_providers=custom_providers)
 
     _best_effort(_read_config)
-    _best_effort(_read_runtime)
+    runtime_resolved = _best_effort(_read_runtime)
+    if warmup and (
+        not runtime_resolved
+        or (provider or "").lower() in {"bedrock", "moa"}
+        or (base_url and base_url_hostname(base_url).startswith("bedrock-runtime.")
+            and base_url_host_matches(base_url, "amazonaws.com"))
+    ):
+        # Bedrock discovers limits with a large synthetic Converse prompt; MoA can
+        # delegate context discovery to Bedrock. Keep these lazy, and never probe
+        # a guessed route after credential resolution failed.
+        return None
     if config_context_length is not None and not _best_effort(_pin_still_applies):
         config_context_length = None
     if config_context_length is None and custom_providers and base_url:

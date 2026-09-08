@@ -111,6 +111,7 @@ class GatewayStartupMixin:
         """Initialize turn machinery on an executor thread before the gate opens. Never raises: a
         failed warm-up degrades to lazy init and must not block startup."""
         from gateway.run import _warm_turn_machinery_sync
+        from gateway.run_model_context import _resolve_gateway_model_context
         with _log_suppressed(
             logging.WARNING, "Turn-machinery warm-up failed; first inbound turn will initialize lazily",
             exc_info=True,
@@ -122,6 +123,16 @@ class GatewayStartupMixin:
                 "Turn machinery warmed in %.1fs (%d tool schema(s) materialized)",
                 time.monotonic() - t0, tool_count,
             )
+        with _log_suppressed(
+            logging.WARNING, "Model-metadata warm-up failed; first inbound turn will initialize lazily",
+            exc_info=True,
+        ):
+            t0 = time.monotonic()
+            # to_thread preserves the active profile/secret ContextVars. Do not
+            # construct an agent here: prompts, memory and tools are session-owned.
+            resolved = await asyncio.to_thread(_resolve_gateway_model_context, warmup=True)
+            if resolved is not None:
+                logger.info("Model metadata warmed in %.1fs", time.monotonic() - t0)
 
     async def _await_startup_warmup(self) -> None:
         """Bounded wait for the boot warm-up. On timeout the gate opens anyway (availability outranks

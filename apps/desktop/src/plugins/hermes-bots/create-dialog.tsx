@@ -45,14 +45,15 @@ import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
-import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
+import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, $groupChats, uniqueGroupChatName, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupImageControls } from './group-chat-parts'
 import {
   botGroups,
   durableGroupChatMembers,
+  groupChatNames,
+  groupMemberGroupNames,
   groupMembershipPatch,
-  knownGroups,
   liveGroupChatNames
 } from './group-membership'
 import { useBots } from './i18n'
@@ -1020,15 +1021,55 @@ interface GroupDialogProps {
   onClose: () => void
 }
 
+/** Evict one member from a room's durable `members` list. groupChatMemberBots
+ *  re-seats stored room members even when bot-meta no longer names the group,
+ *  so removing a bot from a group must also drop its stored descriptor or it
+ *  keeps appearing in the room. Matches identity the same way seating does
+ *  (roster key, plus legacy friendly-name fallback). */
+function evictFromGroupRoom(group: string, bot: RosterRow): void {
+  const key = botRosterKey(bot)
+  const nameKey = String(bot?.name || '')
+    .trim()
+    .toLowerCase()
+
+  void updateGroupChat(group, (room: GroupChatRoom) => {
+    const members = Array.isArray(room?.members) ? room.members : []
+
+    room.members = members.filter(descriptor => {
+      if (!descriptor) {
+        return true
+      }
+
+      if (botRosterKey(descriptor) === key) {
+        return false
+      }
+
+      return !(
+        nameKey &&
+        String(descriptor?.name || '')
+          .trim()
+          .toLowerCase() === nameKey
+      )
+    })
+
+    return room
+  })
+}
+
 /** Assign a bot to a group-chat membership without replacing its others.
  *  Existing groups are independent toggles; the input creates and joins a new
  *  one. Canonical groups + the legacy scalar projection ride ui_meta. */
 export function GroupDialog({ bot, onClose }: GroupDialogProps) {
   const b = useBots()
   const meta = useValue($botMeta)
+  const rooms = useValue($groupChats)
   const [name, setName] = useState('')
-  const current = botGroups(botRosterMeta(bot, meta))
-  const groups = knownGroups(meta)
+  // Membership is a UNION of bot-meta `groups` AND the room record's stored
+  // members (mirrors groupChatMemberBots). Reading meta alone leaves a member
+  // that rides the room record only — after a local-only ui_meta save, or a
+  // scoped remote member — invisible here, so it could never be removed.
+  const current = groupMemberGroupNames(bot, botRosterMeta(bot, meta), rooms)
+  const groups = groupChatNames(meta, rooms)
 
   const setMembership = (group: string, enabled: boolean) => {
     void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, meta), group, enabled))
@@ -1038,6 +1079,27 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
         ? `${displayName(bot, botRosterMeta(bot, meta))} added to “${group}”`
         : `${displayName(bot, botRosterMeta(bot, meta))} removed from “${group}”`
     })
+
+    // Removal must ALSO evict the member from the room's durable `members`
+    // list. groupChatMemberBots re-seats stored room members even when bot-meta
+    // no longer names the group, so without this the bot keeps appearing in the
+    // group chat after the box is unchecked. Adding needs no room write — the
+    // Create & join flow seats via durableGroupChatMembers.
+    if (!enabled) {
+      evictFromGroupRoom(group, bot)
+    }
+  }
+
+  const removeFromAll = () => {
+    void saveBotMeta(bot, {
+      groups: [],
+      group: null
+    })
+
+    // Clear the member from every room's durable member list too.
+    for (const group of current) {
+      evictFromGroupRoom(group, bot)
+    }
   }
 
   return (
@@ -1096,12 +1158,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
         {current.length ? (
           <Button
             className="justify-self-start"
-            onClick={() =>
-              void saveBotMeta(bot, {
-                groups: [],
-                group: null
-              })
-            }
+            onClick={removeFromAll}
             size="sm"
             variant="ghost"
           >

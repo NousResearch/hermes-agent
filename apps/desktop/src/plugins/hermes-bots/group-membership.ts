@@ -366,3 +366,50 @@ export function knownGroups(metaByName: Record<string, BotMeta>) {
     })
   )
 }
+
+/** Groups a single member ACTUALLY sits in, read from BOTH sources — bot-meta
+ *  `groups` AND the room record's stored `members` — mirroring how
+ *  `groupChatMemberBots` seats the room. The settings dialog must use this
+ *  union, or a member that rides the room record alone (e.g. after a local-only
+ *  ui_meta save, or a scoped remote member) stays invisible in the
+ *  Manage-groups dialog and can never be removed back out of the group. */
+export function groupMemberGroupNames(
+  member: RosterRow,
+  meta: BotMeta | null | undefined,
+  rooms: Record<string, GroupChat>
+): string[] {
+  const names = new Set(botGroups(meta))
+  const key = botRosterKey(member)
+  const nameKey = String(member?.name || '')
+    .trim()
+    .toLowerCase()
+
+  for (const [group, room] of Object.entries(rooms || {})) {
+    if (room?.tombstone) {
+      continue
+    }
+
+    const seated =
+      Array.isArray(room?.members) &&
+      room.members.some(descriptor => {
+        if (!descriptor) {
+          return false
+        }
+
+        if (botRosterKey(descriptor) === key) {
+          return true
+        }
+
+        // Legacy/friendly-name descriptors persist the display name under
+        // `name` — fall back to a case-insensitive name match so a room-seated
+        // member whose meta dropped the group still resolves to its room.
+        return nameKey && String(descriptor?.name || '').trim().toLowerCase() === nameKey
+      })
+
+    if (seated) {
+      names.add(group)
+    }
+  }
+
+  return [...names]
+}

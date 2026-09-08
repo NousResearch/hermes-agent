@@ -16,6 +16,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway import hosted_rooms
 from gateway.config import PlatformConfig
 from gateway.hosted_room_peer import (
+    HostedRoomGrantError,
     HostedMemberDispatch,
     attachment_manifest_digest,
     decode_room_grant,
@@ -841,7 +842,7 @@ async def test_terminal_cleanup_uses_the_longer_status_grant_horizon(attachment_
         target_install_id=TARGET_INSTALL,
         target_profile="default",
         execution_policy_digest="b" * 64,
-        permissions=("status",),
+        permissions=("status", "attachment.stage"),
         issued_at=issued_at,
         ttl_seconds=60,
         status_ttl_seconds=600,
@@ -851,6 +852,11 @@ async def test_terminal_cleanup_uses_the_longer_status_grant_horizon(attachment_
         cleanup_grant,
         permission="status",
     )
+    with pytest.raises(HostedRoomGrantError):
+        decode_room_grant(
+            adapter._room_grant_secret(), cleanup_grant, permission="attachment.stage",
+        )
+    assert cleanup_claims["expires_at"] < time.time() < cleanup_claims["status_expires_at"]
     hosted_rooms.reserve_peer_room(
         hosted_rooms.default_db_path(),
         claims=cleanup_claims,

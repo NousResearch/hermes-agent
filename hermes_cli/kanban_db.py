@@ -126,7 +126,7 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # a parent awaiting release, or a deploy card awaiting approval. Nothing
 # automatic clears it: not the unblocker, not the escalator, not the
 # auto-decomposer. Only `hermes kanban unblock` by a human.
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient", "cost_cap", "operator_hold"}
+VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient", "cost_cap", "quota_cap", "operator_hold"}
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
@@ -1140,7 +1140,15 @@ class Task:
     # ``None`` = uncapped (backward compat); when set and exceeded the
     # dispatcher SIGTERMs the worker and BLOCKs the card with kind
     # ``cost_cap`` (never retried — routes to the jobsy triage lane).
+    # 2026-09-08 (C): deprecated as the enforcement axis; ``max_quota_tokens``
+    # is what the dispatcher heartbeat now reads. Kept in the row for audit.
     max_cost: Optional[float] = None
+    # Per-card token budget on cumulative worker spend (state.db session
+    # prompt+completion+reasoning). NULL = uncapped; when set and exceeded
+    # the dispatcher SIGTERMs the worker and BLOCKs the card with kind
+    # ``quota_cap``. This is the unit that binds on the ModelArk flat-rate
+    # plan (the dollar axis above is a proxy kept for audit/legacy).
+    max_quota_tokens: Optional[int] = None
     current_run_id: Optional[int] = None
     workflow_template_id: Optional[str] = None
     current_step_key: Optional[str] = None
@@ -1248,6 +1256,9 @@ class Task:
             ),
             max_cost=(
                 row["max_cost"] if "max_cost" in keys else None
+            ),
+            max_quota_tokens=(
+                row["max_quota_tokens"] if "max_quota_tokens" in keys else None
             ),
             last_heartbeat_at=(
                 row["last_heartbeat_at"] if "last_heartbeat_at" in keys else None
@@ -1426,7 +1437,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- if exceeded, SIGTERMs the worker and BLOCKs the card with kind
     -- ``cost_cap`` (never retried — it routes to the jobsy triage lane).
     -- NULL = uncapped (backward compat).
+    -- 2026-09-08 (C): DEPRECATED in favour of ``max_quota_tokens``. Kept as a
+    -- mint-time alias that converts to quota (see effective_max_quota_tokens);
+    -- enforcement now reads ``max_quota_tokens``.
     max_cost             REAL,
+    -- Per-card token budget on cumulative worker spend. INTEGER, nullable;
+    -- when set, the dispatcher compares the card's cumulative session tokens
+    -- (state.db session_model_usage prompt+completion+reasoning) against this
+    -- each heartbeat tick and, if exceeded, SIGTERMs the worker and BLOCKs the
+    -- card with kind ``quota_cap`` (never retried). This is the unit that
+    -- actually binds on the ModelArk flat-rate plan. NULL = uncapped.
+    max_quota_tokens     INTEGER,
     last_heartbeat_at    INTEGER,
     -- Pointer into task_runs for the currently-active run (NULL if no
     -- run is in-flight). Denormalised for cheap reads.
@@ -2690,6 +2711,21 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # Per-card dollar cap on cumulative worker spend. NULL = uncapped
         # (backward compat: existing cards that never had a cap keep it).
         _add_column_if_missing(conn, "tasks", "max_cost", "max_cost REAL")
+    if "max_quota_tokens" not in cols:
+        # Per-card token budget on cumulative worker spend. NULL = uncapped.
+        _add_column_if_missing(
+            conn, "tasks", "max_quota_tokens", "max_quota_tokens INTEGER"
+        )
+        # 2026-09-08 (C) one-shot backfill: existing cards carry a legacy
+        # ``max_cost`` but no quota column, so without this backfill the
+        # quota axis is NULL on every legacy card and enforcement loses its
+        # grip until each card is re-minted. The conversion rate matches
+        # ``_DOLLAR_TO_QUOTA_TOKENS_PER_USD`` (blended proxy price ~$0.20/M).
+        # Cards without ``max_cost`` stay NULL = uncapped, backward compat.
+        conn.execute(
+            "UPDATE tasks SET max_quota_tokens = CAST(max_cost * 5000000 AS INTEGER) "
+            "WHERE max_cost IS NOT NULL AND max_quota_tokens IS NULL"
+        )
     if "last_heartbeat_at" not in cols:
         _add_column_if_missing(
             conn, "tasks", "last_heartbeat_at", "last_heartbeat_at INTEGER"
@@ -3365,6 +3401,66 @@ def resolve_max_cost_hard_ceiling() -> float:
     return _resolve_cost_key("max_cost_hard_ceiling", 1.50)
 
 
+# 2026-09-08 (C): the fleet runs the ModelArk flat-rate plan, where the unit
+# that actually binds is subscription quota, not dollars. The quota resolvers
+# mirror the dollar resolvers above; `max_cost` is kept only as a mint-time
+# alias that converts to quota (see effective_max_quota_tokens).
+
+# Representative blended rate used to translate a dollar cap into a token
+# budget. Weighted by usage across the five ModelArk fleet ids at proxy
+# prices (deepseek flash/pro, glm-5-2, gpt-oss-120b, seed-2-0-lite): the
+# measured session mix is ~92% input, ~8% output on a 500k-token envelope,
+# which prices at ≈ $0.20/M blended. $1.00 / $0.20 * 1e6 = 5,000,000 tokens.
+_DOLLAR_TO_QUOTA_TOKENS_PER_USD = 5_000_000
+
+
+def resolve_default_max_quota_tokens() -> Optional[int]:
+    """Resolve the ``kanban.default_max_quota_tokens`` new-card fallback."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config() or {}).get("kanban", {}).get(
+            "default_max_quota_tokens", None
+        )
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    val = int(raw)
+    if val < 0:
+        raise ValueError("kanban.default_max_quota_tokens must be >= 0")
+    return val
+
+
+def _resolve_quota_key(key: str, fallback: int) -> int:
+    """Read an int ``kanban.<key>`` from config, falling back on any error."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config() or {}).get("kanban", {}).get(key, None)
+        if raw is None:
+            return fallback
+        val = int(raw)
+        return val if val > 0 else fallback
+    except Exception:
+        return fallback
+
+
+def resolve_max_quota_ceiling() -> int:
+    """Hardest token budget allowed on a NEW card (``kanban.max_quota_ceiling``)."""
+    return _resolve_quota_key("max_quota_ceiling", 500_000)
+
+
+def resolve_max_quota_hard_ceiling() -> int:
+    """Absolute lifetime token budget for a card including extensions."""
+    return _resolve_quota_key("max_quota_hard_ceiling", 1_000_000)
+
+
+def resolve_default_quota_extension() -> int:
+    """Default token extension granted by overwatch on a quota-cap block."""
+    return _resolve_quota_key("default_quota_extension", 500_000)
+
+
 def _profile_skills_dir(profile: Optional[str]) -> Path:
     """Where a profile's skills actually live.
 
@@ -3429,6 +3525,10 @@ def effective_max_cost(max_cost: Optional[float]) -> Optional[float]:
 
     ``None`` -> the configured default. Any value -> clamped to the new-card
     ceiling. A card that genuinely needs more gets split by Steve-o.
+
+    Deprecated 2026-09-08 (C): callers should prefer
+    :func:`effective_max_quota_tokens`. This function remains for legacy
+    surfaces that still speak dollars; the quota path converts the result.
     """
     try:
         val = resolve_default_max_cost() if max_cost is None else float(max_cost)
@@ -3438,6 +3538,45 @@ def effective_max_cost(max_cost: Optional[float]) -> Optional[float]:
         return None
     ceiling = resolve_max_cost_ceiling()
     return min(val, ceiling) if val > 0 else None
+
+
+def effective_max_quota_tokens(
+    max_quota_tokens: Optional[int] = None,
+    max_cost: Optional[float] = None,
+) -> Optional[int]:
+    """Resolve a card's token budget at mint time, on every insert path.
+
+    Precedence:
+      1. explicit ``max_quota_tokens`` (clamped to the quota ceiling);
+      2. explicit ``max_cost`` (legacy alias — converted to tokens at the
+         blended proxy rate, then clamped to the quota ceiling);
+      3. the configured ``kanban.default_max_quota_tokens`` fallback.
+
+    ``None`` is returned only when the config fallback is absent (uncapped,
+    backward compat). The conversion keeps the old dollar cap meaningful as a
+    token budget once enforcement measures quota.
+    """
+    if max_quota_tokens is not None:
+        try:
+            val = int(max_quota_tokens)
+        except (TypeError, ValueError):
+            val = 0
+        if val <= 0:
+            return None
+        return min(val, resolve_max_quota_ceiling())
+    if max_cost is not None:
+        try:
+            dollars = float(max_cost)
+        except (TypeError, ValueError):
+            dollars = 0.0
+        if dollars <= 0:
+            return None
+        tokens = int(dollars * _DOLLAR_TO_QUOTA_TOKENS_PER_USD)
+        return min(tokens, resolve_max_quota_ceiling())
+    default = resolve_default_max_quota_tokens()
+    if default is None:
+        return None
+    return min(default, resolve_max_quota_ceiling())
 
 
 def _fleet_home() -> Path:
@@ -3516,6 +3655,7 @@ def create_task(
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
     max_cost: Optional[float] = None,
+    max_quota_tokens: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
     model_override: Optional[str] = None,
@@ -3896,11 +4036,11 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
-                        max_runtime_seconds, max_cost,
+                        max_runtime_seconds, max_cost, max_quota_tokens,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
                         goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3923,6 +4063,12 @@ def create_task(
                         # create_task is covered — CLI, kanban_create tool,
                         # dashboard API, Deploy: follow-ups and swarm alike.
                         effective_max_cost(max_cost),
+                        # 2026-09-08 (C): enforcement reads this column. Token
+                        # budgets are explicit; the legacy dollar path is the
+                        # alias conversion in effective_max_quota_tokens.
+                        effective_max_quota_tokens(
+                            max_quota_tokens=max_quota_tokens, max_cost=max_cost,
+                        ),
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
                         model_override,
@@ -8173,8 +8319,8 @@ def decompose_triage_task(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
                 " workspace_path, tenant, created_at, created_by, max_cost, "
-                " block_kind) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " max_quota_tokens, block_kind) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -8191,6 +8337,9 @@ def decompose_triage_task(
                     # and reached $2.17 with no cap. Children inherit the default
                     # under the $1.00 ceiling; Steve-o re-estimates from there.
                     effective_max_cost(None),
+                    # 2026-09-08 (C): quota axis the enforcement loop now reads.
+                    # The legacy column is kept in sync for audit purposes only.
+                    effective_max_quota_tokens(),
                     child_block_kind,
                 ),
             )
@@ -9112,6 +9261,12 @@ class DispatchResult:
     These were SIGTERMed (shared teardown with the runtime-cap path) and
     blocked with kind ``cost_cap`` — never retried; they flow to the jobsy
     triage lane like other dead letters."""
+    quota_capped: list[str] = field(default_factory=list)
+    """Task ids whose cumulative token spend exceeded ``max_quota_tokens``
+    (2026-09-08 / option C). The dispatch tick runs both ``enforce_max_cost``
+    and ``enforce_max_quota``; whichever fires first blocks the card. The
+    legacy dollar axis stays so existing cards do not regress; new cards use
+    the quota axis at mint time."""
     stale: list[str] = field(default_factory=list)
     """Task ids reclaimed because no progress (heartbeat) was seen
     within ``dispatch_stale_timeout_seconds``."""
@@ -10101,6 +10256,88 @@ def _cumulative_session_cost(state_db_path, workspace, task_id=None, all_ledgers
     return _session_cost_in_db(str(state_db_path), prefix_for=workspace, task_id=None)
 
 
+def _cumulative_session_tokens(
+    state_db_path, workspace, task_id=None, all_ledgers=False,
+) -> int:
+    """Sum ``prompt+completion+reasoning`` tokens across a card's worker sessions.
+
+    Mirror of :func:`_cumulative_session_cost` for the new quota tripwire
+    (2026-09-08 / option C). Reads the assignee's own ledger only by default,
+    matching the overwatch policy on the dollar axis (09-06 C1).
+
+    The token sum is the unit that actually binds on the ModelArk flat-rate
+    plan. Cache reads are included in ``prompt_tokens`` on the ModelArk API
+    (cached tokens are part of the inclusive total), so we don't need to add
+    a separate ``cache_read_tokens`` column.
+    """
+    if not workspace and not task_id:
+        return 0
+    if task_id:
+        total = 0
+        seen = set()
+        try:
+            roots = []
+            if all_ledgers:
+                hermes_home = Path(os.path.expanduser("~/.hermes"))
+                roots.append(hermes_home / "state.db")
+                roots.extend(sorted((hermes_home / "profiles").glob("*/state.db")))
+            if state_db_path:
+                roots.append(Path(str(state_db_path)))
+            for db in roots:
+                key = str(db)
+                if key in seen or not os.path.isfile(key):
+                    continue
+                seen.add(key)
+                total += _session_tokens_in_db(
+                    key, prefix_for=workspace, task_id=task_id,
+                )
+        except Exception:
+            return 0
+        return total
+    if not state_db_path or not os.path.isfile(str(state_db_path)):
+        return 0
+    return _session_tokens_in_db(str(state_db_path), prefix_for=workspace, task_id=None)
+
+
+def _session_tokens_in_db(state_db_path, prefix_for=None, task_id=None) -> int:
+    """Sum tokens for matching sessions inside ONE state.db. Fail-open."""
+    prefix = str(prefix_for).rstrip("/\\") if prefix_for else ""
+    try:
+        sconn = sqlite3.connect(
+            f"file:{state_db_path}?mode=ro", uri=True, timeout=10,
+        )
+        sconn.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return 0
+    try:
+        clauses, params = [], []
+        if prefix:
+            clauses.append("(s.cwd = ? OR s.cwd LIKE ? ESCAPE '\\')")
+            params += [prefix, _escape_like(prefix) + "/%"]
+        if task_id:
+            clauses.append("s.title LIKE ? ESCAPE '\\'")
+            params.append("%" + _escape_like(str(task_id)) + "%")
+        if not clauses:
+            return 0
+        where = " OR ".join(clauses)
+        row = sconn.execute(
+            "SELECT COALESCE(SUM("
+            "  COALESCE(u.input_tokens, 0)"
+            "  + COALESCE(u.output_tokens, 0)"
+            "  + COALESCE(u.reasoning_tokens, 0)"
+            "), 0) AS total "
+            "FROM sessions s "
+            "JOIN session_model_usage u ON u.session_id = s.id "
+            f"WHERE {where}",
+            params,
+        ).fetchone()
+        return int(row["total"]) if row and row["total"] is not None else 0
+    except sqlite3.Error:
+        return 0
+    finally:
+        sconn.close()
+
+
 def _session_cost_in_db(state_db_path, prefix_for=None, task_id=None) -> float:
     """Sum matching session cost inside ONE state.db. Fail-open on any error."""
     prefix = str(prefix_for).rstrip("/\\") if prefix_for else ""
@@ -10202,6 +10439,74 @@ def set_task_max_cost(
     return new_cap
 
 
+def set_task_max_quota(
+    conn: sqlite3.Connection,
+    task_id: str,
+    new_cap: int,
+    *,
+    by: str,
+    reason: str = "",
+) -> int:
+    """Raise a card's quota cap ONCE, to at most ``kanban.max_quota_hard_ceiling``.
+
+    2026-09-08 (C): the overwatch extension on the quota axis. Smith extends
+    a breached card once by up to the configured default (500_000 tokens),
+    ceiling 500_000 -> hard ceiling 1_000_000. A second extension is refused
+    — a second breach on one card is the deeper-error signal that goes to
+    Richie. Records a ``quota-extension:`` comment on the card so the ledger
+    review can see it. Returns the cap set.
+
+    Mirrors :func:`set_task_max_cost`. Both arms exist; whichever the
+    escalator chooses records an audit comment, and the legacy dollar column
+    is left untouched on quota extensions (and vice versa).
+    """
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    hard = resolve_max_quota_hard_ceiling()
+    try:
+        new_cap = int(new_cap)
+    except (TypeError, ValueError):
+        raise ValueError(f"cap must be an int, got {new_cap!r}")
+    if new_cap <= 0:
+        raise ValueError("cap must be > 0")
+    if new_cap > hard:
+        raise ValueError(
+            f"cap {new_cap} tokens exceeds the hard ceiling {hard}; "
+            "only Richie can move a card past it (split it instead)"
+        )
+    old = task.max_quota_tokens
+    prior = conn.execute(
+        "SELECT COUNT(*) FROM task_comments "
+        "WHERE task_id = ? AND body LIKE 'quota-extension:%'",
+        (task_id,),
+    ).fetchone()[0]
+    if prior:
+        raise ValueError(
+            "this card has already been extended once; a second breach stays "
+            "blocked for Richie (overwatch rule)"
+        )
+    if old is not None and new_cap <= int(old):
+        raise ValueError(
+            f"cap {new_cap} is not above the current {int(old)}"
+        )
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET max_quota_tokens = ? WHERE id = ?",
+            (new_cap, task_id),
+        )
+        old_repr = str(int(old)) if old is not None else "(none)"
+        body = f"quota-extension: {old_repr} -> {new_cap} tokens by {by}"
+        if reason:
+            body += f"\nreason: {reason}"
+        add_comment(conn, task_id, author=by, body=body)
+        _append_event(
+            conn, task_id, "quota_cap_extended",
+            {"by": by, "old": old, "new": new_cap, "reason": reason},
+        )
+    return new_cap
+
+
 def enforce_max_cost(
     conn: sqlite3.Connection,
     *,
@@ -10298,6 +10603,95 @@ def enforce_max_cost(
             _log.warning("kanban cost-cap: comment write failed for %s: %s", tid, exc)
         cost_capped.append(tid)
     return cost_capped
+
+
+def enforce_max_quota(
+    conn: sqlite3.Connection,
+    *,
+    signal_fn=None,
+    state_db_path=None,
+) -> list[str]:
+    """Block workers whose cumulative token spend exceeded ``max_quota_tokens``.
+
+    2026-09-08 (option C): the quota tripwire. Mirrors :func:`enforce_max_cost`
+    but compares cumulative ``input_tokens + output_tokens + reasoning_tokens``
+    across the card's worker sessions against ``tasks.max_quota_tokens``. When
+    the cumulative total exceeds the cap:
+
+      1. the host-local worker is SIGTERMed (then SIGKILLed after the grace
+         window) via the SAME shared teardown the runtime-cap path and stale
+         reclaim use — no second teardown implementation;
+      2. the card is BLOCKED with ``kind='quota_cap'``.
+
+    Runs alongside ``enforce_max_cost`` each tick (whichever fires first wins;
+    the dollar axis is kept for legacy cards). Same dead-letter routing:
+    ``quota_cap`` blocks are never re-queued, and the dependency-gate watchdog
+    carries them to the jobsy triage lane.
+
+    Fail-open on any ledger problem (a card with no workspace, no ledger, or
+    an unreadable state.db is treated as 0 tokens and left running) so a
+    ledger bug never fakes a false positive.
+
+    ``signal_fn`` and ``state_db_path`` are test hooks.
+    """
+    quota_capped: list[str] = []
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+
+    rows = conn.execute(
+        "SELECT t.id, t.worker_pid, t.assignee, t.workspace_path, "
+        "       t.max_quota_tokens, t.claim_lock "
+        "FROM tasks t "
+        "WHERE t.status = 'running' AND t.max_quota_tokens IS NOT NULL "
+        "  AND t.claim_lock IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        lock = row["claim_lock"] or ""
+        if not lock.startswith(host_prefix):
+            continue
+        workspace = row["workspace_path"]
+        if not workspace:
+            continue
+        cap = int(row["max_quota_tokens"])
+        tokens = _cumulative_session_tokens(
+            state_db_path or _state_db_path_for_assignee(row["assignee"]),
+            workspace,
+            task_id=row["id"],
+            all_ledgers=False,
+        )
+        if tokens <= cap:
+            continue
+
+        tid = row["id"]
+        pid = row["worker_pid"]
+        termination = _terminate_reclaimed_worker(
+            pid, row["claim_lock"], signal_fn=signal_fn,
+        )
+        sigkill_used = bool(termination.get("sigkill"))
+        worker_survived = bool(
+            termination.get("termination_attempted")
+            and not termination.get("terminated")
+        )
+        reason = (
+            f"cumulative tokens {tokens} exceeded max_quota_tokens {cap}"
+        )
+
+        blocked = block_task(conn, tid, reason=reason, kind="quota_cap")
+        if not blocked:
+            _log.debug("kanban quota-cap: %s left running before block", tid)
+        try:
+            add_comment(
+                conn, tid, author="dispatcher",
+                body=(
+                    f"quota cap tripped ({reason}). "
+                    f"Worker PID {pid or '(none)'} "
+                    f"{'SIGKILLed' if sigkill_used else 'SIGTERMed'};"
+                    f"{' worker survived termination' if worker_survived else ''}"
+                ),
+            )
+        except Exception as exc:  # pragma: no cover - never fail the tick
+            _log.warning("kanban quota-cap: comment write failed for %s: %s", tid, exc)
+        quota_capped.append(tid)
+    return quota_capped
 
 
 # Heartbeat staleness heartbeat gap — if a running task hasn't sent a
@@ -11877,6 +12271,10 @@ def _dispatch_once_locked(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.cost_capped = enforce_max_cost(conn)
+    # 2026-09-08 (C): run the quota axis each tick alongside the dollar axis.
+    # Whichever fires first blocks the card. Existing cards still bind on
+    # dollars; new cards bind on tokens (or both if both are set).
+    result.quota_capped = enforce_max_quota(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather

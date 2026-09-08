@@ -2970,8 +2970,22 @@ DEFAULT_CONFIG = {
     # Steve-o may grant at most two extensions to a card that breaks its cap,
     # up to max_cost_hard_ceiling in total. A third break is never extended —
     # the card blocks and Richie decides (Slack + iMessage).
+    # 2026-09-08 (C): the quota axis supersedes dollars. Existing config keys
+    # stay for backward compat; new cards use the keys below by default. The
+    # dollar path becomes a mint-time alias.
     "max_cost_ceiling": 1.00,
     "max_cost_hard_ceiling": 1.50,
+        # Per-card token budget on cumulative worker spend (the unit that
+        # actually binds on the ModelArk flat-rate plan). Same envelope as
+        # the dollar caps above: a new card may not exceed
+        # ``max_quota_ceiling``; one extension to ``max_quota_hard_ceiling``;
+        # second breach stays blocked. Tokens are prompt+completion+reasoning
+        # summed across the card's worker sessions in state.db.
+        "default_max_quota_tokens": 500000,
+        "max_quota_ceiling": 500000,
+        "max_quota_hard_ceiling": 1000000,
+        # Default extension size granted by overwatch on a quota-cap block.
+        "default_quota_extension": 500000,
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
         # raise these to keep more early failure evidence.

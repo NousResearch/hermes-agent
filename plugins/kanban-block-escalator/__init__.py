@@ -21,7 +21,7 @@ were ``operator_hold`` by design and 28 dependency waits that needed nobody;
 14 cost breaches each spawned ~4 more cards.
 
 Triggers (read from the board, never from substrings of the reason text):
-  cost_cap, capability, needs_input          -> always
+  cost_cap, quota_cap, capability, needs_input          -> always
   transient                                  -> on the SECOND occurrence
 Never: operator_hold (Richie's decision), dependency (self-resumes),
 scheduled (a date, not a fault).
@@ -29,7 +29,11 @@ scheduled (a date, not a fault).
 Hard stops (no overwatch; ceiling marker for escalation-watch -> Richie):
   * the card already carries TWO overwatch decisions;
   * a cost_cap block on a card that was already extended once, or whose cap
-    is already at kanban.max_cost_hard_ceiling.
+    is already at kanban.max_cost_hard_ceiling;
+  * a quota_cap block on a card that was already extended once, or whose
+    cap is already at kanban.max_quota_hard_ceiling. The quota axis is
+    what the dispatcher heartbeat now reads (option C, 2026-09-08); the
+    overwatch extension here is `hermes kanban set-quota <id> <tokens>`.
 On a hard stop ONE more Smith session is spawned with the RUNDOWN prompt:
 write the rundown as a comment; escalation-watch (15 min, iMessage + Slack)
 carries it to Richie.
@@ -58,13 +62,19 @@ DEFAULT_ASSESSOR = OVERWATCH   # kept for older tools that import the name
 RUNTIME_ASSESSOR = OVERWATCH
 COST_ASSESSOR = OVERWATCH      # Steve-o no longer adjudicates spend (2026-09-06)
 
-ALWAYS_TRIGGER_KINDS = frozenset({"cost_cap", "capability", "needs_input"})
+ALWAYS_TRIGGER_KINDS = frozenset({"cost_cap", "quota_cap", "capability", "needs_input"})
 NEVER_TRIGGER_KINDS = frozenset({"operator_hold", "dependency", "scheduled"})
 TRANSIENT_TRIGGER_AFTER = 1     # first transient retries; second triggers
 
 OVERWATCH_LIMIT = 2             # overwatch touches per card before Richie
 OVERWATCH_MARKER = "overwatch:"  # Smith's decision comment must start with this
+# 2026-09-08 (C): one-extension rule shared across the cost and quota axes —
+# any card with either ``cost-extension:`` or ``quota-extension:`` in its
+# comments is treated as already extended and goes to RUNDOWN on the next
+# breach. Kept as one marker family so a card's lifetime extension count
+# is the sum of both axes.
 EXTENSION_MARKER = "cost-extension:"
+QUOTA_EXTENSION_MARKER = "quota-extension:"
 CEILING_MARKER = "escalation-ceiling"
 RUNDOWN_MARKER = "rundown:"
 NON_COST_TRIAGE_LIMIT = OVERWATCH_LIMIT  # name kept for escalation-watch
@@ -129,6 +139,24 @@ def _hard_ceiling() -> float:
         return HARD_CEILING_FALLBACK
 
 
+def _quota_hard_ceiling() -> int:
+    try:
+        from hermes_cli import kanban_db  # type: ignore
+
+        return int(kanban_db.resolve_max_quota_hard_ceiling())
+    except Exception:  # noqa: BLE001
+        return 1_000_000
+
+
+def _quota_extension_default() -> int:
+    try:
+        from hermes_cli import kanban_db  # type: ignore
+
+        return int(kanban_db.resolve_default_quota_extension())
+    except Exception:  # noqa: BLE001
+        return 500_000
+
+
 def _recurrences(task_id: str) -> int:
     card = _card(task_id)
     try:
@@ -152,12 +180,13 @@ def should_trigger(card: dict) -> tuple[bool, str]:
 
 
 def is_hard_stop(task_id: str, card: dict) -> tuple[bool, str]:
-    """Second overwatch on one card, or a cost breach past the extension."""
+    """Second overwatch on one card, or a cost/quota breach past the extension."""
     n = _count_comments(task_id, OVERWATCH_MARKER, author=OVERWATCH)
     if n >= OVERWATCH_LIMIT:
         return True, f"{n} overwatch decisions already on this card"
     if (card.get("block_kind") or "") == "cost_cap":
-        if _count_comments(task_id, EXTENSION_MARKER) >= 1:
+        if (_count_comments(task_id, EXTENSION_MARKER)
+                + _count_comments(task_id, QUOTA_EXTENSION_MARKER)) >= 1:
             return True, "cost cap breached again after the one allowed extension"
         try:
             cap = float(card.get("max_cost") or 0)
@@ -165,6 +194,16 @@ def is_hard_stop(task_id: str, card: dict) -> tuple[bool, str]:
             cap = 0.0
         if cap and cap >= _hard_ceiling() - 1e-9:
             return True, f"cap ${cap:.2f} is already at the hard ceiling"
+    if (card.get("block_kind") or "") == "quota_cap":
+        if (_count_comments(task_id, EXTENSION_MARKER)
+                + _count_comments(task_id, QUOTA_EXTENSION_MARKER)) >= 1:
+            return True, "quota cap breached again after the one allowed extension"
+        try:
+            cap = int(card.get("max_quota_tokens") or 0)
+        except Exception:  # noqa: BLE001
+            cap = 0
+        if cap and cap >= _quota_hard_ceiling():
+            return True, f"quota cap {cap} tokens is already at the hard ceiling"
     return False, ""
 
 
@@ -177,7 +216,7 @@ def _brief(task_id: str, card: dict) -> tuple[str, str]:
             lines += [f"title: {card.get('title')}",
                       f"status: {card.get('status')}  block_kind: {card.get('block_kind')}  recurrences: {card.get('block_recurrences')}",
                       f"assignee: {card.get('assignee')}  created_by: {card.get('created_by')}  tenant: {card.get('tenant')}",
-                      f"cap: {card.get('max_cost')}  workspace: {card.get('workspace_kind')} {card.get('workspace_path')}", ""]
+                      f"max_cost: {card.get('max_cost')}  max_quota_tokens: {card.get('max_quota_tokens')}  workspace: {card.get('workspace_kind')} {card.get('workspace_path')}", ""]
             body = (card.get("body") or "").strip()
             lines += ["## body (head)", body[:1500], ""]
             parents = [r[0] for r in con.execute("SELECT parent_id FROM task_links WHERE child_id=?", (task_id,))]
@@ -212,7 +251,18 @@ def _brief(task_id: str, card: dict) -> tuple[str, str]:
             kanban_db._state_db_path_for_assignee(card.get("assignee")), card.get("workspace_path"),
             task_id=task_id, all_ledgers=False)
         life = kanban_db._cumulative_session_cost(None, card.get("workspace_path"), task_id=task_id, all_ledgers=True)
-        lines += ["", f"spend: assignee ${own:.2f} / lifetime all ledgers ${life:.2f} / cap {card.get('max_cost')}"]
+        try:
+            tokens = kanban_db._cumulative_session_tokens(
+                kanban_db._state_db_path_for_assignee(card.get("assignee")),
+                card.get("workspace_path"), task_id=task_id, all_ledgers=False,
+            )
+        except Exception:  # noqa: BLE001
+            tokens = 0
+        lines += [
+            "",
+            f"spend: assignee ${own:.2f} / lifetime all ledgers ${life:.2f} / max_cost {card.get('max_cost')}",
+            f"tokens: assignee {tokens} / max_quota_tokens {card.get('max_quota_tokens')}",
+        ]
     except Exception:  # noqa: BLE001
         pass
     text = "\n".join(lines)
@@ -246,11 +296,14 @@ AUTHORITY = (
     "YOUR AUTHORITY (Richie, 2026-09-06). You MAY: comment, unblock, reassign, split the card "
     "via Jobsy, archive duplicates, rescope, put on hold, open a HELD platform card, and — for a "
     "cost_cap block — extend the cap ONCE by at most $0.50 with `hermes kanban set-cap <id> <cap> "
-    "--reason ...` (hard ceiling $1.50). You may NOT, while cards are running: commit platform "
-    "code, restart a gateway, edit a SOUL, waive a review or test gate, raise a cap past $1.50, "
-    "or create a card assigned to yourself. A defective gate is a held platform card, not an "
-    "exemption. Finish quickly, hygienically and cheaply, keeping every agreed review and test "
-    "gate. Your FIRST comment on the card must start with `overwatch:` and state the decision "
+    "--reason ...` (hard ceiling $1.50), OR — for a quota_cap block — extend ONCE by at most "
+    "`kanban.default_quota_extension` tokens with `hermes kanban set-quota <id> <tokens> --reason ...` "
+    "(hard ceiling `kanban.max_quota_hard_ceiling` tokens; the quota axis is the one the dispatcher "
+    "heartbeat reads, 2026-09-08 / option C). You may NOT, while cards are running: commit platform "
+    "code, restart a gateway, edit a SOUL, waive a review or test gate, raise a cap past the "
+    "hard ceiling, or create a card assigned to yourself. A defective gate is a held platform card, "
+    "not an exemption. Finish quickly, hygienically and cheaply, keeping every agreed review and "
+    "test gate. Your FIRST comment on the card must start with `overwatch:` and state the decision "
     "and its evidence — that comment is how the board counts your interventions."
 )
 

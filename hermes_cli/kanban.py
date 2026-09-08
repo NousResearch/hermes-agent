@@ -81,6 +81,8 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "max_cost": t.max_cost,
+        "max_quota_tokens": t.max_quota_tokens,
     }
 
 
@@ -394,13 +396,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "and re-queues the task.")
     p_create.add_argument("--max-cost", type=float, default=None,
                           metavar="USD",
-                          help="Per-card dollar cap on cumulative worker spend. "
-                               "When the card's session costs in state.db "
-                               "exceed this, the dispatcher SIGTERMs the worker "
-                               "and BLOCKs the card with kind=cost_cap (never "
-                               "retried — routes to the jobsy triage lane). "
-                               "Omit to use kanban.default_max_cost in config "
+                          help="DEPRECATED alias (2026-09-08). Per-card dollar cap "
+                               "on cumulative worker spend; converted to a token "
+                               "budget at mint time (effective_max_quota_tokens) "
+                               "and recorded in max_cost for audit. Prefer "
+                               "--max-quota-tokens. Omit to use "
+                               "kanban.default_max_cost in config "
                                "(None/absent = uncapped).")
+    p_create.add_argument("--max-quota-tokens", type=int, default=None,
+                          metavar="TOKENS",
+                          help="Per-card token budget on cumulative worker spend. "
+                               "The dispatcher compares "
+                               "(prompt+completion+reasoning) across the card's "
+                               "worker sessions against this each heartbeat tick "
+                               "and, when exceeded, SIGTERMs the worker and BLOCKs "
+                               "the card with kind=quota_cap (never retried — "
+                               "routes to the jobsy triage lane). Omit to use "
+                               "kanban.default_max_quota_tokens in config "
+                               "(None/absent = uncapped). Wins over --max-cost.")
     p_create.add_argument("--created-by", default="user",
                           help="Author name recorded on the task (default: user)")
     p_create.add_argument("--skill", action="append", default=[], dest="skills",
@@ -708,11 +721,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     p_setcap = sub.add_parser(
         "set-cap",
-        help="Overwatch extension: raise a card's cost cap ONCE, to at most kanban.max_cost_hard_ceiling (2026-09-06)",
+        help="DEPRECATED alias: raise a card's cost cap ONCE. Prefer set-quota "
+             "(2026-09-08 / option C — the quota axis is what enforcement reads). "
+             "Cap is in USD, <= hard ceiling 1.50.",
     )
     p_setcap.add_argument("task_id")
     p_setcap.add_argument("cap", type=float, help="new cap in USD (<= hard ceiling, default 1.50)")
     p_setcap.add_argument("--reason", default="", help="why the extension is justified — recorded on the card")
+
+    p_setquota = sub.add_parser(
+        "set-quota",
+        help="Overwatch extension: raise a card's quota cap ONCE, to at most "
+             "kanban.max_quota_hard_ceiling (default 1_000_000 tokens). The "
+             "dispatcher heartbeat reads this column; one extension per card; "
+             "a second breach stays blocked for Richie.",
+    )
+    p_setquota.add_argument("task_id")
+    p_setquota.add_argument("cap", type=int, help="new cap in tokens (<= hard ceiling, default 1_000_000)")
+    p_setquota.add_argument("--reason", default="", help="why the extension is justified — recorded on the card")
 
     p_request_review = sub.add_parser(
         "request-review",
@@ -1197,6 +1223,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
             "set-cap":  _cmd_set_cap,
+            "set-quota": _cmd_set_quota,
             "request-review": _cmd_request_review,
             "request-changes": _cmd_request_changes,
             "reopen-review":  _cmd_reopen_review,
@@ -1707,6 +1734,22 @@ def _cmd_create(args: argparse.Namespace) -> int:
         if max_cost < 0:
             print("kanban: max cost must be >= 0", file=sys.stderr)
             return 2
+    # 2026-09-08 (C): the quota axis the dispatcher heartbeat reads. Explicit
+    # --max-quota-tokens wins over --max-cost (which becomes the legacy alias
+    # — converted at mint time by effective_max_quota_tokens inside create_task).
+    max_quota_tokens = getattr(args, "max_quota_tokens", None)
+    if max_quota_tokens is not None:
+        try:
+            max_quota_tokens = int(max_quota_tokens)
+        except (TypeError, ValueError):
+            print(
+                f"kanban: invalid --max-quota-tokens {max_quota_tokens!r}",
+                file=sys.stderr,
+            )
+            return 2
+        if max_quota_tokens < 0:
+            print("kanban: max quota tokens must be >= 0", file=sys.stderr)
+            return 2
     max_retries = getattr(args, "max_retries", None)
     if max_retries is not None and max_retries < 1:
         print(
@@ -1734,6 +1777,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime,
             max_cost=max_cost,
+            max_quota_tokens=max_quota_tokens,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
             model_override=getattr(args, "model_override", None),
@@ -1757,8 +1801,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
     else:
         print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
-        if task.max_cost is not None:
-            print(f"  max_cost=${task.max_cost:.2f}")
+        if task.max_quota_tokens is not None:
+            print(f"  max_quota_tokens={task.max_quota_tokens}")
+        elif task.max_cost is not None:
+            print(f"  max_cost=${task.max_cost:.2f}  (alias converted to tokens)")
 
         # Warn when the task would sit in `ready` because no dispatcher is
         # present. Only warn on ready+assigned tasks — triage/todo are
@@ -2608,6 +2654,25 @@ def _cmd_set_cap(args: argparse.Namespace) -> int:
         print(f"set-cap refused: {exc}", file=sys.stderr)
         return 1
     print(f"Cap on {args.task_id} set to ${cap:.2f} by {author}")
+    return 0
+
+
+def _cmd_set_quota(args: argparse.Namespace) -> int:
+    """Overwatch extension on the quota axis (2026-09-08 / option C).
+
+    Mirrors :func:`_cmd_set_cap` but uses :func:`kb.set_task_max_quota`. The
+    same single-extension rule applies: a second breach stays blocked for
+    Richie (escalation-ceiling marker).
+    """
+    author = _profile_author()
+    try:
+        with kb.connect_closing() as conn:
+            cap = kb.set_task_max_quota(conn, args.task_id, args.cap, by=author,
+                                        reason=(args.reason or "").strip())
+    except ValueError as exc:
+        print(f"set-quota refused: {exc}", file=sys.stderr)
+        return 1
+    print(f"Quota on {args.task_id} set to {cap} tokens by {author}")
     return 0
 
 

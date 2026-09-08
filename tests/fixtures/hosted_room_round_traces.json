@@ -1,0 +1,155 @@
+{
+  "comment": [
+    "Shared scripted round traces. The native Desktop round driver",
+    "(apps/desktop/src/plugins/hermes-bots/group-rounds.ts, driven through group-test-utils'",
+    "scripted gateway) and the hosted-room policy (gateway/hosted_room_discussion.py, driven",
+    "through its planner and checkpoint on an isolated store) both run these exact scripts.",
+    "Each scenario compares the COMPLETE ordered speaker trace, not a first responder or a count,",
+    "plus the input delta a resumed member actually receives.",
+    "'user' messages are sent one at a time, each drive awaited before the next. 'replies' gives",
+    "each member's scripted answers in order; a member that runs out of lines passes.",
+    "'speakers' is the ordered list of committed member messages. Handles equal member names so",
+    "both mention resolvers address the same members."
+  ],
+  "members": [
+    {"member_id": "member-a", "handle": "a"},
+    {"member_id": "member-b", "handle": "b"},
+    {"member_id": "member-c", "handle": "c"},
+    {"member_id": "member-d", "handle": "d"}
+  ],
+  "scenarios": [
+    {
+      "name": "unmentioned discussion keeps both members answering later rounds",
+      "group": "Discuss",
+      "members": ["a", "b"],
+      "user": ["Discuss the rollout"],
+      "replies": {
+        "a": ["A first take", "A second take", "A third take"],
+        "b": ["B first take", "B second take", "B third take"]
+      },
+      "comment": [
+        "Round 0 dispatches the rotated roster a,b. Round 1 rotates to b,a: b has no new delta",
+        "after its own last reply and is skipped at group-rounds.ts:573-579, so a answers b.",
+        "Round 2 rotates back to a,b and the same rule skips a. The round cap ends the drive.",
+        "Hosted settles after round 0 today: that is the participation gap this pins."
+      ],
+      "speakers": ["a", "b", "a", "b"]
+    },
+    {
+      "name": "a peer handoff lets the original member answer the substantive reply",
+      "group": "Handoff",
+      "members": ["a", "b"],
+      "user": ["@a lead this"],
+      "replies": {
+        "a": ["@b can you confirm the wording?", "A reviews B's answer"],
+        "b": ["B substantive answer with no mention"]
+      },
+      "speakers": ["a", "b", "a"]
+    },
+    {
+      "name": "a held member does not take the slot rotation gives it",
+      "group": "Order",
+      "members": ["a", "b", "c", "d"],
+      "user": ["@a stop", "@all discuss"],
+      "replies": {
+        "a": ["A must never speak while held"],
+        "b": ["@all B one", "@all B two"],
+        "c": ["@all C one", "@all C two"],
+        "d": ["@all D one", "@all D two"]
+      },
+      "speakers": ["b", "c", "d", "b", "c", "d"]
+    },
+    {
+      "name": "a released member still sees the context addressed to its peer",
+      "group": "Resume",
+      "members": ["a", "b"],
+      "user": ["@a stop", "@b context-marker", "@a resume"],
+      "replies": {
+        "a": ["A speaks after the release"],
+        "b": ["B acknowledges the marker"]
+      },
+      "speakers": ["b", "a"],
+      "resumed_delta": {
+        "member": "a",
+        "must_contain": ["context-marker", "B acknowledges the marker"]
+      }
+    },
+    {
+      "name": "a citation nobody answered still owes a turn when a later round goes quiet",
+      "comment": [
+        "The first discussion leaves a's citation of b unresolved because b says nothing. The",
+        "second same-thread message addresses only a, whose ordinary round then has nothing to",
+        "say. Recovery drives the cited member; here it passes too, so the room settles.",
+        "'replies' is keyed by user message so b's script cannot be consumed by the first",
+        "discussion's turns."
+      ],
+      "group": "Recovery",
+      "members": ["a", "b"],
+      "user": ["@a lead this", "@a status?"],
+      "replies": {
+        "a": {"1": ["@b please confirm"], "2": ["(pass)"]},
+        "b": {"1": ["(pass)"], "2": ["(pass)"]}
+      },
+      "speakers": ["a"],
+      "dispatch": ["a", "b", "a", "b"],
+      "phases": [
+        ["a", "ordinary", 0], ["b", "ordinary", 1],
+        ["a", "ordinary", 0], ["b", "continuation", 0]
+      ],
+      "outcome": "settled"
+    },
+    {
+      "name": "a productive recovery answers the old citation and the room continues",
+      "group": "Recovered",
+      "members": ["a", "b"],
+      "user": ["@a lead this", "@a status?"],
+      "replies": {
+        "a": {"1": ["@b please confirm"], "2": ["(pass)"]},
+        "b": {"1": ["(pass)"], "2": ["B finally answers"]}
+      },
+      "speakers": ["a", "b"],
+      "comment_dispatch": [
+        "The recovery turn is productive, so the drive does not settle on it: an ordinary round",
+        "follows and offers the turn back to a, which now has the new answer in its delta."
+      ],
+      "dispatch": ["a", "b", "a", "b", "a"],
+      "phases": [
+        ["a", "ordinary", 0], ["b", "ordinary", 1],
+        ["a", "ordinary", 0], ["b", "continuation", 0], ["a", "ordinary", 1]
+      ],
+      "outcome": "settled"
+    },
+    {
+      "name": "a held member owed a recovery turn is skipped by both engines",
+      "comment": [
+        "b is paused, cited by a peer, and then owed a recovery turn when a later round goes",
+        "quiet. Neither engine may give it that turn while the hold stands."
+      ],
+      "group": "HeldRecovery",
+      "members": ["a", "b"],
+      "user": ["@b stop", "@a lead this", "@a status?"],
+      "replies": {"a": {"2": ["@b please confirm"], "3": ["(pass)"]}, "b": {}},
+      "speakers": ["a"],
+      "dispatch": ["a", "a"],
+      "phases": [["a", "ordinary", 0], ["a", "ordinary", 0]],
+      "outcome": "settled",
+      "unread": {"member": "b", "read": "@b please confirm", "waiting": "@a status?"}
+    },
+    {
+      "name": "a broadcast reply leaves no handoff for either engine to recover",
+      "comment": [
+        "The accepted old-citation recovery shape with the citation replaced by `@all`: if a",
+        "broadcast were read as citing everyone, the quiet second discussion would dispatch a",
+        "recovery turn exactly where the explicit-citation vector does."
+      ],
+      "group": "Broadcast",
+      "members": ["a", "b"],
+      "user": ["@a lead this", "@a status?"],
+      "replies": {"a": {"1": ["@all thanks everyone"], "2": ["(pass)"]}, "b": {}},
+      "speakers": ["a"],
+      "dispatch": ["a", "b", "a"],
+      "phases": [["a", "ordinary", 0], ["b", "ordinary", 1], ["a", "ordinary", 0]],
+      "outcome": "settled"
+    }
+  ]
+}

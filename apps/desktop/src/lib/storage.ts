@@ -26,13 +26,14 @@ function emitPersistence(event: PersistenceEvent) {
   }
 }
 
-/** Raw read. Returns null when absent or storage is unavailable. */
-export function readKey(key: string): null | string {
+/** Raw read. Strict migrations propagate storage errors instead of treating them as absence. */
+export function readKey(key: string, strict = false): null | string {
   let value: null | string = null
 
   try {
     value = window.localStorage.getItem(key)
-  } catch {
+  } catch (error) {
+    if (strict) {throw error}
     // Restricted contexts (private mode, disabled storage) read as absent.
   }
 

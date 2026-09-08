@@ -17,15 +17,20 @@ method = _registry.method
 #: Wire order of ``groups.capabilities.methods``; every one runs on the RPC pool.
 _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
+    "groups.attachment.put", "groups.attachment.list", "groups.attachment.read",
     "groups.rename", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
     "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
-    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register")
+    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register",
+    "groups.telegram.resolve_delivery")
 LONG_HANDLERS = frozenset(_METHODS)
 
 _service_lock = threading.Lock()
 _run_store_lock = threading.Lock()
 _bound_server = None
 _service = None
+_transport = None
+_UNBOUND_BINDING = object()
+_binding = _UNBOUND_BINDING
 
 _WORKER_UNAVAILABLE = "Group Chat worker is unavailable. Restart the Hermes gateway and try again."
 _DRIVER_UNAVAILABLE = "hosted room driver is unavailable"
@@ -38,28 +43,98 @@ def bind_server(server) -> None:
     server._profile_execution_policy = _profile_execution_policy
 
 
-def start_hosted_room_service():
-    """Start one process-owned hosted room service idempotently."""
-    global _service
+def _stop_room_transport(*, timeout: float = 5.0) -> bool:
+    """Stop the transport companion, keeping its handle unless it actually ceased.
+
+    A companion that did not stop is still able to publish, so forgetting it here would leave an
+    unowned worker behind exactly where the service contract refuses to.
+    """
+    global _transport
+    transport = _transport
+    if transport is None:
+        return True
+    stopped = bool(transport.stop(timeout=timeout))
+    if stopped and _transport is transport:
+        _transport = None
+    return stopped
+
+
+def start_hosted_room_service(*, cancel_event=None):
+    """Start one process-owned hosted room service, and its optional transport, idempotently."""
+    global _service, _transport, _binding
     if _bound_server is None:
         return None
     from gateway.hosted_rooms import default_db_path
+    from hermes_constants import get_default_hermes_root
     from tui_gateway.hosted_room_service import HostedRoomService
     db_path = default_db_path()
+    # Validated before anything is started: a broken binding must not take down a room that is
+    # already serving, nor start a worker this gateway cannot describe.
+    from plugins.platforms.telegram.hosted_room_transport import (
+        Transport, hosted_room_binding_path, load_binding)
+    # Transport ownership belongs to canonical room storage, not a member's ingress
+    # config. Named gateways share the root DB but can ingest for a separate serve.
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     with _service_lock:
+        if cancel_event is not None and cancel_event.is_set():
+            return None
+        # Routing changes require restart after the first successful start. Until
+        # then config can be repaired; an active binding is captured for recovery.
+        binding = _binding
+        if _service is None or _service.db_path != db_path or _binding is _UNBOUND_BINDING:
+            config_scope = set_hermes_home_override(db_path.parent)
+            try:
+                path = hosted_room_binding_path()
+                binding = load_binding(path) if path is not None else None
+            finally:
+                reset_hermes_home_override(config_scope)
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         if _service is not None and _service.db_path != db_path:
-            _service.stop(timeout=1.0)
+            # Neither handle may be dropped before its worker actually ceased: a service that is
+            # still running would otherwise be replaced while it still owns accepted turns.
+            if not _stop_room_transport(timeout=1.0):
+                raise RuntimeError("hosted room transport did not stop; its service was kept")
+            if not _service.stop(timeout=1.0):
+                raise RuntimeError("hosted room service did not stop; it was not replaced")
             _service = None
         if _service is None:
-            _service = HostedRoomService(_bound_server, db_path=db_path)
+            # Roster discovery and the native turn locks resolve member profiles from this root;
+            # without it they would look beside the room's own storage.
+            _service = HostedRoomService(
+                _bound_server, db_path=db_path, profiles_root=get_default_hermes_root())
+            _binding = _UNBOUND_BINDING
         _service.start()
+        if cancel_event is not None and cancel_event.is_set():
+            return None
+        if _transport is not None and not _room_transport_healthy(_transport):
+            if not _stop_room_transport(timeout=5.0):
+                raise RuntimeError("previous Telegram transport did not stop; its handle was kept")
+        if cancel_event is not None and cancel_event.is_set():
+            return None
+        if _transport is None and binding is not None:
+            _transport = Transport(_service, binding)
+            try:
+                _transport.start()
+            except BaseException:
+                _stop_room_transport(timeout=5.0)
+                raise
+        _binding = binding
         return _service
+
+
+def _room_transport_healthy(transport):
+    return (transport.thread is not None and transport.thread.is_alive()
+            and transport.ready.is_set() and not transport.error and not transport.halt.is_set())
 
 
 def stop_hosted_room_service(*, timeout: float = 5.0) -> bool:
     """Stop the process-owned worker without interrupting accepted turns."""
     global _service
     with _service_lock:
+        # Before the service reference can be dropped: the companion publishes through it.
+        if not _stop_room_transport(timeout=timeout):
+            return False
         service = _service
         if service is None:
             return True
@@ -79,6 +154,26 @@ def get_hosted_room_service():
     except Exception:
         return None
     return service if status.get("running") and not status.get("stopping") else None
+
+
+def _telegram_delivery(service, room_id, params=None):
+    # This default-bound helper retains methods_groups' lifetime globals after handler rebinding.
+    with _service_lock:
+        transport = _transport
+        if transport is None or transport.service is not service or transport.room != room_id:
+            if params is None:
+                return None
+            raise ValueError("This room has no active Telegram transport")
+        if params is None:
+            return transport.status()
+        if not _room_transport_healthy(transport):
+            raise ValueError("Telegram transport is unavailable; restart the gateway before reconciling")
+        if params.get("confirm") is not True:
+            raise ValueError("Telegram reconciliation requires confirm=true after external readback")
+        return transport.resolve_delivery(
+            room_id=room_id, **{key: params.get(key) for key in (
+                "event_id", "chunk_index", "attempt", "decision", "message_id",
+                "authority_gateway_id", "authority_epoch")})
 
 
 def _profile_name() -> str:
@@ -157,11 +252,12 @@ def _room_link_run_storage_durable() -> bool:
 
 
 def _local_catalog(installation_id: str, profile: str, execution_policy: dict) -> dict:
-    """Advertise this gateway's direct-only, text-only RoomLink catalog."""
+    """Advertise this gateway's direct RoomLink and available file support."""
     from gateway.hosted_room_peer import PROTOCOL_VERSION, local_catalog_mapping
+    from gateway.platforms.api_server_room_attachments import roomlink_attachments_available
     return local_catalog_mapping(
         installation_id=installation_id, protocol_versions=(PROTOCOL_VERSION,),
-        link_modes=("direct",), text=True, attachments=False, target_profile=profile,
+        link_modes=("direct",), text=True, attachments=roomlink_attachments_available(), target_profile=profile,
         execution_policy=execution_policy)
 
 
@@ -241,9 +337,10 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
         "persistent_process": bool(room_link.get("catalog", {}).get("persistent_process", False)),
         "authority_gateway_id": local_authority_gateway_id(), "room_link": room_link,
         "features": [
+            "attachment_ids", "attachment_metadata_catalog", "attachment_same_gateway_delivery",
             "authority_epoch", "coordinator_fencing", "room_identity", "monotonic_log",
             "idempotent_send", "replayable_disband", "typed_events", "actor_identity",
-            "log_replication", "authority_takeover"],
+            "log_replication", "authority_takeover", "persistent_member_holds"],
         "methods": list(_methods), "max_log_limit": MAX_LOG_LIMIT})
 
 
@@ -291,6 +388,12 @@ def _(rid, params: dict, db_path, _expiry=_grant_expiry) -> dict:
             or claims["target_install_id"] != local_authority_gateway_id()):
         raise ValueError("room grant target does not match this profile")
     revoke_room_grant_scope(db_path, claims=claims, expires_at=_expiry(claims))
+    try:
+        from gateway.platforms.api_server_room_attachments import _default_spool
+        _default_spool().discard_scope(claims)
+    except Exception:
+        # Revocation is durable; bounded expiry backs up failed spool cleanup.
+        pass
     return _ok(rid, {"revoked": True})
 
 
@@ -334,7 +437,8 @@ def _(rid, params: dict, service) -> dict:
         execution_policy_digest=catalog.execution_policy.policy_digest,
         cancellation_scope_id=str(
             params.get("cancellation_scope_id") or f"cancel-{params.get('room_id') or ''}"),
-        trace_id=str(params.get("trace_id") or f"trace-{os.urandom(16).hex()}"), grant=grant)
+        trace_id=str(params.get("trace_id") or f"trace-{os.urandom(16).hex()}"), grant=grant,
+        attachments=catalog.attachments)
     service.register_peer_route(
         room_id=room_id, member_id=member_id, route=route, client=client, target_url=target_url,
         catalog=catalog)
@@ -367,7 +471,7 @@ def _(rid, params: dict, service) -> dict:
 
 
 @_room_method("groups.state", code=5115, room_code=4114, db=True)
-def _(rid, params: dict, db_path) -> dict:
+def _(rid, params: dict, db_path, _telegram=_telegram_delivery) -> dict:
     """Return one hosted room's replay cursor and fenced authority state."""
     from gateway.hosted_rooms import room_state
     room = room_state(
@@ -377,7 +481,14 @@ def _(rid, params: dict, db_path) -> dict:
     result = {"room": room}
     if service is not None and room.get("disbanded_at") is None:
         result["driver_status"] = service.status(str(room["room_id"]))
+        result["telegram_status"] = _telegram(service, room["room_id"])
     return _ok(rid, result)
+
+
+@_room_method("groups.telegram.resolve_delivery", code=4144, service_code=4115)
+def _(rid, params: dict, service, _telegram=_telegram_delivery) -> dict:
+    """Reconcile one output part; native gateway admin authority, never a room-task retry."""
+    return _ok(rid, _telegram(service, params.get("room_id"), params))
 
 
 @_room_method(
@@ -401,7 +512,7 @@ def _(rid, params: dict, service) -> dict:
 def _(rid, params: dict, service) -> dict:
     """Permanently tombstone a hosted room id."""
     from gateway.hosted_rooms import (
-        AuthorityConflictError, RoomHistoryExpiredError, disband_room, local_authority_gateway_id,
+        AuthorityConflictError, RoomHistoryExpiredError, begin_room_disband, disband_room, local_authority_gateway_id,
         room_state)
     room_id = str(params.get("room_id") or "")
 
@@ -413,6 +524,8 @@ def _(rid, params: dict, service) -> dict:
             service.db_path, room_id=params.get("room_id"),
             expected_gateway_id=str(local_gateway_id),
             expected_epoch=int(state["authority_epoch"] if state is not None else 1))
+        service.attachments.mark_room_disbanded(params.get("room_id"))
+        service.attachments.prune()
         return _ok(rid, {"tombstone": tombstone})
     try:
         existing = room_state(
@@ -421,6 +534,9 @@ def _(rid, params: dict, service) -> dict:
         return disband_with_state()
     if existing.get("disbanded_at") is not None:
         return disband_with_state(existing)
+    begin_room_disband(
+        service.db_path, room_id=room_id, expected_gateway_id=local_authority_gateway_id(),
+        expected_epoch=int(existing["authority_epoch"]))
     service.stop_room(
         room_id, cancel_id=str(params.get("cancel_id") or "room-disbanded"),
         require_acknowledged=True)
@@ -526,3 +642,89 @@ _passthrough(
 
 def register(server) -> None:
     _registry.install(server)
+
+@method("groups.attachment.put")
+def _(rid, params: dict) -> dict:
+    """Store one bounded attachment on the room's authority gateway."""
+
+    try:
+        from gateway.hosted_room_attachments import decode_content_base64
+
+        service = get_hosted_room_service()
+        if service is None:
+            return _err(rid, 4123, _WORKER_UNAVAILABLE)
+        attachment = service.put_attachment(
+            room_id=params.get("room_id"),
+            upload_id=params.get("upload_id"),
+            kind=params.get("kind"),
+            name=params.get("name"),
+            mime=params.get("mime"),
+            data=decode_content_base64(params.get("content_base64")),
+        )
+        return _ok(rid, {"attachment": attachment})
+    except Exception as exc:
+        return _err(rid, 4140, str(exc))
+
+@method("groups.attachment.read")
+def _(rid, params: dict) -> dict:
+    """Read committed bytes for a Group Chat viewer."""
+
+    try:
+        from gateway.hosted_room_attachments import encode_content_base64
+
+        if str(params.get("purpose") or "").strip().casefold() != "viewer":
+            raise ValueError("hosted attachment reads are viewer-only over RPC")
+        service = get_hosted_room_service()
+        if service is None:
+            return _err(rid, 4123, _WORKER_UNAVAILABLE)
+        stored = service.read_attachment(
+            room_id=params.get("room_id"),
+            attachment_id=params.get("attachment_id"),
+            recipient_member_id=None,
+            event_id=params.get("event_id"),
+            viewer=True,
+        )
+        return _ok(
+            rid,
+            {
+                "attachment": stored.attachment,
+                "content_base64": encode_content_base64(stored.data),
+            },
+        )
+    except Exception as exc:
+        return _err(rid, 4141, str(exc))
+
+
+@method("groups.attachment.list")
+def _(rid, params: dict) -> dict:
+    """List canonical published attachment metadata for a Group Chat viewer."""
+
+    from gateway.hosted_room_attachments import AttachmentCursorError
+
+    try:
+        if str(params.get("purpose") or "").strip().casefold() != "viewer":
+            raise ValueError("hosted attachment lists are viewer-only over RPC")
+        service = get_hosted_room_service()
+        if service is None:
+            return _err(rid, 4123, _WORKER_UNAVAILABLE)
+        page = service.list_attachments(
+            room_id=params.get("room_id"),
+            cursor=params.get("cursor"),
+            limit=params.get("limit"),
+            query=params.get("query"),
+            producer_member_id=params.get("producer_member_id"),
+        )
+        return _ok(rid, page)
+    except AttachmentCursorError as exc:
+        return _err(
+            rid,
+            4143,
+            str(exc),
+            {
+                "reason": "attachment_cursor_reset_required",
+                "reset_required": True,
+                "action": "return_to_latest",
+            },
+        )
+    except Exception as exc:
+        return _err(rid, 4142, str(exc))

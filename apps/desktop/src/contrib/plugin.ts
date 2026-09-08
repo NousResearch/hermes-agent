@@ -32,6 +32,8 @@ export type PluginContribution = Omit<Contribution, 'source' | 'id'> & { id: str
  *  under `hermes.plugin.<id>.` — plugins can't read or clobber each other. */
 export interface PluginStorage {
   get<T>(key: string, fallback: T): T
+  /** Strict raw read for migrations: unavailable storage must not mean absent. */
+  getRaw(key: string): string | null
   set(key: string, value: unknown): void
   remove(key: string): void
 }
@@ -136,6 +138,7 @@ function createPluginStorage(pluginId: string): PluginStorage {
         return fallback
       }
     },
+    getRaw: key => readKey(scoped(key), true),
     set: (key, value) => writeKey(scoped(key), JSON.stringify(value)),
     remove: key => writeKey(scoped(key), null)
   }

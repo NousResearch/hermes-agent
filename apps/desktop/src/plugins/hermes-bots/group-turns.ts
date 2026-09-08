@@ -12,6 +12,7 @@ import { recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, $groupNeedsYou, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { groupMemberKey, groupSessionOwner } from './group-membership'
+import { isHostedRoomKey } from './hosted-room-protocol'
 import { botConnectionRoute, requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
 
@@ -123,6 +124,7 @@ interface GroupMemberSessionHandle {
  *  it after restarts. Cross-connection members route to their OWN source
  *  via requestForBot; the window's gateway never switches. */
 export async function ensureGroupChatSession(group: string, member: GroupMember): Promise<GroupMemberSessionHandle> {
+  if (isHostedRoomKey(group)) {throw new Error('Hosted rooms cannot create Desktop member sessions')}
   const room = $groupChats.get()[group] || {}
   // New rooms title member sessions by their immutable roomId so a
   // same-name recreate never resumes the old room's sessions by title;
@@ -586,6 +588,7 @@ export async function runGroupChatMemberTurn(
   thread: string,
   images?: Attachment[]
 ): Promise<null | string> {
+  if (isHostedRoomKey(group)) {throw new Error('Hosted rooms cannot prompt members directly')}
   // #93602: hold the member's route socket for the whole turn. Without the
   // lease, every RPC below rides its own request-scoped socket lease; the
   // socket that minted `runtime` can close between RPCs, the gateway reaps

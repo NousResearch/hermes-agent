@@ -128,10 +128,16 @@ export type GroupMember = Pick<
 export type AttachmentKind = 'file' | 'image' | 'pdf'
 
 export interface Attachment {
-  /** Data URL. */
+  /** Server-minted id, set once a hosted room has committed these bytes. */
+  attachmentId?: string
+  /** Data URL. Empty for a hosted attachment whose bytes have not been fetched yet. */
   data: string
   kind: AttachmentKind
+  mime?: string
   name: string
+  size?: number
+  /** Client-minted idempotency key, reused verbatim across retries of one uncertain send. */
+  uploadId?: string
 }
 
 export interface GroupMessageAuthor {

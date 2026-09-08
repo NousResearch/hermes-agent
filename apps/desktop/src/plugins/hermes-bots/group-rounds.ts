@@ -23,6 +23,7 @@ import {
 import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
 import { durableGroupChatMembers, groupMemberKey } from './group-membership'
 import { harvestStrandedGroupReply, isGroupPassText, runGroupChatMemberTurn } from './group-turns'
+import { isHostedRoomKey } from './hosted-room-protocol'
 import { requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupMessage } from './types'
 
@@ -424,6 +425,7 @@ export function unaddressedGroupMentions(group: string, members: GroupMember[], 
  *  `members` is the live roster when the caller has one (the workspace);
  *  falls back to the room's durable roster so a two-arg call still works. */
 export async function stopGroupThread(group: string, thread: null | string, members: GroupMember[] | null = null) {
+  if (isHostedRoomKey(group)) {throw new Error('Hosted rooms must stop through groups.stop')}
   const room = $groupChats.get()[group] || {}
   const roster = Array.isArray(members) && members.length ? members : room.members || []
   const turnName = room.turn || null
@@ -493,6 +495,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
 export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string) {
+  if (isHostedRoomKey(group)) {throw new Error('Hosted rooms cannot run the Desktop coordinator')}
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
   const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
   let posted = 0
@@ -966,6 +969,7 @@ export function sendToGroupChat(
   thread?: null | string,
   images?: Attachment[]
 ): null | string {
+  if (isHostedRoomKey(group)) {throw new Error('Hosted rooms must send through groups.send')}
   const trimmed = String(text || '').trim()
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
 

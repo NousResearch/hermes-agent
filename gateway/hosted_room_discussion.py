@@ -2,7 +2,7 @@
 
 Pure (no I/O, transport or model knowledge): a frozen local roster plus the complete typed room log yields
 at most one next driver task. Discussion coordinates live in deterministic ``TaskIdentity`` values and typed
-terminal events rather than a widened driver payload, so a restart reconstructs tasks from durable state.
+terminal events; compacting callers also freeze bounded input references in driver admissions.
 Callers must reconcile terminal driver rows into publication plans before asking for the next task.
 """
 
@@ -18,6 +18,8 @@ from typing import Any, Literal
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway import hosted_rooms_common as common
+from gateway.hosted_room_attachments import MAX_TASK_ATTACHMENT_BYTES, MAX_TASK_ATTACHMENTS
+from gateway.hosted_room_task_input import validate_task_input
 from gateway.hosted_rooms_common import compact_json
 
 
@@ -25,20 +27,46 @@ MAX_DISCUSSION_MEMBERS = 6
 MIN_DISCUSSION_MEMBERS = 2
 MAX_DISCUSSION_ROUNDS = 3
 MAX_DISCUSSION_MESSAGES = 10
+# Silent-round recovery, bounded independently of the message cap so a mention chain cannot
+# spend the room's whole budget on handoffs (native ``GROUP_CHAT_MAX_CONTINUATIONS``).
+MAX_DISCUSSION_CONTINUATIONS = 2
 MAX_DISCUSSION_DELTA_LINES = 24
 MAX_USER_TEXT_BYTES = 64 * 1024
 MAX_MEMBER_TEXT_BYTES = 64 * 1024
 _TRUNCATED_REPLY_NOTICE = "\n\n[Reply truncated. Ask the Bot to share the full result as a file.]"
+MAX_ATTACHMENTS = 8
+MAX_ATTACHMENT_NAME_CHARS = 255
+MAX_ATTACHMENT_MIME_CHARS = 127
+MAX_ATTACHMENT_ID_CHARS = 128
+MAX_ATTACHMENT_SIZE_BYTES = 15_000_000
+MAX_ATTACHMENT_TOTAL_BYTES = 25_000_000
+MAX_ATTACHMENT_MANIFEST_BYTES = 32 * 1024
+_MIME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$")
+_ATTACHMENT_ID_RE = re.compile(r"^att_[0-9a-f]{32}$")
+_ATTACHMENT_FIELDS = frozenset({"attachment_id", "kind", "name", "size", "mime"})
+_ATTACHMENT_KINDS = frozenset({"image", "pdf", "file"})
 
 Payload = Mapping[str, Any]
 DecisionStatus = Literal["idle", "task", "settled", "bounded"]
 TerminalKind = Literal["settled", "failed", "cancelled", "deferred"]
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._:-]*)", re.IGNORECASE)
+_MENTION_SEPARATORS_RE = re.compile(r"[._:-]+")
+_MENTION_FORM_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+# Room-wide and reserved words the native resolver never derives from a member's friendly
+# label. A profile or handle that literally IS one of them still resolves, as it does natively.
+_RESERVED_MENTION_FORMS = frozenset({"all", "everyone", "user", "default", "hermes"})
+# ASCII word boundaries and case-insensitivity mirror the native JavaScript regexes exactly, so
+# the same user text holds and releases the same members from either frontend.
+_HOLD_RE = re.compile(r"\b(stop|halt|pause)\b", re.IGNORECASE | re.ASCII)
+_RELEASE_RE = re.compile(r"\b(resume|continue|go|proceed)\b", re.IGNORECASE | re.ASCII)
 _TURN_ID_RE = re.compile(
     r"^d(?P<source>[1-9][0-9]*)\.r(?P<round>[0-2])\."
     r"p(?P<position>[0-5])\.s(?P<seen>[1-9][0-9]*)\."
-    r"m(?P<member>[0-9a-f]{24})$")
+    r"m(?P<member>[0-9a-f]{24})"
+    # Optional on purpose: an ordinary turn's coordinate stays byte-identical to the one this
+    # room has always minted, so stored tasks, seeds and reconstruction remain valid.
+    r"(?:\.c(?P<continuation>[1-2]))?$")
 
 _TARGET_FIELDS = {
     "local": frozenset({"kind", "profile"}),
@@ -115,6 +143,10 @@ class DiscussionDecision:
     source_event_seq: int | None = None
     thread_id: str | None = None
     task: DiscussionTaskPlan | None = None
+    #: ``(member_id, seen_through_seq)`` for the held members whose ordinary slot this walk
+    #: actually reached. Emitted by the walk itself rather than re-derived elsewhere, so the
+    #: durable projection and the planner can never disagree about when a pause costs context.
+    held_consumptions: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -184,12 +216,21 @@ def _all_failure_reasons() -> frozenset[str]:
     return ALL_REASONS
 
 
-def validate_user_payload(value: Any) -> dict[str, Any]:
+def validate_user_payload(value: Any, *, member_ids: Iterable[str] | None = None) -> dict[str, Any]:
     """Validate and normalize the exact ``message.user`` Discussion payload."""
-    payload = _exact_fields(value, label="user payload", required=_USER_PAYLOAD_FIELDS)
-    return {
-        "text": _text(payload["text"], label="user payload text", max_bytes=MAX_USER_TEXT_BYTES),
-        "thread_id": _identifier(payload["thread_id"], label="thread_id")}
+    payload = _exact_fields(value, label="user payload", required=_USER_PAYLOAD_FIELDS, optional={"attachments"})
+    text = payload["text"]
+    if not isinstance(text, str):
+        raise DiscussionValidationError("user payload text must be a string")
+    text = text.strip()
+    if not text and not payload.get("attachments"):
+        raise DiscussionValidationError("user payload must contain text or attachments")
+    if len(text.encode("utf-8")) > MAX_USER_TEXT_BYTES:
+        raise DiscussionValidationError("user payload text is too large")
+    normalized = {"text": text, "thread_id": _identifier(payload["thread_id"], label="thread_id")}
+    if "attachments" in payload:
+        normalized["attachments"] = _validate_attachments(payload["attachments"], member_ids=member_ids)
+    return normalized
 
 
 def _validate_member_target(value: Any, *, profile: str, known_profiles: set[str], index: int) -> dict[str, Any]:
@@ -288,41 +329,295 @@ def is_pass_text(value: Any) -> bool:
     return not text or re.fullmatch(r"\(?\s*pass\s*\)?\.?", text, re.IGNORECASE) is not None
 
 
-def resolve_mentions(
-    texts: Iterable[str], members: Sequence[DiscussionMember], *, default_all: bool = True
-) -> tuple[DiscussionMember, ...]:
-    """Resolve member handles deterministically against the frozen roster."""
-    by_handle = {member.handle.casefold(): member for member in members}
+def _friendly_mention_forms(value: str) -> tuple[str, ...]:
+    """Slug and collapsed forms of one friendly label, as the native composer derives them.
+
+    Mirrors ``mentionNameForms`` in the Desktop roster module, including its refusal to derive
+    a room-wide or reserved word from a member's label. ``lower`` rather than ``casefold``
+    deliberately: JavaScript's ``toLowerCase`` leaves ``ß`` alone, so "Straße" reduces to
+    ``stra-e``/``strae`` on both sides instead of one engine inventing ``strasse``.
+    """
+    name = str(value or "").strip().lower()
+    if not name:
+        return ()
+    slug = re.sub(r"^-+|-+$", "", re.sub(r"[^a-z0-9_-]+", "-", name))
+    collapsed = re.sub(r"[^a-z0-9_-]+", "", name)
+    return tuple(
+        form for form in dict.fromkeys((slug, collapsed))
+        if _MENTION_FORM_RE.fullmatch(form) and form not in _RESERVED_MENTION_FORMS)
+
+
+def _mention_index(
+    members: Sequence[DiscussionMember]) -> tuple[dict[str, str], dict[str, str | None]]:
+    """``(canonical, alias)`` mention forms mapped to the frozen handle they address.
+
+    Canonical is every EXACT handle and nothing else, filled first: a member's own unique name
+    can never be shadowed by a form derived from another member, whatever the roster order.
+    Everything derived -- a handle without its separators, the profile, and the friendly label
+    in the slugged and collapsed shapes the native autocomplete inserts -- is an alias, and an
+    alias two members derive addresses neither (``None``) rather than the first one seen.
+    Only frozen roster fields are read; no live profile metadata enters a replaying room.
+    """
+    canonical = {member.handle.lower(): member.handle.casefold() for member in members}
+    alias: dict[str, str | None] = {}
+    for member in members:
+        handle = member.handle.casefold()
+        profile = member.profile.lower()
+        forms = (
+            _MENTION_SEPARATORS_RE.sub("", member.handle.lower()),
+            profile,
+            _MENTION_SEPARATORS_RE.sub("", profile),
+            *_friendly_mention_forms(member.display_name))
+        for form in dict.fromkeys(forms):
+            if form and form not in canonical:
+                alias[form] = handle if alias.get(form, handle) == handle else None
+    return canonical, alias
+
+
+def _resolve_mention_token(
+    token: str, canonical: Mapping[str, str], alias: Mapping[str, str | None]) -> str | None:
+    """The frozen handle one ``@token`` addresses, or ``None``.
+
+    The separator-free form is tried second, exactly as the native resolver does: that is what
+    lets ``@writer.`` and ``@writer:`` reach ``writer`` without a second parser.
+    """
+    for form in dict.fromkeys((token, _MENTION_SEPARATORS_RE.sub("", token))):
+        if form in canonical:
+            return canonical[form]
+        if alias.get(form) is not None:
+            return alias[form]
+    return None
+
+
+def _mentioned_handles(
+    texts: Iterable[str], members: Sequence[DiscussionMember]) -> tuple[set[str], bool]:
+    """Return (casefolded roster handles addressed, ``@all``/``@everyone`` seen).
+
+    The two are separate on purpose: ``@all hello`` addresses the room without addressing any
+    member, which is exactly the distinction manual holds turn on.
+
+    One resolver serves scheduling, holds and member handoffs, so the tag the composer inserts
+    for a renamed member addresses the same member from every surface. ``@user`` is reserved
+    for the person in the room and never resolves to a Bot, as in ``parseGroupChatMentions``.
+    """
+    canonical, alias = _mention_index(members)
+    qualified = sorted((handle for handle in canonical if ":" in handle), key=len, reverse=True)
     mentioned: set[str] = set()
     everyone = False
     for text in texts:
         for match in _MENTION_RE.finditer(str(text or "")):
-            handle = match.group(1).casefold()
-            if handle in {"all", "everyone"}:
+            token = match.group(1).lower()
+            # Desktop treats ':' as punctuation. Hosted handles may also use it as a
+            # namespace delimiter: keep the longest exact roster prefix, never collapse
+            # ':stop' into a different member's alias (e.g. implstop).
+            token = next((handle for handle in qualified if (
+                token == handle or token.startswith(handle + ":")
+                or token.rstrip("._-") == handle)), token.split(":", 1)[0])
+            if token in {"all", "everyone"}:
                 everyone = True
-            elif handle in by_handle:
+                continue
+            if token == "user":
+                continue
+            if (handle := _resolve_mention_token(token, canonical, alias)) is not None:
                 mentioned.add(handle)
+    return mentioned, everyone
+
+
+def resolve_mentions(
+    texts: Iterable[str], members: Sequence[DiscussionMember], *, default_all: bool = True
+) -> tuple[DiscussionMember, ...]:
+    """Resolve member handles deterministically against the frozen roster."""
+    mentioned, everyone = _mentioned_handles(texts, members)
     if everyone or (default_all and not mentioned):
         return tuple(members)
     return tuple(member for member in members if member.handle.casefold() in mentioned)
 
 
+@dataclass(frozen=True)
+class HoldDirective:
+    """Members one user message holds and releases, already expanded over the frozen roster."""
+    hold: tuple[str, ...] = ()
+    release: tuple[str, ...] = ()
+
+
+def resolve_hold_directive(text: Any, members: Sequence[DiscussionMember]) -> HoldDirective:
+    """Classify one ``message.user`` text's effect on manual member holds.
+
+    Native contract (``classifyGroupHoldDirective`` in the Desktop coordinator): a standalone
+    stop/halt/pause wins over resume/continue/go/proceed and holds every addressed member, with
+    ``@all``/``@everyone`` covering the whole roster. Otherwise any direct mention releases exactly
+    the members it addresses -- ``@all`` alone addresses nobody so it releases nobody, while
+    ``@all resume`` releases everyone -- and unaddressed prose changes nothing. Conservative by
+    design: "don't stop @x" still holds @x, because a wrongly held member is one mention away from
+    running again while a wrongly running one keeps doing work it was told to stop.
+
+    Only user messages are classified. Member prose, its mentions and late turn results can never
+    mutate a hold, so a Bot cannot talk itself (or a peer) out of a pause.
+    """
+    value = str(text or "")
+    handles, everyone = _mentioned_handles((value,), members)
+    everyone_ids = tuple(member.member_id for member in members)
+    addressed = tuple(m.member_id for m in members if m.handle.casefold() in handles)
+    if _HOLD_RE.search(value):
+        return HoldDirective(hold=everyone_ids if everyone else addressed)
+    if _RELEASE_RE.search(value):
+        return HoldDirective(release=everyone_ids if everyone else addressed)
+    return HoldDirective(release=addressed)
+
+
+def explicit_mentions(
+    text: Any, members: Sequence[DiscussionMember]) -> tuple[DiscussionMember, ...]:
+    """Members this text names outright.
+
+    ``@all`` addresses the room, not any one peer: the native handoff detector reads only its
+    parsed mention set, so expanding the roster here would make every broadcast reply look like
+    an unresolved citation of every member. Public because the durable projection remembers the
+    same citations after the bounded transcript has trimmed the message that made them.
+    """
+    handles, _everyone = _mentioned_handles((str(text or ""),), members)
+    return tuple(member for member in members if member.handle.casefold() in handles)
+
+
 def _unaddressed_member_mentions(
-    messages: Sequence[_ValidatedEvent], room: DiscussionRoom) -> tuple[DiscussionMember, ...]:
-    """Return peers explicitly cited by a Bot and not heard from afterward."""
+    messages: Sequence[_ValidatedEvent], room: DiscussionRoom, *,
+    initial: Mapping[str, tuple[int, int]] | None = None) -> tuple[DiscussionMember, ...]:
+    """Return peers explicitly cited by a Bot and not heard from afterward.
+
+    ``initial`` carries ``member_id -> (cited_at_seq, last_post_seq)`` from the durable citation
+    projection, so a handoff older than the bounded transcript window is still owed its turn.
+    """
     cited_at: dict[str, int] = {}
     last_post_at: dict[str, int] = {}
+    for member_id, (cited, posted) in (initial or {}).items():
+        cited_at[str(member_id)] = int(cited)
+        last_post_at[str(member_id)] = int(posted)
     for event in messages:
         if event.kind != "message.member":
             continue
         speaker_id = str(event.payload["member_id"])
-        last_post_at[speaker_id] = event.seq
-        for member in resolve_mentions((str(event.payload["text"]),), room.members, default_all=False):
+        last_post_at[speaker_id] = max(last_post_at.get(speaker_id, 0), event.seq)
+        for member in explicit_mentions(event.payload["text"], room.members):
             if member.member_id != speaker_id:
-                cited_at[member.member_id] = event.seq
+                cited_at[member.member_id] = max(cited_at.get(member.member_id, 0), event.seq)
     return tuple(
         member for member in room.members
-        if member.member_id in cited_at and last_post_at.get(member.member_id, 0) <= cited_at[member.member_id])
+        if cited_at.get(member.member_id, 0) > 0
+        and last_post_at.get(member.member_id, 0) <= cited_at[member.member_id])
+
+
+def _round_frontier(
+    discussion_event: _ValidatedEvent, thread_messages: Sequence[_ValidatedEvent], round_index: int
+) -> tuple[_ValidatedEvent, ...]:
+    """The committed messages one ordinary round is planned from.
+
+    Frozen at the round's own frontier -- this discussion's user message plus every message an
+    EARLIER round committed -- so a reply landing while the round is still being walked cannot
+    change who that round selected. Native freezes the same list once per round.
+    """
+    return tuple(
+        event for event in thread_messages
+        if event.seq >= discussion_event.seq and (
+            event.kind == "message.user" or int(event.payload.get("round_index") or 0) < round_index))
+
+
+@dataclass(frozen=True)
+class _RoundWalk:
+    """One ordinary round's frozen slots, and what a held slot in it has already missed."""
+    rotated: tuple[DiscussionMember, ...]
+    frontier_seq: int
+    spoken_at: Mapping[int, int]
+
+    def consumption_at(self, member_index: int) -> int:
+        """What the room had committed by the time this slot came up."""
+        return max([self.frontier_seq, *(seq for slot, seq in self.spoken_at.items() if slot < member_index)])
+
+
+def _round_walk(
+    members: Sequence[DiscussionMember], thread_messages: Sequence[_ValidatedEvent],
+    member_messages: Sequence[_ValidatedEvent], *, discussion_event: _ValidatedEvent, round_index: int
+) -> _RoundWalk:
+    """The one round walk both the planner and the durable rebuild run.
+
+    Cumulative selection frozen at the round's own committed frontier, rotated as a whole so a
+    pause cannot reorder the others, plus where each earlier slot of the round committed its reply.
+    """
+    frontier = _round_frontier(discussion_event, thread_messages, round_index)
+    return _RoundWalk(
+        rotated=_rotate(_round_responders(members, frontier), round_index),
+        frontier_seq=max((event.seq for event in frontier), default=0),
+        spoken_at={
+            _position_of(event.payload.get("turn_id")): event.seq for event in member_messages
+            if int(event.payload.get("round_index") or 0) == round_index
+            and _continuation_of(event.payload.get("turn_id")) is None
+            and _position_of(event.payload.get("turn_id")) is not None})
+
+
+def _position_of(turn_id: Any) -> int | None:
+    """The slot one turn coordinate occupied in its phase."""
+    match = _TURN_ID_RE.fullmatch(str(turn_id or ""))
+    return None if match is None else int(match.group("position"))
+
+
+def _continuation_of(turn_id: Any) -> int | None:
+    """The continuation attempt a turn coordinate belongs to; ``None`` for an ordinary turn."""
+    match = _TURN_ID_RE.fullmatch(str(turn_id or ""))
+    attempt = match.group("continuation") if match is not None else None
+    return int(attempt) if attempt else None
+
+
+def _phase_progress(
+    validated: Sequence[_ValidatedEvent], discussion_event: _ValidatedEvent
+) -> tuple[dict[tuple[int, int], int], tuple[int, int]]:
+    """``(furthest slot walked per phase, the furthest phase itself)`` for one discussion.
+
+    A phase is ``(round, 0)`` for an ordinary walk and ``(round, attempt)`` for its recovery, so
+    the natural ordering is the order the loop runs them in. Read ONLY from committed terminal
+    events: a member message whose terminal has not landed is the publication gap, and replaying
+    it must not advance the walk.
+    """
+    cursors: dict[tuple[int, int], int] = {}
+    furthest = (-1, 0)
+    for event in validated:
+        if event.kind not in _TERMINAL_EVENT_KINDS:
+            continue
+        if event.payload.get("discussion_event_id") != discussion_event.event_id:
+            continue
+        turn = _TURN_ID_RE.fullmatch(str(event.payload.get("turn_id") or ""))
+        if turn is None:
+            continue
+        attempt = turn.group("continuation")
+        phase = (int(turn.group("round")), int(attempt) if attempt else 0)
+        cursors[phase] = max(cursors.get(phase, -1), int(turn.group("position")))
+        furthest = max(furthest, phase)
+    return cursors, furthest
+
+
+def _citation_frontier(
+    thread_messages: Sequence[_ValidatedEvent], discussion_event: _ValidatedEvent, round_index: int
+) -> tuple[_ValidatedEvent, ...]:
+    """The whole thread as one silent round saw it when its recovery began.
+
+    Native scans the entire thread for unresolved citations, but takes the list ONCE: a peer that
+    a continuation reply cites for the first time belongs to the next ordinary round, not to the
+    attempt already walking.
+    """
+    return tuple(
+        event for event in thread_messages
+        if not (event.kind == "message.member"
+                and event.payload.get("discussion_event_id") == discussion_event.event_id
+                and int(event.payload.get("round_index") or 0) >= round_index))
+
+
+def _round_responders(
+    members: Sequence[DiscussionMember], frontier: Sequence[_ValidatedEvent]) -> tuple[DiscussionMember, ...]:
+    """Everyone the frozen frontier addresses, defaulting to the whole roster.
+
+    Native ``resolveGroupResponders``: cumulative mentions from the latest user message and every
+    member message after it. A member carrying new peer context can answer again without being
+    called by name, and a round that names nobody belongs to the whole room.
+    """
+    return resolve_mentions(
+        tuple(str(event.payload.get("text") or "") for event in frontier), members)
 
 
 def _require_gateway_actor(actor: Mapping[str, Any], room: DiscussionRoom, message: str) -> None:
@@ -348,15 +643,23 @@ def _validate_turn_coordinates(payload: Mapping[str, Any], room: DiscussionRoom)
 # -- per-kind event payload validators (dispatched by _validate_event) ---------
 # Each takes (kind, payload, actor, room) and returns the payload to record.
 def _validate_user_event(kind: str, payload: Payload, actor: Payload, room: DiscussionRoom) -> Payload:
-    payload = validate_user_payload(payload)
+    payload = validate_user_payload(payload, member_ids=(member.member_id for member in room.members))
     if actor.get("kind") != "user":
         raise DiscussionValidationError("message.user requires a user actor")
     return payload
 
 
 def _validate_member_message(kind: str, payload: Payload, actor: Payload, room: DiscussionRoom) -> Payload:
-    _exact_fields(payload, label="message.member payload", required=_MEMBER_MESSAGE_FIELDS)
+    _exact_fields(
+        payload, label="message.member payload", required=_MEMBER_MESSAGE_FIELDS,
+        optional={"attachments"})
     _validate_turn_coordinates(payload, room)
+    if "attachments" in payload:
+        # A file a member produced is the SAME canonical manifest a user message carries: one
+        # attachment contract, one store, one set of ids. The bytes are committed to this event
+        # before it is appended, exactly as an inbound attachment is.
+        _validate_attachments(
+            payload["attachments"], member_ids=tuple(member.member_id for member in room.members))
     if not isinstance(text := payload.get("text"), str) or not text.strip() or is_pass_text(text):
         raise DiscussionValidationError("message.member text must be a non-pass string")
     member = _member_by_id(room, payload.get("member_id"))
@@ -454,6 +757,7 @@ def derive_member_watermarks(
 
 def _derive_member_watermarks(events: Sequence[_ValidatedEvent]) -> dict[tuple[str, str], int]:
     messages_by_id = {event.event_id: event for event in events if event.kind == "message.member"}
+    user_seq_by_id = {event.event_id: event.seq for event in events if event.kind == "message.user"}
     terminal_by_task: dict[str, _ValidatedEvent] = {}
     watermarks: dict[tuple[str, str], int] = {}
     for event in events:
@@ -462,19 +766,37 @@ def _derive_member_watermarks(events: Sequence[_ValidatedEvent]) -> dict[tuple[s
         task_id = str(event.payload["task_id"])
         if (previous := terminal_by_task.get(task_id)) is not None:
             if previous.kind != "turn.deferred":
-                raise DiscussionValidationError(f"task '{task_id}' has more than one terminal room event")
-            if event.kind == "turn.deferred" and int(
-                event.payload["execution_generation"]) <= int(previous.payload["execution_generation"]):
-                raise DiscussionValidationError(f"task '{task_id}' deferral generation did not advance")
+                raise DiscussionValidationError(
+                    f"task '{task_id}' has more than one terminal room event"
+                )
+            if event.kind == "turn.deferred" and int(event.payload["execution_generation"]) <= int(
+                previous.payload["execution_generation"]
+            ):
+                raise DiscussionValidationError(
+                    f"task '{task_id}' deferral generation did not advance"
+                )
         terminal_by_task[task_id] = event
         key = (str(event.payload["thread_id"]), str(event.payload["member_id"]))
         watermark = int(event.payload["seen_through_seq"])
         if event.kind == "turn.settled" and not event.payload["passed"]:
             message = messages_by_id.get(str(event.payload["message_event_id"]))
             if message is None or any(
-                message.payload.get(f) != event.payload.get(f) for f in ("task_id", "member_id", "thread_id")):
-                raise DiscussionValidationError("turn.settled references no matching member message")
-            watermark = max(watermark, message.seq)
+                message.payload.get(f) != event.payload.get(f)
+                for f in ("task_id", "member_id", "thread_id")
+            ):
+                raise DiscussionValidationError(
+                    "turn.settled references no matching member message"
+                )
+            discussion_seq = user_seq_by_id.get(str(event.payload["discussion_event_id"]))
+            if discussion_seq is None:
+                raise DiscussionValidationError(
+                    "turn.settled references no matching user discussion"
+                )
+            # A partial attachment batch deliberately stops before the latest
+            # user event. Do not let this Bot's later visible reply skip the
+            # older attachment events that still need a bounded follow-up task.
+            if watermark >= discussion_seq:
+                watermark = max(watermark, message.seq)
         watermarks[key] = max(watermarks.get(key, 0), watermark)
     return watermarks
 
@@ -507,7 +829,10 @@ def _truncate_utf8_text(value: Any, *, max_bytes: int, suffix: str = "") -> str:
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
     seen_through_seq: int) -> str:
-    delta = [event for event in messages if watermark < event.seq <= seen_through_seq][- MAX_DISCUSSION_DELTA_LINES:]
+    delta = [
+        event for event in messages if watermark < event.seq <= seen_through_seq
+        and not (event.kind == "message.member" and event.payload.get("member_id") == member.member_id)
+    ][-MAX_DISCUSSION_DELTA_LINES:]
     peers = ", ".join(f"@{candidate.handle}" for candidate in room.members if candidate.member_id != member.member_id)
     opening = [
         f'[Discussion: "{room.name}"] You are @{member.handle}, one participant '
@@ -519,7 +844,8 @@ def _build_prompt(
         '- If you have nothing new to add, reply with exactly "(pass)".',
         "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
         "- Never reveal content from private conversations. Your reply is published verbatim."]
-    fixed_bytes = len("\n".join([*opening, *rules]).encode("utf-8"))
+    attachment_lines = _attachment_prompt_lines(delta)
+    fixed_bytes = len("\n".join([*opening, *attachment_lines, *rules]).encode("utf-8"))
     available = max(0, driver.MAX_PROMPT_BYTES - fixed_bytes - 1)
     selected: list[str] = []
     for event in reversed(delta):
@@ -532,36 +858,84 @@ def _build_prompt(
         selected.append(line)
         available -= line_bytes
     selected.reverse()
-    if len((prompt := "\n".join([*opening, *selected, *rules])).encode("utf-8")) > driver.MAX_PROMPT_BYTES:
+    if len((prompt := "\n".join([*opening, *selected, *attachment_lines, *rules])).encode("utf-8")) > driver.MAX_PROMPT_BYTES:
         raise DiscussionValidationError("Discussion prompt exceeds the driver limit")
     return prompt
 
 
 def _make_task_plan(
-    *, room: DiscussionRoom, discussion_event: _ValidatedEvent, member: DiscussionMember, member_index: int,
-    round_index: int, seen_through_seq: int, prompt: str) -> DiscussionTaskPlan:
-    turn_id = f"d{discussion_event.seq}.r{round_index}.p{member_index}.s{seen_through_seq}.m{_member_digest(member)}"
-    seed = compact_json({
-        "discussion_event_id": discussion_event.event_id, "member_id": member.member_id, "member_index": member_index,
-        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(), "room_id": room.room_id,
-        "round_index": round_index, "seen_through_seq": seen_through_seq, "source_event_seq": discussion_event.seq,
-        "thread_id": discussion_event.payload["thread_id"]})
+    *,
+    room: DiscussionRoom,
+    discussion_event: _ValidatedEvent,
+    member: DiscussionMember,
+    member_index: int,
+    round_index: int,
+    seen_through_seq: int,
+    prompt: str,
+    attachments: Sequence[Mapping[str, Any]] = (),
+    input_context: Mapping[str, Any] | None = None,
+    continuation: int | None = None,
+) -> DiscussionTaskPlan:
+    # An ordinary turn's coordinate and seed are byte-identical to the ones this room has always
+    # minted: the continuation phase appears only when there is one, so every stored task id,
+    # payload and reconstruction from before this policy stays valid.
+    turn_id = (
+        f"d{discussion_event.seq}.r{round_index}.p{member_index}.s{seen_through_seq}"
+        f".m{_member_digest(member)}{f'.c{continuation}' if continuation is not None else ''}")
+    seed = compact_json(
+        {
+            "discussion_event_id": discussion_event.event_id,
+            "member_id": member.member_id,
+            "member_index": member_index,
+            "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            "room_id": room.room_id,
+            "round_index": round_index,
+            "seen_through_seq": seen_through_seq,
+            "source_event_seq": discussion_event.seq,
+            "thread_id": discussion_event.payload["thread_id"],
+            **({"continuation": continuation} if continuation is not None else {}),
+            **({"input_context": input_context} if input_context is not None else {}),
+        }
+    )
     identity = driver.TaskIdentity(
-        room_id=room.room_id, task_id=f"dtask:{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:48]}",
-        thread_id=str(discussion_event.payload["thread_id"]), turn_id=turn_id)
+        room_id=room.room_id,
+        task_id=f"dtask:{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:48]}",
+        thread_id=str(discussion_event.payload["thread_id"]),
+        turn_id=turn_id,
+    )
     payload = {
-        "target_member_id": member.member_id, "target_profile": member.profile, "prompt": prompt,
-        "source_event_seq": discussion_event.seq}
+        "target_member_id": member.member_id,
+        "target_profile": member.profile,
+        "prompt": prompt,
+        "source_event_seq": discussion_event.seq,
+    }
+    if attachments:
+        payload["attachments"] = [dict(attachment) for attachment in attachments]
+    if input_context is not None:
+        payload["input_context"] = dict(input_context)
     return DiscussionTaskPlan(
-        identity, payload, discussion_event.event_id, member, member_index, round_index, seen_through_seq)
+        identity,
+        payload,
+        discussion_event.event_id,
+        member,
+        member_index,
+        round_index,
+        seen_through_seq,
+    )
 
 
 def _pending_discussion(validated: Sequence[_ValidatedEvent]) -> _ValidatedEvent | None:
     """Oldest latest-per-thread user message not stopped and not yet completed."""
     stopped_through_seq = max((event.seq for event in validated if event.kind == "room.stop_requested"), default=0)
+    committed_through = {
+        str(event.payload["discussion_event_id"]): event.seq for event in validated
+        if event.kind == "turn.settled" and event.payload.get("message_event_id") is not None}
     completed_discussion_ids = {
         str(event.payload["discussion_event_id"]) for event in validated
-        if event.kind == "room.activity" and event.payload.get("status") in {"settled", "bounded"}}
+        if event.kind == "room.activity" and (
+            event.payload.get("status") == "bounded"
+            or (event.payload.get("status") == "settled"
+                and event.seq >= committed_through.get(str(event.payload["discussion_event_id"]), 0)))}
     latest_by_thread = {
         str(event.payload["thread_id"]): event for event in validated if event.kind == "message.user"}
     return next((
@@ -604,9 +978,21 @@ def _effective_watermarks(
 
 def plan_next_task(
     room_value: Any, events: Sequence[Mapping[str, Any]], *, local_profiles: Iterable[str],
-    initial_watermarks: Mapping[tuple[str, str], int] | None = None) -> DiscussionDecision:
-    """Replay the complete room log and return at most one next member task."""
+    initial_watermarks: Mapping[tuple[str, str], int] | None = None,
+    held_member_ids: Iterable[str] | None = None,
+    initial_citations: Mapping[str, tuple[int, int]] | None = None,
+    freeze_input_context: bool = False) -> DiscussionDecision:
+    """Replay the complete room log and return at most one next member task.
+
+    ``held_member_ids`` are the manually held members of this room (room scope, durable, supplied
+    by the caller's projection because a hold outlives the bounded active-discussion window). A
+    held member is never selected, so no session or model work is dispatched for it, and the
+    Discussion settles instead of spinning on a turn nobody may take.
+
+    ``freeze_input_context`` freezes the bounded input window into the task payload.
+    """
     room = validate_room(room_value, local_profiles=local_profiles)
+    held = frozenset(str(member_id) for member_id in (held_member_ids or ()))
     validated = _validated_events(events, room=room)
     if (discussion := _pending_discussion(validated)) is None:
         return DiscussionDecision(status="idle", reason="no_pending_user_event")
@@ -618,35 +1004,123 @@ def plan_next_task(
     if len(member_messages) >= MAX_DISCUSSION_MESSAGES:
         return decide("bounded", "max_messages")
     terminals = {
-        (int(event.payload["round_index"]), str(event.payload["member_id"])) for event in validated
+        (int(event.payload["round_index"]), str(event.payload["member_id"]),
+         _continuation_of(event.payload.get("turn_id")))
+        for event in validated
         if event.kind in _TERMINAL_EVENT_KINDS and event.payload.get("discussion_event_id") == discussion.event_id}
+    # How far this discussion has already walked. A slot is visited ONCE and a phase the room has
+    # moved past is sealed: without this, a reply committed by a continuation or a later round
+    # would re-open an earlier empty-delta or held skip and dispatch a member into a round its
+    # own coordinates say is finished. Only the furthest phase stays replayable, so the last
+    # slot's unfinished attachment batch can still take its remaining turn.
+    cursors, furthest_phase = _phase_progress(validated, discussion)
+
+    def sealed(round_index: int, continuation: int | None = None) -> bool:
+        return (round_index, continuation or 0) < furthest_phase
     watermarks = _effective_watermarks(validated, initial_watermarks)
-    seen_through_seq = max(event.seq for event in thread_messages)
+    maximum_seen_seq = max(event.seq for event in thread_messages)
+    # Rounds that committed an ORDINARY visible message. A continuation's own reply is excluded,
+    # so a silent round stays the round whose recovery attempt it belongs to.
+    ordinary_rounds = {
+        int(event.payload["round_index"]) for event in member_messages
+        if _continuation_of(event.payload.get("turn_id")) is None}
+    # Filled by the walk below and read at every exit, so each decision carries exactly the held
+    # skips this walk reached -- including a round nobody could take and a trailing skip before
+    # the room settled.
+    consumptions: dict[str, int] = {}
+
+    def dispatch(
+        member: DiscussionMember, *, member_index: int, round_index: int, reason: str,
+        continuation: int | None = None) -> DiscussionDecision | None:
+        """This slot's task, or ``None`` when the slot has nothing to say."""
+        watermark = watermarks.get((thread_id, member.member_id), 0)
+        pending_attachments = any(
+            event.kind in {"message.user", "message.member"} and watermark < event.seq <= maximum_seen_seq
+            and event.payload.get("attachments") for event in thread_messages)
+        if (round_index, member.member_id, continuation) in terminals and not pending_attachments:
+            return None
+        seen_through_seq, delta, attachments = _bounded_task_delta(
+            thread_messages, watermark=watermark, maximum_seq=maximum_seen_seq)
+        if not delta:
+            return None
+        member_attachments = any(event.kind == "message.member" and event.payload.get("attachments")
+                                 for event in delta)
+        prompt = _build_prompt(
+            room=room, member=member, messages=thread_messages, watermark=watermark,
+            seen_through_seq=seen_through_seq)
+        return decide("task", reason, held_consumptions=tuple(sorted(consumptions.items())), task=_make_task_plan(
+            room=room, discussion_event=discussion, member=member, member_index=member_index,
+            round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt,
+            attachments=attachments, continuation=continuation,
+            input_context=(validate_task_input({
+                "watermark": watermark, "event_seqs": [event.seq for event in delta],
+                # Bind the additive produced-file contract into the immutable task identity.
+                # Older admissions lacking this field must never gain files on Retry.
+                **({"member_attachments": True} if member_attachments else {})})
+                if freeze_input_context or member_attachments else None)))
+
     for round_index in range(MAX_DISCUSSION_ROUNDS):
-        # The user's message selects the first round, with no mention meaning
-        # everyone. Later rounds are opt-in: only a peer explicitly cited by a
-        # Bot and not heard from afterward gets another turn. Every member's
-        # watermark remains intact, so a peer cited later still receives the
-        # complete bounded transcript delta without consuming turns meanwhile.
-        responders = (
-            resolve_mentions((str(discussion.payload["text"]),), room.members) if round_index == 0
-            else _unaddressed_member_mentions(discussion_messages, room))
-        for member_index, member in enumerate(_rotate(responders, round_index)):
-            if (round_index, member.member_id) in terminals:
+        # Cumulative selection, frozen at this round's own committed frontier: this discussion's
+        # user message plus every earlier round's replies, with no mention meaning everyone. A
+        # member carrying new peer context answers again without being called by name.
+        walk = _round_walk(
+            room.members, thread_messages, member_messages,
+            discussion_event=discussion, round_index=round_index)
+        rotated = walk.rotated
+        walked = cursors.get((round_index, 0), -1)
+        # Every slot's held effect is replayed, including a sealed phase's trailing skips, so a
+        # rebuilt projection derives exactly what the live walk did. Only dispatch is restricted:
+        # resume ON the last dispatched slot -- it may still owe this turn its remaining
+        # attachment batch -- and never re-open a slot an earlier call already walked.
+        for member_index, member in enumerate(rotated):
+            if member.member_id in held:
+                consumed = walk.consumption_at(member_index)
+                if consumed > watermarks.get((thread_id, member.member_id), 0):
+                    watermarks[(thread_id, member.member_id)] = consumed
+                    consumptions[member.member_id] = consumed
                 continue
-            watermark = watermarks.get((thread_id, member.member_id), 0)
-            if not any(watermark < event.seq <= seen_through_seq for event in thread_messages):
+            if sealed(round_index) or member_index < max(walked, 0):
                 continue
-            prompt = _build_prompt(
-                room=room, member=member, messages=thread_messages, watermark=watermark,
-                seen_through_seq=seen_through_seq)
-            return decide("task", "member_turn", task=_make_task_plan(
-                room=room, discussion_event=discussion, member=member, member_index=member_index,
-                round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt))
+            if (planned := dispatch(member, member_index=member_index, round_index=round_index,
+                                    reason="member_turn")) is not None:
+                return planned
+        pending_citations: tuple[DiscussionMember, ...] = ()
+        if round_index not in ordinary_rounds:
+            # Silent-round recovery: a peer cited BY NAME and never heard from still owes this
+            # thread a turn. `@all` addresses the room, not a peer, so it cites nobody. The list
+            # is frozen at the silent round's frontier -- a peer first cited by a continuation
+            # reply waits for the next ordinary round -- and walked in roster order without
+            # rotation. A held member is skipped here WITHOUT consuming its delta.
+            attempt = 1 + sum(1 for earlier in range(round_index) if earlier not in ordinary_rounds)
+            pending_citations = _unaddressed_member_mentions(
+                _citation_frontier(thread_messages, discussion, round_index), room,
+                initial=initial_citations)
+            if pending_citations:
+                if attempt > MAX_DISCUSSION_CONTINUATIONS:
+                    # Citations are still owed and only the continuation budget stopped the room
+                    # from driving them: a bounded exit, not consensus. Keyed on the exhausted
+                    # attempt alone -- a phase that a later one sealed simply walks nothing.
+                    return decide("bounded", "max_continuations",
+                                  held_consumptions=tuple(sorted(consumptions.items())))
+                if not sealed(round_index, attempt):
+                    cursor = max(cursors.get((round_index, attempt), 0), 0)
+                    for position in range(cursor, len(pending_citations)):
+                        member = pending_citations[position]
+                        if member.member_id in held:
+                            continue
+                        if (planned := dispatch(
+                                member, member_index=position, round_index=round_index,
+                                reason="continuation_turn", continuation=attempt)) is not None:
+                            return planned
         if not any(int(event.payload["round_index"]) == round_index for event in member_messages):
-            return decide("settled", "silent_round")
+            # A round that only went quiet because every responder is held is reported as such:
+            # the room settles (no spin, no dispatch) and the reason names the manual pause.
+            held_only = bool(rotated) and all(member.member_id in held for member in rotated)
+            return decide("settled", "members_held" if held_only else "silent_round",
+                          held_consumptions=tuple(sorted(consumptions.items())))
         if round_index == MAX_DISCUSSION_ROUNDS - 1:
-            return decide("bounded", "max_rounds")
+            return decide("bounded", "max_rounds",
+                          held_consumptions=tuple(sorted(consumptions.items())))
     raise AssertionError("bounded Discussion loop exhausted unexpectedly")
 
 
@@ -683,9 +1157,39 @@ def reconstruct_task_plan(
         raise DiscussionReconstructionError("task prompt is missing")
     if len(prompt.encode("utf-8")) > driver.MAX_PROMPT_BYTES:
         raise DiscussionReconstructionError("task prompt exceeds the driver limit")
+    # Use the watermark before this task's own publication, not the current one.
+    terminal = next((event for event in validated if event.kind in _TERMINAL_EVENT_KINDS
+                     and event.payload.get("task_id") == identity.task_id), None)
+    watermark_events = validated if terminal is None else tuple(event for event in validated if event.seq < terminal.seq)
+    seen_through_seq = int(match.group("seen"))
+    input_context = None
+    if "input_context" in payload:
+        try:
+            input_context = validate_task_input(payload["input_context"])
+        except ValueError as exc:
+            raise DiscussionReconstructionError(str(exc)) from exc
+        if input_context["event_seqs"][-1] != seen_through_seq:
+            raise DiscussionReconstructionError("task input does not match turn_id")
+        watermark = input_context["watermark"]
+    else:
+        watermark = _derive_member_watermarks(watermark_events).get((identity.thread_id, member.member_id), 0)
+    task_messages = tuple(event for event in validated if event.kind in {"message.user", "message.member"}
+                          and event.payload.get("thread_id") == identity.thread_id and event.seq <= seen_through_seq)
+    if input_context is not None:
+        by_seq = {event.seq: event for event in task_messages}
+        if any(seq not in by_seq for seq in input_context["event_seqs"]):
+            raise DiscussionReconstructionError("task input message is missing")
+        task_messages = tuple(by_seq[seq] for seq in input_context["event_seqs"])
+    attachments = [dict(attachment) for event in task_messages
+                   if watermark < event.seq <= seen_through_seq and (event.kind == "message.user"
+                       or (input_context is not None and input_context.get("member_attachments") is True
+                           and event.kind == "message.member"))
+                   for attachment in event.payload.get("attachments", [])]
     reconstructed = _make_task_plan(
         room=room, discussion_event=discussion, member=member, member_index=int(match.group("position")),
-        round_index=int(match.group("round")), seen_through_seq=int(match.group("seen")), prompt=prompt)
+        round_index=int(match.group("round")), seen_through_seq=seen_through_seq, prompt=prompt,
+        attachments=attachments, input_context=input_context,
+        continuation=int(match.group("continuation")) if match.group("continuation") else None)
     if reconstructed.identity != identity or dict(reconstructed.payload) != dict(payload):
         raise DiscussionReconstructionError("driver task failed deterministic reconstruction")
     return reconstructed
@@ -715,12 +1219,22 @@ def _settled_effects(
     text = _truncate_utf8_text(
         _terminal_text(result, field="text", fallback=""), max_bytes=MAX_MEMBER_TEXT_BYTES,
         suffix=_TRUNCATED_REPLY_NOTICE)
-    if is_pass_text(text):
+    # Files the member produced, already committed to this exact message id by the caller.
+    attachments = [dict(entry) for entry in (
+        result.get("attachments") or [] if isinstance(result, Mapping) else [])]
+    if attachments and (not text.strip() or is_pass_text(text)):
+        # A reply that was only a MEDIA: tag has no words left once the tag is removed, and a
+        # blank member message is not publishable. Name what actually arrived instead.
+        text = _truncate_utf8_text(
+            "Attached files: " + ", ".join(str(entry.get("name") or "attachment") for entry in attachments),
+            max_bytes=MAX_MEMBER_TEXT_BYTES, suffix=_TRUNCATED_REPLY_NOTICE)
+    if is_pass_text(text) and not attachments:
         return {"message_event_id": None, "passed": True}, []
     return {"message_event_id": message_event_id, "passed": False}, [EventPlan(
         event_id=message_event_id, kind="message.member", actor=_member_actor(task.member),
-        payload={**_turn_coordinates(task), "text": text}, authority_gateway_id=room.gateway_id,
-        authority_epoch=room.authority_epoch)]
+        payload={**_turn_coordinates(task), "text": text,
+                 **({"attachments": attachments} if attachments else {})},
+        authority_gateway_id=room.gateway_id, authority_epoch=room.authority_epoch)]
 
 
 def _failed_effects(result: Any, **_: Any) -> Effects:
@@ -766,8 +1280,9 @@ def plan_publication(
             raise DiscussionValidationError(message)
     if status == "deferred":
         _bounded_int(execution_generation, message="deferred publication requires an execution generation", low=1)
+    source_event_seq = int(task.payload["source_event_seq"])
     newer_same_thread = any(
-        event.kind == "message.user" and event.seq > task.seen_through_seq
+        event.kind == "message.user" and event.seq > source_event_seq
         and event.payload.get("thread_id") == task.identity.thread_id for event in validated)
     effective_status: TerminalKind = ("cancelled" if newer_same_thread and status != "deferred" else status)
     digest = task.identity.task_id.removeprefix("dtask:")
@@ -790,3 +1305,196 @@ def plan_publication(
 # The whole block is removed by reverting the commit that added it.
 import json  # noqa: F401,E402
 # ---- END PLUGIN-COMPAT ----
+
+
+def _bounded_task_delta(
+    messages: Sequence[_ValidatedEvent],
+    *,
+    watermark: int,
+    maximum_seq: int,
+) -> tuple[int, list[_ValidatedEvent], list[dict[str, Any]]]:
+    """Return the oldest complete input prefix that fits one model turn.
+
+    Every accepted user or member message fits the per-message attachment limits,
+    so the first event can always make progress. Stopping only between events
+    preserves each message and lets the terminal watermark resume at the next
+    unconsumed event instead of poisoning the room backlog.
+    """
+
+    selected: list[_ValidatedEvent] = []
+    attachments: list[dict[str, Any]] = []
+    attachment_bytes = 0
+    seen_through_seq = watermark
+    for event in messages:
+        if not watermark < event.seq <= maximum_seq:
+            continue
+        event_attachments = (
+            list(event.payload.get("attachments", []))
+            if event.kind in {"message.user", "message.member"}
+            else []
+        )
+        next_count = len(attachments) + len(event_attachments)
+        next_bytes = attachment_bytes + sum(
+            int(attachment["size"]) for attachment in event_attachments
+        )
+        if event_attachments and (
+            next_count > MAX_TASK_ATTACHMENTS
+            or next_bytes > MAX_TASK_ATTACHMENT_BYTES
+        ):
+            if selected:
+                break
+            raise DiscussionValidationError(
+                "one message exceeds the per-task attachment budget"
+            )
+        selected.append(event)
+        attachments.extend(dict(attachment) for attachment in event_attachments)
+        attachment_bytes = next_bytes
+        seen_through_seq = event.seq
+    return seen_through_seq, selected, attachments
+
+
+def _attachment_prompt_lines(
+    messages: Sequence[_ValidatedEvent],
+) -> list[str]:
+    entries: list[str] = []
+    queued_media = False
+    for event in messages:
+        if event.kind != "message.user":
+            continue
+        for attachment in event.payload.get("attachments", []):
+            name = compact_json(attachment["name"])
+            metadata = f"{attachment['mime']}, {attachment['size']} bytes"
+            if attachment["kind"] == "file":
+                entries.append(f"- Staged file {name} ({metadata})")
+                continue
+            queued_media = True
+            label = "image" if attachment["kind"] == "image" else "PDF"
+            entries.append(
+                f"- Queued {label} {name} ({metadata}) for this turn."
+            )
+    if not entries:
+        return []
+    lines = ["", "Attachments available to you for this turn:", *entries]
+    if queued_media:
+        lines.append(
+            "Queued image/PDF attachments are staged separately for this turn; "
+            "inspect the supplied media rather than treating its filename as content."
+        )
+    return lines
+
+
+def _validate_attachments(
+    value: Any,
+    *,
+    member_ids: Iterable[str] | None,
+) -> list[dict[str, Any]]:
+    if member_ids is None:
+        raise DiscussionValidationError(
+            "attachment validation requires the frozen room member ids"
+        )
+    if not isinstance(value, list):
+        raise DiscussionValidationError("attachments must be a list")
+    if len(value) > MAX_ATTACHMENTS:
+        raise DiscussionValidationError(
+            f"attachments must contain at most {MAX_ATTACHMENTS} entries"
+        )
+    expected_member_ids = tuple(
+        _identifier(member_id, label="attachment member_id") for member_id in member_ids
+    )
+    if not expected_member_ids or len(set(expected_member_ids)) != len(
+        expected_member_ids
+    ):
+        raise DiscussionValidationError(
+            "attachment member ids must be a non-empty frozen set"
+        )
+    normalized: list[dict[str, Any]] = []
+    for index, raw in enumerate(value):
+        attachment = _exact_fields(
+            raw,
+            label=f"attachment {index}",
+            required=_ATTACHMENT_FIELDS,
+        )
+        attachment_id = attachment["attachment_id"]
+        if (
+            not isinstance(attachment_id, str)
+            or len(attachment_id) > MAX_ATTACHMENT_ID_CHARS
+            or _ATTACHMENT_ID_RE.fullmatch(attachment_id) is None
+        ):
+            raise DiscussionValidationError(
+                f"attachment {index} has an invalid opaque attachment_id"
+            )
+        kind = attachment["kind"]
+        if not isinstance(kind, str) or kind not in _ATTACHMENT_KINDS:
+            raise DiscussionValidationError(
+                f"attachment {index} kind must be image, pdf, or file"
+            )
+        name = _attachment_name(attachment["name"], index=index)
+        size = attachment["size"]
+        if (
+            isinstance(size, bool)
+            or not isinstance(size, int)
+            or not 0 < size <= MAX_ATTACHMENT_SIZE_BYTES
+        ):
+            raise DiscussionValidationError(
+                f"attachment {index} size must be between 1 and "
+                f"{MAX_ATTACHMENT_SIZE_BYTES} bytes"
+            )
+        mime = _attachment_mime(attachment["mime"], index=index, kind=kind)
+        normalized.append({
+            "attachment_id": attachment_id,
+            "kind": kind,
+            "name": name,
+            "size": size,
+            "mime": mime,
+        })
+    if len({item["attachment_id"] for item in normalized}) != len(normalized):
+        raise DiscussionValidationError("attachment ids must be unique")
+    if sum(item["size"] for item in normalized) > MAX_ATTACHMENT_TOTAL_BYTES:
+        raise DiscussionValidationError(
+            "attachment manifest exceeds the message byte limit"
+        )
+    encoded = compact_json(normalized)
+    if len(encoded.encode("utf-8")) > MAX_ATTACHMENT_MANIFEST_BYTES:
+        raise DiscussionValidationError("attachment manifest is too large")
+    return normalized
+
+
+def _attachment_mime(value: Any, *, index: int, kind: str) -> str:
+    if not isinstance(value, str):
+        raise DiscussionValidationError(f"attachment {index} mime must be a string")
+    mime = value.strip().lower()
+    if (
+        not mime
+        or len(mime) > MAX_ATTACHMENT_MIME_CHARS
+        or _MIME_RE.fullmatch(mime) is None
+    ):
+        raise DiscussionValidationError(f"attachment {index} has invalid mime metadata")
+    if kind == "image" and not mime.startswith("image/"):
+        raise DiscussionValidationError(
+            f"attachment {index} image kind requires image mime"
+        )
+    if kind == "pdf" and mime != "application/pdf":
+        raise DiscussionValidationError(
+            f"attachment {index} pdf kind requires application/pdf"
+        )
+    return mime
+
+
+def _attachment_name(value: Any, *, index: int) -> str:
+    if not isinstance(value, str):
+        raise DiscussionValidationError(f"attachment {index} name must be a string")
+    name = value.strip()
+    if (
+        not name
+        or len(name) > MAX_ATTACHMENT_NAME_CHARS
+        or name in {".", ".."}
+        or "/" in name
+        or "\\" in name
+        or "\x00" in name
+        or "\n" in name
+        or "\r" in name
+    ):
+        raise DiscussionValidationError(
+            f"attachment {index} name must be a bounded basename"
+        )
+    return name

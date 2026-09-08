@@ -64,6 +64,7 @@ import { groupChatMemberBots, groupChatNames, groupLastActivity } from './group-
 import { reorderGroupRows, sortGroupRosterRows } from './group-order'
 import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
 import { $showHiddenBots, isBotHidden, isBotPinned } from './hidden-bots'
+import { HostedRoomDirectory } from './hosted-room-controls'
 import { useBots } from './i18n'
 import { displayName } from './labels'
 import { deleteBot, mergeServerMeta, pullServerAvatars } from './profile-ops'
@@ -916,6 +917,7 @@ export function BotsPane() {
           ) : null}
         </div>
       ) : null}
+      <HostedRoomDirectory onOpen={openGroupChat} />
       {staleNotice ? (
         <div className="mx-2.5 mb-1 rounded-md bg-(--chrome-action-hover) px-2 py-1.5 text-[0.6875rem] text-(--ui-text-tertiary)">
           {staleNotice}

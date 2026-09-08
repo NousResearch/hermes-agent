@@ -6,6 +6,23 @@ import { createPluginContext } from './plugin'
 
 vi.mock('@/store/native-notifications', () => ({ dispatchPluginNativeNotification: vi.fn() }))
 
+it('provides a scoped raw migration read that distinguishes missing data from read failure without parsing JSON', () => {
+  const { storage } = createPluginContext('migration-test')
+  expect(storage.getRaw('pending')).toBeNull()
+  window.localStorage.setItem('hermes.plugin.migration-test.pending', '{invalid json')
+  expect(storage.getRaw('pending')).toBe('{invalid json')
+  expect(createPluginContext('other-plugin').storage.getRaw('pending')).toBeNull()
+  const get = vi.spyOn(window.localStorage, 'getItem').mockImplementation(() => {throw new Error('Read denied')})
+
+  try {
+    expect(() => storage.getRaw('pending')).toThrow('Read denied')
+    expect(storage.get('pending', null)).toBeNull()
+  } finally {
+    get.mockRestore()
+    window.localStorage.removeItem('hermes.plugin.migration-test.pending')
+  }
+})
+
 describe('createPluginContext.onDispose', () => {
   it('collects arbitrary cleanups so the host runs them on deactivate', () => {
     const disposers: Array<() => void> = []

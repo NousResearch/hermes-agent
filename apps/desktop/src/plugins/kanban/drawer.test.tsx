@@ -58,7 +58,7 @@ beforeEach(() => {
   disposeLocales = registerPluginLocales('kanban', KANBAN_LOCALES)
   disposeApi = bindApi(
     async <T,>(path: string, options?: PluginRestOptions) => (await rest(path, options)) as T,
-    { get: (_key, fallback) => fallback, set: vi.fn(), remove: vi.fn() },
+    { get: (_key, fallback) => fallback, getRaw: () => null, set: vi.fn(), remove: vi.fn() },
     () => vi.fn()
   )
 })

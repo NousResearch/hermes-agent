@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+from hashlib import sha256
 import os
+import shutil
 import threading
 import time
 from collections import Counter
 from collections.abc import Iterator, Mapping
+from functools import partial
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
@@ -18,10 +21,13 @@ from gateway import hosted_room_driver as driver
 from gateway import hosted_room_links
 from gateway import hosted_rooms
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
+from gateway.hosted_room_attachments import AttachmentData, HostedRoomAttachmentStore
 from gateway.hosted_room_peer import (
-    GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
-from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
+    GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh,
+    attachment_manifest_digest)
+from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime, MemberTransportUnavailable
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
+from tui_gateway.hosted_room_history_context import load_history_context
 from tui_gateway.hosted_room_peer_http import (
     PeerRunsHTTPClient, PeerRunsHTTPError, digest_reauthorization_error)
 from tui_gateway.hosted_room_peer_transport import (
@@ -61,16 +67,26 @@ def _authority(room: Mapping[str, Any]) -> tuple[str, int]:
     return str(room["authority_gateway_id"]), int(room["authority_epoch"])
 
 
+def _task_member_id(task: Mapping[str, Any]) -> str:
+    """The roster member one driver task belongs to (driver payload fallback order)."""
+    payload = task.get("payload") or {}
+    return str(payload.get("target_member_id") or payload.get("target_profile") or "")
+
+
 class HostedRoomService:
     """Own the hosted Discussion policy and its transport-free worker."""
 
     def __init__(
         self, server: ModuleType, *, db_path: Path | str | None = None,
+        profiles_root: Path | None = None,
         peer_routes: Mapping[tuple[str, str], PeerMemberRoute] | None = None,
         peer_clients: Mapping[Any, HostedRoomPeerClient] | None = None) -> None:
         self.server, self.db_path = server, Path(db_path or hosted_rooms.default_db_path())
+        # Room storage may live separately; discovery and native turn locks must agree.
+        self.profiles_root = Path(profiles_root) if profiles_root is not None else self.root
         hosted_rooms.prune_disbanded_rooms(self.db_path)
         self._policy_lock = threading.RLock()
+        self.attachments = HostedRoomAttachmentStore(self.db_path)
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(self.db_path)
         self.rpc = HostedRoomServerRPC(server)
@@ -93,6 +109,8 @@ class HostedRoomService:
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
             prepare_room=self.prepare_room, publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action,
+            attachment_loader=self._load_task_attachments,
+            history_context_loader=partial(load_history_context, self),
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
             turn_timeout_seconds=_hosted_room_turn_timeout_seconds())
@@ -112,7 +130,7 @@ class HostedRoomService:
                 target_profile=stored.target_profile, capability_digest=catalog.catalog_digest,
                 execution_policy_digest=catalog.execution_policy.policy_digest,
                 cancellation_scope_id=stored.cancellation_scope_id, trace_id=stored.trace_id,
-                grant=stored.grant)
+                grant=stored.grant, attachments=catalog.attachments)
             self.peer_clients[key] = PeerRunsHTTPClient(
                 base_url=stored.target_url, api_key="", receipt_db_path=self.db_path)
             self._peer_route_status[key] = stored.status
@@ -124,7 +142,7 @@ class HostedRoomService:
         return self.db_path.parent
 
     def local_profiles(self) -> tuple[str, ...]:
-        profiles, profiles_dir = {"default"}, self.root / "profiles"
+        profiles, profiles_dir = {"default"}, self.profiles_root / "profiles"
         if profiles_dir.is_dir():
             profiles.update(path.name for path in profiles_dir.iterdir() if path.is_dir())
         return tuple(sorted(profiles))
@@ -139,20 +157,27 @@ class HostedRoomService:
     def _room(self, room_id: str) -> dict[str, Any]:
         return hosted_rooms.room_state(self.db_path, room_id=room_id)
 
-    def _owned_authority(self, room_id: str) -> tuple[str, int]:
-        """(gateway_id, epoch) of a room this gateway owns; conflict error otherwise."""
-        gateway_id, epoch = _authority(self._room(room_id))
+    def _owned_room(self, room_id: str) -> dict[str, Any]:
+        """Room snapshot owned by this gateway; conflict error otherwise."""
+        room = self._room(room_id)
+        gateway_id, _epoch = _authority(room)
         if gateway_id != hosted_rooms.local_authority_gateway_id():
             raise hosted_rooms.AuthorityConflictError(
                 "This Group Chat is managed by another gateway.")
-        return gateway_id, epoch
+        return room
 
     def _turn_lock(self, profile: str) -> contextlib.AbstractContextManager[Path]:
         from tools.bot_relay import acquire_turn_lock
-        return acquire_turn_lock(self.root, profile)
+        return acquire_turn_lock(self.profiles_root, profile)
 
     def start(self) -> None:
-        self.runtime.start()
+        with self._policy_lock:
+            # Match runtime.start(): a live draining worker must not be restarted either.
+            if self.runtime.status()["running"]:
+                return
+            self.attachments.reconcile_room_events()
+            self.attachments.prune()
+            self.runtime.start()
 
     def stop(self, *, timeout: float = 5.0) -> bool:
         return self.runtime.stop(timeout=timeout)
@@ -229,32 +254,51 @@ class HostedRoomService:
         route = self.peer_routes.get(key)
         if route is None:
             if self._member_is_peer(binding.room_id, member_id):
-                raise RuntimeError("peer room route is unavailable")
+                raise MemberTransportUnavailable("peer room route is unavailable")
             return self.rpc
         client = self.peer_clients.get(key)
         if client is None:
-            raise RuntimeError("peer room client is unavailable")
+            raise MemberTransportUnavailable("peer room client is unavailable")
         identity = task.get("identity")
         execution_generation = int(task.get("execution_generation") or 0)
         bind_observation = _hook(client, "bind_observation")
         if (
-            bind_observation is not None and isinstance(identity, driver.TaskIdentity)
-            and execution_generation > 0):
+            bind_observation is not None
+            and isinstance(identity, driver.TaskIdentity)
+            and execution_generation > 0
+        ):
             bind_observation(task_id=identity.task_id, execution_generation=execution_generation)
 
         def set_status(status: str):
             return lambda: self._set_route_status(*key, status)
+
         tracked_client = _RouteStatusPeerClient(
-            client, on_ready=set_status("ready"),
+            client,
+            on_ready=set_status("ready"),
             on_reauthorization=set_status("needs_reauthorization"),
             on_unavailable=set_status("unavailable"),
-            on_refreshed=lambda grant, catalog=None: self._rotate_route_grant(
-                *key, grant, catalog))
+            on_refreshed=lambda grant, catalog=None: self._rotate_route_grant(*key, grant, catalog),
+        )
+        if task.get("payload", {}).get("attachments"):
+            route = self._refresh_peer_attachment_catalog(
+                binding.room_id,
+                member_id,
+                route,
+                tracked_client,
+            )
+            if not route.attachments:
+                raise MemberTransportUnavailable(
+                    "The target gateway needs an update before it can receive files in this Group Chat."
+                )
         self._recover_peer_admission(binding, task, route, tracked_client)
         return PeerHostedRoomTransport(
-            binding=binding, route=route, client=tracked_client,
+            binding=binding,
+            route=route,
+            client=tracked_client,
             source_event_seq=int(payload.get("source_event_seq") or 0),
-            task_id=getattr(identity, "task_id", None), execution_generation=execution_generation)
+            task_id=getattr(identity, "task_id", None),
+            execution_generation=execution_generation,
+        )
 
     def _recover_peer_admission(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], route: PeerMemberRoute,
@@ -272,10 +316,20 @@ class HostedRoomService:
         source_event_seq = int(payload.get("source_event_seq") or 0)
         if not isinstance(prompt, str) or source_event_seq < 1 or not route.trace_id:
             raise RuntimeError("peer room admission identity is unavailable for recovery")
+        attachment_payloads = [
+            {**dict(attachment), "sha256": sha256(data).hexdigest(), "data": data}
+            for attachment, data in self._load_task_attachments(binding, task)]
+        manifest = [{key: value for key, value in item.items() if key != "data"} for item in attachment_payloads]
         dispatch = build_member_dispatch(
             binding=binding, route=route, room_id=identity.room_id, task_id=identity.task_id,
             target_profile=route.target_profile, execution_generation=execution_generation,
-            source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id)
+            source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id,
+            attachment_digest=attachment_manifest_digest(manifest) if manifest else None)
+        if attachment_payloads:
+            stage = _hook(client, "stage_attachments")
+            if stage is None:
+                raise RuntimeError("The target gateway needs an update before it can receive files in this Group Chat.")
+            stage(dispatch=dispatch.as_mapping(), attachments=attachment_payloads, grant=route.grant)
         recover(dispatch=dispatch.as_mapping(), grant=route.grant)
 
     def _member_is_peer(self, room_id: str, member_id: str) -> bool:
@@ -362,6 +416,141 @@ class HostedRoomService:
         return self.policy_checkpoint.snapshot(
             room_id=str(room["room_id"]), latest_seq=int(room["latest_seq"]))
 
+    def _promote_produced_media(
+        self, room: Mapping[str, Any], task: Mapping[str, Any], message_event_id: str, result: Any
+    ) -> tuple[Any, tuple[str, ...]]:
+        """Commit the files a member's reply produced into the room's canonical Files store.
+
+        The native terminal result carries them the way every Hermes surface receives them:
+        explicit ``MEDIA:`` tags, read here through the platform adapter's own ``extract_media``,
+        so code-block, quoted and stored-JSON examples stay non-deliverable and the cleaned text
+        comes from that same parser rather than a second one. Each path is then accepted only by
+        ``validate_media_delivery_path`` under the member's own session, and the bytes become an
+        ordinary room attachment: same store, same ids, same commit-and-retain contract as an
+        inbound file.
+
+        Only a LOCAL member's reply may name a path on this host; a peer's result never causes a
+        backend-local read. The outcome -- display text, ordered manifest, and anything that could
+        not be attached -- is durable in the Files store the moment it is decided, so a
+        publication that fails to append its event republishes exactly that, never a re-reading of
+        sources that may have changed. What could not be attached is named in the reply instead of
+        being passed off as delivered.
+        """
+        import mimetypes
+
+        from gateway.hosted_room_attachments import (
+            MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_ATTACHMENT_BYTES,
+            AttachmentError, AttachmentQuotaError, _name,
+        )
+        from tui_gateway.hosted_room_driver import ROOM_SESSION_SOURCE, room_session_title
+
+        fields = ("attachment_id", "kind", "name", "size", "mime")
+        text = result.get("text") if isinstance(result, Mapping) else None
+        if not isinstance(text, str) or "MEDIA:" not in text:
+            return result, ()
+        room_id = str(room["room_id"])
+        target_id = str(task.get("payload", {}).get("target_member_id") or "")
+        profile = str(task.get("payload", {}).get("target_profile") or "")
+        member = next(
+            (candidate for candidate in room["members"]
+             if str(candidate.get("member_id") or "") == target_id
+             or (not target_id and str(candidate.get("profile") or "") == profile)), None)
+        if member is None or str((member.get("target") or {}).get("kind") or "local") != "local":
+            return result, ()
+        member_ids = tuple(
+            str(candidate.get("member_id") or candidate.get("profile") or "")
+            for candidate in room["members"])
+        commit = partial(
+            self.attachments.commit_message_with_receipt, room_id=room_id,
+            event_id=message_event_id, recipient_member_ids=member_ids, viewer_access=True,
+            hold_until_event=True)
+        # BEFORE resolving a session or touching a path: a decided promotion is what this message
+        # publishes, whatever the filesystem now says.
+        promoted = self.attachments.find_promotion(room_id=room_id, event_id=message_event_id)
+        if promoted is not None:
+            cleaned = str(promoted["display_text"])
+            manifest = list(promoted["manifest"])
+            if not manifest:
+                return {**dict(result), "text": cleaned}, ()
+            committed, transitioned = commit(
+                manifest=manifest,
+                promotion={"display_text": cleaned, "unavailable": promoted["unavailable"]})
+            return {**dict(result), "text": cleaned, "attachments": committed}, transitioned
+        resolved = self.rpc.resolve_exact(
+            profile=profile, title=room_session_title(room_id), source=ROOM_SESSION_SOURCE)
+        if resolved is None:
+            return result, ()
+        # Parsed and path-checked inside the member's own profile scope. `refused` names files the
+        # guard would not open: their tags are already gone from the cleaned text, so dropping
+        # them here would publish a reply that quietly lost an attachment.
+        paths, refused, cleaned = self.rpc.deliverable_media(
+            profile=profile, session_id=str(resolved.get("session_id") or ""), text=text)
+        if not paths and not refused:
+            return result, ()
+        manifest: list[dict[str, Any]] = []
+        unavailable: list[str] = list(refused)
+        total_bytes = 0
+        for index, safe_path in enumerate(paths):
+            source = Path(safe_path)
+            if len(manifest) >= MAX_ATTACHMENTS_PER_MESSAGE:
+                unavailable.append(source.name)
+                continue
+            try:
+                data = self.rpc.read_produced_media(
+                    profile=profile, session_id=str(resolved.get("session_id") or ""), path=safe_path)
+            except OSError:
+                # Bounded and named: a file that vanished or cannot be read must neither block
+                # this room's preparation forever nor be reported as delivered.
+                unavailable.append(source.name)
+                continue
+            if not 0 < len(data) <= min(MAX_ATTACHMENT_BYTES, MAX_MESSAGE_ATTACHMENT_BYTES - total_bytes):
+                unavailable.append(source.name)
+                continue
+            mime = (mimetypes.guess_type(source.name)[0] or "application/octet-stream").lower()
+            if mime == "application/pdf" and shutil.which("pdftoppm") is None:
+                unavailable.append(source.name)
+                continue
+            try:
+                uploaded = self.put_attachment(
+                    room_id=room_id, upload_id=f"{message_event_id}:{index}",
+                    kind="image" if mime.startswith("image/") else (
+                        "pdf" if mime == "application/pdf" else "file"),
+                    name=source.name, mime=mime, data=data)
+            except AttachmentError as exc:
+                # Validation/quota refusals are outcomes; integrity, ownership and idempotency
+                # failures are not. Never turn a broken durable store into successful delivery.
+                if type(exc) not in (AttachmentError, AttachmentQuotaError):
+                    raise
+                unavailable.append(source.name)
+                continue
+            manifest.append({key: uploaded[key] for key in fields})
+            total_bytes += uploaded["size"]
+        if unavailable:
+            omitted = max(0, len(unavailable) - MAX_ATTACHMENTS_PER_MESSAGE)
+            unavailable = unavailable[:MAX_ATTACHMENTS_PER_MESSAGE]
+            for index, name in enumerate(unavailable):
+                try:
+                    unavailable[index] = _name(name)
+                except AttachmentError:
+                    unavailable[index] = "file with an invalid attachment name"
+            notice = f"[Attachment unavailable: {', '.join(unavailable)}"
+            if omitted:
+                notice += f"; {omitted} additional unavailable files (names omitted)"
+            notice += "]"
+            cleaned = discussion._truncate_utf8_text(
+                cleaned, max_bytes=discussion.MAX_MEMBER_TEXT_BYTES - len(notice.encode("utf-8")) - 2,
+                suffix=discussion._TRUNCATED_REPLY_NOTICE)
+            cleaned = f"{cleaned}\n\n{notice}".strip()
+        else:
+            cleaned = discussion._truncate_utf8_text(
+                cleaned, max_bytes=discussion.MAX_MEMBER_TEXT_BYTES,
+                suffix=discussion._TRUNCATED_REPLY_NOTICE)
+        committed, transitioned = commit(
+            manifest=manifest, promotion={"display_text": cleaned, "unavailable": unavailable})
+        if not committed:
+            return {**dict(result), "text": cleaned}, transitioned
+        return {**dict(result), "text": cleaned, "attachments": committed}, transitioned
+
     def _publish_terminal_tasks(self, room: Mapping[str, Any]) -> bool:
         changed, room_id, local_profiles = False, str(room["room_id"]), self.local_profiles()
         for task in self._list_tasks(room_id, _TERMINAL_STATUSES):
@@ -370,16 +559,39 @@ class HostedRoomService:
                 room_id=room_id, task_id=task["identity"].task_id, status=status,
                 execution_generation=execution_generation):
                 continue
+            publication_cursor = int(self._room(room_id)["latest_seq"])
             task_events = self.policy_checkpoint.events_for_task(
-                room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]))
+                room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]),
+                input_context=task["payload"].get("input_context"), task_id=task["identity"].task_id)
             plan = discussion.reconstruct_task_plan(
                 room, task_events, task, local_profiles=local_profiles)
+            message_id = f"dmessage:{task['identity'].task_id.removeprefix('dtask:')}"
+            if any(event.get("event_id") == message_id and event["kind"] == "message.member" for event in task_events):
+                # Finish an already visible immutable reply even if a later request arrived.
+                task_events = [event for event in task_events if event["kind"] != "message.user"
+                               or int(event["seq"]) <= int(task["payload"]["source_event_seq"])]
+            result, transitioned = (
+                self._promote_produced_media(room, task, message_id, task.get("result"))
+                if status == "settled" else (task.get("result"), ()))
             publication = discussion.plan_publication(
-                room, task_events, plan, status=status, result=task.get("result"),
+                room, task_events, plan, status=status, result=result,
                 execution_generation=execution_generation if status == "deferred" else None,
                 local_profiles=local_profiles)
-            for event in publication.events:
-                hosted_rooms.append_event(self.db_path, **event.append_kwargs(room_id))
+            try:
+                for event in publication.events:
+                    appended = hosted_rooms.append_event(self.db_path, **event.append_kwargs(room_id),
+                                                         expected_latest_seq=publication_cursor)
+                    publication_cursor = max(publication_cursor, int(appended["seq"]))
+            except hosted_rooms.EventCursorConflictError:
+                # Retry publication on an ordinary prepare poll, never rerun the model. The
+                # promoted bytes go back to staging with their decision intact, exactly as an
+                # unsent user attachment does.
+                if transitioned:
+                    self.attachments.abort_message_commit(
+                        room_id=room_id, event_id=message_id, attachment_ids=transitioned)
+                continue
+            if isinstance(result, Mapping) and result.get("attachments"):
+                self.attachments.retain_event(room_id=room_id, event_id=message_id)
             changed = True
         return changed
 
@@ -388,15 +600,53 @@ class HostedRoomService:
         if decision.discussion_event_id is None:
             return
         gateway_id, epoch = _authority(room)
-        hosted_rooms.append_event(
-            self.db_path, room_id=str(room["room_id"]),
-            event_id=f"dactivity:{decision.discussion_event_id}:{decision.reason}",
-            kind="room.activity", actor={"kind": "gateway", "id": gateway_id},
-            payload={
-                "status": decision.status, "reason_code": decision.reason,
-                "thread_id": decision.thread_id,
-                "discussion_event_id": decision.discussion_event_id},
-            authority_gateway_id=gateway_id, authority_epoch=epoch)
+        try:
+            hosted_rooms.append_event(
+                self.db_path, room_id=str(room["room_id"]),
+                event_id=f"dactivity:{decision.discussion_event_id}:{decision.reason}:{room['latest_seq']}",
+                kind="room.activity", actor={"kind": "gateway", "id": gateway_id},
+                payload={
+                    "status": decision.status, "reason_code": decision.reason,
+                    "thread_id": decision.thread_id,
+                    "discussion_event_id": decision.discussion_event_id},
+                authority_gateway_id=gateway_id, authority_epoch=epoch,
+                expected_latest_seq=int(room["latest_seq"]))
+        except hosted_rooms.EventCursorConflictError:
+            # A retry committed after the policy read; recompute on the next preparation.
+            return
+
+    def _enforce_control_intent(self, snapshot: PolicySnapshot, room_id: str) -> bool:
+        """Cancel every surviving task the durable control log already forbids.
+
+        Run before the live-task early return, so a Stop that committed its room event and then
+        lost its process (crash, restart, or a cancellation that never reached the driver) is
+        replayed against the tasks it never got to cancel. Later user input is untouched: only
+        tasks behind the stop fence, or belonging to a member the user is holding, are cancelled.
+        Returns whether any task was asked to stop.
+        """
+        held = frozenset(snapshot.held_member_ids)
+        fence = snapshot.stopped_through_seq
+        requested = False
+        for task in list(self._list_tasks(room_id, _STOPPABLE_STATUSES)):
+            member_id = _task_member_id(task)
+            if int(task["payload"].get("source_event_seq") or 0) < fence:
+                cancel_id = f"stop-fence:{fence}"
+            elif member_id in held:
+                cancel_id = f"member-hold:{member_id}"
+            else:
+                continue
+            # A task the worker transitioned concurrently (settled, or already owned by another
+            # stop) raises here; its own terminal path stays authoritative and the next
+            # preparation re-reads whatever survived.
+            with contextlib.suppress(driver.DriverStateError):
+                self.runtime.cancel(task["identity"], cancel_id=cancel_id)
+                requested = True
+        return requested
+
+    def _require_work_open(self, room_id: str) -> None:
+        from gateway.hosted_room_route_schema import require_room_work_open
+        with hosted_rooms._transaction(self.db_path, immediate=True) as conn:
+            require_room_work_open(conn, room_id, error=driver.RoomUnavailableError)
 
     def prepare_room(self, binding: HostedRoomBinding) -> None:
         with self._policy_lock:
@@ -408,20 +658,52 @@ class HostedRoomService:
             self.policy_checkpoint.compact_completed(room_id=binding.room_id)
             driver.prune_published_terminal_tasks(
                 self.db_path, room_id=binding.room_id, clock=self.runtime.clock)
+            # Enforcing control intent can terminalize tasks; publishing them here keeps their
+            # outcomes inside the discussion projection this pass may go on to complete.
+            if self._enforce_control_intent(snapshot, binding.room_id):
+                if self._publish_terminal_tasks(room):
+                    room = self._room(binding.room_id)
+                snapshot = self._policy_snapshot(room)
             if next(iter(self._list_tasks(binding.room_id, _LIVE_STATUSES)), None) is not None:
                 return
+            try:
+                self._require_work_open(binding.room_id)
+            except driver.RoomUnavailableError:
+                return  # Terminal publication and Stop above remain available while closing.
             decision = discussion.plan_next_task(
                 room, list(snapshot.events), local_profiles=self.local_profiles(),
-                initial_watermarks=snapshot.watermarks)
+                initial_watermarks=snapshot.watermarks,
+                held_member_ids=snapshot.held_member_ids, initial_citations=snapshot.citations,
+                freeze_input_context=True)
+            # Persist the held skips this walk reached before acting on its decision: the pause
+            # already cost that context whether or not the planned turn is admitted. The write is
+            # fenced on the cursor the walk read, because it cannot be undone by the cancellation
+            # check below -- if a release or a newer message landed first, this decision is stale
+            # and the room is planned again on the next ordinary drive.
+            if decision.thread_id and decision.held_consumptions:
+                if not self.policy_checkpoint.apply_held_consumptions(
+                        room_id=binding.room_id, thread_id=decision.thread_id,
+                        consumptions=decision.held_consumptions,
+                        expected_through_seq=snapshot.through_seq):
+                    self.runtime.wakeup()
+                    return
             if decision.status == "task" and decision.task is not None:
-                driver.admit_task(
-                    self.db_path, decision.task.identity, payload=decision.task.payload,
-                    clock=time.time)
-                # A stop can race the policy read from another process: re-read after admission
-                # and cancel a task whose source event is now behind the room stop fence.
-                fence = self._policy_snapshot(self._room(binding.room_id)).stopped_through_seq
-                if decision.source_event_seq is not None and decision.source_event_seq < fence:
-                    self.runtime.cancel(decision.task.identity, cancel_id=f"stop-fence:{fence}")
+                existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
+                legacy_payload = dict(decision.task.payload)
+                legacy_payload.pop("input_context", None)
+                if existing is not None and existing["payload"] == legacy_payload:
+                    # Planned before the Files upgrade: keep its identity and receipts rather than
+                    # admitting a second task for the same turn.
+                    discussion.reconstruct_task_plan(room, list(snapshot.events), existing,
+                                                     local_profiles=self.local_profiles())
+                else:
+                    driver.admit_task(
+                        self.db_path, decision.task.identity, payload=decision.task.payload,
+                        clock=time.time)
+                # A stop or a hold can race the policy read from another process: re-read after
+                # admission and cancel a task the control log now forbids.
+                self._enforce_control_intent(
+                    self._policy_snapshot(self._room(binding.room_id)), binding.room_id)
             elif decision.status in {"settled", "bounded"}:
                 self._append_room_status(room, decision)
 
@@ -443,14 +725,72 @@ class HostedRoomService:
         self.runtime.wakeup()
         return room
 
-    def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
-        normalized = discussion.validate_user_payload(payload)
-        gateway_id, epoch = self._owned_authority(room_id)
-        event = hosted_rooms.append_event(
-            self.db_path, room_id=room_id, event_id=event_id, kind="message.user",
-            actor={"kind": "user", "id": "desktop"}, payload=normalized,
-            authority_gateway_id=gateway_id, authority_epoch=epoch)
-        binding = next((b for b in self.bindings() if b.room_id == room_id), None)
+    def send(
+        self,
+        *,
+        room_id: str,
+        event_id: str,
+        payload: Any,
+        actor_id: str = "desktop",
+    ) -> dict[str, Any]:
+        """Accept a trusted caller's actor, never a public RPC-supplied identity."""
+        if (not isinstance(actor_id, str) or not actor_id.strip()
+                or len(actor_id) > hosted_rooms.MAX_ACTOR_ID_CHARS or actor_id != actor_id.strip()):
+            raise hosted_rooms.HostedRoomError("invalid actor_id")
+        room = self._owned_room(room_id)
+        member_ids = tuple(
+            str(member.get("member_id") or member.get("profile") or "")
+            for member in room["members"]
+        )
+        if isinstance(payload, Mapping) and "thread_id" not in payload:
+            payload = {**payload, "thread_id": event_id}
+        normalized = discussion.validate_user_payload(
+            payload,
+            member_ids=member_ids,
+        )
+        transitioned_attachment_ids: tuple[str, ...] = ()
+        if normalized.get("attachments"):
+            normalized["attachments"], transitioned_attachment_ids = (
+                self.attachments.commit_message_with_receipt(
+                    room_id=room_id,
+                    event_id=event_id,
+                    manifest=normalized["attachments"],
+                    recipient_member_ids=member_ids,
+                    viewer_access=True,
+                    hold_until_event=True,
+                )
+            )
+        try:
+            event = hosted_rooms.append_event(
+                self.db_path,
+                room_id=room_id,
+                event_id=event_id,
+                kind="message.user",
+                # The trusted caller's actor: Telegram ingress attribution depends on this, and a
+                # public RPC still cannot supply it.
+                actor={"kind": "user", "id": actor_id},
+                payload=normalized,
+                authority_gateway_id=str(room["authority_gateway_id"]),
+                authority_epoch=int(room["authority_epoch"]),
+            )
+        except Exception:
+            if transitioned_attachment_ids:
+                self.attachments.abort_message_commit(
+                    room_id=room_id,
+                    event_id=event_id,
+                    attachment_ids=transitioned_attachment_ids,
+                )
+            raise
+        if normalized.get("attachments"):
+            self.attachments.retain_event(room_id=room_id, event_id=event_id)
+        binding = next(
+            (
+                candidate
+                for candidate in self.bindings()
+                if candidate.room_id == room_id
+            ),
+            None,
+        )
         if binding is None:
             raise hosted_rooms.RoomNotFoundError("hosted room not found")
         self.prepare_room(binding)
@@ -459,7 +799,7 @@ class HostedRoomService:
 
     def stop_room(
         self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False) -> int:
-        gateway_id, epoch = self._owned_authority(room_id)
+        gateway_id, epoch = _authority(self._owned_room(room_id))
         hosted_rooms.request_room_stop(
             self.db_path, room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
             expected_epoch=epoch)
@@ -472,19 +812,52 @@ class HostedRoomService:
                 own_cancel_id = (
                     task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
                 result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id)
-                if result["status"] == "stopping":
+                # "indeterminate" is a stop the driver could not prove: like "stopping" it must
+                # not read as work that finished.
+                if result["status"] in {"stopping", "indeterminate"}:
                     pending += 1
         if require_acknowledged and pending:
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()
         return len(tasks)
 
+    def _member_holds(self, room_id: str):
+        """Durable manual holds, materialized through the room's current log position."""
+        room = self._room(room_id)
+        return self.policy_checkpoint.member_holds(
+            room_id=room_id, latest_seq=int(room["latest_seq"]))
+
+    def _hold_status(self, room_id: str) -> list[dict[str, Any]]:
+        """Held members for one room's status, labelled from the durable roster."""
+        try:
+            room = self._room(room_id)
+            holds = self._member_holds(room_id)
+        except hosted_rooms.HostedRoomError:
+            return []  # a room that no longer exists holds nobody
+        by_member = {
+            str(member.get("member_id") or ""): member
+            for member in (room.get("members") or []) if isinstance(member, Mapping)}
+        return [
+            {
+                "member_id": hold.member_id,
+                "handle": str(by_member.get(hold.member_id, {}).get("handle") or hold.member_id),
+                "display_name": str(by_member.get(hold.member_id, {}).get("display_name") or ""),
+                "held_at_seq": hold.held_at_seq}
+            for hold in holds if hold.held]
+
     def retry_room_task(self, room_id: str, *, task_id: str) -> dict[str, Any]:
         """Retry one uncertain or deferred task only after explicit user action."""
+        self._require_work_open(room_id)
         candidates = self._list_tasks(room_id, _RETRYABLE_STATUSES)
         task = next((c for c in candidates if c["identity"].task_id == task_id), None)
         if task is None:
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
+        # Retry is recovery of uncertain work, never a hold release: a held member's turn stays
+        # unscheduled until the user releases it with a message.
+        held = {hold.member_id for hold in self._member_holds(room_id) if hold.held}
+        if _task_member_id(task) in held:
+            raise driver.InvalidTaskTransitionError(
+                "this Group Chat member is paused; release it in the room before retrying")
         return self.runtime.retry_indeterminate(task["identity"])
 
     def approve_room_task(
@@ -506,6 +879,8 @@ class HostedRoomService:
             raise RuntimeError("room approval is no longer pending")
         if choice not in {"once", "deny"}:
             raise RuntimeError("room approval choice must be once or deny")
+        if choice == "once":
+            self._require_work_open(room_id)
         approve = _hook(client, "approve_receipt")
         if route is not None and approve is not None:
             result = approve(
@@ -545,7 +920,206 @@ class HostedRoomService:
             "blocked": room_id in runtime["blocked_rooms"]
             or bool(counts.get("indeterminate") or counts.get("stopping")),
             "counts": dict(counts), "pending_actions": pending_actions,
+            "needs_attention": bool(pending_actions),
+            "holds": self._hold_status(room_id),
             "peer_routes": self._route_statuses(room_id)}
+
+
+    def read_attachment(
+        self,
+        *,
+        room_id: str,
+        attachment_id: str,
+        recipient_member_id: str | None,
+        event_id: str | None = None,
+        viewer: bool = False,
+    ) -> AttachmentData:
+        """Return verified bytes only when send-time recipient ownership permits it."""
+
+        if viewer:
+            room = self._owned_room(room_id)
+            return self.attachments.read_viewer(
+                room_id=room["room_id"],
+                attachment_id=attachment_id,
+                event_id=event_id,
+                recipient_member_id=recipient_member_id,
+                authority_gateway_id=room["authority_gateway_id"],
+                authority_epoch=room["authority_epoch"],
+            )
+        return self.attachments.read(
+            room_id=room_id,
+            attachment_id=attachment_id,
+            recipient_member_id=recipient_member_id,
+            event_id=event_id,
+            viewer=viewer,
+        )
+
+
+    def put_attachment(
+        self,
+        *,
+        room_id: str,
+        upload_id: str,
+        kind: str,
+        name: str,
+        mime: str,
+        data: bytes,
+    ) -> dict[str, Any]:
+        """Store one bounded upload for a live room without exposing its path."""
+
+        self._owned_room(room_id)
+        if kind == "pdf" and shutil.which("pdftoppm") is None:
+            raise hosted_rooms.HostedRoomError(
+                "This gateway cannot receive PDFs until Poppler is installed."
+            )
+        return self.attachments.put(
+            room_id=room_id,
+            upload_id=upload_id,
+            kind=kind,
+            name=name,
+            mime=mime,
+            data=data,
+        )
+
+
+    def _load_task_attachments(
+        self,
+        binding: HostedRoomBinding,
+        task: Mapping[str, Any],
+    ) -> Iterator[tuple[Mapping[str, Any], bytes]]:
+        """Resolve task manifests to verified bytes for one frozen room member."""
+
+        manifests = task.get("payload", {}).get("attachments") or []
+        if not manifests:
+            return
+        room = hosted_rooms.room_state(self.db_path, room_id=binding.room_id)
+        target_member_id = str(
+            task.get("payload", {}).get("target_member_id") or ""
+        )
+        profile = str(task.get("payload", {}).get("target_profile") or "")
+        member = next(
+            (
+                candidate
+                for candidate in room["members"]
+                if (
+                    str(candidate.get("member_id") or "") == target_member_id
+                    if target_member_id
+                    else str(candidate.get("profile") or "") == profile
+                )
+            ),
+            None,
+        )
+        if member is None:
+            raise RuntimeError("hosted attachment target is not in the frozen roster")
+        member_id = str(member.get("member_id") or "")
+        for manifest in manifests:
+            stored = self.attachments.read(
+                room_id=binding.room_id,
+                attachment_id=manifest.get("attachment_id"),
+                recipient_member_id=member_id,
+            )
+            safe = {
+                "attachment_id": stored.attachment["attachment_id"],
+                "kind": stored.attachment["kind"],
+                "name": stored.attachment["name"],
+                "size": stored.attachment["size"],
+                "mime": stored.attachment["mime"],
+            }
+            if safe != dict(manifest):
+                raise RuntimeError(
+                    "hosted attachment metadata changed after task admission"
+                )
+            yield safe, stored.data
+
+
+    def _refresh_peer_attachment_catalog(
+        self,
+        room_id: str,
+        member_id: str,
+        route: PeerMemberRoute,
+        client: Any,
+    ) -> PeerMemberRoute:
+        """Re-probe binary support so upgrades and downgrades fail truthfully."""
+
+        probe = getattr(client, "probe", None)
+        if not callable(probe):
+            return route
+        result = probe(grant=route.grant)
+        catalog = GatewayRoomCatalog.from_mapping(result.get("catalog"))
+        if (
+            catalog.installation_id != route.target_install_id
+            or not catalog.persistent_process
+            or not catalog.text
+        ):
+            raise RuntimeError("peer room capability identity changed")
+        key = (room_id, member_id)
+        stored = next(
+            (
+                link
+                for link in hosted_room_links.load_room_links(self.db_path)
+                if (link.room_id, link.member_id) == key
+            ),
+            None,
+        )
+        if stored is None:
+            # Explicitly supplied in-process routes are valid for tests and
+            # ephemeral callers, but cannot publish a refreshed catalog.
+            return replace(
+                route,
+                capability_digest=catalog.catalog_digest,
+                attachments=catalog.attachments,
+            )
+        refreshed = replace(
+            route,
+            capability_digest=catalog.catalog_digest,
+            attachments=catalog.attachments,
+        )
+        if (
+            stored.catalog.catalog_digest != catalog.catalog_digest
+            or stored.catalog.attachments != catalog.attachments
+        ):
+            hosted_room_links.save_room_link(
+                self.db_path,
+                hosted_room_links.make_stored_link(
+                    room_id=room_id,
+                    member_id=member_id,
+                    target_url=stored.target_url,
+                    target_profile=stored.target_profile,
+                    grant=route.grant,
+                    catalog=catalog,
+                    cancellation_scope_id=stored.cancellation_scope_id,
+                    trace_id=stored.trace_id,
+                ),
+            )
+            with self._policy_lock:
+                self.peer_routes[key] = refreshed
+                self._peer_route_status[key] = "ready"
+        return refreshed
+
+
+    def list_attachments(
+        self,
+        *,
+        room_id: str,
+        cursor: Any = None,
+        limit: Any = None,
+        query: Any = None,
+        producer_member_id: Any = None,
+        recipient_member_id: Any = None,
+    ) -> dict[str, Any]:
+        """List canonical files without starting or locking the execution worker."""
+
+        room = self._owned_room(room_id)
+        return self.attachments.list_published(
+            room_id=room_id,
+            authority_gateway_id=str(room["authority_gateway_id"]),
+            authority_epoch=int(room["authority_epoch"]),
+            cursor=cursor,
+            limit=limit,
+            query=query,
+            producer_member_id=producer_member_id,
+            recipient_member_id=recipient_member_id,
+        )
 
 
 class _RouteStatusPeerClient:
@@ -599,7 +1173,7 @@ class _RouteStatusPeerClient:
             return value
 
         def tracked(*args, **kwargs):
-            if name in {"dispatch", "recover_dispatch"} and "grant" in kwargs:
+            if name in {"dispatch", "recover_dispatch", "stage_attachments"} and "grant" in kwargs:
                 kwargs = self._refresh_grant(kwargs)
             try:
                 result = value(*args, **kwargs)

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
+from gateway.hosted_room_attachments import HostedRoomAttachmentStore
 
 
 ROOM_ID = "room-1"
@@ -24,6 +26,50 @@ MEMBERS = [
     }
     for profile in LOCAL_PROFILES[:3]
 ]
+MEMBER_IDS = tuple(member["member_id"] for member in MEMBERS)
+
+
+def _attachment(
+    kind: str,
+    name: str,
+    mime: str,
+    *,
+    size: int = 128,
+    attachment_id: str = "att_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+) -> dict:
+    return {
+        "attachment_id": attachment_id,
+        "kind": kind,
+        "name": name,
+        "size": size,
+        "mime": mime,
+    }
+
+
+def _attachment_manifest() -> list[dict]:
+    return [
+        _attachment(
+            "image",
+            "diagram.png",
+            "image/png",
+            size=2048,
+            attachment_id="att_11111111111111111111111111111111",
+        ),
+        _attachment(
+            "pdf",
+            "release.pdf",
+            "application/pdf",
+            size=4096,
+            attachment_id="att_22222222222222222222222222222222",
+        ),
+        _attachment(
+            "file",
+            "notes.txt",
+            "text/plain",
+            size=512,
+            attachment_id="att_33333333333333333333333333333333",
+        ),
+    ]
 
 
 @pytest.fixture
@@ -55,7 +101,37 @@ def _append_user(
     event_id: str,
     text: str,
     thread_id: str = "thread-1",
+    attachments: list[dict] | None = None,
 ) -> dict:
+    if attachments:
+        store = HostedRoomAttachmentStore(db)
+        for entry in attachments:
+            header = {"image": b"\x89PNG\r\n\x1a\n", "pdf": b"%PDF-"}.get(
+                entry["kind"], b""
+            )
+            data = header + b"x" * (entry["size"] - len(header))
+            # Keep stable planner fixtures, but require real verified commitments.
+            with patch(
+                "gateway.hosted_room_attachments.secrets.token_hex",
+                return_value=entry["attachment_id"].removeprefix("att_"),
+            ):
+                uploaded = store.put(
+                    room_id=ROOM_ID,
+                    upload_id=entry["attachment_id"],
+                    kind=entry["kind"],
+                    name=entry["name"],
+                    mime=entry["mime"],
+                    data=data,
+                )
+            assert {key: uploaded[key] for key in entry} == entry
+        store.commit_message(
+            room_id=ROOM_ID,
+            event_id=event_id,
+            manifest=attachments,
+            recipient_member_ids=MEMBER_IDS,
+            viewer_access=True,
+            hold_until_event=True,
+        )
     return hosted_rooms.append_event(
         db,
         room_id=ROOM_ID,
@@ -64,7 +140,11 @@ def _append_user(
         actor={"kind": "user", "id": "local-user"},
         authority_gateway_id=GATEWAY_ID,
         authority_epoch=1,
-        payload={"text": text, "thread_id": thread_id},
+        payload={
+            "text": text,
+            "thread_id": thread_id,
+            **({"attachments": attachments} if attachments is not None else {}),
+        },
         now=time.time(),
     )
 
@@ -286,6 +366,188 @@ def test_mentions_select_handles_or_everyone(
     _append_user(db, event_id="user-1", text=text)
 
     assert _next_task(room, db).member.profile == expected_profile
+
+
+def _member(profile: str, handle: str, display_name: str) -> dict:
+    return {
+        "member_id": f"member-{handle}",
+        "profile": profile,
+        "handle": handle,
+        "display_name": display_name,
+    }
+
+
+# One member whose friendly name is not its handle. The hosted composer inserts the friendly
+# slug for exactly this roster shape (`botMentionTag`), so the frozen-roster resolver has to
+# accept the tag its own autocomplete produces.
+ALIAS_MEMBERS = [
+    _member("docs", "docs", "Research Buddy"),
+    _member("ops", "ops", "Ops"),
+    _member("qa", "qa", "José QA"),
+]
+
+
+@pytest.fixture
+def alias_room_db(tmp_path: Path) -> tuple[Path, dict]:
+    db = tmp_path / "state.db"
+    room = hosted_rooms.create_room(
+        db,
+        room_id=ROOM_ID,
+        name="Release",
+        members=ALIAS_MEMBERS,
+        authority_gateway_id=GATEWAY_ID,
+        now=1,
+    )
+    return db, room
+
+
+def _roster(*members: dict) -> tuple[discussion.DiscussionMember, ...]:
+    return tuple(
+        discussion.DiscussionMember(
+            member_id=member["member_id"],
+            profile=member["profile"],
+            handle=member["handle"],
+            display_name=member["display_name"],
+        )
+        for member in members
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_handles"),
+    [
+        ("@docs please inspect this", ("docs",)),
+        # The exact tag the hosted autocomplete inserts for "Research Buddy".
+        ("@research-buddy please inspect this", ("docs",)),
+        ("@researchbuddy please inspect this", ("docs",)),
+        # Terminal punctuation after a canonical handle.
+        ("@docs: please inspect this", ("docs",)),
+        ("@docs. please inspect this", ("docs",)),
+        ("@ops. and @research-buddy, both please", ("docs", "ops")),
+        # Accented friendly labels reduce the same way the native resolver reduces them.
+        ("@jos-qa look at this", ("qa",)),
+        ("@josqa look at this", ("qa",)),
+        # Reserved words never resolve to a member, so the room answers as a whole.
+        ("@user please inspect this", ("docs", "ops", "qa")),
+        ("@unknown please inspect this", ("docs", "ops", "qa")),
+        ("@all please inspect this", ("docs", "ops", "qa")),
+    ],
+)
+def test_friendly_aliases_and_punctuation_resolve_against_the_frozen_roster(
+    text: str,
+    expected_handles: tuple[str, ...],
+):
+    resolved = discussion.resolve_mentions((text,), _roster(*ALIAS_MEMBERS))
+
+    assert tuple(member.handle for member in resolved) == expected_handles
+
+
+def test_canonical_handles_win_and_ambiguous_aliases_resolve_to_nobody():
+    """A handle is the unambiguous name; a friendly form shared by two members names neither."""
+    crossed = _roster(_member("docs", "docs", "Ops"), _member("ops", "ops", "Docs"))
+
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@ops go",), crossed)) == ("ops",)
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@docs go",), crossed)) == ("docs",)
+
+    shared = _roster(_member("docs", "docs", "Ops Helper"), _member("ops", "ops", "Ops Helper"))
+
+    assert discussion.resolve_mentions(("@ops-helper go",), shared, default_all=False) == ()
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@ops go",), shared)) == ("ops",)
+
+
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+def test_an_exact_handle_is_never_shadowed_by_a_normalized_form(order: tuple[int, int]):
+    """`foo-bar` collapses to `foobar`, which is another member's real name. Roster order
+    cannot decide who `@foobar` reaches."""
+    members = (_member("docs", "foo-bar", "One"), _member("ops", "foobar", "Two"))
+    roster = _roster(*(members[index] for index in order))
+
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@foobar go",), roster)) == ("foobar",)
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@foo-bar go",), roster)) == ("foo-bar",)
+    assert discussion.resolve_hold_directive("@foobar stop", roster).hold == ("member-foobar",)
+
+
+def test_friendly_labels_fold_like_the_native_composer_not_python_casefold():
+    """`casefold()` would reduce "Straße" to `strasse` — a tag the Desktop autocomplete never
+    inserts and its resolver never accepts. Both engines must accept the same forms."""
+    roster = _roster(_member("docs", "docs", "Straße Team"), _member("ops", "ops", "Ops"))
+
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@stra-e-team go",), roster)) == ("docs",)
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@straeteam go",), roster)) == ("docs",)
+    assert discussion.resolve_mentions(("@strasse-team go",), roster, default_all=False) == ()
+
+
+def test_a_normalized_form_two_handles_share_addresses_nobody():
+    roster = _roster(_member("docs", "foo-bar", "One"), _member("ops", "foo.bar", "Two"))
+
+    assert discussion.resolve_mentions(("@foobar go",), roster, default_all=False) == ()
+    assert discussion.resolve_hold_directive("@foobar stop", roster).hold == ()
+    # Each exact handle still addresses its own member.
+    assert tuple(m.handle for m in discussion.resolve_mentions(("@foo.bar go",), roster)) == ("foo.bar",)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["@research-buddy stop", "@researchbuddy stop", "@docs: stop", "@docs. stop"],
+)
+def test_friendly_stop_holds_its_target(text: str):
+    directive = discussion.resolve_hold_directive(text, _roster(*ALIAS_MEMBERS))
+
+    assert directive.hold == ("member-docs",)
+    assert directive.release == ()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_release"),
+    [
+        ("@research-buddy resume", ("member-docs",)),
+        ("@researchbuddy resume", ("member-docs",)),
+        ("@jos-qa resume", ("member-qa",)),
+        ("@docs. resume", ("member-docs",)),
+        # A direct mention with no verb still releases exactly its target, and only it.
+        ("@research-buddy any update?", ("member-docs",)),
+        ("@all resume", ("member-docs", "member-ops", "member-qa")),
+    ],
+)
+def test_friendly_release_addresses_exactly_its_member(
+    text: str, expected_release: tuple[str, ...]
+):
+    directive = discussion.resolve_hold_directive(text, _roster(*ALIAS_MEMBERS))
+
+    assert directive.hold == ()
+    assert directive.release == expected_release
+
+
+def test_a_composer_friendly_mention_selects_only_that_member(
+    alias_room_db: tuple[Path, dict],
+):
+    """The text a hosted autocomplete tag produces, planned from the committed room log.
+
+    This appends the user event directly: the composer insertion and the `groups.send` round
+    trip are the Desktop comparator's own coverage, not this module's.
+    """
+    db, room = alias_room_db
+    # Deliberately the LAST member's friendly tag: an unresolved alias falls back to the whole
+    # room, whose first speaker is `docs`, so a first-member fixture could not tell them apart.
+    _append_user(db, event_id="user-1", text="@jos-qa please inspect this")
+
+    assert _settle_next(room, db, text="On it.").member.profile == "qa"
+    assert discussion.plan_next_task(
+        room, _events(db), local_profiles=LOCAL_PROFILES).status == "settled"
+
+
+def test_a_member_reply_using_a_friendly_alias_pulls_that_peer_into_the_next_round(
+    alias_room_db: tuple[Path, dict],
+):
+    db, room = alias_room_db
+    _append_user(db, event_id="user-1", text="@ops lead this")
+
+    first = _settle_next(room, db, text="@research-buddy can you confirm the wording?")
+    second = _next_task(room, db)
+
+    assert first.member.profile == "ops"
+    assert second.member.profile == "docs"
+    assert second.round_index == 1
 
 
 def test_member_mention_joins_the_next_round_not_the_current_round(
@@ -592,8 +854,13 @@ def test_three_round_bound(room_db: tuple[Path, dict]):
     room["members"] = MEMBERS[:2]
     _append_user(db, event_id="user-1", text="Discuss.")
 
-    for index in range(6):
+    # Four turns, not six: a round only dispatches a member with NEW delta, so after both have
+    # answered once each later round has exactly one member to hear from. The bound is still what
+    # ends the discussion.
+    spoken: list[str] = []
+    for index in range(4):
         task = _next_task(room, db)
+        spoken.append(task.member.profile)
         peer = "build" if task.member.profile == "research" else "research"
         publication = discussion.plan_publication(
             room,
@@ -604,6 +871,8 @@ def test_three_round_bound(room_db: tuple[Path, dict]):
             local_profiles=LOCAL_PROFILES,
         )
         _append_publication(db, publication)
+
+    assert spoken == ["research", "build", "research", "build"]
 
     decision = discussion.plan_next_task(
         room,
@@ -662,15 +931,6 @@ def test_prompt_delta_is_bounded_to_24_message_lines(
     assert "Message 5." not in task.payload["prompt"]
     assert "Message 6." in task.payload["prompt"]
     assert "Message 29." in task.payload["prompt"]
-
-
-def test_attachment_payload_is_rejected_by_local_text_only_boundary():
-    with pytest.raises(discussion.DiscussionValidationError, match="unknown fields"):
-        discussion.validate_user_payload({
-            "text": "Review.",
-            "thread_id": "thread-1",
-            "attachments": [{"name": "notes.txt"}],
-        })
 
 
 @pytest.mark.parametrize(
@@ -747,3 +1007,420 @@ def test_malformed_log_and_task_reconstruction_fail_closed(
             malformed,
             local_profiles=LOCAL_PROFILES,
         )
+
+
+def test_attachment_only_user_payload_is_accepted():
+    payload = discussion.validate_user_payload(
+        {
+            "text": "",
+            "thread_id": "thread-1",
+            "attachments": [_attachment("file", "notes.txt", "text/plain")],
+        },
+        member_ids=MEMBER_IDS,
+    )
+
+    assert payload["text"] == ""
+    assert len(payload["attachments"]) == 1
+
+
+def test_attachment_manifest_total_bytes_are_bounded():
+    attachments = [
+        _attachment(
+            "file",
+            f"attachment-{index}.bin",
+            "application/octet-stream",
+            size=4_000_000,
+            attachment_id=f"att_{index:032x}",
+        )
+        for index in range(discussion.MAX_ATTACHMENTS)
+    ]
+
+    with pytest.raises(
+        discussion.DiscussionValidationError, match="message byte limit"
+    ):
+        discussion.validate_user_payload(
+            {
+                "text": "Review.",
+                "thread_id": "thread-1",
+                "attachments": attachments,
+            },
+            member_ids=MEMBER_IDS,
+        )
+
+
+def test_attachment_count_is_bounded():
+    attachments = [
+        _attachment(
+            "file",
+            f"notes-{index}.txt",
+            "text/plain",
+            attachment_id=f"att_{index:032x}",
+        )
+        for index in range(discussion.MAX_ATTACHMENTS + 1)
+    ]
+
+    with pytest.raises(discussion.DiscussionValidationError, match="at most 8"):
+        discussion.validate_user_payload(
+            {
+                "text": "Review.",
+                "thread_id": "thread-1",
+                "attachments": attachments,
+            },
+            member_ids=MEMBER_IDS,
+        )
+
+
+@pytest.mark.parametrize(
+    ("attachment", "match"),
+    [
+        (
+            _attachment("file", "x" * 256, "text/plain"),
+            "bounded basename",
+        ),
+        (
+            _attachment("file", "../secret", "text/plain"),
+            "bounded basename",
+        ),
+        (
+            _attachment(
+                "file",
+                "notes.txt",
+                "text/plain",
+                size=discussion.MAX_ATTACHMENT_SIZE_BYTES + 1,
+            ),
+            "size must be between",
+        ),
+        (
+            _attachment("image", "image.bin", "application/octet-stream"),
+            "image kind requires image mime",
+        ),
+        (
+            _attachment("pdf", "release.pdf", "application/octet-stream"),
+            "pdf kind requires application/pdf",
+        ),
+    ],
+)
+def test_attachment_metadata_is_bounded(attachment: dict, match: str):
+    with pytest.raises(discussion.DiscussionValidationError, match=match):
+        discussion.validate_user_payload(
+            {
+                "text": "Review.",
+                "thread_id": "thread-1",
+                "attachments": [attachment],
+            },
+            member_ids=MEMBER_IDS,
+        )
+
+
+@pytest.mark.parametrize("attachment_id", ["", "att_short", "file:secret", "../secret"])
+def test_attachment_manifest_rejects_non_opaque_ids(attachment_id: str):
+    with pytest.raises(discussion.DiscussionValidationError, match="attachment_id"):
+        discussion.validate_user_payload(
+            {
+                "text": "Review.",
+                "thread_id": "thread-1",
+                "attachments": [
+                    _attachment(
+                        "file",
+                        "notes.txt",
+                        "text/plain",
+                        attachment_id=attachment_id,
+                    )
+                ],
+            },
+            member_ids=MEMBER_IDS,
+        )
+
+
+def test_attachment_manifest_requires_every_exact_metadata_field():
+    attachment = _attachment("file", "notes.txt", "text/plain")
+    attachment.pop("mime")
+
+    with pytest.raises(discussion.DiscussionValidationError, match="missing fields"):
+        discussion.validate_user_payload(
+            {
+                "text": "Review.",
+                "thread_id": "thread-1",
+                "attachments": [attachment],
+            },
+            member_ids=MEMBER_IDS,
+        )
+
+
+@pytest.mark.parametrize("field", ["data", "data_url", "base64", "path"])
+def test_attachment_manifest_rejects_raw_data_and_path_fields(field: str):
+    attachment = _attachment("file", "notes.txt", "text/plain")
+    attachment[field] = "/tmp/raw" if field == "path" else "AAAA"
+
+    with pytest.raises(discussion.DiscussionValidationError, match="unknown fields"):
+        discussion.validate_user_payload(
+            {
+                "text": "Review.",
+                "thread_id": "thread-1",
+                "attachments": [attachment],
+            },
+            member_ids=MEMBER_IDS,
+        )
+
+
+def test_attachment_manifest_requires_frozen_member_ids():
+    with pytest.raises(discussion.DiscussionValidationError, match="frozen room member"):
+        discussion.validate_user_payload(
+            {
+                "text": "Review.",
+                "thread_id": "thread-1",
+                "attachments": [_attachment("file", "notes.txt", "text/plain")],
+            },
+        )
+
+
+def test_attachment_task_reconstructs_after_its_terminal_publication(
+    room_db: tuple[Path, dict],
+):
+    db, room = room_db
+    _append_user(
+        db,
+        event_id="user-attachments-terminal",
+        text="Review the upload.",
+        attachments=_attachment_manifest(),
+    )
+    first = _next_task(room, db)
+    publication = discussion.plan_publication(
+        room,
+        _events(db),
+        first,
+        status="settled",
+        result={"text": "First review complete."},
+        local_profiles=LOCAL_PROFILES,
+    )
+    _append_publication(db, publication)
+
+    reconstructed = discussion.reconstruct_task_plan(
+        room,
+        _events(db),
+        {"identity": first.identity, "payload": first.payload},
+        local_profiles=LOCAL_PROFILES,
+    )
+    assert reconstructed == first
+
+    second = _next_task(room, db)
+    assert second.member.member_id != first.member.member_id
+    assert second.payload["attachments"] == _attachment_manifest()
+
+
+def test_attachment_task_reconstructs_after_driver_reopen(
+    room_db: tuple[Path, dict],
+):
+    db, room = room_db
+    _append_user(
+        db,
+        event_id="user-attachments",
+        text="Review the upload.",
+        attachments=_attachment_manifest(),
+    )
+    task = _next_task(room, db)
+    driver.admit_task(db, task.identity, payload=task.payload, clock=time.time)
+
+    reconstructed = discussion.reconstruct_task_plan(
+        room,
+        _events(db),
+        driver.get_task(db, task.identity),
+        local_profiles=LOCAL_PROFILES,
+    )
+    assert reconstructed == task
+    assert reconstructed.payload["attachments"] == _attachment_manifest()
+    assert "att_11111111111111111111111111111111" not in reconstructed.payload["prompt"]
+
+
+def test_attachment_manifest_changes_the_deterministic_task_id(
+    room_db: tuple[Path, dict],
+):
+    db, room = room_db
+    _append_user(
+        db,
+        event_id="user-attachments",
+        text="Review the upload.",
+        attachments=_attachment_manifest(),
+    )
+    with_attachments = _next_task(room, db)
+    without_events = [
+        {
+            **event,
+            "payload": {
+                "text": event["payload"]["text"],
+                "thread_id": event["payload"]["thread_id"],
+            },
+        }
+        if event["kind"] == "message.user"
+        else event
+        for event in _events(db)
+    ]
+    without_attachments = discussion.plan_next_task(
+        room,
+        without_events,
+        local_profiles=LOCAL_PROFILES,
+    ).task
+
+    assert without_attachments is not None
+    assert with_attachments.identity.turn_id == without_attachments.identity.turn_id
+    assert with_attachments.identity.task_id != without_attachments.identity.task_id
+    assert with_attachments.payload["prompt"] != without_attachments.payload["prompt"]
+
+
+def test_attachment_backlog_is_also_chunked_by_task_bytes(
+    room_db: tuple[Path, dict],
+):
+    db, room = room_db
+    for message_index in range(3):
+        manifest = [
+            _attachment(
+                "file",
+                f"chunk-{message_index}-{file_index}.bin",
+                "application/octet-stream",
+                size=10_000_000,
+                attachment_id=f"att_{message_index * 2 + file_index:032x}",
+            )
+            for file_index in range(2)
+        ]
+        _append_user(
+            db,
+            event_id=f"user-bytes-{message_index}",
+            text=f"Byte batch {message_index}",
+            attachments=manifest,
+        )
+
+    first = _next_task(room, db)
+    assert sum(item["size"] for item in first.payload["attachments"]) == 40_000_000
+    publication = discussion.plan_publication(
+        room,
+        _events(db),
+        first,
+        status="settled",
+        result={"text": "(pass)"},
+        local_profiles=LOCAL_PROFILES,
+    )
+    _append_publication(db, publication)
+
+    second = _next_task(room, db)
+    assert second.member.profile == "research"
+    assert sum(item["size"] for item in second.payload["attachments"]) == 20_000_000
+
+
+def test_large_attachment_backlog_advances_in_bounded_lossless_batches(
+    room_db: tuple[Path, dict],
+):
+    db, room = room_db
+    expected_ids: list[str] = []
+    for message_index in range(25):
+        manifest = [
+            _attachment(
+                "file",
+                f"part-{message_index}-{file_index}.bin",
+                "application/octet-stream",
+                size=1,
+                attachment_id=f"att_{message_index * 8 + file_index:032x}",
+            )
+            for file_index in range(8)
+        ]
+        expected_ids.extend(item["attachment_id"] for item in manifest)
+        _append_user(
+            db,
+            event_id=f"user-batch-{message_index}",
+            text=f"Batch {message_index}",
+            attachments=manifest,
+        )
+
+    observed_ids: list[str] = []
+    tasks: list[discussion.DiscussionTaskPlan] = []
+    while len(observed_ids) < len(expected_ids):
+        task = _next_task(room, db)
+        assert task.member.profile == "research"
+        attachments = task.payload["attachments"]
+        assert len(attachments) <= 16
+        assert sum(item["size"] for item in attachments) <= 50_000_000
+        observed_ids.extend(item["attachment_id"] for item in attachments)
+        tasks.append(task)
+        publication = discussion.plan_publication(
+            room,
+            _events(db),
+            task,
+            status="settled",
+            result={"text": "First batch reviewed." if len(tasks) == 1 else "(pass)"},
+            local_profiles=LOCAL_PROFILES,
+        )
+        assert publication.terminal_kind == "turn.settled"
+        _append_publication(db, publication)
+
+    assert observed_ids == expected_ids
+    assert len(tasks) == 13
+    assert len({task.identity.task_id for task in tasks}) == len(tasks)
+    assert tasks[0].seen_through_seq < tasks[-1].seen_through_seq
+    assert "First batch reviewed." not in tasks[1].payload["prompt"]
+
+    next_member = _next_task(room, db)
+    assert next_member.member.profile == "build"
+    assert len(next_member.payload["attachments"]) == 16
+
+
+def test_prompts_include_safe_metadata_and_tasks_carry_attachment_ids(
+    room_db: tuple[Path, dict],
+):
+    db, room = room_db
+    _append_user(
+        db,
+        event_id="user-attachments",
+        text="Review the upload.",
+        attachments=_attachment_manifest(),
+    )
+
+    research = _next_task(room, db)
+    research_prompt = research.payload["prompt"]
+    assert research.member.member_id == "member-research"
+    assert "User (user): Review the upload." in research_prompt
+    assert "User (user): Review the upload. diagram.png" not in research_prompt
+    assert "att_11111111111111111111111111111111" not in research_prompt
+    assert research.payload["attachments"] == _attachment_manifest()
+    assert "Queued image/PDF attachments are staged separately" in research_prompt
+    assert 'Queued image "diagram.png"' in research_prompt
+    assert 'Queued PDF "release.pdf"' in research_prompt
+    assert 'Staged file "notes.txt"' in research_prompt
+
+    publication = discussion.plan_publication(
+        room,
+        _events(db),
+        research,
+        status="settled",
+        result={"text": "(pass)"},
+        local_profiles=LOCAL_PROFILES,
+    )
+    _append_publication(db, publication)
+    build = _next_task(room, db)
+    build_prompt = build.payload["prompt"]
+    assert build.member.member_id == "member-build"
+    assert "att_11111111111111111111111111111111" not in build_prompt
+    assert build.payload["attachments"] == _attachment_manifest()
+    assert build.identity.task_id != research.identity.task_id
+
+
+def test_valid_image_pdf_and_file_manifest_is_normalized():
+    payload = discussion.validate_user_payload(
+        {
+            "text": "Review the attached material.",
+            "thread_id": "thread-1",
+            "attachments": _attachment_manifest(),
+        },
+        member_ids=MEMBER_IDS,
+    )
+
+    assert [attachment["kind"] for attachment in payload["attachments"]] == [
+        "image",
+        "pdf",
+        "file",
+    ]
+    assert payload["attachments"][0] == {
+        "attachment_id": "att_11111111111111111111111111111111",
+        "kind": "image",
+        "name": "diagram.png",
+        "size": 2048,
+        "mime": "image/png",
+    }

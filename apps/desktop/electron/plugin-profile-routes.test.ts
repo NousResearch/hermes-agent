@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { buildAgentRoster, type ConnectionAgents } from './connection-registry'
 import {
   buildOpaqueProfileRoutes,
   buildRegistryProfileRoutes,
@@ -204,9 +205,9 @@ describe('buildOpaqueProfileRoutes', () => {
 describe('buildRegistryProfileRoutes', () => {
   it('keeps duplicate profile names distinct by registry connection without exposing source details', () => {
     const routes = buildRegistryProfileRoutes({
-      agents: [
-        { connectionId: 'local', profile: 'research' },
-        { connectionId: 'homelab', profile: 'research' }
+      enumerations: [
+        { connection: { id: 'local', kind: 'local', label: 'This device' }, profiles: ['research'] },
+        { connection: { id: 'homelab', kind: 'ssh', label: 'Homelab' }, profiles: ['research'] }
       ],
       legacyRoutes: [{ connectionId: 'legacy-hash', mode: 'local', profile: 'research', targetProfile: 'research' }],
       sources: [
@@ -236,7 +237,7 @@ describe('buildRegistryProfileRoutes', () => {
 
   it('keeps the registry local source genuinely local when legacy v1 routing is remote', () => {
     const routes = buildRegistryProfileRoutes({
-      agents: [{ connectionId: 'local', profile: 'barry' }],
+      enumerations: [{ connection: { id: 'local', kind: 'local', label: 'This device' }, profiles: ['barry'] }],
       legacyRoutes: [{ connectionId: 'legacy-hash', mode: 'remote', profile: 'barry', targetProfile: 'default' }],
       sources: [{ id: 'local', kind: 'local', label: 'This device' }]
     })
@@ -252,6 +253,68 @@ describe('buildRegistryProfileRoutes', () => {
       'ws://127.0.0.1:5151/api/ws?token=local'
     )
   })
+
+  it.each(['local', 'studio'])(
+    'retains every same-install route with %s primary while display collapses',
+    primary => {
+      const sources = [
+        { id: 'local', kind: 'local' as const, label: 'This device' },
+        { id: 'studio', kind: 'remote' as const, label: 'Studio' }
+      ]
+
+      const profiles = ['default', 'research']
+
+      const enumerations: ConnectionAgents[] = sources.map(connection => ({
+        connection,
+        installId: 'same-install',
+        profiles: [...profiles, ' research ']
+      }))
+
+      const roster = buildAgentRoster(enumerations, { primaryConnectionId: primary })
+
+      expect(roster.map(({ connectionId, profile, handle }) => ({ connectionId, profile, handle }))).toEqual(
+        profiles.map(profile => ({ connectionId: primary, profile, handle: profile }))
+      )
+      expect(buildRegistryProfileRoutes({ enumerations, sources })).toEqual(
+        sources.flatMap(source =>
+          profiles.map(profile => ({
+            connectionId: source.id,
+            mode: source.kind,
+            profile,
+            targetProfile: profile
+          }))
+        )
+      )
+      // A removed owner must not be recreated or retargeted to its same-install twin.
+      expect(buildRegistryProfileRoutes({ enumerations, sources: sources.slice(0, 1) })).toEqual(
+        profiles.map(profile => ({ connectionId: 'local', mode: 'local', profile, targetProfile: profile }))
+      )
+    }
+  )
+
+  it.each([undefined, 'connect-on-demand', 'ECONNREFUSED'])(
+    'preserves SSH seeds and only restores local cached routes for a real failure (%s)',
+    error => {
+      const sources = [
+        { id: 'local', kind: 'local' as const, label: 'This device' },
+        { id: 'ssh', kind: 'ssh' as const, label: 'SSH', remoteProfile: 'worker' },
+        { id: 'remote', kind: 'remote' as const, label: 'Remote' }
+      ]
+
+      const routes = buildRegistryProfileRoutes({
+        enumerations: sources.map(connection => ({ connection, profiles: null, error })),
+        fallbackProfileNames: ['research', ' research '],
+        sources
+      })
+
+      expect(routes).toEqual([
+        { connectionId: 'ssh', mode: 'remote', profile: 'default', targetProfile: 'worker' },
+        ...(error === 'ECONNREFUSED'
+          ? [{ connectionId: 'local', mode: 'local', profile: 'research', targetProfile: 'research' }]
+          : [])
+      ])
+    }
+  )
 })
 
 describe('isLocalEnumerationFailure', () => {

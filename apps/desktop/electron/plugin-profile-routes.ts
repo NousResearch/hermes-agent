@@ -1,5 +1,7 @@
 import crypto from 'node:crypto'
 
+import type { ConnectionAgents } from './connection-registry'
+
 export interface ProfileRouteConfig {
   cloudOrg: string
   mode: 'cloud' | 'local' | 'remote' | 'ssh'
@@ -37,7 +39,8 @@ interface RegistryProfileRouteSource {
 }
 
 interface BuildRegistryProfileRoutesOptions {
-  agents: RegistryProfileRouteAgent[]
+  enumerations: ConnectionAgents[]
+  fallbackProfileNames?: string[]
   legacyRoutes?: OpaqueProfileRoute[]
   sources: RegistryProfileRouteSource[]
 }
@@ -250,15 +253,38 @@ export async function buildOpaqueProfileRoutes({
 }
 
 /**
- * Project the union registry roster into the narrow plugin descriptor. Registry
+ * Project uncollapsed source enumerations into the narrow plugin descriptor. Registry
  * ids and profile names are routing identities; endpoint/auth/source fields are
  * deliberately discarded here. A registry source of kind `local` always means
  * the actual local runtime, independently of legacy v1 global/profile routing.
  */
 export function buildRegistryProfileRoutes({
-  agents,
+  enumerations,
+  fallbackProfileNames = [],
   sources
 }: BuildRegistryProfileRoutesOptions): OpaqueProfileRoute[] {
+  // Display deduplication by installId would erase valid connection-qualified routes.
+  const agents = enumerations.flatMap(({ connection, profiles }) =>
+    (profiles || []).map(profile => ({ connectionId: connection.id, profile }))
+  )
+
+  agents.push(...undialedSshRouteSeeds(agents, sources))
+
+  const localSource = sources.find(source => source.kind === 'local')
+
+  if (localSource) {
+    const localEnumeration = enumerations.find(({ connection }) => connection.id === localSource.id)
+
+    agents.push(
+      ...localRouteFallbackProfiles(
+        agents,
+        localSource.id,
+        fallbackProfileNames,
+        isLocalEnumerationFailure(localEnumeration?.error)
+      ).map(profile => ({ connectionId: localSource.id, profile }))
+    )
+  }
+
   const sourceById = new Map(sources.map(source => [source.id, source]))
   const seen = new Set<string>()
   const routes: OpaqueProfileRoute[] = []

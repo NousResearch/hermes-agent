@@ -12,7 +12,7 @@ import re
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Literal, Optional, Set
 from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
@@ -142,7 +142,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, classify_send_error,
+    BasePlatformAdapter, CachedMedia, SendResult, classify_send_error,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
@@ -430,6 +430,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
         self._webhook_mode: bool = False
+        self._hosted_room_ingress_active: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
@@ -2841,11 +2842,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 # same builder for the next attempt and discard the old one.
                 if rebuild_app and _attempt < _max_connect - 1:
                     old_app = self._app
-                    self._app = builder.build()
-                    self._bot = self._app.bot
-                    self._register_handlers(self._app)  # keep core and observer handlers in lockstep
                     with contextlib.suppress(Exception):
                         await _shutdown_abandoned_app(old_app)
+                    self._app = builder.build()
+                    self._bot = self._app.bot
+                    # Same order as connect(): plugin handlers BEFORE core, or a rebuilt app keeps
+                    # only core handlers and every plugin-owned route silently disappears for the
+                    # rest of the process.
+                    self._wire_plugin_handlers(self._app)
+                    self._register_handlers(self._app)  # keep core and observer handlers in lockstep
+
+    def _wire_plugin_handlers(self, native=None) -> None:
+        from .hosted_room_ingress import wire
+        self._hosted_room_ingress_active = False
+        self._hosted_room_ingress_active = wire(native, self)
+        super()._wire_plugin_handlers(native)
 
     async def _start_webhook_mode(self, webhook_url: str, *, is_reconnect: bool) -> None:
         """Start PTB's webhook server (Telegram pushes updates; lets cloud platforms auto-wake suspended
@@ -2872,7 +2883,7 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._app.updater.start_webhook(
             listen=webhook_host, port=webhook_port, url_path=webhook_path, webhook_url=webhook_url,
             secret_token=webhook_secret, allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=not is_reconnect,  # push-based ⇒ practically a no-op; mirrors polling
+            drop_pending_updates=not is_reconnect and not getattr(self, "_hosted_room_ingress_active", False),
        )
         self._webhook_mode = True
         self._polling_progress_accepting = False
@@ -2903,8 +2914,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
         self._polling_error_callback_ref = _polling_error_callback  # reused by _handle_polling_conflict
         polling_started = await self._start_polling_resilient(
-            # Cold first boot drops the stale Bot API queue; a watcher reconnect preserves it.
-            drop_pending_updates=not is_reconnect, error_callback=_polling_error_callback, require_progress=not is_reconnect)
+            # A wired active room must capture outage backlog even on a fresh gateway process.
+            drop_pending_updates=not is_reconnect and not getattr(self, "_hosted_room_ingress_active", False),
+            error_callback=_polling_error_callback, require_progress=not is_reconnect)
         if not polling_started:
             logger.warning(
                 "[%s] Connected in degraded Telegram mode: gateway is alive, polling will be retried in the background", self.name)
@@ -2912,7 +2924,8 @@ class TelegramAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect via long polling, or a webhook server if ``TELEGRAM_WEBHOOK_URL`` is set.
 
-        ``is_reconnect``: False = cold boot (drop the stale Bot API queue); True = watcher reconnect (preserve queued
+        ``is_reconnect``: False = cold boot (drop the Bot API queue unless active room ingress is wired);
+        True = watcher reconnect (preserve queued
         updates, else every message sent during the outage is lost). Webhook env: TELEGRAM_WEBHOOK_URL,
         TELEGRAM_WEBHOOK_PORT (8443), TELEGRAM_WEBHOOK_HOST, TELEGRAM_WEBHOOK_SECRET."""
         # Explicit connect() is the only operation allowed to reopen polling after a completed teardown.
@@ -5466,19 +5479,43 @@ class TelegramAdapter(BasePlatformAdapter):
 
     _CACHED_KIND_TO_MESSAGE_TYPE = {"image": MessageType.PHOTO, "video": MessageType.VIDEO, "audio": MessageType.AUDIO}
 
-    async def _download_observed_media(self, msg: Any, what: str):
-        """Download ``msg``'s attachment into the media cache (bounded by ``_max_doc_bytes``). Returns ``(status, cached)``:
+    async def _download_observed_media(
+        self, msg: Any, what: str, *, max_bytes: int | None = None,
+    ) -> tuple[Literal["ok"], CachedMedia] | tuple[Literal["oversized"], Any] | tuple[Literal["none", "failed", "unreadable"], None]:
+        """Download into the cache under the adapter limit and optional tighter caller cap. Returns ``(status, cached)``:
         ``"none"``, ``"oversized"`` (cached = raw file_size), ``"failed"``, ``"unreadable"`` or ``"ok"``."""
+        from pathlib import Path
+
         from gateway.platforms.base import cache_media_bytes_async
         source, filename, mime, kind = self._observed_media_source(msg)
         if source is None:
             return "none", None
+        limit = getattr(self, "_max_doc_bytes", 20 * 1024 * 1024)
+        if max_bytes is not None:
+            limit = min(limit, max_bytes)
         file_size = getattr(source, "file_size", None)
-        if not (0 < self._int_or_zero(file_size) <= getattr(self, "_max_doc_bytes", 20 * 1024 * 1024)):
+        if not (0 < self._int_or_zero(file_size) <= limit):
             return "oversized", file_size
         try:
             file_obj = await source.get_file()
-            data = bytes(await file_obj.download_as_bytearray())
+            if self.config.extra.get("local_mode") and Path(file_obj.file_path or "").is_absolute():
+                # PTB's local-mode download reads the whole file synchronously, trusting
+                # Telegram's size metadata. Bound the actual file before caching instead.
+                def read_local():
+                    path = Path(file_obj.file_path)
+                    if not path.is_file():
+                        raise OSError("Telegram media is not a regular file")
+                    with path.open("rb") as handle:
+                        if not 0 < os.fstat(handle.fileno()).st_size <= limit:
+                            return b""
+                        return handle.read(limit + 1)
+
+                data = await asyncio.to_thread(read_local)
+            else:
+                data = await file_obj.download_as_bytearray()
+            if not 0 < len(data) <= limit:
+                return "oversized", len(data)
+            data = bytes(data)
             if not filename:
                 filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
             cached = await cache_media_bytes_async(data, filename=filename, mime_type=mime, default_kind=kind)

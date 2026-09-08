@@ -13,6 +13,7 @@ import faulthandler
 import logging
 import os
 import signal
+import threading
 import time
 from contextlib import suppress
 from datetime import datetime
@@ -654,22 +655,36 @@ class GatewayStartupMixin:
         return exact, fallback
 
     @staticmethod
-    def _start_hosted_room_worker_sync():
+    def _start_hosted_room_worker_sync(cancel_event):
         """Start the local Group Chat worker without importing the dashboard."""
         import tui_gateway.server  # noqa: F401
         from tui_gateway import methods_groups
-        service = methods_groups.get_hosted_room_service()
+        try:
+            service = methods_groups.start_hosted_room_service(cancel_event=cancel_event)
+        finally:
+            if cancel_event.is_set():
+                methods_groups.stop_hosted_room_service(timeout=1.0)
+        if cancel_event.is_set():
+            return None
         if service is None:
-            service = methods_groups.start_hosted_room_service()
-        if service is None:
-            raise RuntimeError("Group Chat worker has no bound session backend")
+            return None
         status = service.runtime.status()
         if not status.get("running") or status.get("stopping"):
             raise RuntimeError("Group Chat worker did not start")
         return service
 
     async def _ensure_hosted_room_worker(self):
-        return await asyncio.to_thread(self._start_hosted_room_worker_sync)
+        if not hasattr(self, "_hosted_room_start_cancel"):
+            self._hosted_room_start_cancel = threading.Event()
+        try:
+            return await asyncio.to_thread(
+                self._start_hosted_room_worker_sync, self._hosted_room_start_cancel)
+        except asyncio.CancelledError:
+            # Cancelling to_thread does not stop its native call. Fence queued
+            # starts and retire any handle it installed before cancellation.
+            self._hosted_room_start_cancel.set()
+            await self._stop_hosted_room_worker()
+            raise
 
     async def _hosted_room_worker_watcher(self, interval: float = 1.0) -> None:
         """Keep the room worker alive for the messaging gateway lifetime."""
@@ -680,6 +695,9 @@ class GatewayStartupMixin:
     async def _stop_hosted_room_worker(self, timeout: float = 5.0) -> bool:
         """Pause room execution durably without interrupting accepted turns."""
         from tui_gateway import methods_groups
+        if not hasattr(self, "_hosted_room_start_cancel"):
+            self._hosted_room_start_cancel = threading.Event()
+        self._hosted_room_start_cancel.set()
         return await asyncio.to_thread(methods_groups.stop_hosted_room_service, timeout=timeout)
 
     def _start_loop_heartbeat_task(self) -> None:
@@ -1196,13 +1214,7 @@ class GatewayStartupMixin:
     async def _start_post_connect_services(self, connected_count: int) -> None:
         """Room worker, heartbeat, gateway:startup hook, channel directory, /update notice."""
         from gateway.run import _hermes_home
-        try:
-            await self._ensure_hosted_room_worker()
-        except Exception:
-            logger.error(
-                "Group Chat worker failed to start; mutating Group Chat commands "
-                "will fail closed until supervision recovers it", exc_info=True,
-            )
+        # Supervise initial startup too: a broken room must not abort unrelated services.
         self._spawn_supervised(self._hosted_room_worker_watcher, "hosted_room_worker")
         self._start_loop_heartbeat_task()
         from gateway.run_heartbeat_restore import restore_heartbeat_watches

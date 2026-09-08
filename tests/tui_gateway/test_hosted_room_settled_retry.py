@@ -16,6 +16,15 @@ def test_settled_discussion_retry_publishes_once(tmp_path, monkeypatch, later_me
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     (tmp_path / ".hermes" / "profiles" / "reviewer").mkdir(parents=True)
     server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
+    session_lookups = []
+
+    def list_sessions(rid, params):
+        session_lookups.append(dict(params))
+        # Tasks below start in the driver store, never in a native session.
+        assert not server._sessions
+        return {"id": rid, "result": {"sessions": []}}
+
+    server._methods["session.list"] = list_sessions
     service = HostedRoomService(server, db_path=tmp_path / ".hermes" / "state.db")
     service.create_room(room_id="room", name="Room", members=[
         {"member_id": "worker", "profile": "default", "handle": "worker"},
@@ -54,6 +63,7 @@ def test_settled_discussion_retry_publishes_once(tmp_path, monkeypatch, later_me
             authority_gateway_id=binding.gateway_id, authority_epoch=1)
     service._policy_snapshot(hosted_rooms.room_state(service.db_path, room_id="room"))
     assert service.retry_room_task("room", task_id=task["identity"].task_id)["status"] == "queued"
+    assert session_lookups == [{"profile": "default", "title": "Group: room", "include_hidden": True}]
     attempt = driver.start_task(
         service.db_path, task["identity"], lease, expected_cancel_generation=0, clock=clock)
     driver.settle_task(service.db_path, attempt, settlement_id="retry", status="settled",

@@ -750,25 +750,42 @@ def _stamp_api_content_sidecar(
     #
     # Rotation mode needs nothing here: its compacted copies flush to the child
     # session after this stamp.
-    _row_id = _turn_user_msg.get("_row_id")
-    _has_valid_row_id = (
-        isinstance(_row_id, int)
-        and not isinstance(_row_id, bool)
-        and _row_id > 0
-    )
-    _in_place_compacted = preflight_compressed and bool(
-        getattr(agent, "_last_compaction_in_place", False)
-    )
-    if not (_has_valid_row_id or _in_place_compacted):
-        return
-    # Match the durable row on the bytes it actually holds on disk (the pre-flushed
-    # clean text) when we captured one; otherwise fall back to the live content, same
-    # as before this fix (the ordinary in-place-compaction / no-early-flush case).
-    _match_content = (
-        _persisted_content if _persisted_content is not None else _turn_user_msg.get("content")
-    )
-    _db = getattr(agent, "_session_db", None)
-    if _db is not None:
+    #
+    # ``_row_id`` MUST be read (and re-read) under ``_session_persist_lock``, the same
+    # lock a close/early flush holds while it copies this row out, commits it, and
+    # writes ``_row_id`` back onto this dict (see ``_persist_under_lock``). Reading
+    # ``_row_id`` outside that lock races: a close flush can be paused between
+    # committing the row (with no sidecar) and stamping ``_row_id`` back, this stamp
+    # sees no id yet and returns, the close flush then finishes committing
+    # ``api_content = NULL`` and marks the message persisted, and turn-start persist
+    # skips it forever because it is already marked persisted — the row is left with
+    # the wrong bytes for replay with no writer left to correct it. Taking the lock
+    # here — and re-checking ``_row_id`` AFTER acquiring it, not before — closes that
+    # window: either we run first and the close flush blocks until we release the
+    # lock (ordinary no-row-yet path), or the close flush already finished under the
+    # lock and by the time we acquire it ``_row_id`` is visible and current.
+    def _backfill_locked() -> None:
+        _row_id = _turn_user_msg.get("_row_id")
+        _has_valid_row_id = (
+            isinstance(_row_id, int)
+            and not isinstance(_row_id, bool)
+            and _row_id > 0
+        )
+        _in_place_compacted = preflight_compressed and bool(
+            getattr(agent, "_last_compaction_in_place", False)
+        )
+        if not (_has_valid_row_id or _in_place_compacted):
+            return
+        # Match the durable row on the bytes it actually holds on disk (the
+        # pre-flushed clean text) when we captured one; otherwise fall back to the
+        # live content, same as before this fix (the ordinary in-place-compaction /
+        # no-early-flush case).
+        _match_content = (
+            _persisted_content if _persisted_content is not None else _turn_user_msg.get("content")
+        )
+        _db = getattr(agent, "_session_db", None)
+        if _db is None:
+            return
         try:
             if _has_valid_row_id:
                 _db.set_message_api_content(
@@ -790,6 +807,13 @@ def _stamp_api_content_sidecar(
                 agent.session_id or "none",
                 exc_info=True,
             )
+
+    _lock = getattr(agent, "_session_persist_lock", None)
+    if _lock is None:
+        _backfill_locked()
+    else:
+        with _lock:
+            _backfill_locked()
 
 
 def _persist_turn_start(

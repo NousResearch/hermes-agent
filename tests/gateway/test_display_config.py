@@ -50,7 +50,10 @@ class TestResolveDisplaySetting:
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
 
-    def test_chat_and_thread_progress_overrides_are_more_specific_than_platform(self):
+    def test_chat_and_thread_progress_overrides_are_more_specific_than_platform(
+        self, tmp_path, monkeypatch,
+    ):
+        from hermes_cli.config import load_config, set_config_value
         from gateway.display_config import resolve_display_setting
 
         config = {
@@ -76,6 +79,21 @@ class TestResolveDisplaySetting:
         assert resolve_display_setting(
             config, "telegram", "tool_progress", chat_id="-100999",
         ) == "all"
+
+        # The documented CLI escape must persist a dotted thread ID as one key.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        set_config_value(
+            "display.platforms.slack.chats.C123:1712345678\\.123456.tool_progress",
+            "verbose",
+        )
+        persisted = load_config()
+        assert resolve_display_setting(
+            persisted,
+            "slack",
+            "tool_progress",
+            chat_id="C123",
+            thread_id="1712345678.123456",
+        ) == "verbose"
 
 
 # ---------------------------------------------------------------------------

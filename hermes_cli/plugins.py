@@ -984,6 +984,10 @@ class PluginContext:
                              f"plugin name '{self.manifest.name}' automatically).")
         if not name or not _NAMESPACE_RE.match(name):
             raise ValueError(f"Invalid skill name '{name}'. Must match [a-zA-Z0-9_-]+.")
+        # Plugin register() helpers commonly pass the SKILL.md location as str
+        # (PluginManifest.path is stored as str); the registry and find_plugin_skill()
+        # promise a Path downstream.
+        path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"SKILL.md not found at {path}")
         namespace = self.manifest.skill_namespace or self.manifest.name

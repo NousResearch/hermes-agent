@@ -11,15 +11,20 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import {
+  REVIEW_TOOL_DIFF_QUESTION,
+  REVIEW_TOOL_DIFF_TRIGGER,
+  startMockServer
+} from '../../../tests-js/scripts/mock-server'
+
+import {
   buildAppEnv,
   createSandbox,
   launchDesktop,
   type MockBackendFixture,
   waitForAppReady,
   writeEnvFile,
-  writeMockProviderConfig,
+  writeMockProviderConfig
 } from './fixtures'
-import { REVIEW_TOOL_DIFF_QUESTION, REVIEW_TOOL_DIFF_TRIGGER, startMockServer } from './mock-server'
 import { expect, test } from './test'
 
 test('tool diff outside Git opens read-only Review instead of NO DIFFS', async () => {
@@ -32,9 +37,14 @@ test('tool diff outside Git opens read-only Review instead of NO DIFFS', async (
 
   const mock = await startMockServer({ verificationWritePath: changedFile })
   writeMockProviderConfig(sandbox.hermesHome, mock.url)
-  fs.appendFileSync(path.join(sandbox.hermesHome, 'config.yaml'), `\nterminal:\n  cwd: ${JSON.stringify(projectRoot)}\n`, 'utf8')
+  fs.appendFileSync(
+    path.join(sandbox.hermesHome, 'config.yaml'),
+    `\nterminal:\n  cwd: ${JSON.stringify(projectRoot)}\n`,
+    'utf8'
+  )
   writeEnvFile(sandbox.hermesHome)
   const { app, page } = await launchDesktop(buildAppEnv(sandbox))
+
   const fixture: MockBackendFixture = {
     app,
     page,
@@ -45,7 +55,7 @@ test('tool diff outside Git opens read-only Review instead of NO DIFFS', async (
       await app.close().catch(() => undefined)
       await mock.close()
       sandbox.cleanup()
-    },
+    }
   }
 
   try {
@@ -58,17 +68,25 @@ test('tool diff outside Git opens read-only Review instead of NO DIFFS', async (
     await expect(page.getByText(REVIEW_TOOL_DIFF_QUESTION)).toBeVisible({ timeout: 60_000 })
     await page.locator('[data-slot="composer-root"] button[aria-label="Stop"]').click()
 
-    await page.waitForFunction(() => {
-      const card = document.querySelector('[data-slot="aui_changed-files"]')
-      const reviewButton = [...(card?.querySelectorAll('button') ?? [])]
-        .find(button => button.textContent?.trim() === 'Review')
-      if (!reviewButton) {
-        return false
-      }
+    await page.waitForFunction(
+      () => {
+        const card = document.querySelector('[data-slot="aui_changed-files"]')
 
-      reviewButton.click()
-      return true
-    }, undefined, { timeout: 30_000 })
+        const reviewButton = [...(card?.querySelectorAll('button') ?? [])].find(
+          button => button.textContent?.trim() === 'Review'
+        )
+
+        if (!reviewButton) {
+          return false
+        }
+
+        reviewButton.click()
+
+        return true
+      },
+      undefined,
+      { timeout: 30_000 }
+    )
 
     const review = page.getByRole('complementary', { name: 'Review' })
     await expect(review).toBeVisible()

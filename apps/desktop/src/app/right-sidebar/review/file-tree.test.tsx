@@ -148,8 +148,8 @@ describe('ReviewFileTree', () => {
     renderTree()
     fireEvent.contextMenu(screen.getByText('note.md'))
 
-    expect(await screen.findByRole('menuitem', { name: 'Open Changes' })).toBeTruthy()
-    expect(screen.getByRole('menuitem', { name: 'Open File' })).toBeTruthy()
+    expect(await screen.findByRole('menuitem', { name: /open changes/i })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /open file/i })).toBeTruthy()
     expect(screen.queryByRole('menuitem', { name: 'Stage' })).toBeNull()
     expect(screen.queryByRole('menuitem', { name: 'Revert' })).toBeNull()
   })

@@ -124,6 +124,7 @@ describe('FileDiffPanel survives a failed lazy syntax-diff chunk', () => {
       '-old two',
       '+new two'
     ].join('\n')
+
     const { container } = renderQuietly(<FileDiffPanel diff={multiFileDiff} path="combined.patch" />)
 
     await act(() => new Promise(resolve => setTimeout(resolve, 300)))

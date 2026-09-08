@@ -5,6 +5,7 @@ import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 import type { HermesReviewFile, HermesReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
+import { desktopGitRoot } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
@@ -496,11 +497,62 @@ export async function openReviewForPath(
   revealReview(scopeCwd, scopeTarget, fallbackFiles)
   await refreshReview()
 
-  const file = matchReviewFile($reviewFiles.get(), path)
+  let file = matchReviewFile($reviewFiles.get(), path)
+
+  // Git at the pane's current scope has no authority over this file: the
+  // session cwd may not be a repo, may be an umbrella directory ABOVE the
+  // file's own repo, or — on a remote gateway — may be a stale/empty workspace
+  // path while the file lives in a real repo on the backend (#86334, #81722).
+  // Ask the file itself which repo it belongs to (desktopGitRoot is
+  // remote-aware: Electron locally, GET /api/fs/git-root on a gateway) and
+  // re-home the pane there so real git review wins over the read-only tool
+  // snapshot. An explicit scopeCwd is a deliberate pin (a tile's worktree) and
+  // is never second-guessed.
+  if (!scopeCwd && (!file || $reviewReadOnly.get())) {
+    if (await rehomeReviewToChangedFileRepo(path, scopeTarget, fallbackFiles)) {
+      file = matchReviewFile($reviewFiles.get(), path) ?? file
+    }
+  }
 
   if (file) {
     await selectReviewFile(file)
   }
+}
+
+// Monotonic token so an older repo-root probe that resolves late cannot yank
+// the pane away from a scope a newer interaction already established.
+let reviewRehomeSeq = 0
+
+/** Resolve `probePath`'s own git root and re-scope the pane to it. Returns
+ *  true when the pane was re-homed and refreshed against the resolved root. */
+async function rehomeReviewToChangedFileRepo(
+  probePath: string,
+  scopeTarget: string,
+  fallbackFiles: readonly ReviewFallbackFile[]
+): Promise<boolean> {
+  // Only an absolute tool path can name a repo (on either machine); a bare
+  // relative path is meaningless outside the scope we already probed.
+  if (!/^(?:[a-zA-Z]:[\\/]|[\\/])/.test(probePath)) {
+    return false
+  }
+
+  const seq = (reviewRehomeSeq += 1)
+  let root: null | string = null
+
+  try {
+    root = (await desktopGitRoot(probePath))?.trim() || null
+  } catch {
+    root = null
+  }
+
+  if (seq !== reviewRehomeSeq || !root || root === repoCwd()) {
+    return false
+  }
+
+  revealReview(root, scopeTarget, fallbackFiles)
+  await refreshReview()
+
+  return seq === reviewRehomeSeq
 }
 
 // ── Mutations ────────────────────────────────────────────────────────────────

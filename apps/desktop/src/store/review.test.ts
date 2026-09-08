@@ -41,7 +41,7 @@ import {
   toggleReviewTreeMode,
   unstageReviewFile
 } from './review'
-import { $currentCwd } from './session'
+import { $connection, $currentCwd } from './session'
 
 // requestOneShot is the only cross-module dependency that must be faked (it
 // reaches the gateway); everything else routes through window.hermesDesktop.git,
@@ -108,6 +108,131 @@ beforeEach(() => {
 
 afterEach(() => {
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  $connection.set(null)
+})
+
+describe('openReviewForPath repo re-homing (#86334 / #81722)', () => {
+  it('re-homes to the changed file\u2019s own repo when the session cwd is not a repo (umbrella dir)', async () => {
+    // Session cwd is an umbrella directory; git review there is empty, but the
+    // clicked file lives inside a child repository.
+    $currentCwd.set('/umbrella')
+
+    const list = vi.fn(async (cwd: string) =>
+      cwd === '/umbrella/child' ? { files: [file('note.md')] } : { files: [] }
+    )
+
+    const review = stubReview({ diff: vi.fn(async () => 'git diff'), list })
+
+    ;(window as unknown as { hermesDesktop: { gitRoot?: unknown } }).hermesDesktop.gitRoot = vi.fn(
+      async () => '/umbrella/child'
+    )
+
+    const fallback = { added: 1, diff: 'tool diff', path: '/umbrella/child/note.md', removed: 0 }
+
+    await openReviewForPath(fallback.path, null, 'main', [fallback])
+
+    // The pane must land on real, mutable git review of the child repo — not
+    // the read-only tool snapshot fallback.
+    expect($reviewScopeCwd.get()).toBe('/umbrella/child')
+    expect($reviewFiles.get().map(item => item.path)).toEqual(['note.md'])
+    expect($reviewReadOnly.get()).toBe(false)
+    expect($reviewSelectedPath.get()).toBe('note.md')
+    expect($reviewDiff.get()).toBe('git diff')
+    expect(review.list).toHaveBeenCalledWith('/umbrella/child', 'uncommitted', null)
+  })
+
+  it('re-homes over a remote gateway: git-root and review both resolve via the backend REST API', async () => {
+    // Desktop on one machine, gateway on another: desktopGit()/desktopGitRoot
+    // must route through /api/fs/git-root and /api/git/review/* on the REMOTE
+    // backend. The session cwd points at a stale workspace path whose review
+    // list is empty, while the changed file lives in a real repo on the
+    // gateway (#81722).
+    $connection.set({ mode: 'remote' } as never)
+    $currentCwd.set('/gw/workspace')
+
+    const api = vi.fn(async (request: { path: string }) => {
+      const { path } = request
+
+      if (path.startsWith('/api/fs/git-root')) {
+        return { root: '/gw/repo' }
+      }
+
+      if (path.startsWith('/api/git/review/list')) {
+        const cwd = new URL(path, 'http://x').searchParams.get('path')
+
+        return cwd === '/gw/repo' ? { base: null, files: [file('docs/note.md')] } : { base: null, files: [] }
+      }
+
+      if (path.startsWith('/api/git/review/diff')) {
+        return { diff: 'remote git diff' }
+      }
+
+      if (path.startsWith('/api/git/review/ship-info')) {
+        return { ghReady: false, pr: null }
+      }
+
+      throw new Error(`unexpected api call: ${path}`)
+    })
+
+    ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = { api }
+
+    const fallback = { added: 1, diff: 'tool diff', path: '/gw/repo/docs/note.md', removed: 0 }
+
+    await openReviewForPath(fallback.path, null, 'main', [fallback])
+
+    expect($reviewScopeCwd.get()).toBe('/gw/repo')
+    expect($reviewFiles.get().map(item => item.path)).toEqual(['docs/note.md'])
+    expect($reviewReadOnly.get()).toBe(false)
+    expect($reviewSelectedPath.get()).toBe('docs/note.md')
+    expect($reviewDiff.get()).toBe('remote git diff')
+    // The probe went to the backend, not the local Electron bridge.
+    expect(api.mock.calls.some(([request]) => request.path.startsWith('/api/fs/git-root'))).toBe(true)
+  })
+
+  it('keeps the read-only tool snapshot when no repo root exists anywhere', async () => {
+    $currentCwd.set('/no-repo')
+    stubReview({ list: vi.fn(async () => ({ files: [] })) })
+    ;(window as unknown as { hermesDesktop: { gitRoot?: unknown } }).hermesDesktop.gitRoot = vi.fn(async () => null)
+
+    const fallback = { added: 1, diff: 'tool diff', path: '/no-repo/note.md', removed: 0 }
+
+    await openReviewForPath(fallback.path, null, 'main', [fallback])
+
+    expect($reviewScopeCwd.get()).toBeNull()
+    expect($reviewReadOnly.get()).toBe(true)
+    expect($reviewSelectedPath.get()).toBe(fallback.path)
+    expect($reviewDiff.get()).toBe('tool diff')
+  })
+
+  it('never second-guesses an explicit tile scope pin', async () => {
+    const review = stubReview({ list: vi.fn(async () => ({ files: [] })) })
+
+    const gitRoot = vi.fn(async () => '/elsewhere')
+
+    ;(window as unknown as { hermesDesktop: { gitRoot?: unknown } }).hermesDesktop.gitRoot = gitRoot
+
+    const fallback = { added: 1, diff: 'tool diff', path: '/tile/worktree/note.md', removed: 0 }
+
+    await openReviewForPath(fallback.path, '/tile/worktree', 'tile:one', [fallback])
+
+    expect(gitRoot).not.toHaveBeenCalled()
+    expect($reviewScopeCwd.get()).toBe('/tile/worktree')
+    expect(review.list).toHaveBeenCalledWith('/tile/worktree', 'uncommitted', null)
+  })
+
+  it('does not probe git-root for relative tool paths', async () => {
+    stubReview({ list: vi.fn(async () => ({ files: [] })) })
+
+    const gitRoot = vi.fn(async () => '/somewhere')
+
+    ;(window as unknown as { hermesDesktop: { gitRoot?: unknown } }).hermesDesktop.gitRoot = gitRoot
+
+    await openReviewForPath('relative/note.md', null, 'main', [
+      { added: 1, diff: 'tool diff', path: 'relative/note.md', removed: 0 }
+    ])
+
+    expect(gitRoot).not.toHaveBeenCalled()
+  })
 })
 
 describe('refreshReview', () => {
@@ -264,9 +389,12 @@ describe('selectReviewFile / clearReviewSelection', () => {
 
     let resolveDiff!: (value: string) => void
     review.list.mockResolvedValue({ files: [file(gitPath)] })
-    review.diff.mockImplementationOnce(() => new Promise(resolve => {
-      resolveDiff = resolve
-    }))
+    review.diff.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          resolveDiff = resolve
+        })
+    )
 
     const unsafeSnapshots: string[][] = []
 
@@ -404,9 +532,10 @@ describe('selectReviewFile / clearReviewSelection', () => {
 
     let resolveList!: (value: { files: HermesReviewFile[] }) => void
     review.list.mockImplementationOnce(
-      () => new Promise(resolve => {
-        resolveList = resolve
-      })
+      () =>
+        new Promise(resolve => {
+          resolveList = resolve
+        })
     )
     const second = { added: 1, diff: 'second diff', path: '/workspace/second.md', removed: 0 }
 

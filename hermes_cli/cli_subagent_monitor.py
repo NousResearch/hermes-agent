@@ -92,6 +92,171 @@ class SubagentMonitor:
         return '\n'.join(lines)
 
 
+def read_tail(path):
+    if not path:
+        return 'Live transcript not available yet.'
+    try:
+        with open(path, 'rb') as stream:
+            stream.seek(0, 2)
+            stream.seek(max(0, stream.tell() - 32768))
+            text = stream.read(32768).decode('utf-8', errors='replace')
+        return ''.join(c for c in text if c.isprintable() or c in '\n\t')
+    except OSError:
+        return 'Live transcript not available yet.'
+
+
+def build_monitor_application(monitor, **kwargs):
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.data_structures import Point
+    from prompt_toolkit.filters import Condition
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.widgets import TextArea
+
+    state = {'detail': False, 'steering': False, 'confirm': False, 'notice': ''}
+    steer = TextArea(height=1, prompt='Steer: ', multiline=False)
+    tail = TextArea(read_only=True, scrollbar=True, wrap_lines=True)
+
+    def roster_text():
+        size = app.output.get_size()
+        rows = []
+        for row in monitor.entries:
+            selected = row['subagent_id'] == monitor.selected_id
+            text = f"{'❯' if selected else ' '} {row['elapsed']}s · {row.get('status') or 'starting'} · {row.get('goal') or row['subagent_id']}"
+            if row.get('last_tool'):
+                text += f" · last: {row['last_tool']}"
+            rows.append(('reverse' if selected else '', _clip(text, size.columns) + '\n'))
+        return rows or [('', 'No live subagents. Results arrive in the conversation.')]
+
+    def cursor():
+        index = next((i for i, row in enumerate(monitor.entries) if row['subagent_id'] == monitor.selected_id), 0)
+        return Point(x=0, y=index)
+
+    roster = Window(FormattedTextControl(roster_text, focusable=True, get_cursor_position=cursor))
+
+    def update_tail():
+        row = monitor.selected
+        text = read_tail(row.get('live_transcript')) if row else 'This subagent is no longer live.'
+        if text != tail.text:
+            following = tail.buffer.cursor_position == len(tail.text)
+            position = tail.buffer.cursor_position
+            tail.text = text
+            tail.buffer.cursor_position = len(text) if following else min(position, len(text))
+
+    def header():
+        row = monitor.selected
+        title = f"Subagents · {len(monitor.entries)} live"
+        if state['detail'] and row:
+            title += f" · {row['subagent_id']} · {row.get('goal') or ''}"
+        return [('bold', _clip(title, app.output.get_size().columns))]
+
+    def footer():
+        if state['confirm']:
+            return 'Stop selected subagent? y confirm · Esc cancel'
+        if state['steering']:
+            return 'Enter queues guidance · Esc cancels (does not interrupt)'
+        return ('Esc roster · PgUp/PgDn tail · s steer · x stop' if state['detail'] else
+                '↑/↓ select · Enter tail · s steer · x stop · q/F6 close')
+
+    kb = KeyBindings()
+    normal = Condition(lambda: not state['steering'] and not state['confirm'])
+    listing = normal & Condition(lambda: not state['detail'])
+
+    @kb.add('up', filter=listing)
+    def up(event):
+        monitor.select(-1)
+
+    @kb.add('down', filter=listing)
+    def down(event):
+        monitor.select(1)
+
+    @kb.add('enter', filter=listing)
+    def detail(event):
+        if monitor.selected:
+            state['detail'] = True
+            update_tail()
+            app.layout.focus(tail)
+
+    @kb.add('s', filter=normal)
+    def start_steer(event):
+        if monitor.selected:
+            state['steering'] = True
+            app.layout.focus(steer)
+
+    @kb.add('enter', filter=Condition(lambda: state['steering']))
+    def send_steer(event):
+        if not steer.text.strip():
+            return
+        result = monitor.control('steer', steer.text)
+        state['notice'] = result.get('error') or result.get('note') or str(result)
+        steer.text = ''
+        state['steering'] = False
+        app.layout.focus(tail if state['detail'] else roster)
+
+    @kb.add('x', filter=normal)
+    def stop(event):
+        if monitor.selected:
+            state['confirm'] = True
+
+    @kb.add('y', filter=Condition(lambda: state['confirm']))
+    def confirm(event):
+        result = monitor.control('stop')
+        state['notice'] = result.get('error') or result.get('note') or str(result)
+        state['confirm'] = False
+
+    @kb.add('escape', eager=True)
+    def back(event):
+        if state['steering'] or state['confirm']:
+            state['steering'] = state['confirm'] = False
+            app.layout.focus(tail if state['detail'] else roster)
+        elif state['detail']:
+            state['detail'] = False
+            app.layout.focus(roster)
+        else:
+            app.exit()
+
+    @kb.add('q', filter=normal)
+    @kb.add('f6', filter=normal)
+    @kb.add('c-c')
+    def close(event):
+        app.exit()
+
+    layout = Layout(HSplit([
+        Window(FormattedTextControl(header), height=1),
+        ConditionalContainer(roster, filter=Condition(lambda: not state['detail'])),
+        ConditionalContainer(tail, filter=Condition(lambda: state['detail'])),
+        ConditionalContainer(steer, filter=Condition(lambda: state['steering'])),
+        Window(FormattedTextControl(lambda: _clip(state['notice'], app.output.get_size().columns)), height=1),
+        Window(FormattedTextControl(footer), height=1),
+    ]), focused_element=roster)
+    app = Application(layout=layout, key_bindings=kb, full_screen=True, mouse_support=False,
+                      before_render=lambda app: update_tail() if state['detail'] else None, **kwargs)
+    return app
+
+
+def open_monitor(cli):
+    import asyncio
+    from prompt_toolkit.application import in_terminal
+    monitor = getattr(cli, '_subagent_monitor', None)
+    if monitor is None or monitor.opening:
+        return
+    monitor.opening = True
+
+    async def run():
+        try:
+            async with in_terminal():
+                monitor.refresh()
+                monitor.app = build_monitor_application(monitor)
+                await monitor.app.run_async()
+        finally:
+            monitor.app = None
+            monitor.opening = False
+            cli._invalidate()
+
+    asyncio.get_running_loop().create_task(run())
+
+
 def install_dock(cli):
     from prompt_toolkit.application import get_app
     from prompt_toolkit.layout import ConditionalContainer, Window

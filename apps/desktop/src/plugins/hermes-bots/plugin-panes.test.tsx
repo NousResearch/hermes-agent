@@ -24,12 +24,41 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as DataModule from './data'
 import type * as RoutingModule from './routing'
 
-const mocks = vi.hoisted(() => ({
-  botChatOwnsWorkspace: vi.fn(() => false),
-  paneVisibility: vi.fn(),
-  sessionOwnsWorkspace: vi.fn(() => false),
-  setWorkspaceScope: vi.fn()
-}))
+const mocks = vi.hoisted(() => {
+  const store = (initial: string) => {
+    let value = initial
+    const listeners = new Set<(next: string) => void>()
+
+    return {
+      get: () => value,
+      listen: (listener: (next: string) => void) => {
+        listeners.add(listener)
+        listener(value)
+
+        return () => listeners.delete(listener)
+      },
+      reset: (next: string) => {
+        listeners.clear()
+        value = next
+      },
+      set: (next: string) => {
+        value = next
+        listeners.forEach(listener => listener(next))
+      }
+    }
+  }
+
+  return {
+    botChatOwnsWorkspace: vi.fn(() => false),
+    connectionId: store('local'),
+    gatewayState: store('idle'),
+    handleSessionsGatewayTransition: vi.fn(async () => undefined),
+    paneVisibility: vi.fn(),
+    recoverPendingGroupChatRounds: vi.fn(),
+    sessionOwnsWorkspace: vi.fn(() => false),
+    setWorkspaceScope: vi.fn()
+  }
+})
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const original = await importOriginal<typeof HermesSdk>()
@@ -40,7 +69,12 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
       ...original.host,
       onEvent: undefined,
       paneVisibility: mocks.paneVisibility,
-      setWorkspaceScope: mocks.setWorkspaceScope
+      setWorkspaceScope: mocks.setWorkspaceScope,
+      state: {
+        ...original.host.state,
+        connectionId: mocks.connectionId,
+        gateway: mocks.gatewayState
+      }
     }
   }
 })
@@ -68,7 +102,7 @@ vi.mock('./group-chat', async () => {
     $groupChats: nanoAtom({}),
     $groupChatWorkspace: nanoAtom(null),
     assignLegacyThreads: (log: unknown[]) => log,
-    handleSessionsGatewayTransition: vi.fn(),
+    handleSessionsGatewayTransition: mocks.handleSessionsGatewayTransition,
     pullGroupChatServerState: async () => false,
     scheduleGroupChatServerSync: vi.fn(),
     setGroupChatSyncDisposed: vi.fn(),
@@ -77,6 +111,7 @@ vi.mock('./group-chat', async () => {
     updateGroupChat: vi.fn()
   }
 })
+vi.mock('./group-rounds', () => ({ recoverPendingGroupChatRounds: mocks.recoverPendingGroupChatRounds }))
 vi.mock('./data', async importOriginal => {
   const original = await importOriginal<typeof DataModule>()
 
@@ -151,6 +186,8 @@ function paneStores() {
 const settle = () => new Promise(resolve => setTimeout(resolve, 0))
 
 beforeEach(() => {
+  mocks.connectionId.reset('local')
+  mocks.gatewayState.reset('idle')
   vi.clearAllMocks()
   mocks.botChatOwnsWorkspace.mockReturnValue(false)
   mocks.sessionOwnsWorkspace.mockReturnValue(false)
@@ -158,6 +195,50 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+})
+
+describe('group-room recovery', () => {
+  it('coalesces startup hydration with the initial connection identity', async () => {
+    paneStores()
+    const harness = recordingContext()
+
+    plugin.register(harness.ctx)
+    mocks.connectionId.set('remote-startup')
+    await settle()
+
+    expect(mocks.handleSessionsGatewayTransition).not.toHaveBeenCalled()
+    expect(mocks.recoverPendingGroupChatRounds).toHaveBeenCalledTimes(1)
+
+    harness.dispose()
+  })
+
+  it('does not cancel room drives when socket or foreground-connection state changes', async () => {
+    paneStores()
+    const harness = recordingContext()
+
+    plugin.register(harness.ctx)
+    await settle()
+    mocks.handleSessionsGatewayTransition.mockClear()
+
+    mocks.gatewayState.set('connecting')
+    mocks.gatewayState.set('open')
+    expect(mocks.handleSessionsGatewayTransition).not.toHaveBeenCalled()
+
+    mocks.connectionId.set('other-gateway')
+    expect(mocks.handleSessionsGatewayTransition).not.toHaveBeenCalled()
+    harness.dispose()
+  })
+
+  it('re-drives durable unread turns after room hydration settles', async () => {
+    paneStores()
+    const harness = recordingContext()
+
+    plugin.register(harness.ctx)
+    await settle()
+
+    expect(mocks.recoverPendingGroupChatRounds).toHaveBeenCalled()
+    harness.dispose()
+  })
 })
 
 describe('the Bots pane dock', () => {

@@ -897,6 +897,10 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         r.running = false
         r.turn = null
 
+        if (r.pendingThread === thread) {
+          delete r.pendingThread
+        }
+
         return r
       })
 
@@ -954,6 +958,62 @@ async function harvestStrandedUntilSettled(group: string, members: GroupMember[]
   })
 }
 
+/** Re-drive the newest thread in every idle room that still has a user
+ *  message an addressed member has not consumed. Window reloads and gateway
+ *  re-homes necessarily kill the renderer-owned serial loop, but the durable
+ *  pending-thread marker, log, and watermarks retain exactly which members are
+ *  still owed a turn. Reconstruct from that state instead of replaying old
+ *  settled rooms or requiring the user to resend. */
+export function recoverPendingGroupChatRounds() {
+  for (const [group, room] of Object.entries($groupChats.get())) {
+    const members = Array.isArray(room?.members) ? room.members : []
+
+    if (!room || room.running || room.tombstone || !members.length || !Array.isArray(room.log)) {
+      continue
+    }
+
+    const pendingThread = room.pendingThread
+
+    if (!pendingThread) {
+      continue
+    }
+
+    const threadLog = room.log.filter((entry: GroupMessage) => groupThreadOf(entry) === pendingThread)
+    const responders = resolveGroupResponders(threadLog, members)
+
+    const hasUnreadEntry = responders.some((member: GroupMember) => {
+      const seen = room.watermarks?.[`${pendingThread}::${groupMemberKey(member)}`] || 0
+
+      return room.log.slice(seen).some((entry: GroupMessage) => groupThreadOf(entry) === pendingThread)
+    })
+
+    if (!hasUnreadEntry) {
+      updateGroupChat(group, current => {
+        delete current.pendingThread
+
+        return current
+      })
+
+      continue
+    }
+
+    updateGroupChat(group, (current: GroupChatRoom) => {
+      current.epoch = (current.epoch || 0) + 1
+      current.running = true
+
+      return current
+    })
+    void runGroupChatRounds(group, members, pendingThread).catch(() => {
+      updateGroupChat(group, (current: GroupChatRoom) => {
+        current.running = false
+        current.turn = null
+
+        return current
+      })
+    })
+  }
+}
+
 /** User send into a group room. `thread` continues that thread (its reply
  *  box); omitted/null mints a NEW thread — the main composer's Slack shape.
  *  Appends, bumps the room epoch (supersedes any running loop at its next
@@ -1001,6 +1061,7 @@ export function sendToGroupChat(
   const wasRunning = ($groupChats.get()[group] || {}).running === true
   updateGroupChat(group, (room: GroupChatRoom) => {
     room.epoch = (room.epoch || 0) + 1
+    room.pendingThread = target
     room.running = true
     // #93129: user text is the ONLY input that changes member holds. An
     // explicit "stop @member" sets a sticky hold; "@member resume" (or

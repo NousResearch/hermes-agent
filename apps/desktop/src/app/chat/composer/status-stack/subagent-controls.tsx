@@ -8,11 +8,12 @@ import { requestForOwnedSession } from '@/store/session-states'
 interface SubagentControlsProps {
   sessionId: string
   subagentId: string
+  text: string
+  setText: (text: string) => void
 }
 
-export function SubagentControls({ sessionId, subagentId }: SubagentControlsProps) {
+export function SubagentControls({ sessionId, subagentId, text, setText }: SubagentControlsProps) {
   const { t } = useI18n()
-  const [text, setText] = useState('')
   const [pending, setPending] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [failed, setFailed] = useState(false)

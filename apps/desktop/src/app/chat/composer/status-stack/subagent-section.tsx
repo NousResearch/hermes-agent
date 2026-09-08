@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
 import { SubagentRow } from '@/app/agents'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { StatusSection } from '@/components/chat/status-section'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import { useI18n } from '@/i18n'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
@@ -22,17 +23,10 @@ export function SubagentSection({ sessionId }: SubagentSectionProps) {
   const live = items.filter(item => item.status === 'running' || item.status === 'queued')
   const [nowMs, setNowMs] = useState(Date.now)
   const [selected, setSelected] = useState<string | null>(null)
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
   const hasLive = live.length > 0
 
-  useEffect(() => {
-    if (!hasLive) {
-      return
-    }
-
-    const timer = setInterval(() => setNowMs(Date.now()), 1000)
-
-    return () => clearInterval(timer)
-  }, [hasLive])
+  useViewedInterval(() => setNowMs(Date.now()), 1000, hasLive)
 
   if (!hasLive) {
     return null
@@ -46,7 +40,11 @@ export function SubagentSection({ sessionId }: SubagentSectionProps) {
       onClick={() => setSelected(selected === item.id ? null : item.id)}
       type="button"
     >
-      <GlyphSpinner ariaLabel={t.agents.running} className="mt-0.5 shrink-0 text-(--ui-purple)" spinner="braille" />
+      <GlyphSpinner
+        ariaLabel={item.status === 'queued' ? t.agents.queued : t.agents.running}
+        className="mt-0.5 shrink-0 text-(--ui-purple)"
+        spinner="braille"
+      />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-xs text-(--ui-text-primary)">{item.goal}</span>
         <span className="block truncate text-[0.68rem] text-(--ui-text-tertiary)">
@@ -60,7 +58,7 @@ export function SubagentSection({ sessionId }: SubagentSectionProps) {
     </button>
   )
 
-  const detail = items.find(item => item.id === selected)
+  const detail = live.find(item => item.id === selected)
 
   return (
     <div className="composer-no-drag min-w-0" data-slot="composer-subagents">
@@ -81,7 +79,13 @@ export function SubagentSection({ sessionId }: SubagentSectionProps) {
       {detail && (
         <div className="max-h-[25vh] overflow-y-auto overscroll-contain px-3 py-2" data-slot="composer-subagent-detail">
           {(detail.status === 'running' || detail.status === 'queued') && (
-            <SubagentControls key={`${sessionId}:${detail.id}`} sessionId={sessionId} subagentId={detail.id} />
+            <SubagentControls
+              key={`${sessionId}:${detail.id}`}
+              sessionId={sessionId}
+              setText={text => setDrafts(previous => ({ ...previous, [detail.id]: text }))}
+              subagentId={detail.id}
+              text={drafts[detail.id] ?? ''}
+            />
           )}
           <SubagentRow node={{ ...detail, children: [] }} nowMs={nowMs} />
         </div>

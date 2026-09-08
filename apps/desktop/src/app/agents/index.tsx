@@ -323,7 +323,7 @@ function StreamLine({
 export function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: number; nowMs: number }) {
   const { t } = useI18n()
   const running = node.status === 'running' || node.status === 'queued'
-  const elapsed = useElapsedSeconds(running, `subagent:${node.id}`)
+  const elapsed = useElapsedSeconds(running, `subagent:${node.id}`, node.startedAt)
 
   const durationSeconds =
     typeof node.durationSeconds === 'number' ? Math.max(0, Math.round(node.durationSeconds)) : elapsed

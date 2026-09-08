@@ -643,9 +643,13 @@ PLATFORM_HINTS = {
     ),
     "tui": (
         # Same file-delivery reality as the CLI: no MEDIA: interception in tui/.
-        "You are in the Hermes terminal UI (TUI). Files: there is no attachment channel and MEDIA:/path tags "
-        "are NOT intercepted here (they print as literal text) — deliver a file by stating its absolute path "
-        "or URL in plain text. "
+        "You are in the Hermes terminal UI (TUI). Markdown renders (formatting, tables, and syntax-highlighted code). "
+        "Do not use HTML tags (no <details>, <summary>, <div>, etc.) — terminal markdown has no HTML parser, so use "
+        "native markdown headings, blockquotes, and lists instead. "
+        "LaTeX math renders inline automatically: format formulas using $inline$ or $$block$$ delimiters (never wrap "
+        "formulas in ```latex code fences, and avoid document boilerplate like \\documentclass). "
+        "Files: there is no attachment channel and MEDIA:/path tags are NOT intercepted here (they print as literal text) — "
+        "deliver a file by stating its absolute path or URL in plain text. "
         f"{_LOCAL_CRON_DELIVERY_NOTE}"
     ),
     "desktop": (

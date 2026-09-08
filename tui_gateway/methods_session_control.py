@@ -149,9 +149,8 @@ def _safe_heartbeat_snapshot(state) -> dict | None:
     }
 
 
-def _snapshot_control(session_key: str) -> dict:
+def _snapshot_control(session_key: str, *, include_loop_min_interval: bool = False) -> dict:
     """Serialize persisted session-control state once, without wall-clock churn."""
-    from hermes_cli.loops import min_interval_seconds
 
     goal_state = _load_goal_state(session_key)
     loop_state = _load_loop_state(session_key)
@@ -166,14 +165,17 @@ def _snapshot_control(session_key: str) -> dict:
     goal = _safe_goal_snapshot(goal_state)
     loop = _safe_loop_snapshot(loop_state, deferred_by_goal=deferred_by_goal)
     heartbeat = _safe_heartbeat_snapshot(heartbeat_state)
-    return {
+    control = {
         "goal": goal,
         "loop": loop,
         "heartbeat": heartbeat,
-        "loop_min_interval_seconds": min_interval_seconds(),
         "revision": _snapshot_revision(goal, loop, heartbeat),
         "updated_at": _snapshot_updated_at(goal_state, loop_state, heartbeat_state),
     }
+    if include_loop_min_interval:
+        from hermes_cli.loops import min_interval_seconds
+        control["loop_min_interval_seconds"] = min_interval_seconds()
+    return control
 
 
 def _snapshot_revision(goal, loop, heartbeat) -> str:
@@ -260,7 +262,10 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4001, "session has no stored key")
     try:
         with _session_profile_runtime_scope(session):
-            return _ok(rid, {"control": _snapshot_control(session_key)})
+            return _ok(
+                rid,
+                {"control": _snapshot_control(session_key, include_loop_min_interval=params.get("include_loop_min_interval") is True)},
+            )
     except Exception as exc:
         logger.debug("session.control.read failed: %s", exc, exc_info=True)
         return _err(rid, 5031, f"session.control.read failed: {exc}")
@@ -284,16 +289,18 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4004, "args must be an object")
     else:
         args = {}
-    validated, validation_error = _validate_action_args(rid, action, args)
-    if validation_error:
-        return validation_error
-
     session, err = _sess_nowait(params, rid)
     if err:
         return err
     session_key = str(session.get("session_key") or "")
     if not session_key:
         return _err(rid, 4001, "session has no stored key")
+
+    with _session_profile_runtime_scope(session):
+        validated, validation_error = _validate_action_args(rid, action, args)
+    if validation_error:
+        return validation_error
+    include_loop_min_interval = params.get("include_loop_min_interval") is True
 
     try:
         if action in _ACTION_COMMAND_MAP:
@@ -328,7 +335,8 @@ def _(rid, params: dict) -> dict:
 
     try:
         with _session_profile_runtime_scope(session):
-            control = _snapshot_control(session_key)
+            control = _snapshot_control(session_key, include_loop_min_interval=include_loop_min_interval)
+            event_control = _snapshot_control(session_key)
     except Exception as exc:
         logger.debug("session.control snapshot after %s failed: %s", action, exc, exc_info=True)
         return _err(rid, 5031, f"session.control snapshot failed: {exc}")
@@ -339,7 +347,7 @@ def _(rid, params: dict) -> dict:
     # command.dispatch already published the update for goal/loop actions; manager actions publish here.
     if action not in _ACTION_COMMAND_MAP:
         try:
-            _emit("session.control.update", params.get("session_id") or "", {"control": control})
+            _emit("session.control.update", params.get("session_id") or "", {"control": event_control})
         except Exception as exc:
             logger.debug("session.control.update emit failed (best-effort): %s", exc, exc_info=True)
     return _ok(rid, {"control": control, "dispatch": _dispatch_envelope(action_result)})

@@ -591,10 +591,25 @@ function publishEntry(sessionId: string, next: SessionControlEntry): SessionCont
   return next
 }
 
+function reconcileSnapshot(
+  current: SessionControlSnapshot | null,
+  incoming: SessionControlSnapshot,
+  preserveLoopMinimum: boolean
+): SessionControlSnapshot {
+  const snapshot =
+    preserveLoopMinimum && incoming.loop_min_interval_seconds === undefined && current?.loop_min_interval_seconds !== undefined
+      ? { ...incoming, loop_min_interval_seconds: current.loop_min_interval_seconds }
+      : incoming
+
+  return current?.revision === snapshot.revision && current.loop_min_interval_seconds === snapshot.loop_min_interval_seconds
+    ? current
+    : snapshot
+}
+
 function applyParsedSnapshot(sessionId: string, snapshot: SessionControlSnapshot): SessionControlEntry {
   advanceVersion(sessionId)
   const current = $sessionControlBySession.get()[sessionId] ?? emptyEntry()
-  const nextSnapshot = current.snapshot?.revision === snapshot.revision ? current.snapshot : snapshot
+  const nextSnapshot = reconcileSnapshot(current.snapshot, snapshot, false)
 
   return publishEntry(sessionId, {
     capability: 'supported',
@@ -638,7 +653,7 @@ export function applySessionControlUpdate(sessionId: string, rawSnapshot: unknow
     advanceVersion(sessionId)
   }
 
-  const nextSnapshot = current.snapshot?.revision === snapshot.revision ? current.snapshot : snapshot
+  const nextSnapshot = reconcileSnapshot(current.snapshot, snapshot, true)
 
   return publishEntry(sessionId, {
     ...current,
@@ -835,7 +850,7 @@ export async function refreshSessionControl(
       sessionId,
       ambientRequestFor(gateway),
       'session.control.read',
-      { session_id: sessionId }
+      { include_loop_min_interval: true, session_id: sessionId }
     )
 
     if (!isCurrent(sessionId, token)) {
@@ -905,6 +920,7 @@ export async function runSessionControlAction(
     const response = await requestForOwnedSession<unknown>(sessionId, ambientRequestFor(gateway), 'session.control', {
       action,
       args: args ?? {},
+      include_loop_min_interval: true,
       session_id: sessionId
     })
 

@@ -22065,6 +22065,7 @@ def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_p
         provider = "test"
         _cached_system_prompt = None
         _session_db = None
+        _global_policy_snapshot = "frozen TUI policy"
 
         def _build_system_prompt(self, system_message=None):
             from hermes_constants import get_hermes_home
@@ -22079,7 +22080,7 @@ def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_p
 
     class FakeDB:
         def update_system_prompt(self, session_id, prompt, global_policy_snapshot=None):
-            pass
+            self.persisted = (session_id, prompt, global_policy_snapshot)
 
     agent = FakeAgent()
     agent._session_db = FakeDB()
@@ -22098,6 +22099,9 @@ def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_p
         f"system prompt built with wrong home: {built_homes[0]}"
     )
     assert "Work persona" in agent._cached_system_prompt
+    assert agent._session_db.persisted == (
+        "test-key", agent._cached_system_prompt, "frozen TUI policy"
+    )
 
     # The override must have been reset after the call.
     from hermes_constants import get_hermes_home_override

@@ -17,6 +17,7 @@ class _TurnFixture(GatewayTurnMixin):
         self.started = asyncio.Event()
         self.consumer_started = asyncio.Event()
         self.flushing = asyncio.Event()
+        self.stream_settled = asyncio.Event()
         self.finish = asyncio.Event()
         self.progress_settling = asyncio.Event()
         self.release_progress = asyncio.Event()
@@ -65,6 +66,7 @@ class _TurnFixture(GatewayTurnMixin):
     async def _await_stream_task(self, task):
         self.flushing.set()
         await super()._await_stream_task(task)
+        self.stream_settled.set()
 
     def _get_proxy_url(self):
         return None
@@ -146,6 +148,7 @@ async def test_cancelled_turn_settles_stream_and_preserves_cancellation(phase):
         if phase == "settlement":
             fixture.finish.set()
             await asyncio.wait_for(fixture.progress_settling.wait(), 2)
+            await asyncio.wait_for(fixture.stream_settled.wait(), 2)
         task.cancel()
         # Event synchronization above identifies the phase. This generous bound only
         # rejects the unrelated five-second normal-flush budget on an aborted turn.

@@ -190,6 +190,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const groupings = GROUPINGS.map(option =>
     option.id === 'profile' ? { ...option, label: t.sidebar.gatewayGroups.grouping } : option
   )
+
   const groupingLabel = groupings.find(option => option.id === grouping)?.label
 
   // Two options are conditional: dragging a row is what picks manual, so it

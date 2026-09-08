@@ -475,6 +475,77 @@ class TestStreamOwnership:
         assert outcome["turn"].interrupted is True
         assert holder["client"].interrupted is True
 
+    def _stop_during_terminal_projection(self, script):
+        """Admit a /stop while the projector is inside the terminal message."""
+        import agent.transports.claude_agent_sdk_session_turn as sdk_session_mod
+
+        entered, release = threading.Event(), threading.Event()
+        base = sdk_session_mod.ClaudeSdkEventProjector
+
+        class BlockingProjector(base):
+            def project(self, message):
+                if type(message).__name__ == "ResultMessage":
+                    entered.set()
+                    assert release.wait(timeout=5.0)
+                return super().project(message)
+
+        original = sdk_session_mod.ClaudeSdkEventProjector
+        sdk_session_mod.ClaudeSdkEventProjector = BlockingProjector
+        try:
+            session, _holder = _make_session(script=script)
+            outcome = {}
+            worker = threading.Thread(
+                target=lambda: outcome.update(turn=session.run_turn("hi"))
+            )
+            worker.start()
+            try:
+                assert entered.wait(timeout=5.0)
+                session.request_interrupt()
+                release.set()
+                worker.join(timeout=10.0)
+                assert worker.is_alive() is False
+            finally:
+                release.set()
+                session.close()
+            return outcome["turn"]
+        finally:
+            sdk_session_mod.ClaudeSdkEventProjector = original
+
+    def test_stop_during_terminal_projection_keeps_the_completed_answer(self):
+        """The commit-boundary read REPORTS a stop; it must not gate delivery.
+
+        The terminal ResultMessage is already complete when the projector runs.
+        Folding the boundary read into the loop's ``interrupted`` local would
+        suppress the transcript and the final text for an answer that exists --
+        the same discarded-answer failure the terminal fence exists to prevent,
+        one layer lower.
+        """
+        turn = self._stop_during_terminal_projection(
+            [ResultMessage(result="answer", uuid="terminal-race-1")]
+        )
+
+        assert turn.final_text == "answer"
+        assert turn.interrupted is True
+
+    def test_stop_during_terminal_projection_never_masks_a_genuine_error(self):
+        """The EDE mask keys on THIS turn's flag, never on a fresh event read.
+
+        A real ``error_during_execution`` colliding with a stop must keep its
+        error text and its retire path; masking it would page nobody and drop
+        the failure on the floor.
+        """
+        turn = self._stop_during_terminal_projection([
+            ResultMessage(
+                is_error=True,
+                subtype="error_during_execution",
+                errors=["boom"],
+                result="boom",
+                uuid="terminal-race-2",
+            ),
+        ])
+
+        assert turn.error and "boom" in turn.error
+
     def test_offset_does_not_accumulate_across_unsolicited_turns(self):
         # The live incident: 4 unsolicited turns -> every later reply answered
         # a question 4 back. N unsolicited results must be dropped, not queued.

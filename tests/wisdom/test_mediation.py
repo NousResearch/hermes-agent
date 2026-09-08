@@ -151,6 +151,69 @@ def test_changed_bytes_require_new_review(consent):
     instance.service.install_apply.assert_not_called()
 
 
+def test_real_compatibility_tuples_survive_persisted_consent(consent):
+    from dataclasses import asdict
+    from hermes_wisdom.compatibility import CompatibilityResult
+
+    instance, actor, identity, _ = consent
+    instance.service.install_plan.return_value["compatibility"] = asdict(
+        CompatibilityResult("compatible", ("Hermes >= 0.20.5",), (), (), ())
+    )
+    shown = instance.present("org", identity, actor)
+    assert shown["facts"]["compatibility"]["satisfied"] == ["Hermes >= 0.20.5"]
+    assert instance.resolve("org", shown["id"], actor, "confirm")["state"] == "completed"
+    instance.service.install_apply.assert_called_once()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("content_hash", "new-content"), ("manifest_hash", "new-manifest"),
+    ("takedown_generation", 2), ("allowed", False),
+    ("compatibility", {"outcome": "blocked_pending_action", "blocked": ("Needs credentials",)}),
+])
+def test_signature_still_rejects_changed_approval_facts(consent, field, value):
+    instance, actor, identity, _ = consent
+    shown = instance.present("org", identity, actor)
+    instance.service.install_plan.return_value[field] = value
+    assert instance.resolve("org", shown["id"], actor, "confirm")["state"] == "stale"
+    instance.service.install_apply.assert_not_called()
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_recheck_creates_fresh_consent_without_applying_and_is_repeatable(consent, expired):
+    instance, actor, identity, now = consent
+    old = instance.present("org", identity, actor)
+    if expired:
+        now[0] = old["expires_at"] + 1
+    else:
+        instance.service.install_plan.return_value["content_hash"] = "new-content"
+    terminal = instance.resolve("org", old["id"], actor, "confirm")
+    assert terminal["state"] == ("expired" if expired else "stale")
+    assert any(a.label == "Recheck" for a in interaction_view(terminal).actions)
+    new = instance.resolve("org", old["id"], actor, "recheck")
+    assert new["id"] != old["id"] and new["state"] == "pending"
+    assert new["facts"]["content_hash"] == instance.service.install_plan.return_value["content_hash"]
+    assert new["expires_at"] > now[0]
+    assert instance.resolve("org", old["id"], actor, "recheck")["id"] == new["id"]
+    assert instance.resolve("org", old["id"], actor, "confirm")["state"] == terminal["state"]
+    instance.service.install_apply.assert_not_called()
+    assert instance.resolve("org", new["id"], actor, "confirm")["state"] == "completed"
+    assert instance.resolve("org", old["id"], actor, "recheck")["state"] == "completed"
+    instance.service.install_apply.assert_called_once()
+
+
+def test_recheck_requires_original_actor_and_address(consent):
+    instance, actor, identity, _ = consent
+    shown = instance.present("org", identity, actor)
+    instance.service.install_plan.return_value["content_hash"] = "changed"
+    instance.resolve("org", shown["id"], actor, "confirm")
+    instance.service.install_plan.reset_mock()
+    wrong = ConsentActor(**{**actor.__dict__, "chat_id": "another-chat"})
+    with pytest.raises(WisdomNotFound):
+        instance.resolve("org", shown["id"], wrong, "recheck")
+    instance.service.install_plan.assert_not_called()
+    instance.service.install_apply.assert_not_called()
+
+
 def test_defer_queues_shared_exact_version_suppression_without_applying(consent):
     instance, actor, identity, now = consent
     shown = instance.present("org", identity, actor)

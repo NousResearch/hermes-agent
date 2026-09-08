@@ -408,7 +408,8 @@ def test_stale_checks_toggle_does_not_restore_actionable_advice(sharing):
             chat_id=actor.chat_id, thread_id=actor.thread_id,
         )
         assert view.summary == "Stale"
-        assert len(view.actions) == 1
+        assert len(view.actions) == 2
+        assert view.actions[-1].label == "Recheck"
         assert view.actions[0].label == ("Hide checks" if mode == "show" else "Show checks")
         assert ("Private keys" in view.to_text()) == (mode == "show")
         assert "Pass" not in view.to_text()

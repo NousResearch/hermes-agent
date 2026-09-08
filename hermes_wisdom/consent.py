@@ -63,7 +63,7 @@ def public_plan(plan: dict[str, Any]) -> dict[str, Any]:
 
 
 def _signature(plan: dict[str, Any]) -> dict[str, Any]:
-    return {
+    signature = {
         key: plan.get(key)
         for key in (
             "skill_id",
@@ -83,6 +83,9 @@ def _signature(plan: dict[str, Any]) -> dict[str, Any]:
             "update_mode",
         )
     }
+    # Plans cross a JSON persistence boundary. Compare wire values, not Python
+    # tuple/list container types returned by compatibility evaluation.
+    return json.loads(json.dumps(signature))
 
 
 class WisdomConsent:
@@ -334,6 +337,14 @@ class WisdomConsent:
     def resolve(
         self, org: str, interaction_id: str, actor: ConsentActor, action: str
     ) -> dict[str, Any]:
+        if action == "recheck":
+            result = self._resolve(org, interaction_id, actor, "inspect")
+            if result["state"] in {"stale", "expired"} or (
+                result["state"] == "pending"
+                and result["expires_at"] <= self.queue.clock()
+            ):
+                return self.present(org, result["assessment_id"], actor)
+            return result
         page = re.fullmatch(r"inspect(?:\.([0-9]{1,4}))?", action)
         result = self._resolve(
             org, interaction_id, actor, "inspect" if page else action

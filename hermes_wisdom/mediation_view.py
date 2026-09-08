@@ -319,6 +319,11 @@ def interaction_view(result: dict, *, checks_expanded: bool = False) -> WisdomVi
     if facts.get("security_check") or facts.get("professionalism_check"):
         detail += "\n\n" + _review_summary(facts, checks_expanded)
         actions.append(_checks_action(result["id"], checks_expanded))
+    if result["state"] in {"stale", "expired"}:
+        actions.append(WisdomAction(
+            label="Recheck",
+            callback_data=f"wi:agent:recheck:{result['id']}",
+        ))
     if result["state"] == "pending" and not result.get("deferred"):
         for action in result["actions"]:
             actions.append(

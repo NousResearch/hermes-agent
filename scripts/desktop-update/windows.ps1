@@ -1444,6 +1444,12 @@ try {
         exit 0
     }
 
+    # A detached `cmd /c start` hand-off inherits Electron's launch directory,
+    # which may be the packaged app rather than this checkout. The post-update
+    # verifier receives `Path.cwd()`, so anchor every following step to the
+    # installation root before it inspects the rebuilt Desktop artifacts.
+    Set-Location -LiteralPath $InstallRoot
+
     # Check only the interpreter here: dependency recovery belongs to update.
     $pythonExe = Join-Path $InstallRoot "venv\Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {

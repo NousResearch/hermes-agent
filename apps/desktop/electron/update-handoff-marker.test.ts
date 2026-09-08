@@ -66,6 +66,17 @@ function runWindows(installRoot: string, startedAt?: string) {
   )
 }
 
+test('Windows hand-off anchors verification to the installation root', () => {
+  const source = fs.readFileSync(WINDOWS_SCRIPT, 'utf8')
+  const markerTest = source.indexOf('if ($SelfTestMarker)')
+  const anchor = source.indexOf('Set-Location -LiteralPath $InstallRoot')
+  const python = source.indexOf('$pythonExe = Join-Path $InstallRoot')
+
+  assert.ok(markerTest >= 0, 'marker self-test guard should exist')
+  assert.ok(anchor > markerTest, 'the hand-off must anchor its cwd after self-tests')
+  assert.ok(anchor < python, 'the hand-off must anchor its cwd before running Python')
+})
+
 function assertScriptHandoff(run: (installRoot: string, startedAt?: string) => ReturnType<typeof spawnSync>) {
   const preserved = sandbox('preserved')
   const acquiredAt = Math.floor(Date.now() / 1000) - 300

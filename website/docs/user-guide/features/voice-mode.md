@@ -497,6 +497,38 @@ DISCORD_BOT_TOKEN=...
 DISCORD_ALLOWED_USERS=...
 ```
 
+### Optional STT failover
+
+By default, transcription uses only the selected provider. To recover from a
+provider error, explicitly configure an ordered list of backup provider names:
+
+```yaml
+stt:
+  provider: my_primary
+  fallback_providers: [local]
+  local:
+    model: small
+```
+
+`fallback_providers` accepts built-in, command, and plugin provider names. Install
+and configure each backup first. Hermes tries the primary first, then each unique
+backup once, stopping on success. Both failure results and provider exceptions
+advance the chain; if every attempt fails, the last error is returned. An omitted
+or empty list retains single-provider behavior. Non-list values and non-string or
+blank entries are ignored. Use exact provider names, as with `stt.provider`.
+
+An explicit `stt.provider` remains the primary; configuring this list explicitly
+opts it into failover. The Python `transcribe_audio` API has no per-call provider
+override. Its `model` override applies only to the primary, since model names are
+provider-specific; backups use their own configured models. Each attempt receives
+the caller's `source` and runs the normal pre-transcription hook.
+
+Disabled STT, blocked/invalid audio, preprocessing failures, and upload size
+validation errors stop transcription without advancing the chain. Upload limits
+are checked again before a non-local backup, even when the primary was local.
+Only list cloud providers if sending audio to those services and their potential
+charges are acceptable. A local-only backup does not require a paid API.
+
 ### STT Provider Comparison
 
 | Provider | Model | Speed | Quality | Cost | API Key |

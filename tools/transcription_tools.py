@@ -415,27 +415,45 @@ def _transcribe_prepared_audio(
     if not is_stt_enabled(stt_config):
         return _error_result("STT is disabled in config.yaml (stt.enabled: false).")
     provider = _get_provider(stt_config)
-    if not _is_local_stt_provider(provider, stt_config):
-        error = _validate_audio_file_size(Path(file_path))
-        if error:
-            return error
-        # Convert CAF (iMessage voice notes) to WAV for cloud STT providers.
-        if Path(file_path).suffix.lower() == ".caf":
-            file_path = _convert_caf_to_wav(file_path)
-            if not file_path:
-                return _error_result("CAF audio could not be converted to WAV.")
-    # Best-effort pre-upload silence trim for built-in cloud providers.
-    trim_cleanup_dir: Optional[str] = None
-    if provider in CLOUD_STT_PROVIDERS:
-        trimmed = _trim_silence_for_cloud_stt(file_path, stt_config)
-        if trimmed:
-            file_path = trimmed
-            trim_cleanup_dir = os.path.dirname(trimmed)
-    try:
-        return _dispatch_stt_provider(file_path, provider, stt_config, model, source)
-    finally:
-        if trim_cleanup_dir:
-            shutil.rmtree(trim_cleanup_dir, ignore_errors=True)
+    providers = [provider]
+    fallbacks = stt_config.get("fallback_providers", [])
+    if isinstance(fallbacks, list):
+        for fallback in fallbacks:
+            if isinstance(fallback, str) and fallback.strip() and fallback not in providers:
+                providers.append(fallback)
+
+    for index, provider in enumerate(providers):
+        # Always start with the original prepared file, never another provider's
+        # temporary trim. A local-first chain must not bypass cloud size checks.
+        attempt_path = file_path
+        if not _is_local_stt_provider(provider, stt_config):
+            error = _validate_audio_file_size(Path(attempt_path))
+            if error:
+                return error
+            if Path(attempt_path).suffix.lower() == ".caf":
+                attempt_path = _convert_caf_to_wav(attempt_path)
+                if not attempt_path:
+                    return _error_result("CAF audio could not be converted to WAV.")
+        trim_cleanup_dir: Optional[str] = None
+        try:
+            if provider in CLOUD_STT_PROVIDERS:
+                trimmed = _trim_silence_for_cloud_stt(attempt_path, stt_config)
+                if trimmed:
+                    attempt_path = trimmed
+                    trim_cleanup_dir = os.path.dirname(trimmed)
+            # Model names are provider-specific: a caller override belongs only
+            # to the primary; fallback providers use their own configured model.
+            result = _dispatch_stt_provider(
+                attempt_path, provider, stt_config, model if index == 0 else None, source)
+        except Exception as exc:
+            logger.warning("STT provider %s failed (%s)", provider, type(exc).__name__)
+            result = _error_result(f"STT provider '{provider}' failed: {exc}", provider=provider)
+        finally:
+            if trim_cleanup_dir:
+                shutil.rmtree(trim_cleanup_dir, ignore_errors=True)
+        if result.get("success"):
+            return result
+    return result
 
 
 # Built-in provider -> (stt section, config key, default, treat-empty-as-missing). "local_command"

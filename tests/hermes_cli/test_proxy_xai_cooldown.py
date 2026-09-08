@@ -34,7 +34,8 @@ def auth_store(tmp_path, monkeypatch):
             entry["failure_reason"] = reason
         (home / "auth.json").write_text(json.dumps({
             "version": 1, "credential_pool": {"xai-oauth": [] if empty else [entry]},
-        }))
+        }), encoding="utf-8")
+        return home
     return write
 
 
@@ -96,3 +97,30 @@ def test_proxy_status_describes_cooldown(auth_store, capsys, monkeypatch):
     output = capsys.readouterr().out
     assert "cooling down" in output
     assert "not logged in" not in output
+
+
+@pytest.mark.parametrize("peer_code,peer_status,reason,expected_delay", [
+    (401, "exhausted", None, 900),
+    (403, "exhausted", "billing", 900),
+    (401, "dead", None, 900),
+    (503, "exhausted", None, 60),
+])
+def test_mixed_pool_retries_at_the_first_transient_recovery(
+    auth_store, peer_code, peer_status, reason, expected_delay,
+):
+    home = auth_store(delay=900)
+    path = home / "auth.json"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    entries = state["credential_pool"]["xai-oauth"]
+    peer = dict(entries[0], id="peer-key", label="peer-key", last_error_code=peer_code,
+                last_status=peer_status, last_error_reset_at=time.time() + 60)
+    if reason:
+        peer["failure_reason"] = reason
+    entries.append(peer)
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    status, headers, body = request(XAIGrokAdapter())
+    assert status == 429
+    # An earlier auth/billing deadline cannot promise the retryable credential is ready.
+    assert expected_delay - 5 <= int(headers["Retry-After"]) <= expected_delay
+    assert body["error"]["code"] == "upstream_rate_limited"

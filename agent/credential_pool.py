@@ -960,17 +960,21 @@ class CredentialPool(CredentialPoolAdminMixin):
             available, _pending = self._available_entries()
             return bool(available)
 
-    def next_available_at(self) -> Optional[float]:
+    def next_available_at(
+        self, *, eligible: Optional[Callable[[PooledCredential], bool]] = None,
+    ) -> Optional[float]:
         """Earliest epoch time (seconds) any entry re-enters rotation.
 
         ``None`` when an entry is available now, or when no exhausted entry
         carries a usable recovery time (empty pool, or only ``STATUS_DEAD``
         entries). Callers must treat ``None`` as "no wait information".
         Runs under ``self._lock`` for the same reason as ``has_available``.
+        ``eligible`` limits the answer to a subset, e.g. proxy credentials
+        recovering from transient failures rather than authentication failures.
         """
         with self._lock:
             available, _pending = self._available_entries()
-            if available:
+            if available and (eligible is None or any(eligible(entry) for entry in available)):
                 return None
             # Mirror _available_entries: a sole credential's transient throttle
             # cools down in seconds, and the fallback restore gate must not
@@ -982,6 +986,7 @@ class CredentialPool(CredentialPoolAdminMixin):
                     _exhausted_until(entry, sole_credential=sole_credential)
                     for entry in self._entries
                     if entry.last_status == STATUS_EXHAUSTED
+                    and (eligible is None or eligible(entry))
                 )
                 if until is not None
             ]

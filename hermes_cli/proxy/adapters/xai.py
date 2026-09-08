@@ -70,25 +70,26 @@ class XAIGrokAdapter(UpstreamAdapter):
                 )
             entry = pool.select()
             if entry is None:
-                available_at = pool.next_available_at()
-                entries = pool.entries()
-                exhausted = [
-                    item for item in entries
+                retryable_ids = {
+                    item.id for item in pool.entries()
                     if item.last_status == STATUS_EXHAUSTED
-                ]
-                if not exhausted or not all(
-                    item.last_error_code in {429, 500, 502, 503, 504}
-                    or (
-                        item.last_error_code == 403
-                        and item.extra.get("failure_reason") == "rate_limit"
+                    and (
+                        item.last_error_code in {429, 500, 502, 503, 504}
+                        or (item.last_error_code == 403
+                            and item.extra.get("failure_reason") == "rate_limit")
                     )
-                    for item in exhausted
-                ):
+                }
+                if not retryable_ids:
                     raise RuntimeError(
                         "No available xAI OAuth credentials found. Run "
                         "`hermes auth reset xai-oauth` or re-authenticate with "
                         "`hermes auth add xai-oauth --type oauth`."
                     )
+                # A permanent failure in another entry does not prevent recovery.
+                # Its earlier deadline must not shorten this Retry-After either.
+                available_at = pool.next_available_at(
+                    eligible=lambda item: item.id in retryable_ids,
+                )
                 retry_after = (
                     math.ceil(available_at - time.time())
                     if available_at is not None

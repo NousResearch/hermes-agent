@@ -198,6 +198,33 @@ def test_quarantined_close_does_not_checkpoint_wal_into_main_file(
 
 
 @pytest.mark.skipif(
+    hasattr(sqlite3.Connection, "setconfig"),
+    reason="legacy bridge is used only before Python 3.12",
+)
+def test_quarantined_close_abandons_handle_when_legacy_bridge_fails(
+    tmp_path, force_wal, monkeypatch, caplog
+):
+    path = tmp_path / "state.db"
+    db = SessionDB(db_path=path)
+    before = _immutable_message_count(path)
+    db.create_session("s", "cli")
+    db.append_message("s", role="user", content="wal-only")
+    db._db_wal_generation_lost = True
+
+    def fail_bridge(_conn, _flag):
+        raise OSError("sqlite library unavailable")
+
+    monkeypatch.setattr(db, "_set_legacy_no_checkpoint_on_close", fail_bridge)
+    with caplog.at_level("ERROR", logger="hermes_state"):
+        db.close()
+
+    assert db._conn is None
+    assert _immutable_message_count(path) == before
+    assert Path(os.fspath(path) + "-wal").is_file()
+    assert "Abandoning the unsafe SQLite handle" in caplog.text
+
+
+@pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason="deleted-WAL /proc scan is Linux-only",
 )

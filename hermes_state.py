@@ -1047,16 +1047,16 @@ class SessionDB(
                 setattr(err, attr, getattr(exc, attr))
         raise err from exc
 
-    def _quarantine_lost_wal_generation(self) -> None:
+    def _quarantine_lost_wal_generation(self) -> bool:
         """Make the split-WAL refusal sticky and suppress SQLite close checkpointing."""
         self._db_wal_generation_lost = True
-        self._disable_close_time_checkpoint()
+        return self._disable_close_time_checkpoint()
 
-    def _disable_close_time_checkpoint(self) -> None:
-        """Best-effort SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE on every supported CPython."""
+    def _disable_close_time_checkpoint(self) -> bool:
+        """Set SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE on every supported CPython."""
         conn = self._conn
         if conn is None:
-            return
+            return True
         flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", 1006)
         setconfig = getattr(conn, "setconfig", None)
         try:
@@ -1064,11 +1064,23 @@ class SessionDB(
                 setconfig(flag, True)
             else:
                 self._set_legacy_no_checkpoint_on_close(conn, flag)
+            return True
         except Exception:
-            logger.debug(
+            logger.error(
                 "Could not disable SQLite's close-time checkpoint on the unsafe handle for %s",
                 self.db_path, exc_info=True,
             )
+            return False
+
+    @staticmethod
+    def _abandon_connection_without_close(conn: sqlite3.Connection) -> None:
+        """Leak an unsafe CPython connection so only process exit closes its descriptors."""
+        import ctypes
+
+        incref = ctypes.pythonapi.Py_IncRef
+        incref.argtypes = [ctypes.py_object]
+        incref.restype = None
+        incref(conn)
 
     @staticmethod
     def _set_legacy_no_checkpoint_on_close(conn: sqlite3.Connection, flag: int) -> None:
@@ -1189,7 +1201,9 @@ class SessionDB(
             pass
         with self._lock:
             if self._conn:
+                safe_to_close = True
                 if self._db_corrupt:  # quarantined: no checkpoint over a damaged image
+                    safe_to_close = self._disable_close_time_checkpoint()
                     logger.warning(
                         "Skipping the close-time WAL checkpoint for %s: this "
                         "handle observed structural corruption (%s). Take a "
@@ -1200,7 +1214,7 @@ class SessionDB(
                 elif not self.read_only and (
                     self._db_wal_generation_lost or self._wal_generation_was_lost()
                 ):
-                    self._quarantine_lost_wal_generation()
+                    safe_to_close = self._quarantine_lost_wal_generation()
                     logger.warning(
                         "Skipping the close-time WAL checkpoint for %s: this handle's "
                         "state.db-wal or state.db-shm generation was deleted or replaced. "
@@ -1218,10 +1232,18 @@ class SessionDB(
                     except Exception as exc:
                         logger.debug("WAL checkpoint (PASSIVE) at close failed: %s", exc)
                 conn, self._conn = self._conn, None
-                self._close_connection_quietly(conn)
-                # A clean close lets SQLite unlink the sidecars (a legitimate end of the
-                # generation, not a split): a teardown-race reopen must re-adopt.
-                self._db_sidecar_identity = {}
+                if safe_to_close:
+                    self._close_connection_quietly(conn)
+                    # A clean close lets SQLite unlink the sidecars (a legitimate end of the
+                    # generation, not a split): a teardown-race reopen must re-adopt.
+                    self._db_sidecar_identity = {}
+                else:
+                    logger.critical(
+                        "Abandoning the unsafe SQLite handle for %s until process exit: "
+                        "closing it could checkpoint quarantined WAL frames.",
+                        self.db_path,
+                    )
+                    self._abandon_connection_without_close(conn)
 
     def __del__(self) -> None:
         """Safety net: close() if the caller forgot. Attribute access stays

@@ -17,6 +17,7 @@ from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION
+from agent.message_content import ascii_lower
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
 from tools.registry import tool_error
@@ -210,14 +211,14 @@ class StreamingContextScrubber:
         while buf:
             if self._in_span:
                 tag = self._CLOSE_TAG
-                idx = buf.lower().find(tag)
+                idx = ascii_lower(buf).find(tag)
                 held = self._max_partial_suffix(buf, tag)  # potential partial close tag
             else:
                 tag = self._OPEN_TAG
                 idx = self._find_boundary_open_tag(buf)
                 # A complete boundary tag at the buffer end is held until the next char confirms it.
                 n = len(tag)
-                pending = n if buf.lower().endswith(tag) and self._ends_at_block_boundary(buf[:-n]) else 0
+                pending = n if ascii_lower(buf).endswith(tag) and self._ends_at_block_boundary(buf[:-n]) else 0
                 held = pending or self._max_partial_suffix(buf, tag)
             if idx == -1:
                 # Hold back the possible partial tag; inside a span the rest is dropped.
@@ -242,13 +243,13 @@ class StreamingContextScrubber:
     @staticmethod
     def _max_partial_suffix(buf: str, tag: str) -> int:
         """Length of the longest buf-suffix that is a (case-insensitive) prefix of ``tag``, else 0."""
-        tag_lower, buf_lower = tag.lower(), buf.lower()
+        tag_lower, buf_lower = tag.lower(), ascii_lower(buf)
         span = range(min(len(buf_lower), len(tag_lower) - 1), 0, -1)
         return next((i for i in span if tag_lower.startswith(buf_lower[-i:])), 0)
 
     def _find_boundary_open_tag(self, buf: str) -> int:
         """Find an opening fence only when it starts a block-like span (own line, newline after)."""
-        buf_lower, tag_len = buf.lower(), len(self._OPEN_TAG)
+        buf_lower, tag_len = ascii_lower(buf), len(self._OPEN_TAG)
         idx = buf_lower.find(self._OPEN_TAG)
         while idx != -1:
             after_idx = idx + tag_len

@@ -6,6 +6,16 @@ from typing import Any
 
 _NON_TEXT_PART_TYPES = {"image", "image_url", "input_image", "audio", "input_audio"}
 _TEXT_KEYS = ("text", "content", "input_text", "output_text", "summary_text")
+_ASCII_LOWER_TABLE = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def ascii_lower(text: str) -> str:
+    """Fold ASCII tags without shifting offsets into the original Unicode text.
+
+    Unicode lowercasing can expand a character (İ -> i + combining dot), so its
+    search offsets cannot safely be used to slice the original stream buffer.
+    """
+    return text.translate(_ASCII_LOWER_TABLE)
 
 
 def _field(value: Any, key: str) -> Any:

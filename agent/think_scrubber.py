@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from typing import Tuple
 
+from agent.message_content import ascii_lower
+
 __all__ = ["StreamingThinkScrubber"]
 
 
@@ -115,13 +117,13 @@ class StreamingThinkScrubber:
     @staticmethod
     def _find_first_tag(buf: str, tags: Tuple[str, ...]) -> Tuple[int, int]:
         """Return (earliest_index, tag_length) over *tags* (case-insensitive), or (-1, 0)."""
-        buf_lower = buf.lower()
+        buf_lower = ascii_lower(buf)
         hits = [(idx, len(tag)) for tag in tags if (idx := buf_lower.find(tag)) != -1]
         return min(hits) if hits else (-1, 0)
 
     def _find_earliest_closed_pair(self, buf: str):
         """(start_idx, end_idx) of the earliest ``<tag>...</tag>`` pair (non-greedy, case-insensitive), else None."""
-        buf_lower = buf.lower()
+        buf_lower = ascii_lower(buf)
         pairs = []
         for open_tag, close_tag in zip(self._OPEN_TAGS, self._CLOSE_TAGS):
             open_idx = buf_lower.find(open_tag)
@@ -132,7 +134,7 @@ class StreamingThinkScrubber:
 
     def _find_open_at_boundary(self, buf: str, already_emitted: list[str]) -> Tuple[int, int]:
         """Return the earliest block-boundary open-tag (idx, len), or (-1, 0)."""
-        buf_lower = buf.lower()
+        buf_lower = ascii_lower(buf)
         hits = []
         for tag in self._OPEN_TAGS:
             idx = buf_lower.find(tag)
@@ -156,7 +158,7 @@ class StreamingThinkScrubber:
     @classmethod
     def _max_partial_suffix(cls, buf: str, tags: Tuple[str, ...]) -> int:
         """Longest buf-suffix that is a strict prefix of any tag (full matches are real tags, handled elsewhere)."""
-        buf_lower = buf.lower()
+        buf_lower = ascii_lower(buf)
         for i in range(min(len(buf_lower), cls._MAX_TAG_LEN - 1), 0, -1):
             suffix = buf_lower[-i:]
             if any(len(tag) > i and tag.startswith(suffix) for tag in tags):

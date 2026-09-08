@@ -308,7 +308,11 @@ async function desktopSessionCreateParams(
     provider: isManualSelection ? $currentProvider.get().trim() : ''
   }
 
-  const profile = capturedRoute?.profile || $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
+  // A pending gateway swap is still the user's visible profile intent. Cmd+N
+  // deliberately clears a stale per-profile quick-create selection, but must
+  // not route the new session back through the previous live backend while
+  // that explicit profile switch is still opening (#79003 class).
+  const profile = capturedRoute?.profile || $newChatProfile.get() ?? $gatewaySwapTarget.get() ?? normalizeProfileKey($activeGatewayProfile.get())
 
   if (capturedRoute) {
     await ensureGatewayAgent(capturedRoute.connectionId, profile)

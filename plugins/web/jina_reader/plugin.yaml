@@ -1,0 +1,7 @@
+name: web-jina-reader
+version: 1.0.0
+description: "Jina Reader raw Markdown extraction for public URLs; no key required for basic usage."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - jina-reader

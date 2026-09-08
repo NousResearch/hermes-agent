@@ -376,7 +376,9 @@ def _active_profile_line(agent: Any) -> str:
         f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
         f"different session run from a different shell. Do NOT modify "
         f"another profile's skills/plugins/cron/memories unless the user "
-        f"explicitly directs you to."
+        f"explicitly directs you to. The cross-profile write guard will "
+        f"refuse such writes by default; pass cross_profile=True only "
+        f"after explicit direction."
     )
 
 
@@ -593,7 +595,9 @@ def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -
     launch_artifact = getattr(agent, "_context_cwd_is_launch_artifact", False)
     return [_pb.build_context_files_prompt(
         cwd=None if launch_artifact else resolve_context_cwd(), skip_soul=soul_loaded, context_length=ctx_len,
-        allow_install_tree_fallback=agent.platform in ("cli", "tui"), home_override=_agent_home(agent))]
+        allow_install_tree_fallback=agent.platform in ("cli", "tui"),
+        allow_cross_profile_context=agent.platform in ("cli", "tui"),
+        home_override=_agent_home(agent))]
 
 
 def _join_tier(parts: List[Optional[str]]) -> str:

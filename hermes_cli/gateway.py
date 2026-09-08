@@ -164,6 +164,7 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                         pid = int(show.stdout.strip())
                         if pid > 0:
                             pids.add(pid)
+                            pids |= _gateway_descendants_of(pid)
                     except (ValueError, subprocess.TimeoutExpired):
                         pass
             except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -186,6 +187,7 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                 continue
             if pid is not None and pid > 0:
                 pids.add(pid)
+                pids |= _gateway_descendants_of(pid)
         if all_profiles:
             # Prefix scan also catches ai.hermes.gateway* agents the label derivation can't map
             # (renamed profiles, other installs). Over-inclusion is safe: PIDs are only protected.
@@ -199,12 +201,46 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                                 pid = int(parts[0])
                                 if pid > 0:
                                     pids.add(pid)
+                                    pids |= _gateway_descendants_of(pid)
                             except ValueError:
                                 pass
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
 
     return pids
+
+
+def _gateway_descendants_of(pid: int) -> set:
+    """Strictly matched gateway runtimes below a service manager's tracked PID.
+
+    systemd/launchd may report a wrapper (``doppler``, ``direnv``, Hermes'
+    ``stderr_timestamp``) rather than the gateway. Walk the complete subtree so service-owned
+    gateways are never swept as manual processes. Adapted from #66913 by @Tranquil-Flow.
+    """
+    if pid <= 1:
+        return set()
+    try:
+        import psutil  # type: ignore
+        from gateway.status import looks_like_gateway_command_line
+    except ImportError:
+        return set()
+    try:
+        descendants = psutil.Process(pid).children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return set()
+    except Exception:
+        return set()
+    found: set = set()
+    for child in descendants:
+        try:
+            command = " ".join(child.cmdline() or [])
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        except Exception:
+            continue
+        if command and looks_like_gateway_command_line(command):
+            found.add(child.pid)
+    return found
 
 
 def _get_parent_pid(pid: int) -> int | None:

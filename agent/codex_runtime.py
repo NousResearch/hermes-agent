@@ -419,7 +419,15 @@ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> 
     if not turn.projected_messages:
         return
     from agent.message_metadata import append_message
-    for projected_message in turn.projected_messages:
+    projected_messages = turn.projected_messages
+    # Turn-start persistence owns the accepted input. Codex's leading user item
+    # only echoes its coerced wire text; later/nonmatching events remain real.
+    submitted_user_text = getattr(turn, "submitted_user_text", None)
+    first = projected_messages[0]
+    if (submitted_user_text is not None and first.get("role") == "user"
+            and first.get("content") == submitted_user_text):
+        projected_messages = projected_messages[1:]
+    for projected_message in projected_messages:
         append_message(messages, projected_message)
     if getattr(agent, "_session_db", None) is None:
         return

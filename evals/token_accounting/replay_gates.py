@@ -3,8 +3,8 @@ local ``bytes/4`` estimate? (#104462)
 
 Runs the REAL ``AIAgent`` turn loop against a local fake OpenAI chat-completions server whose
 ``usage.prompt_tokens`` is scripted per request and deliberately disagrees with the transcript
-size. The only patch on the agent path is a counting wrapper around ``_compress_context``
-(the question is *whether* a gate fires, not what a summarizer writes).
+size. Gate scenarios replace ``_compress_context`` with a counting hook; recovery
+scenarios run real compression with only summary generation replaced by fixed local text.
 
 Shapes (each runs several turns):
 
@@ -18,6 +18,9 @@ Scenarios per shape:
 
 * ``inflated``  — transcript ~3x the threshold by bytes/4, provider reports real usage well
                   UNDER threshold. No gate may fire (positive arm).
+* ``past_window_inflated`` — whole-history estimate exceeds the entire model window.
+* ``overflow_recovery`` / ``usage_less_fallback`` — real compression and local HTTP retry,
+  with fixed local summary text (no inference); provider capability probes do not consume usage.
 * ``deflated``  — transcript tiny by bytes/4, provider reports real usage OVER threshold.
                   Local compression MUST fire once real usage is known (negative arm).
 
@@ -29,6 +32,7 @@ Usage (from a checkout root, venv python)::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -55,7 +59,7 @@ class _FakeChat:
 
     def __init__(self) -> None:
         self.requests: list[dict] = []
-        self.usage_script: list[int] = []
+        self.usage_script: list[int | None | str] = []
         self.lock = threading.Lock()
         server = self
 
@@ -66,10 +70,25 @@ class _FakeChat:
             def do_POST(self):
                 n = int(self.headers.get("content-length", 0))
                 body = json.loads(self.rfile.read(n) or b"{}")
+                # Runtime capability probes are not model requests and must not consume usage.
+                if "messages" not in body:
+                    self.send_error(404, "Only chat completions are supported by this fixture")
+                    return
                 with server.lock:
                     server.requests.append(body)
                     prompt = server.usage_script.pop(0) if server.usage_script else REAL_UNDER
-                usage = {"prompt_tokens": prompt, "completion_tokens": 5, "total_tokens": prompt + 5}
+                if prompt == "overflow":
+                    data = json.dumps({"error": {"message": "maximum context length exceeded",
+                                                "type": "invalid_request_error",
+                                                "code": "context_length_exceeded"}}).encode()
+                    self.send_response(400)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+                usage = ({"prompt_tokens": prompt, "completion_tokens": 5, "total_tokens": prompt + 5}
+                         if isinstance(prompt, int) else None)
                 msg = {"role": "assistant", "content": "ok"}
                 if body.get("stream") is True:
                     self.send_response(200)
@@ -147,6 +166,7 @@ def _run_turns(wire: _FakeChat, agent_factory, history: list[dict], *, reload: b
             history = json.loads(json.dumps(history))
         before = len(agent._ab_compress_calls)
         r = agent.run_conversation(f"turn {t + 1}", conversation_history=history)
+        assert r.get("completed"), r.get("error")
         compress_by_turn.append(len(agent._ab_compress_calls) - before)
         history = r["messages"]
         approx = list(agent._ab_compress_calls)
@@ -176,7 +196,7 @@ def scenario(wire: _FakeChat, *, shape: str, real: int, chars: int, tmp: Path) -
 
     wire.requests.clear()
     wire.usage_script[:] = [real] * (TURNS + 2)
-    sid = f"replay-{shape}-{real}"
+    sid = f"replay-{shape}-{real}-{chars}"
     db_path = tmp / f"state-{sid}.db"
     db = SessionDB(db_path=db_path)
     # The prior transcript is already durable (run_conversation treats ``conversation_history``
@@ -187,6 +207,7 @@ def scenario(wire: _FakeChat, *, shape: str, real: int, chars: int, tmp: Path) -
     history = db.get_messages_as_conversation(sid)
     first = _make_agent(wire.base_url, session_id=sid, session_db=db)
     r1 = first.run_conversation("turn 1", conversation_history=history)
+    assert r1.get("completed"), r1.get("error")
     calls_t1 = len(first._ab_compress_calls)
     db.close()
     reopened = SessionDB(db_path=db_path)
@@ -202,6 +223,7 @@ def scenario(wire: _FakeChat, *, shape: str, real: int, chars: int, tmp: Path) -
     for t in range(1, TURNS):
         before = len(fresh._ab_compress_calls)
         r = fresh.run_conversation(f"turn {t + 1}", conversation_history=hist)
+        assert r.get("completed"), r.get("error")
         compress_by_turn.append(len(fresh._ab_compress_calls) - before)
         hist = r["messages"]
     reopened.close()
@@ -209,11 +231,42 @@ def scenario(wire: _FakeChat, *, shape: str, real: int, chars: int, tmp: Path) -
         "threshold": THRESHOLD, "real_prompt_tokens": real,
         "rough_estimate_turn1_messages": _rough(r1["messages"]),
         "persisted_messages": len(persisted),
-        "anchor_restored_in_fresh_process": anchor_restored,
+        "anchor_restored_in_fresh_agent": anchor_restored,
         "local_compress_calls_by_turn": compress_by_turn,
         "local_compress_approx_tokens": list(first._ab_compress_calls) + list(fresh._ab_compress_calls),
         "provider_requests": len(wire.requests),
     }
+
+
+def recovery_scenario(wire: _FakeChat, *, usage_less: bool) -> dict:
+    """Real compression/retry, with only summary generation replaced by fixed local text."""
+    from run_agent import AIAgent
+
+    agent = _make_agent(wire.base_url)
+    wire.requests.clear()
+    wire.usage_script[:] = [None] * 8 if usage_less else ["overflow", REAL_UNDER]
+    calls = []
+    original = AIAgent._compress_context.__get__(agent, AIAgent)
+
+    def compress(*args, **kwargs):
+        calls.append(len(wire.requests))
+        return original(*args, **kwargs)
+
+    agent._compress_context = compress
+    agent.context_compressor._generate_summary = lambda *a, **kw: "Local fixture summary of prior work."
+    history = [{"role": "user" if i % 2 == 0 else "assistant",
+                "content": f"record {i} " + "x" * 32_000} for i in range(20)]
+    first = agent.run_conversation("continue", conversation_history=history)
+    first_calls = len(calls)
+    result = (agent.run_conversation("continue again", conversation_history=first["messages"])
+              if usage_less else first)
+    sizes = [len(json.dumps(r["messages"])) for r in wire.requests]
+    return {"completed": result.get("completed"), "response": result.get("final_response"),
+            "compression_after_provider_requests": calls, "first_turn_compressions": first_calls,
+            "provider_request_sizes": sizes, "provider_omits_usage": agent.context_compressor._provider_omits_usage,
+            "pass": bool(result.get("completed") and calls and calls[0] >= 1
+                         and min(sizes[1:]) < sizes[0]
+                         and (not usage_less or first_calls == 0))}
 
 
 def main() -> int:
@@ -225,16 +278,25 @@ def main() -> int:
     (tmp / "home").mkdir(parents=True)
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     wire = _FakeChat()
-    result: dict = {"checkout": str(ROOT), "head": head}
+    result: dict = {"checkout": str(ROOT), "head": head,
+                    "compressor_sha256": hashlib.sha256(
+                        (ROOT / "agent/context_compressor.py").read_bytes()).hexdigest()}
     try:
         for shape in ("cli", "gateway", "restore"):
+            result[f"{shape}_past_window_inflated"] = scenario(
+                wire, shape=shape, real=REAL_UNDER, chars=640_000, tmp=tmp)
             result[f"{shape}_inflated"] = scenario(wire, shape=shape, real=REAL_UNDER, chars=INFLATED_CHARS, tmp=tmp)
             result[f"{shape}_deflated"] = scenario(wire, shape=shape, real=REAL_OVER, chars=400, tmp=tmp)
+        result["overflow_recovery"] = recovery_scenario(wire, usage_less=False)
+        result["usage_less_fallback"] = recovery_scenario(wire, usage_less=True)
     finally:
         wire.close()
     verdict = {}
     for k, v in result.items():
         if not isinstance(v, dict):
+            continue
+        if "pass" in v:
+            verdict[k] = "PASS" if v["pass"] else "FAIL"
             continue
         fired = sum(v["local_compress_calls_by_turn"])
         # inflated: real under threshold → no gate may fire. deflated: real over → must fire ≥1 after turn 1.

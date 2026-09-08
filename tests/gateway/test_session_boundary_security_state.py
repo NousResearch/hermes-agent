@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 from tools import approval as approval_mod
 from tools import slash_confirm as slash_confirm_mod

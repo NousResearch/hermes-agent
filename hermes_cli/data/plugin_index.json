@@ -63,6 +63,18 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "hermes-plugin-netbox",
+      "description": "NetBox change management: query DCIM/IPAM objects, build a reviewed field-level diff, apply with a journal and automatic rollback, roll back later.",
+      "author": "Andrew Vieyra",
+      "tags": ["netbox", "dcim", "ipam", "infrastructure", "change-management", "network"],
+      "repo": "andrewvieyra/hermes-plugin-netbox",
+      "ref": "f54aec907fb11ebc1b076e5fc107a4d6a7713374",
+      "homepage": "https://github.com/andrewvieyra/hermes-plugin-netbox",
+      "capabilities": ["tools"],
+      "api_version": 1,
+      "added_at": "2026-09-08"
     }
   ]
 }

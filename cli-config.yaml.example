@@ -201,6 +201,10 @@ model:
 # wire format shares the same credential helper:
 #
 # providers:
+#   commandcode-oauth:               # Command Code via browser OAuth / CLI credentials
+#     models:                        # Optional: specify custom models or omit for live discovery
+#       - meituan/LongCat-2.0:free
+#       - deepseek/deepseek-v3.2
 #   dbx:                             # OpenAI-compatible (MLflow) route
 #     base_url: "https://<workspace>.cloud.databricks.com/ai-gateway/mlflow/v1"
 #     api_mode: chat_completions

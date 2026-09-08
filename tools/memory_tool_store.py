@@ -54,6 +54,34 @@ def _read_failed_error(path: Path) -> Dict[str, Any]:
         f"memory, so the write is refused. Nothing was changed — retry in a moment.")
 
 
+def _compute_replacement(entry: str, old_text: str, content: str) -> str:
+    """Compute updated entry preserving surrounding content unless whole-entry replacement was intended."""
+    if content == entry or old_text == entry:
+        return content
+    pos = entry.find(old_text)
+    if pos == -1:
+        return content
+    prefix = entry[:pos]
+    suffix = entry[pos + len(old_text):]
+    
+    p_clean = prefix.strip()
+    s_clean = suffix.strip()
+
+    # 1. Both prefix and suffix exist, and content overlaps both ends (e.g. 'Python 3.11 project' -> 'Python 3.12 project' with old='3.11')
+    if p_clean and s_clean and content.startswith(p_clean) and content.endswith(s_clean):
+        return content
+
+    # 2. Match is at the beginning (prefix empty), but content is substantially longer and repeats the old_text prefix
+    if not p_clean and s_clean and content.startswith(old_text.strip()) and len(content) >= len(entry) * 0.7:
+        return content
+
+    # 3. Match is at the end (suffix empty), but content repeats the prefix of the entry
+    if p_clean and not s_clean and len(p_clean) > 3 and content.startswith(p_clean):
+        return content
+
+    return prefix + content + suffix
+
+
 def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int], bool]:
     """``(index, ambiguous)`` for entries containing *old_text*. Exact-duplicate
     matches are safe (first wins); distinct matches → ``(None, True)``."""
@@ -261,7 +289,11 @@ class MemoryStore:
                 return self._consolidation_failure(_error(
                     f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
                     f"of the entry you want to {'replace' if new_content else 'remove'}.", current_entries=entries))
-            replaced = entries[:idx] + ([] if new_content is None else [new_content]) + entries[idx + 1:]
+            if new_content is not None:
+                computed_entry = _compute_replacement(entries[idx], old_text, new_content)
+                replaced = entries[:idx] + [computed_entry] + entries[idx + 1:]
+            else:
+                replaced = entries[:idx] + entries[idx + 1:]
             if new_content is None:
                 return replaced, "Entry removed."
             new_total = len(ENTRY_DELIMITER.join(replaced))
@@ -293,7 +325,10 @@ class MemoryStore:
             return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific."
         if idx is None:
             return f"{pos}: no entry matched '{old_text}'."
-        working[idx:idx + 1] = [content] if act == "replace" else []
+        if act == "replace":
+            working[idx] = _compute_replacement(working[idx], old_text, content)
+        else:
+            working[idx:idx + 1] = []
         return None
 
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:

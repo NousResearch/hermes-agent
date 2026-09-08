@@ -151,6 +151,89 @@ class TestMemoryStoreReplace:
         assert "Python 3.12 project" in store.memory_entries
         assert "Python 3.11 project" not in store.memory_entries
 
+    def test_replace_composite_entry_middle_span(self, store):
+        """Fix #59184: replacing a middle clause preserves surrounding prefix and suffix."""
+        store.add("user", "User: Alice. Role: Architect. Stack: Python & Go. Prefers dark mode.")
+        result = store.replace("user", "Stack: Python & Go.", "Stack: Rust & TypeScript.")
+        assert result["success"] is True
+        assert store.user_entries[0] == "User: Alice. Role: Architect. Stack: Rust & TypeScript. Prefers dark mode."
+
+    def test_replace_composite_entry_suffix_span(self, store):
+        """Fix #59184: replacing a trailing clause preserves preceding content."""
+        store.add("user", "User: Bob. City: Bandung. Timezone: WIB. Alert: Slack.")
+        result = store.replace("user", "Alert: Slack.", "Alert: Discord.")
+        assert result["success"] is True
+        assert store.user_entries[0] == "User: Bob. City: Bandung. Timezone: WIB. Alert: Discord."
+
+    def test_replace_composite_entry_prefix_span(self, store):
+        """Fix #59184: replacing a leading clause preserves following content."""
+        store.add("memory", "Status: Staging. DB: PostgreSQL. Cache: Redis.")
+        result = store.replace("memory", "Status: Staging.", "Status: Production.")
+        assert result["success"] is True
+        assert store.memory_entries[0] == "Status: Production. DB: PostgreSQL. Cache: Redis."
+
+    def test_replace_whole_entry_backward_compat(self, store):
+        """When old_text matches the full entry, replacement behaves as whole-card update."""
+        store.add("memory", "Python 3.11 project")
+        result = store.replace("memory", "Python 3.11 project", "Rust 1.75 project")
+        assert result["success"] is True
+        assert store.memory_entries[0] == "Rust 1.75 project"
+
+    def test_replace_punctuation_suffix_not_mistaken_for_whole_entry(self, store):
+        """Fix edge-case: punctuation suffix (e.g. '.') must not trigger whole-card override."""
+        store.add("memory", "Model: GPT-4.")
+        result = store.replace("memory", "GPT-4", "Claude-3")
+        assert result["success"] is True
+        assert store.memory_entries[0] == "Model: Claude-3."
+
+    def test_replace_leading_span_with_full_card_repetition(self, store):
+        """Fix edge-case: when model targets leading clause but repeats full card in content."""
+        store.add("memory", "Status: Staging. Cache: Redis.")
+        result = store.replace("memory", "Status: Staging.", "Status: Staging. Cache: Valkey.")
+        assert result["success"] is True
+        assert store.memory_entries[0] == "Status: Staging. Cache: Valkey."
+
+    def test_replace_at_capacity_shrinkage_consolidation(self, store):
+        """Consolidation shrinkage: replacing full bloated entry with concise summary must shrink cleanly."""
+        store.add("memory", "Detailed Log: " + "x" * 400)
+        result = store.replace("memory", "Detailed Log: " + "x" * 400, "Log: Compacted.")
+        assert result["success"] is True
+        assert store.memory_entries[0] == "Log: Compacted."
+
+    def test_replace_regex_and_special_characters(self, store):
+        """Special characters like brackets, anchors, and carets must not break string matching."""
+        store.add("memory", "Pattern: ^[a-z0-9_-]{3,16}$. Status: Valid.")
+        result = store.replace("memory", "^[a-z0-9_-]{3,16}$", "^[a-zA-Z0-9_-]{3,32}$")
+        assert result["success"] is True
+        assert store.memory_entries[0] == "Pattern: ^[a-zA-Z0-9_-]{3,32}$. Status: Valid."
+
+    def test_replace_multiline_list_formatting(self, store):
+        """Multiline bullet lists and newlines within a card are preserved."""
+        store.add("user", "Section A:\n- item 1\nSection B:\n- item 2")
+        result = store.replace("user", "- item 2", "- item 2\n- item 3")
+        assert result["success"] is True
+        assert store.user_entries[0] == "Section A:\n- item 1\nSection B:\n- item 2\n- item 3"
+
+    def test_replace_composite_multi_sentence_real_world(self, store):
+        """Real-world multi-attribute user profile card preserving surrounding context."""
+        entry = (
+            "User Profile: Alice, AI Researcher at Lab X (advisor: Dr. Y). "
+            "Building agentic systems. UI utilitarian; diagram README WAJIB Mermaid SVG."
+        )
+        store.add("user", entry)
+        result = store.replace(
+            "user",
+            "diagram README WAJIB Mermaid SVG.",
+            "diagram arsitektur & README WAJIB format Mermaid SVG."
+        )
+        assert result["success"] is True
+        res = store.user_entries[0]
+        assert "Alice" in res
+        assert "Lab X" in res
+        assert "advisor: Dr. Y" in res
+        assert "Building agentic systems" in res
+        assert "diagram arsitektur & README WAJIB format Mermaid SVG." in res
+
 
     def test_replace_ambiguous_match(self, store):
         store.add("memory", "server A runs nginx")
@@ -396,6 +479,14 @@ class TestMemoryBatch:
         ))
         assert result["success"] is False
         assert "legit fact" not in store.memory_entries
+
+    def test_batch_replace_composite_middle_span(self, store):
+        """Fix #59184: batch replace in the middle of a multi-sentence card preserves surrounding clauses."""
+        store.add("memory", "Policy: Zero-trust. Session: 8h. MFA: Hardware key.")
+        batch = [{"action": "replace", "old_text": "Session: 8h.", "content": "Session: 12h."}]
+        result = store.apply_batch("memory", batch)
+        assert result["success"] is True
+        assert store.memory_entries[0] == "Policy: Zero-trust. Session: 12h. MFA: Hardware key."
 
 
 # =========================================================================

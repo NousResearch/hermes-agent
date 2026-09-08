@@ -99,6 +99,15 @@ test('resolves with a HERMES_BACKEND_READY port (headless `serve`)', async () =>
   assert.equal(await p, 43210)
 })
 
+test('ignores out-of-range announcements until a valid TCP port arrives', async () => {
+  const child = makeFakeChild()
+  const p = waitForDashboardPort(child, 1000)
+
+  child.stdout.emit('data', 'HERMES_BACKEND_READY port=65536\n')
+  child.stdout.emit('data', 'HERMES_BACKEND_READY port=43210\n')
+  assert.equal(await p, 43210)
+})
+
 test('parses the port even when the line arrives split across chunks', async () => {
   const child = makeFakeChild()
   const p = waitForDashboardPort(child, 1000)
@@ -172,6 +181,8 @@ test('readDashboardReadyFile ignores missing, malformed, or invalid files', () =
     fs.writeFileSync(tmp.file, '{')
     assert.equal(readDashboardReadyFile(tmp.file), null)
     fs.writeFileSync(tmp.file, JSON.stringify({ port: 0 }))
+    assert.equal(readDashboardReadyFile(tmp.file), null)
+    fs.writeFileSync(tmp.file, JSON.stringify({ port: 65_536 }))
     assert.equal(readDashboardReadyFile(tmp.file), null)
   } finally {
     tmp.cleanup()

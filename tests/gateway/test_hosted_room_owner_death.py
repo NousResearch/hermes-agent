@@ -115,6 +115,56 @@ def test_admission_stamps_the_descriptor_and_the_stamp_together(store):
     assert descriptor["task_id"] == store["identity"].task_id
 
 
+@pytest.mark.linux_only
+@pytest.mark.parametrize("legacy", [True, False], ids=["v1", "current"])
+@pytest.mark.parametrize("drift", [-3600.0, 3600.0])
+def test_live_owner_clock_drift_cannot_authorize_recovery(store, monkeypatch, legacy, drift):
+    """Real test PID and SQLite evidence; only psutil's wall-clock metadata is shifted."""
+    import os
+    import psutil
+    from psutil import _pslinux
+    from gateway import hosted_room_owner_probe as probe
+    from hermes_state_common import _proc_start_ticks
+
+    task = _make_indeterminate(store)
+    descriptor = dict(task["owner_descriptor"])
+    if legacy:
+        descriptor["descriptor_version"] = 1
+        descriptor.pop("process_start_ticks", None)
+        _set_descriptor(store["db"], store["identity"], json.dumps(descriptor))
+        task = state.get_task(store["db"], store["identity"])
+    assert descriptor["pid"] == os.getpid()
+    ticks = _proc_start_ticks(os.getpid())
+    assert ticks is not None
+    assert probe.probe_owner_incarnation(descriptor) == probe.ALIVE
+    epoch = psutil.Process(os.getpid()).create_time()
+    boot_time = _pslinux.boot_time
+    monkeypatch.setattr(_pslinux, "boot_time", lambda: boot_time() + drift)
+    assert psutil.Process(os.getpid()).create_time() == pytest.approx(epoch + drift, rel=0, abs=0.001)
+    assert _proc_start_ticks(os.getpid()) == ticks
+
+    verdict = probe.probe_owner_incarnation(descriptor)
+    proof = state.owner_death_proof(task, verdict)
+    with pytest.raises(state.DriverStateError):
+        _requeue(store, task, owner_death_proof=proof)
+    assert verdict == (probe.UNKNOWN if legacy else probe.ALIVE)
+    assert proof is None
+    with pytest.raises(state.DriverValidationError):
+        state.resolve_indeterminate_cancellation(
+            store["db"], store["identity"], store["lease"],
+            expected_execution_generation=task["execution_generation"],
+            expected_cancel_generation=task["cancel_generation"], cancel_id="stop-1",
+            clock=store["clock"], death_authorized=True, owner_death_proof=proof)
+    with pytest.raises(state.DriverValidationError):
+        state.resolve_indeterminate_task(
+            store["db"], store["identity"], store["lease"],
+            expected_execution_generation=task["execution_generation"],
+            expected_cancel_generation=task["cancel_generation"], settlement_id="clock-drift",
+            status="failed", result={"error": "unproven death"}, clock=store["clock"],
+            death_authorized=True, owner_death_proof=proof)
+    assert state.get_task(store["db"], store["identity"]) == task
+
+
 def test_an_incomplete_native_half_stores_no_descriptor_at_all(tmp_path):
     """Never a partial map: the attempt is admitted, it simply gains no recovery eligibility."""
     db = tmp_path / "partial.db"
@@ -273,14 +323,28 @@ def test_a_malformed_non_null_descriptor_refuses_the_same_generation_requeue(sto
     assert state.get_task(store["db"], store["identity"])["status"] == "indeterminate"
 
 
-def test_a_complete_proof_lets_the_attempt_be_requeued_once(store):
-    task = _make_indeterminate(store)
+@pytest.mark.parametrize("legacy", [True, False], ids=["v1", "v2"])
+def test_a_complete_proof_lets_the_attempt_be_requeued_once(store, legacy):
+    import psutil
+    from gateway import hosted_room_owner_probe as probe
 
-    requeued = _requeue(store, task, owner_death_proof=_proof(store, task))
+    task = _make_indeterminate(store)
+    descriptor = dict(task["owner_descriptor"])
+    descriptor["pid"] = next(
+        pid for pid in range(4_000_000, 4_100_000) if not psutil.pid_exists(pid))
+    if legacy:
+        descriptor["descriptor_version"] = 1
+        descriptor.pop("process_start_ticks")
+    _set_descriptor(store["db"], store["identity"], json.dumps(descriptor))
+    task = state.get_task(store["db"], store["identity"])
+    proof = state.owner_death_proof(task, probe.probe_owner_incarnation(descriptor))
+    assert proof is not None
+
+    requeued = _requeue(store, task, owner_death_proof=proof)
 
     assert requeued["status"] == "queued"
     with pytest.raises(state.DriverStateError):
-        _requeue(store, task, owner_death_proof=_proof(store, task))
+        _requeue(store, task, owner_death_proof=proof)
 
 
 # --- the proof guard ----------------------------------------------------------
@@ -395,6 +459,14 @@ _MISSING = object()
         ("stored_session_key", _MISSING, "no durable key"),
         ("home", "", "an empty execution home"),
         ("profile", 7, "a non-string profile"),
+        ("process_start_ticks", _MISSING, "v2 requires a boot-relative stamp"),
+        ("process_start_ticks", None, "unreadable boot-relative stamp"),
+        ("process_start_ticks", True, "a bool is not a tick stamp"),
+        ("process_start_ticks", 1.0, "a float is not a tick stamp"),
+        ("process_start_ticks", "1", "a string is not a tick stamp"),
+        ("process_start_ticks", 0, "a zero tick stamp"),
+        ("process_start_ticks", -1, "a negative tick stamp"),
+        ("descriptor_version", 2.0, "a float is not a version"),
         # Admission half.
         ("cancel_generation_at_admission", _MISSING, "no admission-cancel coordinate"),
         ("execution_generation", _MISSING, "no execution generation"),
@@ -454,6 +526,9 @@ def test_an_incomplete_or_inconsistent_descriptor_authorizes_nothing(store, fiel
     "field, value, why",
     [
         ("pid", True, "a bool pid inside an otherwise equal map"),
+        ("process_start_ticks", True, "a bool tick stamp"),
+        ("process_start_ticks", 1.0, "a float tick stamp"),
+        ("process_start_ticks", 1, "a substituted valid tick stamp must bind the stored one"),
         ("execution_generation", True, "a bool generation that dict equality accepts"),
         ("run_lease_generation", 1.0, "a float generation that dict equality accepts"),
         ("cancel_generation_at_admission", True, "a bool admission coordinate"),

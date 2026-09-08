@@ -13,6 +13,10 @@ never read as death: this module preserves psutil's exception types and fails cl
 cannot match and its rows stay unrecoverable rather than being misjudged. Where the domain cannot
 be read, no descriptor is captured and recovery is simply unavailable -- a declared capability
 limit, not a fault, and never a reason to refuse ordinary work. ``host`` is a human label only.
+
+v2 retains ``process_start`` as epoch metadata and adds positive integer ``process_start_ticks``
+from Linux stat field 22 for identity. Persisted v1 descriptors are never upgraded or rewritten:
+their epoch mismatch is ``unknown``, while verified absence or zombie status still proves death.
 """
 
 from __future__ import annotations
@@ -20,12 +24,12 @@ from __future__ import annotations
 import math
 import os
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, TypeGuard
 
-DESCRIPTOR_VERSION = 1
+DESCRIPTOR_VERSION = 2
 
-# psutil reports process start times with limited resolution; a difference this small is the same
-# incarnation, anything larger is a verified reuse of the pid.
+# Only legacy epoch equality uses tolerance. An epoch mismatch is not evidence of PID reuse:
+# Linux btime (and therefore psutil create_time) can shift while the process remains alive.
 _START_TIME_TOLERANCE_SECONDS = 0.001
 
 ALIVE = "alive"
@@ -65,13 +69,16 @@ def capture_local_domain() -> dict[str, Any] | None:
     pid = os.getpid()
     try:
         import psutil
+        from hermes_state_common import _proc_start_ticks
 
         process_start = float(psutil.Process(pid).create_time())
+        process_start_ticks = _proc_start_ticks(pid)
     except Exception:
         return None  # a descriptor that cannot be probed later is worse than none at all
     domain = {
         "descriptor_version": DESCRIPTOR_VERSION, "host": os.uname().nodename,
-        "boot_id": boot_id, "pid_ns": pid_ns, "pid": pid, "process_start": process_start}
+        "boot_id": boot_id, "pid_ns": pid_ns, "pid": pid, "process_start": process_start,
+        "process_start_ticks": process_start_ticks}
     # Captured through the same validation the probe applies, so this module cannot mint a
     # descriptor its own verdict would later misread.
     return domain if _domain_is_current(domain) else None
@@ -89,6 +96,8 @@ def validate_native_descriptor(native: Any) -> dict[str, Any] | None:
     if not _domain_is_current(native) or not isinstance(native.get("host"), str):
         return None
     validated = {field: native[field] for field in (*_DOMAIN_FIELDS, "host", "descriptor_version")}
+    if native["descriptor_version"] == 2:
+        validated["process_start_ticks"] = native["process_start_ticks"]
     for field in _NATIVE_TARGET_FIELDS:
         value = native.get(field)
         if not isinstance(value, str) or not value.strip():
@@ -97,7 +106,7 @@ def validate_native_descriptor(native: Any) -> dict[str, Any] | None:
     return validated
 
 
-def _exact_int(value: Any) -> bool:
+def _exact_int(value: Any) -> TypeGuard[int]:
     """A real ``int``. ``bool`` is excluded explicitly: ``True == 1`` would otherwise pass."""
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -107,15 +116,21 @@ def _domain_is_current(descriptor: Mapping[str, Any]) -> bool:
     version = descriptor.get("descriptor_version")
     # Exact type AND value: `True == 1` and `1.0 == 1` are both true in Python, so a bare
     # comparison would admit a bool or a float as version 1.
-    if not _exact_int(version) or version != DESCRIPTOR_VERSION:
+    if not _exact_int(version) or version not in (1, 2):
         return False
+    if version == 2:
+        ticks = descriptor.get("process_start_ticks")
+        if not _exact_int(ticks) or ticks <= 0:
+            return False
+    elif "process_start_ticks" in descriptor:
+        return False  # v1 has epoch evidence only; never reinterpret or silently drop a stamp
     if any(descriptor.get(field) is None for field in _DOMAIN_FIELDS):
         return False
     pid, start = descriptor.get("pid"), descriptor.get("process_start")
     if not _exact_int(pid) or pid <= 0:
         return False
-    # Finite AND positive, not merely "not NaN": an infinite start time would differ from every
-    # real one by more than the tolerance and would classify a LIVE owner as ended.
+    # Keep epoch evidence finite and positive in both versions; v2 must not launder corrupt v1
+    # metadata merely because it also carries ticks.
     if isinstance(start, bool) or not isinstance(start, (int, float)):
         return False
     if not math.isfinite(start) or start <= 0:
@@ -144,6 +159,13 @@ def probe_owner_incarnation(descriptor: Mapping[str, Any] | None) -> str:
         process = psutil.Process(pid)
         if process.status() == psutil.STATUS_ZOMBIE:
             return ENDED  # reaped-but-not-collected: its execution is over
+        if descriptor["descriptor_version"] == 2:
+            from hermes_state_common import _proc_start_ticks
+
+            ticks = _proc_start_ticks(pid)
+            if not _exact_int(ticks) or ticks <= 0:
+                return UNKNOWN  # even a missing /proc file is not a NoSuchProcess verdict
+            return ALIVE if ticks == descriptor["process_start_ticks"] else ENDED
         started = float(process.create_time())
     except psutil.NoSuchProcess:
         return ENDED
@@ -151,8 +173,8 @@ def probe_owner_incarnation(descriptor: Mapping[str, Any] | None) -> str:
         # AccessDenied, a zombie racing collection, an unexpected OSError: all unreadable, and an
         # unreadable process has NOT been shown to have ended.
         return UNKNOWN
+    if not math.isfinite(started) or started <= 0:
+        return UNKNOWN
     if abs(started - float(descriptor["process_start"])) > _START_TIME_TOLERANCE_SECONDS:
-        # The pid was reused inside a validated domain: the recorded incarnation is gone. This is
-        # positive evidence, not a refusal.
-        return ENDED
+        return UNKNOWN  # v1 cannot distinguish PID reuse from wall-clock metadata drift
     return ALIVE

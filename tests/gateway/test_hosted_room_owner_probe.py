@@ -35,21 +35,31 @@ def test_this_process_is_alive(domain):
     assert probe.probe_owner_incarnation(domain) == probe.ALIVE
 
 
-def test_a_verified_start_time_difference_is_a_reused_pid_and_therefore_ended(domain):
-    """Positive evidence, not a refusal: the recorded incarnation is provably gone."""
-    reused = {**domain, "process_start": domain["process_start"] - 5.0}
+@pytest.mark.parametrize("legacy", [True, False], ids=["v1-uncertain", "v2-reuse"])
+def test_only_boot_relative_start_difference_proves_pid_reuse(domain, legacy):
+    reused = dict(domain)
+    if legacy:
+        reused["descriptor_version"] = 1
+        reused.pop("process_start_ticks")
+        reused["process_start"] -= 5.0
+    else:
+        reused["process_start_ticks"] += 1
 
-    assert probe.probe_owner_incarnation(reused) == probe.ENDED
+    assert probe.probe_owner_incarnation(reused) == (probe.UNKNOWN if legacy else probe.ENDED)
 
 
-def test_an_absent_process_is_ended(domain):
+@pytest.mark.parametrize("legacy", [True, False], ids=["v1", "v2"])
+def test_an_absent_process_is_ended(domain, legacy):
     import psutil
 
     free_pid = next(
         pid for pid in range(4_000_000, 4_100_000) if not psutil.pid_exists(pid))
 
-    assert probe.probe_owner_incarnation(
-        {**domain, "process_start": 1.0, "pid": free_pid}) == probe.ENDED
+    descriptor = {**domain, "process_start": 1.0, "pid": free_pid}
+    if legacy:
+        descriptor["descriptor_version"] = 1
+        descriptor.pop("process_start_ticks")
+    assert probe.probe_owner_incarnation(descriptor) == probe.ENDED
 
 
 @pytest.mark.parametrize(
@@ -60,6 +70,14 @@ def test_an_absent_process_is_ended(domain):
         ({"descriptor_version": 999}, "an unknown descriptor version"),
         ({"descriptor_version": True}, "a bool is not version 1 even though True == 1"),
         ({"descriptor_version": 1.0}, "a float is not version 1 even though 1.0 == 1"),
+        ({"descriptor_version": 2.0}, "a float is not version 2"),
+        ({"descriptor_version": 1}, "a v1 descriptor cannot carry a v2 tick stamp"),
+        ({"process_start_ticks": None}, "missing boot-relative evidence"),
+        ({"process_start_ticks": True}, "a bool is not a tick stamp"),
+        ({"process_start_ticks": 1.0}, "a float is not a tick stamp"),
+        ({"process_start_ticks": "1"}, "a string is not a tick stamp"),
+        ({"process_start_ticks": 0}, "a zero tick stamp"),
+        ({"process_start_ticks": -1}, "a negative tick stamp"),
         ({"pid": True}, "a bool is not a pid even though True == 1"),
         ({"pid": 0}, "pid 0 is not a process"),
         ({"pid": -1}, "a negative pid"),
@@ -102,6 +120,27 @@ def test_an_unreadable_process_is_unknown_not_ended(domain, monkeypatch):
     assert probe.probe_owner_incarnation(domain) == probe.UNKNOWN
 
 
+@pytest.mark.linux_only
+@pytest.mark.parametrize("failure", ["denied", "readonly", "missing", "malformed"])
+def test_unreadable_kernel_ticks_never_authorize_death(domain, monkeypatch, failure):
+    import errno
+    import io
+    import hermes_state_common
+
+    def unreadable(path, mode):
+        assert path == f"/proc/{os.getpid()}/stat" and mode == "rb"
+        if failure == "malformed":
+            return io.BytesIO(b"unparseable stat")
+        code = {"denied": errno.EACCES, "readonly": errno.EROFS, "missing": errno.ENOENT}[failure]
+        raise OSError(code, "simulated kernel read failure")
+
+    # Affect only the reused helper's read, not psutil's independent live-process observation.
+    monkeypatch.setattr(hermes_state_common, "open", unreadable, raising=False)
+    assert hermes_state_common._proc_start_ticks(os.getpid()) is None
+    assert probe.probe_owner_incarnation(domain) == probe.UNKNOWN
+    assert probe.capture_local_domain() is None
+
+
 def test_a_zombie_is_ended(domain, monkeypatch):
     import psutil
 
@@ -116,10 +155,14 @@ def test_a_zombie_is_ended(domain, monkeypatch):
     assert probe.probe_owner_incarnation(domain) == probe.ENDED
 
 
-def test_native_descriptor_validation_never_returns_a_partial_map(domain):
+@pytest.mark.parametrize("legacy", [True, False], ids=["v1", "v2"])
+def test_native_descriptor_validation_never_returns_a_partial_map(domain, legacy):
     complete = {
         **domain, "home": "/tmp/home", "profile": "ops",
         "runtime_session_id": "runtime-1", "stored_session_key": "stored-1"}
+    if legacy:
+        complete["descriptor_version"] = 1
+        complete.pop("process_start_ticks")
 
     assert probe.validate_native_descriptor(complete) == complete
     for field in ("home", "profile", "runtime_session_id", "stored_session_key"):

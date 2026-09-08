@@ -143,9 +143,14 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   // runs, falling back to chat activity when it ends.
   const workerActive = workerActiveAt(bot)
 
-  const rowAgeTs = workerActive
-    ? Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
-    : activitySession?.last_active || 0
+  // Age reflects the last time the bot did ANYTHING — a human chat or a delegated worker run
+  // (source `tool`/`kanban`) — not only conversations. A delegate-only specialist that ran 24×
+  // today used to read "11d ago" the instant its worker's 150s liveness window lapsed, because
+  // the worker stamp only counted while workerActive (#105874). Take the max unconditionally; the
+  // worker stamp degrades to 0 when absent (worker_session can be None past the 20-row window), so
+  // the age falls back to chat activity. workerActive still gates only the live pulse/mood below.
+  const rowAgeTs = Math.max(
+    activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
 
   const botMood = workerActive || (isGatewayHome && gatewayState === 'busy') ? 'work' : 'idle'
   // Status keys off the canonical Bot Chat — the very session this row opens,

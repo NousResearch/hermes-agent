@@ -547,10 +547,12 @@ class SessionSchemaMixin:
         """Body of :meth:`_recover_stale_fts`; caller holds rebuild authority. One write
         transaction, so no canonical writer slips between rebuild and trigger restoration."""
         try:
-            include_trigram = self._fts_table_probe(cursor, "messages_fts_trigram") is True
+            trigram_present = self._fts_table_probe(cursor, "messages_fts_trigram") is True
         except (sqlite3.DatabaseError, UnicodeDecodeError):
             # A corrupt vtable may fail even a LIMIT 0 probe; still include it in the drop-and-recreate.
             include_trigram = True
+        else:
+            include_trigram = trigram_present or (not legacy and self._trigram_tokenizer_available(cursor))
 
         drop_sql = "".join(f"DROP TRIGGER IF EXISTS {trigger};" for trigger in _FTS_TRIGGERS)
         if include_trigram:
@@ -588,6 +590,21 @@ class SessionSchemaMixin:
         self._fts_enabled = True
         self._trigram_available = include_trigram
         logger.warning("Rebuilt stale state.db FTS indexes from canonical messages and restored sync triggers.")
+        return True
+
+    def _trigram_tokenizer_available(self, cursor: sqlite3.Cursor) -> bool:
+        """Probe trigram support without publishing a persistent FTS object."""
+        probe = "temp.hermes_fts5_trigram_probe"
+        cursor.execute(f"DROP TABLE IF EXISTS {probe}")
+        try:
+            cursor.execute(f"CREATE VIRTUAL TABLE {probe} USING fts5(content, tokenize='trigram')")
+        except sqlite3.OperationalError as exc:
+            if not self._is_trigram_unavailable_error(exc):
+                raise
+            self._warn_trigram_unavailable(exc)
+            return False
+        finally:
+            cursor.execute(f"DROP TABLE IF EXISTS {probe}")
         return True
 
     # ── Declarative column reconciliation ──────────────────────────────────

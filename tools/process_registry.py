@@ -186,18 +186,123 @@ def _systemd_run_user_scope_available() -> bool:
         return available
 
 
+GATEWAY_ORIGIN_PID_ENV = "HERMES_GATEWAY_ORIGIN_PID"
+
+
+def _is_gateway_runtime_process() -> bool:
+    """Return whether this process owns the live Hermes gateway PID file.
+
+    ``_HERMES_GATEWAY`` alone is insufficient because imports and child
+    processes inherit it. PID ownership distinguishes the gateway itself and
+    works for both supervised Unix services and direct-spawn Windows login
+    items.
+    """
+    origin = os.environ.get(GATEWAY_ORIGIN_PID_ENV, "").strip()
+    if origin and origin != str(os.getpid()):
+        return False
+    if not origin and os.environ.get("_HERMES_GATEWAY") != "1":
+        return False
+
+    try:
+        from gateway.status import get_running_pid
+
+        return get_running_pid(cleanup_stale=False) == os.getpid()
+    except Exception as exc:
+        logger.debug("Could not verify gateway process identity: %s", exc)
+        return False
+
+
+def _is_gateway_descendant_process() -> bool:
+    """Return whether this process descends from a currently running gateway.
+
+    Prefer the inherited origin PID and actual process ancestry. Explicit
+    gateway command shapes recover when wrappers remove the environment or
+    switch profiles. The legacy marker is only a fail-closed fallback paired
+    with live gateway state, never sufficient during an ordinary import.
+    """
+    marker = os.environ.get("_HERMES_GATEWAY") == "1"
+    origin_raw = os.environ.get(GATEWAY_ORIGIN_PID_ENV, "").strip()
+    ancestors = None
+    ancestry_error = False
+    try:
+        import psutil
+
+        ancestors = psutil.Process(os.getpid()).parents()
+    except Exception as exc:
+        ancestry_error = True
+        logger.debug("Could not inspect gateway ancestry: %s", exc)
+
+    if ancestors is not None:
+        try:
+            origin_pid = int(origin_raw) if origin_raw else None
+        except ValueError:
+            origin_pid = None
+        ancestor_pids = {getattr(ancestor, "pid", None) for ancestor in ancestors}
+        if origin_pid is not None and origin_pid in ancestor_pids:
+            return True
+
+        for ancestor in ancestors:
+            try:
+                argv = [
+                    str(part).replace("\\", "/").lower()
+                    for part in ancestor.cmdline()
+                ]
+            except Exception:
+                continue
+            executable = argv[0].rsplit("/", 1)[-1].removesuffix(".exe") if argv else ""
+            is_hermes_cli = executable == "hermes" or any(
+                argv[index] == "-m" and argv[index + 1] == "hermes_cli.main"
+                for index in range(len(argv) - 1)
+            )
+            if is_hermes_cli and any(
+                argv[index] == "gateway" and argv[index + 1] == "run"
+                for index in range(len(argv) - 1)
+            ):
+                return True
+            if any(
+                argv[index] == "-m" and argv[index + 1] == "gateway.run"
+                for index in range(len(argv) - 1)
+            ):
+                return True
+            if "--gateway" in argv and any(
+                part.rsplit("/", 1)[-1] == "cli.py" for part in argv
+            ):
+                return True
+
+    if origin_raw and ancestry_error:
+        return True
+    if not marker:
+        return False
+
+    try:
+        from gateway.status import get_running_pid
+
+        live_pid = get_running_pid(cleanup_stale=False)
+    except Exception as exc:
+        logger.debug("Could not verify inherited gateway marker: %s", exc)
+        return True
+
+    if live_pid is None:
+        return False
+    if ancestors is None:
+        return True
+    return live_pid == os.getpid() or any(
+        getattr(ancestor, "pid", None) == live_pid for ancestor in ancestors
+    )
+
+
 def _is_supervised_gateway_process() -> bool:
     """Whether this process is the live, supervised Hermes gateway itself.
     Supervisor markers and ``_HERMES_GATEWAY`` are inherited by every descendant (and
-    importing ``gateway.run`` sets the latter), so also require ownership of the live
-    gateway PID file — scopes are for the gateway, not terminal children or CLIs."""
-    if os.environ.get("_HERMES_GATEWAY") != "1":
+    importing ``gateway.run`` sets the latter), so PID-file ownership is required too
+    — scopes are for the gateway, not terminal children or CLIs. The ownership half
+    now lives in ``_is_gateway_runtime_process`` so both probes share one answer."""
+    if not _is_gateway_runtime_process():
         return False
     try:
         from gateway.restart import is_gateway_supervisor_process
-        from gateway.status import get_running_pid
 
-        return is_gateway_supervisor_process() and get_running_pid(cleanup_stale=False) == os.getpid()
+        return is_gateway_supervisor_process()
     except Exception as exc:
         logger.debug("Could not verify supervised gateway process identity: %s", exc)
         return False

@@ -11,7 +11,13 @@ Verifies that:
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from gateway.platforms.base import BasePlatformAdapter, SendResult, _RETRYABLE_ERROR_PATTERNS
+from gateway.platforms.base import (
+    SEND_ERROR_KINDS,
+    BasePlatformAdapter,
+    SendResult,
+    _RETRYABLE_ERROR_PATTERNS,
+    classify_send_error,
+)
 from gateway.platforms.base import Platform, PlatformConfig
 
 
@@ -62,6 +68,10 @@ class TestIsRetryableError:
 
     def test_permission_error_not_retryable(self):
         assert not _StubAdapter._is_retryable_error("Forbidden: bot was blocked by the user")
+
+    def test_peer_flood_has_documented_machine_readable_kind(self):
+        assert "peer_flood" in SEND_ERROR_KINDS
+        assert classify_send_error(None, "Telegram PEER_FLOOD") == "peer_flood"
 
 
 # ---------------------------------------------------------------------------
@@ -294,3 +304,57 @@ class TestSendWithRetryFailureTypeTransitions:
         assert result.success  # fallback succeeded
         # No delivery-failure notice was sent (this is a formatting fallback, not network exhaustion)
         assert "delivery failed" not in adapter._send_calls[-1][1].lower()
+
+
+# ---------------------------------------------------------------------------
+# _send_with_retry — Telegram PEER_FLOOD (per-peer circuit breaker)
+# ---------------------------------------------------------------------------
+# peer_flood is NOT ordinary flood control: the adapter already holds the
+# cooldown, so a retry, a plain-text fallback or a delivery-failure notice
+# would each hit the same restricted peer and amplify the ban.
+
+class TestSendWithRetryPeerFlood:
+
+    @pytest.mark.asyncio
+    async def test_peer_flood_is_not_retried_or_followed_by_notice_or_fallback(self):
+        """PEER_FLOOD must leave the original final-delivery failure intact."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(
+                success=False,
+                error="peer_flood",
+                retryable=False,
+                retry_after=300.0,
+                error_kind="peer_flood",
+            ),
+        ]
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "final answer")
+
+        assert not result.success
+        assert result.error_kind == "peer_flood"
+        assert len(adapter._send_calls) == 1
+        mock_sleep.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_peer_flood_on_retry_stops_notice_and_plain_text_fallback(self):
+        """A retry that hits PEER_FLOOD must become the final result immediately."""
+        adapter = _StubAdapter()
+        peer_flood = SendResult(
+            success=False,
+            error="peer_flood",
+            retryable=False,
+            retry_after=300.0,
+            error_kind="peer_flood",
+        )
+        adapter._send_results = [
+            SendResult(success=False, error="network down", retryable=True),
+            peer_flood,
+        ]
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter._send_with_retry("chat1", "final answer")
+
+        assert result is peer_flood
+        assert len(adapter._send_calls) == 2

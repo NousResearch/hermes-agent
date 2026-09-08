@@ -116,6 +116,36 @@ def _configure_lifecycle_connect(monkeypatch, adapter, apps):
     return builders
 
 
+@pytest.mark.asyncio
+async def test_delete_webhook_routes_through_global_outbound_gateway():
+    adapter = _make_adapter()
+    adapter._bot = MagicMock()
+    adapter._bot.delete_webhook = AsyncMock(return_value=True)
+    adapter._outbound_gateway.write = AsyncMock(return_value=True)
+
+    assert await adapter._delete_webhook_best_effort() is True
+
+    adapter._outbound_gateway.write.assert_awaited_once()
+    call = adapter._outbound_gateway.write.await_args
+    assert call.args[1] == "delete_webhook"
+
+
+@pytest.mark.asyncio
+async def test_start_webhook_routes_through_global_outbound_gateway(monkeypatch):
+    adapter = _make_adapter()
+    adapter._app = _lifecycle_app()
+    adapter._outbound_gateway.write = AsyncMock(return_value=True)
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "test-secret")
+
+    await adapter._start_webhook_mode(
+        "https://example.test/telegram", is_reconnect=False
+    )
+
+    adapter._outbound_gateway.write.assert_awaited_once()
+    call = adapter._outbound_gateway.write.await_args
+    assert call.args[1] == "start_webhook"
+
+
 async def _cancel_task(task):
     if task is None or task.done():
         return

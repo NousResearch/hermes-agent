@@ -29,6 +29,11 @@ from gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from gateway.slash_commands_model import GatewayModelCommandsMixin
 from gateway.slash_commands_session import GatewaySessionCommandsMixin
 from gateway.slash_commands_status import HISTORY_UNREADABLE, GatewayStatusCommandsMixin
+from gateway.update_contract import (
+    UPDATE_ORPHAN_GRACE_SECONDS,
+    UPDATE_TIMEOUT_SECONDS,
+    acquire_update_helper_probe,
+)
 from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
 
@@ -71,16 +76,6 @@ _PLATFORM_USAGE = ("Usage: /platform <list|pause|resume> [name]\n"
                    "  /platform pause <name> — stop retrying a failing platform\n"
                    "  /platform resume <name> — re-queue a paused platform")
 
-_WINDOWS_UPDATE_HELPER = """
-import os, subprocess, sys
-output_path, exit_code_path, cmd = sys.argv[1], sys.argv[2], sys.argv[3:]
-env = dict(os.environ, PYTHONUNBUFFERED="1")
-with open(output_path, "wb") as f:
-    rc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env).wait(timeout=3600)
-with open(exit_code_path, "w", encoding="utf-8") as f:
-    f.write(str(rc))
-""".strip()
-
 
 def _nested_dict(root: dict, *keys: str) -> dict:
     """Walk/create ``root[k1][k2]...`` as dicts, replacing any non-dict value on the path."""
@@ -112,36 +107,6 @@ def _restart_notify_payload(event: MessageEvent) -> dict:
     optional = (("thread_id", source.thread_id), ("message_id", event.message_id))
     data.update({k: v for k, v in optional if v})
     return data
-
-
-def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
-    """Spawn ``hermes update --gateway`` detached so it survives the gateway restart it may trigger.
-    setsid is portable (works where ``systemd-run --user`` lacks a D-Bus session); ``--gateway``
-    enables file-based IPC so interactive prompts are forwarded; PYTHONUNBUFFERED lets the gateway
-    stream output live.  Windows has no setsid: an inline helper runs the updater as a module under
-    this interpreter (not venv\\Scripts\\hermes.exe — that shim holds its own file open, and the
-    update must replace it), redirects both outputs to one file and writes the exit code."""
-    import shutil
-    import subprocess
-    if sys.platform == "win32":
-        from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
-        subprocess.Popen(
-            [sys.executable, "-c", _WINDOWS_UPDATE_HELPER, str(output_path), str(exit_code_path),
-             sys.executable, "-m", "hermes_cli.main", "update", "--gateway"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **windows_detach_popen_kwargs())
-        return
-    hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
-    update_cmd = (
-        f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway"
-        f" > {shlex.quote(str(output_path))} 2>&1; "
-        # Avoid `status=$?`: `status` is read-only in zsh and this template is reused in
-        # macOS/zsh operator wrappers, so keep it zsh-safe even though bash runs it here.
-        f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}")
-    # Preferred: setsid creates a new session, fully detached; fallback start_new_session=True
-    # calls os.setsid() in the child.
-    setsid_bin = shutil.which("setsid")
-    argv = [setsid_bin, "bash", "-c", update_cmd] if setsid_bin else ["bash", "-c", update_cmd]
-    subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 def _home_thread_from_source(source) -> Optional[str]:
@@ -1201,7 +1166,12 @@ class GatewaySlashCommandsMixin(
         """Handle /update — spawn ``hermes update`` detached (``setsid``) so it survives the gateway
         restart it may trigger; marker files let this or the next gateway process notify the user."""
         import json
+        import hashlib
+        import secrets
+        import shutil
+        import subprocess
         from gateway.run import _hermes_home, _resolve_hermes_bin
+        from hermes_cli.active_sessions import _FileLock
         from hermes_cli.config import is_managed, format_managed_message
         # Block non-messaging platforms (API server, webhooks, ACP); plugin platforms with
         # allow_update_command=True are also allowed.
@@ -1222,22 +1192,264 @@ class GatewaySlashCommandsMixin(
         if not hermes_cmd:
             return t("gateway.update.hermes_cmd_not_found")
         pending_path = _hermes_home / ".update_pending.json"
+        claimed_path = _hermes_home / ".update_pending.claimed.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
-        pending = {
-            "platform": src.platform.value, "chat_id": src.chat_id, "chat_type": src.chat_type,
-            "user_id": src.user_id, "session_key": self._session_key_for_source(src),
-            "timestamp": datetime.now().isoformat()}
-        pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id)) if v})
-        _tmp_pending = pending_path.with_suffix(".tmp")
-        _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
-        _tmp_pending.replace(pending_path)
-        exit_code_path.unlink(missing_ok=True)
+        helper_pid_path = _hermes_home / ".update_helper_pid"
+        helper_lock_path = _hermes_home / ".update_helper.lock"
+        done_path = _hermes_home / ".update_helper_done.json"
+        session_key = self._session_key_for_source(event.source)
+        lock_path = pending_path.with_name(".update_pending.lock")
         try:
-            _spawn_detached_update(hermes_cmd, output_path, exit_code_path)
+            with _FileLock(lock_path):
+                helper_probe = acquire_update_helper_probe(helper_lock_path)
+                if helper_probe is None:
+                    return "An update is already in progress or awaiting notification."
+                helper_probe.release()
+                for active_path in (pending_path, claimed_path):
+                    try:
+                        active = json.loads(active_path.read_text(encoding="utf-8"))
+                    except (FileNotFoundError, OSError, ValueError, TypeError):
+                        continue
+                    if isinstance(active, dict) and active.get("platform") and active.get("chat_id"):
+                        return "An update is already in progress or awaiting notification."
+
+                # Invalid leftovers are not an active update. Clear them only
+                # after the locked active-state check, then publish one matched
+                # metadata/token pair atomically.
+                for stale_path in (
+                    pending_path, claimed_path, output_path,
+                    exit_code_path, helper_pid_path,
+                ):
+                    stale_path.unlink(missing_ok=True)
+                handoff_token = secrets.token_urlsafe(32)
+                request_id = secrets.token_urlsafe(24)
+                pending = {
+                    "request_id": request_id,
+                    "platform": event.source.platform.value,
+                    "chat_id": event.source.chat_id,
+                    "chat_type": event.source.chat_type,
+                    "user_id": event.source.user_id,
+                    "session_key": session_key,
+                    "timestamp": datetime.now().isoformat(),
+                    "deadline_epoch": time.time() + UPDATE_TIMEOUT_SECONDS,
+                    "orphan_grace_seconds": UPDATE_ORPHAN_GRACE_SECONDS,
+                    "handoff_token_sha256": hashlib.sha256(
+                        handoff_token.encode("utf-8")
+                    ).hexdigest(),
+                }
+                if event.source.thread_id:
+                    pending["thread_id"] = event.source.thread_id
+                if event.message_id:
+                    pending["message_id"] = event.message_id
+                atomic_json_write(pending_path, pending)
+        except (OSError, RuntimeError) as exc:
+            return t("gateway.update.start_failed", error=exc)
+
+        # Spawn `hermes update --gateway` detached so it survives gateway restart.
+        # --gateway enables file-based IPC for interactive prompts (stash
+        # restore, config migration) so the gateway can forward them to the
+        # user instead of silently skipping them.
+        # Use setsid for portable session detach (works under system services
+        # where systemd-run --user fails due to missing D-Bus session).
+        # PYTHONUNBUFFERED ensures output is flushed line-by-line so the
+        # gateway can stream it to the messenger in near-real-time.
+        # Spawn `hermes update --gateway` detached so it survives gateway restart.
+        # --gateway enables file-based IPC for interactive prompts (stash
+        # restore, config migration) so the gateway can forward them to the
+        # user instead of silently skipping them.
+        # Use setsid for portable session detach (works under system services
+        # where systemd-run --user fails due to missing D-Bus session).
+        # PYTHONUNBUFFERED ensures output is flushed line-by-line so the
+        # gateway can stream it to the messenger in near-real-time.
+        #
+        # Windows: no bash/setsid chain.  Run `hermes update --gateway`
+        # directly via sys.executable; redirect stdout/stderr to the same
+        # output files via Popen file handles; write the exit code in a
+        # follow-up write.  A tiny Python watcher would be cleaner but
+        # we're already inside gateway/run.py's update path which is async,
+        # so the simplest correct thing is: launch an inline Python helper
+        # that runs the command and writes both outputs.
+        try:
+            import textwrap
+            from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+
+            # The helper receives the capability through an inherited anonymous
+            # stdin pipe, then forwards it to the updater through a second pipe.
+            # It never appears in argv, environment variables, command strings,
+            # or logs. The same helper records the exit code on every platform.
+            helper = textwrap.dedent(
+                """
+                import json, os, subprocess, sys, time
+                from pathlib import Path
+                from gateway.status import get_process_start_time
+                from gateway.update_contract import UpdateHelperLock
+                output_path = sys.argv[1]
+                exit_code_path = sys.argv[2]
+                helper_lock_path = sys.argv[3]
+                done_path = sys.argv[4]
+                request_id = sys.argv[5]
+                timeout = float(sys.argv[6])
+                cmd = sys.argv[7:]
+                helper_pid_path = str(Path(helper_lock_path).with_name(".update_helper_pid"))
+
+                def atomic_write(path, data):
+                    tmp = f"{path}.{os.getpid()}.tmp"
+                    with open(tmp, "wb") as f:
+                        f.write(data)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp, path)
+
+                def stop_and_reap(proc):
+                    # Do not return until child termination is positively observed.
+                    while True:
+                        try:
+                            if proc.poll() is not None:
+                                return
+                        except BaseException:
+                            pass
+                        try:
+                            proc.kill()
+                        except BaseException:
+                            try:
+                                proc.terminate()
+                            except BaseException:
+                                pass
+                        try:
+                            proc.communicate(timeout=1.0)
+                        except subprocess.TimeoutExpired:
+                            pass
+                        except BaseException:
+                            try:
+                                proc.wait(timeout=1.0)
+                            except BaseException:
+                                pass
+                        try:
+                            if proc.poll() is not None:
+                                return
+                        except BaseException:
+                            pass
+                        time.sleep(0.1)
+
+                def flush_output(output_file):
+                    # Keep the lifecycle lock if captured output cannot be persisted.
+                    if output_file is None:
+                        return
+                    while True:
+                        try:
+                            output_file.flush()
+                            os.fsync(output_file.fileno())
+                            output_file.close()
+                            return
+                        except BaseException:
+                            time.sleep(0.1)
+
+                helper_exit = 0
+                with UpdateHelperLock(Path(helper_lock_path)):
+                    helper_pid = os.getpid()
+                    identity_bytes = json.dumps(
+                        {
+                            "pid": helper_pid,
+                            "start_time": get_process_start_time(helper_pid),
+                        },
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    atomic_write(helper_pid_path, identity_bytes)
+                    proc = None
+                    output_file = None
+                    try:
+                        token = sys.stdin.buffer.readline(4097)
+                        env = dict(os.environ)
+                        env["PYTHONUNBUFFERED"] = "1"
+                        output_file = open(output_path, "wb")
+                        proc = subprocess.Popen(
+                            cmd, stdin=subprocess.PIPE, stdout=output_file,
+                            stderr=subprocess.STDOUT, env=env,
+                        )
+                        try:
+                            proc.communicate(input=token, timeout=timeout)
+                            if proc.poll() is None:
+                                stop_and_reap(proc)
+                            rc = proc.returncode
+                            status = "completed"
+                        except subprocess.TimeoutExpired:
+                            stop_and_reap(proc)
+                            rc = 124
+                            status = "timed_out"
+                        except BaseException:
+                            stop_and_reap(proc)
+                            rc = 125
+                            status = "helper_exception"
+                            helper_exit = 125
+                    except BaseException:
+                        if proc is not None:
+                            stop_and_reap(proc)
+                        rc = 125
+                        status = "helper_exception"
+                        helper_exit = 125
+                    flush_output(output_file)
+                    atomic_write(exit_code_path, str(rc).encode("ascii"))
+                    done_bytes = json.dumps(
+                        {
+                            "request_id": request_id,
+                            "exit_code": rc,
+                            "status": status,
+                        },
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    atomic_write(done_path, done_bytes)
+                raise SystemExit(helper_exit)
+                """
+            ).strip()
+            helper_command = [
+                sys.executable, "-c", helper,
+                str(output_path), str(exit_code_path),
+                str(helper_lock_path), str(done_path), request_id,
+                str(UPDATE_TIMEOUT_SECONDS),
+                sys.executable, "-m", "hermes_cli.main",
+                "update", "--gateway",
+            ]
+            popen_kwargs = {
+                "stdin": subprocess.PIPE,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+            }
+            if sys.platform == "win32":
+                # Invoke the updater as a module under this interpreter rather
+                # than through hermes_cmd (venv\Scripts\hermes.exe): the shim
+                # launcher holds its own file open for the whole run, and the
+                # update has to replace it. Going through python.exe maps no
+                # shim, so the entry points can be rewritten freely.
+                popen_kwargs.update(windows_detach_popen_kwargs())
+            else:
+                setsid_bin = shutil.which("setsid")
+                if setsid_bin:
+                    helper_command.insert(0, setsid_bin)
+                else:
+                    popen_kwargs["start_new_session"] = True
+            helper_proc = subprocess.Popen(helper_command, **popen_kwargs)
+            assert helper_proc.stdin is not None
+            helper_proc.stdin.write((handoff_token + "\n").encode("utf-8"))
+            helper_proc.stdin.close()
         except Exception as e:
-            pending_path.unlink(missing_ok=True)
-            exit_code_path.unlink(missing_ok=True)
+            try:
+                with _FileLock(lock_path):
+                    current_request_id = None
+                    try:
+                        current_request_id = json.loads(
+                            pending_path.read_text(encoding="utf-8")
+                        ).get("request_id")
+                    except (FileNotFoundError, OSError, ValueError, TypeError):
+                        pass
+                    if current_request_id == request_id:
+                        pending_path.unlink(missing_ok=True)
+                        claimed_path.unlink(missing_ok=True)
+                        output_path.unlink(missing_ok=True)
+                        exit_code_path.unlink(missing_ok=True)
+                        helper_pid_path.unlink(missing_ok=True)
+            except (OSError, RuntimeError):
+                pass
             return t("gateway.update.start_failed", error=e)
         self._schedule_update_notification_watch()
         return t("gateway.update.starting")

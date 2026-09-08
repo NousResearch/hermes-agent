@@ -41,6 +41,11 @@ from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.update_contract import (
+    UPDATE_ORPHAN_GRACE_SECONDS,
+    UPDATE_TIMEOUT_SECONDS,
+    acquire_update_helper_probe,
+)
 
 # Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_housekeeping_watcher.
 _AGENT_CACHE_MAX_SIZE = 128
@@ -4952,6 +4957,11 @@ def _start_gateway_claim_pid_file() -> bool:
         release_gateway_runtime_lock()
         logger.error("PID file race lost to another gateway instance. Exiting.")
         return False
+    # Publish only after the authoritative PID/runtime-lock claims succeed.
+    # Descendants retain this identity even when a routed profile changes
+    # HERMES_HOME or a wrapper strips the legacy _HERMES_GATEWAY marker.
+    from tools.process_registry import GATEWAY_ORIGIN_PID_ENV
+    os.environ[GATEWAY_ORIGIN_PID_ENV] = str(os.getpid())
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
     return True

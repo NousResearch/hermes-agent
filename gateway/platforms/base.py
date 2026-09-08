@@ -1581,10 +1581,13 @@ _SEND_RETRY_INLINE_WAIT_CAP_SECS = 60.0
 
 # Platform-neutral send-failure kinds for ``SendResult.error_kind``: too_long (size cap),
 # bad_format (markup rejected; plain-text retry fixes), forbidden (the bot CANNOT reach the user),
-# not_found (chat/thread/message gone), rate_limited, transient (connection-level, retry-safe),
-# unknown.
+# not_found (chat/thread/message gone), rate_limited (ordinary flood control, retryable after the
+# declared delay), peer_flood (Telegram per-peer anti-spam — a circuit-breaker signal that must NOT
+# trigger a retry, a plain-text fallback or a failure notice), transient (connection-level,
+# retry-safe), unknown.
 SEND_ERROR_KINDS = frozenset(
-    {"too_long", "bad_format", "forbidden", "not_found", "rate_limited", "transient", "unknown"})
+    {"too_long", "bad_format", "forbidden", "not_found", "rate_limited", "peer_flood", "transient",
+     "unknown"})
 
 # ``not_found`` substrings by blast radius: chat-level = target dead; thread/topic/message-level
 # leaves the parent chat reachable.
@@ -1618,6 +1621,9 @@ _SEND_ERROR_CLASSIFIERS: Tuple[Tuple[str, Callable[[str], bool]], ...] = (
         b, "forbidden", "bot was blocked", "blocked by the user", "user is deactivated",
         "not enough rights", "have no rights", "not a member")),
     ("not_found", lambda b: _any_in(b, *_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS, *_SUBCHAT_NOT_FOUND_SUBSTRINGS)),
+    # Before rate_limited: PEER_FLOOD also contains "flood" but is a per-peer circuit-breaker
+    # signal, not a retry-after-the-delay throttle.
+    ("peer_flood", lambda b: _any_in(b, "peer_flood", "peer flood")),
     ("rate_limited", lambda b: _any_in(b, "flood", "too many requests", "retry after", "rate limit")),
     ("transient", lambda b: _any_in(b, *_RETRYABLE_ERROR_PATTERNS, "connecttimeout")))
 
@@ -3149,6 +3155,16 @@ class BasePlatformAdapter(ABC):
         result = await _send(content)
         if result.success:
             return result
+
+        # Telegram PEER_FLOOD is a per-chat circuit-breaker signal, not a
+        # formatting or ordinary transient failure. The adapter already keeps
+        # the server-requested (or conservative default) cooldown. Retrying,
+        # sending a failure notice, or attempting plain text would all hit the
+        # same peer immediately and amplify the restriction. Return the exact
+        # failure so final-delivery ledger handling records it as failed.
+        if getattr(result, "error_kind", None) == "peer_flood":
+            return result
+
         error_str = result.error or ""
         # A rate-limited / flood-capped send is transient: it should back off
         # (honoring the server's retry_after when present) rather than fall
@@ -3191,6 +3207,8 @@ class BasePlatformAdapter(ABC):
                 result = await _send(content)
                 if result.success:
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
+                    return result
+                if getattr(result, "error_kind", None) == "peer_flood":
                     return result
                 error_str = result.error or ""
                 if result.retry_after is not None:

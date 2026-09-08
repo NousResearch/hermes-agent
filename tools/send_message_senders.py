@@ -69,6 +69,13 @@ _TELEGRAM_TRANSIENT_MARKERS = ("bad gateway", "502", "too many requests", "429",
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     """Retry delay in seconds, or None when final: honours ``retry_after``; timeouts are
     never retried (the send may have gone through); 5xx/429 back off exponentially."""
+    try:
+        from plugins.platforms.telegram.outbound_policy import TelegramPeerFloodBlocked
+
+        if isinstance(exc, TelegramPeerFloodBlocked):
+            return None
+    except ImportError:
+        pass
     retry_after = getattr(exc, "retry_after", None)
     if retry_after is not None:
         try:
@@ -238,9 +245,17 @@ def _telegram_format(message):
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
     """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+    from plugins.platforms.telegram.outbound_policy import (
+        GuardedTelegramTarget,
+        TelegramOutboundGateway,
+        TelegramPeerFloodBlocked,
+    )
+
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
-        bot = _telegram_bot(token)
+        bot = GuardedTelegramTarget(
+            _telegram_bot(token), TelegramOutboundGateway(), target_key=chat_id
+        )
         from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
         from gateway.platforms.base import BasePlatformAdapter, utf16_len
         # Telegram accepts a numeric chat_id OR an @username string; never force-int.
@@ -270,6 +285,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             bot, chat_id=int_chat_id, text=_tg_caption, parse_mode=send_parse_mode, **text_kwargs)
                         _tg_caption = None  # delivered — don't re-caption a later file
                     except Exception as _cap_err:
+                        if isinstance(_cap_err, TelegramPeerFloodBlocked):
+                            raise
                         logger.warning("Telegram caption-fallback send failed for missing media: %s",
                                        _sanitize_error_text(_cap_err))
                 continue
@@ -277,12 +294,23 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 last_msg = await _telegram_send_one_media(
                     bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
                     has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
+            except TelegramPeerFloodBlocked:
+                raise
             except Exception as e:
                 warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}"))
                 logger.error(warnings[-1])
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
         return _success("telegram", chat_id, warnings, message_id=str(last_msg.message_id))
+    except TelegramPeerFloodBlocked as e:
+        return {
+            "error": "peer_flood",
+            "error_kind": "peer_flood",
+            "retryable": False,
+            "retry_after": e.retry_after,
+            "platform": "telegram",
+            "chat_id": chat_id,
+        }
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
     except Exception as e:

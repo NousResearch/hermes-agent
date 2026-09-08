@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import os
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -20,6 +21,7 @@ from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
+from gateway.update_contract import UPDATE_ORPHAN_GRACE_SECONDS, UPDATE_TIMEOUT_SECONDS
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -55,24 +57,6 @@ class GatewayNotificationsMixin:
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
     _COMPLETION_BATCH_KEY_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id")
     _ASYNC_GROUP_KEY_FIELDS = ("session_key", "parent_session_id", *_COMPLETION_BATCH_KEY_FIELDS[1:])
-
-    @dataclasses.dataclass
-    class _UpdatePaths:
-        """Marker files ``hermes update --gateway`` and its watcher exchange under HERMES_HOME."""
-
-        pending: Path
-        claimed: Path
-        output: Path
-        exit_code: Path
-        prompt: Path
-        response: Path
-
-        def any_pending(self) -> bool:
-            return self.pending.exists() or self.claimed.exists()
-
-        def unlink_all(self) -> None:
-            for p in (self.pending, self.claimed, self.output, self.exit_code, self.prompt, self.response):
-                p.unlink(missing_ok=True)
 
     @dataclasses.dataclass
     class _UpdateTarget:
@@ -364,39 +348,6 @@ class GatewayNotificationsMixin:
         except RuntimeError:
             logger.debug("Skipping update notification watcher: no running event loop")
 
-    @classmethod
-    def _update_paths(cls) -> "GatewayNotificationsMixin._UpdatePaths":
-        from gateway.run import _hermes_home
-        return cls._UpdatePaths(
-            pending=_hermes_home / ".update_pending.json",
-            claimed=_hermes_home / ".update_pending.claimed.json", output=_hermes_home / ".update_output.txt",
-            exit_code=_hermes_home / ".update_exit_code",
-            prompt=_hermes_home / ".update_prompt.json", response=_hermes_home / ".update_response",
-        )
-
-    def _resolve_update_target(self, paths: "_UpdatePaths") -> Optional["_UpdateTarget"]:
-        """Resolve adapter/chat/session for update watcher messages from the pending marker."""
-        for path in (paths.claimed, paths.pending):
-            if not path.exists():
-                continue
-            with suppress(Exception):
-                pending = json.loads(path.read_text(encoding="utf-8"))
-                platform_str = pending.get("platform")
-                chat_id = pending.get("chat_id")
-                session_key = pending.get("session_key")
-                if not (platform_str and chat_id):
-                    continue  # BASE: an incomplete marker falls through to the next path, not "unresolved"
-                platform = Platform(platform_str)
-                adapter = self.adapters.get(platform)
-                if not adapter:
-                    return None
-                metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
-                # Fallback session key if not stored (old pending files)
-                return self._UpdateTarget(
-                    adapter, chat_id, session_key or f"{platform_str}:{chat_id}", metadata, platform,
-                )
-        return None
-
     def _pending_marker_metadata(self, platform, chat_id, data: dict, adapter):
         """Thread metadata for a persisted update/restart marker (thread_id/chat_type/message_id keys)."""
         return self._thread_metadata_for_target(
@@ -404,66 +355,36 @@ class GatewayNotificationsMixin:
             reply_to_message_id=data.get("message_id"), adapter=adapter,
         )
 
-    async def _watch_update_completion_only(self, paths: "_UpdatePaths", deadline: float, poll_interval: float) -> None:
-        """Fallback when no adapter/chat can be resolved: wait for the exit code, then notify."""
-        logger.warning("Update watcher: cannot resolve adapter/chat_id, falling back to completion-only")
-        # Poll until _send_update_notification delivers (it returns False while the platform reconnects).
-        loop = asyncio.get_running_loop()
-        while paths.any_pending() and loop.time() < deadline:
-            if paths.exit_code.exists() and await self._send_update_notification():
-                return
-            await asyncio.sleep(poll_interval)
-        if paths.any_pending() and not paths.exit_code.exists():
-            paths.exit_code.write_text("124", encoding="utf-8")
-            await self._send_update_notification()
-
-    @staticmethod
-    def _update_exit_code(paths: "_UpdatePaths") -> int:
-        return int(paths.exit_code.read_text(encoding="utf-8").strip() or "1")
-
-    @staticmethod
-    def _read_update_output_since(path: Path, offset: int) -> tuple[str, int]:
-        """Read update output defensively; logs may contain invalid UTF-8."""
-        try:
-            data = path.read_bytes()
-        except OSError:
-            return "", offset
-        if len(data) <= offset:
-            return "", len(data)
-        return data[offset:].decode("utf-8", errors="replace"), len(data)
-
-    async def _send_update_output(self, target: "_UpdateTarget", text: str) -> None:
-        """Send buffered update output as fenced chunks that fit message limits (Telegram: 4096)."""
-        from tools.ansi_strip import strip_ansi
-        clean = strip_ansi(text).strip()
-        if not clean:
-            return
-        max_chunk = 3500
-        for i in range(0, len(clean), max_chunk):
-            with _log_suppressed(logging.DEBUG, "Update stream send failed: %s"):
-                await target.send(f"```\n{clean[i:i + max_chunk]}\n```")
-
     async def _forward_update_prompt(self, target: "_UpdateTarget", prompt_text: str, default: str) -> None:
         """Forward an update prompt: platform-native buttons first (Discord, Telegram), else text."""
-        sent_buttons = False
+        delivered = False
+        peer_flood_blocked = False
         adapter = target.adapter
         if getattr(type(adapter), "send_update_prompt", None) is not None:
-            with _log_suppressed(logging.DEBUG, "Button-based update prompt failed: %s"):
-                await adapter.send_update_prompt(
+            try:
+                result = await adapter.send_update_prompt(
                     chat_id=target.chat_id, prompt=prompt_text, default=default,
                     session_key=target.session_key, metadata=target.send_metadata(),
                 )
-                sent_buttons = True
-        if not sent_buttons:
+                delivered = not _send_failed(result)
+                peer_flood_blocked = getattr(result, "error_kind", None) == "peer_flood"
+            except Exception as exc:
+                peer_flood_blocked = getattr(exc, "error_kind", None) == "peer_flood"
+                logger.debug("Button-based update prompt failed: %s", exc)
+        if not delivered and not peer_flood_blocked:
             default_hint = f" (default: {default})" if default else ""
             _p = getattr(adapter, "typed_command_prefix", "/")
-            await target.send(
+            result = await target.send(
                 f"⚕ **Update needs your input:**\n\n{prompt_text}{default_hint}\n\n"
                 f"Reply `{_p}approve` (yes) or `{_p}deny` (no), or type your answer directly."
             )
+            delivered = not _send_failed(result)
         # Keep the prompt marker on disk until answered so a restarted watcher can re-forward it.
-        self._session_state(target.session_key).persistent.update_prompt_pending = True
-        logger.info("Forwarded update prompt to %s: %s", target.session_key, prompt_text[:80])
+        self._session_state(target.session_key).persistent.update_prompt_pending = delivered
+        if delivered:
+            logger.info("Forwarded update prompt to %s: %s", target.session_key, prompt_text[:80])
+        else:
+            logger.warning("Update prompt delivery failed for %s", target.session_key)
 
     def _clear_update_markers(self, paths: "_UpdatePaths", session_key: Optional[str]) -> None:
         paths.unlink_all()
@@ -472,142 +393,555 @@ class GatewayNotificationsMixin:
             state.persistent.update_prompt_pending = False
 
     async def _watch_update_progress(
-        self, poll_interval: float = 2.0, stream_interval: float = 4.0, timeout: float = 1800.0
+        self,
+        poll_interval: float = 2.0,
+        stream_interval: float = 4.0,
+        timeout: float = UPDATE_TIMEOUT_SECONDS,
     ) -> None:
         """Watch ``hermes update --gateway``, streaming output + forwarding prompts.
 
-        Polls ``.update_output.txt`` for new content and sends chunks to the user periodically;
-        detects ``.update_prompt.json`` (written when the update process needs input) and forwards it.
+        Polls ``.update_output.txt`` for new content and sends chunks to the
+        user periodically.  Detects ``.update_prompt.json`` (written by the
+        update process when it needs user input) and forwards the prompt to
+        the messenger.  The user's next message is intercepted by
+        ``_handle_message`` and written to ``.update_response``.
         """
-        paths = self._update_paths()
+        from gateway.run import _hermes_home, _non_conversational_metadata
+
+        pending_path = _hermes_home / ".update_pending.json"
+        claimed_path = _hermes_home / ".update_pending.claimed.json"
+        output_path = _hermes_home / ".update_output.txt"
+        exit_code_path = _hermes_home / ".update_exit_code"
+        helper_pid_path = _hermes_home / ".update_helper_pid"
+        prompt_path = _hermes_home / ".update_prompt.json"
+        from hermes_cli.active_sessions import _FileLock
+        update_lock_path = _hermes_home / ".update_pending.lock"
+
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        target = self._resolve_update_target(paths)
-        if target is None:
-            await self._watch_update_completion_only(paths, deadline, poll_interval)
+
+        # Resolve the adapter and chat_id for sending messages
+        adapter = None
+        chat_id = None
+        session_key = None
+        metadata = None
+        for path in (claimed_path, pending_path):
+            if path.exists():
+                try:
+                    pending = json.loads(path.read_text(encoding="utf-8"))
+                    platform_str = pending.get("platform")
+                    chat_id = pending.get("chat_id")
+                    chat_type = pending.get("chat_type")
+                    session_key = pending.get("session_key")
+                    thread_id = pending.get("thread_id")
+                    message_id = pending.get("message_id")
+                    if platform_str and chat_id:
+                        platform = Platform(platform_str)
+                        adapter = self.adapters.get(platform)
+                        metadata = self._thread_metadata_for_target(
+                            platform,
+                            chat_id,
+                            thread_id,
+                            chat_type=chat_type,
+                            reply_to_message_id=message_id,
+                            adapter=adapter,
+                        )
+                        # Fallback session key if not stored (old pending files)
+                        if not session_key:
+                            session_key = f"{platform_str}:{chat_id}"
+                    break
+                except Exception:
+                    pass
+
+        if not adapter or not chat_id:
+            logger.warning("Update watcher: cannot resolve adapter/chat_id, falling back to completion-only")
+            # Fall back to completion-only: wait for the exit code and send the
+            # final notification. _send_update_notification re-resolves the
+            # adapter on every call, so when the target platform is still
+            # reconnecting it returns False and keeps the markers. Keep polling
+            # until it actually delivers (returns True) instead of giving up
+            # after the first completion check — otherwise a platform that
+            # reconnects a few seconds after completion never gets notified.
+            while (
+                (pending_path.exists() or claimed_path.exists())
+                and loop.time() < deadline
+            ):
+                if await self._send_update_notification():
+                    return
+                await asyncio.sleep(poll_interval)
+            if pending_path.exists() or claimed_path.exists():
+                await self._send_update_notification()
             return
-        session_key = target.session_key
+
+        target = self._UpdateTarget(
+            adapter, chat_id, session_key, metadata, platform,
+        )
+
+        def _strip_ansi(text: str) -> str:
+            from tools.ansi_strip import strip_ansi
+            return strip_ansi(text)
+
+        def _read_output_since(path: Path, offset: int) -> tuple[str, int]:
+            """Read update output defensively; logs may contain invalid UTF-8."""
+            try:
+                data = path.read_bytes()
+            except OSError:
+                return "", offset
+            if len(data) <= offset:
+                return "", len(data)
+            return data[offset:].decode("utf-8", errors="replace"), len(data)
+
         bytes_sent = 0
         last_stream_time = loop.time()
         buffer = ""
 
         async def _flush_buffer() -> None:
+            """Send buffered output to the user."""
             nonlocal buffer, last_stream_time
-            text, buffer = buffer, ""
-            if text.strip():
-                last_stream_time = loop.time()
-                await self._send_update_output(target, text)
-
-        def _read_new_output() -> None:
-            nonlocal buffer, bytes_sent
-            if paths.output.exists():
-                with suppress(OSError):
-                    chunk, bytes_sent = self._read_update_output_since(paths.output, bytes_sent)
-                    buffer += chunk
+            if not buffer.strip():
+                buffer = ""
+                return
+            # Chunk to fit message limits (Telegram: 4096, others: generous)
+            clean = _strip_ansi(buffer).strip()
+            buffer = ""
+            last_stream_time = loop.time()
+            if not clean:
+                return
+            # Split into chunks if too long
+            max_chunk = 3500
+            chunks = [clean[i:i + max_chunk] for i in range(0, len(clean), max_chunk)]
+            for chunk in chunks:
+                try:
+                    await adapter.send(
+                        chat_id,
+                        f"```\n{chunk}\n```",
+                        metadata=_non_conversational_metadata(metadata, platform=platform),
+                    )
+                except Exception as e:
+                    logger.debug("Update stream send failed: %s", e)
 
         while loop.time() < deadline:
-            if paths.exit_code.exists():
-                _read_new_output()
-                await _flush_buffer()
-                with _log_suppressed(logging.WARNING, "Update final notification failed: %s"):
-                    exit_code = self._update_exit_code(paths)
-                    await target.send(
-                        "✅ Hermes update finished." if exit_code == 0
-                        else "❌ Hermes update failed (exit code {}).".format(exit_code)
-                    )
-                    logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
-                self._clear_update_markers(paths, session_key)
+            if await self._send_update_notification():
+                _up_done = self._peek_session_state(session_key)
+                if _up_done is not None:
+                    _up_done.persistent.update_prompt_pending = False
                 return
-            _read_new_output()
+
+            # Check for new output
+            if output_path.exists():
+                try:
+                    chunk, bytes_sent = _read_output_since(output_path, bytes_sent)
+                    if chunk:
+                        buffer += chunk
+                except OSError:
+                    pass
+
+            # Flush buffer periodically
             if buffer.strip() and (loop.time() - last_stream_time) >= stream_interval:
                 await _flush_buffer()
-            # Forward a prompt only when none is pending, else every poll re-forwards the same prompt.
-            _pending_state = self._peek_session_state(session_key) if session_key else None
-            if paths.prompt.exists() and session_key and not getattr(
-                getattr(_pending_state, "persistent", None), "update_prompt_pending", False
-            ):
+
+            # Check for prompts — only forward if we haven't already sent
+            # one that's still awaiting a response.  Without this guard the
+            # watcher would re-read the same .update_prompt.json every poll
+            # cycle and spam the user with duplicate prompt messages.
+            _up_pending_state = (
+                self._peek_session_state(session_key) if session_key else None
+            )
+            if (prompt_path.exists() and session_key
+                    and not (
+                        _up_pending_state is not None
+                        and _up_pending_state.persistent.update_prompt_pending
+                    )):
                 try:
-                    prompt_data = json.loads(paths.prompt.read_text(encoding="utf-8"))
+                    prompt_data = json.loads(prompt_path.read_text(encoding="utf-8"))
                     prompt_text = prompt_data.get("prompt", "")
+                    default = prompt_data.get("default", "")
                     if prompt_text:
-                        await _flush_buffer()  # user sees context before the prompt
-                        await self._forward_update_prompt(target, prompt_text, prompt_data.get("default", ""))
+                        # Flush any buffered output first so the user sees
+                        # context before the prompt
+                        await _flush_buffer()
+                        await self._forward_update_prompt(target, prompt_text, default)
                 except (json.JSONDecodeError, OSError) as e:
                     logger.debug("Failed to read update prompt: %s", e)
+
             await asyncio.sleep(poll_interval)
-        if not paths.exit_code.exists():
-            logger.warning("Update watcher timed out after %.0fs", timeout)
-            paths.exit_code.write_text("124", encoding="utf-8")
-            await _flush_buffer()
-            with suppress(Exception):
-                await target.send("❌ Hermes update timed out after 30 minutes.")
-            self._clear_update_markers(paths, session_key)
+
+        # Local watch budget elapsed. The persisted request deadline and helper
+        # lock remain authoritative; one final pass may recover an expired orphan
+        # or deliver a completed request, but never invents completion itself.
+        await _flush_buffer()
+        if await self._send_update_notification():
+            _up_timeout_state = self._peek_session_state(session_key)
+            if _up_timeout_state is not None:
+                _up_timeout_state.persistent.update_prompt_pending = False
 
     async def _send_update_notification(self) -> bool:
         """If an update finished, notify the user.
 
-        False while the update is still running (caller may retry); True after a definitive send/skip.
+        Returns False while the helper owns its OS lock, when state is partial or
+        request IDs do not match, or when delivery should be retried. Request
+        state is removed only after a matching completion is delivered. The
+        ``.update_helper.lock`` inode is intentionally retained: only ownership
+        of its OS lock is lifecycle authority, and stable lock files avoid
+        unlink-and-recreate races across processes.
         """
-        from gateway.run import _non_conversational_metadata
-        paths = self._update_paths()
-        if not paths.any_pending():
-            return False
-        cleanup = True
-        active_pending_path = paths.claimed
+        from gateway.run import (
+            _hermes_home,
+            _non_conversational_metadata,
+            acquire_update_helper_probe,
+        )
 
-        def _defer(reason: str, *args) -> bool:
-            nonlocal cleanup, active_pending_path
-            logger.info(reason, *args)
-            cleanup = False
-            active_pending_path = paths.pending
-            paths.claimed.replace(paths.pending)
+        pending_path = _hermes_home / ".update_pending.json"
+        claimed_path = _hermes_home / ".update_pending.claimed.json"
+        output_path = _hermes_home / ".update_output.txt"
+        exit_code_path = _hermes_home / ".update_exit_code"
+        helper_pid_path = _hermes_home / ".update_helper_pid"
+        helper_lock_path = _hermes_home / ".update_helper.lock"
+        done_path = _hermes_home / ".update_helper_done.json"
+        from hermes_cli.active_sessions import _FileLock
+        update_lock_path = _hermes_home / ".update_pending.lock"
+
+        if not pending_path.exists() and not claimed_path.exists():
             return False
 
         try:
-            if paths.pending.exists():
-                try:
-                    paths.pending.replace(paths.claimed)
-                except FileNotFoundError:
-                    if not paths.claimed.exists():
-                        return True
-            elif not paths.claimed.exists():
-                return True
-            pending = json.loads(paths.claimed.read_text(encoding="utf-8"))
+            helper_probe = acquire_update_helper_probe(helper_lock_path)
+        except (OSError, RuntimeError):
+            logger.warning("Update notification deferred: helper lock probe failed")
+            return False
+        if helper_probe is None:
+            logger.info("Update notification deferred: update helper lock is held")
+            return False
+
+        cleanup = False
+        delivered = False
+        request_id = None
+        active_pending_path = claimed_path
+        try:
+            with _FileLock(update_lock_path):
+                if pending_path.exists():
+                    try:
+                        pending = json.loads(pending_path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError, TypeError):
+                        logger.info(
+                            "Update notification deferred: pending marker is incomplete"
+                        )
+                        return False
+                    try:
+                        pending_path.replace(claimed_path)
+                    except FileNotFoundError:
+                        if not claimed_path.exists():
+                            return False
+                        try:
+                            pending = json.loads(
+                                claimed_path.read_text(encoding="utf-8")
+                            )
+                        except (OSError, ValueError, TypeError):
+                            return False
+                elif not claimed_path.exists():
+                    return False
+                else:
+                    try:
+                        pending = json.loads(claimed_path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError, TypeError):
+                        logger.info(
+                            "Update notification deferred: claimed marker is incomplete"
+                        )
+                        return False
+
             platform_str = pending.get("platform")
             chat_id = pending.get("chat_id")
-            if not paths.exit_code.exists():
-                return _defer("Update notification deferred: update still running")
-            exit_code = self._update_exit_code(paths)
-            output = paths.output.read_bytes().decode("utf-8", errors="replace") if paths.output.exists() else ""
+            chat_type = pending.get("chat_type")
+            thread_id = pending.get("thread_id")
+            message_id = pending.get("message_id")
+            request_id = pending.get("request_id")
+
+            try:
+                done = json.loads(done_path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                done = None
+            except (OSError, ValueError, TypeError):
+                done = "invalid"
+            legacy_request = (
+                "request_id" not in pending
+                and "deadline_epoch" not in pending
+                and "handoff_token_sha256" not in pending
+                and done is None
+            )
+            matching_done = (
+                isinstance(request_id, str)
+                and bool(request_id)
+                and isinstance(done, dict)
+                and done.get("request_id") == request_id
+            )
+            if legacy_request:
+                # Helpers from before the request-id contract wrote only the
+                # pending metadata, output and exit code. The helper OS lock is
+                # still lifecycle authority; PID metadata is deliberately not.
+                if not isinstance(platform_str, str) or not platform_str or not chat_id:
+                    logger.info(
+                        "Update notification deferred: legacy pending target is invalid"
+                    )
+                    return False
+                try:
+                    Platform(platform_str)
+                except (TypeError, ValueError):
+                    logger.info(
+                        "Update notification deferred: legacy pending platform is invalid"
+                    )
+                    return False
+
+                if not exit_code_path.exists():
+                    try:
+                        legacy_started_epoch = active_pending_path.stat().st_mtime
+                    except OSError:
+                        logger.info(
+                            "Update notification deferred: legacy pending age unavailable"
+                        )
+                        return False
+                    legacy_expiry = (
+                        legacy_started_epoch
+                        + UPDATE_TIMEOUT_SECONDS
+                        + UPDATE_ORPHAN_GRACE_SECONDS
+                    )
+                    if time.time() <= legacy_expiry:
+                        logger.info(
+                            "Update notification deferred: legacy helper may still complete"
+                        )
+                        return False
+                    with _FileLock(update_lock_path):
+                        current = json.loads(
+                            claimed_path.read_text(encoding="utf-8")
+                        )
+                        if current != pending or any(
+                            isinstance(candidate, dict) and candidate.get("request_id")
+                            for candidate_path in (pending_path, claimed_path)
+                            if candidate_path.exists()
+                            for candidate in (
+                                json.loads(candidate_path.read_text(encoding="utf-8")),
+                            )
+                        ):
+                            return False
+                        exit_tmp = exit_code_path.with_name(
+                            f"{exit_code_path.name}.legacy.tmp"
+                        )
+                        with open(exit_tmp, "wb") as exit_file:
+                            exit_file.write(b"125")
+                            exit_file.flush()
+                            os.fsync(exit_file.fileno())
+                        exit_tmp.replace(exit_code_path)
+                matching_done = True
+            elif not matching_done:
+                deadline_epoch = pending.get("deadline_epoch")
+                orphan_grace = pending.get("orphan_grace_seconds")
+                recoverable_orphan = (
+                    done is None
+                    and isinstance(request_id, str)
+                    and bool(request_id)
+                    and isinstance(deadline_epoch, (int, float))
+                    and not isinstance(deadline_epoch, bool)
+                    and isinstance(orphan_grace, (int, float))
+                    and not isinstance(orphan_grace, bool)
+                    and orphan_grace >= 0
+                    and time.time() > deadline_epoch + orphan_grace
+                )
+                if recoverable_orphan:
+                    from utils import atomic_json_write
+
+                    with _FileLock(update_lock_path):
+                        current = json.loads(
+                            claimed_path.read_text(encoding="utf-8")
+                        )
+                        if current.get("request_id") != request_id:
+                            cleanup = False
+                            return False
+                        exit_tmp = exit_code_path.with_name(
+                            f"{exit_code_path.name}.{request_id}.tmp"
+                        )
+                        with open(exit_tmp, "wb") as exit_file:
+                            exit_file.write(b"125")
+                            exit_file.flush()
+                            os.fsync(exit_file.fileno())
+                        exit_tmp.replace(exit_code_path)
+                        done = {
+                            "request_id": request_id,
+                            "exit_code": 125,
+                            "status": "helper_crashed",
+                        }
+                        atomic_json_write(done_path, done)
+                    matching_done = True
+                else:
+                    logger.info(
+                        "Update notification deferred: no matching helper completion"
+                    )
+                    cleanup = False
+                    active_pending_path = pending_path
+                    with _FileLock(update_lock_path):
+                        claimed_path.replace(pending_path)
+                    return False
+            if not exit_code_path.exists():
+                logger.info("Update notification deferred: exit code not flushed")
+                cleanup = False
+                active_pending_path = pending_path
+                with _FileLock(update_lock_path):
+                    claimed_path.replace(pending_path)
+                return False
+
+            exit_code_raw = exit_code_path.read_text(encoding="utf-8").strip() or "1"
+            try:
+                exit_code = int(exit_code_raw)
+            except ValueError:
+                logger.info("Update notification deferred: exit code is incomplete")
+                return False
+            if not legacy_request and done.get("exit_code") != exit_code:
+                logger.info("Update notification deferred: exit code does not match completion")
+                return False
+
+            # Read the captured update output
+            output = ""
+            if output_path.exists():
+                output = output_path.read_bytes().decode("utf-8", errors="replace")
+
+            # Resolve adapter
             platform = Platform(platform_str)
             adapter = self.adapters.get(platform)
-            if chat_id and not adapter:
-                # Target platform not reconnected yet (common right after the update's restart): keep the
-                # markers for a later retry instead of silently losing the notification.
-                return _defer("Update notification deferred: %s adapter not connected yet", platform_str)
-            if chat_id:
-                metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
+
+            if not adapter and chat_id:
+                # The update finished, but the target platform has not
+                # reconnected yet (common right after the restart that
+                # `hermes update` triggers). Treating "adapter missing" as a
+                # definitive skip would delete the markers and silently lose the
+                # completion notification — the user never learns whether the
+                # update succeeded or timed out. Preserve the markers instead so
+                # a later retry (the watcher poll loop, or the next gateway
+                # startup) can deliver the result once the adapter is back.
+                logger.info(
+                    "Update notification deferred: %s adapter not connected yet",
+                    platform_str,
+                )
+                cleanup = False
+                active_pending_path = pending_path
+                with _FileLock(update_lock_path):
+                    claimed_path.replace(pending_path)
+                return False
+
+            if adapter and chat_id:
+                metadata = self._thread_metadata_for_target(
+                    platform,
+                    chat_id,
+                    thread_id,
+                    chat_type=chat_type,
+                    reply_to_message_id=message_id,
+                    adapter=adapter,
+                )
+                # Strip ANSI escape codes for clean display
                 from tools.ansi_strip import strip_ansi
                 output = strip_ansi(output).strip()
                 if output:
                     if len(output) > 3500:
                         output = "…" + output[-3500:]
-                    status = "✅ Hermes update finished." if exit_code == 0 else "❌ Hermes update failed."
-                    msg = f"{status}\n\n```\n{output}\n```"
+                    if exit_code == 0:
+                        msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
+                    else:
+                        msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
+                elif exit_code == 0:
+                    msg = "✅ Hermes update finished successfully."
                 else:
-                    msg = (
-                        "✅ Hermes update finished successfully." if exit_code == 0 else
-                        "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+                    msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+                result = await adapter.send(
+                    chat_id,
+                    msg,
+                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                )
+                if result is not None and getattr(result, "success", True) is False:
+                    logger.warning(
+                        "Post-update notification to %s:%s was not delivered: %s",
+                        platform_str,
+                        chat_id,
+                        getattr(result, "error", "send returned success=False"),
                     )
-                await adapter.send(chat_id, msg, metadata=_non_conversational_metadata(metadata, platform=platform))
-                logger.info("Sent post-update notification to %s:%s (exit=%s)", platform_str, chat_id, exit_code)
+                    return False
+                logger.info(
+                    "Sent post-update notification to %s:%s (exit=%s)",
+                    platform_str,
+                    chat_id,
+                    exit_code,
+                )
+                cleanup = True
+                delivered = True
         except Exception as e:
             logger.warning("Post-update notification failed: %s", e)
         finally:
             if cleanup:
-                for p in (active_pending_path, paths.claimed, paths.output, paths.exit_code):
-                    p.unlink(missing_ok=True)
-        return True
+                with _FileLock(update_lock_path):
+                    if legacy_request:
+                        try:
+                            cleanup_pending = json.loads(
+                                active_pending_path.read_text(encoding="utf-8")
+                            )
+                            marker_states = [
+                                json.loads(path.read_text(encoding="utf-8"))
+                                for path in (pending_path, claimed_path)
+                                if path.exists()
+                            ]
+                        except (FileNotFoundError, OSError, ValueError, TypeError):
+                            cleanup_pending = None
+                            marker_states = []
+                        safe_to_clean_legacy = (
+                            cleanup_pending == pending
+                            and "request_id" not in cleanup_pending
+                            and not any(
+                                isinstance(state, dict) and state.get("request_id")
+                                for state in marker_states
+                            )
+                        )
+                        if safe_to_clean_legacy:
+                            for path in (
+                                pending_path,
+                                claimed_path,
+                                output_path,
+                                exit_code_path,
+                                helper_pid_path,
+                                _hermes_home / ".update_prompt.json",
+                                _hermes_home / ".update_response",
+                            ):
+                                path.unlink(missing_ok=True)
+                    else:
+                        try:
+                            cleanup_pending = json.loads(
+                                active_pending_path.read_text(encoding="utf-8")
+                            )
+                            cleanup_done = json.loads(done_path.read_text(encoding="utf-8"))
+                        except (FileNotFoundError, OSError, ValueError, TypeError):
+                            cleanup_pending = cleanup_done = None
+                    if (
+                        not legacy_request
+                        and isinstance(cleanup_pending, dict)
+                        and cleanup_pending.get("request_id") == request_id
+                        and isinstance(cleanup_done, dict)
+                        and cleanup_done.get("request_id") == request_id
+                    ):
+                        for path in (
+                            active_pending_path,
+                            claimed_path,
+                            output_path,
+                            exit_code_path,
+                            helper_pid_path,
+                            done_path,
+                            _hermes_home / ".update_prompt.json",
+                            _hermes_home / ".update_response",
+                        ):
+                            path.unlink(missing_ok=True)
+            elif claimed_path.exists() and not pending_path.exists():
+                try:
+                    with _FileLock(update_lock_path):
+                        if claimed_path.exists() and not pending_path.exists():
+                            claimed_path.replace(pending_path)
+                except (OSError, RuntimeError):
+                    pass
+            helper_probe.release()
+
+        return delivered
 
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""

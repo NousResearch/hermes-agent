@@ -1,7 +1,10 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
 import hashlib
+import io
+import os
 import subprocess
+import threading
 from types import SimpleNamespace
 from unittest.mock import ANY, patch
 
@@ -43,6 +46,166 @@ def mock_args():
     return SimpleNamespace()
 
 
+class TestGatewayDescendantUpdateGuard:
+    """Mutating updates must not run as children of the gateway they stop."""
+
+    @patch("hermes_cli.config.is_managed", return_value=False)
+    def test_mutating_update_refuses_gateway_descendant(
+        self, _managed, monkeypatch, capsys
+    ):
+        from tools import process_registry
+
+        monkeypatch.setattr(
+            process_registry, "_is_gateway_descendant_process", lambda: True
+        )
+        args = SimpleNamespace(plan=False, check=False, gateway=False)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_update(args)
+
+        assert exc_info.value.code == 1
+        assert "outside the running gateway" in capsys.readouterr().out
+
+    @patch("hermes_cli.config.is_managed", return_value=False)
+    @patch("hermes_cli.main._resolve_update_branch", return_value="main")
+    # Patch where production reads: the preflight late-imports _cmd_update_check from
+    # hermes_cli.update_cmd (the Sep-2026 decomposition moved it off hermes_cli.main).
+    @patch("hermes_cli.update_cmd._cmd_update_check")
+    def test_read_only_check_is_allowed(
+        self, check_update, _branch, _managed, monkeypatch
+    ):
+        from tools import process_registry
+
+        monkeypatch.setattr(
+            process_registry, "_is_gateway_descendant_process", lambda: True
+        )
+        args = SimpleNamespace(plan=False, check=True, branch=None, gateway=False)
+
+        cmd_update(args)
+
+        check_update.assert_called_once_with(branch="main", branch_explicit=False)
+
+    @pytest.mark.parametrize("gateway_mode", [False, True])
+    def test_external_updaters_are_allowed_without_environment(
+        self, monkeypatch, gateway_mode
+    ):
+        """Shell and official --gateway updaters need no new environment."""
+        from hermes_cli import main
+        from tools import process_registry
+
+        monkeypatch.delenv("HERMES_GATEWAY_ORIGIN_PID", raising=False)
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        monkeypatch.setattr(
+            process_registry, "_is_gateway_descendant_process", lambda: False
+        )
+
+        assert main._authorize_update_from_context(
+            gateway_mode=gateway_mode, stream=io.BytesIO()
+        )
+
+    def test_gateway_child_cannot_spoof_external_updater_mode(self, monkeypatch):
+        from hermes_cli import main
+        from tools import process_registry
+
+        monkeypatch.setenv("HERMES_UPDATE_MODE", "external" + "-updater")
+        monkeypatch.setenv("HERMES_GATEWAY_ORIGIN_PID", "4242")
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setattr(
+            process_registry, "_is_gateway_descendant_process", lambda: True
+        )
+
+        assert not main._authorize_update_from_context(
+            gateway_mode=True, stream=io.BytesIO(b"not-a-token\n")
+        )
+
+    def test_gateway_handoff_token_matches_pending_hash(self, tmp_path, monkeypatch):
+        """Only the token paired with the pending marker authorizes --gateway."""
+        import hashlib
+        import json
+        from hermes_cli import main
+        from tools import process_registry
+
+        token = "test-one-time-handoff-token"
+        pending = tmp_path / ".update_pending.json"
+        pending.write_text(
+            json.dumps(
+                {"handoff_token_sha256": hashlib.sha256(token.encode()).hexdigest()}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(
+            process_registry, "_is_gateway_descendant_process", lambda: True
+        )
+
+        assert main._authorize_update_from_context(
+            gateway_mode=True,
+            stream=io.BytesIO((token + "\n").encode()),
+        ) is True
+        assert "handoff_token_sha256" not in json.loads(pending.read_text())
+
+    def test_gateway_handoff_token_is_single_use_under_concurrency(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+        from hermes_cli import main
+
+        token = "one-consumer-only"
+        pending = tmp_path / ".update_pending.json"
+        pending.write_text(
+            json.dumps(
+                {"handoff_token_sha256": hashlib.sha256(token.encode()).hexdigest()}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: tmp_path)
+        barrier = threading.Barrier(3)
+        results = []
+
+        def consume():
+            barrier.wait()
+            results.append(
+                main._consume_gateway_update_handoff(
+                    io.BytesIO((token + "\n").encode())
+                )
+            )
+
+        threads = [threading.Thread(target=consume) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        assert sorted(results) == [False, True]
+        assert main._consume_gateway_update_handoff(
+            io.BytesIO((token + "\n").encode())
+        ) is False
+
+    def test_gateway_handoff_lock_access_denied_fails_closed(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+        from hermes_cli import active_sessions, main
+
+        token = "must-not-consume-without-lock"
+        pending = tmp_path / ".update_pending.json"
+        expected = hashlib.sha256(token.encode()).hexdigest()
+        pending.write_text(
+            json.dumps({"handoff_token_sha256": expected}), encoding="utf-8"
+        )
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: tmp_path)
+
+        def denied(_self):
+            raise RuntimeError("access denied")
+
+        monkeypatch.setattr(active_sessions._FileLock, "__enter__", denied)
+
+        assert main._consume_gateway_update_handoff(
+            io.BytesIO((token + "\n").encode())
+        ) is False
+        assert json.loads(pending.read_text())["handoff_token_sha256"] == expected
+
 # ---------------------------------------------------------------------------
 # Managed-uv compatibility for tests that patch shutil.which
 # ---------------------------------------------------------------------------
@@ -79,8 +242,18 @@ def _patch_managed_uv(request):
 
 
 @pytest.fixture(autouse=True)
-def _patch_gateway_discovery(isolated_update_runtime):
-    pass
+def _patch_gateway_discovery(isolated_update_runtime, monkeypatch, request):
+    """``isolated_update_runtime`` already keeps gateway discovery off this host.
+
+    Only the new updater admission gate needs handling here: every test in this
+    module models an EXTERNAL shell, so the gateway-descendant probe must read
+    False. Never patch it for the dedicated guard class — its tests must execute
+    the real decision seam or the regression signal disappears.
+    """
+    if request.node.cls is not TestGatewayDescendantUpdateGuard:
+        monkeypatch.setattr(
+            "tools.process_registry._is_gateway_descendant_process", lambda: False
+        )
 
 
 class TestCmdUpdateNpmLockfileCache:

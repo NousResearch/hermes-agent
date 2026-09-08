@@ -682,15 +682,12 @@ def execute_code(
     if not code or not code.strip():
         return tool_error("No code provided. execute_code requires a non-empty 'code' "
                           "parameter containing Python source. To run shell commands, use terminal(command=...) instead.")
-    # Hard-block gateway-lifecycle commands (mirrors the terminal_tool guard — otherwise
-    # `os.system("launchctl bootout ...")` here bypasses it and SIGTERMs the gateway mid-task).
-    # Gated on PID-file ownership, not the inherited env marker.
     # Hard-block gateway-lifecycle commands, mirroring the terminal_tool guard (#68289): without this,
     # execute_code is a straight bypass — the terminal() path refuses `launchctl bootout ai.hermes.gateway`,
     # but the identical command inside `os.system(...)` / `subprocess.run([...])` here sailed through and
-    # SIGTERM'd the gateway mid-task.
-    from tools.process_registry import _is_supervised_gateway_process
-    if _is_supervised_gateway_process():
+    # SIGTERM'd the gateway mid-task. Gated on PID-file ownership, not the inherited env marker (#92560).
+    from tools.process_registry import _is_gateway_runtime_process
+    if _is_gateway_runtime_process():
         from cron.lifecycle_guard import contains_gateway_lifecycle_command
         if contains_gateway_lifecycle_command(code):
             return tool_error(

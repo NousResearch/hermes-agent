@@ -11,13 +11,6 @@ import json
 import sys
 from typing import Optional
 
-from gateway.global_mesh import (
-    GPUDescriptor,
-    GlobalMeshCoordinator,
-    MeshNodeInfo,
-    probe_local_gpu,
-)
-
 
 def _format_vram(mb: int) -> str:
     if mb >= 1024:
@@ -26,6 +19,8 @@ def _format_vram(mb: int) -> str:
 
 
 def mesh_join(args: argparse.Namespace) -> int:
+    from gateway.global_mesh import GlobalMeshCoordinator
+
     coordinator = GlobalMeshCoordinator(rendezvous_url=args.rendezvous)
     offer_gpu = False if args.no_gpu else (True if args.offer_gpu or args.vram or args.backend or args.device else None)
 
@@ -55,6 +50,8 @@ def mesh_join(args: argparse.Namespace) -> int:
 
 
 def mesh_status(args: argparse.Namespace) -> int:
+    from gateway.global_mesh import GlobalMeshCoordinator
+
     coordinator = GlobalMeshCoordinator()
     coordinator.init_local_node()
     summary = coordinator.get_mesh_summary()
@@ -74,6 +71,8 @@ def mesh_status(args: argparse.Namespace) -> int:
 
 
 def mesh_peers(args: argparse.Namespace) -> int:
+    from gateway.global_mesh import GlobalMeshCoordinator
+
     coordinator = GlobalMeshCoordinator()
     peers = list(coordinator.peers.values())
     if not peers:
@@ -93,6 +92,8 @@ def mesh_peers(args: argparse.Namespace) -> int:
 
 
 def mesh_delegate(args: argparse.Namespace) -> int:
+    from gateway.global_mesh import GlobalMeshCoordinator
+
     coordinator = GlobalMeshCoordinator()
     print(f"Broadcasting compute request to Hermes Global Swarm (target: {args.model}, min VRAM: {_format_vram(args.min_vram)})...")
     receipt = coordinator.delegate_task(
@@ -114,6 +115,8 @@ def mesh_delegate(args: argparse.Namespace) -> int:
 
 
 def mesh_prune(args: argparse.Namespace) -> int:
+    from gateway.global_mesh import GlobalMeshCoordinator
+
     coordinator = GlobalMeshCoordinator()
     pruned = coordinator.prune_inactive_peers(timeout_seconds=args.timeout)
     print(f"Pruned {pruned} inactive peers from global mesh registry.")

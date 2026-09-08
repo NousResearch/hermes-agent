@@ -23,12 +23,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-try:
-    from cryptography.hazmat.primitives.asymmetric import ed25519
-    from cryptography.exceptions import InvalidSignature
-    _HAS_ED25519 = True
-except ImportError:
-    _HAS_ED25519 = False
+def _get_ed25519():
+    try:
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+        from cryptography.exceptions import InvalidSignature
+        return ed25519, InvalidSignature
+    except ImportError:
+        return None, None
 
 logger = logging.getLogger("hermes.global_mesh")
 
@@ -62,9 +63,10 @@ def _write_secure_file(path: Path, content: str, mode: int = 0o600) -> None:
 
 def compute_signature(payload_bytes: bytes, secret_or_private_key: str) -> str:
     """Compute signature using asymmetric Ed25519 private key or HMAC-SHA256 fallback."""
-    if _HAS_ED25519 and len(secret_or_private_key) == 64:
+    ed25519_mod, _ = _get_ed25519()
+    if ed25519_mod and len(secret_or_private_key) == 64:
         try:
-            priv = ed25519.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(secret_or_private_key))
+            priv = ed25519_mod.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(secret_or_private_key))
             return priv.sign(payload_bytes).hex()
         except Exception:
             pass
@@ -77,26 +79,26 @@ def compute_signature(payload_bytes: bytes, secret_or_private_key: str) -> str:
 
 def verify_signature(payload_bytes: bytes, signature_hex: str, public_key_or_secret: str) -> bool:
     """Verify cryptographic signature using Ed25519 public key or HMAC fallback."""
-    if _HAS_ED25519:
-        if len(public_key_or_secret) == 64:
-            # Try interpreting as Ed25519 public key
-            try:
-                pub = ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key_or_secret))
-                pub.verify(bytes.fromhex(signature_hex), payload_bytes)
-                return True
-            except (InvalidSignature, ValueError):
-                pass
-            except Exception:
-                pass
-            # Try interpreting as Ed25519 private key (derives public key)
-            try:
-                priv = ed25519.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(public_key_or_secret))
-                priv.public_key().verify(bytes.fromhex(signature_hex), payload_bytes)
-                return True
-            except (InvalidSignature, ValueError):
-                pass
-            except Exception:
-                pass
+    ed25519_mod, invalid_sig = _get_ed25519()
+    if ed25519_mod and len(public_key_or_secret) == 64:
+        # Try interpreting as Ed25519 public key
+        try:
+            pub = ed25519_mod.Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key_or_secret))
+            pub.verify(bytes.fromhex(signature_hex), payload_bytes)
+            return True
+        except (invalid_sig, ValueError):
+            pass
+        except Exception:
+            pass
+        # Try interpreting as Ed25519 private key (derives public key)
+        try:
+            priv = ed25519_mod.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(public_key_or_secret))
+            priv.public_key().verify(bytes.fromhex(signature_hex), payload_bytes)
+            return True
+        except (invalid_sig, ValueError):
+            pass
+        except Exception:
+            pass
 
     # HMAC fallback comparison
     try:
@@ -411,9 +413,10 @@ class GlobalMeshCoordinator:
         self.node_id = node_id or self._load_or_create_node_id()
         if secret_key:
             self.secret_key = secret_key
-            if _HAS_ED25519 and len(secret_key) == 64:
+            ed25519_mod, _ = _get_ed25519()
+            if ed25519_mod and len(secret_key) == 64:
                 try:
-                    priv = ed25519.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(secret_key))
+                    priv = ed25519_mod.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(secret_key))
                     self.public_key = priv.public_key().public_bytes_raw().hex()
                 except Exception:
                     self.public_key = hashlib.sha256(secret_key.encode("utf-8")).hexdigest()[:32]
@@ -447,13 +450,14 @@ class GlobalMeshCoordinator:
     def _load_or_create_keypair(self) -> Tuple[str, str]:
         """Load or securely generate an asymmetric Ed25519 keypair."""
         key_file = self.state_dir / "mesh_node_secret.key"
+        ed25519_mod, _ = _get_ed25519()
         if key_file.exists():
             try:
                 content = key_file.read_text(encoding="utf-8").strip()
                 if len(content) == 64:
-                    if _HAS_ED25519:
+                    if ed25519_mod:
                         try:
-                            priv = ed25519.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(content))
+                            priv = ed25519_mod.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(content))
                             pub_hex = priv.public_key().public_bytes_raw().hex()
                             return content, pub_hex
                         except Exception:
@@ -463,8 +467,8 @@ class GlobalMeshCoordinator:
             except Exception:
                 pass
 
-        if _HAS_ED25519:
-            priv = ed25519.Ed25519PrivateKey.generate()
+        if ed25519_mod:
+            priv = ed25519_mod.Ed25519PrivateKey.generate()
             priv_hex = priv.private_bytes_raw().hex()
             pub_hex = priv.public_key().public_bytes_raw().hex()
         else:

@@ -1247,10 +1247,8 @@ def _save_alias_map(cfg: dict, host: str, working: dict, aliases_from_root: bool
             print("  edits no longer reach this profile.")
 
     target = cfg if write_root else cfg.setdefault("hosts", {}).setdefault(host, {})
-    if working:
-        target["userPeerAliases"] = working
-    else:
-        target.pop("userPeerAliases", None)
+    # An empty host map is an explicit override; popping the key would re-inherit the root aliases.
+    target["userPeerAliases"] = working
     target_desc = f"host block [{host}]"
     if write_root:
         target_desc = "root config (shared by all profiles)"
@@ -1265,7 +1263,9 @@ def _save_alias_map(cfg: dict, host: str, working: dict, aliases_from_root: bool
             print(f"    {', '.join(names)}) — picked peers may not exist there.")
 
     _write_config(cfg)
-    print(f"\n  userPeerAliases = {working if working else '{}'}")
+    print(f"\n  userPeerAliases = {working}")
+    if not working and not write_root and cfg.get("userPeerAliases"):
+        print(f"  (empty host map: root aliases no longer apply to [{host}])")
     print(f"  written to {target_desc} in {_local_config_path()}\n")
 
 

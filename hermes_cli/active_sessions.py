@@ -300,6 +300,20 @@ def _write_entries(path: Path, entries: list[dict[str, Any]]) -> None:
             pass
 
 
+# psutil's Process.create_time() is a wall-clock timestamp (epoch seconds derived
+# from /proc/<pid> on Linux, boot+wall on macOS/Windows), so it shifts when the
+# wall clock steps — NTP correction, laptop sleep/wake, DST (#105714). A 1 ms
+# tolerance (the prior value) false-pruned a live session after any such step,
+# silently dropping its lease from the registry on the next read/write.
+# 2.0 s tolerates a clock step while still catching a recycled PID: a reused
+# PID's create_time differs by the process's whole age (seconds to days),
+# never ~1 s. #62505 / #66518 fixed the same defect in mcp_stdio_watchdog /
+# slash_worker by dropping create_time for the POSIX parent relationship, which
+# does not apply here — active sessions are arbitrary CLI/TUI processes, not
+# children of a known parent.
+_PID_START_TOLERANCE_S = 2.0
+
+
 def _process_start_time(pid: int) -> Optional[float]:
     # Pair pid with create_time when psutil can read it, so a recycled pid does not
     # keep a stale lease alive indefinitely.
@@ -342,7 +356,7 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
     current_start = _process_start_time(pid_int)
     if current_start is None:
         return True if lenient else None
-    return abs(current_start - expected_start) < 0.001
+    return abs(current_start - expected_start) < _PID_START_TOLERANCE_S
 
 
 def _prune_dead(entries: list[dict[str, Any]], *, strict: bool = False) -> list[dict[str, Any]]:

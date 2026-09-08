@@ -202,7 +202,6 @@ import {
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
-import { clearStaleGitLocks } from './gitlock'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -385,9 +384,7 @@ import {
 import {
   compareApiUrl,
   parseCompareBehindCount,
-  resolveBehindCount,
-  resolveCommitLogSelection,
-  shouldCountCommits
+  resolveCommitLogSelection
 } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
@@ -3208,79 +3205,52 @@ async function checkUpdates() {
     }
   }
 
-  // Self-heal abandoned git lock files before fetching. A stale
-  // .git/shallow.lock from a crashed/interrupted fetch otherwise fails every
-  // later fetch ("Unable to create '.git/shallow.lock': File exists") and this
-  // check reports 'fetch-failed' forever — git never removes these itself.
-  await clearStaleGitLocks(updateRoot)
+  const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
-  const fetched = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
+  const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
+    git(['rev-parse', 'HEAD']),
+    runGit(['ls-remote', 'origin', `refs/heads/${branch}`], { cwd: updateRoot }),
+    git(['status', '--porcelain']),
+    git(['rev-parse', '--abbrev-ref', 'HEAD'])
+  ])
 
-  if (fetched.code !== 0) {
+  const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
+
+  if (target.code !== 0 || !targetSha) {
     return {
       supported: true,
       branch,
       error: 'fetch-failed',
-      message: firstLine(fetched.stderr) || 'git fetch failed.',
+      message: firstLine(target.stderr) || 'git ls-remote failed.',
       hermesRoot: updateRoot,
       fetchedAt: Date.now()
     }
   }
 
-  const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
+  // Passive HTTPS checks only know tip SHAs (ls-remote) — never fabricate a
+  // "1 commit behind". Recover the exact count via the GitHub compare API
+  // when possible; otherwise behind stays null ("update available, count
+  // unknown") and updateAvailable carries the signal. ahead_by === 0 with
+  // differing tips means the remote tip is reachable from our HEAD — a local
+  // carried commit sitting AHEAD, not behind: flagging that as an update
+  // nudges the user into wiping their work.
+  const tipsEqual = Boolean(currentSha && currentSha === targetSha)
 
-  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr] = await Promise.all([
-    git(['rev-parse', 'HEAD']),
-    git(['rev-parse', `origin/${branch}`]),
-    git(['status', '--porcelain']),
-    git(['rev-parse', '--abbrev-ref', 'HEAD']),
-    git(['rev-parse', '--is-shallow-repository'])
-  ])
+  const behind = tipsEqual
+    ? 0
+    : await fetchCompareBehindCount({ currentSha, originUrl, targetSha })
 
-  const isShallow = shallowStr === 'true'
-
-  // A shallow graph cannot provide a trustworthy exact count, even when it has
-  // a visible merge-base. Skip the ancestry walk and use the SHA fallback.
-  const countStr = shouldCountCommits({ isShallow }) ? await git(['rev-list', `HEAD..origin/${branch}`, '--count']) : ''
-
-  // A positive directional ancestry result remains trustworthy in a shallow
-  // graph and prevents a local commit on top of origin from looking outdated.
-  const targetIsAncestorOfHead =
-    isShallow &&
-    currentSha !== targetSha &&
-    (await runGit(['merge-base', '--is-ancestor', `origin/${branch}`, 'HEAD'], { cwd: updateRoot })).code === 0
-
-  let behind = resolveBehindCount({
-    countStr,
-    currentSha,
-    targetSha,
-    isShallow,
-    targetIsAncestorOfHead
-  })
-
-  // Recover the exact count a shallow clone can't compute: the GitHub compare
-  // API knows the full graph regardless of local clone depth. Best-effort —
-  // offline, rate-limited, or non-GitHub origins keep the honest null
-  // ("update available", no fabricated number).
-  if (behind === null) {
-    behind = await fetchCompareBehindCount({ currentSha, originUrl, targetSha })
-  }
-
-  // behind === null means "update available, exact count unknown" (shallow
-  // clone): still list what origin offers — resolveCommitLogSelection keeps
-  // the shallow log to the fetched tip so the range walk can't enumerate the
-  // contaminated ancestry — so "See what's new" stays useful and honest.
-  const commits = behind !== 0 ? await readCommitLog(updateRoot, branch, isShallow) : []
+  const upToDate = tipsEqual || behind === 0
 
   return {
     supported: true,
     branch,
     currentBranch,
-    behind,
-    updateAvailable: behind === null || behind > 0,
+    behind: upToDate ? 0 : behind,
+    updateAvailable: !upToDate,
     currentSha,
     targetSha,
-    commits,
+    commits: [],
     dirty: dirtyStr.length > 0,
     hermesRoot: updateRoot,
     fetchedAt: Date.now()

@@ -20,6 +20,7 @@ import { handleDesktopBridgeEvent } from './desktop-bridge'
 import { handleInputRequestEvent } from './input-requests'
 import { handleLifecycleEvent } from './lifecycle'
 import { handleMessageStreamEvent } from './message-stream'
+import { handleControlEvent } from './session-control'
 import { handleSessionInfoEvent } from './session-info'
 import { handleStatusEvent } from './status'
 import { handleToolEvent } from './tools'
@@ -84,6 +85,7 @@ const PROVIDER_WAIT_SUPERSEDING_EVENT_TYPES = new Set([
 const HANDLERS: GatewayEventHandler[] = [
   handleLifecycleEvent,
   handleSessionInfoEvent,
+  handleControlEvent,
   handleMessageStreamEvent,
   handleToolEvent,
   handleInputRequestEvent,

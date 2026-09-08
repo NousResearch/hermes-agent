@@ -23,7 +23,7 @@ def test_clamp_collision_emits_warning_naming_both_skills(
     tmp_path: Path, caplog
 ) -> None:
     """Two skills with identical first 32 chars — warning names both."""
-    from hermes_cli.commands import discord_skill_commands_by_category
+    from hermes_cli.commands_platforms import discord_skill_commands_by_category
 
     # Craft cmd_keys that share the first 32 chars.
     # 40-char prefix 'skill-collision-prefix-identical-first-32'
@@ -98,7 +98,7 @@ def test_long_skill_name_preserves_cmd_key_through_by_category(
     This is the actual runtime path used by the Discord adapter via
     ``_refresh_skill_catalog_state``.
     """
-    from hermes_cli.commands import discord_skill_commands_by_category
+    from hermes_cli.commands_platforms import discord_skill_commands_by_category
 
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()

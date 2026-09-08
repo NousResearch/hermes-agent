@@ -74,10 +74,11 @@ def _cell(status="ok", stdout="", execution_count=1, **kw):
     return payload
 
 
-def _run(env, code="print(1)", *, task="t1", reset=False, timeout=10):
+def _run(env, code="print(1)", *, task="t1", reset=False, timeout=10,
+         tools=frozenset({"read_file"})):
     return execute_in_remote_kernel(
         code, env=env, env_type="ssh", task_env_id=task,
-        sandbox_tools=frozenset({"read_file"}), timeout=timeout,
+        sandbox_tools=tools, timeout=timeout,
         max_tool_calls=5, reset=reset,
     )
 
@@ -176,6 +177,19 @@ class TestDeathDetection(RemoteKernelBase):
 
 
 class TestOwnershipIsolation(RemoteKernelBase):
+    def test_changed_tool_set_spawns_kernel_with_fresh_stubs(self):
+        env = ScriptedEnv(_spawn_ok_handlers([_cell(), _cell()]))
+        _run(env, tools=frozenset({"read_file"}))
+        _run(env, tools=frozenset({"web_search"}))
+
+        self.assertEqual(len(_REMOTE_KERNELS), 2)
+        self.assertEqual(sum(1 for c in env.commands if "nohup" in c), 2)
+        keyed_tool_sets = {key[-1] for key in _REMOTE_KERNELS}
+        self.assertEqual(
+            keyed_tool_sets,
+            {("read_file",), ("web_search",)},
+        )
+
     def test_delegated_children_get_their_own_remote_kernels(self):
         """Same invariant as local (#94647 review fix): the child context
         qualifier must key a DIFFERENT remote kernel."""
@@ -198,6 +212,81 @@ class TestOwnershipIsolation(RemoteKernelBase):
         self.assertEqual(len(_REMOTE_KERNELS), 1)
         remaining_owner = next(iter(_REMOTE_KERNELS))[0]
         self.assertEqual(remaining_owner, "owner-b")
+
+
+class TestIdleReapAndCapEviction(RemoteKernelBase):
+    """Unlike local session kernels, remote kernels had no idle-reap or
+    process-wide cap: _REMOTE_KERNELS grew one entry per distinct
+    (owner, env_type, task_env_id) that was never revisited, for the life
+    of the gateway process."""
+
+    def test_idle_expired_kernel_is_reaped_on_next_call(self):
+        env = ScriptedEnv(_spawn_ok_handlers([_cell(), _cell()]))
+        execute_in_remote_kernel(
+            "print(1)", env=env, env_type="ssh", task_env_id="stale",
+            sandbox_tools=frozenset(), timeout=10, max_tool_calls=5,
+            reset=False, idle_exit=1800,
+        )
+        self.assertEqual(len(_REMOTE_KERNELS), 1)
+        # Backdate the kernel's last_used past the idle window — simulates
+        # a key that is never revisited again.
+        for kernel in _REMOTE_KERNELS.values():
+            kernel.last_used -= 2000
+        # A call for a DIFFERENT key must reap the stale entry on entry,
+        # without ever touching or reviving it.
+        execute_in_remote_kernel(
+            "print(1)", env=env, env_type="ssh", task_env_id="fresh",
+            sandbox_tools=frozenset(), timeout=10, max_tool_calls=5,
+            reset=False, idle_exit=1800,
+        )
+        owners = {key[0] for key in _REMOTE_KERNELS}
+        self.assertNotIn("stale", owners)
+        self.assertIn("fresh", owners)
+
+    def test_over_cap_evicts_least_recently_used(self):
+        with patch("tools.code_kernel._lifecycle_limits", return_value=(2, 1800)):
+            env = ScriptedEnv(_spawn_ok_handlers([_cell() for _ in range(10)]))
+            for i in range(3):
+                execute_in_remote_kernel(
+                    "print(1)", env=env, env_type="ssh", task_env_id=f"owner-{i}",
+                    sandbox_tools=frozenset(), timeout=10, max_tool_calls=5,
+                    reset=False, idle_exit=1800,
+                )
+            self.assertEqual(len(_REMOTE_KERNELS), 2)
+            owners = {key[0] for key in _REMOTE_KERNELS}
+            self.assertNotIn("owner-0", owners)
+            self.assertIn("owner-1", owners)
+            self.assertIn("owner-2", owners)
+
+    def test_eviction_skips_kernels_with_a_running_cell(self):
+        """Cap eviction must never kill a kernel mid-cell (the local-kernel
+        race from hermes-agent#101861): a busy kernel stays put and a
+        settled one goes instead, even if the busy one is older."""
+        import threading
+
+        gate = threading.Event()
+
+        def slow_cat(command):
+            gate.wait(10)
+            return {"output": json.dumps(_cell()), "returncode": 0}
+
+        busy_env = ScriptedEnv([
+            ("nohup", lambda c: {"output": "PID:4242\n", "returncode": 0}),
+            ("kill -0", lambda c: {"output": "ALIVE\n", "returncode": 0}),
+            ("cat ", slow_cat),
+        ])
+        with patch("tools.code_kernel._lifecycle_limits", return_value=(1, 1800)):
+            worker = threading.Thread(target=_run, args=(busy_env,), kwargs={"task": "busy"})
+            worker.start()
+            while not any(k.attached for k in _REMOTE_KERNELS.values()):
+                pass
+            env = ScriptedEnv(_spawn_ok_handlers([_cell()]))
+            _run(env, task="settled")
+            owners = {key[0] for key in _REMOTE_KERNELS}
+            self.assertIn("busy", owners)
+            gate.set()
+            worker.join(10)
+        self.assertFalse(any("kill 4242" in c for c in busy_env.commands))
 
 
 class TestDispatchIntegration(unittest.TestCase):

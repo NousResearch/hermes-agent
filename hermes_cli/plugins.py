@@ -1022,6 +1022,12 @@ _SCOPED_PROVIDER_REGISTRARS: Tuple[Tuple[str, str, str, str, str, str, Dict[str,
      "Register an :class:`agent.browser_provider.BrowserProvider`; "
      "``provider.name`` is matched by ``browser.cloud_provider`` (consulted by "
      "``tools.browser_tool_cloud._get_cloud_provider``).", {}),
+    ("register_computer_use_provider", "computer_use_provider", "agent.computer_use_registry",
+     "agent.computer_use_provider:ComputerUseProvider", "computer_use provider",
+     "Register a :class:`agent.computer_use_provider.ComputerUseProvider`; ``provider.name`` is "
+     "matched by ``computer_use.provider``. Selection is explicit: registering never activates. This "
+     "is how a runtime that owns its own display (container pool, leased sandbox, desktop-client "
+     "bridge) supplies a backend without core knowing it exists.", {}),
     ("register_terminal_environment_provider", "terminal_environment_provider",
      "agent.terminal_env_registry", "agent.terminal_env_provider:TerminalEnvironmentProvider",
      "terminal environment provider",

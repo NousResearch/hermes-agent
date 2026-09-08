@@ -20,8 +20,12 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
+from agent.computer_use_provider import ComputerUseProvider
+from agent.computer_use_registry import HOST_PROVIDER_NAME, UnknownComputerUseProvider, resolve_provider
 from hermes_constants import hermes_home_key
+from tools.computer_use import remote_provider  # noqa: F401 — registers the remote provider
+from tools.computer_use import host_provider  # noqa: F401 — registers the built-ins
+from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -135,14 +139,43 @@ def _backend_owner_key(session_id: str) -> Tuple[str, str]:
     return hermes_home_key(), str(session_id or "")
 
 
-def _new_backend(permission_mode: str) -> ComputerUseBackend:
-    backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-    if backend_name in {"cua", "cua-driver", ""}:
-        from tools.computer_use.cua_backend import CuaDriverBackend
-        return CuaDriverBackend(permission_mode=permission_mode)
-    if backend_name != "noop":
-        raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
-    return _NoopBackend()  # pragma: no cover
+_provider_lock = threading.Lock()
+# Keyed by profile home, not one slot: under gateway.multiplex_profiles a single process serves several
+# profiles, and computer_use.provider is read from each one's own config.yaml.
+_provider_cache: Dict[str, ComputerUseProvider] = {}
+
+def _configured_provider_name() -> str:
+    """Read ``computer_use.provider``, bridging the retired env override.
+
+    ``HERMES_COMPUTER_USE_BACKEND`` selected the backend class before this key existed. It is non-secret
+    behavior, so config.yaml is its home now (root AGENTS.md); the env var still wins where it is set, once,
+    loudly, so a running deployment does not change which machine it clicks on because it upgraded.
+    """
+    legacy = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "").strip()
+    if legacy:
+        logger.warning("HERMES_COMPUTER_USE_BACKEND=%s is deprecated; set computer_use.provider in config.yaml instead.",
+                       legacy)
+        return legacy
+    try:
+        from hermes_cli.config import load_config
+        return str(((load_config() or {}).get("computer_use") or {}).get("provider") or "")
+    except Exception as exc:  # noqa: BLE001 — an unreadable config still gets the host
+        logger.debug("computer_use: provider config read failed: %s", exc)
+        return ""
+
+def active_computer_use_provider() -> ComputerUseProvider:
+    """The provider servicing this process, resolved once per profile (config cannot change mid-process; this is
+    read on every dispatch and tool-registration pass). ``reset_backend_for_tests`` clears it. Raises
+    :class:`UnknownComputerUseProvider` for an unregistered name — see the registry on why that is not a fallback."""
+    key = hermes_home_key()
+    with _provider_lock:
+        if (cached := _provider_cache.get(key)) is not None:
+            return cached
+        provider = _provider_cache[key] = resolve_provider(_configured_provider_name())
+        return provider
+
+def _new_backend(sid: str, permission_mode: str) -> ComputerUseBackend:
+    return active_computer_use_provider().create_backend(sid, permission_mode)
 
 def _install_backend(owner: Tuple[str, str], backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
@@ -197,7 +230,7 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
                     if _backend_start_locks.get(owner) is not start_lock:
                         raise RuntimeError("computer_use session released during backend startup")
                     permission_mode = _cua_permission_mode(sid)
-            backend = _new_backend(permission_mode)
+            backend = _new_backend(sid, permission_mode)
             try:
                 backend.start()  # outside _backend_lock: unrelated owners proceed concurrently
             except BaseException:
@@ -253,9 +286,20 @@ def _shutdown_backend_atexit() -> None:
         _session_auto_approve.clear(), _always_allow.clear(), _escalation_warned.clear()
     for backend, call_lock in unique.values():
         _stop_backend(backend, call_lock, lambda e: logger.debug("cua-driver atexit teardown failed: %s", e))
+    # After the backends: a provider's leases (containers, sandboxes) outlive the backend objects that drove
+    # them. Only a provider we actually resolved can own anything, so this never forces a resolution at exit.
+    with _provider_lock:
+        resolved = list(_provider_cache.values())
+    for provider in resolved:
+        try:
+            provider.emergency_cleanup()
+        except Exception as e:
+            logger.debug("computer_use provider %r cleanup failed: %s", provider.name, e)
 
 def reset_backend_for_tests() -> None:  # pragma: no cover — tear down the cached backend and per-session state
     _shutdown_backend_atexit()
+    with _provider_lock:
+        _provider_cache.clear()
     _AUX_VISION_ROUTE_CACHE.clear()
 
 def _noop_stub(name: str, *params: str, result: Any = None):
@@ -298,6 +342,10 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
             return err
     try:
         backend = _get_backend(session_id=session_id)
+    except UnknownComputerUseProvider as e:
+        # Its message already names the missing provider and how to fix it; the cua-driver hint below would
+        # send the user after the wrong thing.
+        return json.dumps({"error": str(e)})
     except Exception as e:
         return json.dumps({"error": f"computer_use backend unavailable: {e}",
                            "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
@@ -792,21 +840,26 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str, *, visib
 
 # ── Availability check (used by the tool registry check_fn) ─────────────────
 def check_computer_use_requirements() -> bool:
-    """True when remote CUA transport resolves, else macOS/Windows/Linux + cua-driver binary
-    (or env override). `hermes computer-use doctor` names blocked checks."""
-    try:  # remote transport: the bridge host owns the driver, so no local binary is required
-        from tools.computer_use.cua_backend import _computer_use_cfg
-        from tools.computer_use.remote import resolve_remote_cua_config
-        if resolve_remote_cua_config(_computer_use_cfg(), permission_mode="standard") is not None:
-            return True
-    except RuntimeError:  # broken remote config fails closed — the tool stays hidden
-        return False
-    except ImportError:  # tree without the remote module — local rules apply
-        pass
+    """True iff the active provider can run computer_use.
+
+    Host provider: macOS/Windows/Linux + cua-driver binary (`hermes computer-use doctor` names blocked checks).
+    Another provider answers for its own runtime — a container pool supplies displays a headless gateway lacks,
+    so the host platform gate is not applied on its behalf. A misconfigured provider keeps the tool: the
+    dispatcher's error names what is missing, where a tool stripped from the schema leaves the model mute.
+    """
+    try:
+        provider = active_computer_use_provider()
+    except UnknownComputerUseProvider:
+        return True
+    if provider.name != HOST_PROVIDER_NAME:
+        try:
+            return bool(provider.is_available())
+        except Exception:  # noqa: BLE001 — a throwing provider is an absent one
+            logger.debug("computer_use provider availability check failed", exc_info=True)
+            return False
     if sys.platform not in ("darwin", "win32", "linux"):
         return False
-    from tools.computer_use.cua_backend_driver import cua_driver_binary_available
-    return cua_driver_binary_available()
+    return provider.is_available()
 
 def get_computer_use_schema() -> Dict[str, Any]:
     from tools.computer_use.schema import COMPUTER_USE_SCHEMA

@@ -28,7 +28,7 @@ from tools.computer_use.cua_backend_driver import (
 from tools.computer_use.cua_backend_input import _InputMixin
 from tools.computer_use.cua_backend_parse import _action_result_from
 from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
-from tools.computer_use.remote import resolve_remote_cua_config
+from tools.computer_use.remote import RemoteCuaConfig, resolve_remote_cua_config
 
 logger = logging.getLogger(__name__)
 # cua-driver's anonymous PostHog telemetry gate ("0" disables; absent => ON upstream).
@@ -239,13 +239,13 @@ def _maybe_nudge_update() -> None:
 class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
-    def __init__(self, permission_mode: str = "standard") -> None:
+    def __init__(self, permission_mode: str = "standard", remote_config: Optional[RemoteCuaConfig] = None) -> None:
         if permission_mode not in {"standard", "bounded", "unrestricted"}:
             raise ValueError(f"unsupported cua-driver permission mode: {permission_mode}")
-        self._remote_config = resolve_remote_cua_config(
-            _computer_use_cfg(),
-            permission_mode=permission_mode,
-        )
+        if remote_config is not None and permission_mode != "standard":
+            raise RuntimeError("remote computer use supports standard permission mode only")
+        # The factory, never ambient config, selects the machine.
+        self._remote_config = remote_config
         self.permission_mode = permission_mode
         self._embedded_daemon: Optional[_EmbeddedCuaDaemon] = None
         if permission_mode != "standard" and self._remote_config is None:

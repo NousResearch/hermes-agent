@@ -484,6 +484,7 @@ Existing `ctx.*` methods extend an existing Hermes subsystem:
 | `ctx.register_tool` | adds a tool the agent can call |
 | `ctx.register_platform` | wires a new gateway adapter |
 | `ctx.register_image_gen_provider` | replaces an image-gen backend |
+| `ctx.register_computer_use_provider` | supplies the machine computer_use drives |
 | `ctx.register_memory_provider` | replaces the memory backend |
 | `ctx.register_context_engine` | replaces the context compressor |
 | `ctx.register_hook` | observes a lifecycle event |

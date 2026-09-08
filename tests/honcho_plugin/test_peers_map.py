@@ -51,6 +51,15 @@ class TestSeenGatewayAccounts:
             {"platform": "telegram", "user_id": "111", "user_id_alt": "", "label": "eri", "sessions": 2, "profiles": []},
         ]
 
+    def test_shared_session_lists_only_its_last_author(self, tmp_path):
+        """record_gateway_session_peer overwrites the row's user_id, so earlier authors are gone."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(tmp_path / "state.db")
+        for uid in ("alice", "bob"):
+            db.record_gateway_session_peer("shared", source="telegram", user_id=uid, session_key="telegram:group:1")
+        assert [a["user_id"] for a in _seen_gateway_accounts(tmp_path / "state.db")] == ["bob"]
+
     def test_missing_db_or_table_returns_empty(self, tmp_path):
         assert _seen_gateway_accounts(tmp_path / "absent.db") == []
         sqlite3.connect(tmp_path / "empty.db").close()

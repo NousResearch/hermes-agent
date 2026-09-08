@@ -7073,34 +7073,9 @@ function installDevToolsShortcut(window) {
   })
 }
 
-function installPreviewShortcut(window) {
-  window.webContents.on('before-input-event', (event, input) => {
-    const key = String(input.key || '').toLowerCase()
-    const accel = (IS_MAC ? input.meta : input.control) && !input.alt
-    const isCloseTabShortcut = key === 'w' && accel && !input.shift
 
-    // Always claim ⌘W here (the File>Close item deliberately has no
-    // accelerator, so nothing else does). The renderer decides tab-vs-window
-    // — no `previewShortcutActive` gate, so it works for every closeable tab.
-    if (isCloseTabShortcut) {
-      event.preventDefault()
-      sendClosePreviewRequested()
 
-      return
-    }
-
-    // ⌘R rides here rather than on the View menu item for the same reason:
-    // the application menu only exists on macOS (it is set to null elsewhere,
-    // see #77845), so a menu accelerator would leave Windows and Linux with no
-    // way to reload a page at all. ⇧⌘R is left alone — that is `forceReload`,
-    // the unconditional whole-window escape hatch.
-    if (key === 'r' && accel && !input.shift) {
-      event.preventDefault()
-      sendPreviewNavCommand('reload')
-    }
-  })
-}
-
+import { installInputShortcuts } from './input-shortcuts'
 // Zoom level is persisted in the renderer's own localStorage (per-origin,
 // survives reloads/restarts) rather than a main-process JSON file. The main
 // process owns setZoomLevel, so we mirror each change into localStorage and
@@ -7189,57 +7164,7 @@ function restorePersistedZoomLevel(window) {
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
 }
 
-function installZoomShortcuts(window) {
-  // Override Ctrl/Cmd + +/-/0 with half Chromium's default zoom step (ZOOM_STEP
-  // is 0.1 vs Chromium's 0.2). The menu items handle this on macOS (where the
-  // menu is always present), but on Linux/Windows the menu is null and
-  // Chromium's default handler would use the full 0.2 step, so we intercept
-  // here for consistency. Ctrl/Cmd+0 resets to DEFAULT_ZOOM_LEVEL, not Chromium 0.
-  window.webContents.on('before-input-event', (event, input) => {
-    const mod = IS_MAC ? input.meta : input.control
 
-    if (!mod || input.alt) {
-      return
-    }
-
-    const key = input.key
-
-    if (key === '0') {
-      if (input.shift) {
-        return // Ctrl/Cmd+Shift+0 is not a zoom chord — leave it alone
-      }
-
-      event.preventDefault()
-      setAndPersistZoomLevel(window, DEFAULT_ZOOM_LEVEL)
-    } else if (key === '=' || key === '+') {
-      // Zoom-in must accept the shift modifier: on US layouts Plus is
-      // physically Shift+=, so Cmd+Plus arrives as Cmd+Shift+'+' (or '='
-      // depending on platform). The old blanket shift guard silently
-      // dropped keyboard zoom-in on macOS (#43517).
-      event.preventDefault()
-      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + ZOOM_STEP)
-    } else if (key === '-') {
-      if (input.shift) {
-        return // Shift+'-' is '_' territory on most layouts, not zoom-out
-      }
-
-      event.preventDefault()
-      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() - ZOOM_STEP)
-    }
-  })
-
-  // Ctrl/Cmd + mouse wheel — the standard desktop/browser zoom gesture
-  // (#40295). Chromium surfaces it as the main-process 'zoom-changed' event
-  // (wheel events are DOM-side, so before-input-event never sees them).
-  // Route through the same persist+notify funnel as the keyboard shortcuts
-  // so wheel zoom survives restarts and the settings Scale control stays in
-  // sync, and use the same half step for consistency.
-  window.webContents.on('zoom-changed', (event, zoomDirection) => {
-    event.preventDefault()
-    const delta = zoomDirection === 'in' ? ZOOM_STEP : -ZOOM_STEP
-    setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + delta)
-  })
-}
 
 /**
  * The custom (renderer) context menu's main-process half.
@@ -13333,7 +13258,15 @@ async function startHermes() {
 // Alt+wheel scale, so inheriting the global UI zoom would render the mascot
 // larger than its window and crop it. Chat windows keep zoom on.
 function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {}) {
-  installPreviewShortcut(win)
+  installInputShortcuts(win, IS_MAC, {
+    sendClosePreviewRequested,
+    sendPreviewNavCommand,
+    ...(zoom && {
+      setAndPersistZoomLevel,
+      getDefaultZoomLevel: () => DEFAULT_ZOOM_LEVEL,
+      getZoomStep: () => ZOOM_STEP
+    })
+  })
   installDevToolsShortcut(win)
   installBrowserNavGestures(win)
 
@@ -13348,7 +13281,6 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   }
 
   if (zoom) {
-    installZoomShortcuts(win)
     // Re-apply persisted zoom on show/restore/resize/cross-display move
     // (Chromium can drop webContents zoom after these window transitions), on
     // EVERY full load — not once, since crash recovery reloads and would

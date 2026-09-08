@@ -19,6 +19,22 @@ from tools.mcp_oauth_provider import HermesProviderMixin
 
 logger = logging.getLogger(__name__)
 
+
+class _SkippedRefreshResponse:
+    """Stand-in 2xx refresh response for the single-refresher skip path.
+
+    Duck-typed (``status_code`` + ``aread()``) so that if the pinned SDK ever
+    inspects the yielded response before calling ``_handle_refresh_response``,
+    it still sees a coherent 2xx instead of ``None``. ``_handle_refresh_response``
+    short-circuits on the skip flag before reading it either way.
+    """
+
+    status_code = 200
+
+    async def aread(self) -> bytes:
+        return b""
+
+
 try:
     from mcp.client.auth.oauth2 import OAuthClientProvider as _SDKOAuthClientProvider
     _SDK_BASES: tuple = (_SDKOAuthClientProvider,)
@@ -230,7 +246,20 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     sent_access_token = tokens.access_token if tokens is not None else None
                     self.context.lock.release()
                     resource_lock_released = True
-                incoming = yield outgoing
+                if getattr(self, "_hermes_refresh_skipped", False) and (
+                    outgoing is not request
+                ):
+                    # _refresh_token adopted a token rotated by a sibling
+                    # process; do not POST the now-spent refresh token.
+                    # Feed a duck-typed 2xx stub so _handle_refresh_response
+                    # short-circuits cleanly (it returns True on the skip
+                    # flag before reading the response).
+                    # The `outgoing is not request` guard ensures a stale
+                    # skip flag can only suppress a refresh POST, never the
+                    # resource request itself (F1).
+                    incoming = _SkippedRefreshResponse()
+                else:
+                    incoming = yield outgoing
                 if resource_lock_released:
                     await self.context.lock.acquire()
                     resource_lock_released = False
@@ -246,10 +275,36 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 # Sniff the response for a dead-client-registration signal before handing it back to the SDK
                 # (best-effort, GH#36767).
                 await self._maybe_flag_poisoned_client(incoming)
-                outgoing = await inner.asend(incoming)
+                # `incoming` may be the _SkippedRefreshResponse stub (skip
+                # path) rather than a real httpx2.Response; the SDK's
+                # _handle_refresh_response short-circuits before reading it.
+                outgoing = await inner.asend(incoming)  # type: ignore[arg-type]
         except StopAsyncIteration:
             self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch
         finally:
+            # If the refresh generator was cancelled between _refresh_token
+            # (which acquires the cross-process lock) and
+            # _handle_refresh_response (which releases it), the lock would
+            # otherwise leak and wedge every other process on the flock.
+            # Clear the skip flag for the same reason: a cancelled refresh
+            # must not leave a sticky skip that swallows the next resource
+            # request (F1).
+            #
+            # Ownership gate: the flock and skip flag are held ONLY for the
+            # refresh POST, which is yielded before the resource request.
+            # _handle_refresh_response releases the flock and clears the
+            # flag before the resource request is ever yielded, so by the
+            # time resource_lock_released is True this flow no longer owns
+            # them. A concurrent flow on the same cached provider instance
+            # may have acquired the flock and set the flag while this flow
+            # was suspended at the resource yield; releasing/clearing them
+            # unconditionally would stomp that concurrent flow's live
+            # refresh (re-POSTing a spent refresh token -> browser re-auth).
+            # Only touch them when this flow still owns them.
+            if not resource_lock_released:
+                self._hermes_refresh_skipped = False
+                if getattr(self, "_hermes_refresh_lock", None) is not None:
+                    self._hermes_release_refresh_lock()
             if resource_lock_released:
                 # Balance the SDK's surrounding ``async with`` even when HTTPX cancels/closes the
                 # flow mid-request; shield only this local bookkeeping.

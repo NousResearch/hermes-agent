@@ -411,4 +411,61 @@ import {
   console.log('  ✓ captioned failed download keeps caption and appends note');
 }
 
+// -- quoted message envelopes --------------------------------------------
+{
+  // WhatsApp wraps disappearing (ephemeral), view-once and re-shared
+  // document messages in envelope types. The quote extractor must see
+  // through them, or a reply to such a message keeps its quoted ID but
+  // loses the quoted text entirely (#106066).
+  for (const [fixture, quotedMessage] of [
+    ['plain conversation', { conversation: 'Example appointment at 11:40' }],
+    ['ephemeral-wrapped', {
+      ephemeralMessage: { message: { conversation: 'Example appointment at 11:40' } },
+    }],
+    ['view-once wrapped', {
+      viewOnceMessageV2: { message: { conversation: 'Example appointment at 11:40' } },
+    }],
+    ['document-with-caption envelope', {
+      documentWithCaptionMessage: {
+        message: { documentMessage: { caption: 'the signed contract', fileName: 'contract.pdf' } },
+      },
+    }],
+    ['extended text inside ephemeral', {
+      ephemeralMessage: {
+        message: { extendedTextMessage: { text: 'Example appointment at 11:40' } },
+      },
+    }],
+  ]) {
+    const event = await extractBridgeEvent({
+      msg: {
+        key: { id: `reply-${fixture}`, remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+        messageTimestamp: 123,
+        message: {
+          extendedTextMessage: {
+            text: 'confirmed',
+            contextInfo: {
+              stanzaId: 'original-id',
+              participant: '15559998888@s.whatsapp.net',
+              quotedMessage,
+            },
+          },
+        },
+      },
+      chatId: '15551234567@s.whatsapp.net',
+      senderId: '15550001111@s.whatsapp.net',
+      senderNumber: '15550001111',
+      botIds: ['15559998888@s.whatsapp.net'],
+      downloadMedia: async () => Buffer.from(''),
+    });
+    assert.equal(event.quotedMessageId, 'original-id', fixture);
+    assert.equal(event.hasQuotedMessage, true, fixture);
+    if (fixture === 'document-with-caption envelope') {
+      assert.equal(event.quotedText, 'the signed contract', fixture);
+    } else {
+      assert.equal(event.quotedText, 'Example appointment at 11:40', fixture);
+    }
+  }
+  console.log('  ✓ quoted message text survives ephemeral/view-once/document envelopes');
+}
+
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

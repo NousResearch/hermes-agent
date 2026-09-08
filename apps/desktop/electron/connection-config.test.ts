@@ -334,10 +334,10 @@ const ROUTES = [
     expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
   },
   {
-    name: 'a renamed primary profile still owns the window backend',
+    name: 'a renamed primary profile on a global remote is still scoped on the wire',
     profile: ' coder ',
     opts: { primaryProfile: 'coder', globalRemote: true },
-    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
   },
   {
     name: 'an unset profile resolves to the primary',
@@ -526,14 +526,14 @@ test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => 
   )
 })
 
-test('pathWithGlobalRemoteProfile skips the primary profile, which the remote already serves', () => {
+test('pathWithGlobalRemoteProfile scopes the primary label because the dashboard launch home may differ', () => {
   assert.equal(
     pathWithGlobalRemoteProfile('/api/model/info', 'coder', {
       globalRemote: true,
       primaryProfile: 'coder',
       profileRemoteOverride: false
     }),
-    '/api/model/info'
+    '/api/model/info?profile=coder'
   )
 })
 

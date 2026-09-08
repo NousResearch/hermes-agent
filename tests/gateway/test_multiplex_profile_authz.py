@@ -74,6 +74,52 @@ def test_active_profile_stamp_resolves_primary_adapter(monkeypatch):
     assert runner._authorization_adapter(Platform.WECOM, profile="dev") is default_adapter
 
 
+def test_scoped_secondary_profile_still_uses_profile_adapters(monkeypatch):
+    """Runtime scope must not redirect secondary authz to primary adapters.
+
+    ``_make_profile_message_handler`` wraps ``_handle_message`` in
+    ``_profile_runtime_scope``, which overrides HERMES_HOME so
+    ``get_active_profile_name()`` equals the secondary profile for that turn.
+    Authorization must still read ``_profile_adapters[profile]``, not the
+    empty primary ``self.adapters`` map — otherwise upstream-auth platforms
+    such as A2A default-deny an already-authenticated peer (#80884). A
+    secondary profile with NO registry entry still fails closed.
+    """
+    from gateway.run import GatewayRunner
+
+    _clear_auth_env(monkeypatch)
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner.adapters = {}
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+
+    secondary = SimpleNamespace(
+        authorization_is_upstream=True,
+        enforces_own_access_policy=False,
+    )
+    runner._profile_adapters = {"beta": {Platform("a2a"): secondary}}
+    # Simulate the scoped turn: active profile name collapses to the secondary.
+    runner._active_profile_name = lambda: "beta"
+
+    assert runner._authorization_adapter(Platform("a2a"), profile="beta") is secondary
+
+    source = SessionSource(
+        platform=Platform("a2a"),
+        chat_id="a2a-context",
+        user_id="alpha",
+        user_name="alpha",
+        chat_type="dm",
+        profile="beta",
+    )
+    assert runner._is_user_authorized(source) is True
+
+    # Fail-closed guard is untouched: no registry entry -> no default fallback.
+    runner._profile_adapters = {"beta": {}}
+    assert runner._authorization_adapter(Platform("a2a"), profile="beta") is None
+
+
 def test_secondary_allowlist_dm_behavior_ignores_unauthorized(monkeypatch):
     """Unauthorized-DM behavior must read the secondary adapter's dm_policy."""
     runner, _default_adapter, secondary_adapter = _make_multiplex_runner(monkeypatch)

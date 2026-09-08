@@ -17,7 +17,7 @@ There is no new primitive to learn: a Bot **is** a Hermes profile — isolated c
 
 The roster shows one row per agent profile: avatar, latest-message preview, and timestamp.
 
-- **Click a Bot** to land in its chat — every Bot has a canonical, persistent **Bot Chat** conversation that is created (and pinned) the moment the Bot is born.
+- **Click a Bot** to land in its chat — every Bot has a canonical, persistent **Bot Chat** conversation that is created (and pinned) the moment the Bot is born. A row click always opens that Bot Chat (the same conversation the row previews), even when you have other tabs open for the Bot; those tabs stay open beside it. In the tab strip the Bot Chat is captioned with the Bot's name, so two open Bots are told apart at a glance.
 - **Active now** — a presence strip above the roster shows every Bot currently working: the gateway-busy profile plus any Bot that wrote within the last 90 seconds. Each chip opens that Bot's chat. The strip never reorders the roster and disappears when the fleet is idle.
 - **Search** filters the roster as you type.
 - **Hide a Bot** — right-click a row → **Hide Bot** to take a Bot you don't use out of the roster and the Active-now strip. Hiding is display-only: @mentions still resolve, group-chat memberships are untouched, and routines keep running. Once at least one Bot is hidden, an **eye toggle** appears in the pane header — click it to reveal hidden Bots dimmed in place, then right-click → **Unhide Bot** to bring one back. Hidden Bots never toast, but they accumulate unread activity silently and the eye badges a dot so you know something happened. Hidden state is saved in the Bot's profile metadata, so it follows the Bot to every desktop connected to that backend.
@@ -25,6 +25,17 @@ The roster shows one row per agent profile: avatar, latest-message preview, and 
 :::note The canonical Bot Chat is a forever-chat
 Typing `/new` (or `/reset`) inside a Bot's canonical chat would fork the relationship into a scratch session — the one thing Bot Mode promises never happens. The composer reroutes it to `/compact` instead: fresh working context, same conversation. Regular sessions on the same profile keep full `/new` freedom.
 :::
+
+### Organize bots into sections
+
+Sections are folders you make yourself — **Clients**, **Team**, whatever fits — as a second axis beside the automatic per-gateway grouping. With no sections created the roster is the plain list it always was.
+
+- **Create one** from the pane's **+** menu → **New section**, or right-click a Bot → **Move to section** → **New section…** (that files the Bot into it as you create it).
+- **File a Bot** by dragging its row onto a section — the target highlights while you hover, and **Esc** cancels the drag — or right-click → **Move to section** and pick one. **Remove from section** puts it back in **Unassigned**.
+- **Rename, reorder, or delete** a section from its heading's right-click menu (or the **⋯** that appears on hover); double-click a heading to rename. Headings fold like the gateway headings do.
+- **Deleting a section never deletes Bots** — they return to **Unassigned**, and the toast offers **Undo**. No confirmation is asked.
+
+Membership is stored in each Bot's profile metadata (`ui_meta`), so a Bot's section follows it to every desktop connected to that backend. When the roster shows more than one gateway, sections nest inside each gateway's bucket.
 
 ## Creating a Bot
 
@@ -98,6 +109,8 @@ Bots message each other with attribution, and you can hand work off from any cha
 - **Renamed Bots keep their tags in sync** — give a Bot a friendly name (the pencil in its chat header, or `hermes profile rename`) and it becomes taggable by that name: a Bot titled *Research Buddy* answers to `@research-buddy` (and `@researchbuddy`), in regular chats and in group rooms alike. The composer's `@` autocomplete offers the renamed tag and also matches when you type the old profile name, which keeps resolving too.
 - **Direct messages** — every Bot Chat carries the `message_agent` tool: a Bot messages a teammate by calling `message_agent(target="researcher", message="…")`. The tool validates the target against the live roster, prefixes the sender's `Message from 🤖 <sender> (@<sender>):` attribution automatically, and delivers into the teammate's canonical Bot Chat. Delivery is **fire-and-forget**: the sender gets an acknowledgement, finishes its turn, and the reply arrives later as a background completion notification. The message travels as a real parameter (nothing shell-interpreted — quotes, `$(...)`, and backticks arrive verbatim), and the Bot composes its own message rather than forwarding your words. The teammate roster — names **and roles** from each profile's title/description — is part of every Bot Chat's system prompt, so Bots know who does what before choosing a recipient. The tool exists **only** in canonical Bot Chat sessions on Bot-Mode-managed installs; regular chats, group-room member sessions, and CLI sessions never see it.
 
+Local messages also reach a Bot Chat that stays open in Desktop or the TUI. The receiving backend keeps ownership: it reads durable ingress on its existing notification poller, admits immediately when idle, or waits until the running turn and already queued human prompts finish. A `queued` acknowledgement confirms durable admission, **not** a completed reply. The target profile retains the delivery ID and receipt under `runtime/bot_live_delivery/`; `settled` confirms completion. A crashed or cancelled imported turn is not automatically replayed, and pending work pinned to a departed owner remains inspectable rather than being silently rerun. Do not resend a delivery whose outcome is unknown. Older backends without live-delivery capability retain the existing ownership refusal; restart that backend after upgrading.
+
 The backend teaches each Bot's canonical Bot Chat session the messaging protocol automatically at prompt-build time — including when a teammate opens it headlessly from the CLI. Only the canonical Bot Chat gets the protocol section; your regular sessions and your SOUL.md stay untouched. This is controlled by `agent.bot_mode_protocol` in `config.yaml` (default: on):
 
 ```yaml
@@ -110,6 +123,11 @@ Bot-to-bot delivery is per-invocation: the receiving Bot picks the message up wh
 :::
 
 ### Failed turns retry safely
+
+Local one-shot delivery preserves the active-session refusal code separately from
+its human-readable message. `SESSION_NOT_OWNED` produces `target_busy`; an
+unreadable coordination registry is not mislabeled as another owner. Older local
+CLIs without the code marker still use the historical refusal wording.
 
 A failed delivery turn is retried at most once, and only when a retry can actually help. Transient failures (target runtime offline, delivery timeout, provider rate limit or server error) re-run the same Bot Chat session unchanged. A context-overflow failure also re-runs the same session — the retried turn compacts the over-threshold transcript via the standard context-compression pass before calling the model, so the retry fits where the original didn't. Auth, quota, and configuration failures never auto-retry: a second attempt cannot fix them and only burns quota, so the failure is surfaced immediately. A retried turn never starts a fresh session — your Bot Chat history and context stay intact.
 
@@ -160,6 +178,70 @@ viewer, not a relay. A gateway behind home NAT can dial out to a public peer
 a NAT boundary, put the room's authority on the host every participant can
 reach (typically the public VPS), or bridge the network with Tailscale/VPN.
 :::
+
+### Transferring hosted room authority
+
+Authority takeover is an **operator recovery procedure**, not an atomic handover.
+Use the existing JSON-RPC methods `groups.promote` and `groups.demote` on the
+appropriate gateway. There are no `groups.peer.promote` or `groups.peer.demote`
+methods; `groups.capabilities` lists the methods your gateway supports.
+
+:::warning Fence the old writer before promotion
+Before sending `confirm: true`, establish that the previous authority **cannot
+commit**, and keep that fence in place until it has been demoted. Stop its
+room-writing processes and prevent automatic restart, or use an equivalent
+infrastructure fence. A network timeout, disconnecting Desktop, or `groups.stop`
+is not proof: the old gateway may still be running, and stopping a turn does not
+revoke room authority. If you cannot establish the fence, do not promote.
+:::
+
+1. **Check replica coverage.** On the replacement gateway, inspect
+   `groups.replica_state` with `{"room_id":"ROOM_ID"}` and compare `last_seq`
+   with `latest_seq`. Require a complete replica before planned takeover;
+   promotion itself does not check this coverage. `groups.replicate` reports
+   `caught_up` after ingesting pages returned by `groups.log`; peer registration
+   alone does not prove the replacement has the room history. Caught-up status
+   describes the last replicated page, not proof the old writer has stopped or
+   that no newer events exist. For a planned move, quiesce writers, replicate
+   through the final cursor, then maintain the fence. For disaster recovery,
+   account for any history that never reached the replica.
+2. **Promote only while the old writer is fenced.** On the replacement:
+
+   ```json
+   {"jsonrpc":"2.0","id":1,"method":"groups.promote","params":{"room_id":"ROOM_ID","confirm":true,"reason":"planned-handover"}}
+   ```
+
+   `room_id` and `confirm: true` are required; `reason` is optional and defaults
+   to `authority-unreachable`. Confirmation is your assertion that the previous
+   authority cannot commit, **not** a request to fence it automatically. Without
+   confirmation the call returns error `4118`. A successful result reports
+   `authority_gateway_id` and `authority_epoch` (the replicated epoch plus one).
+3. **Demote the old authority before returning it to service.** Keep its normal
+   room writers fenced while applying this RPC through a controlled recovery
+   connection on the old gateway. Replace the example gateway ID and epoch with
+   the exact values returned by the successful promotion:
+
+   ```json
+   {"jsonrpc":"2.0","id":2,"method":"groups.demote","params":{"room_id":"ROOM_ID","observed_gateway_id":"NEW_GATEWAY_ID","observed_epoch":2}}
+   ```
+
+   All three parameters are required. Do not guess a future epoch: demotion
+   requires evidence of a newer authority, not an invented value. It records
+   `authority.lost` and adopts the observed lineage; repeating the same lineage
+   is idempotent. If the old host is unavailable, keep it fenced and perform
+   this step before restoring its normal writers.
+4. **Verify and reconnect.** Read `groups.state` on both gateways and compare
+   `room.authority_gateway_id` and `room.authority_epoch` with the promotion
+   result. Old-authority sends must be refused; direct clients to the replacement.
+   Demotion fences writes; it does not merge histories or automatically turn the
+   old authoritative store into a synchronized replica.
+
+Promoting while the old gateway remains writable allows both independent
+`state.db` stores to accept messages and develop divergent histories. A higher
+epoch on the replacement does not remotely disable the old writer; equal epochs
+are not required for split-brain. If histories have already diverged, fence
+writers and preserve both histories for recovery rather than assuming that
+promotion, demotion, or replay will merge them.
 
 ## Bots across machines
 

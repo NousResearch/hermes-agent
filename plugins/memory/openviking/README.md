@@ -120,23 +120,39 @@ changes future writes, not the location of existing memories.
 | `viking_search` | Semantic search with fast/deep/auto modes |
 | `viking_read` | Read content at a viking:// URI (abstract/overview/full) |
 | `viking_browse` | Filesystem-style navigation (list/tree/stat) |
-| `viking_remember` | Store a fact directly with OpenViking `content/write` |
+| `viking_remember` | Submit a fact through OpenViking session memory extraction |
 | `viking_forget` | Delete one exact `viking://` memory file URI |
 | `viking_add_resource` | Ingest URLs/docs into the knowledge base |
 
 ## Memory Writes And Deletes
 
-`viking_remember` writes directly to OpenViking with `POST /api/v1/content/write`
-and `mode=create`. By default it creates files under explicit-uid
-`viking://user/<user>/memories/...` URIs. When a peer ID is configured, it keeps
-the existing `viking://user/<user>/peers/<peer>/memories/...` path. In both cases,
-`<user>` is resolved client-side from `/api/v1/system/status` (server-asserted
-current user). Hermes caches a confirmed user only for the active connection.
-If the probe fails, Hermes uses the configured user, or `default`, for that
-operation and retries the probe later. Explicit-uid URIs are canonical and
-work under every OpenViking auth mode and version; the `viking://~` alias only
-expands for USER/ADMIN roles, not the default dev mode.
-Explicit remembers do not depend on session commit extraction.
+`viking_remember` creates a one-shot `hermes-remember-<random>` OpenViking
+session, adds the fact as one message, and commits the session with no retained
+tail. The session remains available in OpenViking for audit. OpenViking then
+classifies the source and can add, merge, or skip a memory through its normal
+extraction pipeline. The tool returns the one-shot session ID and the
+extraction task ID when the server provides one. Extraction continues
+asynchronously after the tool returns.
+
+The tool returns `status: submitted` because extraction can add a memory, merge
+the fact into an existing memory, or produce no memory operation. It does not
+promise that OpenViking created a distinct memory file. The fact is submitted
+as an unchanged `user` message so OpenViking owns the final classification.
+The legacy `category` argument is still accepted from existing callers but is
+not advertised or used. The one-shot session is separate from the live Hermes
+conversation, so an explicit remember does not commit or rotate the active
+conversation session.
+
+If the message request or commit fails, the error includes the canonical
+session URI, the failed stage, the observed message status, and an `ov session
+commit <session-id>` recovery command. Inspect the session first. An archive
+means the commit completed. A non-empty live `messages.jsonl` with no archive
+means the message was accepted but still needs a commit. An empty live file
+without an archive is ambiguous and must not trigger an automatic resubmission.
+Use the same OpenViking profile and credentials as Hermes for manual recovery.
+OpenViking server auto-commit is disabled by default, so an accepted message
+whose explicit commit fails normally remains live and unextracted until it is
+manually committed.
 
 Hermes built-in `memory` tool additions are mirrored to OpenViking after the
 local memory operation succeeds:

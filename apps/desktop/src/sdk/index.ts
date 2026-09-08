@@ -21,6 +21,7 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
+import { capabilityScoped } from '@/api/client'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import type { ClientSessionState } from '@/app/types'
@@ -36,12 +37,14 @@ import {
   $workspaceMode,
   $workspaceOwnerKey,
   setWorkspaceScope as publishWorkspaceScope,
+  setWorkspaceOwnerLabel,
   type WorkspaceNewSessionTarget
 } from '@/components/pane-shell/workspace-scope'
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
+import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -636,6 +639,27 @@ export const host = {
   /** Tail an app log file (`agent` / `errors` / `gateway` / `gui` / …). */
   logs: async (...args: Parameters<typeof getLogs>) => getLogs(...args),
 
+  /** Complete client-local MCP sign-in for a pinned bot profile, optionally
+   *  installing its catalog entry first. Uses the same OAuth flow as Settings. */
+  completeMcpOAuth: async (options: Parameters<typeof completeMcpDesktopOAuth>[0] & { catalogPreset?: string }) => {
+    const profile = capabilityScoped(options.profile)
+
+    if (options.catalogPreset) {
+      const added = await requestGatewayForAgent<{ ok?: boolean; error?: string }>(
+        profile.connectionId ?? null,
+        profile.profile || 'default',
+        'mcp.servers.add',
+        { name: options.serverName, preset: options.catalogPreset }
+      )
+
+      if (!added.ok) {
+        throw new Error(added.error || 'Could not add server')
+      }
+    }
+
+    return completeMcpDesktopOAuth({ ...options, profile })
+  },
+
   /** Navigate the app router (hash routes, e.g. '/command-center?section=system'). */
   navigate: (path: string) => {
     window.location.hash = path.startsWith('#') ? path : `#${path}`
@@ -910,11 +934,14 @@ export const host = {
       // not the registry-secondary path openGatewayForAgent takes for a 'local'
       // connection id. Behavior for a plain local open is unchanged.
       const dial = explicitRoute
-        ? () => openGatewayForAgent(explicitRoute.connectionId, explicitRoute.profile)
+        ? () =>
+            openGatewayForAgent(explicitRoute.connectionId, explicitRoute.profile, {
+              spawnPriority: 'foreground'
+            })
         : plan.switchWorkspace
           ? () => ensureGatewayProfile(plan.switchWorkspace as string)
           : plan.dialWithoutSwitching
-            ? () => openGatewayForProfile(plan.dialWithoutSwitching as string)
+            ? () => openGatewayForProfile(plan.dialWithoutSwitching as string, { spawnPriority: 'foreground' })
             : null
 
       if (dial) {
@@ -1160,6 +1187,11 @@ export const host = {
     return close
   },
 
+  /** Name a workspace owner on its tabs (a bot's display name). A canonical
+   *  chat's STORED title is an identity the backend resolves by name; this is
+   *  the caption shown for it. Feature-detect on older desktops. */
+  setWorkspaceOwnerLabel,
+
   /** Switch the visible main-pane workspace without unregistering retained panes. */
   setWorkspaceScope: (
     mode: WorkspaceMode,
@@ -1217,8 +1249,9 @@ export const host = {
    *  caller falls through to its authoritative open path. */
   focusOpenWorkspaceSession: (
     workspaceOwnerKey: string,
-    isStaleTile?: (tile: { storedSessionId: string; workspaceTabTitle?: string }) => boolean
-  ): null | string => focusWorkspaceOwnerSessionTile(workspaceOwnerKey, isStaleTile),
+    isStaleTile?: (tile: { storedSessionId: string; workspaceTabTitle?: string }) => boolean,
+    onlyStoredIds?: readonly string[]
+  ): null | string => focusWorkspaceOwnerSessionTile(workspaceOwnerKey, isStaleTile, onlyStoredIds),
 
   /** Reactive on-screen visibility of a contributed pane: true while it is in
    *  the layout tree, not dismissed/hidden, its zone un-minimized, AND holding
@@ -1510,6 +1543,11 @@ export {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  // Submenus: Bot Mode files a bot into a user section from its row menu, and
+  // a flat list of every folder would swamp the items already there.
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 export { CopyButton } from '@/components/ui/copy-button'

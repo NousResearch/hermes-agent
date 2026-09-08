@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import os
 import stat
+import struct
 import sys
 from pathlib import Path
 
@@ -29,6 +31,26 @@ def _make_project(tmp_path: Path) -> Path:
     icon.parent.mkdir(parents=True)
     icon.write_bytes(b"\x89PNG fake")
     return root
+
+
+def _png_ihdr(width: int, height: int) -> bytes:
+    """Minimal PNG prefix whose IHDR the installer can parse (no pixels)."""
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + b"\x00\x00\x00\r"
+        + b"IHDR"
+        + struct.pack(">II", width, height)
+    )
+
+
+def _stub_install(tmp_path, monkeypatch) -> None:
+    hermes_bin = tmp_path / "bin" / "hermes"
+    hermes_bin.parent.mkdir(exist_ok=True)
+    hermes_bin.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin)
+    )
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
 
 
 def _parse(entry_text: str) -> dict:
@@ -94,8 +116,8 @@ def test_install_prefers_themed_icon_from_hicolor(tmp_path, xdg_home, monkeypatc
 
     # And the icon really landed in the hicolor tree: the fixture icon is
     # a fake PNG (no valid IHDR), so the size is unknown and the icon
-    # lands under scalable/.
-    dest = xdg_home / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png"
+    # lands under 256x256/ (indexed; never scalable, which is SVG-only).
+    dest = xdg_home / "icons" / "hicolor" / "256x256" / "apps" / "hermes.png"
     assert dest.is_file()
     assert dest.read_bytes() == lde.icon_path(root).read_bytes()
 
@@ -965,8 +987,8 @@ def test_probe_accepts_shell_launcher_wrapper(tmp_path, xdg_home, monkeypatch):
 
 def test_install_icon_handles_truncated_png_header(tmp_path, xdg_home, monkeypatch):
     """A truncated PNG (valid signature + IHDR tag, <24 bytes) must not
-    raise struct.error out of the fail-safe: it lands in scalable/ like
-    any other unknown-size image."""
+    raise struct.error out of the fail-safe: it lands in 256x256/ like
+    any other unknown-size raster."""
     root = _make_project(tmp_path)
     icon = lde.icon_path(root)
     icon.write_bytes(
@@ -984,5 +1006,96 @@ def test_install_icon_handles_truncated_png_header(tmp_path, xdg_home, monkeypat
 
     values = _parse(entry.read_text(encoding="utf-8"))
     assert values["Icon"] == "hermes"
-    dest = xdg_home / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png"
+    dest = xdg_home / "icons" / "hicolor" / "256x256" / "apps" / "hermes.png"
     assert dest.is_file()
+
+
+def test_hicolor_subdir_puts_rasters_in_indexed_dirs_never_scalable():
+    """Panel lookup uses fixed sizes. scalable/ is SVG-only."""
+    assert lde._hicolor_subdir(None) == "256x256"
+    assert lde._hicolor_subdir((1024, 1024)) == "256x256"
+    assert lde._hicolor_subdir((512, 512)) == "512x512"
+    assert lde._hicolor_subdir((256, 256)) == "256x256"
+    assert lde._hicolor_subdir((48, 48)) == "48x48"
+    assert lde._hicolor_subdir((24, 24)) == "24x24"
+    assert lde._hicolor_subdir((64, 32)) == "256x256"
+
+
+def test_install_places_1024_png_in_256x256_not_scalable(
+    tmp_path, xdg_home, monkeypatch
+):
+    """The shipped desktop asset is 1024×1024. A PNG in scalable/ is what
+    Cinnamon's panel rasterizes as a mangled low-res icon."""
+    root = _make_project(tmp_path)
+    lde.icon_path(root).write_bytes(_png_ihdr(1024, 1024))
+    _stub_install(tmp_path, monkeypatch)
+
+    entry = lde.install_desktop_entry(root)
+    values = _parse(entry.read_text(encoding="utf-8"))
+
+    dest = xdg_home / "icons" / "hicolor" / "256x256" / "apps" / "hermes.png"
+    stale = xdg_home / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png"
+    assert values["Icon"] == "hermes"
+    assert dest.is_file()
+    assert dest.read_bytes() == lde.icon_path(root).read_bytes()
+    assert not stale.exists()
+
+
+def test_install_removes_stale_scalable_png(tmp_path, xdg_home, monkeypatch):
+    """v2026.8.31 wrote the PNG into scalable/. A later hermes desktop
+    must delete that leftover so Cinnamon does not keep using it."""
+    root = _make_project(tmp_path)
+    lde.icon_path(root).write_bytes(_png_ihdr(1024, 1024))
+    _stub_install(tmp_path, monkeypatch)
+
+    stale = xdg_home / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"old scalable png")
+
+    lde.install_desktop_entry(root)
+
+    dest = xdg_home / "icons" / "hicolor" / "256x256" / "apps" / "hermes.png"
+    assert dest.is_file()
+    assert not stale.exists()
+
+
+def test_install_exact_48_png_uses_48x48_dir(tmp_path, xdg_home, monkeypatch):
+    root = _make_project(tmp_path)
+    lde.icon_path(root).write_bytes(_png_ihdr(48, 48))
+    _stub_install(tmp_path, monkeypatch)
+
+    lde.install_desktop_entry(root)
+
+    dest = xdg_home / "icons" / "hicolor" / "48x48" / "apps" / "hermes.png"
+    assert dest.is_file()
+    assert not (
+        xdg_home / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png"
+    ).exists()
+
+
+def test_install_resizes_decodable_png_to_panel_sizes(
+    tmp_path, xdg_home, monkeypatch
+):
+    """A decodeable PNG is Lanczos-resized so the 24px slot is actually 24px."""
+    from PIL import Image
+
+    root = _make_project(tmp_path)
+    im = Image.new("RGBA", (64, 64), (255, 255, 255, 255))
+    for x in range(16, 48):
+        for y in range(16, 48):
+            im.putpixel((x, y), (0, 0, 0, 255))
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    lde.icon_path(root).write_bytes(buf.getvalue())
+    _stub_install(tmp_path, monkeypatch)
+
+    lde.install_desktop_entry(root)
+
+    dest_24 = xdg_home / "icons" / "hicolor" / "24x24" / "apps" / "hermes.png"
+    dest_256 = xdg_home / "icons" / "hicolor" / "256x256" / "apps" / "hermes.png"
+    stale = xdg_home / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png"
+    assert dest_24.is_file()
+    assert dest_256.is_file()
+    assert not stale.exists()
+    assert struct.unpack(">II", dest_24.read_bytes()[16:24]) == (24, 24)
+    assert struct.unpack(">II", dest_256.read_bytes()[16:24]) == (256, 256)

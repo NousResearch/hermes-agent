@@ -94,15 +94,15 @@ describe('resolveTerminalConnection', () => {
 
 describe('sshQuitShouldBlock', () => {
   it('waits when connections exist and teardown has not finished', () => {
-    expect(
-      sshQuitShouldBlock({ teardownDone: false, connectionCount: 1, bootstrapPending: 0, inFlight: null })
-    ).toBe(true)
+    expect(sshQuitShouldBlock({ teardownDone: false, connectionCount: 1, bootstrapPending: 0, inFlight: null })).toBe(
+      true
+    )
   })
 
   it('waits when bootstrap is still running', () => {
-    expect(
-      sshQuitShouldBlock({ teardownDone: false, connectionCount: 0, bootstrapPending: 1, inFlight: null })
-    ).toBe(true)
+    expect(sshQuitShouldBlock({ teardownDone: false, connectionCount: 0, bootstrapPending: 1, inFlight: null })).toBe(
+      true
+    )
   })
 
   it('waits when the map is empty but a remote kill is already in flight', () => {
@@ -128,9 +128,9 @@ describe('sshQuitShouldBlock', () => {
   })
 
   it('does not block quit when there is nothing to tear down', () => {
-    expect(
-      sshQuitShouldBlock({ teardownDone: false, connectionCount: 0, bootstrapPending: 0, inFlight: null })
-    ).toBe(false)
+    expect(sshQuitShouldBlock({ teardownDone: false, connectionCount: 0, bootstrapPending: 0, inFlight: null })).toBe(
+      false
+    )
   })
 })
 

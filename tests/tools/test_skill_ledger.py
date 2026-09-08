@@ -63,7 +63,7 @@ def test_background_review_patch_ledgers_and_rolls_back(ledger_env, monkeypatch)
         reset_current_write_origin,
         set_current_write_origin,
     )
-    from tools.skill_manager_tool import mark_background_review_skill_read
+    from tools.skill_manager_guards import mark_background_review_skill_read
 
     token = set_current_write_origin(BACKGROUND_REVIEW)
     try:

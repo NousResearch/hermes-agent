@@ -1216,41 +1216,83 @@ def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) ->
                    "Run 'hermes tools' and pick a different Web Search & Extract provider")
 
 
+_MISSING_CONTAINER_SCHEMA = object()
+_EXTRA_CONTAINER_SCHEMA = {
+    "custom_providers": [{"extra_body": {}, "extra_headers": {}}],
+    "model_catalog": {"excluded_providers": []},
+    "plugins": {"enabled": [], "disabled": []},
+    "providers": {"*": {"extra_body": {}, "extra_headers": {}}},
+}
+
+
+def _container_schema_child(schema: Any, key: Any) -> Any:
+    if isinstance(schema, dict):
+        return schema.get(key, schema.get("*", _MISSING_CONTAINER_SCHEMA))
+    if isinstance(schema, list) and schema:
+        return schema[0]
+    return _MISSING_CONTAINER_SCHEMA
+
+
 def _validate_stringified_containers(
-    config: Dict[str, Any], issues: List[ConfigIssue], prefix: str = "",
+    value: Any,
+    issues: List[ConfigIssue],
+    path: str = "",
+    default_schema: Any = DEFAULT_CONFIG,
+    extra_schema: Any = _EXTRA_CONTAINER_SCHEMA,
 ) -> None:
     """Flag list/mapping settings stored as one quoted string.
 
     Readers that require a container silently ignore these strings. Schema-declared strings remain
     valid even when their contents use brackets or braces.
     """
-    for key, value in config.items():
-        path = f"{prefix}.{key}" if prefix else str(key)
-        if isinstance(value, dict):
-            _validate_stringified_containers(value, issues, path)
-            continue
-        text = value.strip() if isinstance(value, str) else ""
-        if (
-            text[:1] not in ("[", "{")
-            or text[-1:] not in ("]", "}")
-            or isinstance(_default_value_for_key(path), str)
-        ):
-            continue
+    expected_type = next(
+        (kind for kind in (dict, list)
+         if isinstance(default_schema, kind) or isinstance(extra_schema, kind)),
+        None,
+    )
+    if expected_type is None:
+        return
+
+    if isinstance(value, str):
+        text = value.strip()
+        if text[:1] not in ("[", "{") or text[-1:] not in ("]", "}"):
+            return
         try:
             parsed = yaml.safe_load(text)
         except yaml.YAMLError:
-            continue
+            return
         if not isinstance(parsed, (list, dict)):
-            continue
-        kind = "list" if isinstance(parsed, list) else "mapping"
+            return
+        kind = "list" if expected_type is list else "mapping"
         _issue(
             issues,
             "warning",
-            f"{path} is a quoted string that looks like a {kind} — Hermes expects a real YAML "
+            f"{path} is a quoted string that looks like a container — Hermes expects a real YAML "
             f"{kind} here and ignores the string",
             f"Re-run: hermes config set {path} '<value>' (stored as a real {kind}), or rewrite "
             f"it in config.yaml using YAML {kind} syntax",
         )
+        return
+
+    if isinstance(value, dict) and expected_type is dict:
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            _validate_stringified_containers(
+                child,
+                issues,
+                child_path,
+                _container_schema_child(default_schema, key),
+                _container_schema_child(extra_schema, key),
+            )
+    elif isinstance(value, list) and expected_type is list:
+        for index, child in enumerate(value):
+            _validate_stringified_containers(
+                child,
+                issues,
+                f"{path}[{index}]",
+                _container_schema_child(default_schema, index),
+                _container_schema_child(extra_schema, index),
+            )
 
 
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:

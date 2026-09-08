@@ -158,6 +158,16 @@ class TestStringifiedContainers:
              "plugins.enabled", "list"),
             ({"model_overrides": '{"custom": {"model": {"supports_tools": false}}}'},
              "model_overrides", "mapping"),
+            ({"custom_providers": [{
+                "name": "local",
+                "base_url": "http://localhost:8000/v1",
+                "extra_body": "{temperature: 0}",
+             }]}, "custom_providers[0].extra_body", "mapping"),
+            ({"custom_providers": [{
+                "name": "local",
+                "base_url": "http://localhost:8000/v1",
+                "extra_headers": "{X-Service-Token: secret}",
+             }]}, "custom_providers[0].extra_headers", "mapping"),
         )
 
         for config, path, kind in cases:
@@ -172,8 +182,9 @@ class TestStringifiedContainers:
         config = {
             "approvals": {"mode": "[off]"},
             "model_catalog": {"excluded_providers": ["openai-api"]},
-            "plugins": {"enabled": ["state"]},
+            "plugins": {"enabled": ["state", "[literal-plugin-name]"]},
             "custom_note": "[INST] not a list",
+            "MY_APP_SETTING": '["foo"]',
         }
 
         assert self._quoted_string_issues(config) == []

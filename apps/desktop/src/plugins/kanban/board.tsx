@@ -8,6 +8,8 @@
  * actions, and the detail drawer. Dispatch nudges ride every write (see api.ts).
  */
 
+// only this operation's mark is contributed; native fallback stays intact.
+import { SystemActivitySlot, useI18n } from '@hermes/plugin-sdk'
 import {
   Button,
   cn,
@@ -1080,6 +1082,7 @@ function SelectionBar({
 // ── page ─────────────────────────────────────────────────────────────────────
 
 export function KanbanBoardPage() {
+  const { t } = useI18n()
   const k = useKanban()
   const qc = useQueryClient()
   const slug = useValue($boardSlug)
@@ -1373,7 +1376,12 @@ export function KanbanBoardPage() {
         </div>
       ) : !filtered ? (
         <div className="grid flex-1 place-items-center">
-          <Loader type="lemniscate-bloom" />
+          <SystemActivitySlot
+            activity="loading"
+            fallback={<Loader type="lemniscate-bloom" />}
+            label={t.common.loading}
+            placement="region"
+          />
         </div>
       ) : total === 0 ? (
         <div className="grid flex-1 place-items-center px-4 text-center">

@@ -8,6 +8,8 @@
  * detection.
  */
 
+// only this operation's mark is contributed; native fallback stays intact.
+import { SystemActivitySlot, useI18n } from '@hermes/plugin-sdk'
 import * as sdk from '@hermes/plugin-sdk'
 import {
   Checkbox,
@@ -128,6 +130,7 @@ interface AdvancedProfileConfigProps {
 }
 
 export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileConfigProps) {
+  const { t } = useI18n()
   const b = useBots()
   const [loaded, setLoaded] = useState(false)
   const [unsupported, setUnsupported] = useState(false)
@@ -193,7 +196,12 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
   if (!state.loaded) {
     return (
       <div className="flex justify-center py-4">
-        <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
+        <SystemActivitySlot
+          activity="loading"
+          fallback={<GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />}
+          label={t.common.loading}
+          placement="inline"
+        />
       </div>
     )
   }

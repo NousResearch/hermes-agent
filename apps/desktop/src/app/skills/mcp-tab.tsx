@@ -1319,7 +1319,8 @@ function ServerConfig({
       )}
       {!saved && <p className="mt-3 text-[0.68rem] text-muted-foreground/60">{m.unsavedConnect}</p>}
 
-      {status === 'probing' && <PageLoader className="min-h-24" label={t.skills.loading} />}
+      {/* browser consent is a person wait; only the active probe animates. */}
+      {status === 'probing' && !authing && <PageLoader activity="connecting" className="min-h-24" label={t.common.connecting} />}
 
       {/* No inline error dump — the status dot/line says "Error"/"Needs
           authentication", and the actual failure lands in the logs pane below

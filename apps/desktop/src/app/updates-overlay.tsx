@@ -18,6 +18,8 @@ import type { DesktopUpdateBlocker, DesktopUpdateCommit, DesktopUpdateStage, Des
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
+// customize update activity while the updater owns progress and recovery.
+import { SystemActivitySlot } from '@/lib/system-activity'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
 import {
@@ -176,7 +178,14 @@ function IdleView({
   if (!status && checking) {
     return (
       <CenteredStatus
-        icon={<Loader className="size-12" label={u.checking} type="lemniscate-bloom" />}
+        icon={
+          <SystemActivitySlot
+            activity="loading"
+            fallback={<Loader className="size-12" label={u.checking} type="lemniscate-bloom" />}
+            label={u.checking}
+            placement="region"
+          />
+        }
         title={u.checking}
       />
     )
@@ -398,7 +407,12 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7">
       <div className="flex flex-col items-center gap-3 text-center">
-        <Loader className="size-16" label={label} type="lemniscate-bloom" />
+        <SystemActivitySlot
+          activity="processing"
+          fallback={<Loader className="size-16" label={label} type="lemniscate-bloom" />}
+          hasProgress
+          placement="region"
+        />
 
         <DialogTitle className="text-center text-xl">{label}</DialogTitle>
         <DialogDescription className="text-center text-sm">{body}</DialogDescription>

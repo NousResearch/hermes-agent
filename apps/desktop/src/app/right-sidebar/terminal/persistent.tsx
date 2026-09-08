@@ -3,6 +3,8 @@ import { atom } from 'nanostores'
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { isElementInHiddenPane, PANE_HIDDEN_ATTR } from '@/components/pane-shell/pane-visibility'
+// retained terminal activity follows the persistent surface's visibility.
+import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { markRightPanePerf } from '@/debug/right-pane-events'
 import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
@@ -288,7 +290,9 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
   // conhost on Windows. After that `mounted` latches: shells persist while hidden.
   return (
     <div aria-hidden={!visible} data-persistent-terminal="" style={style}>
-      {mounted && <TerminalWorkspace onAddSelectionToChat={onAddSelectionToChat} />}
+      <PaneVisibleContext value={visible}>
+        {mounted && <TerminalWorkspace onAddSelectionToChat={onAddSelectionToChat} />}
+      </PaneVisibleContext>
     </div>
   )
 }

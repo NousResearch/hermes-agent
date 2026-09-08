@@ -7,6 +7,8 @@
  * the dialogs; nothing in Bot Mode imports it except the plugin entry point.
  */
 
+// only this operation's mark is contributed; native fallback stays intact.
+import { SystemActivitySlot } from '@hermes/plugin-sdk'
 import {
   atom,
   Button,
@@ -889,7 +891,12 @@ export function BotsPane() {
       ) : null}
       {(isLoading || initialRosterLoading) && !roster.length ? (
         <div className="flex flex-1 items-center justify-center">
-          <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
+          <SystemActivitySlot
+            activity="loading"
+            fallback={<GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />}
+            label={t.common.loading}
+            placement="region"
+          />
         </div>
       ) : error && !roster.length ? (
         <div className="grid gap-2 px-3 py-4 text-xs text-(--ui-text-tertiary)">

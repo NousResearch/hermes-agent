@@ -14,6 +14,8 @@ import { useI18n } from '@/i18n'
 import { Search } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+// model inventory loading is system activity.
+import { SystemActivitySlot } from '@/lib/system-activity'
 import { foldIncludes, normalize } from '@/lib/text'
 import {
   $visibleModels,
@@ -100,7 +102,14 @@ export function ModelVisibilityDialog({
         <div className="max-h-[55vh] overflow-y-auto pb-1">
           {providers.length === 0 ? (
             <div className="px-3 py-5 text-center text-xs text-muted-foreground">
-              {modelOptions.isPending ? <GlyphSpinner className="mx-auto text-sm" /> : copy.noAuthenticatedProviders}
+              {modelOptions.isPending ? (
+                <SystemActivitySlot
+                  activity="loading"
+                  fallback={<GlyphSpinner className="mx-auto text-sm" />}
+                  label={t.common.loading}
+                  placement="inline"
+                />
+              ) : copy.noAuthenticatedProviders}
             </div>
           ) : (
             providers.map(provider => {

@@ -1702,6 +1702,13 @@ export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left'
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */
 export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+// system-operation rendering through the existing contribution registry.
+export {
+  SYSTEM_ACTIVITY_AREA,
+  type SystemActivityContribution,
+  type SystemActivityProps,
+  SystemActivitySlot
+} from '@/lib/system-activity'
 /** Canonical time formatting — every surface pulls from here so timestamps read
  *  the same app-wide. For a row's AGE, bucket with `coarseElapsed` and render
  *  the compact suffixes (`t.sidebar.row.ageMin` → "52m"), which is what the

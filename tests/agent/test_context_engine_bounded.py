@@ -17,10 +17,14 @@ import pytest
 
 from agent.model_metadata import estimate_messages_tokens_rough
 from plugins.context_engine import discover_context_engines, load_context_engine
-from plugins.context_engine.bounded import BoundedContextEngine, _CLAMP_MARKER
+from plugins.context_engine.bounded import (
+    BoundedContextEngine,
+    _CLAMP_MARKER,
+    _current_request_index,
+)
 
 
-def _msg(role: str, content: str = "", **extra: Any) -> Dict[str, Any]:
+def _msg(role: str, content: Any = "", **extra: Any) -> Dict[str, Any]:
     m: Dict[str, Any] = {"role": role, "content": content}
     m.update(extra)
     return m
@@ -400,3 +404,294 @@ def test_selection_telemetry_fields_no_content(caplog):
     ):
         assert f"'{field}'" in records[0].getMessage()
     assert "CURRENT_REQUEST_SENTINEL" not in records[0].getMessage()
+
+
+# ---- helper: multimodal user message -----------------------------------------------
+def _multimodal_user(text: str) -> Dict[str, Any]:
+    return _msg(
+        "user",
+        content=[
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}},
+        ],
+    )
+
+
+def _build_turn_history(
+    current: Dict[str, Any], rounds: int = 8, words: int = 12000
+) -> List[Dict[str, Any]]:
+    msgs: List[Dict[str, Any]] = [
+        _msg("system", content="You are a helpful assistant.")
+    ]
+    for r in range(rounds):
+        msgs.append(_msg("user", content=_tokenish_text(r, words)))
+        msgs.append(_msg("assistant", content=_tokenish_text(r + 200, 120)))
+    msgs.append(current)
+    return msgs
+
+
+# ---- F1 regression: the trailing user request must never be dropped ----------------
+def test_f1_current_request_index_prefers_trailing_list_content_user():
+    req = [
+        _msg("system", content="S"),
+        _msg("user", content="A"),
+        _multimodal_user("B multimodal"),
+    ]
+    assert _current_request_index(req) == 2
+
+
+def test_f1_multiturn_text_current_request_remains_current():
+    e = _engine(context_length=262144)
+    current = _msg("user", content="CURRENT_REQUEST_SENTINEL final text request")
+    req = _build_turn_history(current, rounds=8, words=12000)
+    out = e.select_context(req, budget_tokens=262144)
+    assert out is not None
+    assert len(out) < len(req)
+    assert out[-1] is current
+    assert out[-1]["content"] == "CURRENT_REQUEST_SENTINEL final text request"
+
+
+def test_f1_multiturn_multimodal_tail_remains_current_request():
+    e = _engine(context_length=262144)
+    current = _multimodal_user("CURRENT_REQUEST_SENTINEL analyze this screenshot")
+    req = _build_turn_history(current, rounds=8, words=12000)
+    out = e.select_context(req, budget_tokens=262144)
+    assert out is not None
+    assert len(out) < len(req)
+    assert out[-1] is current
+    assert "CURRENT_REQUEST_SENTINEL analyze this screenshot" in str(
+        out[-1].get("content")
+    )
+
+
+def test_f1_single_multimodal_request_is_current():
+    e = _engine(context_length=262144)
+    req = [_msg("system", content="S"), _multimodal_user("a single image request")]
+    out = e.select_context(req, budget_tokens=262144)
+    assert out is req
+    assert out[-1]["content"][0]["text"] == "a single image request"
+
+
+def test_f1_text_moa_aggregated_message_remains_current():
+    e = _engine(context_length=262144)
+    current = _msg(
+        "user",
+        content=(
+            "CURRENT_REQUEST_SENTINEL user prompt\n\n"
+            "[MoA aggregated context from reference models]"
+        ),
+    )
+    req = _build_turn_history(current, rounds=8, words=12000)
+    out = e.select_context(req, budget_tokens=262144)
+    assert out is not None
+    assert out[-1] is current
+    assert "CURRENT_REQUEST_SENTINEL user prompt" in out[-1]["content"]
+
+
+def test_f1_multimodal_tail_not_replaced_by_previous_user():
+    e = _engine(context_length=262144)
+    req = _build_turn_history(
+        _msg("user", content="previous plain request"), rounds=8, words=12000
+    )
+    current = _multimodal_user("CURRENT_REQUEST_SENTINEL actual trailing image request")
+    req.append(current)
+    out = e.select_context(req, budget_tokens=262144)
+    assert out is not None
+    assert out[-1] is current
+    assert "CURRENT_REQUEST_SENTINEL actual trailing image request" in str(
+        out[-1].get("content")
+    )
+    assert "previous plain request" not in out[-1]["content"]
+
+
+def test_f1_current_request_present_in_final_selection():
+    e = _engine(context_length=262144)
+    current = _msg("user", content="CURRENT_REQUEST_SENTINEL visible final request")
+    req = _build_turn_history(current, rounds=12, words=16000)
+    out = e.select_context(req, budget_tokens=262144)
+    assert out is not None
+    assert len(out) > 1
+    assert current in out, "current request message identity must survive selection"
+    assert out[-1] is current
+
+
+# ---- R2 regression: wrapper counter / preflight-usage mirroring --------------------
+def test_r2_inner_usage_mirrors_to_wrapper_counters():
+    e = BoundedContextEngine()
+    e.update_model("test/bounded", 262144)
+    e.update_from_response({
+        "prompt_tokens": 12345,
+        "completion_tokens": 200,
+        "total_tokens": 12545,
+    })
+    inner = e._inner()
+    assert inner is not None
+    assert e.last_prompt_tokens == inner.last_prompt_tokens == 12345
+    assert e.last_completion_tokens == inner.last_completion_tokens == 200
+    assert e.last_total_tokens == inner.last_total_tokens == 12545
+
+
+def test_r2_wrapper_total_derived_when_provider_omits_total():
+    e = BoundedContextEngine()
+    e.update_model("test/bounded", 262144)
+    e.update_from_response({"prompt_tokens": 500, "completion_tokens": 50})
+    assert e.last_prompt_tokens == 500
+    assert e.last_total_tokens == 550
+
+
+def test_r2_host_facing_preflight_sees_real_usage():
+    e = BoundedContextEngine()
+    e.update_model("test/bounded", 262144)
+    e.update_from_response({
+        "prompt_tokens": 1000,
+        "completion_tokens": 100,
+        "total_tokens": 1100,
+    })
+    # Host preflight reads the engine's own last_prompt_tokens directly; a fit result
+    # below the threshold must not trigger a compression pass.
+    assert e.last_prompt_tokens == 1000
+    assert 1000 < e.threshold_tokens
+    assert e.should_compress(e.last_prompt_tokens) is False
+
+
+def test_r2_should_defer_preflight_forwards_to_inner():
+    e = BoundedContextEngine()
+    e.update_model("test/bounded", 262144)
+    inner = e._inner()
+    assert inner is not None
+    rough = e.threshold_tokens * 2
+    assert e.should_defer_preflight_to_real_usage(
+        rough
+    ) == inner.should_defer_preflight_to_real_usage(rough)
+
+
+def test_r2_wrapper_defer_not_shadowed_by_base_false():
+    e = BoundedContextEngine()
+    e.update_model("test/bounded", 262144)
+    inner = e._inner()
+    assert inner is not None
+    inner.awaiting_real_usage_after_compression = True
+    assert inner.last_real_prompt_tokens == 0
+    assert e.should_defer_preflight_to_real_usage(e.threshold_tokens + 1) is True
+
+
+def test_r2_no_extra_pass_from_zero_wrapper_counter():
+    e = BoundedContextEngine()
+    e.update_model("test/bounded", 262144)
+    e.update_from_response({"prompt_tokens": 800, "completion_tokens": 50})
+    assert e.last_prompt_tokens == 800
+    assert e.should_compress(e.last_prompt_tokens) is False
+
+
+def test_r2_inner_compressor_semantics_preserved():
+    e = BoundedContextEngine()
+    e.update_model("test/bounded", 262144)
+    inner = e._inner()
+    assert inner is not None
+    e.update_from_response({
+        "prompt_tokens": 300,
+        "completion_tokens": 20,
+        "total_tokens": 320,
+    })
+    assert inner.last_prompt_tokens == 300
+    assert inner.last_completion_tokens == 20
+    assert inner.awaiting_real_usage_after_compression is False
+    assert e.should_compress_info(300)[0] is False
+
+
+# ---- backfill: multi-tool-call batches ---------------------------------------------
+def test_backfill_multi_tool_call_batch_selection_pair_valid():
+    e = _engine(context_length=65536)
+    req = [_msg("system", content="S")]
+    for r in range(4):
+        req.append(_msg("user", content=_tokenish_text(r, 8000)))
+        req.append(
+            _msg(
+                "assistant",
+                content="calling two tools",
+                tool_calls=[
+                    {
+                        "id": f"c{r}a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    },
+                    {
+                        "id": f"c{r}b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": "{}"},
+                    },
+                ],
+            )
+        )
+        req.append(_msg("tool", content="B" * 20000, tool_call_id=f"c{r}a", name="a"))
+        req.append(_msg("tool", content="C" * 20000, tool_call_id=f"c{r}b", name="b"))
+    req.append(_msg("user", content="CURRENT_REQUEST_SENTINEL final"))
+    out = e.select_context(req, budget_tokens=65536)
+    assert out is not None
+    _assert_pair_valid(out)
+    _assert_replay_order(out, req)
+    assert out[-1]["content"] == "CURRENT_REQUEST_SENTINEL final"
+    assert estimate_messages_tokens_rough(out) <= e._hard_budget_for(65536)
+
+
+# ---- backfill: system-only requests ------------------------------------------------
+def test_backfill_system_only_request_unchanged():
+    e = _engine()
+    system = _msg("system", content="You are a helpful assistant.")
+    out = e.select_context([system], budget_tokens=262144)
+    assert out is not None
+    assert out == [system]
+    assert out[0]["role"] == "system"
+
+
+def test_backfill_oversized_system_only_fails_open():
+    e = _engine(context_length=65536)
+    system = _msg("system", content=_tokenish_text(7, 60000))
+    assert estimate_messages_tokens_rough([system]) > e._hard_budget_for(65536)
+    assert e.select_context([system], budget_tokens=65536) is None
+
+
+# ---- backfill: pending tool chain clamp protection ---------------------------------
+def test_backfill_pending_tool_chain_never_clamped_or_trimmed():
+    e = _engine(context_length=65536)
+    req = [_msg("system", content="S")]
+    for r in range(4):
+        req.append(_msg("user", content=_tokenish_text(r, 8000)))
+        req += _tool_turn(f"old{r}", result_text="B" * 30000)
+    req.append(_msg("user", content="CURRENT_REQUEST_SENTINEL current"))
+    req += _tool_turn("pending1", result_text="P" * 30000)
+    out = e.select_context(req, budget_tokens=65536)
+    assert out is not None
+    joined = "\n".join(str(m.get("content")) for m in out)
+    assert "P" * 30000 in joined, "pending tool result must never be clamped or trimmed"
+    _assert_pair_valid(out)
+    assert out[-1]["content"] in (
+        "P" * 30000,
+        "second result " + ("P" * 30000)[-2000:],
+    )
+
+
+# ---- backfill: host _apply_context_engine_selection integration --------------------
+def test_backfill_host_pipeline_integration_bounded_engine():
+    from types import SimpleNamespace
+
+    from agent.conversation_loop import _apply_context_engine_selection
+
+    engine = load_context_engine("bounded")
+    assert engine is not None
+    engine.update_model("test/bounded", 262144)
+    agent = SimpleNamespace(context_compressor=engine, session_id="int-test")
+
+    api_messages = _build_turn_history(
+        _multimodal_user("CURRENT_REQUEST_SENTINEL analyze"), rounds=8, words=12000
+    )
+    conversation = copy.deepcopy(api_messages)
+    incoming = api_messages[-1]
+    sel = _apply_context_engine_selection(
+        agent, api_messages, conversation, incoming, logger=logging.getLogger("test")
+    )
+    assert sel is not None
+    assert sel is not api_messages, "real selection must yield a trimmed request"
+    _assert_pair_valid(sel)
+    assert sel[-1]["content"] == api_messages[-1]["content"]
+    assert "CURRENT_REQUEST_SENTINEL analyze" in str(sel[-1].get("content"))

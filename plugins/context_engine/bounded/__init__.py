@@ -197,13 +197,23 @@ class BoundedContextEngine(ContextEngine):
 
     def update_from_response(self, usage: Dict[str, Any]) -> None:
         inner = self._inner()
-        if inner is not None:
-            return inner.update_from_response(usage)
-        pt = (usage or {}).get("prompt_tokens") or 0
-        ct = (usage or {}).get("completion_tokens") or 0
-        self.last_prompt_tokens = int(pt)
-        self.last_completion_tokens = int(ct)
-        self.last_total_tokens = int(pt) + int(ct)
+        if inner is None:
+            pt = (usage or {}).get("prompt_tokens") or 0
+            ct = (usage or {}).get("completion_tokens") or 0
+            self.last_prompt_tokens = int(pt)
+            self.last_completion_tokens = int(ct)
+            self.last_total_tokens = int(pt) + int(ct)
+            return
+        inner.update_from_response(usage)
+        # Host preflight reads the engine's own counters directly; mirror the inner
+        # compressor's post-response state so wrapper reads are never stale (and the
+        # host-set awaiting-real-usage latch is cleared in sync with the inner one).
+        self.last_prompt_tokens = int(inner.last_prompt_tokens)
+        self.last_completion_tokens = int(inner.last_completion_tokens)
+        self.last_total_tokens = int(inner.last_total_tokens)
+        self.awaiting_real_usage_after_compression = bool(
+            getattr(inner, "awaiting_real_usage_after_compression", False)
+        )
 
     def should_compress(self, prompt_tokens: Optional[int] = None) -> bool:
         inner = self._inner()
@@ -218,6 +228,12 @@ class BoundedContextEngine(ContextEngine):
         if inner is None or not hasattr(inner, "should_compress_info"):
             return self.should_compress(prompt_tokens), None
         return inner.should_compress_info(prompt_tokens)  # type: ignore[invalid-argument-type]
+
+    def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
+        inner = self._inner()
+        if inner is not None and hasattr(inner, "should_defer_preflight_to_real_usage"):
+            return inner.should_defer_preflight_to_real_usage(rough_tokens)
+        return super().should_defer_preflight_to_real_usage(rough_tokens)
 
     def compress(
         self,
@@ -569,12 +585,14 @@ def _message_text(m: Any) -> str:
 
 
 def _current_request_index(request_messages: List[Dict[str, Any]]) -> Optional[int]:
-    """Index of the live user request (last user message without a tool_call_id).
+    """Index of the live user request: the last user message without a tool_call_id.
 
-    When the trailing user message carries list-content (multimodal attachment/MoA
-    epilogue), the actual text request is the previous user message.
+    The host never emits a separate trailing epilogue user message: MoA context is
+    folded INTO the last user message (turn_request_assembly._append_moa_context) and
+    genuine list-content (multimodal) user messages are passed through unchanged by
+    build_api_messages. So the last user message is ALWAYS the current request and
+    must be preserved, even when its content is a list.
     """
-    last_user = None
     for i in range(len(request_messages) - 1, -1, -1):
         m = request_messages[i]
         if (
@@ -582,21 +600,8 @@ def _current_request_index(request_messages: List[Dict[str, Any]]) -> Optional[i
             and m.get("role") == "user"
             and not m.get("tool_call_id")
         ):
-            last_user = i
-            break
-    if last_user is None:
-        return None
-    content = request_messages[last_user].get("content")
-    if isinstance(content, list):
-        for i in range(last_user - 1, -1, -1):
-            m = request_messages[i]
-            if (
-                isinstance(m, dict)
-                and m.get("role") == "user"
-                and not m.get("tool_call_id")
-            ):
-                return i
-    return last_user
+            return i
+    return None
 
 
 def _newest_tool_group_indices(

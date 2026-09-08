@@ -20,7 +20,7 @@ from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionSource
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
 )
@@ -1452,39 +1452,15 @@ class GatewayStartupMixin:
             handoff_config=handoff_config,
         )
 
-    def _handoff_session_key(self, dest, profile_name: Optional[str]) -> str:
-        """Destination session_key by the adapters' own rules. Thread keys omit user_id so the next
-        message shares it. Namespaced to the queuing profile (else a multiplexed gateway builds
-        ``agent:main:...`` while the profile's adapter routes on ``agent:<profile>:...``); the store
-        resolver is only the root fallback. The isinstance check is load-bearing: a Mock store returns
-        a truthy MagicMock."""
-        platform_cfg = dest.handoff_config.platforms.get(dest.platform)
-        extra = platform_cfg.extra if platform_cfg else {}
-        handoff_profile = profile_name if (profile_name and profile_name != "default") else None
-        if handoff_profile is None:
-            try:
-                store = getattr(self.async_session_store, "_store", self.async_session_store)
-                resolver = getattr(store, "_resolve_profile_for_key", None)
-                # Resolve the bound text channel's channel_prompt so voice input gets the same per-channel
-                # context as typed messages (#50149).
-                if callable(resolver):
-                    resolved = resolver(dest.source)
-                    if isinstance(resolved, str) and resolved.strip():
-                        handoff_profile = resolved
-            except Exception:
-                logger.debug("Handoff: could not resolve profile namespace", exc_info=True)
-        return build_session_key(
-            dest.source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=extra.get("thread_sessions_per_user", False), profile=handoff_profile,
-        )
-
     async def _process_handoff(self, row: Dict[str, Any], profile_name: Optional[str] = None) -> None:
         """Execute one handoff row; raises on failure (caller marks failed). ``profile_name`` (None =
         root) is the profile whose store queued it — load-bearing under multiplex: secondaries live in
         ``_profile_adapters`` and the key must be namespaced ``agent:<profile>:...`` or nobody reads it."""
         cli_session_id = row["id"]
         dest = await self._handoff_resolve_destination(row, profile_name)
-        session_key = self._handoff_session_key(dest, profile_name)
+        # dest.source carries the queuing profile, so the store namespaces the key ``agent:<profile>:...``
+        # under multiplex (else nobody reads it) and honors adapter-declared scope like every other site.
+        session_key = self._session_key_for_source(dest.source)
         # Ensure a session_store entry exists for this key; switch_session then re-points it.
         await self.async_session_store.get_or_create_session(dest.source)
         # switch_session ends the prior session and reopens the CLI session under the new key.

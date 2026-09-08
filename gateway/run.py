@@ -2080,7 +2080,8 @@ if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
 from gateway.config import (
     ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
 from gateway.session import (
-    AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key)
+    AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key,
+    config_session_scope)
 # Telegram topic routing (#22773, regression fixed #52060): a
 # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is ambiguous — a forum-style topic in a
 # private chat and a genuine Bot API channel Direct-Messages topic share the same shape and need OPPOSITE
@@ -3823,10 +3824,19 @@ class GatewayRunner(
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
+        group_per_user, thread_per_user = self._resolve_session_scope_for(source)
         return build_session_key(
-            source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            source, group_sessions_per_user=group_per_user, thread_sessions_per_user=thread_per_user,
             profile=_profile)
+
+    def _resolve_session_scope_for(self, source: SessionSource) -> tuple[bool, bool]:
+        """(group_sessions_per_user, thread_sessions_per_user) for *source*: the real store honors
+        adapter-declared overrides; bare/legacy runners and test doubles keep the gateway-config
+        defaults. The one place runner-side code reads isolation flags."""
+        store = getattr(self, "session_store", None)
+        if isinstance(store, SessionStore):
+            return store.resolve_session_scope(source)
+        return config_session_scope(getattr(self, "config", None))
 
     # Telegram General topic in forum-enabled private chats: clients omit message_thread_id or send "1"; both = root.
     _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})

@@ -19,7 +19,7 @@ from agent.turn_context import extract_api_content_sidecar
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, build_session_key, is_shared_multi_user_session
+from gateway.session import SessionSource, is_shared_multi_user_session
 from gateway.session_transcript import TranscriptReadError
 from gateway.slash_commands_status import HISTORY_UNREADABLE
 
@@ -293,9 +293,9 @@ class GatewaySessionCommandsMixin:
     def _is_shared_session_source(self, source: SessionSource) -> bool:
         """Whether *source*'s session key is shared by every participant (not per-user); mirrors
         build_session_key's isolation rules so the guards stay in lock-step with the key."""
+        group_per_user, thread_per_user = self._resolve_session_scope_for(source)
         return is_shared_multi_user_session(
-            source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False))
+            source, group_sessions_per_user=group_per_user, thread_sessions_per_user=thread_per_user)
 
     def _resume_caller_is_admin(self, source: SessionSource) -> bool:
         """Whether *source* is an EXPLICITLY-configured admin (cross-origin /resume, /sessions).
@@ -443,7 +443,7 @@ class GatewaySessionCommandsMixin:
             return t("gateway.undo.nothing")
         session_entry.last_prompt_tokens = 0  # transcript was truncated
         try:
-            self._evict_cached_agent(build_session_key(source))
+            self._evict_cached_agent(self._session_key_for_source(source))
         except Exception as e:
             logger.debug("undo: cached-agent eviction skipped: %s", e)
         target_text = result["target_text"]

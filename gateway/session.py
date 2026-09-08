@@ -1168,14 +1168,26 @@ class SessionStore(
             return entry.session_id if entry else None
 
 
+def config_session_scope(config: Any) -> tuple[bool, bool]:
+    """(group_sessions_per_user, thread_sessions_per_user) from the gateway config — the default
+    every scope resolver falls back to when no adapter registered an override."""
+    return (getattr(config, "group_sessions_per_user", True),
+            getattr(config, "thread_sessions_per_user", False))
+
+
 def build_session_context(
-    source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None
+    source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None,
+    session_store: Optional["SessionStore"] = None,
 ) -> SessionContext:
-    """Build a full session context (for system prompt injection)."""
+    """Build a full session context (for system prompt injection). Pass ``session_store`` so the
+    shared-session flag honors adapter-declared scope and stays in lock-step with the session key;
+    without it the gateway-config defaults apply."""
     connected = config.get_connected_platforms()
+    group_per_user, thread_per_user = (
+        session_store.resolve_session_scope(source) if isinstance(session_store, SessionStore)
+        else config_session_scope(config))
     shared = is_shared_multi_user_session(
-        source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-        thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+        source, group_sessions_per_user=group_per_user, thread_sessions_per_user=thread_per_user,
     )
     context = SessionContext(
         source=source, connected_platforms=connected, shared_multi_user_session=shared,

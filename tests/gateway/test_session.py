@@ -19,6 +19,12 @@ from gateway.session import (
     neutralize_untrusted_inline_text,
 )
 
+
+def discord_group_source(**overrides) -> SessionSource:
+    """A Discord group-chat source (the registered-scope tests' shared shape)."""
+    values = {"platform": Platform.DISCORD, "chat_id": "guild-123", "chat_type": "group", "user_id": "alice"}
+    return SessionSource(**(values | overrides))
+
 # Legacy name preserved for these tests; product renamed the function to
 # canonical_whatsapp_identifier.  Keep the tests referencing the old name
 # working without duplicating the suite.
@@ -700,6 +706,127 @@ class TestWhatsAppSessionKeyConsistency:
         assert first_entry.session_key == "agent:main:discord:group:guild-123"
         assert second_entry.session_key == "agent:main:discord:group:guild-123"
         assert first_entry.session_id == second_entry.session_id
+
+    @pytest.mark.parametrize(
+        ("registered", "expected_shared"),
+        [
+            pytest.param(True, True, id="adapter-override-shares"),
+            pytest.param(False, False, id="unregistered-follows-global"),
+        ],
+    )
+    def test_adapter_declared_scope_beats_global_default(
+        self, store, registered, expected_shared
+    ):
+        """A platform absent from config.platforms (plugin/out-of-tree
+        adapter) keys sessions by its adapter-registered scope; without a
+        registration the global default still governs.
+
+        Regression: plugin adapters set extra.group_sessions_per_user on
+        their own PlatformConfig, but the store derived keys from the global
+        gateway config only, so a plugin group chat silently split into
+        per-user sessions and cross-contaminated multi-user context."""
+        store.config.group_sessions_per_user = True  # global default: isolated
+        if registered:
+            store.register_platform_session_scope(
+                "discord",
+                group_sessions_per_user=False,
+                thread_sessions_per_user=False,
+            )
+
+        alice = discord_group_source(user_name="Alice")
+        bob = discord_group_source(user_id="bob", user_name="Bob")
+
+        alice_entry = store.get_or_create_session(alice)
+        bob_entry = store.get_or_create_session(bob)
+
+        if expected_shared:
+            assert alice_entry.session_key == "agent:main:discord:group:guild-123"
+            assert alice_entry.session_key == bob_entry.session_key
+            assert alice_entry.session_id == bob_entry.session_id
+        else:
+            assert alice_entry.session_key != bob_entry.session_key
+            assert alice_entry.session_id != bob_entry.session_id
+
+    def test_adapter_declared_scope_is_profile_keyed(self, store):
+        """One profile's override must not leak into another profile's key
+        shape: a registration for a named profile is invisible to the active
+        (default) profile, while a profile=None registration is the
+        every-profile default."""
+        store.config.group_sessions_per_user = True
+        store.register_platform_session_scope(
+            "discord",
+            group_sessions_per_user=False,
+            thread_sessions_per_user=False,
+            profile="eva",
+        )
+
+        source = discord_group_source()
+        # Active profile has no registration — global default (isolated) wins.
+        assert store.resolve_session_scope(source) == (True, False)
+
+        store.register_platform_session_scope(
+            "discord",
+            group_sessions_per_user=False,
+            thread_sessions_per_user=True,
+        )
+        assert store.resolve_session_scope(source) == (False, True)
+
+        # Multiplexed: a source on "eva" gets eva's registration; a profile with
+        # no registration of its own falls through to the profile=None default.
+        store.config.multiplex_profiles = True
+        eva = replace(source, profile="eva")
+        other = replace(source, profile="other")
+        assert store.resolve_session_scope(eva) == (False, False)
+        assert store.resolve_session_scope(other) == (False, True)
+
+    def test_session_context_shared_flag_follows_adapter_scope(self, store):
+        """The agent-facing shared_multi_user_session flag must agree with
+        the session key: an adapter-declared shared group is announced as
+        multi-user even when the global default would isolate it."""
+        from gateway.session import build_session_context
+
+        store.config.group_sessions_per_user = True
+        store.register_platform_session_scope(
+            "discord",
+            group_sessions_per_user=False,
+            thread_sessions_per_user=False,
+        )
+        source = discord_group_source()
+
+        with_store = build_session_context(
+            source, store.config, session_store=store
+        )
+        without_store = build_session_context(source, store.config)
+
+        assert with_store.shared_multi_user_session is True
+        assert without_store.shared_multi_user_session is False
+
+    def test_secondary_adapter_scope_seeds_from_owning_profile_defaults(self, tmp_path):
+        """Registration seeds a missing/None isolation flag from the OWNING gateway config (a
+        secondary profile's, not the primary's), writes it into config.extra, and resolves that
+        tuple under the adapter's profile. Primary group_sessions_per_user=False must not leak
+        into a secondary that isolates."""
+        from types import SimpleNamespace
+
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            group_sessions_per_user=False, thread_sessions_per_user=False, multiplex_profiles=True,
+        )
+        runner.session_store = SessionStore(sessions_dir=tmp_path, config=runner.config)
+        extra = {"group_sessions_per_user": None, "thread_sessions_per_user": False}
+        adapter = SimpleNamespace(platform=Platform.DISCORD, config=SimpleNamespace(extra=extra))
+
+        runner._register_adapter_session_scope(adapter, profile="eva", scope_defaults=(True, True))
+
+        # None seeded from the secondary's default (True), explicit False kept and written back.
+        assert extra == {"group_sessions_per_user": True, "thread_sessions_per_user": False}
+        assert runner.session_store.resolve_session_scope(discord_group_source(profile="eva")) == (True, False)
+        # A primary adapter (no owning defaults passed) seeds from the primary config.
+        primary = SimpleNamespace(platform=Platform.DISCORD, config=SimpleNamespace(extra={}))
+        runner._register_adapter_session_scope(primary)
+        assert primary.config.extra == {"group_sessions_per_user": False, "thread_sessions_per_user": False}
 
     def test_telegram_dm_includes_chat_id(self):
         """Non-WhatsApp DMs should also include chat_id to separate users."""

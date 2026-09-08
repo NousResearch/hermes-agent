@@ -5734,19 +5734,29 @@ class SlackAdapter(BasePlatformAdapter):
         """Thread session key via ``build_session_key()`` (honours per-user isolation).
         ``chat_type`` must come from the event's ``channel_type``, not the ID prefix (MPIM ids
         start with ``G``)."""
-        session_store = getattr(self, "_session_store", None)
-        if not session_store:
+        if not getattr(self, "_session_store", None):
             return None
         try:
             from gateway.session import build_session_key
             source = self._thread_session_source(channel_id, thread_ts, user_id, team_id, chat_type)
-            store_cfg = getattr(session_store, "config", None)
+            group_per_user, thread_per_user = self._thread_scope(source)
             return build_session_key(
-                source, group_sessions_per_user=getattr(store_cfg, "group_sessions_per_user", True),
-                thread_sessions_per_user=getattr(store_cfg, "thread_sessions_per_user", False),
+                source, group_sessions_per_user=group_per_user, thread_sessions_per_user=thread_per_user,
                 profile=self._session_key_profile(source))
         except Exception:
             return None
+
+    def _thread_scope(self, source: Any) -> tuple:
+        """(group_sessions_per_user, thread_sessions_per_user) for a thread source: the store's
+        registry-aware resolver (adapter-declared scope) when it is a real store, else its config.
+        Resolved under the ADAPTER's owning profile — the same namespace ``build_session_key`` gets
+        two lines later — not the store's active-profile guess (a secondary Slack bot would miss its
+        own registration otherwise)."""
+        from gateway.session import SessionStore, config_session_scope
+        store = getattr(self, "_session_store", None)
+        if isinstance(store, SessionStore):
+            return store.resolve_session_scope(source, profile=self._session_key_profile(source))
+        return config_session_scope(getattr(store, "config", None))
 
     @staticmethod
     def _thread_session_source(
@@ -5761,8 +5771,9 @@ class SlackAdapter(BasePlatformAdapter):
         """Per-process key for the once-per-thread rehydration check; per-user when
         ``thread_sessions_per_user`` is on, like the session key."""
         key = f"{team_id}:{channel_id}:{thread_ts}"
-        store_cfg = getattr(getattr(self, "_session_store", None), "config", None)
-        return f"{key}:{user_id}" if getattr(store_cfg, "thread_sessions_per_user", False) else key
+        _, thread_per_user = self._thread_scope(
+            self._thread_session_source(channel_id, thread_ts, user_id, team_id, "group"))
+        return f"{key}:{user_id}" if thread_per_user else key
 
     def _mark_thread_rehydration_checked(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "") -> None:

@@ -1322,9 +1322,9 @@ class GatewayInboundMixin:
 
     def _prefix_inbound_sender_context(self, event: MessageEvent, source: SessionSource, message_text: str) -> str:
         """Attribute the sender in shared multi-user sessions and prepend history-backfill channel context."""
+        _group_per_user, _thread_per_user = self._resolve_session_scope_for(source)
         _is_shared_multi_user = is_shared_multi_user_session(
-            source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            source, group_sessions_per_user=_group_per_user, thread_sessions_per_user=_thread_per_user,
         )
         if _is_shared_multi_user and source.user_name:
             # Display names are attacker-influenceable: neutralize newlines/control chars or a

@@ -87,14 +87,46 @@ class SessionRecoveryMixin:
             return requested_profile is None or recovered_profile == requested_profile
         return recovered_profile == self._active_profile_name()
 
+    def register_platform_session_scope(
+        self, platform: str, *, group_sessions_per_user: bool, thread_sessions_per_user: bool,
+        profile: Optional[str] = None,
+    ) -> None:
+        """Record an accepted adapter's resolved isolation flags so the store — the owner of routing
+        keys — keys that platform's sources the way the adapter does, even when the platform has no
+        entry in the gateway's config.platforms map (plugin/out-of-tree adapters). Keyed per
+        (profile, platform) so one multiplexed profile's override cannot leak into another's;
+        ``profile=None`` is the default for any profile without its own registration."""
+        # (profile, platform value) -> (group_per_user, thread_per_user); consulted before the
+        # gateway-config defaults by resolve_session_scope().
+        self._lazy("_platform_session_scope", dict)[(profile, platform)] = (
+            bool(group_sessions_per_user), bool(thread_sessions_per_user))
+
+    def resolve_session_scope(
+        self, source: SessionSource, profile: Optional[str] = None
+    ) -> tuple[bool, bool]:
+        """(group_sessions_per_user, thread_sessions_per_user) for *source*: the scope its adapter
+        registered for (profile, platform), else the gateway-config defaults. Every key derivation
+        and every guard that must agree with key shape resolves through here."""
+        platform_value = getattr(source.platform, "value", str(source.platform))
+        if profile is None:
+            profile = self._resolve_profile_for_key(source)
+        registry = self._lazy("_platform_session_scope", dict)
+        for profile_key in (profile, None):
+            scope = registry.get((profile_key, platform_value))
+            if scope is not None:
+                return scope
+        from gateway.session import config_session_scope
+        return config_session_scope(self.config)
+
     def _generate_session_key(self, source: SessionSource, key_source: Optional[SessionSource] = None) -> str:
         """Session key for *source* (profile from *source*; key from *key_source* if given)."""
         from gateway.session import build_session_key
+        profile = self._resolve_profile_for_key(source)
+        group_per_user, thread_per_user = self.resolve_session_scope(source, profile=profile)
         return build_session_key(
             key_source if key_source is not None else source,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
-            profile=self._resolve_profile_for_key(source))
+            group_sessions_per_user=group_per_user, thread_sessions_per_user=thread_per_user,
+            profile=profile)
 
     def _legacy_slack_session_key(self, source: SessionSource) -> Optional[str]:
         """Pre-workspace Slack key for an explicitly scoped source. Deliberately Slack-only: an

@@ -162,3 +162,28 @@ class TestThreadReplyAlwaysScopesByThread:
             f"thread reply dropped with reply_in_thread={reply_in_thread}"
         )
         assert captured[0].source.thread_id == "1700000000.000009"
+
+
+def test_thread_keys_follow_adapter_registered_scope_under_owning_profile(adapter, tmp_path):
+    """A secondary (multiplexed) Slack bot's thread session key and rehydration key must follow the
+    scope its adapter registered under ITS profile — not the gateway default, and not a lookup
+    under the store's active-profile guess."""
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+
+    cfg = GatewayConfig(group_sessions_per_user=True, thread_sessions_per_user=False,
+                        multiplex_profiles=True)
+    adapter._session_store = SessionStore(sessions_dir=tmp_path, config=cfg)
+    adapter._owner_profile = "eva"
+    # Another profile's per-user-thread registration is invisible to eva: shared thread key.
+    adapter._session_store.register_platform_session_scope(
+        "slack", group_sessions_per_user=True, thread_sessions_per_user=True, profile="other")
+    assert adapter._build_thread_session_key("C1", "111.222", "U1", "T1") == (
+        "agent:eva:slack:group:T1:C1:111.222")
+    assert adapter._thread_rehydration_key("C1", "111.222", "U1", "T1") == "T1:C1:111.222"
+
+    adapter._session_store.register_platform_session_scope(
+        "slack", group_sessions_per_user=True, thread_sessions_per_user=True, profile="eva")
+    assert adapter._build_thread_session_key("C1", "111.222", "U1", "T1") == (
+        "agent:eva:slack:group:T1:C1:111.222:U1")
+    assert adapter._thread_rehydration_key("C1", "111.222", "U1", "T1") == "T1:C1:111.222:U1"

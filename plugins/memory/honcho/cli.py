@@ -951,8 +951,8 @@ def _state_db_path() -> Path:
 def _seen_gateway_accounts(db_path: Path) -> list[dict]:
     """Gateway accounts recorded in state.db, most recent first; bot authors are skipped.
 
-    The gateway stamps each session row with its routing peer, so grouping rows by
-    (source, user_id) enumerates every account it has handled.
+    A session row keeps only its last routing peer, so a shared thread contributes
+    its most recent author and not every participant.
     """
     if not db_path.exists():
         return []

@@ -301,7 +301,8 @@ def run_sign_in(
                 if not _core.guest_enabled():
                     precondition_state = Unavailable()
                 else:
-                    state = _core.ensure_portal_identity(blocking=True, timeout_seconds=timeout_seconds)
+                    state = _core.ensure_portal_identity(
+                        blocking=True, timeout_seconds=timeout_seconds, on_request=True)
                     if not _core.is_guest_state(state):
                         # The free tier is off, or an account appeared mid-flight.
                         precondition_state = Unavailable()

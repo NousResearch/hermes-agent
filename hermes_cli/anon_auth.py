@@ -89,6 +89,33 @@ def guest_enabled() -> bool:
     return bool(nous_cfg.get("guest", True))
 
 
+GUEST_SETUP_AUTO = "auto"
+GUEST_SETUP_ON_REQUEST = "on-request"
+
+
+def guest_setup_policy() -> str:
+    """``nous.guest_setup``: when Hermes creates a free-tier identity on its own.
+
+    ``"auto"`` (default): on first use, wherever nothing else is configured — the resolver's last
+    rung, the first-run check, the desktop's status read, the connector token path.
+    ``"on-request"``: only when something asks for the free tier by name — ``nous/welcome`` selected
+    as the model (the guided setup's session, the free-tier row in ``hermes model``), ``/login`` and
+    ``hermes auth upgrade``. Implicit callers still ADOPT an identity the shared store already holds
+    (so every profile follows the one the guided setup minted); they never mint one.
+    ``HERMES_FORCE_GUEST`` reads as ``auto``. Unknown values read as ``auto``.
+    """
+    if force_guest_mode():
+        return GUEST_SETUP_AUTO
+    try:
+        from hermes_cli.config import load_config_readonly
+        nous_cfg = load_config_readonly().get("nous")
+    except Exception:
+        return GUEST_SETUP_AUTO
+    raw = nous_cfg.get("guest_setup") if isinstance(nous_cfg, dict) else None
+    value = str(raw or "").strip().lower().replace("_", "-")
+    return GUEST_SETUP_ON_REQUEST if value in {"on-request", "onrequest", "explicit", "request"} else GUEST_SETUP_AUTO
+
+
 def is_guest_state(state: Any) -> bool:
     return isinstance(state, dict) and state.get("auth_method") == ANON_AUTH_METHOD
 
@@ -290,14 +317,15 @@ _mint_failed = False
 _forced_new_done = False
 
 
-def _reconcile_and_provision(*, force: str, timeout_seconds: float) -> Dict[str, Any]:
+def _reconcile_and_provision(*, force: str, timeout_seconds: float, may_mint: bool = True) -> Optional[Dict[str, Any]]:
     """The lifecycle body, run under profile lock THEN shared lock (the documented order).
 
     1. The shared store is the identity of record for this Hermes root. If it holds an identity
        that differs from the profile's, the profile adopts it (a stale guest never outlives a
        sibling profile's sign-in, and never overwrites it).
     2. Otherwise the profile's own identity stands.
-    3. Nothing anywhere: mint, persisting the credential before exchanging it.
+    3. Nothing anywhere: mint, persisting the credential before exchanging it — unless *may_mint*
+       is False (an implicit caller under ``nous.guest_setup: on-request``), which returns None.
     ``force == "new"`` skips 1 and 2.
     """
     from hermes_cli.auth import (
@@ -322,19 +350,28 @@ def _reconcile_and_provision(*, force: str, timeout_seconds: float) -> Dict[str,
                     if not shared:
                         _write_shared_nous_state(profile_state)
                     return profile_state
+            if not may_mint:
+                return None
             verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)
             with _nous_http_client(timeout_seconds, verify) as client:
                 return _mint_locked(client, portal, auth_store)
 
 
-def ensure_portal_identity(*, blocking: bool = True, timeout_seconds: float = GUEST_MINT_TIMEOUT_SECONDS) -> Optional[Dict[str, Any]]:
+def ensure_portal_identity(
+    *, blocking: bool = True, timeout_seconds: float = GUEST_MINT_TIMEOUT_SECONDS, on_request: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Make sure this profile has a Nous identity (guest or account); mint a guest only if the shared
-    store has none. Returns the ``providers.nous`` state, or None (disabled / non-blocking / failed).
+    store has none. Returns the ``providers.nous`` state, or None (disabled / non-blocking / failed /
+    nothing to adopt and this caller may not mint).
 
     Order: ``nous.guest`` gate -> reconcile with the shared store -> mint. Locks are taken profile
     first, then shared, matching every other Nous path. Non-blocking mode runs on a daemon thread
     and returns None immediately; a failure there is logged at DEBUG (the guest is a fallback; a
     fallback failing is not an error).
+
+    *on_request* says the caller asked for the free tier by name (``nous/welcome`` requested, a
+    sign-in from it, a retired identity being replaced). Under ``nous.guest_setup: on-request`` only
+    those callers mint; the implicit ones (default) still adopt what the shared store holds.
     """
     global _mint_failed, _forced_new_done
     if not guest_enabled():
@@ -342,12 +379,13 @@ def ensure_portal_identity(*, blocking: bool = True, timeout_seconds: float = GU
     force = force_guest_mode()
     if force == "new" and _forced_new_done:
         force = "1"
-    if _mint_failed and force != "new" and not current_nous_state():
+    may_mint = on_request or guest_setup_policy() == GUEST_SETUP_AUTO
+    if may_mint and _mint_failed and force != "new" and not current_nous_state():
         return None  # this process already tried and failed; do not hammer the portal
 
     if blocking:
         try:
-            result = _reconcile_and_provision(force=force, timeout_seconds=timeout_seconds)
+            result = _reconcile_and_provision(force=force, timeout_seconds=timeout_seconds, may_mint=may_mint)
         except Exception:
             _mint_failed = True
             raise
@@ -364,7 +402,7 @@ def ensure_portal_identity(*, blocking: bool = True, timeout_seconds: float = GU
     def _run() -> None:
         global _background_started
         try:
-            _reconcile_and_provision(force=force, timeout_seconds=timeout_seconds)
+            _reconcile_and_provision(force=force, timeout_seconds=timeout_seconds, may_mint=may_mint)
         except Exception as exc:
             logger.debug("Nous free tier background setup skipped: %s", exc)
             # A transient failure must not consume the process's only attempt: release the latch
@@ -379,6 +417,17 @@ def ensure_portal_identity(*, blocking: bool = True, timeout_seconds: float = GU
             _background_started = False
         logger.debug("Nous free tier background setup could not start: %s", exc)
     return None
+
+
+def ensure_identity_for_model(model: Any, *, timeout_seconds: float = GUEST_MINT_TIMEOUT_SECONDS) -> Optional[Dict[str, Any]]:
+    """The free tier, set up because *model* asked for it: ``nous/welcome`` is served to a free-tier
+    identity and nothing else, so requesting it on a profile with no Nous identity IS the request
+    for one (the guided setup's session, the free-tier row in ``hermes model``, a bare
+    ``--provider nous`` pointed at it). Any other model is not a request: None, nothing minted.
+    Explicit under every ``nous.guest_setup`` policy; ``nous.guest: false`` still wins."""
+    if str(model or "").strip() != GUEST_MODEL:
+        return None
+    return ensure_portal_identity(blocking=True, timeout_seconds=timeout_seconds, on_request=True)
 
 
 def refresh_guest_state(state: Dict[str, Any], client: httpx.Client) -> None:

@@ -166,6 +166,61 @@ class TestIdentityLifecycle:
         assert portal.minted == 2
 
 
+class TestSetupPolicy:
+    """``nous.guest_setup: on-request``: implicit callers adopt but never mint; a request for the free
+    tier by name (``nous/welcome`` on an explicit Nous route, a sign-in) mints; a sibling profile
+    then follows the shared store."""
+
+    def test_on_request_implicit_callers_never_mint(self, portal, monkeypatch):
+        _write_config(monkeypatch, guest_setup="on-request")
+        assert anon_auth.guest_setup_policy() == anon_auth.GUEST_SETUP_ON_REQUEST
+        assert anon_auth.ensure_portal_identity(blocking=True) is None
+        with pytest.raises(anon_auth.AuthError):
+            resolve_provider("auto")               # the resolver's last rung is implicit
+        assert portal.minted == 0 and portal.calls == []
+
+    def test_on_request_welcome_model_on_the_nous_route_mints_once(self, portal, monkeypatch):
+        _write_config(monkeypatch, guest_setup="on-request")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        runtime = resolve_runtime_provider(requested="nous", target_model=anon_auth.GUEST_MODEL)
+        assert runtime["provider"] == "nous"
+        assert runtime["base_url"].rstrip("/") == WELCOME
+        assert portal.minted == 1
+        assert anon_auth.has_guest()
+        resolve_runtime_provider(requested="nous", target_model=anon_auth.GUEST_MODEL)
+        assert portal.minted == 1                  # adopted, not re-minted
+
+    def test_on_request_other_model_on_the_nous_route_does_not_mint(self, portal, monkeypatch):
+        _write_config(monkeypatch, guest_setup="on-request")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        with pytest.raises(anon_auth.AuthError):
+            resolve_runtime_provider(requested="nous", target_model="openai/gpt-5")
+        assert portal.minted == 0
+
+    def test_on_request_sibling_profile_adopts_what_the_guided_setup_minted(self, portal, monkeypatch, tmp_path):
+        _write_config(monkeypatch, guest_setup="on-request")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        resolve_runtime_provider(requested="nous", target_model=anon_auth.GUEST_MODEL)
+        token = _load_auth_store()["providers"]["nous"]["anon_token"]
+        sibling = tmp_path / "sibling-profile"
+        sibling.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(sibling))
+        _write_config(monkeypatch, guest_setup="on-request")
+        adopted = anon_auth.ensure_portal_identity(blocking=True)   # implicit: adopt only
+        assert adopted and adopted["anon_token"] == token
+        assert portal.minted == 1
+
+    def test_auto_policy_keeps_todays_first_use_mint(self, portal, monkeypatch):
+        _write_config(monkeypatch, guest_setup="auto")
+        assert resolve_provider("auto") == "nous"
+        assert portal.minted == 1
+
+    def test_guest_off_beats_an_explicit_request(self, portal, monkeypatch):
+        _write_config(monkeypatch, guest=False, guest_setup="on-request")
+        assert anon_auth.ensure_identity_for_model(anon_auth.GUEST_MODEL) is None
+        assert portal.minted == 0
+
+
 class TestResolverIsUnchanged:
     def test_guest_is_last_resort_and_explicit_key_wins(self, portal, monkeypatch):
         anon_auth.ensure_portal_identity(blocking=True)

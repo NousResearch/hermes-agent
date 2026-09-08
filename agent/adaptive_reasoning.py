@@ -357,9 +357,15 @@ def _positively_simple_reason(stripped: str, norm: str) -> str:
     return ""
 
 
+def _continues_escalation(text: str, prior_effort: Optional[str]) -> bool:
+    return prior_effort in EFFORT_RANK and bool(
+        _CONTINUATION_RE.fullmatch(re.sub(r"\s+", " ", text.strip().lower()))
+    )
+
+
 def classify_reasoning_effort(
     text: str, prior_effort: Optional[str] = None
-) -> Tuple[str, str]:
+) -> Tuple[Optional[str], str]:
     """Classify one user turn into (effort, reason) — deterministic, no I/O.
 
     ``prior_effort`` is the adaptive level of the previous turn (or None):
@@ -367,18 +373,18 @@ def classify_reasoning_effort(
     complex task back to the baseline mid-flight. Unrelated trivial turns
     re-classify from scratch, so nothing stays stuck at xhigh.
 
-    ``low`` is only returned on positive evidence of simplicity (casual
+    Apart from inherited continuations, ``low`` requires positive simplicity (casual
     chatter, a short fact lookup, a single read-only mechanical step) with
     zero complexity signals; whether it takes effect is the caller's floor
     decision. Ambiguous turns — including empty text, e.g. an image-only
-    message — stay ``medium``.
+    message — return ``None`` (no adjustment), not a concrete effort level.
     """
     stripped = (text or "").strip()
     if not stripped:
-        return "medium", ""
+        return None, ""
     norm = re.sub(r"\s+", " ", stripped.lower())
 
-    if prior_effort in EFFORT_RANK and _CONTINUATION_RE.fullmatch(norm):
+    if _continues_escalation(norm, prior_effort):
         return prior_effort, "continuing the escalated task"
 
     # Terse turns (≤4 words, no code) never escalate — but they still get the
@@ -420,7 +426,7 @@ def classify_reasoning_effort(
         simple_reason = _positively_simple_reason(stripped, norm)
         if simple_reason:
             return "low", simple_reason
-    return "medium", ""
+    return None, ""
 
 
 def _notify_adjustment(agent: Any, effort: str, reason: str, lowered: bool) -> None:
@@ -500,12 +506,19 @@ def begin_adaptive_reasoning_turn(
             except Exception:
                 pass
         text = extract_message_text(user_message)
+        prior_effort = getattr(agent, "_adaptive_prev_effort", None)
         effort, reason = classify_reasoning_effort(
-            text, prior_effort=getattr(agent, "_adaptive_prev_effort", None)
+            text, prior_effort=prior_effort
         )
-        # Only a positively simple classification may lower the baseline. In particular,
-        # ambiguous medium work must not downshift an inherited high/xhigh child baseline.
-        simple = effort == "low"
+        # No adjustment is distinct from a concrete level: ambiguous work
+        # keeps even a low/minimal baseline, including inherited child effort.
+        # A continuation capped at low is still an escalation from minimal.
+        simple = effort == "low" and not _continues_escalation(text, prior_effort)
+        if effort is None:
+            effort = baseline
+        elif simple:
+            # Positive simplicity permits a downshift, never an escalation.
+            effort = min(effort, baseline, key=EFFORT_RANK.__getitem__)
         max_effort = cfg.get("max_effort") or _DEFAULT_MAX_EFFORT
         if EFFORT_RANK.get(effort, 0) > EFFORT_RANK.get(max_effort, 0):
             effort = max_effort

@@ -273,6 +273,11 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>Show</DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
+              <OptionCheckbox
+                checked={rowMeta.includes('activity')}
+                onCheck={() => toggleSidebarRowMeta('activity')}
+                option={{ icon: 'pulse', id: 'activity', label: t.sidebar.row.activity }}
+              />
               {rowMetaOptions.map(option => (
                 <OptionCheckbox
                   checked={rowMeta.includes(option.id)}

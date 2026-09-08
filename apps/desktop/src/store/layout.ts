@@ -254,7 +254,7 @@ export type SidebarOrdering = 'cost' | 'created' | 'manual' | 'status' | 'tokens
 export type SidebarSortKey = Exclude<SidebarOrdering, 'manual'>
 /** Optional per-row metadata the user can switch on. `preview` is card-only:
  *  the one-line row has nowhere to put a second line. */
-export type SidebarRowMeta = 'cost' | 'pr' | 'preview' | 'profile' | 'tokens' | 'updated'
+export type SidebarRowMeta = 'activity' | 'cost' | 'pr' | 'preview' | 'profile' | 'tokens' | 'updated'
 
 function oneOf<T extends string>(values: readonly T[], fallback: T): Codec<T> {
   return {
@@ -270,7 +270,7 @@ function listOf<T extends string>(values: readonly T[]): Codec<T[]> {
   }
 }
 
-const ROW_META: readonly SidebarRowMeta[] = ['cost', 'pr', 'preview', 'profile', 'tokens', 'updated']
+const ROW_META: readonly SidebarRowMeta[] = ['activity', 'cost', 'pr', 'preview', 'profile', 'tokens', 'updated']
 const STATUS_FILTERS: readonly SessionStatusBucket[] = ['needs-input', 'working', 'unread', 'draft', 'idle']
 const PR_FILTERS: readonly PullRequestBucket[] = ['open', 'draft', 'merged', 'closed', 'none']
 export const SIDEBAR_SORT_KEYS: readonly SidebarSortKey[] = ['updated', 'created', 'status', 'tokens', 'cost']

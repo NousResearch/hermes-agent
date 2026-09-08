@@ -47,6 +47,7 @@ import {
   SidebarRowShell
 } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { SidebarSessionActivity } from './session-activity'
 import { sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
 import { useProfilePrewarm } from './use-profile-prewarm'
@@ -297,6 +298,9 @@ function SidebarSessionRowImpl({
   // when only the header shares its line with the age and kebab.
   const actionsNode = (
     <div className="relative z-2 flex shrink-0 items-center justify-end gap-1" data-row-actions>
+      {/* Activity owns a small inline slot before metadata. Keep it outside
+          the tail swap so the age/PR/kebab retain their existing behavior. */}
+      {!session.archived && <SidebarSessionActivity sessionId={session.id} />}
       {trailing.map(({ key, node }, index) => (
         <span
           className={

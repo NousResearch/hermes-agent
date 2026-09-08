@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $backgroundStatusBySession,
+  clearAllSessionBackground,
   dismissBackgroundProcess,
   isSessionGoneForBackgroundPolling,
   reconcileBackgroundProcesses,
@@ -34,10 +35,11 @@ describe('reconcileBackgroundProcesses', () => {
     // Fake timers so the success self-clear (a real setTimeout) is deterministic
     // and never leaks a pending timer between tests.
     vi.useFakeTimers()
-    $backgroundStatusBySession.set({})
+    clearAllSessionBackground()
   })
 
   afterEach(() => {
+    clearAllSessionBackground()
     vi.clearAllTimers()
     vi.useRealTimers()
   })
@@ -177,11 +179,12 @@ describe('reconcileBackgroundProcesses', () => {
 // A gone session is terminal, not transient: stop polling it.
 describe('refreshBackgroundProcesses dead-session guard', () => {
   beforeEach(() => {
-    $backgroundStatusBySession.set({})
+    clearAllSessionBackground()
     resetBackgroundPollingGuard()
   })
 
   afterEach(() => {
+    clearAllSessionBackground()
     $gateway.set(null as never)
     resetBackgroundPollingGuard()
   })
@@ -319,11 +322,12 @@ describe('refreshBackgroundProcesses dead-session guard', () => {
 // ── Review-thread hardenings on the guard (#94950) ───────────────────────────
 describe('refreshBackgroundProcesses dead-session guard hardenings', () => {
   beforeEach(() => {
-    $backgroundStatusBySession.set({})
+    clearAllSessionBackground()
     resetBackgroundPollingGuard()
   })
 
   afterEach(() => {
+    clearAllSessionBackground()
     $gateway.set(null as never)
     resetBackgroundPollingGuard()
   })

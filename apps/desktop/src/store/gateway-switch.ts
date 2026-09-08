@@ -4,6 +4,7 @@ import { resetLiveRuntimeTracking } from '@/app/contrib/hooks/use-background-syn
 import { resetSidebarBatchCapability } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { clearArtifactRegistry } from '@/store/artifacts'
+import { clearAllSessionBackground } from '@/store/composer-status'
 import { invalidateCronJobsRequests, setCronJobs } from '@/store/cron'
 import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
@@ -206,6 +207,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // session-unread.ts are keyed by durable session id and repaint the rows
   // that are still unread once the next gateway's lists load — so a profile
   // round-trip doesn't swallow green dots.
+  clearAllSessionBackground()
   clearAllSessionStates()
   // Structured goal/loop/heartbeat entries are keyed by runtime id, which the
   // next backend re-mints, so a full wipe is exact (and stale-response-safe).

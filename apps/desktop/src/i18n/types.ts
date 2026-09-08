@@ -2128,6 +2128,7 @@ export interface Translations {
       waitingForAnswer: string
       finishedUnread: string
       backgroundRunning: string
+      activity: string
       draftSession: string
       handoffOrigin: (platform: string) => string
       ownedByProfile: (profile: string) => string

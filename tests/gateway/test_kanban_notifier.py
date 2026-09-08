@@ -821,6 +821,60 @@ def test_notifier_delivers_claimed_workflow_transition_and_completes_cursor(
     assert tuple(sub) == (event_id, 0, None, None)
 
 
+def test_workflow_notification_is_pinned_to_the_claimed_event_generation(
+    tmp_path, monkeypatch,
+):
+    """A later reopen must not change the already-claimed cancellation notice."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "workflow-pinned.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        acceptance = kb.create_task(conn, title="accept", tenant="tenant-a")
+        replacement = kb.create_task(conn, title="retry", tenant="tenant-a")
+        remediation = kb.create_task(conn, title="remediate", tenant="tenant-a")
+        reverification = kb.create_task(conn, title="reverify", tenant="tenant-a")
+        actor = kb.KanbanActorContext(
+            principal_id="svc:test", profile_name="default",
+            board_identity=str(kb.kanban_db_path().resolve()), tenant="tenant-a",
+            capabilities=frozenset({"workflow.manage", "workflow.admin"}),
+            source_kind="test",
+        )
+        created = kb.create_workflow(
+            conn, workflow_id="wf_pinned", name="release", tenant="tenant-a",
+            designated_acceptance_task_id=acceptance, actor=actor, mutation_id="create",
+        )
+        conn.execute(
+            "INSERT INTO kanban_workflow_subscriptions "
+            "(workflow_id,role,platform,chat_id,notifier_profile,target_states,tenant,created_at,last_event_id) "
+            "VALUES (?,'origin','telegram','workflow-chat','default','[\"CANCELLED\"]','tenant-a',0,?)",
+            ("wf_pinned", created["workflow"]["last_event_id"]),
+        )
+        cancelled = kb.cancel_workflow(
+            conn, workflow_id="wf_pinned", actor=actor, mutation_id="cancel",
+            expected_version=created["workflow"]["version"], reason="superseded",
+        )
+        kb.reopen_workflow(
+            conn, workflow_id="wf_pinned", designated_acceptance_task_id=replacement,
+            members=[
+                {"task_id": replacement, "stage_key": "acceptance", "stage_role": "acceptance", "required": True},
+                {"task_id": remediation, "stage_key": "remediation", "stage_role": "remediation", "required": True},
+                {"task_id": reverification, "stage_key": "reverification", "stage_role": "reverification", "required": True},
+            ], actor=actor,
+            mutation_id="reopen", expected_version=cancelled["workflow"]["version"],
+            reason="retry",
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert "generation 1" in adapter.sent[0]["text"]
+    assert "State: CANCELLED" in adapter.sent[0]["text"]
+    assert "generation 2" not in adapter.sent[0]["text"]
+
+
 def test_workflow_notifier_rewinds_and_dead_letters_failed_delivery(
     tmp_path, monkeypatch,
 ):

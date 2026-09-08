@@ -96,31 +96,54 @@ def _collect_workflow_notifications(kb, *, notifier_profile: str) -> list[dict[s
             ).fetchall()
             for row in subscriptions:
                 sub = dict(row)
+                old_cursor: Optional[int] = None
+                cursor: Optional[int] = None
                 try:
                     old_cursor, cursor, events = kb.claim_workflow_events_for_subscription(
                         conn, workflow_id=sub["workflow_id"], role=sub.get("role") or "origin",
                     )
                     if not events:
                         continue
-                    snapshot = kb._workflow_response(
-                        conn, sub["workflow_id"], include_outcomes=True,
-                    )
-                    statuses = {
-                        row["task_id"]: row["status"]
-                        for row in conn.execute(
-                            "SELECT id AS task_id,status FROM tasks WHERE id IN ("
-                            "SELECT task_id FROM kanban_workflow_members "
-                            "WHERE workflow_id=? AND generation=? AND removed_event_id IS NULL)",
-                            (sub["workflow_id"], snapshot["workflow"]["active_generation"]),
+                    event = events[0]
+                    ledger = conn.execute(
+                        "SELECT response_json FROM kanban_workflow_mutations "
+                        "WHERE workflow_id=? AND mutation_id=?",
+                        (sub["workflow_id"], event["mutation_id"]),
+                    ).fetchone()
+                    if ledger is None:
+                        raise kb.WorkflowIntegrityError(
+                            "claimed workflow event has no immutable mutation response"
                         )
-                    }
-                    for member in snapshot["members"]:
-                        member["task_status"] = statuses.get(member["task_id"])
+                    try:
+                        snapshot = json.loads(ledger["response_json"])
+                    except (TypeError, ValueError) as exc:
+                        raise kb.WorkflowIntegrityError(
+                            "claimed workflow mutation response is invalid"
+                        ) from exc
+                    workflow = snapshot.get("workflow") if isinstance(snapshot, dict) else None
+                    payload = event["payload"]
+                    if (not isinstance(workflow, dict)
+                            or workflow.get("id") != sub["workflow_id"]
+                            or int(workflow.get("version", -1)) != int(payload["resulting_version"])
+                            or int(workflow.get("active_generation", -1)) != int(event["generation"])
+                            or workflow.get("state") != payload["resulting_state"]):
+                        raise kb.WorkflowIntegrityError(
+                            "claimed workflow event does not match its immutable response"
+                        )
                     deliveries.append({
                         "sub": sub, "old_cursor": old_cursor, "cursor": cursor,
                         "snapshot": snapshot, "board": board,
                     })
                 except Exception as exc:
+                    if cursor is not None and old_cursor is not None and cursor != old_cursor:
+                        try:
+                            kb.fail_workflow_delivery(
+                                conn, workflow_id=sub["workflow_id"],
+                                role=sub.get("role") or "origin", claimed_cursor=cursor,
+                                old_cursor=old_cursor, error_class=type(exc).__name__,
+                            )
+                        except Exception:
+                            logger.exception("kanban workflow notifier could not rewind invalid claim")
                     logger.warning("kanban workflow notifier: subscription for %s on board %s failed: %s",
                                    sub.get("workflow_id"), board, exc)
         except Exception as exc:

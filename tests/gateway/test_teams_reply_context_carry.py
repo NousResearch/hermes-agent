@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import pytest
-from tests.gateway.test_teams import TeamsAdapter, _make_config
+from tests.gateway.test_teams import TeamsAdapter, _teams_mod, _make_config
 
 @pytest.mark.anyio
 async def test_send_records_only_confirmed_exact_outbound_context(monkeypatch):

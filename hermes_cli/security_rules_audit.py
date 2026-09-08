@@ -12,8 +12,8 @@ and audits them against the deterministic enforcement layer:
 4. Built-in sensitive write targets (_SENSITIVE_WRITE_TARGET)
 
 Classifies rules into three actionable buckets:
-- ENFORCED: active deterministic control exists (hardline, deny glob, or sensitive target).
-- ENFORCEABLE: concrete deterministic command/path pattern can be added to approvals.deny.
+- ENFORCED: an explicit terminal command is denied by the active runtime policy.
+- ENFORCEABLE: a deny glob can cover an identified terminal example, not all prose meanings.
 - ADVISORY-ONLY: model-directed behavioral guidelines without a deterministic analogue.
 """
 
@@ -23,48 +23,50 @@ from dataclasses import dataclass, field
 import fnmatch
 import json
 import logging
+import os
 from pathlib import Path
 import re
+import shlex
 from typing import List, Optional, Sequence, Tuple
 
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import get_hermes_home, get_project_root
+from hermes_cli.config import apply_terminal_config_to_env, get_hermes_home
 
 logger = logging.getLogger(__name__)
 
 # Imperative trigger pattern for negative security rules
 _NEGATIVE_RULE_RE = re.compile(
-    r"(?i)\b(?P<trigger>never|do\s+not|don't|must\s+not|shall\s+not|cannot|can't|should\s+not|shouldn't|strictly\s+forbidden|strictly\s+prohibited|prohibited\s+to|disallowed\s+to|forbidden\s+to)\b\s+(?P<action>[^\n.;`]+)",
+    r"(?i)\b(?P<trigger>never|do\s+not|don't|must\s+not|shall\s+not|cannot|can't|should\s+not|shouldn't|strictly\s+forbidden|strictly\s+prohibited|prohibited\s+to|disallowed\s+to|forbidden\s+to)\b\s+(?P<action>[^\n]+)",
 )
 
 _TRIGGER_STRIP_RE = re.compile(
     r"(?i)^(?:never|do\s+not|don't|must\s+not|shall\s+not|cannot|can't|should\s+not|shouldn't|strictly\s+forbidden\s+(?:to\s+)?|strictly\s+prohibited\s+(?:to\s+)?|prohibited\s+to\s+|disallowed\s+to\s+|forbidden\s+to\s+|disallow\s+|prohibit\s+)\s*",
 )
 
-# Common command pattern triggers for enforceable mapping
+# These examples propose command-level controls; they do not prove coverage of prose.
 _COMMAND_MAPPINGS: list[tuple[re.Pattern, str, str]] = [
-    (re.compile(r"(?i)\bpush(?:\s+(?:directly|changes)?)?\s+to\s+(?:origin\s+)?(?:main|master|prod(?:uction)?)\b"), "git push *main*", "Git branch protection"),
-    (re.compile(r"(?i)\bforce\s+push\b|\bpush\s+--force\b"), "git push *--force*", "Git force push"),
-    (re.compile(r"(?i)\b(?:hard\s+reset|reset\s+--hard)\b"), "git reset --hard*", "Git hard reset"),
-    (re.compile(r"(?i)\bterraform\s+apply\b"), "terraform apply*", "Terraform apply"),
-    (re.compile(r"(?i)\bterraform\s+destroy\b"), "terraform destroy*", "Terraform destroy"),
-    (re.compile(r"(?i)\bkubectl\s+delete\b"), "kubectl delete*", "Kubernetes resource deletion"),
-    (re.compile(r"(?i)\bnpm\s+publish\b"), "npm publish*", "Package publish (npm)"),
-    (re.compile(r"(?i)\bpip\s+install\s+--upgrade\b"), "pip install --upgrade*", "Unpinned package upgrade"),
-    (re.compile(r"(?i)\b(?:docker|podman)\s+(?:rm|system\s+prune)\b"), "docker rm*", "Container deletion"),
-    (re.compile(r"(?i)\bchmod\s+(?:-R\s+)?777\b"), "chmod *777*", "Insecure file permissions"),
-    (re.compile(r"(?i)\b(?:curl|wget)\s+[^|\n]+\|\s*(?:ba)?sh\b"), "curl*|*sh*", "Piped remote execution"),
+    (re.compile(r"(?i)\bpush(?:\s+(?:directly|changes)?)?\s+to\s+(?:origin\s+)?(?P<branch>main|master|prod(?:uction)?)\b"), "git push *{branch}*", "git push origin {branch}"),
+    (re.compile(r"(?i)\bforce\s+push\b|\bpush\s+--force\b"), "git push *--force*", "git push --force origin audit-example"),
+    (re.compile(r"(?i)\b(?:hard\s+reset|reset\s+--hard)\b"), "git reset --hard*", "git reset --hard"),
+    (re.compile(r"(?i)\bterraform\s+apply\b"), "terraform apply*", "terraform apply"),
+    (re.compile(r"(?i)\bterraform\s+destroy\b"), "terraform destroy*", "terraform destroy"),
+    (re.compile(r"(?i)\bkubectl\s+delete\b"), "kubectl delete*", "kubectl delete deployment audit-example"),
+    (re.compile(r"(?i)\bnpm\s+publish\b"), "npm publish*", "npm publish"),
+    (re.compile(r"(?i)\bpip\s+install\s+--upgrade\b"), "pip install --upgrade*", "pip install --upgrade audit-example"),
+    (re.compile(r"(?i)\b(?P<engine>docker|podman)\s+(?P<operation>rm|system\s+prune)\b"), "{engine} {operation}*", "{engine} {operation}"),
+    (re.compile(r"(?i)\bchmod\s+(?:-R\s+)?777\b"), "chmod *777*", "chmod 777 audit-example"),
+    (re.compile(r"(?i)\b(?P<fetcher>curl|wget)\s+[^|\n]+\|\s*(?:ba)?sh\b"), "{fetcher}*|*sh*", "{fetcher} https://example.invalid/script | sh"),
 ]
 
-# Sensitive file keywords that map to file protection
-_SENSITIVE_TARGET_KEYWORDS: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"(?i)\.env\b"), ".env / environment credentials"),
-    (re.compile(r"(?i)\.ssh\b|\bid_rsa\b|\bid_ed25519\b"), "SSH private keys and configuration"),
-    (re.compile(r"(?i)config\.yaml\b"), "Hermes security configuration"),
-    (re.compile(r"(?i)\.(?:bashrc|zshrc|profile)\b"), "Shell configuration files"),
-    (re.compile(r"(?i)\.(?:netrc|pgpass|npmrc|pypirc)\b"), "Credential store files"),
-    (re.compile(r"(?i)/etc/|/private/etc/"), "System configuration files"),
-]
+# A file-write guard says nothing about reads or committing an existing file.
+_FILE_OPERATION_RE = re.compile(
+    r"(?i)^(?P<operation>read|write|commit)\s+(?P<path>\S+)$"
+)
+_FILE_COMMANDS = {
+    "read": "cat {path}",
+    "write": "printf '' > {path}",
+    "commit": "git add {path} && git commit -m audit-example",
+}
 
 
 @dataclass
@@ -218,56 +220,67 @@ def _extract_rules_from_file(path: Path) -> list[Tuple[int, str, str]]:
 
 def _classify_rule(raw_text: str, imperative_phrase: str, active_deny_globs: Sequence[str]) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
     """Classify a rule into (category, enforcement_mechanism, suggested_deny_glob, suggested_command)."""
-    text_lower = raw_text.lower()
-    phrase_lower = imperative_phrase.lower()
-    action_candidate = _TRIGGER_STRIP_RE.sub("", phrase_lower).strip()
+    from hermes_cli.approvals_test import evaluate_command
 
-    # 1. Check if matches active user approvals.deny globs
-    for glob in active_deny_globs:
-        glob_clean = glob.lower().strip()
-        if fnmatch.fnmatchcase(phrase_lower, f"*{glob_clean}*") or fnmatch.fnmatchcase(text_lower, f"*{glob_clean}*") or fnmatch.fnmatchcase(action_candidate, f"*{glob_clean}*"):
-            return "enforced", f"approvals.deny ('{glob}')", None, None
+    action = _TRIGGER_STRIP_RE.sub("", imperative_phrase).strip().rstrip(".")
+    explicit = re.fullmatch(r"(?:run\s+|execute\s+)?`([^`]+)`", action, re.IGNORECASE)
+    # Do not reinterpret the profile's globs or natural-language words as runtime policy.
+    # Resolving into a copy also leaves the caller's environment unchanged.
+    env_type = apply_terminal_config_to_env(env=dict(os.environ)).get("TERMINAL_ENV", "local")
+    command = explicit.group(1) if explicit else None
+    suggested_glob = None
+    for command_re, glob_template, command_template in _COMMAND_MAPPINGS:
+        match = command_re.search(action)
+        if match:
+            values = match.groupdict()
+            suggested_glob = glob_template.format(**values)
+            command = command or command_template.format(**values)
+            break
+    if command is None:
+        file_operation = _FILE_OPERATION_RE.fullmatch(action)
+        if file_operation:
+            command = _FILE_COMMANDS[file_operation.group("operation").lower()].format(
+                path=shlex.quote(file_operation.group("path")),
+            )
 
-    # 2. Check HARDLINE blocklist
-    try:
-        from tools.approval_detection import detect_hardline_command
-        is_hardline, hl_desc = detect_hardline_command(action_candidate)
-        if not is_hardline:
-            is_hardline, hl_desc = detect_hardline_command(text_lower)
-        if is_hardline:
-            return "enforced", f"HARDLINE floor ({hl_desc})", None, None
-    except Exception:
-        pass
+    if command is None:
+        return ("advisory", f"Advisory instruction: active profile {get_hermes_home()}; "
+                "no explicit terminal command; coverage is unverified.", None, None)
 
-    # 3. Check sensitive file write protections
-    for pattern, desc in _SENSITIVE_TARGET_KEYWORDS:
-        if pattern.search(phrase_lower) or pattern.search(text_lower) or pattern.search(action_candidate):
-            if any(w in phrase_lower for w in ["touch", "edit", "modify", "write", "change", "overwrite", "delete", "leak", "commit", "expose"]):
-                return "enforced", f"Built-in file/env protection ({desc})", None, None
+    verdict = evaluate_command(command, env_type=env_type)
+    denied = verdict["verdict"] in {"hardline-deny", "user-deny"}
+    description = {
+        "hardline-deny": "hard denial",
+        "user-deny": "hard denial",
+        "ask-approval": "conditional approval, not a denial",
+        "allow": "allowed by command policy",
+    }[verdict["verdict"]]
+    mechanism = (
+        f"Active profile {get_hermes_home()}: terminal example {command!r} "
+        f"on {env_type}: {verdict['verdict']} "
+        f"({description}); {verdict['detail']}"
+    )
+    if explicit and denied:
+        return "enforced", mechanism + ". This command spelling only; other tools are not audited.", None, None
 
-    # 4. Check DANGEROUS_PATTERNS approval gates
-    try:
-        from tools.approval_detection import detect_dangerous_command
-        is_dangerous, _, dg_desc = detect_dangerous_command(action_candidate)
-        if not is_dangerous:
-            is_dangerous, _, dg_desc = detect_dangerous_command(text_lower)
-        if is_dangerous:
-            return "enforced", f"DANGEROUS_PATTERNS gate ({dg_desc})", None, None
-    except Exception:
-        pass
-
-    # 5. Check if it matches an enforceable deterministic command shape
-    for cmd_re, suggested_glob, desc in _COMMAND_MAPPINGS:
-        if cmd_re.search(action_candidate) or cmd_re.search(phrase_lower) or cmd_re.search(text_lower):
-            suggested_cmd = f"hermes config set approvals.deny '{json.dumps(list(active_deny_globs) + [suggested_glob])}'"
-            return "enforceable", None, suggested_glob, suggested_cmd
-
-    # 6. Fallback: Advisory-only
-    return "advisory", "Advisory model instruction only (no deterministic command analogue)", None, None
+    mechanism += ". Whole instruction coverage is unverified."
+    if suggested_glob and not denied:
+        # The suggested glob must match its canonical example verbatim. Runtime
+        # normalization and configured-policy evaluation remain owned by evaluate_command.
+        if fnmatch.fnmatchcase(command.lower().strip(), suggested_glob.lower()):
+            suggested_cmd = "hermes config set approvals.deny " + shlex.quote(
+                json.dumps(list(active_deny_globs) + [suggested_glob])
+            )
+            return "enforceable", mechanism, suggested_glob, suggested_cmd
+    return "advisory", mechanism, None, None
 
 
 def audit_security_rules(hermes_home: Optional[Path] = None, cwd: Optional[Path] = None) -> SecurityRulesAuditReport:
-    """Run security rules coverage audit across discovered context and memory files."""
+    """Scan the supplied locations against the active profile's command policy.
+
+    ``hermes_home`` selects files to scan; it does not switch the active profile.
+    The shared config loader may initialize standard directories in that profile.
+    """
     report = SecurityRulesAuditReport()
     files = _discover_scan_files(hermes_home=hermes_home, cwd=cwd)
     report.scanned_files = [str(p) for p in files]
@@ -303,16 +316,17 @@ def run_security_rules_audit_cli(hermes_home: Optional[Path] = None, cwd: Option
 
     report = audit_security_rules(hermes_home=hermes_home, cwd=cwd)
 
+    print(f"  Policy: active profile {get_hermes_home()}.")
     print(f"  Scanned {len(report.scanned_files)} files (context, memories, skills).")
     print(f"  Found {len(report.rules)} natural-language security rules:")
-    print(f"    • {color(str(len(report.enforced)), Colors.GREEN, Colors.BOLD)} enforced by deterministic controls")
-    print(f"    • {color(str(len(report.enforceable)), Colors.YELLOW, Colors.BOLD)} enforceable (can add to approvals.deny)")
-    print(f"    • {color(str(len(report.advisory)), Colors.DIM)} advisory-only (guidelines for the model)")
+    print(f"    • {color(str(len(report.enforced)), Colors.GREEN, Colors.BOLD)} explicit terminal commands denied by active policy")
+    print(f"    • {color(str(len(report.enforceable)), Colors.YELLOW, Colors.BOLD)} terminal examples with deny suggestions (review coverage)")
+    print(f"    • {color(str(len(report.advisory)), Colors.DIM)} advisory or unverified instructions")
     print()
 
     # 1. Enforced rules
     if report.enforced:
-        print(color("◆ Enforced Rules (Backed by Built-In Controls)", Colors.GREEN, Colors.BOLD))
+        print(color("◆ Enforced Commands (Exact Terminal Spelling Only)", Colors.GREEN, Colors.BOLD))
         for r in report.enforced:
             rel_file = Path(r.source_file).name
             print(f"  {color('✓', Colors.GREEN)} {color(rel_file + ':' + str(r.line_number), Colors.BOLD)}: \"{r.raw_text}\"")
@@ -322,27 +336,31 @@ def run_security_rules_audit_cli(hermes_home: Optional[Path] = None, cwd: Option
 
     # 2. Enforceable rules
     if report.enforceable:
-        print(color("◆ Enforceable Rules (Action Required: Add Deterministic Deny Glob)", Colors.YELLOW, Colors.BOLD))
+        print(color("◆ Suggested Command Denials (Partial Coverage; Review Before Applying)", Colors.YELLOW, Colors.BOLD))
         for r in report.enforceable:
             rel_file = Path(r.source_file).name
             print(f"  {color('⚠', Colors.YELLOW)} {color(rel_file + ':' + str(r.line_number), Colors.BOLD)}: \"{r.raw_text}\"")
+            if r.enforcement_mechanism:
+                print(f"    {r.enforcement_mechanism}")
             if r.suggested_deny_glob:
                 print(f"    {color('↳ Suggested approvals.deny glob:', Colors.DIM)} {color(r.suggested_deny_glob, Colors.CYAN, Colors.BOLD)}")
             if r.suggested_command:
-                print(f"    {color('↳ Run to enforce:', Colors.DIM)} {color(r.suggested_command, Colors.YELLOW)}")
+                print(f"    {color('↳ Add this command-pattern denial:', Colors.DIM)} {color(r.suggested_command, Colors.YELLOW)}")
         print()
 
     # 3. Advisory-only rules
     if report.advisory:
-        print(color("◆ Advisory-Only Rules (Model Prompts Without Deterministic Analogue)", Colors.DIM, Colors.BOLD))
+        print(color("◆ Advisory or Unverified Instructions", Colors.DIM, Colors.BOLD))
         for r in report.advisory:
             rel_file = Path(r.source_file).name
             print(f"  {color('ℹ', Colors.DIM)} {color(rel_file + ':' + str(r.line_number), Colors.DIM)}: \"{r.raw_text}\"")
+            if r.enforcement_mechanism:
+                print(f"    {r.enforcement_mechanism}")
         print()
 
     print(color("─" * 60, Colors.CYAN))
     if report.enforceable:
-        print(color(f"  ⚡ {len(report.enforceable)} rule(s) can be converted to hard deterministic controls.", Colors.YELLOW, Colors.BOLD))
+        print(color(f"  ⚡ {len(report.enforceable)} terminal example(s) have candidate deny globs; whole instructions remain unverified.", Colors.YELLOW, Colors.BOLD))
     else:
-        print(color("  ✓ All actionable natural-language rules have deterministic controls.", Colors.GREEN, Colors.BOLD))
+        print(color("  No additional deny suggestions. This does not prove all instructions are enforced.", Colors.GREEN, Colors.BOLD))
     print()

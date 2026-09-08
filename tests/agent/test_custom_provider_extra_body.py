@@ -71,3 +71,78 @@ def test_named_custom_provider_extra_body_matches_provider_key():
     )
 
     assert agent.request_overrides == {"extra_body": {"enable_thinking": False}}
+
+
+def test_send_session_metadata_resolves_for_matching_url():
+    from agent.agent_init import _custom_provider_send_session_metadata
+
+    assert _custom_provider_send_session_metadata(
+        provider="custom",
+        model="qwen3.8",
+        base_url="https://gateway.internal.example.com/v1",
+        custom_providers=[
+            {
+                "name": "my-gateway",
+                "base_url": "https://gateway.internal.example.com/v1",
+                "send_session_metadata": True,
+            }
+        ],
+    ) is True
+
+
+def test_send_session_metadata_off_for_other_url():
+    from agent.agent_init import _custom_provider_send_session_metadata
+
+    assert _custom_provider_send_session_metadata(
+        provider="custom",
+        model="qwen3.8",
+        base_url="https://other.internal.example.com/v1",
+        custom_providers=[
+            {
+                "name": "my-gateway",
+                "base_url": "https://gateway.internal.example.com/v1",
+                "send_session_metadata": True,
+            }
+        ],
+    ) is False
+
+
+def test_send_session_metadata_off_for_non_custom_provider():
+    from agent.agent_init import _custom_provider_send_session_metadata
+
+    assert _custom_provider_send_session_metadata(
+        provider="openai",
+        model="gpt-4o",
+        base_url="https://gateway.internal.example.com/v1",
+        custom_providers=[
+            {
+                "name": "my-gateway",
+                "base_url": "https://gateway.internal.example.com/v1",
+                "send_session_metadata": True,
+            }
+        ],
+    ) is False
+
+
+def test_send_session_metadata_named_provider_key_scopes_match():
+    from agent.agent_init import _custom_provider_send_session_metadata
+
+    assert _custom_provider_send_session_metadata(
+        provider="custom:my-gateway",
+        model="qwen3.8",
+        base_url="https://gateway.internal.example.com/v1",
+        custom_providers=[
+            {
+                "provider_key": "other-provider",
+                "name": "Other Provider",
+                "base_url": "https://gateway.internal.example.com/v1",
+                "send_session_metadata": True,
+            },
+            {
+                "provider_key": "my-gateway",
+                "name": "My Gateway",
+                "base_url": "https://gateway.internal.example.com/v1",
+                "send_session_metadata": True,
+            },
+        ],
+    ) is True

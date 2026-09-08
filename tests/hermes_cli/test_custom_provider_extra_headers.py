@@ -244,3 +244,28 @@ def test_fetch_api_models_sends_extra_headers_to_models_probe(monkeypatch):
     assert captured["headers"]["authorization"] == "Bearer proxy-key"
     assert captured["headers"]["sleeve-harness"] == "hermes"
     assert captured["headers"]["sleeve-base-url"] == "http://localhost:8081/v1"
+
+
+def test_normalize_entry_keeps_send_session_metadata_true():
+    normalized = _normalize_custom_provider_entry(
+        {
+            "name": "my-gateway",
+            "base_url": "https://gateway.internal.example.com/v1",
+            "send_session_metadata": True,
+        }
+    )
+    assert normalized is not None
+    assert normalized["send_session_metadata"] is True
+
+
+def test_normalize_entry_defaults_send_session_metadata_off():
+    for absent in (None, False, "true", 1):
+        normalized = _normalize_custom_provider_entry(
+            {
+                "name": "my-gateway",
+                "base_url": "https://gateway.internal.example.com/v1",
+                "send_session_metadata": absent,
+            }
+        )
+        assert normalized is not None
+        assert "send_session_metadata" not in normalized

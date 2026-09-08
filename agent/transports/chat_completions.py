@@ -109,6 +109,39 @@ def _add_prompt_cache_key(
         api_kwargs["prompt_cache_key"] = cache_key
 
 
+def _add_session_metadata(
+    api_kwargs: dict[str, Any],
+    *,
+    send_session_metadata: bool,
+    session_id: str | None = None,
+    cache_scope_id: str | None = None,
+) -> None:
+    """Merge a per-conversation ``metadata.session_id`` when the endpoint opts in.
+
+    Load-balancing gateways (LiteLLM session affinity, matching pools of identical
+    vLLM/llama.cpp backends) pin requests that carry a body ``metadata.session_id``
+    to one deployment for a TTL, turning per-turn cold prefills into prefix-cache
+    hits. Static config cannot express this: concurrent conversations would share
+    one affinity bucket. The value is normalized exactly like ``prompt_cache_key``
+    — ``cache_scope_id`` (compression-lineage root) beats the physical
+    ``session_id`` so affinity survives context-compression session rotation.
+    """
+    if not send_session_metadata:
+        return
+    from agent.transports.codex import _cache_scope_from_session_id
+
+    affinity_id = _cache_scope_from_session_id(cache_scope_id or session_id)
+    if not affinity_id:
+        return
+    metadata = api_kwargs.get("metadata")
+    if metadata is None:
+        api_kwargs["metadata"] = {"session_id": affinity_id}
+    elif isinstance(metadata, dict):
+        # Fill only the free key: Qwen portal metadata and user request_overrides
+        # keep every key they set (promptId and friends).
+        metadata.setdefault("session_id", affinity_id)
+
+
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
     """Clamp Hermes' extended effort set (``ultra``) to the OpenAI-compat wire vocabulary.
 
@@ -284,11 +317,19 @@ def _base_kwargs(model: str, sanitized: list, tools: Any, params: dict, profile:
     return api_kwargs
 
 
-def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *, supports_prompt_cache_key: bool) -> dict[str, Any]:
-    """Tail shared by both build paths: content-addressed prompt_cache_key, then return."""
+def _finish_kwargs(
+    api_kwargs: dict[str, Any], sanitized: list, params: dict, *, supports_prompt_cache_key: bool
+) -> dict[str, Any]:
+    """Tail shared by both build paths: content-addressed prompt_cache_key, session-affinity metadata, then return."""
     _add_prompt_cache_key(
         api_kwargs, messages=sanitized, tools=api_kwargs.get("tools"), supports_prompt_cache_key=supports_prompt_cache_key,
         session_id=params.get("session_id"), cache_scope_id=params.get("cache_scope_id"),
+    )
+    _add_session_metadata(
+        api_kwargs,
+        send_session_metadata=bool(params.get("send_session_metadata")),
+        session_id=params.get("session_id"),
+        cache_scope_id=params.get("cache_scope_id"),
     )
     return api_kwargs
 

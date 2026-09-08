@@ -1834,6 +1834,7 @@ export const shouldPassThroughToGlobalHandler = (
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') ||
+  (key.ctrl && input === 't') ||
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||

@@ -1,0 +1,72 @@
+import { PassThrough } from 'node:stream'
+
+import { renderSync } from '@hermes/ink'
+import React from 'react'
+import stripAnsi from 'strip-ansi'
+import { expect, it } from 'vitest'
+
+import { AgentsPanelView } from '../components/agentsPanel.js'
+import { buildAgentRows, dockRowLimit } from '../lib/agentRows.js'
+import { DEFAULT_THEME } from '../theme.js'
+import type { SubagentProgress } from '../types.js'
+
+const agent = (id: string): SubagentProgress => ({
+  id,
+  goal: 'Investigate authentication handshake '.repeat(8),
+  depth: 0,
+  index: 0,
+  parentId: null,
+  notes: [],
+  tools: ['read_file auth.ts'],
+  thinking: [],
+  toolCount: 1,
+  taskCount: 1,
+  startedAt: 1000,
+  status: 'running'
+})
+
+it('bounds painted chrome by viewport while retaining true live count and activity', () => {
+  const agents = Array.from({ length: 12 }, (_, i) => agent(`child-${i}`))
+
+  for (const height of [14, 24, 40]) {
+    const rows = buildAgentRows(agents, [], 45000, dockRowLimit(height))
+    expect(rows.running).toBe(agents.length)
+    expect(rows.hidden + rows.rows.length).toBe(agents.length)
+    const stdout = Object.assign(new PassThrough(), { columns: 72, rows: height })
+    const frames: string[] = []
+    stdout.on('data', chunk => {
+      frames.push(chunk.toString())
+    })
+
+    const view = renderSync(<AgentsPanelView cols={72} {...rows} t={DEFAULT_THEME} />, {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: new PassThrough() as NodeJS.ReadStream
+    })
+
+    view.unmount()
+    view.cleanup()
+
+    const lines = stripAnsi(frames.filter(frame => stripAnsi(frame).trim()).at(-1) ?? '')
+      .trim()
+      .split('\n')
+
+    expect(lines.length).toBeLessThanOrEqual(dockRowLimit(height) * 2 + 1)
+    expect(lines.join('\n')).toContain('12 live')
+    expect(lines.join('\n')).toContain('read_file')
+  }
+
+  expect(dockRowLimit(14)).toBeLessThan(dockRowLimit(40))
+})
+
+it('deduplicates async batches and hides settled history without dropping live work', () => {
+  const a = agent('child-1')
+
+  const rows = buildAgentRows(
+    [a, { ...agent('done'), status: 'completed' }],
+    [{ delegation_id: 'batch', status: 'running', subagent_ids: [a.id] }],
+    50000
+  )
+
+  expect(rows.running).toBe(1)
+  expect(rows.rows.map(row => row.key)).toEqual(['live:child-1'])
+})

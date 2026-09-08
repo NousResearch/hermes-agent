@@ -631,6 +631,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     // typed to run the command. Works mid-stream: picking a model writes the
     // session model (config.set), which the next turn reads while the in-flight
     // turn keeps streaming.
+    if (isCtrl(key, ch, 't')) {
+      return patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
+    }
+
     if (isCtrl(key, ch, 'o')) {
       return patchOverlayState({ modelPicker: true })
     }

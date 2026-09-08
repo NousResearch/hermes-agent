@@ -25,6 +25,7 @@ export const HOTKEYS: [string, string][] = [
   ['Tab', 'apply completion'],
   ['↑/↓', 'completions / queue edit / history'],
   ['Ctrl+X', 'open live session switcher (deletes queued message while editing)'],
+  ['Ctrl+T', 'expand live agents (keeps your draft)'],
   ['Ctrl+O', 'open model picker (keeps your draft; applies to next turn mid-stream)'],
   [action + '+A/E', 'home / end of line'],
   [action + '+Z / ' + action + '+Y', 'undo / redo input edits'],

@@ -25,6 +25,7 @@ import { composerPromptText } from '../lib/prompt.js'
 import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from '../sdk/host.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
+import { LiveAgentsPanel } from './agentsPanel.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
@@ -363,6 +364,7 @@ const ComposerPane = memo(function ComposerPane({
         <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
       )}
 
+      <LiveAgentsPanel cols={Math.max(1, composer.cols - 2)} />
       <StatusRulePane at="top" composer={composer} status={status} />
       <AmbientDock placement="dock-top" />
 

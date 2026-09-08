@@ -595,6 +595,33 @@ export interface DelegationPauseResponse {
   paused?: boolean
 }
 
+export interface AsyncDelegationRecord {
+  delegation_id: string
+  goal?: string | null
+  role?: string | null
+  model?: string | null
+  status?: string | null
+  dispatched_at?: number | null
+  completed_at?: number | null
+  subagent_ids?: string[]
+}
+
+export interface SubagentListResponse {
+  subagents: {
+    subagent_id: string
+    parent_id?: string | null
+    delegation_id?: string | null
+    depth?: number | null
+    goal?: string | null
+    model?: string | null
+    started_at?: number | null
+    status?: string | null
+    tool_count?: number | null
+    current_tool?: string | null
+  }[]
+  delegations: AsyncDelegationRecord[]
+}
+
 export interface SubagentInterruptResponse {
   found?: boolean
   subagent_id?: string

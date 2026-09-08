@@ -519,12 +519,15 @@ describe('clarify and approvals (#90694)', () => {
         }))
         let entered!: () => void
         let release!: () => void
+
         const polled = new Promise<void>(resolve => {
           entered = resolve
         })
+
         const held = new Promise<void>(resolve => {
           release = resolve
         })
+
         const original = host.request as (method: string, params: Record<string, unknown>) => Promise<any>
         let submitted = false
         let answered = false
@@ -627,12 +630,15 @@ describe('clarify and approvals (#90694)', () => {
         // handoff is driven by the continuation phase.
         let phaseEntered!: () => void
         let release!: () => void
+
         const entered = new Promise<void>(resolve => {
           phaseEntered = resolve
         })
+
         const held = new Promise<void>(resolve => {
           release = resolve
         })
+
         const original = host.request as (method: string, params: Record<string, unknown>) => Promise<any>
 
         host.request = async (method: string, params: Record<string, unknown>) => {
@@ -654,12 +660,14 @@ describe('clarify and approvals (#90694)', () => {
           tombstone: false
         }))
         room.chat.appendGroupChatEntry('Core', { kind: 'member', name: 'research' }, '@user replacement needs you')
+
         const before = structuredClone({
           rooms: room.chat.$groupChats.get(),
           activity: activity.$groupActivity.get(),
           attention: data.$botAttention.get(),
           needsYou: room.chat.$groupNeedsYou.get()
         })
+
         release()
         await drive
         expect({
@@ -683,12 +691,15 @@ describe('clarify and approvals (#90694)', () => {
       room.chat.updateGroupChat('Core', current => ({ ...current, roomId: 'retired-room' }))
       let entered!: () => void
       let release!: () => void
+
       const polled = new Promise<void>(resolve => {
         entered = resolve
       })
+
       const held = new Promise<void>(resolve => {
         release = resolve
       })
+
       const original = host.request as (method: string, params: Record<string, unknown>) => Promise<any>
       let submitted = false
 
@@ -751,12 +762,15 @@ describe('clarify and approvals (#90694)', () => {
     })
     let entered!: () => void
     let release!: () => void
+
     const polled = new Promise<void>(resolve => {
       entered = resolve
     })
+
     const held = new Promise<void>(resolve => {
       release = resolve
     })
+
     let background = false
     const backgroundProfiles: unknown[] = []
     const original = host.request as (method: string, params: Record<string, unknown>) => Promise<any>

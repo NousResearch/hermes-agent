@@ -296,9 +296,11 @@ export function BotsPane() {
   // and the persisted connection registry hydrate. Keep that transition in a
   // neutral loading state instead of flashing the first-run "No bots" copy.
   const initialRosterLoading = !data && !error && roster.length === 0
+
   const activeRosterKeys = new Set(
     activeBots(roster, workingOwner, turnBusy, Date.now(), activeConnectionId).map(botRosterKey)
   )
+
   const gatewayOptions = rosterGatewayOptions(sourceSnapshot, roster)
   const selectedGateway = gatewayOptions.find(option => option.connectionId === gatewayFilter)
   const gatewayFilterExists = gatewayFilter === 'all' || Boolean(selectedGateway)

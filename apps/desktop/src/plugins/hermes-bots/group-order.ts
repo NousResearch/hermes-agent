@@ -28,10 +28,12 @@ export function sortGroupRosterRows<T extends OrderRow>(
 /** Swap visible neighbours without dropping filtered-out rooms from the order. */
 export function reorderGroupRows(rows: OrderRow[], name: string, delta: -1 | 1, visible?: string[]): string[] | null {
   const row = rows.find(row => row.name === name)
+
   const band = rows.filter(
     candidate =>
       candidate.kind === 'group' && candidate.pinned === row?.pinned && (!visible || visible.includes(candidate.name!))
   )
+
   const index = band.findIndex(candidate => candidate.name === name)
   const neighbour = index >= 0 ? band[index + delta] : undefined
 

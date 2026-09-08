@@ -30,6 +30,7 @@ describe('room display order', () => {
       rows.filter(row => row.kind === 'group'),
       {}
     )
+
     expect(reorderGroupRows(ordered, 'Older', -1)).toEqual(['Pinned', 'Older', 'Newer'])
     expect(reorderGroupRows(ordered, 'Newer', -1)).toBeNull()
     expect(reorderGroupRows(ordered, 'deleted', 1)).toBeNull()

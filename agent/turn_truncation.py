@@ -50,7 +50,8 @@ _REPETITION_DOMINATED = (
 _CEILING_NO_TEXT = (
     "⚠️ **No visible answer was produced.** The model hit its output-token limit on every "
     "continuation attempt — its reasoning consumed the entire budget each time.\n\nTo fix this:\n"
-    "→ Lower reasoning effort: `/reasoning low` or `/reasoning none`\n→ Or raise max_tokens for this model"
+    "→ Lower reasoning effort: `/reasoning low` or `/reasoning none`\n"
+    "→ Or switch to a model with a larger output capacity using `/model`"
 )
 
 

@@ -374,7 +374,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
             "Lower model.max_tokens in config.yaml.",
             notices=(
                 "❌ The provider rejected the request because max_tokens exceeds its output cap for this model.",
-                "   💡 Lower model.max_tokens in your config.yaml to at or below the model's max-output limit. "
+                "   💡 Lower reasoning effort or switch models; output caps are provider-controlled. "
                 "(This is an output-cap error, not a context overflow — compression cannot fix it.)",
             ),
             log=(

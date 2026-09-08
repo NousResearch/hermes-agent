@@ -540,7 +540,7 @@ class TestSdkBoundedMcpInspectionPermissions:
         assert calls == []
 
     def test_auto_allowed_mcp_tools_match_claude_profile_readers_exactly(self):
-        from agent.transports.claude_agent_sdk_session import (
+        from agent.transports.claude_agent_sdk_session_permissions import (
             _SDK_AUTO_ALLOWED_MCP_TOOLS,
         )
         from agent.transports.hermes_tool_exposure import (

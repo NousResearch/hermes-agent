@@ -1358,6 +1358,19 @@ def _apply_agent_section(agent, _agent_cfg):
         _api_retries = 3
     agent._api_max_retries = _api_retries
 
+    # Proactive feature router (PR-B). Off by default; reads
+    # proactive_features.* from config. Non-fatal: a broken router config
+    # must never break agent init.
+    agent._feature_router = None
+    try:
+        _pf_cfg = _agent_cfg.get("proactive_features", {}) or {}
+        if _pf_cfg.get("enabled", False):
+            from agent.feature_router import FeatureRouter as _FeatureRouter
+
+            agent._feature_router = _FeatureRouter(_pf_cfg)
+    except Exception:
+        agent._feature_router = None
+
 
 def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
     """``int(raw)`` when positive, else None. ``reject`` lists types refused outright (bool, float)."""

@@ -498,7 +498,9 @@ class TestSystemUnitHermesHome:
 
     def test_system_unit_orders_after_target_user_manager(self, monkeypatch, tmp_path):
         """#104893: restart-safe workers need user@<uid>.service; the system unit must not race it at boot."""
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        root_home = tmp_path / "root"
+        root_home.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: root_home))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         monkeypatch.setattr(
             gateway_cli, "_system_service_identity",

@@ -154,6 +154,41 @@ def test_waiter_command_quotes_and_targets_reply_file(root):
     assert "rm -rf" not in cmd  # sanity: single quoted -c payload
 
 
+_DESKTOP_RELAY_TS = Path(__file__).resolve().parents[2] / "apps" / "desktop" / "src" / "plugins" / "hermes-bots" / "relay.ts"
+
+
+def _desktop_relay_ms(name: str) -> int:
+    """Literal ``const <name> = N`` from relay.ts. No shared anchor links a TS constant to a Python
+    one, so this regex is the seam, mirroring relay-deliver-budget.test.ts on the Desktop side."""
+    match = re.search(rf"^const {name} = ([0-9_]+)", _DESKTOP_RELAY_TS.read_text(encoding="utf-8"), re.M)
+    assert match, f"{name} must stay a literal in relay.ts"
+    return int(match.group(1).replace("_", ""))
+
+
+def test_waiter_outlives_the_desktop_deliver_deadline():
+    """The Desktop posts its timeout reply when RELAY_DELIVER_TIMEOUT_MS passes. A waiter that gave
+    up first left that reply, and any turn finishing after minute 15, in a file nobody read (#93911)."""
+    desktop_budget_s = (
+        _desktop_relay_ms("RELAY_TURN_LOCK_WAIT_MS")
+        + _desktop_relay_ms("RELAY_TURN_ATTEMPT_MS") * _desktop_relay_ms("RELAY_TURN_MAX_ATTEMPTS")
+        + _desktop_relay_ms("RELAY_DELIVER_SETTLEMENT_MARGIN_MS")
+    ) // 1000
+    assert bot_relay.DESKTOP_DELIVER_TIMEOUT_SECONDS == desktop_budget_s
+    assert bot_relay.REPLY_WAIT_SECONDS > desktop_budget_s
+    assert bot_relay.TURN_WAIT_SECONDS_FALLBACK * 1000 == _desktop_relay_ms("RELAY_TURN_LOCK_WAIT_MS")
+
+
+def test_waiter_give_up_message_states_the_real_budget(root):
+    import shlex
+
+    env = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
+    parts = shlex.split(bot_relay.waiter_command(root, env))
+    code = parts[parts.index("-c") + 1]
+    assert f"deadline = time.time() + {bot_relay.REPLY_WAIT_SECONDS}\n" in code
+    assert f"within {bot_relay.REPLY_WAIT_SECONDS}s" in code
+    assert "within 900s" not in code
+
+
 def test_waiter_picks_up_reply_within_a_sub_second_cadence(root):
     """The reply file is written once; the waiter must notice it fast, not
     on a multi-second sleep (dead air the sender's completion notification

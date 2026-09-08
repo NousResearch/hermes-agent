@@ -41,8 +41,16 @@ LOCKS_DIR = "locks"
 # Config fallbacks (real knobs: ``bot_mode.turn_wait_seconds`` / ``bot_mode.envelope_ttl_seconds``).
 TURN_WAIT_SECONDS_FALLBACK = 120
 DEFAULT_ENVELOPE_TTL_SECONDS = 900  # older envelopes are refused at drain with 'queued_expired'
-# Waiter give-up budget: cross-connection turns can be slow — generous, but bounded.
-REPLY_WAIT_SECONDS = 900
+# Per-attempt turn timeout and attempt ceiling for bot_relay.deliver (tui_gateway/methods_bot_relay.py).
+TURN_ATTEMPT_TIMEOUT_SECONDS = 600
+TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
+# Mirrors RELAY_DELIVER_TIMEOUT_MS in apps/desktop/src/plugins/hermes-bots/relay.ts; both test suites pin it.
+DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS = 180
+DESKTOP_DELIVER_TIMEOUT_SECONDS = (
+    TURN_WAIT_SECONDS_FALLBACK + TURN_ATTEMPT_TIMEOUT_SECONDS * TURN_MAX_ATTEMPTS + DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
+)
+# The Desktop posts its own timeout reply at that deadline, so the waiter must still be watching then.
+REPLY_WAIT_SECONDS = DESKTOP_DELIVER_TIMEOUT_SECONDS + 60
 # Envelopes/replies older than this are stale artifacts (Desktop closed) and are swept.
 STALE_AFTER_SECONDS = 6 * 3600
 # Only a recent roster is authoritative for the fail-fast offline check: the

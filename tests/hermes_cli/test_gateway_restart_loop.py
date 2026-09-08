@@ -1697,7 +1697,7 @@ class TestShellShortOptionBundles:
         script.write_text("#!/bin/sh\nhermes gateway stop\n", encoding="utf-8")
         return script
 
-    @pytest.mark.parametrize("shell", ["bash", "sh", "zsh", "dash", "/bin/bash"])
+    @pytest.mark.parametrize("shell", ["bash", "sh", "zsh", "dash", "ksh", "/bin/bash"])
     @pytest.mark.parametrize("flags", [
         "-c", "-lc", "-ec", "-xc", "-lxc", "-ic", "-sc", "-euc",
         "--command", "-c -l", "-l -c", "-euo pipefail -c",
@@ -1760,13 +1760,13 @@ class TestShellShortOptionBundles:
     #
     # `-o`/`-O` take a value, and zsh, ksh and mksh accept it attached inside
     # the same token: `zsh -opipefail -c '...'` runs the payload. Charging that
-    # option a following token spent the `-c`, so the command flag was never
-    # seen and the payload went unscanned on a shell that runs it. Measured
-    # against the real binaries rather than the option grammar: before this,
-    # `zsh -opipefail`, `ksh -opipefail`, `ksh -oc` and `zsh -Opipefail` all
-    # executed the payload with the guard blind to it.
+    # option a following token would spend the `-c`, so the command flag would
+    # never be seen on a shell that runs the payload. Of these spellings only
+    # `ksh -oc` was ever missed by the scan this replaced (which had no option
+    # grammar and simply took the token after any literal `-c`); the rest are
+    # here because the option walk COULD lose them and must not.
 
-    @pytest.mark.parametrize("shell", ["bash", "sh", "zsh", "dash", "/bin/bash"])
+    @pytest.mark.parametrize("shell", ["bash", "sh", "zsh", "dash", "ksh", "/bin/bash"])
     @pytest.mark.parametrize("flags", [
         "-opipefail -c", "-Opipefail -c", "-opipefail -euc",
         "-oemacs -c", "-oc", "-oec", "+oposix -c",
@@ -1774,6 +1774,26 @@ class TestShellShortOptionBundles:
     def test_an_attached_option_value_does_not_eat_the_command_flag(
         self, tmp_path, helper, shell, flags,
     ):
+        command = f"{shell} {flags} 'cd /tmp && {helper}'"
+        assert self._scan(command, cwd=str(tmp_path)) is True
+
+    @pytest.mark.parametrize("shell", ["bash", "sh", "zsh", "dash", "ksh", "/bin/bash"])
+    @pytest.mark.parametrize("flags", [
+        # A value-taking option with NO value in front of the command flag. ksh and zsh do not
+        # insist on one -- `ksh -o -c 'payload'` prints the option table and then runs the payload
+        # -- so charging the option the following `-c` goes blind on a command that executes.
+        "-o -c", "-O -c", "+o -c", "+O -c", "-euo -c", "-eo -c", "-lo -c", "-lO -c", "-xo -c",
+        # And a bundle that already carried the `c`: `zsh -cO 'payload'` runs the payload, so the
+        # trailing `O` must not charge for it.
+        "-cO", "-co",
+    ])
+    def test_a_value_taking_option_does_not_swallow_the_command_flag(
+        self, tmp_path, helper, shell, flags,
+    ):
+        """An option walk can lose payloads a dumber literal `-c` scan caught.
+
+        Real option names (pipefail, errexit, noglob) never start with `-` or `+`, so a token that
+        does is never the value and must stay available as the command flag."""
         command = f"{shell} {flags} 'cd /tmp && {helper}'"
         assert self._scan(command, cwd=str(tmp_path)) is True
 

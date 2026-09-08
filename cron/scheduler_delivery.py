@@ -208,13 +208,19 @@ def _maybe_mirror_cron_delivery(
         )
 
 
-def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Optional[str]:
+def _open_continuable_cron_thread(
+    job: dict, adapter, chat_id: str, loop, *, result_text: str = "",
+) -> Optional[str]:
     """Open a thread for a continuable cron job via ``adapter.create_handoff_thread``. Returns the
     thread_id, or ``None`` (no thread primitive / failed) = caller falls back to the DM mirror."""
     create_thread = getattr(adapter, "create_handoff_thread", None)
     if not callable(create_thread) or loop is None:
         return None
-    thread_name = f"Hermes — {job.get('name') or job.get('id', 'cron')}"
+    from agent.title_generator import derive_title
+    # The completed result is already available: use its opening headline, not
+    # the recurring job's identity. No additional inference on scheduled wakes.
+    headline = next((line.strip() for line in result_text.splitlines() if line.strip()), "")
+    thread_name = derive_title(headline.lstrip("# ").strip("*")) or job.get("name") or "Scheduled result"
     try:
         from agent.async_utils import safe_schedule_threadsafe
         coro = create_thread(str(chat_id), thread_name)
@@ -1613,7 +1619,7 @@ def _prepare_target_delivery(
         and not thread_id  # never override an explicit origin thread/topic
     ):
         opened_thread_id = _open_continuable_cron_thread(
-            job, runtime_adapter, chat_id, loop) or None
+            job, runtime_adapter, chat_id, loop, result_text=mirror_text) or None
         if opened_thread_id:
             thread_id = opened_thread_id
     return _TargetDelivery(

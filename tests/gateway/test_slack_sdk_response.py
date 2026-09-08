@@ -265,8 +265,14 @@ class TestHandoffThread:
             return_value=make_response({"ok": True, "ts": "1700000000.000100"})
         )
         adapter._get_client = lambda *_a, **_kw: client
-        thread_id = asyncio.run(adapter.create_handoff_thread("C_GEN", "review"))
+        title = "Newsletter approval <@U123> & release"
+        thread_id = asyncio.run(adapter.create_handoff_thread("C_GEN", title))
         assert thread_id == "1700000000.000100"
+        payload = client.chat_postMessage.call_args.kwargs
+        assert payload["blocks"][0]["text"] == {"type": "plain_text", "text": title}
+        assert payload["text"] == "Newsletter approval &lt;@U123&gt; &amp; release"
+        assert payload["mrkdwn"] is False
+        assert payload["parse"] == "none"
 
     def test_unreadable_response_yields_no_thread(self):
         """Callers must still see a clean ``None`` for genuinely opaque replies."""

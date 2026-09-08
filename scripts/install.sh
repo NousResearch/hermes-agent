@@ -1070,6 +1070,39 @@ install_node_line() {
         return 1
     fi
 
+    # Verify the tarball against nodejs.org's SHASUMS256.txt before anything
+    # is extracted or executed. Every other binary-bearing channel of this
+    # installer is checksum-pinned (uv's hardcoded sha256, uv.lock for Python
+    # deps, package-lock.json integrity for npm, SHASUMS256.txt for Electron,
+    # object hashes for the git clone) — Node was the only exception, leaving
+    # the TLS certificate as the entire integrity story (#106027). Fail closed
+    # on every error path: SHASUMS256.txt unfetchable, no entry for this
+    # tarball, no hash tool, or a mismatch all reject the line and the caller
+    # walks on to an older release line.
+    local shasums expected actual
+    if ! shasums=$(curl -fsSL "${index_url}SHASUMS256.txt"); then
+        log_warn "Could not fetch SHASUMS256.txt from ${index_url}"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    expected=$(printf '%s\n' "$shasums" \
+        | awk -v f="$tarball_name" '{ gsub(/^\*/, "", $2) } $2 == f { print $1; exit }')
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$tmp_dir/$tarball_name" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$tmp_dir/$tarball_name" | awk '{print $1}')
+    else
+        log_error "Neither sha256sum nor shasum found — cannot verify the Node.js tarball"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+        log_error "Node.js tarball checksum mismatch for $tarball_name" \
+            "(expected ${expected:-no SHASUMS256.txt entry}, got ${actual:-none}) — refusing to extract"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
     log_info "Extracting to ~/.hermes/node/..."
     if [[ "$tarball_name" == *.tar.xz ]]; then
         tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir"

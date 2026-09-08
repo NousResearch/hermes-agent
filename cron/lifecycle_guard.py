@@ -767,6 +767,34 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
 
 # --- referenced-script reading ----------------------------------------------------------------
 
+def _is_posix_shell_shebang(shebang_line: str) -> bool:
+    """True when *shebang_line* is a ``#!`` line invoking a POSIX shell interpreter.
+
+    A referenced script whose shebang names a non-shell interpreter (Node, Python,
+    Ruby, ...) is not POSIX shell source, so shlex-tokenizing it yields path-shaped
+    garbage (regex literals, URL strings) the walk then reads remotely, exhausting
+    the remote-read budget and failing closed on a benign command (#105758).
+    Shebangless files (e.g. ``~/.zshrc`` sourced via ``source``) are not decided
+    here — callers recurse into them unchanged.
+    """
+    if not shebang_line.startswith("#!"):
+        return False
+    parts = shebang_line[2:].strip().split()
+    if not parts:
+        return False
+    name = os.path.basename(parts[0])
+    if name in _SHELL_EXECUTABLES:
+        return True
+    # ``#!/usr/bin/env bash`` / ``#!/usr/bin/env -S bash -l``: the first non-flag
+    # token after ``env`` names the interpreter.
+    if name == "env":
+        for tok in parts[1:]:
+            if tok.startswith("-"):
+                continue
+            return os.path.basename(tok) in _SHELL_EXECUTABLES
+    return False
+
+
 def _has_binary_magic(data: bytes) -> bool:
     """True when *data* starts with a known compiled-binary signature. Deliberately narrower than
     "contains a NUL": ``bash`` still executes a NUL-bearing script, so a padded script must not
@@ -929,6 +957,22 @@ def _contains_unsafe_gateway_action(
             if unsafe:
                 return True
         if not script_text:
+            continue
+        # A non-shell shebanged file (e.g. a minified Node CLI bundle) is not POSIX
+        # shell source; shlex-tokenizing it yields path-shaped garbage (regex
+        # literals, URL strings) the walk then reads remotely, exhausting the
+        # remote-read budget and failing closed on a benign command (#105758).
+        # Still scan its raw text for a literal lifecycle command (a
+        # ``child_process.exec("hermes gateway ...")`` string) so a non-shell
+        # script cannot smuggle one past the guard, but do not recurse via shlex.
+        # Shebangless files (e.g. ``~/.zshrc`` sourced via ``source``) are
+        # unaffected — they recurse as before.
+        first_line = script_text.split("\n", 1)[0]
+        if first_line.startswith("#!") and not _is_posix_shell_shebang(first_line):
+            if not budget.charge_text(script_text):
+                return _budget_exhausted("text", depth)
+            if _direct_lifecycle_scan(script_text):
+                return True
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
         if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd):

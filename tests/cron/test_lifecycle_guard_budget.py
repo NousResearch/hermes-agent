@@ -239,3 +239,90 @@ def test_default_budget_admits_a_wide_benign_wrapper_graph(tmp_path):
     evil.write_text("hermes gateway restart\n", encoding="utf-8")
     hub.write_text(hub.read_text() + f"bash {evil}\n", encoding="utf-8")
     assert guard(f"bash {hub}") is True
+
+
+# --- non-shell shebanged bundles do not exhaust the remote-read budget (#105758) ---
+
+
+def test_is_posix_shell_shebang_recognizes_shell_interpreters():
+    assert lifecycle_guard._is_posix_shell_shebang("#!/bin/sh")
+    assert lifecycle_guard._is_posix_shell_shebang("#!/bin/bash")
+    assert lifecycle_guard._is_posix_shell_shebang("#!/usr/bin/env bash")
+    assert lifecycle_guard._is_posix_shell_shebang("#!/usr/bin/env -S bash -l")
+    assert lifecycle_guard._is_posix_shell_shebang("#!/usr/local/bin/dash")
+    assert lifecycle_guard._is_posix_shell_shebang("#!/bin/zsh -f")
+
+
+def test_is_posix_shell_shebang_rejects_non_shell_and_non_shebang():
+    assert not lifecycle_guard._is_posix_shell_shebang("#!/usr/bin/env node")
+    assert not lifecycle_guard._is_posix_shell_shebang("#!/usr/bin/env python3")
+    assert not lifecycle_guard._is_posix_shell_shebang("#!/usr/bin/node")
+    assert not lifecycle_guard._is_posix_shell_shebang("#!/usr/bin/ruby")
+    # ``env`` with no interpreter is not a shell invocation.
+    assert not lifecycle_guard._is_posix_shell_shebang("#!/usr/bin/env")
+    # Non-shebang first lines are not decided here (callers recurse unchanged).
+    assert not lifecycle_guard._is_posix_shell_shebang("const x = 1")
+    assert not lifecycle_guard._is_posix_shell_shebang("")
+
+
+def test_non_shell_bundle_does_not_exhaust_remote_read_budget(monkeypatch, tmp_path):
+    """A non-shell CLI bundle (e.g. a minified Node CLI) is not POSIX shell source;
+    shlex-tokenizing it yields path-shaped garbage that, under the remote-read
+    cap, exhausts the budget and fails closed on a benign command (#105758).
+
+    The bundle carries many slash-containing tokens (regex-literal / URL shapes
+    from the minified JS) that the OLD walk treated as candidate script paths.
+    """
+    monkeypatch.setattr(lifecycle_guard, "_MAX_LIFECYCLE_SCAN_REMOTE_READS", 1)
+    bundle = "#!/usr/bin/env node\n" + "\n".join(f"/n{i}+/g" for i in range(8))
+    ob = tmp_path / "ob"
+    ob.write_text(bundle, encoding="utf-8")
+
+    reads = []
+
+    def remote(path: str):
+        reads.append(path)
+        return None
+
+    # FIXED: the non-shell shebang is detected, so the bundle is NOT
+    # shlex-tokenized into candidate script paths -> no remote reads -> benign.
+    assert guard(f"{ob} --version", cwd=str(tmp_path), read_remote_script=remote) is False
+    assert reads == []
+
+
+def test_non_shell_bundle_with_literal_lifecycle_command_still_blocked(tmp_path):
+    """The raw-text scan still catches a literal lifecycle command smuggled in a
+    non-shell bundle (e.g. a ``child_process.exec("hermes gateway restart")``
+    string) — skipping shlex recursion does not drop the direct-string defense."""
+    bundle = (
+        "#!/usr/bin/env node\n"
+        'const {exec} = require("child_process"); exec("hermes gateway restart");\n'
+        "/n0+/g /n1+/g /n2+/g /n3+/g\n"
+    )
+    ob = tmp_path / "ob"
+    ob.write_text(bundle, encoding="utf-8")
+
+    assert guard(f"{ob} --version", cwd=str(tmp_path)) is True
+
+
+def test_shell_shebang_bundle_still_recurses_unchanged(monkeypatch, tmp_path):
+    """A POSIX-shell shebanged script still recurses: a referenced script behind
+    it is still read and a hidden lifecycle command is still found (#105758 does
+    not narrow the shell-script walk)."""
+    inner = tmp_path / "inner.sh"
+    inner.write_text("hermes gateway restart\n", encoding="utf-8")
+    outer = tmp_path / "outer.sh"
+    outer.write_text(f"#!/bin/sh\nbash {inner}\n", encoding="utf-8")
+
+    assert guard(f"{outer}") is True
+
+
+def test_shebangless_script_still_recurses_unchanged(tmp_path):
+    """A shebangless sourced file (e.g. ``~/.zshrc`` via ``source``) still recurses
+    — only shebanged non-shell interpreters are skipped (#105758)."""
+    inner = tmp_path / "inner.sh"
+    inner.write_text("hermes gateway restart\n", encoding="utf-8")
+    no_shebang = tmp_path / "sourced"
+    no_shebang.write_text(f"bash {inner}\n", encoding="utf-8")
+
+    assert guard(f"bash {no_shebang}") is True

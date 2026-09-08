@@ -69,12 +69,19 @@ def test_descriptor_and_raw_old_writer_guards_survive_initializers(pair, order):
             target_install_id=TARGET, authority_history=spans, expected_enrollment_id=entry["enrollment_id"])
     assert retirement.current_target_enrollment(target, room_id="room", authority_gateway_id=SUCCESSOR,
                                                authority_epoch=2)["enrollment_id"] == entry["enrollment_id"]
+    assert replicas.replica_state(target, room_id="room")["lineage_status"] == "verified"
     # An old raw writer with a superficially valid event epoch cannot rewrite a claim.
     with sqlite3.connect(target) as conn:
         bad = copy.deepcopy(rooms.read_events(source, room_id="room")["events"][-1]["payload"])
         bad["previous_gateway_id"] = "install:forged"
         conn.execute("UPDATE hosted_room_replica_events SET payload_json=? WHERE kind='authority.claimed'", (lineage.canonical(bad),))
-    assert replicas.replica_state(target, room_id="room")["safety_status"] == "quarantined"
+    state = replicas.replica_state(target, room_id="room")
+    assert state["safety_status"] == "quarantined"
+    assert "lineage_status" not in state
+    assert "authority_history" not in state
+    assert "lineage_status" not in replicas.replica_state(target, room_id="room")
+    with sqlite3.connect(target) as conn:
+        assert conn.execute("SELECT payload_json FROM hosted_room_replica_events WHERE kind='authority.claimed'").fetchone()[0] == lineage.canonical(bad)
     with pytest.raises(rooms.HostedRoomError):
         ingest(target, page_v2(source, spans))
 

@@ -126,6 +126,9 @@ def replica_history_locked(conn, row):
 def state_fields_locked(conn, row) -> dict:
     if "replica_version" not in row.keys() or row["replica_version"] is None:
         return {}
+    # Matching descriptor/header metadata cannot overrule a failed prefix audit.
+    if row["quarantine_reason"] is not None:
+        return {}
     try:
         spans = replica_history_locked(conn, row)
     except PassiveLineageError:

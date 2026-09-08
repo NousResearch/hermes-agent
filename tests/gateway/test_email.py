@@ -831,7 +831,7 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertEqual(send_call["Subject"], "Hermes Agent")
             self.assertIn("Date", send_call)
             self.assertEqual(send_call["To"], "user@test.com")
-            self.assertEqual(send_call["From"], "hermes@test.com")
+            self.assertEqual(send_call["From"], "Hermes <hermes@test.com>")
 
 
 class TestSmtpConnectionCleanup(unittest.TestCase):

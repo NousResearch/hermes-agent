@@ -396,13 +396,43 @@ def _call(tool_name, args):
 
 # ---- Remote execution support (file-based RPC via terminal backend) ----
 
+def _sandbox_safe_cwd(env_type: str, overrides: Dict[str, Any], config: Dict[str, Any]) -> str:
+    """Resolve the cwd for a freshly built environment, sanitized like the
+    terminal and file layers do it.
+
+    A registered cwd override is a host path (a desktop/TUI/ACP session
+    recording its own workspace). On a container backend that reaches
+    ``docker run -w <host path>`` and the container fails to start (exit 125).
+    Every other builder already re-applies this guard; this one did not.
+
+    It looked harmless while the lookup above read only the collapsed
+    container id, because a CWD-only override never reached here. It was not:
+    an override carrying an isolation key (``env_type`` or ``*_image``, as RL
+    and benchmark harnesses register) keeps the raw id, so the host path came
+    through on exactly the rollouts that ask for their own sandbox.
+    """
+    from tools.terminal_tool_config import _is_container_backend, _is_unusable_container_cwd
+
+    cwd = overrides.get("cwd") or config["cwd"]
+    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd):
+        if cwd != config["cwd"]:
+            logger.info(
+                "Ignoring host/relative cwd override %r for %s backend "
+                "(won't exist in sandbox). Using %r instead.",
+                cwd, env_type, config["cwd"],
+            )
+        return config["cwd"]
+    return cwd
+
+
 def _get_or_create_env(task_id: str):
     """``(env, env_type)`` — the environment the terminal/file tools share for *task_id*, created on
     first use (same double-checked per-task lock pattern as file_tools._get_file_ops)."""
     from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
     from tools.terminal_tool import (
         _active_environments, _env_lock, _get_env_config, _last_activity,
-        _start_cleanup_thread, _creation_locks, _creation_locks_lock, _task_env_overrides,
+        _start_cleanup_thread, _creation_locks, _creation_locks_lock,
+        resolve_task_overrides,
         _resolve_container_task_id, _resolve_task_host_cwd, _is_container_backend, _select_image,
     )
     effective_task_id = _resolve_container_task_id(task_id)
@@ -423,7 +453,11 @@ def _get_or_create_env(task_id: str):
             return env, _get_env_config()["env_type"]
         config = _get_env_config()
         env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
+        # Raw key first, then the collapsed container id -- the same lookup the
+        # terminal and file layers use. Reading only the collapsed id dropped
+        # CWD-only overrides, which are registered under the raw session id and
+        # deliberately collapse so sessions share one container.
+        overrides = resolve_task_overrides(task_id)
         container_config = None
         if _is_container_backend(env_type):
             # Shared shaper: execute_code's own key subset dropped docker_extra_args / docker_forward_env /
@@ -433,7 +467,7 @@ def _get_or_create_env(task_id: str):
                      env_type, effective_task_id[:8])
         env = _create_environment(
             env_type=env_type, image=_select_image(env_type, overrides, config),
-            cwd=overrides.get("cwd") or config["cwd"], timeout=config["timeout"],
+            cwd=_sandbox_safe_cwd(env_type, overrides, config), timeout=config["timeout"],
             ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
             container_config=container_config,
             local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,

@@ -215,3 +215,84 @@ def test_existing_system_install_repairs_linger_for_configured_user(monkeypatch,
     gateway.systemd_install(system=True, run_as_user="alice")
 
     assert helper_calls == ["alice"]
+
+
+class TestSystemdStatusLingerMessage:
+    """``hermes gateway status --system`` must query the unit's own ``User=`` for linger, not
+    claim linger is never needed — cron/Kanban's ``systemd-run --user`` workers need that target
+    user's manager (#104893), the same fact ``_ensure_system_service_linger`` already acts on."""
+
+    def _install_common_mocks(self, monkeypatch, unit_path, configured_user):
+        monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway, "has_conflicting_systemd_units", lambda: False)
+        monkeypatch.setattr(gateway, "has_legacy_hermes_units", lambda: False)
+        monkeypatch.setattr(gateway, "systemd_unit_is_current", lambda system=False: True)
+        monkeypatch.setattr(
+            gateway, "_run_systemctl",
+            lambda *args, **kwargs: SimpleNamespace(stdout="active", stderr="", returncode=0),
+        )
+        monkeypatch.setattr(gateway, "_read_systemd_user_from_unit", lambda path: configured_user)
+        monkeypatch.setattr(gateway, "_print_runtime_health", lambda: None)
+        monkeypatch.setattr(gateway, "_read_systemd_unit_properties", lambda system=False, **kwargs: {})
+        monkeypatch.setattr(gateway.subprocess, "run", lambda *args, **kwargs: None)
+
+    def test_system_scope_with_configured_user_checks_that_users_linger(self, monkeypatch, tmp_path, capsys):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("[Service]\nUser=worker\n", encoding="utf-8")
+        self._install_common_mocks(monkeypatch, unit_path, "worker")
+        queried = []
+        monkeypatch.setattr(
+            gateway, "get_systemd_linger_status",
+            lambda username=None: (queried.append(username), (True, ""))[1],
+        )
+
+        gateway.systemd_status(system=True)
+
+        out = capsys.readouterr().out
+        assert queried == ["worker"]
+        assert "Systemd linger is enabled for worker" in out
+        assert "without requiring systemd linger" not in out
+
+    def test_system_scope_with_configured_user_and_disabled_linger_warns_for_that_user(
+        self, monkeypatch, tmp_path, capsys,
+    ):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("[Service]\nUser=worker\n", encoding="utf-8")
+        self._install_common_mocks(monkeypatch, unit_path, "worker")
+        monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (False, ""))
+
+        gateway.systemd_status(system=True)
+
+        out = capsys.readouterr().out
+        assert "Linger not enabled for worker" in out
+        assert "sudo loginctl enable-linger worker" in out
+        assert "$USER" not in out
+
+    def test_system_scope_without_configured_user_reports_no_linger_needed(self, monkeypatch, tmp_path, capsys):
+        """A legacy/hand-edited unit with no ``User=`` runs outright as root; no target-user linger to check."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("[Service]\n", encoding="utf-8")
+        self._install_common_mocks(monkeypatch, unit_path, None)
+        queried = []
+        monkeypatch.setattr(
+            gateway, "get_systemd_linger_status",
+            lambda username=None: (queried.append(username), (True, ""))[1],
+        )
+
+        gateway.systemd_status(system=True)
+
+        out = capsys.readouterr().out
+        assert queried == []
+        assert "System service starts at boot without requiring systemd linger" in out
+
+    def test_system_scope_unverifiable_linger_shown_only_with_deep(self, monkeypatch, tmp_path, capsys):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("[Service]\nUser=worker\n", encoding="utf-8")
+        self._install_common_mocks(monkeypatch, unit_path, "worker")
+        monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (None, "loginctl not found"))
+
+        gateway.systemd_status(system=True, deep=False)
+        assert "Could not verify" not in capsys.readouterr().out
+
+        gateway.systemd_status(system=True, deep=True)
+        assert "Could not verify systemd linger for worker (loginctl not found)" in capsys.readouterr().out

@@ -3417,7 +3417,21 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print(f"  ⚠ Systemd unit result: {result_code}")
 
     if system:
-        print("✓ System service starts at boot without requiring systemd linger")
+        if configured_user:
+            # A system unit's own User= still needs linger — cron/Kanban workers cross
+            # `systemd-run --user`, which needs that target user's manager (#104893).
+            linger_enabled, linger_detail = get_systemd_linger_status(configured_user)
+            if linger_enabled is True:
+                print(f"✓ Systemd linger is enabled for {configured_user} (worker D-Bus available)")
+            elif linger_enabled is False:
+                print(f"⚠ Linger not enabled for {configured_user} — cron and Kanban workers cannot start (no user D-Bus)")
+                print(f"  Run: sudo loginctl enable-linger {configured_user}")
+            elif deep:
+                print(f"⚠ Could not verify systemd linger for {configured_user} ({linger_detail})")
+                print("  If you want cron and Kanban workers to reach systemd-run --user, run:")
+                print(f"  sudo loginctl enable-linger {configured_user}")
+        else:
+            print("✓ System service starts at boot without requiring systemd linger")
     else:
         linger_enabled, linger_detail = get_systemd_linger_status()
         if linger_enabled is True:

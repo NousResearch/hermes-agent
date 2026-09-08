@@ -56,3 +56,26 @@ def test_passive_dock_fills_rows_but_keeps_input_live(monkeypatch, columns, rows
                 app.exit()
                 await task
     asyncio.run(run())
+
+
+def test_expanded_roster_reserves_activity_before_long_task_names():
+    from prompt_toolkit.data_structures import Size
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+    from prompt_toolkit.utils import get_cwidth
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor, build_monitor_application
+
+    monitor = SubagentMonitor(SimpleNamespace())
+    monitor.entries = [dict(subagent_id=str(i), goal='Inspect 界 ' * 30,
+        elapsed=24, status='running', last_tool='terminal') for i in range(6)]
+    monitor.selected_id = '0'
+    output = DummyOutput()
+    with create_pipe_input() as pipe:
+        for columns, rows in [(100, 30), (80, 20)]:
+            output.get_size = lambda: Size(rows=rows, columns=columns)
+            app = build_monitor_application(monitor, input=pipe, output=output)
+            fragments = app.layout.current_control.text()
+            assert len(fragments) == len(monitor.entries)
+            for _, text in fragments:
+                assert '24s' in text and 'running' in text and 'last: terminal' in text
+                assert get_cwidth(text.rstrip('\n')) == columns

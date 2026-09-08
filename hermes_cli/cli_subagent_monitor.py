@@ -130,10 +130,14 @@ def build_monitor_application(monitor, **kwargs):
         rows = []
         for row in monitor.entries:
             selected = row['subagent_id'] == monitor.selected_id
-            text = f"{'❯' if selected else ' '} {row['elapsed']}s · {row.get('status') or 'starting'} · {row.get('goal') or row['subagent_id']}"
-            if row.get('last_tool'):
-                text += f" · last: {row['last_tool']}"
-            rows.append(('class:subagent-dock.selected' if selected else '', _clip(text, size.columns) + '\n'))
+            prefix = f"{row['elapsed']}s · {row.get('status') or 'starting'} · "
+            activity = f" · last: {row['last_tool']}" if row.get('last_tool') else ''
+            goal_width = max(0, size.columns - 2 - get_cwidth(prefix + activity))
+            goal = _clip(row.get('goal') or row['subagent_id'], goal_width)
+            text = f"{'❯' if selected else ' '} " + _clip(prefix + goal + activity, max(0, size.columns - 2))
+            # Pad selection in terminal cells, not codepoints (task names may be wide).
+            text += ' ' * max(0, size.columns - get_cwidth(text))
+            rows.append(('class:subagent-dock.selected' if selected else '', text + '\n'))
         return rows or [('', 'No live subagents. Results arrive in the conversation.')]
 
     def cursor():

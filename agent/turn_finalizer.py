@@ -336,7 +336,13 @@ def _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_r
 
 def _append_file_mutation_footer(agent, final_response, logger):
     """Append the verifier advisory when ``write_file`` / ``patch`` calls failed and were
-    never superseded by a successful write to the same path (surfaces over-claiming)."""
+    never superseded by a successful write to the same path (surfaces over-claiming).
+
+    Failures whose file changed on disk through an UNTRACKED writer after the tracked
+    failure are reconciled first (``_reconcile_file_mutation_failures``): the entry is
+    reworded rather than dropped, so the absolute "NOT modified" claim is never false while
+    the over-claiming signal is preserved.
+    """
     try:
         # File-mutation verifier footer. This catches the specific case — reported by Ben Eng
         # (#15524-adjacent) — where a model issues a batch of parallel patches, half of them fail with
@@ -347,6 +353,7 @@ def _append_file_mutation_footer(agent, final_response, logger):
         # Empty/interrupted turns already have other surface text that shouldn't be augmented.
         _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
         if _failed and agent._file_mutation_verifier_enabled():
+            _failed = agent._reconcile_file_mutation_failures(_failed)
             footer = agent._format_file_mutation_failure_footer(_failed)
             if footer:
                 final_response = final_response.rstrip() + "\n\n" + footer

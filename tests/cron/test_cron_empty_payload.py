@@ -15,7 +15,8 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import sys
+import types
 
 import pytest
 
@@ -73,12 +74,12 @@ def test_valid_shapes_are_accepted(hermes_env):
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
 
     no_agent_job = create_job(
-        prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local"
+        prompt=None, schedule="every 5m", script="w.sh", target="scheduler", no_agent=True, deliver="local"
     )
     assert no_agent_job["no_agent"] is True
 
     script_only_agent_job = create_job(
-        prompt=None, schedule="every 5m", script="w.sh", deliver="local"
+        prompt=None, schedule="every 5m", script="w.sh", target="scheduler", deliver="local"
     )
     assert script_only_agent_job["script"] == "w.sh"
     assert script_only_agent_job["no_agent"] is False
@@ -111,6 +112,26 @@ def test_update_job_rejects_clearing_the_only_payload(hermes_env):
     # Nothing was persisted.
     assert get_job(job["id"])["prompt"] == "check the news"
 
+
+def test_update_job_rejects_dropping_last_skill_from_promptless_job(hermes_env):
+    from cron.jobs import create_job, update_job
+
+    job = create_job(prompt=None, schedule="every 5m", skills=["daily-report"], deliver="local")
+
+    with pytest.raises(ValueError, match="nothing to run"):
+        update_job(job["id"], {"skills": []})
+
+
+def test_update_job_rejects_clearing_script_from_promptless_job(hermes_env):
+    from cron.jobs import create_job, update_job
+
+    (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
+    job = create_job(prompt=None, schedule="every 5m", script="w.sh", target="scheduler", deliver="local")
+
+    with pytest.raises(ValueError, match="nothing to run"):
+        update_job(job["id"], {"script": ""})
+
+
 def test_update_job_rejects_toggling_no_agent_on_without_a_script(hermes_env):
     """create_job enforces no_agent ⇒ script; update_job must too."""
     from cron.jobs import create_job, get_job, update_job
@@ -128,7 +149,7 @@ def test_update_job_rejects_removing_script_from_a_no_agent_job(hermes_env, blan
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
-        prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local"
+        prompt=None, schedule="every 5m", script="w.sh", target="scheduler", no_agent=True, deliver="local"
     )
 
     with pytest.raises(ValueError, match="no_agent=True requires a script"):
@@ -142,7 +163,7 @@ def test_update_job_rejects_swapping_script_for_prompt_on_a_no_agent_job(hermes_
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
-        prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local"
+        prompt=None, schedule="every 5m", script="w.sh", target="scheduler", no_agent=True, deliver="local"
     )
 
     with pytest.raises(ValueError, match="no_agent=True requires a script"):
@@ -154,7 +175,7 @@ def test_update_job_allows_dropping_script_when_no_agent_is_turned_off(hermes_en
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
-        prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local"
+        prompt=None, schedule="every 5m", script="w.sh", target="scheduler", no_agent=True, deliver="local"
     )
 
     update_job(job["id"], {"no_agent": False, "script": None, "prompt": "check the news"})
@@ -168,9 +189,10 @@ def test_update_job_allows_swapping_the_script_of_a_no_agent_job(hermes_env):
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
-        prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local"
+        prompt=None, schedule="every 5m", script="w.sh", target="scheduler", no_agent=True, deliver="local"
     )
 
+    (hermes_env / "scripts" / "other.sh").write_text("echo other\n")
     update_job(job["id"], {"script": "other.sh"})
     assert get_job(job["id"])["script"] == "other.sh"
 
@@ -180,7 +202,7 @@ def test_update_job_allows_clearing_prompt_when_script_remains(hermes_env):
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
-        prompt="summarize this", schedule="every 5m", script="w.sh", deliver="local"
+        prompt="summarize this", schedule="every 5m", script="w.sh", target="scheduler", deliver="local"
     )
 
     update_job(job["id"], {"prompt": ""})
@@ -227,10 +249,13 @@ def _legacy_empty_job(hermes_env):
     for stored in jobs:
         if stored["id"] == job["id"]:
             stored["prompt"] = "   "
+            stored.pop("target", None)
     save_jobs(jobs)
-    return dict(job, prompt="   ")
+    legacy_job = dict(job, prompt="   ")
+    legacy_job.pop("target", None)
+    return legacy_job
 
-def test_run_job_fails_closed_and_never_builds_an_agent(hermes_env):
+def test_run_job_fails_closed_and_never_builds_an_agent(hermes_env, monkeypatch):
     import cron.scheduler as scheduler
 
     job = _legacy_empty_job(hermes_env)
@@ -239,8 +264,11 @@ def test_run_job_fails_closed_and_never_builds_an_agent(hermes_env):
         def __init__(self, *a, **kw):  # pragma: no cover - must never run
             raise AssertionError("AIAgent must not be constructed for an empty job")
 
-    with patch("run_agent.AIAgent", _Boom):
-        success, doc, final, error = scheduler.run_job(job)
+    # ``run_job`` imports this binding only after its fail-closed payload guard.
+    # Install a lightweight module so an accidental import raises without loading
+    # the real runtime bootstrap under the test's isolated HERMES_HOME.
+    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=_Boom))
+    success, doc, final, error = scheduler.run_job(job)
 
     assert success is False
     assert "nothing to run" in error
@@ -270,14 +298,17 @@ def _legacy_no_agent_scriptless_job(hermes_env, script_value=None):
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
-        prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local"
+        prompt=None, schedule="every 5m", script="w.sh", target="scheduler", no_agent=True, deliver="local"
     )
     jobs = load_jobs()
     for stored in jobs:
         if stored["id"] == job["id"]:
             stored["script"] = script_value
+            stored.pop("target", None)
     save_jobs(jobs)
-    return dict(job, script=script_value)
+    legacy_job = dict(job, script=script_value)
+    legacy_job.pop("target", None)
+    return legacy_job
 
 @pytest.mark.parametrize("script_value", [None, "", "   "])
 def test_run_job_pauses_a_legacy_no_agent_job_without_a_script(hermes_env, script_value):
@@ -321,6 +352,7 @@ def test_run_job_does_not_block_a_valid_no_agent_job(hermes_env):
     script.write_text("echo hello\n")
 
     job = dict(_legacy_empty_job(hermes_env), script="w.sh", no_agent=True)
+    assert "target" not in job
     success, doc, final, error = scheduler.run_job(job)
 
     assert success is True
@@ -395,7 +427,7 @@ def test_tool_update_rejects_the_destructive_shape_on_a_script_job(hermes_env):
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
-        prompt=None, schedule="0 2 * * *", script="w.sh",
+        prompt=None, schedule="0 2 * * *", script="w.sh", target="scheduler",
         name="Daily Wiki Backup", deliver="local",
     )
     before = dict(get_job(job["id"]))
@@ -413,7 +445,7 @@ def test_tool_update_rejects_the_destructive_shape_on_a_no_agent_job(hermes_env)
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
-        prompt=None, schedule="0 8 * * *", script="w.sh", no_agent=True,
+        prompt=None, schedule="0 8 * * *", script="w.sh", target="scheduler", no_agent=True,
         name="Lil'Log RSS ingest watchdog", deliver="local",
     )
     before = dict(get_job(job["id"]))
@@ -437,7 +469,7 @@ def test_tool_update_blank_name_is_a_no_op(hermes_env):
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
-        prompt=None, schedule="0 2 * * *", script="w.sh",
+        prompt=None, schedule="0 2 * * *", script="w.sh", target="scheduler",
         name="Daily Wiki Backup", deliver="local",
     )
 
@@ -456,3 +488,36 @@ def test_tool_update_still_renames_when_a_real_name_is_given(hermes_env):
 
     assert result["success"] is True
     assert get_job(job["id"])["name"] == "new"
+
+
+def test_tool_update_blank_scalars_still_clear_workdir_and_context_from(hermes_env):
+    """KNOWN HOLE, pinned deliberately — not an endorsement.
+
+    ``workdir:""`` / ``context_from:[]`` / ``enabled_toolsets:[]`` are
+    documented clears, so a bulk-empty update that survives the payload guard
+    (because it keeps a script) still silently drops all three. Closing this
+    means changing documented semantics; recorded as a finding in
+    RECOVERY_REPORT.md instead. This test exists so the behaviour cannot change
+    unnoticed.
+    """
+    from cron.jobs import create_job, get_job
+
+    (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
+    (hermes_env / "wd").mkdir()
+    job = create_job(
+        prompt=None, schedule="0 2 * * *", script="w.sh", target="scheduler", name="keeper",
+        enabled_toolsets=["file"], workdir=str(hermes_env / "wd"),
+        deliver="local",
+    )
+    assert get_job(job["id"])["workdir"] == str(hermes_env / "wd")
+
+    result = _cronjob(job_id=job["id"], action="update", script="w.sh", target="scheduler",
+                      workdir="", enabled_toolsets=[], context_from=[])
+
+    assert result["success"] is True
+    stored = get_job(job["id"])
+    assert stored["name"] == "keeper"          # protected by the fix above
+    assert stored["script"] == "w.sh"          # payload survives
+    assert stored["workdir"] is None           # still clobbered
+    assert stored["enabled_toolsets"] is None  # still clobbered
+    assert stored["context_from"] is None      # still clobbered

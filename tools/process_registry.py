@@ -1319,11 +1319,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
+        # ``setsid`` makes the stored PID the leader of a dedicated remote
+        # process group.  _signal_kill can therefore stop script descendants
+        # instead of only the shell wrapper that launched them.
+        payload = f"{command} > {q(log_path)} 2>&1; rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)}"
         bg_command = (
-            f"mkdir -p {q(temp_dir)} && "
-            f"( nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
-            f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
-            f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
+            f"if mkdir -p {q(temp_dir)}; then setsid bash -lc {q(payload)} & "
+            f"echo $! > {q(pid_path)} && cat {q(pid_path)}; fi")
         try:
             result = env.execute(bg_command, timeout=timeout, rewrite_compound_background=False)
             output = result.get("output", "").strip()
@@ -2213,7 +2215,18 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
-            session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+            # spawn_via_env starts every remote process with setsid, so this
+            # PID is its own process-group leader. Terminate the entire group;
+            # a wrapper-only kill would orphan a script child it backgrounded.
+            result = session.env_ref.execute(
+                f"kill -TERM -{session.pid} 2>/dev/null", timeout=5
+            )
+            if not isinstance(result, dict) or result.get("returncode", result.get("exit_code")) != 0:
+                detail = (
+                    result.get("error") or result.get("output") or result.get("stderr")
+                    if isinstance(result, dict) else repr(result)
+                )
+                return {"status": "error", "error": f"remote process-group kill failed: {detail or result}"}
         elif session.detached and session.pid_scope == "host" and session.pid:
             # Identity check, not bare liveness: a gone/recycled PID means our
             # process exited — never tree-kill the stranger. Still stop an owned

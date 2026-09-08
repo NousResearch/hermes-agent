@@ -34,6 +34,7 @@ import { PreviewStatusRow } from './preview-row'
 import { SessionControlSections } from './session-control'
 import { useSessionValue } from './session-control-utils'
 import { StatusItemRow } from './status-row'
+import { SubagentSection } from './subagent-section'
 
 // Slow safety-net poll for silent exits (processes without notify_on_complete
 // emit no event when they die). Only armed while a running row is on screen.
@@ -192,6 +193,12 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   }
 
   for (const group of groups) {
+    if (group.type === 'subagent' && sessionId) {
+      sections.push({ key: group.type, node: <SubagentSection key={sessionId} sessionId={sessionId} /> })
+
+      continue
+    }
+
     sections.push({
       key: group.type,
       node: (

@@ -320,7 +320,7 @@ function StreamLine({
   )
 }
 
-function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: number; nowMs: number }) {
+export function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: number; nowMs: number }) {
   const { t } = useI18n()
   const running = node.status === 'running' || node.status === 'queued'
   const elapsed = useElapsedSeconds(running, `subagent:${node.id}`)

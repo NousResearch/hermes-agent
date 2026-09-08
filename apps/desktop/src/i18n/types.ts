@@ -1404,6 +1404,14 @@ export interface Translations {
     streaming: string
     files: string
     moreFiles: (count: number) => string
+    moreAgents: (count: number) => string
+    queued: string
+    waitingActivity: string
+    steer: string
+    steerPlaceholder: string
+    steerQueued: string
+    stopRequested: string
+    requestRejected: string
     delegation: (index: number) => string
     workers: (count: number) => string
     workersActive: (count: number) => string

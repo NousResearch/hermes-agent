@@ -742,15 +742,55 @@ class _DeadWorker:
     event_payload: dict
     protocol_violation: bool = False
     rate_limited: bool = False
+    supervisor_restart: bool = False
 
     @property
     def run_outcome(self) -> str:
         # A rate-limited requeue is recorded as ``rate_limited`` so board history
-        # doesn't show a phantom crash for a quota wall.
-        return "rate_limited" if self.rate_limited else "crashed"
+        # doesn't show a phantom crash for a quota wall; a supervisor-restart
+        # casualty as ``supervisor_restart`` so a gateway restart (OOM kill,
+        # operator restart, crash) doesn't masquerade as task crashes.
+        if self.rate_limited:
+            return "rate_limited"
+        if self.supervisor_restart:
+            return "supervisor_restart"
+        return "crashed"
 
 
-def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
+def _supervisor_restart_boot_ts() -> Optional[float]:
+    """Create time of THIS dispatcher process, or ``None`` when unknowable.
+
+    Uses the same psutil helper as ``process_identity`` (portable across
+    Linux/macOS/Windows); ``None`` makes callers fail safe to legacy
+    crash classification.
+    """
+    try:
+        import psutil  # type: ignore
+
+        return psutil.Process().create_time()
+    except Exception:
+        return None
+
+
+def _supervisor_restart_collateral(claim_started_at: Optional[float]) -> bool:
+    """True when a dead pre-boot claim is provably supervisor-restart collateral.
+
+    A task claimed before this process was created cannot have been served
+    by a child of this process: the previous dispatcher/gateway life (and
+    its in-flight workers) died with a supervisor restart. Fails safe
+    (False → legacy crash accounting) whenever either timestamp is missing.
+    """
+    boot_ts = _supervisor_restart_boot_ts()
+    if claim_started_at is None or boot_ts is None:
+        return False
+    return claim_started_at < boot_ts
+
+
+def _classify_dead_worker(
+    pid: int,
+    claimer: Optional[str],
+    claim_started_at: Optional[float] = None,
+) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping."""
     kind, code = _classify_worker_exit(pid)
     if kind == "clean_exit":
@@ -779,6 +819,28 @@ def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
         error_text = f"pid {pid} exited with code {code}"
     elif kind == "signaled":
         error_text = f"pid {pid} killed by signal {code}"
+    elif kind == "unknown" and _supervisor_restart_collateral(claim_started_at):
+        # The claim predates this dispatcher process: the dead PID cannot
+        # have been our child. A previous gateway/dispatcher life (OOM kill,
+        # operator restart, crash) took its in-flight workers with it via
+        # supervisor cgroup cleanup, and this process never observed those
+        # exits — so the reap registry says ``unknown``. Supervisor-restart
+        # collateral, not a task failure: neutral release, no failure tick
+        # (same accounting as the rate-limited quota wall).
+        return _DeadWorker(
+            "supervisor_restart", code,
+            f"pid {pid} died with the previous gateway "
+            f"(supervisor restart collateral — not a task failure)",
+            "gateway_restart_collateral",
+            {
+                "pid": pid,
+                "claimer": claimer,
+                "exit_kind": "supervisor_restart",
+                "gateway_boot_ts": _supervisor_restart_boot_ts(),
+                "claim_started_at": claim_started_at,
+            },
+            supervisor_restart=True,
+        )
     else:
         error_text = f"pid {pid} not alive"
     event_payload = {"pid": pid, "claimer": claimer}
@@ -794,6 +856,9 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
+    # Gateway-restart collateral: neutral releases (no failure counted, not
+    # crashes) — surfaced via ``detect_crashed_workers._last_supervisor_restart``.
+    supervisor_restarts: list[str] = field(default_factory=list)
     # ``(task_id, pid, claimer, protocol_violation, error_text)``: accounted
     # after the txn via ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, bool, str]] = field(default_factory=list)
@@ -825,7 +890,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 continue
 
             pid = int(row["worker_pid"])
-            dead = _classify_dead_worker(pid, row["claim_lock"])
+            dead = _classify_dead_worker(pid, row["claim_lock"], claim_started_at=started_at)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -854,18 +919,22 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 "outcome": dead.run_outcome,
                 "retry_status": retry_status,
             })
-            if dead.rate_limited or dead.protocol_violation:
+            if dead.rate_limited or dead.protocol_violation or dead.supervisor_restart:
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
                 # a rate-limited requeue must show ``check_respawn_guard`` a quota
                 # blocker; a below-budget protocol violation never reaches
                 # ``_record_task_failure`` (which stamps this column), yet the
-                # board UI and retry worker need the corrective message.
+                # board UI and retry worker need the corrective message; a
+                # supervisor-restart casualty is not a task failure at all but
+                # the board/retry context should still say what happened.
                 conn.execute(
                     "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
                     (dead.error_text[:500], row["id"]),
                 )
             if dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
+            elif dead.supervisor_restart:
+                sweep.supervisor_restarts.append(row["id"])
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append(
@@ -952,6 +1021,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # requeues did NOT count a failure and are NOT crashes.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     detect_crashed_workers._last_rate_limited = sweep.rate_limited  # type: ignore[attr-defined]
+    # Gateway-restart collateral: neutral releases, neither crash nor quota wall.
+    detect_crashed_workers._last_supervisor_restart = sweep.supervisor_restarts  # type: ignore[attr-defined]
     # Fired only now, after the reclaim txn AND breaker accounting have
     # committed, so subscribers always observe fully durable board state.
     if sweep.exited_hook_payloads and _kb._kanban_observer_consumed("on_kanban_worker_exited"):

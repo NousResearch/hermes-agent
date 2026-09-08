@@ -1416,3 +1416,89 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         conn.close()
 
 
+
+
+# ---------------------------------------------------------------------------
+# Gateway-restart collateral: dead pre-boot claim is not a task crash
+# ---------------------------------------------------------------------------
+
+
+def test_supervisor_restart_preboot_claim_neutral_release(kanban_home, monkeypatch):
+    """Dead PID + unknown exit + claim predating dispatcher boot -> neutral.
+
+    Expected: outcome ``supervisor_restart``, event kind
+    ``gateway_restart_collateral``, no failure-counter tick, task back at
+    ``ready`` for respawn.
+    """
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="pre-boot collateral", assignee="worker")
+        kb.claim_task(conn, tid)
+        kbd._set_worker_pid(conn, tid, 234567)
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+        boot_ts = time.time() + 3600.0  # "process booted" an hour from now
+        monkeypatch.setattr(kbd, "_supervisor_restart_boot_ts", lambda: boot_ts)
+
+        crashed = kbd.detect_crashed_workers(conn)
+
+        assert crashed == []  # not a crash — neutral release
+        assert kbd.detect_crashed_workers._last_supervisor_restart == [tid]
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+        run = kb.latest_run(conn, tid)
+        assert run.outcome == "supervisor_restart"
+        assert "supervisor restart collateral" in (run.error or "")
+        ev = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert ev is not None and ev["kind"] == "gateway_restart_collateral"
+    finally:
+        conn.close()
+
+
+def test_supervisor_restart_postboot_claim_stays_crashed(kanban_home, monkeypatch):
+    """Claim AFTER dispatcher boot + unknown exit -> still a genuine crash.
+
+    The classification only fires when the claim provably predates the
+    dispatcher process: a newer claim with a dead unregistered PID keeps
+    legacy crash accounting.
+    """
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="post-boot unknown", assignee="worker")
+        kb.claim_task(conn, tid)
+        kbd._set_worker_pid(conn, tid, 456789)
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+        boot_ts = time.time() - 3600.0  # booted an hour ago
+        monkeypatch.setattr(kbd, "_supervisor_restart_boot_ts", lambda: boot_ts)
+
+        crashed = kbd.detect_crashed_workers(conn)
+
+        assert crashed == [tid]
+        run = kb.latest_run(conn, tid)
+        assert run.outcome == "crashed"
+        assert kbd.detect_crashed_workers._last_supervisor_restart == []
+    finally:
+        conn.close()
+
+
+def test_supervisor_restart_boot_ts_unavailable_stays_crashed(kanban_home, monkeypatch):
+    """Boot ts unavailable -> fail safe: legacy crashed classification."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="no boot ts", assignee="worker")
+        kb.claim_task(conn, tid)
+        kbd._set_worker_pid(conn, tid, 567890)
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+        monkeypatch.setattr(kbd, "_supervisor_restart_boot_ts", lambda: None)
+
+        crashed = kbd.detect_crashed_workers(conn)
+
+        assert crashed == [tid]
+        run = kb.latest_run(conn, tid)
+        assert run.outcome == "crashed"
+    finally:
+        conn.close()
+

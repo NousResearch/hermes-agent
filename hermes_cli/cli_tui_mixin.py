@@ -584,15 +584,20 @@ class CLITuiMixin:
             panel.blank()
         return panel.close()
 
-    def _render_scroll_list_panel(self, state, title, hint, labels, *, min_width, max_width, indent):
+    def _render_scroll_list_panel(self, state, title, hint, labels, *, min_width, max_width, indent,
+                                  note=None):
         """Titled panel with a hint row and a scrolling selectable list (model picker, palette).
 
         The panel renders into a Window with no max height, so the visible slice is limited to
         the terminal rows or the bottom border and trailing items get clipped on long lists
         (e.g. Ollama Cloud's 36+ models). ``state["_scroll_offset"]`` is updated in place.
+
+        ``note`` is an optional second hint row. Rows do not wrap, so a caller with two things
+        to say passes them separately instead of concatenating into one over-long hint.
         """
         from cli import HermesCLI, _panel_box_width, _wrap_panel_text
-        box_width = _panel_box_width(title, [hint] + labels, min_width=min_width, max_width=max_width)
+        _width_lines = [hint] + ([note] if note else []) + labels
+        box_width = _panel_box_width(title, _width_lines, min_width=min_width, max_width=max_width)
         inner_text_width = max(8, box_width - 6)
         selected = state.get("selected", 0)
         try:
@@ -607,6 +612,8 @@ class CLITuiMixin:
         panel = _Panel('class:clarify-border', box_width, title, 'class:clarify-title')
         panel.blank()
         panel.row('class:clarify-hint', hint)
+        if note:
+            panel.row('class:clarify-hint', note)
         panel.blank()
         for idx in range(scroll_offset, min(scroll_offset + visible, len(labels))):
             style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
@@ -654,7 +661,8 @@ class CLITuiMixin:
             else:
                 hint = "No models listed for this provider. Use Back or Cancel."
         return self._render_scroll_list_panel(
-            state, title, hint, choices, min_width=46, max_width=84, indent='  ')
+            state, title, hint, choices, min_width=46, max_width=84, indent='  ',
+            note=state.get("fallback_note") or None)
 
     def _get_command_palette_display_fragments(self):
         state = self._command_palette_state

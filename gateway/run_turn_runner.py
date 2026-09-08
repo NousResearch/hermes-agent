@@ -45,6 +45,43 @@ class _ExecApprovalDeclined(RuntimeError):
     """
 
 
+class _InterimRateGate:
+    """Per-session cooldown for interim assistant commentary (issue #44926).
+
+    0/disabled passes everything. Approval, final-response and error paths never
+    route through the gated callback, so urgent messages are exempt by construction.
+    Suppressed messages are dropped, not queued — replaying them after the window
+    would deliver stale commentary.
+    """
+
+    def __init__(self, min_interval_seconds: Any) -> None:
+        try:
+            self._min_interval = max(0.0, float(min_interval_seconds or 0))
+        except (TypeError, ValueError):
+            self._min_interval = 0.0
+        self._last_emit: Optional[float] = None  # monotonic timestamp of last admitted send
+        self._lock = threading.Lock()
+
+    @property
+    def enabled(self) -> bool:
+        return self._min_interval > 0
+
+    def allow(self, text: Any) -> bool:
+        """True if this commentary may send now; records the send when allowed.
+
+        ``text`` is accepted but not consumed: every message routed here is
+        non-urgent by construction (approvals, errors and finals never reach
+        this gate), so urgency has no bearing on admission.
+        """
+        if not self.enabled:
+            return True
+        with self._lock:
+            now = time.monotonic()
+            if self._last_emit is not None and (now - self._last_emit) < self._min_interval:
+                return False
+            self._last_emit = now
+            return True
+
 class TurnRunner:
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
@@ -852,6 +889,7 @@ class TurnRunner:
             scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
         )
         want_interim_messages = ctx.interim_assistant_messages_enabled
+        interim_rate_gate = _InterimRateGate(getattr(ctx, "interim_assistant_min_interval_seconds", 0) or 0)
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
@@ -883,6 +921,10 @@ class TurnRunner:
 
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
+                return
+            # Non-urgent commentary only (issue #44926): approvals, errors and finals
+            # never route through here. Fresh gate per turn → first message always passes.
+            if interim_rate_gate.enabled and not interim_rate_gate.allow(text):
                 return
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)

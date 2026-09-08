@@ -843,6 +843,9 @@ DEFAULT_CONFIG = {
         # Gateway: natural mid-turn assistant status messages. Desktop: keep mid-turn narration
         # between tool calls instead of collapsing to the final message.
         "interim_assistant_messages": True,
+        # Gateway: minimum seconds between interim assistant commentary messages (0 = unrestricted).
+        # Per-platform override supported; finals/approvals are never delayed (#44926).
+        "interim_assistant_min_interval_seconds": 0,
         # Codex Responses commentary channel: true delivers completed commentary as mid-turn interim
         # updates; false routes it to reasoning (visible only with show_reasoning).
         "show_commentary": True,

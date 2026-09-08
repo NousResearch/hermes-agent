@@ -4338,6 +4338,7 @@ class GatewayRunner(
         log_mode_enabled: Any = None
         log_queue: Any = None
         interim_assistant_messages_enabled: Any = None
+        interim_assistant_min_interval_seconds: Any = 0
         _thinking_enabled: Any = None
         _native_slack_task_cards: Any = None
         needs_progress_queue: Any = None

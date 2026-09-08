@@ -21,6 +21,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
+    # Gateway: minimum seconds between interim assistant commentary messages (0 = unrestricted).
+    # Rate-limits non-urgent mid-turn chatter for mobile gateways with send limits (#44926).
+    "interim_assistant_min_interval_seconds": 0,
     "long_running_notifications": True,
     "busy_ack_detail": True,
     "busy_steer_ack_enabled": True,  # busy_input_mode=steer echo; the text still lands in the run
@@ -147,11 +150,22 @@ def _norm_int(value: Any) -> int:
         return 0
 
 
+def _norm_nonneg_seconds(value: Any) -> int:
+    """Seconds normaliser: ints pass, junk → 0, negatives clamp to 0 (off); fractional values truncate (1.9 → 1)."""
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(float(value)))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 _NORMALISERS: dict[str, Any] = {
     "tool_progress": _norm_tristate("all", "off", {"off", "new", "all", "verbose", "log"}),
     "show_reasoning": _norm_bool,
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,
+    "interim_assistant_min_interval_seconds": _norm_nonneg_seconds,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,

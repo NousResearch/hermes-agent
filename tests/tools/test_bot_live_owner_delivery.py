@@ -69,6 +69,12 @@ def test_corrupt_receipt_does_not_block_other_pending_delivery(tmp_path):
         root / ("c" * 32 + ".json"): json.dumps(dict(
             delivery_id="../wrong", id="../wrong", status="queued", created_at=3,
             sequence=3, owner=owner, message="damaged-id", **owner)),
+        root / ("1" * 32 + ".json"): json.dumps(dict(
+            delivery_id="1" * 32, id="1" * 32, status=[], created_at=4,
+            sequence=4, owner=owner, message="damaged-array-status", **owner)),
+        root / ("2" * 32 + ".json"): json.dumps(dict(
+            delivery_id="2" * 32, id="2" * 32, status={}, created_at=5,
+            sequence=5, owner=owner, message="damaged-object-status", **owner)),
     }
     for path, contents in damaged.items():
         path.write_text(contents, encoding="utf-8")

@@ -653,6 +653,7 @@ def test_pid_liveness_fingerprint_survives_wall_clock_step(monkeypatch):
     # (NTP resync, WSL2 host sleep), which used to prune a live session's lease.
     # The boot-relative fingerprint must not follow the wall clock.
     monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
+    monkeypatch.setattr(active_sessions, "_fingerprint_is_boot_relative", lambda: True)
     monkeypatch.setattr("gateway.status.get_process_start_time", lambda _pid: 1234567)
     # Legacy probe reports the same process one wall-clock second later.
     monkeypatch.setattr(
@@ -667,15 +668,40 @@ def test_pid_liveness_fingerprint_survives_wall_clock_step(monkeypatch):
 
 
 def test_pid_liveness_fingerprint_detects_pid_reuse(monkeypatch):
-    # A different fingerprint on a live pid is a recycled pid: the lease must die.
+    # A different fingerprint on a live pid is a recycled pid: the lease must die,
+    # on both the exact /proc basis and the tolerance fallback basis (the delta of
+    # a recycled pid is its whole age — far beyond the 2s band).
     monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
     monkeypatch.setattr("gateway.status.get_process_start_time", lambda _pid: 7654321)
-    assert active_sessions._pid_liveness(4242, 1234567) is False
+    for basis in (True, False):
+        monkeypatch.setattr(active_sessions, "_fingerprint_is_boot_relative", lambda: basis)
+        assert active_sessions._pid_liveness(4242, 1234567) is False
     entry = {
         "lease_id": "x", "session_id": "s", "surface": "cli",
         "pid": 4242, "process_start_time": 1234567,
     }
     assert active_sessions._prune_dead([entry]) == []
+
+
+def test_pid_liveness_fingerprint_fallback_basis_tolerates_clock_step(monkeypatch):
+    # Without /proc the fingerprint falls back to psutil create_time() centiseconds,
+    # which still follows the wall clock — the reporter's macOS platform (#105714):
+    # a 1.0s step must not kill a live lease, while PID reuse still must.
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
+    monkeypatch.setattr(active_sessions, "_fingerprint_is_boot_relative", lambda: False)
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda _pid: 1234567 + 100)
+    assert active_sessions._pid_liveness(4242, 1234567) is True
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda _pid: 1234567 + 10_000)
+    assert active_sessions._pid_liveness(4242, 1234567) is False
+
+
+def test_pid_liveness_fingerprint_proc_basis_stays_exact(monkeypatch):
+    # On the /proc basis the fingerprint is boot-relative ticks: any drift is a
+    # different process, so comparison stays exact even inside the fallback band.
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
+    monkeypatch.setattr(active_sessions, "_fingerprint_is_boot_relative", lambda: True)
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda _pid: 1234567 + 100)
+    assert active_sessions._pid_liveness(4242, 1234567) is False
 
 
 def test_pid_liveness_legacy_epoch_float_keeps_legacy_probe(monkeypatch):

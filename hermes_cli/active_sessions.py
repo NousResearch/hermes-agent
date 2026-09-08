@@ -313,15 +313,26 @@ def _process_start_time(pid: int) -> Optional[float]:
 
 
 def _process_start_fingerprint(pid: int) -> Optional[int]:
-    # Boot-relative start fingerprint — the PID-reuse guard primitive already used by
-    # gateway.status (/proc/<pid>/stat field 22 on Linux, centisecond create_time
-    # elsewhere). Unlike the wall-clock probe above it does not move when the clock
-    # steps (NTP resync, WSL2 host sleep), so a live lease stays validated (#105714).
+    # Start fingerprint — the PID-reuse guard primitive already used by
+    # gateway.status: /proc/<pid>/stat field 22 on Linux (boot-relative ticks,
+    # immune to wall-clock steps), psutil create_time() centiseconds elsewhere.
+    # The two bases need different comparisons; see _fingerprint_is_boot_relative.
     try:
         from gateway.status import get_process_start_time
         return get_process_start_time(pid)
     except Exception:
         return None
+
+
+_FINGERPRINT_TOLERANCE_TICKS = 200  # 2s in centiseconds; fallback basis only (#105714)
+
+
+def _fingerprint_is_boot_relative() -> bool:
+    # True when gateway.status serves the fingerprint from /proc (procfs mounted):
+    # boot-relative ticks that a wall-clock step cannot move. False means the
+    # psutil create_time() fallback, which still follows the wall clock — the
+    # #105714 reporter measured a 1.0s shift after sleep/wake on macOS.
+    return Path("/proc/self/stat").exists()
 
 
 def _optional_float(value: Any) -> Optional[float]:
@@ -351,12 +362,17 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
     if not exists:
         return False
     if type(process_start_time) is int:
-        # Fingerprint entries compare exactly: same ticks means the same process, and
-        # a clock step cannot counterfeit either side of the comparison.
         current = _process_start_fingerprint(pid_int)
         if current is None:
             return True if lenient else None
-        return current == process_start_time
+        if _fingerprint_is_boot_relative():
+            # Boot-relative ticks: the same value means the same process, and a
+            # clock step cannot counterfeit either side of the comparison.
+            return current == process_start_time
+        # Fallback basis is wall-clock centiseconds, which still shifts on clock
+        # steps: tolerate the shift (reporter measured 1.0s) while still catching
+        # PID reuse, whose age delta is seconds-to-days, never ~2s (#105714).
+        return abs(current - process_start_time) <= _FINGERPRINT_TOLERANCE_TICKS
     expected_start = _optional_float(process_start_time)
     if expected_start is None:
         return True

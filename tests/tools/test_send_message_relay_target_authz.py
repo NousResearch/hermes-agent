@@ -1013,6 +1013,133 @@ def test_a_missing_relay_adapter_is_still_an_absence(monkeypatch):
     assert eg.authorize_relay_target("discord", "999") is not None
 
 
+def test_a_raising_fronts_platform_attribute_is_a_fault_not_an_absence(monkeypatch):
+    """Reading the attribute can raise, and that is still a FAULT.
+
+    Reviewer finding, reproduced before fixing. `fronts_platform` may be a
+    property or descriptor, so the LOOKUP itself can raise — and the lookup
+    used to sit inside the absence handler, which returned None and degraded
+    to the config snapshot:
+
+        live=None, routed=False, verdict=None   ← unattested target authorized
+
+    The earlier test only made an already-retrieved METHOD raise, so it could
+    not catch this. Only `relay is None` is absence now; everything about a
+    present adapter, attribute access included, is a fault.
+    """
+    from types import SimpleNamespace
+
+    import gateway.relay as gr
+    import gateway.relay.egress as eg
+    import gateway.run as gr_run
+    from gateway.config import Platform
+
+    class RaisingAttr:
+        @property
+        def fronts_platform(self):
+            raise RuntimeError("attribute access failed")
+
+    monkeypatch.setattr(
+        gr_run,
+        "_gateway_runner_ref",
+        lambda: SimpleNamespace(adapters={Platform.RELAY: RaisingAttr()}),
+        raising=False,
+    )
+    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: set())
+    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
+
+    with pytest.raises(eg.RelayRouteUnknown):
+        eg._live_relay_fronted()
+    with pytest.raises(eg.RelayRouteUnknown):
+        eg.relay_routed_platform("discord")
+
+
+def test_an_adapter_without_fronts_platform_is_a_fault(monkeypatch):
+    """A present adapter missing the method entirely cannot answer either.
+
+    It used to return None (→ config fallback). A relay adapter that cannot
+    say what it fronts is a broken adapter, not an absent one.
+    """
+    from types import SimpleNamespace
+
+    import gateway.relay as gr
+    import gateway.relay.egress as eg
+    import gateway.run as gr_run
+    from gateway.config import Platform
+
+    monkeypatch.setattr(
+        gr_run,
+        "_gateway_runner_ref",
+        lambda: SimpleNamespace(adapters={Platform.RELAY: object()}),
+        raising=False,
+    )
+    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: set())
+    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
+
+    with pytest.raises(eg.RelayRouteUnknown):
+        eg._live_relay_fronted()
+
+
+def test_a_broken_gateway_import_inside_the_live_probe_is_a_fault(monkeypatch):
+    """A nested ImportError in the live probe must not degrade to the config path.
+
+    Found by spot-check, not by the reviewer. `_live_relay_fronted` imports
+    `gateway.config` and `gateway.run` inside its own try; before this, ANY
+    ImportError there returned None, which means "no live adapter — use the
+    config snapshot". So a broken installation plus an empty snapshot
+    authorized an unattested destination. Probed with a healthy-adapter
+    positive control in the same run:
+
+        healthy_routed=True,  healthy_refuses_unattested=True
+        fault_routed=False,   fault_verdict=None   ← authorized
+
+    `_relay_fronted` below already made exactly this distinction for its own
+    import; this is the same rule one function up.
+    """
+    import builtins
+
+    import gateway.relay as gr
+    import gateway.relay.egress as eg
+
+    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: set())
+    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
+
+    real_import = builtins.__import__
+
+    def broken(name, *args, **kwargs):
+        if name == "gateway.config":
+            raise ImportError("cannot import name Platform from gateway.config")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", broken)
+
+    with pytest.raises(eg.RelayRouteUnknown):
+        eg._live_relay_fronted()
+
+
+def test_a_genuinely_absent_gateway_package_is_still_an_absence(monkeypatch):
+    """Control for the test above: real absence must stay benign.
+
+    `ModuleNotFoundError` naming the gateway package itself means there is no
+    relay egress to authorize. If this raised, a CLI-only install would fail
+    every send instead of using its native credential.
+    """
+    import builtins
+
+    import gateway.relay.egress as eg
+
+    real_import = builtins.__import__
+
+    def absent(name, *args, **kwargs):
+        if name == "gateway.run":
+            raise ModuleNotFoundError("No module named 'gateway'", name="gateway")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", absent)
+
+    assert eg._live_relay_fronted() is None
+
+
 # ── the Telegram @handle exemption must not cover a NATIVE send ────────────
 
 

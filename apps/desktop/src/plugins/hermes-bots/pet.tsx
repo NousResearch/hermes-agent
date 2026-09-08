@@ -3,6 +3,8 @@
  * frame as the bot's profile picture.
  */
 
+// only this operation's mark is contributed; native fallback stays intact.
+import { SystemActivitySlot, useI18n } from '@hermes/plugin-sdk'
 import { Button, cn, GlyphSpinner, host, Input, LruCache, RowButton, useQuery } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
@@ -140,6 +142,7 @@ interface PetTabProps {
 }
 
 export function PetTab({ image, onImage }: PetTabProps) {
+  const { t } = useI18n()
   const b = useBots()
   // Selection is dialog-local: committed by the dialog's Save like any
   // uploaded/generated image (a direct meta write here gets clobbered by
@@ -161,7 +164,12 @@ export function PetTab({ image, onImage }: PetTabProps) {
   if (isLoading) {
     return (
       <div className="flex justify-center py-4">
-        <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
+        <SystemActivitySlot
+          activity="loading"
+          fallback={<GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />}
+          label={t.common.loading}
+          placement="inline"
+        />
       </div>
     )
   }

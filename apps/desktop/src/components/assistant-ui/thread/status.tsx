@@ -13,6 +13,8 @@ import { Loader } from '@/components/ui/loader'
 import { StatusPulse } from '@/components/ui/status-pulse'
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
+// Stored-session hydration is system activity; running turns keep their own mark.
+import { SystemActivitySlot } from '@/lib/system-activity'
 import { cn } from '@/lib/utils'
 import { $backgroundResume } from '@/store/background-delegation'
 import { sessionCompacting } from '@/store/compaction'
@@ -228,13 +230,19 @@ export const CenteredThreadSpinner: FC = () => {
       className="pointer-events-none absolute inset-0 z-1 grid place-items-center"
       role="status"
     >
-      <Loader
-        aria-hidden="true"
-        className="size-12 text-midground/70"
-        pathSteps={220}
-        role="presentation"
-        strokeScale={0.72}
-        type="rose-curve"
+      <SystemActivitySlot
+        activity="loading"
+        fallback={
+          <Loader
+            aria-hidden="true"
+            className="size-12 text-midground/70"
+            pathSteps={220}
+            role="presentation"
+            strokeScale={0.72}
+            type="rose-curve"
+          />
+        }
+        placement="region"
       />
     </div>
   )

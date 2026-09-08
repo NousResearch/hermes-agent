@@ -7,6 +7,8 @@
  * the name pattern that gates the draft.
  */
 
+// only this operation's mark is contributed; native fallback stays intact.
+import { SystemActivitySlot } from '@hermes/plugin-sdk'
 import {
   Badge,
   Button,
@@ -807,7 +809,12 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                   </div>
                 ) : !createdForCaps ? (
                   <div className="flex justify-center py-4">
-                    <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
+                    <SystemActivitySlot
+                      activity="processing"
+                      fallback={<GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />}
+                      label={t.common.loading}
+                      placement="inline"
+                    />
                   </div>
                 ) : SkillsView ? (
                   <ResizableFrame height={440} minHeight={280}>
@@ -836,7 +843,12 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                 </div>
               ) : !caps ? (
                 <div className="flex justify-center py-4">
-                  <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
+                  <SystemActivitySlot
+                    activity="loading"
+                    fallback={<GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />}
+                    label={t.common.loading}
+                    placement="inline"
+                  />
                 </div>
               ) : advTab === 'skills' ? (
                 noSkills ? (

@@ -5,6 +5,8 @@
  * comments (+composer), activity, run history, and the worker log tail.
  */
 
+// only this operation's mark is contributed; native fallback stays intact.
+import { SystemActivitySlot, useI18n } from '@hermes/plugin-sdk'
 import {
   Badge,
   Button,
@@ -548,6 +550,7 @@ export function TaskDrawer({
   onClose: () => void
   onOpen: (id: string) => void
 }) {
+  const { t } = useI18n()
   const k = useKanban()
   const qc = useQueryClient()
   const slug = useValue($boardSlug)
@@ -752,7 +755,12 @@ export function TaskDrawer({
           <ErrorState title={errorMessage} />
         ) : !detail || !task ? (
           <div className="grid h-32 place-items-center">
-            <Loader type="lemniscate-bloom" />
+            <SystemActivitySlot
+              activity="loading"
+              fallback={<Loader type="lemniscate-bloom" />}
+              label={t.common.loading}
+              placement="region"
+            />
           </div>
         ) : (
           <div className="flex flex-col gap-4 text-sm">

@@ -10,6 +10,8 @@ import { Loader } from '@/components/ui/loader'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
+// imported history is read through the system activity area.
+import { SystemActivitySlot } from '@/lib/system-activity'
 import { cn } from '@/lib/utils'
 import { setSessionOwnerHint } from '@/store/session'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
@@ -179,7 +181,16 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
               )}
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-5">
-              {sessions.isPending && <Loader className="mx-auto my-12" label={copy.scanning} />}
+              {sessions.isPending && (
+                <div className="my-12 grid place-items-center">
+                  <SystemActivitySlot
+                    activity="loading"
+                    fallback={<Loader className="mx-auto" label={copy.scanning} />}
+                    label={copy.scanning}
+                    placement="region"
+                  />
+                </div>
+              )}
               {sessions.isError && (
                 <ErrorState className="p-5" description={copy.scanHelp} title={copy.scanError}>
                   <Button onClick={() => void sessions.refetch()} variant="secondary">
@@ -270,7 +281,16 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
                   </p>
                 </div>
                 <div aria-live="polite" className="min-h-0 flex-1 overflow-y-auto px-8 pb-8" key={current.id}>
-                  {preview.isPending && <Loader className="mx-auto my-12" label={copy.previewLoading} />}
+                  {preview.isPending && (
+                    <div className="my-12 grid place-items-center">
+                      <SystemActivitySlot
+                        activity="loading"
+                        fallback={<Loader className="mx-auto" label={copy.previewLoading} />}
+                        label={copy.previewLoading}
+                        placement="region"
+                      />
+                    </div>
+                  )}
                   {preview.isError && (
                     <ErrorState description={copy.previewHelp} title={copy.previewError}>
                       <Button onClick={() => void preview.refetch()} variant="secondary">

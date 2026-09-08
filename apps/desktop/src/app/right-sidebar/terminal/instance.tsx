@@ -4,6 +4,8 @@ import { Button } from '@/components/ui/button'
 import { KbdCombo } from '@/components/ui/kbd'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
+// starting the terminal is system work, independent of Agent turns.
+import { SystemActivitySlot } from '@/lib/system-activity'
 import { cn } from '@/lib/utils'
 
 import { reportTerminalShell } from './terminals'
@@ -59,11 +61,19 @@ export function TerminalInstance({
     >
       {status === 'starting' && (
         <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center">
-          <Loader
-            className="size-8 text-(--ui-text-tertiary)"
-            pathSteps={180}
-            strokeScale={0.68}
-            type="spiral-search"
+          <SystemActivitySlot
+            activity="processing"
+            fallback={
+              <Loader
+                className="size-8 text-(--ui-text-tertiary)"
+                pathSteps={180}
+                strokeScale={0.68}
+                type="spiral-search"
+              />
+            }
+            label={t.common.loading}
+            paused={!active}
+            placement="region"
           />
         </div>
       )}

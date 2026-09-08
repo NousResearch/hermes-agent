@@ -3,6 +3,9 @@ import { useEffect, useRef, useState } from 'react'
 
 import { DecodeText } from '@/components/ui/decode-text'
 import { prefersReducedMotion } from '@/hooks/use-media-query'
+import { useI18n } from '@/i18n'
+// replace only the cold-boot mark, preserving connection and exit gates.
+import { SystemActivitySlot } from '@/lib/system-activity'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
@@ -37,6 +40,7 @@ function forcedPreview(): boolean {
 }
 
 export function GatewayConnectingOverlay() {
+  const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
   const boot = useStore($desktopBoot)
   const gatewaySwitching = useStore($gatewaySwitching)
@@ -146,15 +150,23 @@ export function GatewayConnectingOverlay() {
       // in styles.css.
       data-glass-opaque=""
     >
-      <DecodeText
-        active={phase === 'live' && (previewing || connecting)}
-        className={cn(
-          'pl-[0.4em] text-(--theme-primary) transition duration-300 ease-out',
-          leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
-        )}
-        cursor
-        prefix={4}
-        text={TEXT}
+      <SystemActivitySlot
+        activity="connecting"
+        fallback={
+          <DecodeText
+            active={phase === 'live' && (previewing || connecting)}
+            className={cn(
+              'pl-[0.4em] text-(--theme-primary) transition duration-300 ease-out',
+              leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
+            )}
+            cursor
+            prefix={4}
+            text={TEXT}
+          />
+        }
+        label={t.common.connecting}
+        paused={leaving}
+        placement="threshold"
       />
     </div>
   )

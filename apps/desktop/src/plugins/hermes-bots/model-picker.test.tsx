@@ -18,6 +18,7 @@
  * dispatch at all for a row whose connection is gone.
  */
 
+import type * as HermesSdk from '@hermes/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
@@ -34,10 +35,13 @@ const { hostMock } = vi.hoisted(() => ({
   }
 }))
 
-vi.mock('@hermes/plugin-sdk', async () => {
+// keep the activity slot and localization real alongside the existing host doubles.
+vi.mock('@hermes/plugin-sdk', async importOriginal => {
+  const sdk = await importOriginal<typeof HermesSdk>()
   const { useQuery } = await import('@tanstack/react-query')
 
   return {
+    ...sdk,
     Button: (props: React.ComponentProps<'button'>) => <button {...props} />,
     GlyphSpinner: () => <span data-testid="spinner" />,
     host: hostMock,

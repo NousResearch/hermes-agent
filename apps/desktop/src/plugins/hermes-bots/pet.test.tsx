@@ -12,6 +12,7 @@
  * failure must be evicted; a success must not be refetched.
  */
 
+import type * as HermesSdk from '@hermes/plugin-sdk'
 import { render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -27,7 +28,9 @@ const { hostMock, UnboundedCache, useQueryMock } = vi.hoisted(() => ({
   useQueryMock: vi.fn()
 }))
 
-vi.mock('@hermes/plugin-sdk', () => ({
+// retain the real activity slot and localization; only the existing host/cache doubles vary.
+vi.mock('@hermes/plugin-sdk', async importOriginal => ({
+  ...(await importOriginal<typeof HermesSdk>()),
   Button: (props: React.ComponentProps<'button'>) => <button {...props} />,
   cn: (...parts: unknown[]) => parts.filter(Boolean).join(' '),
   GlyphSpinner: () => <span />,

@@ -9,6 +9,8 @@ import type { DesktopConnectionConfig } from '@/global'
 import { useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { ChevronLeft, ExternalLink, FileText, Loader2, LogIn, RefreshCw, SlidersHorizontal, Wrench } from '@/lib/icons'
+// the recovery settings load is a system wait.
+import { SystemActivitySlot } from '@/lib/system-activity'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -360,7 +362,18 @@ export function BootFailureOverlay() {
             {copy.back}
           </button>
           <div className="min-h-0 flex-1 pt-4">
-            <Suspense fallback={<Loader className="mx-auto my-16 size-6 text-(--ui-text-tertiary)" />}>
+            <Suspense
+              fallback={
+                <div className="my-16 grid place-items-center">
+                  <SystemActivitySlot
+                    activity="loading"
+                    fallback={<Loader className="mx-auto size-6 text-(--ui-text-tertiary)" />}
+                    label={t.common.loading}
+                    placement="region"
+                  />
+                </div>
+              }
+            >
               <GatewaySettings embedded />
             </Suspense>
           </div>

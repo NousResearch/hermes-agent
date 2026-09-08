@@ -6,6 +6,8 @@
  * Shared by the advanced profile editor and the create dialog.
  */
 
+// only this operation's mark is contributed; native fallback stays intact.
+import { SystemActivitySlot, useI18n } from '@hermes/plugin-sdk'
 import {
   Button,
   GlyphSpinner,
@@ -117,6 +119,7 @@ interface ModelPickerProps {
 }
 
 export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'gateway default' }: ModelPickerProps) {
+  const { t } = useI18n()
   const { data, isLoading, error } = useModelOptions(bot)
 
   // Hooks are ALWAYS declared up front, before any conditional return.
@@ -130,7 +133,12 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
   if (isLoading) {
     return (
       <div className="flex justify-center py-2">
-        <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
+        <SystemActivitySlot
+          activity="loading"
+          fallback={<GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />}
+          label={t.common.loading}
+          placement="inline"
+        />
       </div>
     )
   }

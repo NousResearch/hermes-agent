@@ -211,6 +211,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | ⌘K palette | `PALETTE_AREA` | `data: PaletteContribution` |
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
+| System activity | `SYSTEM_ACTIVITY_AREA` (`'ui.systemActivity'`) | `data` as a `SystemActivityContribution` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
 
 ### Panes
@@ -380,6 +381,43 @@ Both doors persist per profile, so a plugin-driven switch sticks exactly like a
 manual pick. To tint the *active* theme rather than replace it, use
 `setAccentOverride(hex)` and clear it in `ctx.onDispose` — the bundled `accent`
 plugin is the worked example.
+
+### System activity
+
+Themes are declarative colors and typography. To customize the mark for an
+app-owned operation, register a renderer in the existing contribution registry:
+
+```tsx
+import { SYSTEM_ACTIVITY_AREA, type SystemActivityContribution } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'activity',
+  area: SYSTEM_ACTIVITY_AREA,
+  data: { render: MyActivityMark } satisfies SystemActivityContribution
+})
+```
+
+The renderer receives `activity` (`loading`, `connecting`, or `processing`),
+`placement` (`inline`, `region`, or `threshold`), and `paused`. Honor `paused`:
+the host combines the operation's exit state with Hermes pane and window
+visibility. Also respect reduced motion and release animation resources on
+unmount. The rendered mark is decorative. `SystemActivitySlot` owns the live
+status name through its `label` prop; omit it when the surrounding status
+already supplies that name. The renderer also receives this label so a full
+application threshold can keep the operation visible beside its mark.
+
+`hasProgress` means the host already renders progress for this operation.
+Returning `null` deliberately omits the additional mark. Missing registration
+or a rendering error restores the caller's native fallback. The first enabled
+renderer in registry order owns the slot; registrations are disposed with the
+plugin. The host retains operation state, progress, copy and recovery controls.
+
+This area covers system waits, including loading saved conversations and
+catalogs. Agent turns, waiting for a person's approval, settled statuses,
+compact icon slots, and existing skeletons keep their own presentation.
+`PageLoader` defaults to `loading`; its `activity` prop identifies an active
+connection probe. Other callers opt in through `SystemActivitySlot` with their
+existing native mark as `fallback`.
 
 ### Composer extensions
 

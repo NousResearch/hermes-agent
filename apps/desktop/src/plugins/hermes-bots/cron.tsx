@@ -4,6 +4,8 @@
  * detail dialogs, and the pane the right tile renders.
  */
 
+// only this operation's mark is contributed; native fallback stays intact.
+import { SystemActivitySlot } from '@hermes/plugin-sdk'
 import {
   atom,
   Button,
@@ -1272,7 +1274,12 @@ export function RoutinesPane() {
       ) : null}
       {isLoading && !view.all.length ? (
         <div className="flex flex-1 items-center justify-center">
-          <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
+          <SystemActivitySlot
+            activity="loading"
+            fallback={<GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />}
+            label={t.common.loading}
+            placement="region"
+          />
         </div>
       ) : error && !view.all.length ? (
         <PanelEmpty

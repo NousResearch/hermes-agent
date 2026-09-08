@@ -40,11 +40,17 @@ export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePan
         <p className="font-medium text-foreground">{copy.title}</p>
 
         <span className="text-[0.6875rem] text-muted-foreground">
-          {copy.tokenSummary(`~${compactNumber(contextUsed)}`, compactNumber(contextMax))}
+          {copy.tokenSummary(
+            `${usage.context_estimated ? '~' : ''}${compactNumber(contextUsed)}`,
+            compactNumber(contextMax)
+          )}
         </span>
       </div>
 
-      <p className="text-[0.6875rem] text-foreground">{copy.percentFull(contextPercent)}</p>
+      <p className="text-[0.6875rem] text-foreground">
+        {usage.context_estimated ? '~' : ''}
+        {copy.percentFull(contextPercent)}
+      </p>
 
       <ContextUsageBar categories={categories} segmentTotal={segmentTotal} />
 
@@ -57,7 +63,7 @@ export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePan
               <span className="truncate text-muted-foreground">{category.label}</span>
             </span>
 
-            <span className="shrink-0 tabular-nums text-foreground">{compactNumber(category.tokens)}</span>
+            <span className="shrink-0 tabular-nums text-foreground">~{compactNumber(category.tokens)}</span>
           </li>
         ))}
       </ul>

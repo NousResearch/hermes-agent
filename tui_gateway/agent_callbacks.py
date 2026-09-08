@@ -358,7 +358,7 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 
 
 def _rebuild_session_agent(sid: str, session: dict, **kwargs):
-    """Rebuild on the session's profile, transferring its DB ownership without acquiring a second ref.
+    """Prepare and install a replacement on the session's profile, then transfer DB ownership.
 
     An unscoped _make_agent defaults to the launch store: named-profile Bot Chat turns then disappear
     from the profile's replay even though they were successfully written to another database (#104079).
@@ -371,6 +371,8 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
     opened = session_db is None and bool(profile_home)
     scopes = _bind_build_profile_scopes(profile_home) if profile_home else None
     try:
+        # Resolve fallible config before allocating a replacement or moving its handle.
+        config_model_seen = _config_model_target()
         if opened:
             session_db = _open_profile_session_db(profile_home)
         agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
@@ -384,17 +386,24 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
             _release_build_profile_scopes(scopes)
     # Only a DEDICATED handle carries ownership; the shared launch handle outlives every agent and
     # _transfer_db_to_agent refuses it.
-    owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
-    if owned and _transfer_db_to_agent(agent, session_db):
-        if old_agent is not None:
-            old_agent._owns_session_db = False
-    elif opened:
-        with contextlib.suppress(Exception):
-            session_db.close()
+    with _sessions_lock:
+        session.update(agent=agent, config_model_seen=config_model_seen)
+        owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
+        if owned and _transfer_db_to_agent(agent, session_db):
+            if old_agent is not None:
+                old_agent._owns_session_db = False
+        elif opened:
+            with contextlib.suppress(Exception):
+                session_db.close()
     return agent
 
 
 def _reset_session_agent(sid: str, session: dict) -> dict:
+    updates = dict(
+        attached_images=[], queued_prompt=None,
+        _queued_prompt_generation=int(session.get("_queued_prompt_generation", 0)) + 1,
+        edit_snapshots={}, image_counter=0, running=False, show_reasoning=_load_show_reasoning(),
+        tool_progress_mode=_load_tool_progress_mode(), tool_started_at={})
     tokens = _set_session_context(session["session_key"])
     try:
         # /new is a full conversation boundary: session-scoped runtime overrides (/model,
@@ -408,12 +417,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
             context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
     finally:
         _clear_session_context(tokens)
-    session.update(
-        agent=new_agent, config_model_seen=_config_model_target(), attached_images=[],
-        queued_prompt=None,
-        _queued_prompt_generation=int(session.get("_queued_prompt_generation", 0)) + 1,
-        edit_snapshots={}, image_counter=0, running=False, show_reasoning=_load_show_reasoning(),
-        tool_progress_mode=_load_tool_progress_mode(), tool_started_at={})
+    session.update(updates)
     session.pop("queued_prompts", None)
     with session["history_lock"]:
         session["history"] = []

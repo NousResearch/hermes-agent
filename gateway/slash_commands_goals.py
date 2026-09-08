@@ -7,7 +7,7 @@ from gateway.message_actor import event_actor_identity, source_for_event_actor
 import logging
 
 from agent.i18n import t
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 
 # Log-record parity with gateway/run.py and the origin module.
 logger = logging.getLogger("gateway.run")

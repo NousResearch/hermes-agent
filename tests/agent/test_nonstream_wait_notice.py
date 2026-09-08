@@ -38,11 +38,13 @@ def _request():
     [
         (59.0, 59.0, None, None),  # Reasoning/text/tool arguments still arriving.
         (59.0, None, None, None),  # Lifecycle traffic is not transport silence either.
-        (10.0, 10.0, None, "50s with no stream events"),
-        (10.0, None, None, "50s with no stream events"),
+        (0.0, 0.0, None, "60s with no stream events"),
+        (0.0, None, None, "60s with no stream events"),
+        (1.0, None, None, None),  # 59 seconds of silence is still quiet.
         (None, None, None, "60s with no response yet"),
         (10.0, 10.0, 59.0, None),  # Internal reconnect gets a fresh first-event wait.
-        (10.0, 10.0, 20.0, "40s with no response after reconnect"),
+        (0.0, 0.0, 0.0, "60s with no response after reconnect"),
+        (0.0, 0.0, 1.0, None),
     ],
 )
 def test_wait_notice_tracks_current_attempt_silence(event, progress, retry, expected):
@@ -51,6 +53,12 @@ def test_wait_notice_tracks_current_attempt_silence(event, progress, retry, expe
     state.last_event_ts = None if event is None else request.call_start + event
     state.last_progress_ts = None if progress is None else request.call_start + progress
     state.retry_started_ts = None if retry is None else request.call_start + retry
+    request._emit_wait_notice(30.0)
+    request._emit_wait_notice(59.0)
+    assert notices == []
+    assert touches
+    if event is None and retry is None:
+        assert "receiving" not in touches[-1]
     request._emit_wait_notice(60.0)
     if expected is None:
         assert notices == []
@@ -74,13 +82,13 @@ def test_resumed_events_clear_only_this_requests_wait_notice(monkeypatch):
             pass
 
         def is_alive(self):
-            return ticks[0] < 104
+            return ticks[0] < 204
 
         def join(self, timeout):
             ticks[0] += 1
-            if ticks[0] >= 101:
+            if ticks[0] >= 201:
                 request.codex_watchdog_state.last_event_ts = 1000.0 + ticks[0] * 0.3
-            if ticks[0] == 104:
+            if ticks[0] == 204:
                 request.result["response"] = sentinel
 
     monkeypatch.setattr(h.threading, "Thread", Worker)

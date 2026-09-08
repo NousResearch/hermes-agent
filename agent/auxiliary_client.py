@@ -112,6 +112,7 @@ from agent.model_metadata import (
     strip_codex_context_variant_suffix as _strip_codex_ctx_variant,
 )
 from hermes_cli.config import get_hermes_home
+from agent.auxiliary_health import _custom_health_base_url, _unhealthy_cache_key
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
@@ -1379,8 +1380,14 @@ class _CodexCompletionsAdapter:
             if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is not False:
                 # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default. Shared
                 # per-model clamp with the main transport ("max" is gpt-5.6-only; "minimal"/"ultra" rejected).
-                from agent.reasoning_effort import clamp_effort, codex_supported_efforts
-                effort = clamp_effort(reasoning_cfg.get("effort") or "medium", codex_supported_efforts(model))
+                from agent.codex_responses_adapter import classify_responses_route
+                from agent.reasoning_effort import clamp_effort
+                from agent.transports.codex import _codex_efforts_for_route
+                is_codex_backend = classify_responses_route(SimpleNamespace(base_url=host)).is_codex_backend
+                effort = clamp_effort(
+                    reasoning_cfg.get("effort") or "medium",
+                    _codex_efforts_for_route(model, host, is_codex_backend=is_codex_backend),
+                )
                 resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
                 resp_kwargs["include"] = ["reasoning.encrypted_content"]
         tools = kwargs.get("tools")
@@ -1433,6 +1440,9 @@ class _CodexCompletionsAdapter:
                     resp_kwargs["prompt_cache_retention"] = cache_retention
         except Exception:
             logger.debug("Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True)
+        # Last, like the main transport: caller extra_body must not put a rejected Astra field back.
+        from agent.transports.codex import _sanitize_astra_request_kwargs
+        _sanitize_astra_request_kwargs(resp_kwargs, model, host)
         return resp_kwargs, model, timeout
 
     def create(self, **kwargs) -> Any:
@@ -1729,8 +1739,8 @@ class _BedrockCompletionsAdapter:
             )
         response = call_converse(
             region=self._region, model=model, messages=kwargs.get("messages", []), tools=kwargs.get("tools"),
-            # Omitted/None cap → None so Bedrock uses the model max (no-cap-by-default like
-            # every other aux wire). Truthiness mirrors the Anthropic shim: explicit 0 = "no cap".
+            # Converse specifically defaults to the model maximum when omitted.
+            # Truthiness mirrors the Anthropic shim: explicit 0 means omit.
             max_tokens=int(max_tokens) if max_tokens else None, temperature=kwargs.get("temperature"),
             top_p=kwargs.get("top_p"), stop_sequences=stop,
         )
@@ -2430,6 +2440,9 @@ def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
+    from agent.auxiliary_wire import prepare_chat_messages
+
+    kwargs = prepare_chat_messages(client, kwargs)
     callback = create or (lambda request: client.chat.completions.create(**request))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
@@ -2449,6 +2462,9 @@ async def _relay_async_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
+    from agent.auxiliary_wire import prepare_chat_messages
+
+    kwargs = prepare_chat_messages(client, kwargs)
     callback = create or (lambda request: client.chat.completions.create(**request))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
@@ -2464,6 +2480,9 @@ async def _relay_async_completion(
 def _relay_sync_stream(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
 ) -> Any:
+    from agent.auxiliary_wire import prepare_chat_messages
+
+    kwargs = prepare_chat_messages(client, kwargs)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return client.chat.completions.create(**kwargs)
@@ -2874,8 +2893,8 @@ def _get_provider_chain() -> List[tuple]:
 # "Recently 402'd" unhealthy-provider cache: a depleted provider stays so for hours, so hiding it
 # for a TTL saves an RTT per aux call. In-process only (profiles may use different keys).
 _AUX_UNHEALTHY_TTL_SECONDS = 600  # 10 minutes
-_aux_unhealthy_until: Dict[str, float] = {}
-_aux_unhealthy_logged_at: Dict[str, float] = {}
+_aux_unhealthy_until: Dict[Any, float] = {}
+_aux_unhealthy_logged_at: Dict[Any, float] = {}
 # resolved_provider / explicit-config names → chain labels.
 _AUX_UNHEALTHY_LABEL_ALIASES = {
     "openrouter": "openrouter", "nous": "nous", "custom": "local/custom",
@@ -2891,14 +2910,17 @@ def _normalize_chain_label(provider: str) -> str:
     return _AUX_UNHEALTHY_LABEL_ALIASES.get(p, p)
 
 
-def _mark_provider_unhealthy(provider: str, ttl: Optional[float] = None) -> None:
-    """Hide ``provider`` from chain iteration until the TTL expires (after a confirmed payment error)."""
+def _mark_provider_unhealthy(
+    provider: str, ttl: Optional[float] = None, *, base_url: Optional[str] = None,
+) -> None:
+    """Hide one provider endpoint until the TTL expires after a confirmed payment error."""
     label = _normalize_chain_label(provider)
     if not label:
         return
+    key = _unhealthy_cache_key(label, base_url)
     ttl = _AUX_UNHEALTHY_TTL_SECONDS if ttl is None else ttl
     expires_at = time.time() + ttl
-    _aux_unhealthy_until[label] = expires_at
+    _aux_unhealthy_until[key] = expires_at
     logger.warning(
         "Auxiliary: marking %s unhealthy for %ds (payment / credit error). "
         "Subsequent auxiliary calls will skip it until %s.",
@@ -2906,26 +2928,30 @@ def _mark_provider_unhealthy(provider: str, ttl: Optional[float] = None) -> None
     )
 
 
-def _is_provider_unhealthy(label: str) -> bool:
-    """True iff ``label`` is unhealthy and unexpired; lazily evicts expired entries."""
+def _is_provider_unhealthy(label: str, base_url: Optional[str] = None) -> bool:
+    """True iff this provider endpoint is unhealthy and unexpired; lazily evicts expired entries."""
     if not label:
         return False
-    expires_at = _aux_unhealthy_until.get(label)
+    key = _unhealthy_cache_key(label, base_url)
+    expires_at = _aux_unhealthy_until.get(key)
     if expires_at is None:
         return False
     if time.time() >= expires_at:
-        _aux_unhealthy_until.pop(label, None)
-        _aux_unhealthy_logged_at.pop(label, None)
+        _aux_unhealthy_until.pop(key, None)
+        _aux_unhealthy_logged_at.pop(key, None)
         return False
     return True
 
 
-def _log_skip_unhealthy(label: str, task: Optional[str] = None) -> None:
+def _log_skip_unhealthy(
+    label: str, task: Optional[str] = None, *, base_url: Optional[str] = None,
+) -> None:
     """Log a skipped unhealthy provider at most once per minute per label."""
     now = time.time()
-    if now - _aux_unhealthy_logged_at.get(label, 0.0) >= 60:
-        _aux_unhealthy_logged_at[label] = now
-        expires_at = _aux_unhealthy_until.get(label, now)
+    key = _unhealthy_cache_key(label, base_url)
+    if now - _aux_unhealthy_logged_at.get(key, 0.0) >= 60:
+        _aux_unhealthy_logged_at[key] = now
+        expires_at = _aux_unhealthy_until.get(key, now)
         logger.info(
             "Auxiliary %s: skipping %s (recently returned payment error, retry in %ds)",
             task or "call", label, max(0, int(expires_at - now)),
@@ -3408,13 +3434,19 @@ def _refresh_nous_credentials() -> bool:
     ))
 
 
-def _refresh_anthropic_credentials() -> bool:
-    from agent.anthropic_credentials import read_claude_code_credentials, _refresh_oauth_token, resolve_anthropic_token
+def _refresh_anthropic_credentials(failed_api_key: str = "") -> bool:
+    from agent.anthropic_credentials import read_claude_code_credentials, _refresh_oauth_token
+    token = failed_api_key
+    if not token:
+        return False
+    pool = load_pool("anthropic")
+    if pool.entry_id_for_api_key(token):
+        return pool.try_refresh_matching(api_key_hint=token) is not None
     creds = read_claude_code_credentials()
-    token = _refresh_oauth_token(creds) if isinstance(creds, dict) and creds.get("refreshToken") else None
-    if not str(token or "").strip():
-        token = resolve_anthropic_token()
-    return bool(str(token or "").strip())
+    # Never spend an ambient login's refresh rotation for another request's key.
+    if isinstance(creds, dict) and creds.get("accessToken") == token and creds.get("refreshToken"):
+        return bool(_refresh_oauth_token(creds))
+    return False
 
 
 def _refresh_xai_oauth_credentials() -> bool:
@@ -3438,21 +3470,21 @@ def _refresh_vertex_credentials() -> bool:
 
 
 # Each refresher returns True when a usable credential exists; the caller then evicts cached clients.
-_CREDENTIAL_REFRESHERS: Dict[str, Callable[[], bool]] = {
+_CREDENTIAL_REFRESHERS: Dict[str, Callable[..., bool]] = {
     "copilot": _refresh_copilot_credentials, "openai-codex": _refresh_codex_credentials,
     "nous": _refresh_nous_credentials, "anthropic": _refresh_anthropic_credentials,
     "xai-oauth": _refresh_xai_oauth_credentials, "vertex": _refresh_vertex_credentials,
 }
 
 
-def _refresh_provider_credentials(provider: str) -> bool:
+def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") -> bool:
     """Refresh short-lived credentials for OAuth-backed auxiliary providers."""
     normalized = _normalize_aux_provider(provider)
     refresher = _CREDENTIAL_REFRESHERS.get(normalized)
     if refresher is None:
         return False
     try:
-        if not refresher():
+        if not (refresher(failed_api_key) if normalized == "anthropic" else refresher()):
             return False
         _evict_cached_clients(normalized)
         return True
@@ -3593,8 +3625,6 @@ def _fallback_request_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=effective_timeout,
         extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task)
-    if apply_fast_lane and fallback_max_tokens is not None and max_tokens is None:
-        fb_kwargs.update(auxiliary_max_tokens_param(fallback_max_tokens, model=destination.model))
     return fb_kwargs
 
 
@@ -3634,9 +3664,12 @@ def _plan_fallback_candidate(
     return destination, _fallback_request_kwargs(destination, **common), _rebuild
 
 
-def _quarantine_fallback_candidate(task: Optional[str], fb_label: str, fb_provider: str, fb_err: Exception, *, tag: str = "") -> None:
+def _quarantine_fallback_candidate(
+    task: Optional[str], fb_label: str, fb_provider: str, fb_err: Exception, *,
+    base_url: str = "", tag: str = "",
+) -> None:
     """Refresh unavailable or still 401s: token is dead. Quarantine the candidate so the caller moves on."""
-    _mark_provider_unhealthy(fb_provider or fb_label)
+    _mark_provider_unhealthy(fb_provider or fb_label, base_url=base_url)
     logger.warning("Auxiliary %s%s: fallback candidate %s has a stale/unrefreshable "
                    "credential (%s) — skipping to next fallback", task or "call", tag, fb_label, fb_err)
 
@@ -3645,11 +3678,13 @@ def _plan_fallback_auth_retry(
     destination: _FallbackDestination,
     rebuild: Callable[[str, Any, Optional[str]], Tuple[_FallbackDestination, Dict[str, Any]]], *,
     async_mode: bool,
+    failed_api_key: str = "",
 ) -> Tuple[str, Optional[Tuple[Any, Dict[str, Any], _FallbackDestination]]]:
     """After an auth error on a fallback candidate: refresh credentials and rebuild the request.
     Returns ``(refresh_provider, retry)``; ``retry`` = ``(client, kwargs, destination)`` or None."""
     fb_provider = _auth_refresh_provider_for_route(destination.provider, destination.base_url)
-    if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider):
+    refresh_kwargs = {"failed_api_key": failed_api_key} if fb_provider == "anthropic" else {}
+    if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider, **refresh_kwargs):
         retry_client, retry_model = _get_cached_client(
             fb_provider, destination.model, **({"async_mode": True} if async_mode else {}),
             base_url=destination.base_url or None, api_mode=destination.api_mode,
@@ -3696,14 +3731,19 @@ def _call_fallback_candidate_sync(
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
-        fb_provider, retry = _plan_fallback_auth_retry(destination, rebuild, async_mode=False)
+        fb_provider, retry = _plan_fallback_auth_retry(
+            destination, rebuild, async_mode=False, failed_api_key=getattr(fb_client, "api_key", ""))
+        failed_destination = destination
         if retry is not None:
+            failed_destination = retry[2]
             try:
                 return _send(*retry)
             except Exception as retry_err:
                 if not _is_auth_error(retry_err):
                     raise
-        _quarantine_fallback_candidate(task, fb_label, fb_provider, fb_err)
+        _quarantine_fallback_candidate(
+            task, fb_label, fb_provider, fb_err, base_url=failed_destination.base_url,
+        )
         return None
 
 
@@ -3730,19 +3770,26 @@ async def _call_fallback_candidate_async(
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
-        fb_provider, retry = _plan_fallback_auth_retry(destination, rebuild, async_mode=True)
+        fb_provider, retry = _plan_fallback_auth_retry(
+            destination, rebuild, async_mode=True, failed_api_key=getattr(fb_client, "api_key", ""))
+        failed_destination = destination
         if retry is not None:
+            failed_destination = retry[2]
             try:
                 return await _send(*retry)
             except Exception as retry_err:
                 if not _is_auth_error(retry_err):
                     raise
-        _quarantine_fallback_candidate(task, fb_label, fb_provider, fb_err, tag=" (async)")
+        _quarantine_fallback_candidate(
+            task, fb_label, fb_provider, fb_err,
+            base_url=failed_destination.base_url, tag=" (async)",
+        )
         return None
 
 
 def _try_payment_fallback(
-    failed_provider: str, task: str = None, reason: str = "payment error"
+    failed_provider: str, task: str = None, reason: str = "payment error", *,
+    failed_base_url: str = "", failure_scope: Any = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try the auto-detection chain after a payment/credit or connection error, skipping the failed
     provider (and the main-provider path when it maps to the same backend). Returns (client, model, label) or (None, None, "")."""
@@ -3752,12 +3799,16 @@ def _try_payment_fallback(
     if main_provider and main_provider.lower() in skip:
         skip_labels.add(main_provider.lower())
     skip_chain_labels = {_normalize_chain_label(s) for s in skip_labels}
+    skip_backend = _failed_backend_skip(
+        failed_provider, None, failed_base_url=failed_base_url, failure_scope=failure_scope)
     tried = []
     for label, try_fn in _get_provider_chain():
-        if label in skip_chain_labels:
+        candidate_base_url = _custom_health_base_url(label)
+        if (not failed_base_url and label in skip_chain_labels) or skip_backend(
+                label, None, candidate_base_url):
             continue
-        if _is_provider_unhealthy(label):
-            _log_skip_unhealthy(label, task)
+        if _is_provider_unhealthy(label, candidate_base_url):
+            _log_skip_unhealthy(label, task, base_url=candidate_base_url)
             tried.append(f"{label} (unhealthy)")
             continue
         client, model = try_fn()
@@ -3771,14 +3822,18 @@ def _try_payment_fallback(
     return None, None, ""
 
 
-def _failed_backend_skip(failed_provider: str, failed_model: Optional[str]) -> Callable[..., bool]:
+def _failed_backend_skip(
+    failed_provider: str, failed_model: Optional[str], *, failed_base_url: str = "",
+    failure_scope: Any = None,
+) -> Callable[..., bool]:
     """Predicate ``skip(provider, model, base_url="")`` → True when a candidate must be skipped for the failed
     route. Scope: ``failed_model`` → model-scoped (only that deployment; timeout/connection/rate-limit);
     None → credential-wide (whole provider; auth/payment)."""
     from agent.backend_identity import BackendIdentity, FailureScope, should_skip_candidate
     skip_model = (failed_model or "").strip().lower() or None
-    failed_ident = BackendIdentity.build(provider=failed_provider, model=skip_model)
-    failure_scope = FailureScope.MODEL if skip_model else FailureScope.CREDENTIAL
+    failed_ident = BackendIdentity.build(
+        provider=failed_provider, model=skip_model, base_url=failed_base_url)
+    failure_scope = failure_scope or (FailureScope.MODEL if skip_model else FailureScope.CREDENTIAL)
 
     def _skip(provider: str, model: Optional[str], base_url: str = "") -> bool:
         return should_skip_candidate(
@@ -3789,7 +3844,7 @@ def _failed_backend_skip(failed_provider: str, failed_model: Optional[str]) -> C
 
 def _try_main_agent_model_fallback(
     failed_provider: str, task: str = None, reason: str = "error",
-    failed_model: Optional[str] = None,
+    failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Last-resort fallback to the main agent provider + model after the configured chain is exhausted.
     ``failed_model`` scoping per ``_failed_backend_skip``; same-URL custom endpoints serve many models,
@@ -3804,10 +3859,13 @@ def _try_main_agent_model_fallback(
         main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
-    if _failed_backend_skip(failed_provider, failed_model)(main_provider, main_model):
+    main_base_url = _custom_health_base_url(main_provider)
+    if _failed_backend_skip(
+            failed_provider, failed_model, failed_base_url=failed_base_url,
+            failure_scope=failure_scope)(main_provider, main_model, main_base_url):
         return None, None, ""
-    if _is_provider_unhealthy(main_provider):
-        _log_skip_unhealthy(main_provider, task)
+    if _is_provider_unhealthy(main_provider, main_base_url):
+        _log_skip_unhealthy(main_provider, task, base_url=main_base_url)
         return None, None, ""
     try:
         client, resolved_model = resolve_provider_client(provider=main_provider, model=main_model)
@@ -3874,7 +3932,8 @@ def _context_too_small(
 
 
 def _try_configured_fallback_chain(
-    task: str, failed_provider: str, reason: str = "error", failed_model: Optional[str] = None
+    task: str, failed_provider: str, reason: str = "error", failed_model: Optional[str] = None, *,
+    failed_base_url: str = "", failure_scope: Any = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try auxiliary.<task>.fallback_chain entries in order (each needs ``provider``; model/base_url/api_key optional).
     ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still
@@ -3884,7 +3943,8 @@ def _try_configured_fallback_chain(
     chain = _get_auxiliary_task_config(task).get("fallback_chain")
     if not chain or not isinstance(chain, list):
         return None, None, ""
-    skip = _failed_backend_skip(failed_provider, failed_model)
+    skip = _failed_backend_skip(
+        failed_provider, failed_model, failed_base_url=failed_base_url, failure_scope=failure_scope)
     tried = []
     min_ctx = _task_minimum_context_length(task)
     for i, entry in enumerate(chain):
@@ -3894,7 +3954,12 @@ def _try_configured_fallback_chain(
         if not fb_provider:
             continue
         fb_model_raw = str(entry.get("model", "")).strip()
-        if skip(fb_provider, fb_model_raw, str(entry.get("base_url") or "")):
+        fb_base_url = _custom_health_base_url(fb_provider, entry.get("base_url"))
+        if skip(fb_provider, fb_model_raw, fb_base_url):
+            continue
+        if _is_provider_unhealthy(fb_provider, fb_base_url):
+            _log_skip_unhealthy(fb_provider, task, base_url=fb_base_url)
+            tried.append(f"fallback_chain[{i}]({fb_provider}) (unhealthy)")
             continue
         fb_model = fb_model_raw or None
         label = f"fallback_chain[{i}]({fb_provider})"
@@ -3953,7 +4018,8 @@ def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optio
 
 
 def _try_main_fallback_chain(
-    task: Optional[str], failed_provider: str = "", reason: str = "error"
+    task: Optional[str], failed_provider: str = "", reason: str = "error", *,
+    failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Top-level main-agent fallback chain for a ``provider: auto`` auxiliary call: auto tasks honour the
     user's main fallback policy before the built-in discovery chain; read via ``get_fallback_chain`` so
@@ -3967,7 +4033,8 @@ def _try_main_fallback_chain(
         return None, None, ""
     if not chain:
         return None, None, ""
-    skip = {p for p in ((failed_provider or "").strip().lower(), (_read_main_provider() or "").strip().lower(), "auto") if p}
+    skip = _failed_backend_skip(
+        failed_provider, failed_model, failed_base_url=failed_base_url, failure_scope=failure_scope)
     tried: List[str] = []
     min_ctx = _task_minimum_context_length(task)
     for i, entry in enumerate(chain):
@@ -3979,11 +4046,12 @@ def _try_main_fallback_chain(
             continue
         fb_norm = fb_provider.lower()
         label = f"fallback_providers[{i}]({fb_provider})"
-        if fb_norm in skip:
+        fb_base_url = _custom_health_base_url(fb_provider, entry.get("base_url"))
+        if fb_norm == "auto" or skip(fb_provider, fb_model, fb_base_url):
             tried.append(f"{label} (skipped)")
             continue
-        if _is_provider_unhealthy(fb_norm):
-            _log_skip_unhealthy(fb_norm, task)
+        if _is_provider_unhealthy(fb_norm, fb_base_url):
+            _log_skip_unhealthy(fb_norm, task, base_url=fb_base_url)
             tried.append(f"{label} (unhealthy)")
             continue
         try:
@@ -4060,6 +4128,7 @@ def _try_main_provider_route(
         return None
     resolved_provider = main_provider
     explicit_base_url = runtime_base_url or None
+    health_base_url = _custom_health_base_url(main_provider, explicit_base_url)
     explicit_api_key = None
     if runtime_base_url and main_provider == "custom":
         # Anonymous custom endpoint — pass through explicit base_url + api_key.
@@ -4086,8 +4155,8 @@ def _try_main_provider_route(
         explicit_api_key = runtime_api_key
     # Skip if the main provider was recently 402'd (unhealthy TTL bounds the bypass).
     main_chain_label = _normalize_chain_label(resolved_provider)
-    if main_chain_label and _is_provider_unhealthy(main_chain_label):
-        _log_skip_unhealthy(main_chain_label)
+    if main_chain_label and _is_provider_unhealthy(main_chain_label, health_base_url):
+        _log_skip_unhealthy(main_chain_label, base_url=health_base_url)
         return None
     client, resolved = resolve_provider_client(
         resolved_provider, main_model, explicit_base_url=explicit_base_url,
@@ -4103,8 +4172,9 @@ def _try_discovery_chain() -> Tuple[Optional[OpenAI], Optional[str], str]:
     """Step 3: hardcoded aggregator/fallback chain, skipping unhealthy providers."""
     tried = []
     for label, try_fn in _get_provider_chain():
-        if _is_provider_unhealthy(label):
-            _log_skip_unhealthy(label)
+        candidate_base_url = _custom_health_base_url(label)
+        if _is_provider_unhealthy(label, candidate_base_url):
+            _log_skip_unhealthy(label, base_url=candidate_base_url)
             tried.append(f"{label} (unhealthy)")
             continue
         client, model = try_fn()
@@ -5538,41 +5608,29 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
 
 
 class CompressionFastLane(NamedTuple):
-    """Explicit, non-reasoning compression route safe for a bounded summary."""
+    """Explicit, non-reasoning compression route."""
 
     certified_non_reasoning: bool
-    max_tokens: Optional[int]
     reasoning_config: Optional[Dict[str, Any]]
 
 
-def _fast_lane_config_fields(config: Dict[str, Any]) -> tuple[str, str, bool, Optional[int]]:
-    """``(provider, model, non_reasoning, cap)`` from one task config.
-
-    ``non_reasoning`` only when ``reasoning_effort`` EXPLICITLY disables thinking (unset is NOT
-    non-reasoning); ``cap`` is a positive int ``max_output_tokens`` or None — booleans are config
-    drift, never a cap (``int(True) == 1``).
-    """
+def _fast_lane_config_fields(config: Dict[str, Any]) -> tuple[str, str, bool]:
+    """Only explicit reasoning disablement certifies a non-reasoning route."""
     from hermes_constants import parse_reasoning_effort
     provider = str(config.get("provider") or "").strip().lower()
     model = str(config.get("model") or "").strip()
     parsed_effort = parse_reasoning_effort(config.get("reasoning_effort"))
     non_reasoning = parsed_effort is not None and parsed_effort.get("enabled") is False
-    raw_cap = config.get("max_output_tokens")
-    try:
-        cap = 0 if isinstance(raw_cap, bool) else int(raw_cap or 0)
-    except (TypeError, ValueError):
-        cap = 0
-    return provider, model, non_reasoning, (cap if cap > 0 else None)
+    return provider, model, non_reasoning
 
 
 def resolve_compression_fast_lane(
     actual_provider: str, actual_model: Optional[str], *, requested_provider: Optional[str] = None,
     requested_model: Optional[str] = None, route_config: Optional[Dict[str, Any]] = None,
 ) -> CompressionFastLane:
-    """Certify the opt-in fast lane: capped only when an explicit, operator-certified
-    non-reasoning provider/model exactly matches the route actually called."""
+    """Certify explicit non-reasoning settings only on the matching destination."""
     config = route_config if route_config is not None else _get_auxiliary_task_config("compression")
-    cfg_provider, cfg_model, non_reasoning, cap = _fast_lane_config_fields(config)
+    cfg_provider, cfg_model, non_reasoning = _fast_lane_config_fields(config)
     provider = str(requested_provider or "").strip().lower() or cfg_provider
     model = str(requested_model or "").strip() or cfg_model
     explicit_route = provider not in {"", "auto"} and model.lower() not in {"", "auto"}
@@ -5580,14 +5638,14 @@ def resolve_compression_fast_lane(
     provider_matches = actual_norm == _normalize_aux_provider(provider)
     model_matches = str(actual_model or "").strip().lower() == model.lower()
     if explicit_route and provider_matches and model_matches and non_reasoning:
-        return CompressionFastLane(True, cap, {"enabled": False, "effort": "none"})
-    return CompressionFastLane(False, None, None)
+        return CompressionFastLane(True, {"enabled": False, "effort": "none"})
+    return CompressionFastLane(False, None)
 
 
 def _compression_config_claims_fast_lane(config: Dict[str, Any]) -> bool:
     """Whether task config declares fast-only controls that cannot leak."""
-    provider, model, non_reasoning, cap = _fast_lane_config_fields(config)
-    return provider not in {"", "auto"} and model.lower() not in {"", "auto"} and non_reasoning and cap is not None
+    provider, model, non_reasoning = _fast_lane_config_fields(config)
+    return provider not in {"", "auto"} and model.lower() not in {"", "auto"} and non_reasoning
 
 
 def _compression_fast_lane_controls(
@@ -5607,7 +5665,7 @@ def _compression_fast_lane_controls(
             body["reasoning"] = lane.reasoning_config
     elif _compression_config_claims_fast_lane(leak_guard_config):
         body.pop("reasoning", None)
-    return lane.max_tokens, body
+    return max_tokens, body
 
 
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
@@ -5812,7 +5870,7 @@ def _is_gemini_native_route(provider_norm: str, effective_base: str) -> bool:
 def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effective_base: str, task: Optional[str]) -> bool:
     """Whether an explicit max_tokens is forwarded on this route.
 
-    No default cap elsewhere (omitted = model max; avoids max_completion_tokens / ZAI-vision
+    No default cap elsewhere (omitted = provider default; avoids max_completion_tokens / ZAI-vision
     quirks). Forward only where mandatory or honored: Anthropic Messages wire (400 without it);
     NVIDIA NIM (empty choices[] when omitted); MoA reference slots; Gemini native (fixed 65,535
     ceiling otherwise); OpenRouter (budgets the FULL window when omitted → 402 on low credit);
@@ -6373,12 +6431,15 @@ class _ChatStreamAccumulator:
         if delta is None:
             return
         made_progress = False
-        piece = getattr(delta, "content", None)
+        from agent.message_content import flatten_message_text
+
+        piece = flatten_message_text(getattr(delta, "content", None), sep="")
         if piece:
             self.content_parts.append(piece)
             made_progress = True
         reasoning_piece = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
-        if reasoning_piece and isinstance(reasoning_piece, str):
+        reasoning_piece = flatten_message_text(reasoning_piece, sep="")
+        if reasoning_piece:
             self.reasoning_parts.append(reasoning_piece)
             made_progress = True
         # Evaluate both unconditionally: they accumulate state, not just progress.
@@ -6533,10 +6594,9 @@ def _prepare_aux_request(
     )
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
-    fast_compression_cap = None
     if not async_mode:
         compression_config = _get_auxiliary_task_config("compression") if task == "compression" else {}
-        fast_compression_cap, effective_extra_body = _compression_fast_lane_controls(
+        _, effective_extra_body = _compression_fast_lane_controls(
             task, actual_provider=request_provider, actual_model=final_model,
             requested_provider=provider, requested_model=model, route_config=compression_config,
             leak_guard_config=compression_config, max_tokens=max_tokens,
@@ -6558,10 +6618,6 @@ def _prepare_aux_request(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task)
-    if fast_compression_cap is not None and max_tokens is None:
-        # The compression route is certified non-reasoning, so a bounded summary is
-        # intentional; explicit caller caps pass through untouched.
-        kwargs.update(auxiliary_max_tokens_param(fast_compression_cap, model=final_model))
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
@@ -6733,7 +6789,9 @@ def _ladder_credential_rungs(
     auth_refresh_provider = _auth_refresh_provider_for_route(resolved_provider, route.base_info)
     if (_is_auth_error(first_err) and auth_refresh_provider not in {"auto", "", None}
             and not client_is_nous):
-        if _refresh_provider_credentials(auth_refresh_provider):
+        refresh_kwargs = ({"failed_api_key": getattr(client, "api_key", "")}
+                          if auth_refresh_provider == "anthropic" else {})
+        if _refresh_provider_credentials(auth_refresh_provider, **refresh_kwargs):
             if auth_refresh_provider != _normalize_aux_provider(resolved_provider):
                 # The stale client is cached under the route label (e.g. "auto"), not the
                 # concrete backend we refreshed.
@@ -6798,23 +6856,34 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         # it instead of paying another doomed RTT.
         _mark_provider_unhealthy(
             _recoverable_pool_provider(resolved_provider, route.client, main_runtime=route.main_runtime)
-            or resolved_provider)
+            or resolved_provider, base_url=route.base_info)
     logger.info("Auxiliary %s%s: %s on %s (%s), trying fallback",
                 task or "call", tag, reason, resolved_provider, first_err)
     # Skip only the failed model for model-specific failures; 401/402 are provider-wide, so
-    # keep skipping the whole provider.
+    # auth keeps skipping the credential surface, while billing is scoped to the endpoint:
+    # separate custom URLs can carry separate credentials (or no billing relationship at all).
     _chain_failed_model = None if reason in ("auth error", "payment error") else route.final_model
+    from agent.backend_identity import FailureScope
+    _chain_failure_scope = (
+        FailureScope.ENDPOINT
+        if reason == "payment error" and _custom_health_base_url(resolved_provider, route.base_info)
+        else None
+    )
     fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-        task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model)
+        task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
+        failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
     if fb_client is None and is_auto:
         fb_client, fb_model, fb_label = _try_main_fallback_chain(
-            task, resolved_provider or "auto", reason=reason)
+            task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
+            failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
         if fb_client is None:
             fb_client, fb_model, fb_label = _try_payment_fallback(
-                resolved_provider, task, reason=reason)
+                resolved_provider, task, reason=reason, failed_base_url=route.base_info,
+                failure_scope=_chain_failure_scope)
     elif fb_client is None:
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
-            resolved_provider, task, reason=reason, failed_model=_chain_failed_model)
+            resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
+            failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
     if fb_client is not None:
         # Second pass: the candidate credential was stale and quarantined — walk the discovery
         # chain once more (unhealthy entries are skipped).
@@ -6825,7 +6894,8 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
                 return fb_resp
             if _pass == 0:
                 fb_client, fb_model, fb_label = _try_payment_fallback(
-                    resolved_provider, task, reason="stale fallback credential")
+                    resolved_provider, task, reason="stale fallback credential",
+                    failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
                 if fb_client is None:
                     break
     # All fallback layers exhausted — one user-visible warning, then re-raise.

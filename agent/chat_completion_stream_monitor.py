@@ -9,7 +9,7 @@ from agent.model_metadata import is_local_endpoint
 class StreamingWaitMonitor:
     def _poll_local_load_notice(self, now: float) -> bool:
         """Managed local server: surface a cold model's weight-load progress
-        instead of the 30s "provider may be slow" copy. Polled ~1s only while no
+        instead of the 60s "provider may be slow" copy. Polled ~1s only while no
         REAL chunk arrived for 2s+ (never during healthy token flow); in-memory,
         no network. True while loading = heartbeat liveness, skip the rest of
         this iteration (the stale detector's local floor dwarfs any load)."""
@@ -34,11 +34,11 @@ class StreamingWaitMonitor:
                 self.agent._emit_wait_notice("")
         return False
 
-    def _heartbeat(self, waiting_secs: int, interval: float) -> None:
+    def _heartbeat(self, waiting_secs: int) -> None:
         """Gateway inactivity heartbeat: the start-to-first-chunk gap (thinking,
         local prefill) can exceed the gateway timeout."""
-        if waiting_secs >= interval:
-            # No chunks for 30s+: say WHAT the wait is and WHEN recovery kicks in.
+        if waiting_secs >= 60.0:
+            # No chunks for 60s+: say WHAT the wait is and WHEN recovery kicks in.
             stale = self._stream_stale_timeout
             _recovery = f"; auto-reconnect at {int(stale)}s" if stale is not None and stale != float("inf") else ""
             self._mon.wait_notice_started_ts = self._mon.last_heartbeat
@@ -69,7 +69,7 @@ class StreamingWaitMonitor:
                 self._mon.wait_notice_started_ts = None
             if _hb_now - self._mon.last_heartbeat >= _HEARTBEAT_INTERVAL:
                 self._mon.last_heartbeat = _hb_now
-                self._heartbeat(int(_hb_now - self.last_chunk_time["t"]), _HEARTBEAT_INTERVAL)
+                self._heartbeat(int(_hb_now - self.last_chunk_time["t"]))
             _stale_elapsed = time.time() - self.last_chunk_time["t"]
             if _stale_elapsed > self._stream_stale_timeout:
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.

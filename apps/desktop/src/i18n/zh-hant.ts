@@ -290,6 +290,13 @@ export const zhHant = defineLocale({
   },
 
   settings: {
+    plugins: {
+      installModal: {
+        installFromGit: '從 Git 安裝',
+        reviewRepository: '檢查儲存庫',
+        repoPlaceholder: 'https://github.com/owner/repo'
+      }
+    },
     closeSettings: '關閉設定',
     exportConfig: '匯出設定',
     importConfig: '匯入設定',
@@ -1342,6 +1349,10 @@ export const zhHant = defineLocale({
     emptyDesc: '當 Hermes 為你的工作建立技能與記憶時，會顯示在這裡。'
   },
   agents: {
+    extendedTranscript: '完整記錄尾端',
+    transcriptTruncated: '顯示最新 16 KiB',
+    transcriptUnavailable: '即時記錄無法使用',
+
     close: '關閉代理',
     title: '派生樹',
     subtitle: '目前回合的子代理即時活動。',
@@ -1353,6 +1364,14 @@ export const zhHant = defineLocale({
     streaming: '串流傳輸中',
     files: '檔案',
     moreFiles: count => `還有 ${count} 個檔案`,
+    moreAgents: count => `還有 ${count} 個子代理`,
+    queued: '排隊中',
+    waitingActivity: '等待活動',
+    steer: '引導',
+    steerPlaceholder: '此子代理的指令',
+    steerQueued: '已排隊，等待下一個檢查點',
+    stopRequested: '已請求停止',
+    requestRejected: '子代理未接受請求',
     delegation: index => `派發 ${index}`,
     workers: count => `${count} 個工作單元`,
     workersActive: count => `${count} 個活躍`,
@@ -1951,13 +1970,23 @@ export const zhHant = defineLocale({
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: '閘道與設定檔',
+      rename: '重新命名群組',
+      aliasLabel: '顯示名稱',
+      aliasHint: '僅變更顯示名稱；閘道和設定檔名稱維持不變。',
+      resetName: '重設名稱',
+      moveUp: '上移',
+      moveDown: '下移',
+      reorder: '調整群組順序',
+      actions: '群組動作'
+    },
     nav: {
       'new-session': '新工作階段',
       skills: '技能與工具',
       messaging: '訊息平台',
       artifacts: '成品',
-      cron: '排程工作',
-      'session-import': '匯入工作階段'
+      cron: '排程工作'
     },
     searchAria: '搜尋工作階段',
     searchPlaceholder: '搜尋工作階段…',
@@ -1977,6 +2006,7 @@ export const zhHant = defineLocale({
     shiftClickHint: 'Shift + 點擊聊天以釘選 · 拖曳以重新排序',
     noWorkspace: '無工作區',
     projectEmpty: '尚無工作階段',
+    projectLoadFailed: '會話載入失敗',
     noSessions: '尚無工作階段',
     noFilterMatches: '沒有工作階段符合這些篩選條件',
     projects: {

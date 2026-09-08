@@ -18,7 +18,8 @@ from contextlib import suppress
 from datetime import datetime
 from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
@@ -1204,6 +1205,9 @@ class GatewayStartupMixin:
             )
         self._spawn_supervised(self._hosted_room_worker_watcher, "hosted_room_worker")
         self._start_loop_heartbeat_task()
+        from gateway.run_heartbeat_restore import restore_heartbeat_watches
+        self._start_heartbeat_poller()  # Keep retrying even when the first scan is empty.
+        await restore_heartbeat_watches(self)
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:
             logger.info("%s hook(s) loaded", hook_count)
@@ -1267,7 +1271,7 @@ class GatewayStartupMixin:
     # Long-lived supervised watchers spawned at the end of start(), in order; supervised name = method
     # name minus the leading underscore.
     _PRE_RECONNECT_WATCHERS = (
-        "_session_expiry_watcher", "_model_catalog_refresh_watcher", "_session_stall_watcher",
+        "_session_housekeeping_watcher", "_model_catalog_refresh_watcher", "_session_stall_watcher",
         "_kanban_notifier_watcher", "_kanban_dispatcher_watcher",
     )
     _POST_RECONNECT_WATCHERS = ("_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher")

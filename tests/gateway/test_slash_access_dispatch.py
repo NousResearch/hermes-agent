@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -599,3 +599,34 @@ async def test_gating_isolated_per_platform():
     tg_src = _make_source(platform=Platform.TELEGRAM, user_id="999", chat_id="t1")
     result = await runner._handle_message(_make_event("/whoami", tg_src))
     assert "Tier: unrestricted" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("actor_id", ["111", "intruder", None])
+async def test_adapter_busy_guard_authorizes_actor_without_changing_shared_route(
+    monkeypatch, actor_id,
+):
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.adapters = {}
+    runner._draining = False
+    runner._effective_busy_input_mode = lambda _source: "queue"
+    runner._route_plaintext_approval_while_busy = AsyncMock(return_value=False)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+    source = _make_source(
+        platform=Platform.TELEGRAM, user_id=None, chat_type="group", chat_id="-100",
+    )
+    event = MessageEvent(text="follow-up", source=source, user_id=actor_id)
+    session_key = build_session_key(source)
+
+    handled = await runner._handle_active_session_busy_message(event, session_key)
+
+    # An authorized sender reaches normal busy handling; all others are dropped
+    # before approval replies or queue/interrupt effects are considered.
+    assert handled is (actor_id != "111")
+    assert runner._route_plaintext_approval_while_busy.await_count == (actor_id == "111")
+    assert event.source is source
+    assert source.user_id is None
+    assert build_session_key(source) == session_key

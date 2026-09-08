@@ -1924,40 +1924,44 @@ export function reopenLastClosedTile(): void {
 // timer / model) reads these instead of the primary-only atoms.
 // ---------------------------------------------------------------------------
 
-/** Stored id of the focused session (the interacted zone's tile, else the
- *  primary's selection). Null on a fresh draft. */
-export const $focusedStoredSessionId = computed(
-  [$activeTreeGroup, $layoutTree, $selectedStoredSessionId, $workspaceMode],
-  (groupId, tree, selected, workspaceMode) => {
-    const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
+/** Focused pane identity, retaining Bot Mode's main-zone fallback. */
+const $focusedTreePaneId = computed([$activeTreeGroup, $layoutTree, $workspaceMode], (groupId, tree, workspaceMode) => {
+  const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
-    if (active?.startsWith(TILE_PANE_PREFIX)) {
-      return active.slice(TILE_PANE_PREFIX.length)
-    }
-
-    // The interaction tracker can point at sidebar CHROME while a chat still
-    // holds the main zone's active tab — clicking a Bots-pane roster row moves
-    // it to the sidebar group, whose active pane ('hermes-bots:pane') is not a
-    // session tile. In sessions mode the primary selection answers, exactly as
-    // always. In Bot Mode that fallback alone publishes a NULL "focused"
-    // edge: bot chats open as TILES and never set $selectedStoredSessionId,
-    // so the selection is null while the chat is plainly on screen. The Bots
-    // plugin reads that null edge as "the chat lost the center", releases its
-    // open claim, and re-asserts the Bots home over the still-visible chat —
-    // the reported "clicking a bot chat jumps to the list" (#96062). Bot
-    // Mode's on-screen truth is the main zone's active TILE; only when the
-    // main zone holds no tile (chat closed) does the selection answer, so a
-    // genuine close still lets the home return.
-    if (workspaceMode === 'bots' && tree) {
-      const mainActive = findGroupOfPane(tree, 'workspace')?.active
-
-      if (mainActive?.startsWith(TILE_PANE_PREFIX)) {
-        return mainActive.slice(TILE_PANE_PREFIX.length)
-      }
-    }
-
-    return selected
+  if (active?.startsWith(TILE_PANE_PREFIX)) {
+    return active
   }
+
+  // The interaction tracker can point at sidebar CHROME while a chat still
+  // holds the main zone's active tab — clicking a Bots-pane roster row moves
+  // it to the sidebar group, whose active pane ('hermes-bots:pane') is not a
+  // session tile. In sessions mode the primary selection answers, exactly as
+  // always. In Bot Mode that fallback alone publishes a NULL "focused"
+  // edge: bot chats open as TILES and never set $selectedStoredSessionId,
+  // so the selection is null while the chat is plainly on screen. The Bots
+  // plugin reads that null edge as "the chat lost the center", releases its
+  // open claim, and re-asserts the Bots home over the still-visible chat —
+  // the reported "clicking a bot chat jumps to the list" (#96062). Bot
+  // Mode's on-screen truth is the main zone's active TILE; only when the
+  // main zone holds no tile (chat closed) does the selection answer, so a
+  // genuine close still lets the home return.
+  if (workspaceMode === 'bots' && tree) {
+    const mainActive = findGroupOfPane(tree, 'workspace')?.active
+
+    if (mainActive?.startsWith(TILE_PANE_PREFIX)) {
+      return mainActive
+    }
+  }
+
+  return active
+})
+
+export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
+  Boolean(active?.startsWith(TILE_PANE_PREFIX))
+)
+
+export const $focusedStoredSessionId = computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
+  active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
 )
 
 /** Every session currently OPEN as a surface: the primary's selection plus

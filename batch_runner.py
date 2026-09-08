@@ -51,12 +51,12 @@ _RUNNER_FIELDS = (
     "batch_size", "run_name", "distribution", "max_iterations", "base_url", "api_key", "model",
     "num_workers", "verbose", "ephemeral_system_prompt", "log_prefix_chars", "providers_allowed",
     "providers_ignored", "providers_order", "provider_sort", "openrouter_min_coding_score",
-    "max_tokens", "reasoning_config", "prefill_messages", "max_samples",
+    "reasoning_config", "prefill_messages", "max_samples",
 )
 # BatchRunner attributes forwarded verbatim to every AIAgent in the worker config.
 _AGENT_PASSTHROUGH = (
     "base_url", "api_key", "ephemeral_system_prompt", "providers_allowed", "providers_ignored",
-    "providers_order", "provider_sort", "openrouter_min_coding_score", "max_tokens",
+    "providers_order", "provider_sort", "openrouter_min_coding_score",
     "reasoning_config", "prefill_messages",
 )
 
@@ -427,7 +427,7 @@ class BatchRunner:
         providers_order: List[str] = None,
         provider_sort: str = None,
         openrouter_min_coding_score: Optional[float] = None,
-        max_tokens: int = None,
+
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         max_samples: int = None,
@@ -861,7 +861,7 @@ def main(
     providers_ignored: str = None,
     providers_order: str = None,
     provider_sort: str = None,
-    max_tokens: int = None,
+
     reasoning_effort: str = None,
     reasoning_disabled: bool = False,
     prefill_messages_file: str = None,
@@ -889,7 +889,7 @@ def main(
         providers_ignored (str): Comma-separated list of OpenRouter providers to ignore (e.g. "together,deepinfra")
         providers_order (str): Comma-separated list of OpenRouter providers to try in order (e.g. "anthropic,openai,google")
         provider_sort (str): Sort providers by "price", "throughput", or "latency" (OpenRouter only)
-        max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
+
         reasoning_effort (str): Reasoning effort: "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra" (default: "medium")
         reasoning_disabled (bool): Completely disable reasoning/thinking tokens (default: False)
         prefill_messages_file (str): Path to JSON file containing prefill messages (list of {role, content} dicts)
@@ -905,9 +905,9 @@ def main(
         # Use specific distribution
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=image_test --distribution=image_gen
         
-        # With disabled reasoning and max tokens
+        # With disabled reasoning
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
-                               --reasoning_disabled --max_tokens=128000
+                               --reasoning_disabled
         
         # With prefill messages from file
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
@@ -981,7 +981,7 @@ def main(
             providers_ignored=_split_csv(providers_ignored),
             providers_order=_split_csv(providers_order),
             provider_sort=provider_sort,
-            max_tokens=max_tokens,
+
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
             max_samples=max_samples,

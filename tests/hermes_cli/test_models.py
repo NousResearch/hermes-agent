@@ -1519,3 +1519,25 @@ class TestLocalOllamaModelDiscovery:
 
         assert result.success is True
         assert result.api_key == "no-key-required"
+
+
+class TestModelsNullDataGuard:
+    """`/models` endpoints may return `{\"data\": None}` (e.g. empty local Ollama).
+
+    Contract: null / missing / malformed `data` degrades to `[]`, never raises
+    `TypeError: 'NoneType' object is not iterable` and never kills the picker.
+    """
+
+    def test_probe_api_models_null_data_returns_empty(self):
+        from hermes_cli.models import probe_api_models
+
+        with patch("hermes_cli.models._get_json", return_value={"object": "list", "data": None}):
+            result = probe_api_models("dummy", "http://localhost:11434/v1", timeout=1.0)
+        assert result["models"] == []
+        assert result["probed_url"] == "http://localhost:11434/v1/models"
+
+    def test_catalog_items_null_data_returns_empty(self):
+        from hermes_cli.models_pricing import _catalog_items
+
+        assert _catalog_items({"data": None}) == []
+        assert _catalog_items({"data": [{"id": "x"}]}) == [{"id": "x"}]

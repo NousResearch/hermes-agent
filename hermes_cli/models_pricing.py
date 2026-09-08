@@ -195,7 +195,8 @@ def _per_token(per_mtok: Any) -> str:
 
 
 def _catalog_items(payload: dict) -> list[dict]:
-    return [item for item in payload.get("data", []) if isinstance(item, dict)]
+    data = (payload.get("data") or []) if isinstance(payload, dict) else []
+    return [item for item in data if isinstance(item, dict)]
 
 
 def fetch_models_with_pricing(
@@ -229,10 +230,12 @@ def fetch_models_with_pricing(
 
     # Same document the reasoning-capability fetch would pull — mirror it so a later hot-path
     # lookup (and the next process) has an answer without its own round-trip.
-    _seed_reasoning_caps(url, payload.get("data"))
+    _seed_reasoning_caps(url, payload.get("data") if isinstance(payload, dict) else None)
 
     result: dict[str, dict[str, Any]] = {}
-    for item in payload.get("data", []):
+    for item in ((payload.get("data") or []) if isinstance(payload, dict) else []):
+        if not isinstance(item, dict):
+            continue
         mid, pricing = item.get("id"), item.get("pricing")
         if mid and isinstance(pricing, dict):
             entry = _pricing_entry(pricing)

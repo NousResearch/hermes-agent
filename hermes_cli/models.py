@@ -456,7 +456,7 @@ def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tupl
         payload = _get_json(url, timeout=timeout, headers={"Accept": "application/json"}, opener=opener)
     except Exception:
         return None
-    live_items = payload.get("data", [])
+    live_items = ((payload.get("data") or []) if isinstance(payload, dict) else [])
     if not isinstance(live_items, list):
         return None
     live_by_id = {
@@ -1661,7 +1661,7 @@ def _fetch_anthropic_models(
                 [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS)
             )
             data = _get_json(url, timeout=timeout, headers=headers)
-        models = [m["id"] for m in data.get("data", []) if m.get("id")]
+        models = [m["id"] for m in (data.get("data") or []) if isinstance(m, dict) and m.get("id")] if isinstance(data, dict) else []
         # opus, then sonnet, then haiku; alphabetical within tier.
         return sorted(models, key=lambda m: ("opus" not in m, "sonnet" not in m, "haiku" not in m, m))
     except Exception as e:
@@ -1976,7 +1976,7 @@ def _fetch_opencode_free_models(
     try:
         with open_credentialed_url(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
-        items = data if isinstance(data, list) else data.get("data", [])
+        items = (data if isinstance(data, list) else ((data.get("data") or []) if isinstance(data, dict) else []))
     except Exception:
         _set_opencode_free_live_memo(None)
         return None
@@ -2166,8 +2166,9 @@ def probe_api_models(
             data = _get_json(url, timeout=timeout, headers=headers, **_open_kwargs)
         except Exception:
             continue
+        items = ((data.get("data") or []) if isinstance(data, dict) else [])
         return _probe_result(
-            [m.get("id", "") for m in data.get("data", [])], url, candidate_base.rstrip("/"),
+            [m.get("id", "") for m in items if isinstance(m, dict)], url, candidate_base.rstrip("/"),
             alternate_base if alternate_base != candidate_base else normalized, is_fallback)
     return _probe_result(
         None, tried[0] if tried else normalized.rstrip("/") + "/models", normalized,
@@ -2295,9 +2296,10 @@ def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
     try:
         url = base_url.rstrip("/") + "/models"
         data = _get_json(url, timeout=timeout, headers=headers, opener=urllib.request.urlopen)
+        items = ((data.get("data") or []) if isinstance(data, dict) else [])
         return [
-            m["id"] for m in data.get("data", [])
-            if m.get("id") and m.get("type") == "language" and "tool-use" in (m.get("tags") or [])]
+            m["id"] for m in items
+            if isinstance(m, dict) and m.get("id") and m.get("type") == "language" and "tool-use" in (m.get("tags") or [])]
     except Exception:
         return None
 

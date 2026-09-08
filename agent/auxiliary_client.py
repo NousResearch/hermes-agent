@@ -1113,7 +1113,8 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALL
 # the user's main chat model. The opt-in lives in
 # ``auxiliary.<task>.prefer_fast_model`` so the default ``auto = main model``
 # contract remains true on every settings surface.
-_FAST_MODEL_TASKS: frozenset = frozenset({"title_generation"})
+_TITLE_GENERATION_TASK = "title_generation"
+_FAST_MODEL_TASKS: frozenset = frozenset({_TITLE_GENERATION_TASK})
 
 
 def _task_prefers_fast_model(task: Optional[str]) -> bool:
@@ -4597,7 +4598,7 @@ def _is_connection_error(exc: Exception) -> bool:
 
 def _title_timeout_should_stop(task: Optional[str], exc: Exception) -> bool:
     """Title generation is cosmetic; a timeout should not amplify load."""
-    return task == "title_generation" and _is_timeout_error(exc)
+    return task == _TITLE_GENERATION_TASK and _is_timeout_error(exc)
 
 
 def _is_transient_transport_error(exc: Exception) -> bool:
@@ -9121,7 +9122,7 @@ def _build_call_kwargs(
             or base_url_host_matches(_effective_base, "integrate.api.nvidia.com")
         )
         _is_moa = bool(task) and str(task) == "moa_reference"
-        _is_title_generation = bool(task) and str(task) == "title_generation"
+        _is_title_generation = bool(task) and str(task) == _TITLE_GENERATION_TASK
         # Gemini's native generateContent maps max_tokens → maxOutputTokens and,
         # when it is omitted, applies a fixed 65,535-token ceiling rather than
         # "the model's full budget" (see gemini_native_adapter.build_gemini_request).
@@ -10303,7 +10304,7 @@ def _call_llm_impl(
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
-            if task == "title_generation" and _is_timeout_error(transient_err):
+            if task == _TITLE_GENERATION_TASK and _is_timeout_error(transient_err):
                 logger.info(
                     "Auxiliary title_generation: timeout; skipping same-provider "
                     "retry and fallback: %s",
@@ -11154,7 +11155,7 @@ async def _async_call_llm_impl(
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
-            if task == "title_generation" and _is_timeout_error(transient_err):
+            if task == _TITLE_GENERATION_TASK and _is_timeout_error(transient_err):
                 logger.info(
                     "Auxiliary title_generation (async): timeout; skipping "
                     "same-provider retry and fallback: %s",

@@ -184,6 +184,52 @@ def _raise_gemini_thinking_max_tokens(model: str, reasoning_config: dict | None,
     return _effective_gemini_max_output_tokens(requested, thinking_config)
 
 
+# Reasoning models bill thinking/reasoning tokens against the same output budget as the answer.
+# A small explicit cap (health-probe/companion trivial probes, short budgeted turns) is fully
+# consumed by ``reasoning_content`` before any answer is emitted, so the model returns
+# ``content: ""`` with ``finish_reason: "length"`` — which a monitor mistakes for a dead model.
+# This is the request-side floor; leave the wire cap untouched for non-reasoning models and
+# for reasoning models with reasoning explicitly disabled or effort "none".
+_REASONING_MIN_OUTPUT_TOKENS = 1024
+
+
+def _reasoning_output_budget_active(reasoning_config: dict | None) -> bool:
+    """True when the outgoing call will actually spend output tokens on reasoning.
+
+    Reasoning is off (and output tokens are all available for the answer) when the config is
+    absent, reasoning is disabled, or the explicit effort is ``none``. These must not be raised.
+    """
+    if not isinstance(reasoning_config, dict):
+        return False
+    if reasoning_config.get("enabled") is False:
+        return False
+    if str(reasoning_config.get("effort") or "").strip().lower() == "none":
+        return False
+    return True
+
+
+def _apply_reasoning_output_floor(
+    requested: Any, reasoning_config: dict | None, *, supports_reasoning: bool,
+) -> Any:
+    """Raise an explicit sub-floor output cap on a reasoning-capable call.
+
+    Guards the first attempt so a tight ``max_tokens`` cannot be exhausted by reasoning before
+    the answer starts — the empty-returning / false-DEGRADED failure class from #46131.
+    Complementary to (not a duplicate of) the response-side recovery in #9452: that PR compacts
+    and retries *after* a reasoning-only response; this raises the budget *before* the request so
+    probes and chat turns stop producing reasoning-only responses in the first place.
+    """
+    if not supports_reasoning or not _reasoning_output_budget_active(reasoning_config):
+        return requested
+    try:
+        requested_i = int(requested)
+    except (TypeError, ValueError):
+        return requested
+    if requested_i <= 0:
+        return requested  # None / provider-default cap — no floor to enforce
+    return max(requested_i, _REASONING_MIN_OUTPUT_TOKENS)
+
+
 def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     normalized = str(base_url or "").strip().rstrip("/").lower()
     return bool(normalized) and "generativelanguage.googleapis.com" in normalized and normalized.endswith("/openai")
@@ -249,15 +295,27 @@ def _swap_developer_role(sanitized: list, model_lower: str) -> list:
     return sanitized
 
 
-def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, params: dict, profile_max: Any = None) -> None:
+def _apply_max_tokens(
+    api_kwargs: dict, model: str, reasoning_config: Any, params: dict, profile_max: Any = None,
+) -> None:
     """Preserve internal task/recovery budgets and provider protocol exceptions."""
     max_tokens_fn = params.get("max_tokens_param_fn")
+    supports_reasoning = bool(params.get("supports_reasoning", False))
+
+    def _guard(requested: Any) -> Any:
+        # Gemini has its own dedicated thinking headroom (provider-native ceiling). For every
+        # other reasoning-capable call enforce the reasoning output floor so reasoning tokens
+        # cannot exhaust a tight cap before the answer starts (#46131).
+        if _build_gemini_thinking_config(model, reasoning_config) is not None:
+            return _raise_gemini_thinking_max_tokens(model, reasoning_config, requested)
+        return _apply_reasoning_output_floor(requested, reasoning_config, supports_reasoning=supports_reasoning)
+
     for candidate in (params.get("ephemeral_max_output_tokens"), params.get("max_tokens")):
         if candidate is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, candidate)))
+            api_kwargs.update(max_tokens_fn(_guard(candidate)))
             return
     if profile_max and max_tokens_fn:
-        api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, profile_max)))
+        api_kwargs.update(max_tokens_fn(_guard(profile_max)))
 
 
 

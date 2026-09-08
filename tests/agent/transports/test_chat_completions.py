@@ -437,6 +437,72 @@ class TestChatCompletionsBuildKwargs:
         assert kw["max_tokens"] == 4096
 
 
+class TestReasoningOutputFloor:
+    """Reasoning models bill thinking tokens against the same output budget as the answer.
+
+    A tight explicit ``max_tokens`` (health-probe/companion trivial probes, budgeted turns) is
+    consumed by ``reasoning_content`` before any answer starts → ``content:""`` +
+    ``finish_reason:"length"``, which a monitor mistakes for a dead model (#46131). The request
+    side must raise a sub-floor cap so reasoning never starves the answer on the first attempt.
+    """
+
+    def _build(self, transport, **overrides):
+        kwargs = dict(
+            model="nousresearch/deepseek-r1",
+            messages=[{"role": "user", "content": "Hi"}],
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "high"},
+            max_tokens=10,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        kwargs.update(overrides)
+        return transport.build_kwargs(**kwargs)
+
+    def test_raises_sub_floor_budget_when_reasoning_active(self, transport):
+        from agent.transports.chat_completions import _REASONING_MIN_OUTPUT_TOKENS
+
+        kw = self._build(transport)
+        assert kw["max_tokens"] == _REASONING_MIN_OUTPUT_TOKENS
+
+    def test_keeps_above_floor_budget(self, transport):
+        kw = self._build(transport, max_tokens=4000)
+        assert kw["max_tokens"] == 4000
+
+    def test_no_floor_when_not_reasoning_capable(self, transport):
+        kw = self._build(transport, supports_reasoning=False)
+        assert kw["max_tokens"] == 10
+
+    def test_no_floor_when_reasoning_disabled(self, transport):
+        kw = self._build(
+            transport, reasoning_config={"enabled": False, "effort": "high"},
+        )
+        assert kw["max_tokens"] == 10
+
+    def test_no_floor_when_effort_none(self, transport):
+        kw = self._build(transport, reasoning_config={"enabled": True, "effort": "none"})
+        assert kw["max_tokens"] == 10
+
+    def test_no_floor_when_gemini_thinking_cap(self, transport):
+        """Gemini gets its provider-native thinking headroom, not the generic floor (#9452-free)."""
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("gemini")
+        kw = transport.build_kwargs(
+            model="gemini-3.7-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="gemini",
+            base_url=profile.base_url,
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "high"},
+            max_tokens=10,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+
+        assert kw["max_tokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+
+
 
 
 

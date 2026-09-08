@@ -555,6 +555,14 @@ def renew_lease(db_path: DbPath, lease: DriverLease, *, ttl_seconds: Any, clock:
         return dataclasses.replace(lease, expires_at=expires_at, reclaimed=False)
 
 
+def require_active_lease(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> DriverLease:
+    """Revalidate one exact lease generation without extending its lifetime."""
+    now = _timestamp(clock)
+    with _transaction(db_path) as conn:
+        current = _require_active_lease(conn, lease, now=now)
+        return _lease_from_row(current)
+
+
 def release_lease(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> dict[str, Any]:
     """Release the exact active lease generation idempotently."""
     now = _timestamp(clock)

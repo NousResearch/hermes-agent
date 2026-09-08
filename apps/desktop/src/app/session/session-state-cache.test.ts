@@ -225,4 +225,112 @@ describe('SessionStateCache', () => {
       expect(cache.get('working')).toBe(working)
     })
   })
+
+  describe('stalled session eviction (#95276)', () => {
+    function busy(storedSessionId: string, text = storedSessionId): ClientSessionState {
+      return { ...settled(storedSessionId, text), busy: true }
+    }
+
+    it('evicts entries gone silent past the stall window even under no size pressure', () => {
+      let nowMs = 0
+      const evicted: string[] = []
+
+      const cache = new SessionStateCache(
+        { isReferenced: () => false, onEvict: runtimeId => evicted.push(runtimeId) },
+        // No count/byte pressure at all: only the stall guard can bound these.
+        {
+          maxBytes: Number.POSITIVE_INFINITY,
+          maxCount: Number.POSITIVE_INFINITY,
+          stalledMs: 10_000,
+          now: () => nowMs
+        }
+      )
+
+      // Mid-turn orphans: committed as busy, then no further events, ever.
+      for (const id of ['a', 'b', 'c']) {
+        cache.set(`runtime-${id}`, busy(`stored-${id}`, 'x'.repeat(2048)))
+      }
+
+      cache.prune()
+      expect(cache.size).toBe(3)
+
+      nowMs += 10_001
+      cache.prune()
+
+      // Pre-fix this stays 3 forever: busy transcripts are invisible to the LRU.
+      expect(cache.size).toBe(0)
+      expect([...evicted].sort()).toEqual(['runtime-a', 'runtime-b', 'runtime-c'])
+    })
+
+    it.each([
+      ['busy', (state: ClientSessionState) => ({ ...state, busy: true }), true],
+      ['awaiting response', (state: ClientSessionState) => ({ ...state, awaitingResponse: true }), true],
+      ['needs input', (state: ClientSessionState) => ({ ...state, needsInput: true }), false]
+    ])('%s past the stall window is evictable exactly when the wait is not on the user', (_label, decorate, stalls) => {
+      let nowMs = 0
+      const evicted: string[] = []
+
+      const cache = new SessionStateCache(
+        { isReferenced: () => false, onEvict: runtimeId => evicted.push(runtimeId) },
+        { stalledMs: 5_000, now: () => nowMs }
+      )
+
+      cache.set('runtime', decorate(settled('stored')))
+      nowMs += 5_001
+      cache.prune()
+
+      expect(cache.has('runtime')).toBe(!stalls)
+      expect(evicted).toEqual(stalls ? ['runtime'] : [])
+    })
+
+    it('keeps a busy transcript alive while events keep arriving and evicts only after silence', () => {
+      let nowMs = 0
+      const evicted: string[] = []
+
+      const cache = new SessionStateCache(
+        { isReferenced: () => false, onEvict: runtimeId => evicted.push(runtimeId) },
+        { stalledMs: 10_000, now: () => nowMs }
+      )
+
+      cache.set('runtime', busy('stored', 'chunk-0'))
+
+      // A healthy long turn keeps mutating state; each event resets the window.
+      for (let tick = 1; tick <= 4; tick += 1) {
+        nowMs += 8_000
+        cache.set('runtime', busy('stored', `chunk-${tick}`))
+        cache.prune()
+        expect(cache.has('runtime')).toBe(true)
+      }
+
+      // Events stop; silence outlasts the window.
+      nowMs += 10_001
+      cache.prune()
+
+      expect(cache.has('runtime')).toBe(false)
+      expect(evicted).toEqual(['runtime'])
+    })
+
+    it('never stall-evicts drafts, in-flight messages, or referenced states', () => {
+      let nowMs = 0
+
+      const cache = new SessionStateCache(
+        { isReferenced: runtimeId => runtimeId === 'referenced', onEvict: () => undefined },
+        { stalledMs: 1, now: () => nowMs }
+      )
+
+      const pending = busy('stored-pending')
+      pending.messages = [{ id: 'pending-assistant', role: 'assistant', parts: [], pending: true }]
+      const draft = { ...createClientSessionState(null), messages: transcript('draft'), busy: true }
+
+      cache.set('pending', pending)
+      cache.set('draft', draft)
+      cache.set('referenced', busy('stored-referenced'))
+      nowMs += 2
+      cache.prune()
+
+      expect(cache.has('pending')).toBe(true)
+      expect(cache.has('draft')).toBe(true)
+      expect(cache.has('referenced')).toBe(true)
+    })
+  })
 })

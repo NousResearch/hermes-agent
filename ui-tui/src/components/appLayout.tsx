@@ -25,6 +25,7 @@ import { composerPromptText } from '../lib/prompt.js'
 import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from '../sdk/host.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
+import { AgentDock } from './agentDock.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
@@ -555,6 +556,8 @@ export const AppLayout = memo(function AppLayout({
           )}
           {!overlay.agents && !overlay.journey && <AmbientRail side="right" />}
         </Box>
+
+        {!overlay.agents && !overlay.journey && <AgentDock />}
 
         {!overlay.agents && !overlay.journey && (
           <>

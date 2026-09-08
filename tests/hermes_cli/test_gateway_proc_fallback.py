@@ -24,7 +24,16 @@ _OTHER_CMD = "python -m some_other_thing"
 
 def _fake_proc_dir(entries: dict):
     """Return side_effects that simulate /proc: isdir → True, listdir → pids,
-    open(cmdline) → null-delimited command bytes."""
+    open(cmdline) → null-delimited command bytes.
+
+    Every simulated process is owned by the current UID (the ownership filter in
+    ``_iter_proc_cmdlines`` lets these through); foreign-owner cases are covered by
+    ``TestProcOwnership`` below. Paths outside /proc fall through to the real os.stat
+    so unrelated callers (e.g. ``get_hermes_home().resolve()``) keep working.
+    """
+    my_uid = os.getuid()
+    real_stat = os.stat
+
     def _isdir(path):
         return str(path) == "/proc"
 
@@ -32,6 +41,14 @@ def _fake_proc_dir(entries: dict):
         if str(path) == "/proc":
             return [str(pid) for pid in entries] + ["self", "version"]
         raise FileNotFoundError(path)
+
+    def _stat(path, **kwargs):
+        path_str = str(path)
+        if path_str.startswith("/proc/"):
+            st = MagicMock()
+            st.st_uid = my_uid
+            return st
+        return real_stat(path, **kwargs)
 
     def _open(path, mode="r", **kwargs):
         path_str = str(path)
@@ -45,7 +62,7 @@ def _fake_proc_dir(entries: dict):
             return m
         raise FileNotFoundError(path)
 
-    return _isdir, _listdir, _open
+    return _isdir, _listdir, _stat, _open
 
 
 # ---------------------------------------------------------------------------
@@ -70,11 +87,12 @@ class TestProcFallback:
             12345: _GATEWAY_CMD,
             99999: _OTHER_CMD,
         }
-        _isdir, _listdir, _open = _fake_proc_dir(entries)
+        _isdir, _listdir, _stat, _open = _fake_proc_dir(entries)
 
         with (
             patch("os.path.isdir", side_effect=_isdir),
             patch("os.listdir", side_effect=_listdir),
+            patch("os.stat", side_effect=_stat),
             patch("builtins.open", side_effect=_open),
             patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
             patch("subprocess.run") as mock_ps,
@@ -97,12 +115,18 @@ class TestProcFallback:
                 return ["12345", "self"]
             raise FileNotFoundError
 
+        def _stat(path):
+            st = MagicMock()
+            st.st_uid = os.getuid()
+            return st
+
         def _open(path, mode="r", **kwargs):
             raise PermissionError("no access")
 
         with (
             patch("os.path.isdir", side_effect=_isdir),
             patch("os.listdir", side_effect=_listdir),
+            patch("os.stat", side_effect=_stat),
             patch("builtins.open", side_effect=_open),
             patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
             patch("subprocess.run") as mock_ps,
@@ -112,6 +136,111 @@ class TestProcFallback:
         # PermissionError swallowed — empty result, no crash
         assert 12345 not in pids
         mock_ps.assert_not_called()  # /proc dir existed, so ps not called
+
+
+@pytest.mark.linux_only
+class TestProcOwnership:
+    """The /proc arm must only count processes owned by the current user (#105719).
+
+    On a multi-user host each seat runs its own gateway with ``HERMES_HOME`` passed
+    through the systemd unit environment — invisible in argv — so the profile matcher
+    cannot tell seats apart by command line. Ownership of ``/proc/<pid>`` is the
+    only signal a sibling seat cannot fake.
+    """
+
+    def test_foreign_uid_gateway_not_counted(self):
+        """A gateway process owned by another user is never this seat's gateway."""
+        my_pid = os.getpid()
+        my_uid = os.getuid()
+        entries = {
+            my_pid: "python -m hermes_cli.main",
+            12345: _GATEWAY_CMD,  # another user's seat
+            67890: _GATEWAY_CMD,  # this user's own gateway
+        }
+
+        def _isdir(path):
+            return str(path) == "/proc"
+
+        def _listdir(path):
+            if str(path) == "/proc":
+                return [str(pid) for pid in entries] + ["self", "version"]
+            raise FileNotFoundError(path)
+
+        def _stat(path, **kwargs):
+            path_str = str(path)
+            if path_str.startswith("/proc/"):
+                pid = int(path_str.split("/proc/")[1])
+                st = MagicMock()
+                st.st_uid = my_uid if pid == 67890 else my_uid + 1000
+                return st
+            return real_stat(path, **kwargs)
+
+        real_stat = os.stat
+
+        def _open(path, mode="r", **kwargs):
+            path_str = str(path)
+            if "/cmdline" in path_str:
+                pid = int(path_str.split("/proc/")[1].split("/")[0])
+                raw = entries.get(pid, "").encode("utf-8").replace(b" ", b"\x00")
+                m = MagicMock()
+                m.read.return_value = raw
+                m.__enter__ = lambda s: s
+                m.__exit__ = MagicMock(return_value=False)
+                return m
+            raise FileNotFoundError(path)
+
+        with (
+            patch("os.path.isdir", side_effect=_isdir),
+            patch("os.listdir", side_effect=_listdir),
+            patch("os.stat", side_effect=_stat),
+            patch("builtins.open", side_effect=_open),
+            patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
+            patch("subprocess.run") as mock_ps,
+        ):
+            pids = gateway_mod._scan_gateway_pids(set(), all_profiles=True)
+
+        assert 67890 in pids
+        assert 12345 not in pids
+        mock_ps.assert_not_called()
+
+    def test_proc_stat_failure_skips_pid(self):
+        """An un-stat-able /proc entry is skipped, never crashes the scan."""
+        my_pid = os.getpid()
+        real_stat = os.stat
+
+        def _isdir(path):
+            return str(path) == "/proc"
+
+        def _listdir(path):
+            if str(path) == "/proc":
+                return [str(my_pid), "12345", "self"]
+            raise FileNotFoundError(path)
+
+        def _stat(path, **kwargs):
+            path_str = str(path)
+            if path_str.startswith("/proc/"):
+                raise FileNotFoundError(path)
+            return real_stat(path, **kwargs)
+
+        def _open(path, mode="r", **kwargs):
+            m = MagicMock()
+            m.read.return_value = _GATEWAY_CMD.encode("utf-8").replace(b" ", b"\x00")
+            m.__enter__ = lambda s: s
+            m.__exit__ = MagicMock(return_value=False)
+            return m
+
+        with (
+            patch("os.path.isdir", side_effect=_isdir),
+            patch("os.listdir", side_effect=_listdir),
+            patch("os.stat", side_effect=_stat),
+            patch("builtins.open", side_effect=_open),
+            patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
+            patch("subprocess.run") as mock_ps,
+        ):
+            pids = gateway_mod._scan_gateway_pids(set(), all_profiles=True)
+
+        assert pids == []
+        mock_ps.assert_not_called()
 
 
 class TestPsFallbackBsdCompat:

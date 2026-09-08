@@ -544,8 +544,14 @@ def _append_unique_pid(pids: list[int], pid: int | None, exclude_pids: set[int])
 
 
 def _iter_proc_cmdlines(exclude_pids: set[int]):
-    """Yield ``(pid, cmdline)`` from ``/proc`` (Docker without procps); raises if /proc is unusable."""
+    """Yield ``(pid, cmdline)`` from ``/proc`` (Docker without procps); raises if /proc is unusable.
+
+    Only processes owned by the current user: on a shared host every seat runs its own
+    gateway, and a sibling's ``HERMES_HOME`` rides the systemd unit environment where
+    argv inspection can never see it — so ownership is the only reliable identity.
+    """
     my_pid = os.getpid()
+    my_uid = os.getuid()
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
             continue
@@ -553,6 +559,8 @@ def _iter_proc_cmdlines(exclude_pids: set[int]):
         if pid == my_pid or pid in exclude_pids:
             continue
         try:
+            if os.stat(f"/proc/{pid}").st_uid != my_uid:
+                continue
             with open(f"/proc/{pid}/cmdline", "rb") as _f:
                 cmdline = _f.read().decode("utf-8", errors="replace")
         except (OSError, PermissionError):

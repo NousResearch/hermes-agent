@@ -21,12 +21,13 @@ def honcho_json(tmp_path, monkeypatch):
 
 
 def test_signature_uses_neutral_keys(honcho_json):
-    honcho_json(peerName="eri", aiPeer="hermes", pinUserPeer=True, runtimePeerPrefix="tg_",
+    honcho_json(workspace="team", peerName="eri", aiPeer="hermes", pinUserPeer=True, runtimePeerPrefix="tg_",
                 userPeerAliases={"222": "bob", "111": "alice"}, sessionPeerPrefix=True)
 
     sig = HonchoMemoryProvider().identity_signature()
 
     assert sig == {
+        "workspace": "team",
         "user_identity": "eri",
         "agent_identity": "hermes",
         "pin_user_identity": True,
@@ -56,6 +57,19 @@ def test_signature_tracks_edits_to_the_file(honcho_json):
 
     honcho_json(peerName="eri", pinUserPeer=False)
     assert provider.identity_signature()["pin_user_identity"] is False
+
+
+def test_signature_changes_with_the_workspace(honcho_json):
+    """A cached gateway agent is bound to one workspace, so a workspace switch must miss the cache."""
+    provider = HonchoMemoryProvider()
+    honcho_json(peerName="eri", workspace="team")
+    before = provider.identity_signature()
+
+    honcho_json(peerName="eri", workspace="personal")
+    after = provider.identity_signature()
+
+    assert before != after
+    assert (before["workspace"], after["workspace"]) == ("team", "personal")
 
 
 def test_signature_is_memoized_on_an_unchanged_file(honcho_json, monkeypatch):

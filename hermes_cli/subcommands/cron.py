@@ -27,7 +27,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "prompt", nargs="?", help="Optional self-contained prompt or task instruction")
     cron_create.add_argument("--name", help="Optional human-friendly job name")
     cron_create.add_argument("--deliver",
-        help="Delivery target: origin, local, telegram, discord, signal, "
+        help="Delivery target: origin, local, all, telegram, discord, signal, "
             "platform:chat_id, or bot-chat[:profile] (inject output into a "
             "local profile's canonical Bot Chat as a message the bot responds to)")
     cron_create.add_argument("--failure-deliver", dest="failure_deliver",

@@ -283,6 +283,7 @@ export const hu: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      all: "Minden csatlakoztatott csatorna",
     },
   },
 

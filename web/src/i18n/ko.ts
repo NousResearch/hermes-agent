@@ -282,6 +282,7 @@ export const ko: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      all: "연결된 모든 채널",
     },
   },
 

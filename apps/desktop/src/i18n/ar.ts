@@ -1590,7 +1590,8 @@ export const ar = defineLocale({
       telegram: 'Telegram',
       discord: 'Discord',
       slack: 'Slack',
-      email: 'البريد الإلكتروني'
+      email: 'البريد الإلكتروني',
+      all: 'جميع القنوات المتصلة'
     },
     scheduleLabels: {
       daily: 'يوميا',

@@ -279,6 +279,7 @@ export const zh: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "邮件",
+      all: "所有已连接频道",
     },
   },
 

@@ -1190,3 +1190,31 @@ async def test_create_cron_job_without_profile_defaults_when_unscoped(
 
     assert job["profile"] == "default"
     assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_delivery_targets_endpoint_surfaces_local_and_all_pseudo_targets(monkeypatch):
+    """The dashboard delivery-targets endpoint always surfaces the implicit
+    ``local`` and ``all`` pseudo-targets (``all`` fans out to every connected
+    home channel at fire time) ahead of the configured gateway platforms, so a
+    UI can offer them without re-implementing the routing-token grammar."""
+    from cron import scheduler_delivery
+
+    monkeypatch.setattr(scheduler_delivery, "cron_delivery_targets", lambda: [])
+
+    result = await _rt_cron.get_cron_delivery_targets()
+    targets = result["targets"]
+
+    assert [target["id"] for target in targets][:2] == ["local", "all"]
+    assert {
+        "id": "local",
+        "name": "Local (save only)",
+        "home_target_set": True,
+        "home_env_var": None,
+    } in targets
+    assert {
+        "id": "all",
+        "name": "All connected channels",
+        "home_target_set": True,
+        "home_env_var": None,
+    } in targets

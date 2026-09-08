@@ -323,6 +323,7 @@ export interface Translations {
       discord: string;
       slack: string;
       email: string;
+      all: string;
       needsHomeChannel?: string;
       noneConfigured?: string;
     };

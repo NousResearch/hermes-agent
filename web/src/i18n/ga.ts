@@ -291,6 +291,7 @@ export const ga: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      all: "Gach cainéal nasctha",
     },
   },
 

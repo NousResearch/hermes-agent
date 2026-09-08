@@ -9,12 +9,14 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Iterable
 
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
 from tools.environments.base_output import _popen_bash
 from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
-from tools.environments.remote_common import bash_argv, run_capture
+from tools.environments.remote_common import (
+    bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,9 @@ logger = logging.getLogger(__name__)
 # fail the connection outright ('getsockname failed: Not a socket'). Skip multiplexing there.
 # Skip multiplexing there; each command pays a fresh connection but the backend works. See #73927.
 _SSH_MULTIPLEX = os.name != "nt"
+
+# Module-level binding: tests patch ``ssh._load_hermes_env_vars`` to fake the .env file.
+_load_hermes_env_vars = load_hermes_env_vars
 
 
 def _ensure_ssh_available() -> None:
@@ -45,19 +50,31 @@ class SSHEnvironment(BaseEnvironment):
     stdout markers. Uses SSH ControlMaster for connection reuse.
     """
 
+    # Passthrough values are re-forwarded on every command (see _run_bash), so like docker/local
+    # they stay out of the remote snapshot under multiplex.
+    _profile_scoped_passthrough = True
+
     def __init__(self, host: str, user: str, cwd: str = "~",
-                 timeout: int = 60, port: int = 22, key_path: str = ""):
+                 timeout: int = 60, port: int = 22, key_path: str = "",
+                 probe_only: bool = False):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
         # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path
         # limit (raw user@host:port + SSH's 16-byte suffix under a deep $TMPDIR exceeds it), and
-        # stability across reconnects keeps ControlMaster reuse working.
-        _socket_id = hashlib.sha256(f"{user}@{host}:{port}".encode()).hexdigest()[:16]
+        # stability across reconnects keeps ControlMaster reuse working. A probe gets its own
+        # per-instance socket so its cleanup() can never close the agent's shared master.
+        socket_key = f"{user}@{host}:{port}"
+        if probe_only:
+            socket_key = f"{socket_key}:probe:{self._session_id}"
+        _socket_id = hashlib.sha256(socket_key.encode()).hexdigest()[:16]
         self.control_socket = self.control_dir / f"{_socket_id}.sock"
         _ensure_ssh_available()
         self._establish_connection()
+        if probe_only:
+            self._sync_manager = None
+            return
         self._remote_home = self._detect_remote_home()
         self._ensure_remote_dirs()
         self._sync_manager = FileSyncManager(
@@ -67,17 +84,38 @@ class SSHEnvironment(BaseEnvironment):
         self._sync_manager.sync(force=True)
         self.init_session()
 
+    def _control_socket_for(self, send_env: tuple[str, ...]) -> Path:
+        """One ControlMaster per SendEnv name-set, beside the plain target socket: a mux master only
+        relays the env names it was itself started with and silently drops the rest, so a passthrough
+        command must ride a master that knows its names. scp/sync/probes keep the plain socket."""
+        plain = Path(self.control_socket)
+        if not send_env:
+            return plain
+        # <target-id[:8]><names-hash[:8]>.sock: same length as the plain socket (macOS's 104-byte
+        # sun_path cap) and prefix-globbable so cleanup() finds every sibling without extra state.
+        digest = hashlib.sha256(" ".join(send_env).encode()).hexdigest()[:8]
+        return plain.with_name(f"{plain.stem[:8]}{digest}.sock")
+
+    def _control_sockets(self) -> list[Path]:
+        """The plain socket plus every SendEnv-set sibling (shared 8-char target prefix)."""
+        plain = Path(self.control_socket)
+        siblings = sorted(plain.parent.glob(f"{plain.stem[:8]}*.sock")) if plain.parent.is_dir() else []
+        return [plain, *(s for s in siblings if s != plain)]
+
     def _target_flags(self, port_flag: str) -> list:
         """Port/key flags shared by ssh (``-p``) and scp (``-P``)."""
         flags = [port_flag, str(self.port)] if self.port != 22 else []
         return flags + (["-i", self.key_path] if self.key_path else [])
 
-    def _build_ssh_command(self, extra_args: list | None = None) -> list:
+    def _build_ssh_command(self, extra_args: list | None = None, send_env: Iterable[str] = ()) -> list:
+        send_env = tuple(sorted(send_env))
         cmd = ["ssh"]
         if _SSH_MULTIPLEX:
-            cmd.extend(["-o", f"ControlPath={self.control_socket}",
+            cmd.extend(["-o", f"ControlPath={self._control_socket_for(send_env)}",
                         "-o", "ControlMaster=auto", "-o", "ControlPersist=300"])
         cmd.extend(["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10"])
+        # Names only; values ride the ssh client's own environment (never the remote command text).
+        cmd.extend(arg for name in send_env for arg in ("-o", f"SendEnv={name}"))
         cmd.extend(self._target_flags("-p"))
         cmd.extend(extra_args or [])
         cmd.append(f"{self.user}@{self.host}")
@@ -217,19 +255,30 @@ class SSHEnvironment(BaseEnvironment):
                               f"Remote file cleanup on {self.host}")
 
     def _before_execute(self) -> None:
-        self._sync_manager.sync()  # rate-limited internally
+        if self._sync_manager is not None:
+            self._sync_manager.sync()  # rate-limited internally
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        return _popen_bash(self._build_ssh_command() + bash_argv(shlex.quote(cmd_string), login), stdin_data)
+        """Forward the passthrough allowlist (skill ``required_environment_variables`` +
+        ``terminal.env_passthrough``) the way docker does: ``SendEnv`` carries the names, the ssh
+        client's env carries the values, so secrets never enter the remote ``bash -c`` argv. The
+        remote sshd must ``AcceptEnv`` them (#14091). Profile-scoped names missing from the active
+        scope are unset remotely so a shared host cannot serve another profile's value."""
+        values, unset_names = resolve_passthrough_env(hermes_env_loader=_load_hermes_env_vars)
+        cmd = self._build_ssh_command(send_env=values) + bash_argv(shlex.quote(prepend_unset(cmd_string, unset_names)), login)
+        client_env = client_env_with(values)
+        return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
 
     def cleanup(self):
         if self._sync_manager:
             logger.info("SSH: syncing files from sandbox...")
             self._sync_manager.sync_back()
-        if self.control_socket.exists():
+        for socket in self._control_sockets():
+            if not socket.exists():
+                continue
             with contextlib.suppress(OSError, subprocess.SubprocessError):
-                cmd = ["ssh", "-o", f"ControlPath={self.control_socket}", "-O", "exit", f"{self.user}@{self.host}"]
+                cmd = ["ssh", "-o", f"ControlPath={socket}", "-O", "exit", f"{self.user}@{self.host}"]
                 subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
             with contextlib.suppress(OSError):
-                self.control_socket.unlink()
+                socket.unlink()

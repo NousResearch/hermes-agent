@@ -588,6 +588,7 @@ class SessionMessagesMixin:
         into each generation: same role/content/timestamp, different ``active``/id); prefer the live row, then
         the newest. The ONE definition every display projection shares. *rows* must be ordered by ``id``."""
         seen: Dict[Tuple[Any, ...], Any] = {}
+        first_id: Dict[Tuple[Any, ...], int] = {}
         for row in rows:
             dedupe_content = row["content"]
             if row["role"] == "user":
@@ -604,7 +605,10 @@ class SessionMessagesMixin:
             cur = seen.get(key)
             if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
                 seen[key] = row
-        return sorted(seen.values(), key=lambda r: r["id"])
+            first_id[key] = min(first_id.get(key, row["id"]), row["id"])
+        # Order by the logical message's FIRST row, not the chosen representative's: a protected-tail
+        # copy in a newer generation has a higher id than messages emitted after the original.
+        return [seen[key] for key in sorted(seen, key=first_id.__getitem__)]
 
     def _row_to_message_dict(self, row, *, warn_context: str, summary_flag: bool) -> Dict[str, Any]:
         """``dict(row)`` with content/tool_calls/display_metadata decoded; *summary_flag* keeps
@@ -1043,6 +1047,15 @@ class SessionMessagesMixin:
         """Count messages, optionally for a specific session."""
         sql = "SELECT COUNT(*) FROM messages" + (" WHERE session_id = ?" if session_id else "")
         return self._read_one(sql, (session_id,) if session_id else ())[0]
+
+    def has_gateway_input_owner(self, session_id: str, owner: str) -> bool:
+        """Probe the accepted-input marker without allocating message bodies or archives."""
+        return self._read_one(
+            "SELECT 1 FROM messages WHERE session_id = ? AND role = 'user' "
+            "AND observed = 0 AND (active = 1 OR compacted = 1) "
+            "AND CASE WHEN json_valid(display_metadata) "
+            "THEN json_extract(display_metadata, '$.gateway_input_owner') END = ? LIMIT 1",
+            (session_id, owner)) is not None
 
     def has_platform_message_id(self, session_id: str, platform_message_id: str) -> bool:
         """True when *platform_message_id* exists (partial-index probe; the gateway's transient-failure dedupe).

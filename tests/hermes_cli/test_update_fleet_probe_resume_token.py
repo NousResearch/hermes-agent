@@ -33,7 +33,8 @@ from __future__ import annotations
 
 import types
 
-from hermes_cli.update_cmd import _fleet_probe_expected_runtimes
+from hermes_cli.main import _fleet_probe_expected_runtimes
+from hermes_cli.update_inventory import RuntimeRecord
 
 
 def _plan(runtimes):
@@ -86,7 +87,13 @@ class TestRowCapableSignalsStillCount:
     def test_plan_inventory_still_expects_rows_alongside_token(self):
         token = {"resume_needed": False, "unmapped": [{"pid": 99, "argv": ["x"]}]}
         assert (
-            _fleet_probe_expected_runtimes(_plan([object()]), [], token, [], set())
+            _fleet_probe_expected_runtimes(
+                _plan([RuntimeRecord(kind="gateway", profile="default")]),
+                [],
+                token,
+                [],
+                set(),
+            )
             is True
         )
 

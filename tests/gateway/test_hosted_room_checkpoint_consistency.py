@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from gateway import hosted_rooms
-from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
+from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, _settled_message
 
 
 def _append(db, index):
@@ -37,6 +37,30 @@ def _checkpoint(tmp_path):
     checkpoint = HostedRoomPolicyCheckpoint(db)
     checkpoint.sync(room_id="checkpoint", latest_seq=2)
     return db, checkpoint
+
+
+@pytest.mark.parametrize("compacted", [False, True])
+def test_settled_message_uses_canonical_content_and_discussion_identity(tmp_path, compacted):
+    db, checkpoint = _checkpoint(tmp_path)
+    hosted_rooms.append_event(
+        db, room_id="checkpoint", event_id="reply", kind="message.member",
+        actor={"kind": "member", "id": "worker", "profile": "default"},
+        authority_gateway_id="home", authority_epoch=1,
+        payload={"text": "Canonical answer", "thread_id": "work", "member_id": "worker",
+                 "discussion_event_id": "user-2"})
+    committed = hosted_rooms.read_events(db, room_id="checkpoint", since_seq=2)["events"][0]
+    with checkpoint._connect() as conn:
+        if compacted:
+            conn.execute("DELETE FROM hosted_room_policy_events WHERE room_id='checkpoint'")
+        else:
+            checkpoint._store_active_event(
+                conn, event={**committed, "payload": {**committed["payload"], "text": "Stale projection"}},
+                thread_id="work", discussion_event_id="user-2")
+        assert _settled_message(conn, "checkpoint", "user-2", "reply") == committed
+        assert _settled_message(conn, "checkpoint", "user-1", "reply") is None
+        assert _settled_message(conn, "another-room", "user-2", "reply") is None
+        for invalid_id in ("user-2", "missing", "", None, {}):
+            assert _settled_message(conn, "checkpoint", "user-2", invalid_id) is None
 
 
 def test_migration_discards_page_fetched_before_another_worker_advanced(

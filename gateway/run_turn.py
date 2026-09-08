@@ -16,11 +16,13 @@ import queue
 import threading
 import time
 from agent.i18n import t
+from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent
+from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -257,7 +259,10 @@ class GatewayTurnMixin:
         the event."""
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's last-active topic so a
         # cross-topic Reply doesn't fragment the conversation.
-        recovered = await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
+        event_metadata = getattr(event, "metadata", None) or {}
+        expected_session_key = str(event_metadata.get("gateway_session_key") or "").strip()
+        recovered = (await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
+                     if not expected_session_key else None)
         if recovered is not None:
             logger.info(
                 "telegram topic recovery: chat=%s user=%s %r -> %s",
@@ -267,8 +272,6 @@ class GatewayTurnMixin:
             with suppress(Exception):
                 event.source = source
 
-        event_metadata = getattr(event, "metadata", None) or {}
-        expected_session_key = str(event_metadata.get("gateway_session_key") or "").strip()
         if expected_session_key:
             derived_session_key = self._session_key_for_source(source)
             if derived_session_key != expected_session_key:
@@ -303,6 +306,9 @@ class GatewayTurnMixin:
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
+        from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
+        if not await resolve_heartbeat_owner(self, event, session_entry):
+            return
         return source, session_entry, session_key
 
     async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):
@@ -385,9 +391,9 @@ class GatewayTurnMixin:
 
     async def _hmwa_deliver_auto_reset_notice(self, session_entry, source, turn_sidecar_notes):
         """Stage the auto-reset sidecar note for the agent and notify the user (policy-gated)."""
-        from gateway.run import _AUTO_RESET_CONTEXT_NOTES, _auto_reset_reason_text
-        reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
-        context_note = _AUTO_RESET_CONTEXT_NOTES.get(reset_reason, _AUTO_RESET_CONTEXT_NOTES["idle"])
+        from gateway.run import _AUTO_RESET_CONTEXT_NOTES
+        reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'suspended'
+        context_note = _AUTO_RESET_CONTEXT_NOTES.get(reset_reason, _AUTO_RESET_CONTEXT_NOTES["suspended"])
         # Long-lived channels: point the agent at the prior same-channel session for session_search.
         try:
             # Returns None (appends nothing) for other platforms or when there's no prior activity to
@@ -400,34 +406,13 @@ class GatewayTurnMixin:
         turn_sidecar_notes.append(context_note)
 
         try:
-            policy = self.session_store.config.get_reset_policy(
-                platform=source.platform, session_type=getattr(source, 'chat_type', 'dm'),
-            )
-            # Check pairing store. A pairing entry is a first-class authorization grant, created only by a
-            # trusted operator approving a pairing code (hermes gateway pairing approve / the authenticated
-            # dashboard) — an inbound sender can never reach approve_code, so this is not an
-            # attacker-controlled path. Honored as a UNION with the allowlist: a paired user is authorized
-            # regardless of the allowlist, and when an allowlist IS configured, operator approval also
-            # writes the user into that allowlist (see PairingStore._approve_user), keeping a single
-            # operator-visible source of truth. (#23778: the original bypass was the inbound
-            # message/approval-button gate, not this gate; that gate is fixed separately.) In multiplex
-            # gateways, route to the per-profile PairingStore so each profile's whitelist is isolated; falls
-            # back to the global store when the source has no profile or the profile isn't registered.
-            platform_name = source.platform.value if source.platform else ""
-            # Suspended / restart-recovery-expired sessions always notify (the user must learn they
-            # can /resume); idle/daily resets respect policy.notify + excluded platforms + activity.
-            should_notify = reset_reason in {"suspended", "resume_pending_expired"} or (
-                policy.notify
-                and getattr(session_entry, 'reset_had_activity', False)
-                and platform_name not in policy.notify_exclude_platforms
-            )
+            should_notify = reset_reason == "suspended"
             adapter = self._adapter_for_source(source) if should_notify else None
             if adapter:
                 notice = (
-                    f"◐ Session automatically reset ({_auto_reset_reason_text(reset_reason, policy)}). "
+                    "◐ Session reset after being stopped. "
                     f"Conversation history cleared.\n"
                     f"Use /resume to browse and restore a previous session.\n"
-                    f"Adjust reset timing in config.yaml under session_reset."
                 )
                 with suppress(Exception):
                     session_info = await asyncio.to_thread(self._reset_notice_session_info, source)
@@ -616,12 +601,26 @@ class GatewayTurnMixin:
         _warn_token_threshold = int(_hyg_context_length * 0.95)
         _msg_count = len(history)
 
-        # Prefer the API-reported prompt tokens over the rough estimate (runs 30-50% high, which only
-        # fires hygiene early — safe). Do NOT compensate with a threshold multiplier.
-        if session_entry.last_prompt_tokens > 0:
-            _approx_tokens, _token_source = session_entry.last_prompt_tokens, "actual"
-        else:
-            _approx_tokens, _token_source = estimate_messages_tokens_rough(history), "estimated"
+        # Real usage decides: the API-reported prompt count, else the anchor persisted on the session
+        # row (real count + delta of what was appended since, survives gateway restarts), else the
+        # rough estimate (runs 30-50% high, which only fires hygiene early — safe). Do NOT compensate
+        # with a threshold multiplier.
+        from agent.image_token_cost import image_cost_context, learned_image_token_cost
+        _anchored = None
+        # Images in any local delta/estimate are priced at the cost learned from this model's usage.
+        with image_cost_context(learned_image_token_cost(hs.model, hs.base_url)):
+            if session_entry.last_prompt_tokens <= 0:
+                from agent.usage_anchor import persisted_anchor_tokens
+                _session_db = getattr(self, "_session_db", None)
+                _anchored = persisted_anchor_tokens(
+                    getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
+                )
+            if session_entry.last_prompt_tokens > 0:
+                _approx_tokens, _token_source = session_entry.last_prompt_tokens, "actual"
+            elif _anchored is not None:
+                _approx_tokens, _token_source = _anchored, "anchored"
+            else:
+                _approx_tokens, _token_source = estimate_messages_tokens_rough(history), "estimated"
 
         # Hard safety valve: force compression at an extreme message count regardless of tokens,
         # breaking the disconnect → no token data → no compression spiral. 5000 clears 1M+ sessions.
@@ -1611,6 +1610,8 @@ class GatewayTurnMixin:
         }
         if prepared.persist_user_display_kind:
             _user_entry["display_kind"] = prepared.persist_user_display_kind
+        if prepared.persistence_owner:
+            _user_entry["display_metadata"] = {"gateway_input_owner": prepared.persistence_owner}
         if getattr(event, "message_id", None):
             _user_entry["message_id"] = str(event.message_id)
         return _user_entry
@@ -1757,22 +1758,13 @@ class GatewayTurnMixin:
         # Retain Slack thread/workspace routing so a failed turn cannot leave its status visible.
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)
-        # Failures before run_conversation() (provider/httpx init) can't persist the inbound turn:
-        # append the user message here once, unless the latest user row already matches it.
+        # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
             if prepared.message_text is not None and session_entry is not None:
-                try:
-                    _recent_transcript = await self.async_session_store.load_transcript(session_entry.session_id)
-                except Exception:
-                    _recent_transcript = []
-                _expected_user_content = (
-                    prepared.persist_user_message if prepared.persist_user_message is not None
-                    else prepared.message_text
+                _owned = await self.async_session_store.has_input_owner(
+                    prepared.persistence_session_id, prepared.persistence_owner,
                 )
-                _last_user = next(
-                    (_msg for _msg in reversed(_recent_transcript[-10:]) if _msg.get("role") == "user"), None,
-                )
-                if _last_user is None or _last_user.get("content") != _expected_user_content:
+                if not _owned:
                     await self.async_session_store.append_to_transcript(
                         session_entry.session_id, self._hmwa_user_transcript_entry(event, prepared, time.time()),
                     )
@@ -1828,6 +1820,8 @@ class GatewayTurnMixin:
         persist_user_message: Any
         persist_user_timestamp: Any
         persist_user_display_kind: Optional[str]
+        persistence_session_id: Optional[str] = None
+        persistence_owner: Optional[str] = None
 
     async def _hmwa_prepare_turn(self, event, source, session_entry, session_key, _quick_key, run_generation):
         """Everything between session resolution and the agent run: session open, task-local env,
@@ -1871,6 +1865,9 @@ class GatewayTurnMixin:
         # from []. Restore task-local context here (before the broad cleanup finally).
         try:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
+            history = await self._hmwa_run_session_hygiene(
+                event, source, session_entry, session_key, history, _quick_key, run_generation,
+            )
         except TranscriptReadError:
             self._clear_session_env(_session_env_tokens)
             return (
@@ -1878,10 +1875,6 @@ class GatewayTurnMixin:
                 "processed. Ask the operator to inspect state.db, then resend after it is healthy. "
                 "Use /reset only if you intentionally want to start a new conversation."
             ), _session_env_tokens
-
-        history = await self._hmwa_run_session_hygiene(
-            event, source, session_entry, session_key, history, _quick_key, run_generation,
-        )
 
         await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes)
 
@@ -1910,9 +1903,16 @@ class GatewayTurnMixin:
         # Bind this run generation to the adapter so deferred post-delivery callbacks are released
         # by the run that registered them.
         self._bind_adapter_run_generation(self._adapter_for_source(source), session_key, run_generation)
+        # Delivery IDs are only unique in their transport namespace. Keyless turns
+        # need their own identity, even when another process writes to this session.
+        import uuid
+        namespace = [source.platform.value, source.profile, source.scope_id,
+                     source.chat_id, source.thread_id, str(event.message_id)]
+        owner = (str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(namespace)))
+                 if event.message_id else str(uuid.uuid4()))
         return self._PreparedTurn(
             history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
-            persist_user_display_kind,
+            persist_user_display_kind, session_entry.session_id, owner,
         ), _session_env_tokens
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
@@ -1952,8 +1952,14 @@ class GatewayTurnMixin:
 
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
+            from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
+            if not heartbeat_owner_is_current(self, event, session_key):
+                return
             _run_start_session_id = session_entry.session_id
             _turn_started_monotonic = time.monotonic()
+            # Admission/typing is not execution. All routing, authorization and
+            # turn preparation gates have passed when the agent runner is entered.
+            event._heartbeat_execution_started = True
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=source,
                 session_id=_run_start_session_id, session_key=session_key,
@@ -1963,6 +1969,7 @@ class GatewayTurnMixin:
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
+                persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner},
                 message_type=event.message_type,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
@@ -2800,10 +2807,6 @@ class GatewayTurnMixin:
             self._thread_metadata_for_progress(
                 source, event_message_id, _progress_thread_id, _relay_prospective_thread_id,
             ),
-            # Freshness-gate stale resume_pending zombies (#46934) — but honor an explicit
-            # ``session_reset.mode: none``: the user opted out of ALL automatic resets, so an expired resume
-            # marker must fall through to a normal resume of the preserved transcript, never a silent fresh
-            # session (#61052).
             platform=source.platform,
         )
         if _native_slack_task_cards:
@@ -3165,6 +3168,7 @@ class GatewayTurnMixin:
         _cur_tool = _activity.get("current_tool")
         _iter_n = _activity.get("api_call_count", 0)
         _iter_max = _activity.get("max_iterations", 0)
+        # Operator-facing log keeps the raw resolved value; only the user-facing lines hide the sentinel.
         logger.error(
             "Agent idle for %.0fs (timeout %.0fs) in session %s "
             "| last_activity=%s | iteration=%s/%s | tool=%s",
@@ -3174,18 +3178,19 @@ class GatewayTurnMixin:
         if _timed_out_agent:
             request_hard_interrupt(_timed_out_agent, _INTERRUPT_REASON_TIMEOUT)
         _timeout_mins = int(worker.agent_timeout // 60) or 1
+        _iter_progress = format_iteration_progress(_iter_n, _iter_max)
         _diag_lines = [
             f"⏱️ Agent inactive for {_timeout_mins} min — no tool calls or API responses."
         ]
         if _cur_tool:
             _diag_lines.append(
                 f"The agent appears stuck on tool `{_cur_tool}` ({_secs_ago:.0f}s since last "
-                f"activity, iteration {_iter_n}/{_iter_max})."
+                f"activity, {_iter_progress})."
             )
         else:
             _diag_lines.append(
                 f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
-                f"iteration {_iter_n}/{_iter_max}). "
+                f"{_iter_progress}). "
                 "The agent may have been waiting on an API response."
             )
         _diag_lines.append(
@@ -3740,7 +3745,7 @@ class GatewayTurnMixin:
                 if _a:
                     _parts = []
                     if _want_iteration_detail:
-                        _parts.append(f"iteration {_a['api_call_count']}/{_a['max_iterations']}")
+                        _parts.append(format_iteration_progress(_a["api_call_count"], _a["max_iterations"]))
                     _action = _a.get("current_tool") or _a.get("last_activity_desc")
                     if _action:
                         _parts.append(str(_action))
@@ -3779,6 +3784,7 @@ class GatewayTurnMixin:
         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
+        persist_user_display_metadata: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -3802,6 +3808,7 @@ class GatewayTurnMixin:
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

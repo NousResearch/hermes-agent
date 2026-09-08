@@ -136,13 +136,17 @@ class HostedRoomServerRPC:
     def _validated_profile_home(self, profile: str, record: Mapping[str, Any]):
         """The execution home for ``profile``, proven to be this record's own. Raises otherwise.
 
-        ``_profile_home`` returns ``None`` for BOTH "this is the launch profile" and "no such
-        profile", so it is not validation: the launch profile is established by name here, and any
-        other name must resolve to a real home. A wrong or unknown profile fails rather than
-        silently aliasing the launch profile.
+        A missing profile raises at resolution. A ``None`` result is accepted only for the
+        named launch profile; every other name must resolve to a real home. A wrong or unknown
+        profile fails rather than silently aliasing the launch profile.
         """
         name = (profile or "").strip()
-        resolved = self.server._profile_home(name) if name else None
+        try:
+            resolved = self.server._profile_home(name) if name else None
+        except FileNotFoundError as exc:
+            raise HostedRoomSessionError(
+                "execution_identity", 4042,
+                f"profile {profile!r} does not resolve to a home on this host") from exc
         if resolved is None:
             if not name or name != self.server._current_profile_name():
                 raise HostedRoomSessionError(

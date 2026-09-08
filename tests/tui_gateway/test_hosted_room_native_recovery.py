@@ -366,6 +366,34 @@ def test_the_native_adapter_refuses_an_invalid_target_instead_of_aliasing_it(nat
         rpc.execution_identity(profile="a-profile-that-does-not-exist", session_id=sid)
 
 
+@pytest.mark.parametrize("error_type", [FileNotFoundError, PermissionError, RuntimeError])
+def test_profile_resolution_errors_keep_their_boundary_across_callers(native, monkeypatch, error_type):
+    from tui_gateway.hosted_room_driver import room_session_title
+    from tui_gateway.hosted_room_server_rpc import HostedRoomSessionError
+
+    sid = native.create_session(room_session_title(ROOM_ID))
+    rpc = native.rpc()
+    failure = error_type("profile resolution failed")
+
+    def fail_resolution(name):
+        raise failure
+
+    monkeypatch.setattr(rpc.server, "_profile_home", fail_resolution)
+    for method, extra in (
+        (rpc.execution_identity, {}),
+        (rpc.deliverable_media, {"text": "MEDIA:/not-opened"}),
+        (rpc.read_produced_media, {"path": "/not-opened"}),
+    ):
+        expected = HostedRoomSessionError if error_type is FileNotFoundError else error_type
+        with pytest.raises(expected) as caught:
+            method(profile="default", session_id=sid, **extra)
+        if error_type is FileNotFoundError:
+            assert caught.value.code == 4042
+            assert caught.value.__cause__ is failure
+        else:
+            assert caught.value is failure
+
+
 def test_an_unsupported_transport_still_submits_with_no_descriptor(separate_registries):
     """Optionality is real: the capability is discovered, never required of the Protocol.
 

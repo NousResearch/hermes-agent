@@ -193,21 +193,15 @@ def _room_members(conn: sqlite3.Connection, room_id: str) -> tuple[discussion.Di
 
 def _settled_message(
     conn: sqlite3.Connection, room_id: str, discussion_event_id: str, message_event_id: Any) -> dict[str, Any] | None:
-    """Return the member message a ``turn.settled`` event committed.
-
-    Normally it is already in the active projection. A turn that settles after its discussion was
-    completed and compacted (a late exact receipt) has no projection left, so the committed
-    message is read from the durable log by its exact event id.
-    """
-    rows = conn.execute(
-        "SELECT seq, event_json FROM hosted_room_policy_events WHERE room_id=? AND discussion_event_id=?",
-        (room_id, discussion_event_id)).fetchall()
-    indexed = next(
-        (m for m in (json.loads(row["event_json"]) for row in rows) if m.get("event_id") == message_event_id), None)
-    if indexed is not None or not isinstance(message_event_id, str) or not message_event_id:
-        return indexed
-    committed = _canonical_event(conn, room_id, event_id=message_event_id)
-    return committed if committed is not None and committed.get("kind") == "message.member" else None
+    """Read the committed message even after its active discussion was compacted."""
+    if not isinstance(message_event_id, str) or not message_event_id:
+        return None
+    event = _canonical_event(conn, room_id, event_id=message_event_id)
+    if event is None:
+        return None
+    if event["kind"] != "message.member" or _text(event["payload"], "discussion_event_id") != discussion_event_id:
+        return None
+    return event
 
 
 class HostedRoomPolicyCheckpoint:

@@ -22,6 +22,7 @@ from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
+from tools.file_operations_common import DEFAULT_READ_LIMIT
 from tools import file_state
 from agent.redact import redact_sensitive_text
 from tools.file_tools_paths import (
@@ -254,7 +255,7 @@ _file_ops_cache: dict = {}
 def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     """Build the terminal environment for *task_id* via the shared ``_create_configured_env``,
     so a file tool that runs before any terminal command still gets the configured backend."""
-    from tools.terminal_tool_config import _CONTAINER_BACKENDS
+    from tools.terminal_tool_config import _is_container_backend
     from tools.terminal_tool import (
         _create_configured_env, _get_env_config, _is_unusable_container_cwd,
         _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
@@ -276,7 +277,7 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     # reaches ``docker run -w <host-path>`` and the container starts in a directory that doesn't exist
     # inside the sandbox, so search_files and friends silently return empty results (#54447). Sanitize it
     # back to the already-validated config["cwd"] so the override can't bypass the guard.
-    if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd):
         if cwd != config["cwd"]:
             logger.info(
                 "Ignoring host/relative cwd override %r for %s backend "
@@ -536,7 +537,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers.
 
     Guard order: device-path blocklist (no I/O) → stat-based special-file
@@ -709,6 +710,52 @@ def _note_edited(task_id: str, paths: list[str], path_to_resolved: dict, session
             file_state.note_write(task_id, path_to_resolved[p])
 
 
+# Whole-file rewrite hint: an overwrite of an existing file this large whose new content keeps at least
+# this fraction of the old lines is a patch written the expensive way. In one 1,393-agent run 661 such
+# rewrites of >20k-char files cost ~25M output chars (~$155) where `patch` averaged 1.3k chars/call.
+_REWRITE_HINT_MIN_CHARS = 20_000
+_REWRITE_HINT_MIN_UNCHANGED = 0.80
+
+
+# Above this the line diff is skipped: SequenceMatcher on pathological repeated-line files is
+# quadratic (a 460 KB same-line file took ~22 s under the write lock).
+_REWRITE_HINT_MAX_CHARS = 400_000
+
+
+def _whole_file_rewrite_hint(task_id: str, resolved: str | None, new_content: str) -> str | None:
+    """Return a hint when ``new_content`` mostly re-sends what is already at ``resolved``.
+
+    Reads the OLD content through the task's own file ops (``read_file_raw``, the sandbox/remote
+    backend the write targets), never the host path: on a remote backend the host file is a
+    different file, and a host FIFO at that path would block the write lock forever. Bounded size
+    and a line multiset comparison (linear) instead of a sequence diff (quadratic on repeated lines)."""
+    if not resolved or not (_REWRITE_HINT_MIN_CHARS <= len(new_content) <= _REWRITE_HINT_MAX_CHARS):
+        return None
+    try:
+        result = _get_file_ops(task_id).read_file_raw(resolved)
+        old = getattr(result, "content", None)
+        if getattr(result, "error", None) or not isinstance(old, str):
+            return None
+    except Exception:
+        return None
+    if not (_REWRITE_HINT_MIN_CHARS <= len(old) <= _REWRITE_HINT_MAX_CHARS):
+        return None
+    old_lines, new_lines = old.splitlines(), new_content.splitlines()
+    if not old_lines:
+        return None
+    from collections import Counter
+    unchanged = sum((Counter(old_lines) & Counter(new_lines)).values())
+    ratio = unchanged / max(len(old_lines), len(new_lines))
+    if ratio < _REWRITE_HINT_MIN_UNCHANGED:
+        return None
+    changed = max(len(old_lines), len(new_lines)) - unchanged
+    return (
+        f"{unchanged:,} of {len(new_lines):,} lines were already on disk ({ratio:.0%} unchanged); ~{changed:,} "
+        f"line(s) actually changed. Re-sending a {len(new_content):,}-char file costs output tokens for every "
+        "unchanged line; for edits like this use patch (old_string/new_string), which sends only the changed region."
+    )
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False,
                     session_id: str | None = None) -> str:
@@ -741,9 +788,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 # subagents; different paths stay fully parallel.
                 _lock.enter_context(file_state.lock_path(_resolved))
             warnings = _edit_warnings([path], path_to_resolved, task_id)
+            rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
             result_dict = _get_file_ops(task_id).write_file(_resolved or path, content).to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]
+            if rewrite_hint and not result_dict.get("error"):
+                result_dict["hint"] = rewrite_hint
             if _resolved:
                 # Always report the ABSOLUTE path written so a wrong-cwd mismatch
                 # is visible in the response instead of silently landing elsewhere.
@@ -943,11 +993,15 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 f"You have run this exact search {count} times consecutively. "
                 "The results have not changed. Use the information you already have.")
 
-        result_json = json.dumps(result_dict, ensure_ascii=False)
+        # Structured like ``_warning`` above: text appended after the JSON
+        # breaks every json.loads consumer (execute_code RPC, strict tool-message
+        # providers) — #90322.
         if result_dict.get("truncated"):
-            next_offset = offset + limit
-            result_json += f"\n\n[Hint: Results truncated. Use offset={next_offset} to see more, or narrow with a more specific pattern or file_glob.]"
-        return result_json
+            result_dict["_hint"] = (
+                f"Results truncated. Use offset={offset + limit} to see more, "
+                "or narrow with a more specific pattern or file_glob."
+            )
+        return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
 
@@ -979,7 +1033,7 @@ READ_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": 2000, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000}
         },
         "required": ["path"]
     }
@@ -1123,7 +1177,7 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid)
 
 
 def _handle_write_file(args, **kw):

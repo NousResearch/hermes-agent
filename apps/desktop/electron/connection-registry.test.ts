@@ -1054,6 +1054,33 @@ test('token only persists on token-auth remotes; oauth/cloud drop it', () => {
   assert.equal(cloud.token, undefined)
 })
 
+test('an ssh entry keeps its session token through a label rename', () => {
+  // #103795, second half: saveRegistryConnection resolves the surviving
+  // envelope (resolvePersistedRemoteToken keeps the stored one when the
+  // editor sends no new value) and hands it to normalizeConnectionInput —
+  // whose ssh branch used to drop it, so renaming a connection wiped the live
+  // backend's reuse credential and re-armed the reap-and-respawn loop.
+  const stored = {
+    host: 'spark1',
+    id: 'spark',
+    kind: 'ssh' as const,
+    label: 'Spark',
+    port: 2222,
+    token: { enc: 'ssh-session-token' },
+    user: 'tek'
+  }
+
+  const merged = mergeConnectionInput(
+    { id: 'spark', kind: 'ssh', label: 'Spark (office)', token: stored.token },
+    stored
+  )
+
+  const renamed = normalizeConnectionInput(merged, emptyRegistry())
+
+  assert.equal(renamed.label, 'Spark (office)')
+  assert.deepEqual(renamed.token, { enc: 'ssh-session-token' })
+})
+
 // --- mergeConnectionInput (edit inheritance) ---
 
 test('merge preserves fields the editor does not carry (org, ssh extras)', () => {
@@ -1323,6 +1350,46 @@ test('normalizeRegistry falls back to Primary when the last-used source is missi
 
   assert.equal(registry.launchMode, 'last-used')
   assert.equal(registry.lastUsed, 'homelab')
+})
+
+test('normalizeRegistry keeps the persisted ssh session token across a cold read', () => {
+  // #103795: persistSshConnectionToken() writes the adopted per-serve token
+  // onto the ssh entry, but normalization rebuilt the entry from the DIAL
+  // fields alone and dropped it. The token then lived only in the mtime-keyed
+  // in-process cache, so the next launch dialed with an empty reuseToken,
+  // failed remote-lifecycle's `Boolean(reuseToken)` reuse gate, reaped a
+  // healthy owned backend and respawned it on a new port — while the renderer
+  // kept dialing the old token and got 403 forever.
+  const saved = {
+    version: REGISTRY_VERSION,
+    primary: 'spark',
+    connections: [
+      { id: LOCAL_CONNECTION_ID, kind: 'local', label: 'This device' },
+      {
+        id: 'spark',
+        kind: 'ssh',
+        label: 'Spark',
+        host: 'spark1',
+        user: 'tek',
+        port: 2222,
+        token: { enc: 'ssh-session-token' }
+      }
+    ]
+  }
+
+  const registry = normalizeRegistry(saved)
+  const spark = registry.connections.find(connection => connection.id === 'spark')
+
+  assert.deepEqual(spark?.token, { enc: 'ssh-session-token' })
+  assert.equal(spark?.host, 'spark1')
+
+  // Write → read → normalize again: the token must survive every cold read,
+  // not just the first.
+  const reread = normalizeRegistry(JSON.parse(JSON.stringify(registry)))
+
+  assert.deepEqual(reread.connections.find(connection => connection.id === 'spark')?.token, {
+    enc: 'ssh-session-token'
+  })
 })
 
 // --- v1 → v2 migration ---

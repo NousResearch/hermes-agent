@@ -146,8 +146,10 @@ class RemoteKernel:
                 logger.debug(failure, exc_info=True)
 
 
-def _kernel_key(owner: str, env_type: str, task_env_id: str) -> Tuple:
-    return (owner, "remote", env_type, task_env_id)
+def _kernel_key(owner: str, env_type: str, task_env_id: str, sandbox_tools: frozenset) -> Tuple:
+    """The hermes_tools stub module is generated from ``sandbox_tools`` once, at spawn, so a kernel
+    is only reusable by calls with the SAME tool set; a different set gets its own kernel."""
+    return (owner, "remote", env_type, task_env_id, tuple(sorted(sandbox_tools)))
 
 
 # Registry + lock shared-shape with code_kernel; teardown runs outside the lock.
@@ -243,7 +245,7 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                            idle_exit: int) -> Tuple[Optional[RemoteKernel], bool, bool, bool]:
     """Find/respawn the owner's kernel: (kernel|None, reused, state_reset, state_lost); reaps
     idle-expired entries on the way in."""
-    key = _kernel_key(owner, env_type, task_env_id)
+    key = _kernel_key(owner, env_type, task_env_id, sandbox_tools)
     state_lost = state_reset = False
     with _REGISTRY.lock:
         expired = _reap_unlocked(idle_exit)
@@ -309,7 +311,7 @@ def execute_in_remote_kernel(
         env, env_type, owner, task_env_id, sandbox_tools, reset=reset, idle_exit=idle_exit)
     if kernel is None:
         return None  # fail open to per-call
-    key = _kernel_key(owner, env_type, task_env_id)
+    key = _kernel_key(owner, env_type, task_env_id, sandbox_tools)
     kernel.last_used = time.monotonic()
     with _REGISTRY.lock:
         kernel.attached += 1

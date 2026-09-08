@@ -28,9 +28,9 @@ Primary files:
 
 The cached system prompt is assembled as three ordered tiers (see `agent/system_prompt.py`):
 
-1. **stable** — identity (`SOUL.md` or fallback), tool/model guidance, skills prompt, environment hints, platform hints
-2. **context** — caller-supplied `system_message` plus project context files (`.hermes.md` / `AGENTS.md` / `CLAUDE.md` / `.cursorrules`)
-3. **volatile** — built-in memory snapshot (`MEMORY.md`), user profile snapshot (`USER.md`), external memory-provider block, timestamp/session/model/provider line
+1. **stable** — identity (`SOUL.md` or fallback), tool/model guidance, coding operating brief
+2. **context** — caller-supplied `system_message`, project context files (`.hermes.md` / `AGENTS.md` / `CLAUDE.md` / `.cursorrules`), then the worktree-dependent git workspace snapshot, operator instructions and platform hints
+3. **volatile** — skills index, built-in memory snapshot (`MEMORY.md`), user profile snapshot (`USER.md`), external memory-provider block, timestamp/session/model/provider line, then runtime environment hints (host / home / **current working directory**)
 
 The final system prompt is then joined as: `stable` → `context` → `volatile`.
 
@@ -38,6 +38,20 @@ This ordering matters for precedence discussions:
 - skills are part of the **stable** tier
 - memory/profile snapshots are part of the **volatile** tier
 - both are still in the cached system prompt (they are not injected as ad-hoc mid-turn overlays)
+
+Inside the context tier the shared project files come **before** anything naming the current worktree.
+Sessions of one project running in different git worktrees then share a prompt prefix covering the whole
+context block, instead of stopping at the first cwd-dependent line — that prefix is what a longest-prefix
+provider cache reuses. A session with no workspace snapshot keeps its trailing guidance in the stable
+tier; the runtime environment block always ends the volatile tier.
+
+Consequence for stored prompts: `_stored_prompt_matches_runtime()` (`agent/conversation_loop.py`) reads
+the first host-info paragraph after the rendered `# Hermes runtime environment` boundary, with a
+closing marker at the absolute end distinguishing this layout from legacy prose quoting the heading.
+The runtime boundary follows all project, operator, memory and plugin text, so examples in those
+blocks do not masquerade as the runtime cwd. Model/provider/platform are read before the runtime
+boundary, excluding embedder descriptions. Legacy prompts retain their original
+host-before-context anchor, so prompts persisted before the reorder still validate.
 
 When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded and the hardcoded `DEFAULT_AGENT_IDENTITY` is used instead.
 

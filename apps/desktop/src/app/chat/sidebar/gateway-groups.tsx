@@ -21,6 +21,7 @@ import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { newSessionInAgent, newSessionInProfile } from '@/store/profile'
 import { $sessionProfilesUsage } from '@/store/session'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
@@ -45,12 +46,49 @@ interface GatewayProfileGroupsProps {
   renderRows: (sessions: SessionInfo[]) => ReactNode
   sensors?: ReturnType<typeof useSensors>
   onNewSessionSplit?: NewSessionSplitHandler
+  nested?: boolean
 }
 
-export function GatewayProfileGroups({ groups, renderRows, sensors, onNewSessionSplit }: GatewayProfileGroupsProps) {
+export function GatewayProfileGroups({
+  groups,
+  renderRows,
+  sensors,
+  onNewSessionSplit,
+  nested = false
+}: GatewayProfileGroupsProps) {
+  const registry = useStore($connectionsRegistry)
   const order = useStore($gatewayGroupOrder)
+  const gatewayProfiles = new Map<string, SidebarSessionGroup[]>()
+  const sections: SidebarSessionGroup[] = []
 
-  const ordered = [...groups].sort((a, b) => {
+  for (const group of groups) {
+    // Unknown legacy ownership stays unassigned; never guess a local gateway.
+    if (nested || !group.connectionId) {
+      sections.push(nested ? { ...group, label: group.profile! } : group)
+
+      continue
+    }
+
+    const id = JSON.stringify(['gateway', group.connectionId])
+    const profiles = gatewayProfiles.get(id)
+
+    if (profiles) {
+      profiles.push(group)
+    } else {
+      gatewayProfiles.set(id, [group])
+      sections.push({
+        id,
+        connectionId: group.connectionId,
+        label:
+          registry?.connections.find(connection => connection.id === group.connectionId)?.label || group.connectionId,
+        mode: 'profile',
+        path: null,
+        sessions: []
+      })
+    }
+  }
+
+  const ordered = [...sections].sort((a, b) => {
     const left = order.indexOf(a.id)
     const right = order.indexOf(b.id)
 
@@ -70,7 +108,19 @@ export function GatewayProfileGroups({ groups, renderRows, sensors, onNewSession
           onMove={direction => reorderGatewayGroups(arrayMove(ids, index, index + direction))}
           onNewSessionSplit={onNewSessionSplit}
           renderRows={renderRows}
-        />
+        >
+          {gatewayProfiles.has(group.id) && (
+            <div className="ml-3 border-l border-border/50 pl-1">
+              <GatewayProfileGroups
+                groups={gatewayProfiles.get(group.id)!}
+                nested
+                onNewSessionSplit={onNewSessionSplit}
+                renderRows={renderRows}
+                sensors={sensors}
+              />
+            </div>
+          )}
+        </GatewayProfileGroup>
       ))}
     </ReorderableList>
   )
@@ -83,9 +133,18 @@ interface GatewayProfileGroupProps {
   onNewSessionSplit?: NewSessionSplitHandler
   first: boolean
   last: boolean
+  children?: ReactNode
 }
 
-function GatewayProfileGroup({ group, renderRows, onMove, first, last, onNewSessionSplit }: GatewayProfileGroupProps) {
+function GatewayProfileGroup({
+  group,
+  renderRows,
+  onMove,
+  first,
+  last,
+  onNewSessionSplit,
+  children
+}: GatewayProfileGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
   const copy = s.gatewayGroups
@@ -120,35 +179,42 @@ function GatewayProfileGroup({ group, renderRows, onMove, first, last, onNewSess
   }
 
   return (
-    <SidebarRowStack data-gateway-group={group.id} ref={sortable.ref} style={sortable.style}>
+    <SidebarRowStack
+      data-gateway-group={group.profile ? group.id : undefined}
+      data-gateway-section={!group.profile ? group.id : undefined}
+      ref={sortable.ref}
+      style={sortable.style}
+    >
       <SidebarGroupRow
         actions={
           <div className="flex items-center">
-            <WorkspaceAddButton
-              label={s.newSessionIn(label)}
-              onClick={startSession}
-              onPointerDown={
-                onNewSessionSplit
-                  ? event =>
-                      startNewSessionDrag(
-                        placement => {
-                          if (!open) {
-                            toggleGatewayGroup(group.id)
-                          }
+            {group.profile && (
+              <WorkspaceAddButton
+                label={s.newSessionIn(label)}
+                onClick={startSession}
+                onPointerDown={
+                  onNewSessionSplit
+                    ? event =>
+                        startNewSessionDrag(
+                          placement => {
+                            if (!open) {
+                              toggleGatewayGroup(group.id)
+                            }
 
-                          onNewSessionSplit(placement.dir, {
-                            anchor: placement.anchor,
-                            before: placement.before,
-                            profile: group.profile,
-                            route
-                          })
-                        },
-                        event,
-                        { label: s.newSessionIn(label), profile: group.profile, route }
-                      )
-                  : undefined
-              }
-            />
+                            onNewSessionSplit(placement.dir, {
+                              anchor: placement.anchor,
+                              before: placement.before,
+                              profile: group.profile,
+                              route
+                            })
+                          },
+                          event,
+                          { label: s.newSessionIn(label), profile: group.profile, route }
+                        )
+                    : undefined
+                }
+              />
+            )}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button aria-label={`${copy.actions}: ${label}`} size="icon-xs" variant="ghost">
@@ -188,12 +254,16 @@ function GatewayProfileGroup({ group, renderRows, onMove, first, last, onNewSess
             dragging={sortable.dragging}
             dragHandleProps={sortable.dragHandleProps}
           >
-            <ProfileGlyph
-              className="size-full"
-              color={group.color ?? null}
-              isDefault={group.profile === 'default'}
-              name={group.profile!}
-            />
+            {group.profile ? (
+              <ProfileGlyph
+                className="size-full"
+                color={group.color ?? null}
+                isDefault={group.profile === 'default'}
+                name={group.profile}
+              />
+            ) : (
+              <Codicon name="remote" />
+            )}
           </SidebarRowGrab>
         }
         toggle={{ ariaLabel: s.projects.toggle(label, !open), onToggle: () => toggleGatewayGroup(group.id), open }}
@@ -201,6 +271,7 @@ function GatewayProfileGroup({ group, renderRows, onMove, first, last, onNewSess
       />
       {open && (
         <>
+          {children}
           {renderRows(sessions.slice(0, visibleCount))}
           {hiddenCount > 0 && (
             <WorkspaceShowMoreButton

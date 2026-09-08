@@ -83,18 +83,37 @@ it('keeps equal profile names on separate gateways and routes section creation a
       .closest('[data-gateway-group]')
       ?.getAttribute('data-gateway-group')
   ).toBe(JSON.stringify([null, 'default']))
-  expect(screen.getByText('This computer · default')).toBeTruthy()
-  expect(screen.getByText('Homelab · default')).toBeTruthy()
-  expect(screen.getByText('Cloud workspace · default')).toBeTruthy()
-  fireEvent.click(screen.getByRole('button', { name: 'New session in Homelab · default' }))
+  act(() =>
+    $sessions.set([
+      ...$sessions.get(),
+      makeSessionInfo({
+        id: 'remote-work',
+        connection_id: 'remote-1',
+        profile: 'work',
+        title: 'Work session',
+        last_active: Date.now() / 1000
+      })
+    ])
+  )
+  const gateway = screen.getByText('Homelab').closest('[data-gateway-section]') as HTMLElement
+  expect(within(gateway).getByText('default')).toBeTruthy()
+  expect(within(gateway).getByText('work')).toBeTruthy()
+  expect(gateway.querySelectorAll('[data-gateway-group]')).toHaveLength(2)
+  fireEvent.click(within(gateway).getAllByRole('button', { name: 'New session in default' })[0])
   expect($newChatRoute.get()).toMatchObject({ connectionId: 'remote-1', profile: 'default' })
   fireEvent.click(screen.getByText('cloud-1 session'))
   expect(resume).toHaveBeenLastCalledWith(
     'cloud-1',
     expect.objectContaining({ connection_id: 'cloud-1', profile: 'default' })
   )
-  const group = screen.getByText('Homelab · default').closest('[data-gateway-group]')!
-  fireEvent.click(within(group as HTMLElement).getByRole('button', { name: 'Hide Homelab · default sessions' }))
+  const group = within(gateway).getByText('default').closest('[data-gateway-group]')!
+  fireEvent.click(within(group as HTMLElement).getByRole('button', { name: 'Hide default sessions' }))
+  expect(screen.queryByText('remote-1 session')).toBeNull()
+  expect(screen.getByText('Work session')).toBeTruthy()
+  fireEvent.click(within(gateway).getByRole('button', { name: 'Hide Homelab sessions' }))
+  expect(screen.queryByText('Work session')).toBeNull()
+  fireEvent.click(within(gateway).getByRole('button', { name: 'Show Homelab sessions' }))
+  expect(screen.getByText('Work session')).toBeTruthy()
   expect(screen.queryByText('remote-1 session')).toBeNull()
   expect(screen.getByText('local session')).toBeTruthy()
 })

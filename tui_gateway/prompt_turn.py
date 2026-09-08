@@ -81,7 +81,8 @@ def _plan_goal_compression_recovery(
 
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
-    queued_prompt_generation: int | None, attempt: tuple | None = None
+    queued_prompt_generation: int | None, attempt: tuple | None = None, *,
+    notify_refusal: bool = False
 ) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
@@ -111,7 +112,15 @@ def _admit_prompt_turn(
         with session["history_lock"]:
             if _turn_attempt_is_current(session, attempt):
                 session["running"] = False
-                _clear_inflight_turn(session)
+                if notify_refusal and not _attempt_was_cancelled(session, attempt):
+                    message = (
+                        "The turn was refused before it started: "
+                        "an earlier attempt's stop is still landing")
+                    _fail_inflight_turn(session, message)
+                    # UI errors are session-scoped: emit before a successor can own the record.
+                    _emit("error", sid, {"message": message})
+                else:
+                    _clear_inflight_turn(session)
         return None
     with session["history_lock"]:
         if not _turn_attempt_is_current(session, attempt):
@@ -801,7 +810,8 @@ def _run_prompt_submit(
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     attempt: tuple | None = None) -> bool:
     admitted = _admit_prompt_turn(
-        sid, session, text, image_paths, queued_prompt_generation, attempt)
+        sid, session, text, image_paths, queued_prompt_generation, attempt,
+        notify_refusal=attempt is not None and terminal_callback is None)
     if admitted is None:
         _report_refused_attempt(session, attempt, terminal_callback)
         return False

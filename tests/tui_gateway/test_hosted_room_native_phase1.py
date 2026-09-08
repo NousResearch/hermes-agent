@@ -1102,6 +1102,99 @@ def test_the_real_hard_interrupt_never_runs_under_the_session_lock(native):
     assert native.record(sid).get("running") is False
 
 
+@pytest.mark.parametrize("hosted", [False, True])
+@pytest.mark.parametrize("outcome", ["current", "cancelled", "successor", "cancelled_successor"])
+def test_foreign_interrupt_timeout_reports_only_the_ordinary_current_attempt(native, hosted, outcome):
+    agent = native.make_agent("refusal")
+    created = native.srv._methods["session.create"]("create-refusal", {
+        "profile": PROFILE, "source": "bot_room" if hosted else "desktop"})
+    assert "error" not in created, created
+    sid = created["result"]["session_id"]
+    session = native.record(sid)
+    native.ready_agent(sid)
+    with session["history_lock"]:
+        predecessor = native.srv._new_turn_attempt(session)
+        native.srv._latch_turn_cancel(session, predecessor)
+        claim = native.srv._claim_attempt_interrupt(session, predecessor)
+    gate = native.barrier("foreign-interrupt-timeout")
+    original_wait = native.srv._await_foreign_attempt_interrupts
+
+    def expire_wait(record, attempt):
+        gate.wait_here()
+        return original_wait(record, attempt, timeout=0)
+
+    native.monkeypatch.setattr(native.srv, "_await_foreign_attempt_interrupts", expire_wait)
+    original_emit = native.srv._emit
+
+    def observe_refusal(kind, event_sid, payload=None):
+        if kind == "error" and event_sid == sid:
+            unlocked = session["history_lock"].acquire(blocking=False)
+            if unlocked:
+                session["history_lock"].release()
+            assert not unlocked, "a successor can overtake the session-scoped refusal"
+        original_emit(kind, event_sid, payload)
+
+    native.monkeypatch.setattr(native.srv, "_emit", observe_refusal)
+    native.srv.record_turn_start(native.home, session["session_key"], "predecessor-marker")
+    marker = read_turn_marker(native.home, session["session_key"])
+    before = len(native.events)
+    receipts = []
+    params = {"session_id": sid, "text": "ordinary-refused-input"}
+    if hosted:
+        params.update(_hosted_task=hosted_task(), _hosted_terminal_callback=receipts.append)
+    accepted = native.srv._methods["prompt.submit"]("refusal-submit", params)
+    assert accepted["result"]["status"] == "streaming"
+    gate.await_reached()
+    waiter = session["_run_thread"]
+    attempt = session["_turn_attempt"]
+    with session["history_lock"]:
+        if outcome in {"cancelled", "cancelled_successor"}:
+            native.srv._latch_turn_cancel(session, attempt)
+        if outcome.endswith("successor"):
+            # Force the stale-at-admission schedule using the native identity primitives.
+            successor = native.srv._new_turn_attempt(session)
+            session["_turn_attempt_live"] = successor
+            native.srv._start_inflight_turn(session, "successor-input")
+        inflight = session["inflight_turn"]
+    gate.release()
+    waiter.join(WAIT)
+    assert not waiter.is_alive()
+    terminal = [event for event in native.events[before:]
+                if event[0] in {"error", "message.start", "message.complete"}]
+    message = "The turn was refused before it started: an earlier attempt's stop is still landing"
+    if not hosted and outcome == "current":
+        assert terminal == [("error", sid, {"message": message})]
+        snapshot = native.srv._inflight_snapshot(session)
+        assert snapshot["user"] == "ordinary-refused-input"
+        assert snapshot["error"] == message
+        assert snapshot["status"] == "error" and snapshot["recoverable"]
+        assert not snapshot["streaming"]
+    else:
+        assert terminal == []
+    if hosted:
+        assert receipts == ([{"status": "failed", "text": "",
+                              "error": "the turn was refused before it started"}]
+                            if outcome in {"current", "successor"}
+                            else [{"status": "cancelled", "text": ""}])
+    else:
+        assert receipts == []
+    assert agent.invocations == [] and agent.cleared == 0
+    assert read_turn_marker(native.home, session["session_key"]) == marker
+    assert session["_run_thread"] is waiter
+    assert session["_turn_interrupt_claims"] == [claim] and not claim[1].is_set()
+    assert session["_pending_attempt_outcomes"][predecessor] == "cancelled"
+    assert attempt not in session["_pending_attempt_outcomes"]
+    if outcome.endswith("successor"):
+        assert session["running"] is True and session["inflight_turn"] is inflight
+        assert session["_turn_attempt_live"] == successor
+        assert session["_pending_attempt_outcomes"][successor] is None
+    else:
+        assert session["running"] is False and session["_turn_attempt_live"] is None
+        if outcome == "cancelled":
+            assert native.srv._attempt_was_cancelled(session, attempt)
+    native.srv._release_attempt_interrupt(session, claim)
+
+
 def test_every_retired_pending_submit_keeps_its_own_cancelled_outcome(native):
     """Two retired submits are in flight at once: neither may inherit the other's outcome.
 

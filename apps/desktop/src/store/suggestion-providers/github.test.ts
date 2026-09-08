@@ -22,7 +22,9 @@ describe('githubHit', () => {
   })
 
   it('does not match lookalike domains', () => {
+    const lookalikeHost = ['github.com', 'evil.example'].join('.')
+
     expect(githubHit('see https://notgithub.com/x more')).toBe(false)
-    expect(githubHit('see https://github.com.evil.example/x more')).toBe(false)
+    expect(githubHit(`see https://${lookalikeHost}/x more`)).toBe(false)
   })
 })

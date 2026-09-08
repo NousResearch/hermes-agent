@@ -252,6 +252,22 @@ def _interpolate_env_vars(value):
     return value
 
 
+def _resolve_headers_with_env(config: dict) -> dict:
+    """Resolve a server's `headers` block, re-expanding ``${ENV}`` refs.
+
+    MCP config headers are stored RAW (see _load_mcp_config / #97107) so a
+    rotated static token (``Authorization: Bearer *** is re-read
+    from the environment at every (re)connect instead of being frozen at
+    config-load. Non-string values pass through unchanged.
+    """
+    headers: Dict[str, Any] = {}
+    for key, value in (config.get("headers") or {}).items():
+        headers[key] = (
+            _interpolate_env_vars(value) if isinstance(value, str) else value
+        )
+    return headers
+
+
 # (server_name, dotted key path) pairs already warned about: config loads repeat per discovery pass.
 _whitespace_warned: Set[Tuple[str, str]] = set()
 
@@ -328,8 +344,17 @@ def _load_mcp_config() -> Dict[str, dict]:
             pass
         safe_servers: Dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers if isinstance(servers, dict) else {}).items():
+            # Interpolate env refs for the whole config EXCEPT the `headers`
+            # block. HTTP MCP server headers commonly carry static tokens
+            # (`Authorization: Bearer *** expanding them here
+            # freezes the value for the life of the server task, so a rotated
+            # token is never picked up on reconnect (see #97107). Keep headers
+            # raw so _run_http re-resolves them at each (re)connect.
             interpolated = _interpolate_env_vars(cfg)
-            if isinstance(interpolated, dict):
+            if isinstance(interpolated, dict) and isinstance(cfg, dict):
+                raw_headers = cfg.get("headers")
+                if raw_headers is not None:
+                    interpolated["headers"] = raw_headers
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated
         _portable_mcp_servers(safe_servers)

@@ -492,23 +492,94 @@ def _prepend_hermes_bin_dir(existing_path: str) -> str:
 
 
 def _managed_runtime_path_entries() -> list[str]:
-    """Existing Hermes-managed runtime dirs: ``$HERMES_HOME/node`` (+``/bin``) and
-    ``$HERMES_HOME/bin`` (managed ``uv``). Per call, not cached: home is
-    profile-scoped and a managed tree can appear mid-process."""
+    """Return existing Hermes-managed runtime dirs for the terminal subshell PATH.
+
+    The terminal tool spawns a subshell whose PATH is the agent process's PATH
+    plus ``_SANE_PATH``. Neither carries the runtimes Hermes installs for
+    itself, so on a machine where Hermes provisioned its own toolchain a
+    command the agent runs resolves a system copy instead — or nothing at all:
+
+    - ``$HERMES_HOME/node`` (+ ``/bin``) — installed to satisfy the desktop and
+      browser toolchain. ``tools/browser_tool.py`` already does this for its own
+      subprocesses; the agent's shell deserves the same.
+    - ``$HERMES_HOME/uv`` — the managed ``uv``/``uvx`` (the private location
+      the installers and the runtime updater keep them in; nothing has ever
+      put them on the user's PATH). Appended here so the agent's own shell is
+      uv-capable even on a managed-only install, while a user's own uv on
+      their PATH still wins (first-occurrence-wins). This is the Hermes
+      sandbox terminal shell, NOT the user's login shell / system PATH, so
+      isolation holds: a user never sees Hermes' uv in their own environment.
+    - ``$HERMES_HOME/bin`` — Hermes-installed CLIs (browser-use via
+      ``UV_TOOL_BIN_DIR``, tirith). Lightpanda is *looked up* there as a
+      fallback but not installed into it — its home is ``~/.lightpanda``.
+
+    Resolved per call rather than cached in a module constant because
+    ``get_hermes_home()`` is profile-scoped and a managed tree can appear
+    mid-process (``heal_hermes_managed_node``, a first browser install).
+    """
     try:
         from hermes_constants import get_hermes_home, iter_hermes_node_dirs
-        return [str(d) for d in (*iter_hermes_node_dirs(), get_hermes_home() / "bin") if d.is_dir()]
+
+        candidates = [
+            *iter_hermes_node_dirs(),
+            get_hermes_home() / "uv",
+            get_hermes_home() / "bin",
+        ]
+        return [str(d) for d in candidates if d.is_dir()]
     except Exception:
         return []
 
 
 def _append_missing_sane_path_entries(existing_path: str) -> str:
-    """Normalised POSIX PATH with missing sane entries appended: empty entries
-    dropped (shells read them as cwd), duplicates collapsed (first wins), then
-    missing ``_SANE_PATH`` / managed-runtime dirs appended so user entries keep
-    precedence. Windows is a no-op passthrough (native ``;`` PATH untouched)."""
+    """Return a normalised PATH with missing sane entries appended.
+
+    On POSIX the caller-supplied PATH is rewritten (not merely appended to):
+    empty entries and duplicate entries are dropped, preserving
+    first-occurrence order, then each missing ``_SANE_PATH`` entry is appended
+    once at the end so existing entries keep their precedence.
+
+    Two intentional normalisations beyond the bare "add Homebrew dirs" fix:
+
+    - **Empty entries are stripped.** A leading/trailing/double ``:`` encodes
+      an empty PATH element, which POSIX shells interpret as the current
+      working directory — a mild foot-gun in a default terminal environment.
+      We drop these rather than carry them through.
+    - **Duplicates are collapsed** (first occurrence wins), so a caller PATH
+      that already contains repeats is not propagated verbatim.
+
+    Hermes-managed runtime dirs are appended alongside the sane entries, not
+    prepended: a tool the user deliberately put on their own PATH still wins,
+    and the managed one only fills the gap where there would otherwise be
+    nothing.
+
+    For a well-formed PATH (no empties, no duplicates) the leading segment is
+    byte-identical to the input and ordering is preserved; only the missing
+    sane entries are appended.
+
+    On Windows the native PATH must not be reordered — so this is NOT a
+    pass-through: it only appends the private managed-uv dir
+    (``$HERMES_HOME\\uv``) at the tail, where the user's own uv (if any) on
+    their PATH still wins (first-occurrence-wins). ``bin`` and the node dirs
+    are handled by ``_prepend_hermes_bin_dir`` / ``iter_hermes_node_dirs``
+    elsewhere; this closes the gap where ``$HERMES_HOME\\uv`` (post-uv-
+    isolation) would otherwise be unreachable in the agent's terminal shell.
+    """
     if _IS_WINDOWS:
-        return existing_path
+        try:
+            from hermes_constants import get_hermes_home
+
+            uv_dir = str(get_hermes_home() / "uv")
+        except Exception:
+            return existing_path
+        sep = os.pathsep
+        parts = existing_path.split(sep) if existing_path else []
+        # Windows PATH matching is case-insensitive, so guard the dedup with
+        # casefold() — otherwise a differently-cased entry (e.g. the user
+        # having ...\\Hermes\\uv) would append a duplicate alongside it.
+        if uv_dir and uv_dir.casefold() not in [p.casefold() for p in parts]:
+            parts.append(uv_dir)
+        return sep.join(parts)
+
     # dict preserves first-occurrence order; empty entries dropped.
     ordered = dict.fromkeys(entry for entry in existing_path.split(":") if entry)
     ordered.update(dict.fromkeys([*_SANE_PATH.split(":"), *_managed_runtime_path_entries()]))

@@ -251,8 +251,9 @@ class _SlashWorker:
         # sweep, racing the spawn, killpg()s the TUI parent itself. errors="replace": bytes invalid
         # in the system locale (GBK Windows) must not raise UnicodeDecodeError in the drain threads.
         # Prepend the Hermes venv bin dir and the user-local bin dir to PATH so slash_worker child processes
-        # can resolve Hermes-managed CLIs (browser-use, uvx) even when the parent gateway was launched with
-        # a minimal PATH (e.g. by the Desktop/Dashboard app). See #83845.
+        # can resolve Hermes-managed CLIs (browser-use via bin; managed uv/uvx are NOT put here on purpose —
+        # they live in the private $HERMES_HOME/uv dir and resolve via resolve_uv()/ensure_uv()) even when
+        # the parent gateway was launched with a minimal PATH (e.g. by the Desktop/Dashboard app). See #83845.
         self.proc = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             encoding="utf-8", errors="replace", bufsize=1, cwd=os.getcwd(), env=env,

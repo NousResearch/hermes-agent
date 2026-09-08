@@ -323,7 +323,7 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
     )
 
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
-    update_managed_uv()  # keep managed uv current — runs `uv self update` if we already have one
+    update_managed_uv()  # keep managed uv current — re-runs the official installer into the private dir (uv self update is refused for unmanaged installs)
     uv_bin = ensure_uv()
     pip_cmd = [_m().sys.executable, "-m", "pip"]
     if not uv_bin:

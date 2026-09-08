@@ -267,13 +267,38 @@ def _probe_broken_packages() -> list[str]:
 def _find_uv_binary() -> str | None:
     """Locate a ``uv`` binary without importing third-party modules.
 
-    uv-managed base interpreters carry an ``EXTERNALLY-MANAGED`` marker, so the stdlib ``pip``
-    fallback refuses to touch them; the only sanctioned installer is then uv itself, which Hermes
-    vendors (``~/.hermes/bin/uv.exe``) or the user has on PATH.
+    uv-managed base interpreters carry an ``EXTERNALLY-MANAGED`` marker, so
+    the stdlib ``pip`` fallback below refuses to touch them.  In that state
+    the only sanctioned installer is uv itself, which Hermes already vendors
+    (``~/.hermes/uv/uv.exe``) or the user has on PATH.  Stdlib-only.
     """
     exe = "uv.exe" if sys.platform == "win32" else "uv"
-    for sub in ((".hermes", "bin"), (".local", "bin"), (".cargo", "bin")):
-        path = Path.home().joinpath(*sub, exe)
+
+    # Resolve the Hermes home without importing hermes_constants: this module
+    # is stdlib-only on purpose — it runs when the checkout is already broken
+    # enough that importing a Hermes module may fail. Mirrors
+    # hermes_constants._get_platform_default_hermes_home (LOCALAPPDATA on
+    # Windows, ~/.hermes elsewhere); if that logic ever changes, keep the two
+    # in sync.
+    hermes_env = os.environ.get("HERMES_HOME", "").strip()
+    if hermes_env:
+        hermes_home = Path(hermes_env)
+    elif sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        hermes_home = base / "hermes"
+    else:
+        hermes_home = Path.home() / ".hermes"
+
+    candidates = [
+        # Private uv in Hermes home (custom HERMES_HOME, %LOCALAPPDATA%/hermes on Windows, ~/.hermes on POSIX)
+        hermes_home / "uv" / exe,
+        # Legacy pre-isolation layout; migrated to the private dir on use.
+        hermes_home / "bin" / exe,
+        Path.home() / ".local" / "bin" / exe,
+        Path.home() / ".cargo" / "bin" / exe,
+    ]
+    for path in candidates:
         if path.is_file():
             return str(path)
     return shutil.which(exe)

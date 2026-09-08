@@ -983,7 +983,8 @@ def _sync_python_dependencies_after_pull(
         "→ Python dependencies unchanged — skipping reinstall" if deps_current
         else "→ Updating Python dependencies...")
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
-    # `uv self update` if we already have a managed uv.
+    # Keep the managed uv current: unmanaged installs refuse `uv self update`, so update_managed_uv
+    # re-runs the official installer into the private dir (throttled to ~weekly).
     update_managed_uv()
     uv_bin = ensure_uv()
     pip_cmd = [sys.executable, "-m", "pip"]

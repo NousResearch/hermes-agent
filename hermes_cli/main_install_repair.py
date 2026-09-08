@@ -414,14 +414,14 @@ def _default_venv_install_target() -> tuple[list[str], dict[str, str] | None]:
     """Return ``(install_cmd_prefix, env)`` for the project venv when possible."""
     from hermes_cli.main import PROJECT_ROOT
     try:
-        from hermes_cli.managed_uv import ensure_uv
+        from hermes_cli.managed_uv import ensure_uv, managed_uv_env
         uv_bin = ensure_uv()
     except Exception:
         uv_bin = None
     if uv_bin:
         from hermes_constants import project_venv_dir
         venv_dir = project_venv_dir(PROJECT_ROOT) or PROJECT_ROOT / "venv"
-        env = {**os.environ, "VIRTUAL_ENV": str(venv_dir)}
+        env = managed_uv_env(base_env={**os.environ, "VIRTUAL_ENV": str(venv_dir)})
         if _is_termux_env(env):
             env.pop("PYTHONPATH", None)
             env.pop("PYTHONHOME", None)

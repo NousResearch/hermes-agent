@@ -266,6 +266,24 @@ def test_repair_install_uv_sets_virtual_env_to_project_venv(tmp_path, monkeypatc
     assert "PYTHONPATH" not in seen_env
 
 
+def test_resolve_install_target_pins_uv_cache_to_hermes_home(tmp_path, monkeypatch):
+    """The update-time venv repair path (``_install_repair``) must pin uv's
+    download cache inside HERMES_HOME too — same containment as
+    ``managed_uv_env()`` but without importing ``managed_uv`` (stdlib-only)."""
+    from hermes_cli import _install_repair as ir
+
+    root = _project(tmp_path)
+    monkeypatch.setattr(ir._er, "_find_uv_binary", lambda: "/fake/uv")
+
+    from hermes_constants import get_hermes_home
+
+    cmd, env = ir._resolve_install_target(root)
+
+    assert cmd == ["/fake/uv", "pip"]
+    assert env["VIRTUAL_ENV"] == str(root / "venv")
+    assert env["UV_CACHE_DIR"] == str(get_hermes_home() / "cache" / "uv")
+
+
 def test_repair_install_falls_back_to_break_system_packages_without_uv(
     tmp_path, monkeypatch
 ):

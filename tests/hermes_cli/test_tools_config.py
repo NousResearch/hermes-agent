@@ -676,12 +676,9 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
         ensure.assert_not_called()
 
     def test_ensure_helper_always_delegates_to_install_cli(self):
-        """MANAGED-FIRST: a browser-use on PATH must not short-circuit the
-        helper — install_cli() owns the managed-copy check and provisions
-        $HERMES_HOME/bin when only side installs exist."""
+        """MANAGED-FIRST: the helper always delegates to install_cli() — that owns the managed-copy
+        check and provisions $HERMES_HOME/bin when only side installs exist."""
         with patch(
-            "hermes_cli.tools_config_post_setup.shutil.which", return_value="/usr/bin/browser-use"
-        ), patch(
             "tools.browser_use_cli.install_cli",
             return_value=(True, "browser-use CLI already installed (/managed/bin/browser-use)"),
         ) as install:
@@ -696,14 +693,50 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
         from hermes_cli.tools_config import _ensure_browser_use_cli
 
         with patch(
-            "hermes_cli.tools_config_post_setup.shutil.which", return_value=None
-        ), patch(
             "tools.browser_use_cli.install_cli",
             return_value=(False, "`uv tool install browser-use` failed:\nboom"),
         ), patch("hermes_cli.tools_config_post_setup._print_warning") as warn:
             _ensure_browser_use_cli()  # must not raise
 
         assert any("failed" in c.args[0] for c in warn.call_args_list)
+
+    def test_ensure_helper_failure_hints_zero_install_with_managed_uvx(self, tmp_path):
+        """A failed install hints the zero-install path exactly when Hermes'
+        OWN managed uvx exists — never because a user has uvx on their PATH."""
+        from hermes_cli.tools_config import _ensure_browser_use_cli
+
+        managed_uvx = tmp_path / "uvx"
+        managed_uvx.write_text("#!/bin/sh\n")
+        managed_uvx.chmod(managed_uvx.stat().st_mode | 0o111)
+        with patch(
+            "tools.browser_use_cli.install_cli",
+            return_value=(False, "`uv tool install browser-use` failed:\nboom"),
+        ), patch(
+            "hermes_cli.managed_uv.managed_uvx_path", return_value=managed_uvx
+        ), patch("hermes_cli.tools_config_post_setup._print_info") as info:
+            _ensure_browser_use_cli()  # must not raise
+
+        hints = " ".join(c.args[0] for c in info.call_args_list)
+        assert "zero-install runs via `uvx browser-use`" in hints
+        assert "Install manually" not in hints
+
+    def test_ensure_helper_failure_hints_manual_install_without_managed_uvx(self, tmp_path):
+        """Without her managed uvx the hint is manual install — a user's PATH
+        uvx must not switch the hint to zero-install."""
+        from hermes_cli.tools_config import _ensure_browser_use_cli
+
+        with patch(
+            "tools.browser_use_cli.install_cli",
+            return_value=(False, "`uv tool install browser-use` failed:\nboom"),
+        ), patch(
+            "hermes_cli.managed_uv.managed_uvx_path",
+            return_value=tmp_path / "no-such-uvx",
+        ), patch("hermes_cli.tools_config_post_setup._print_info") as info:
+            _ensure_browser_use_cli()  # must not raise
+
+        hints = " ".join(c.args[0] for c in info.call_args_list)
+        assert "Install manually" in hints
+        assert "zero-install" not in hints
 
 
 class TestImagegenBackendRegistry:

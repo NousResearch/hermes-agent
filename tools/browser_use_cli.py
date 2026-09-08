@@ -147,6 +147,17 @@ def _base_subprocess_env() -> dict:
     # import path.
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
+    # uv-managed state isolation: when this env drives the zero-install uvx
+    # path (or a ``uv tool install`` elsewhere), pin every dir uv writes to
+    # inside HERMES_HOME so the tool store, download cache, and any Python
+    # it provisions never land in the user's own uv dirs. Harmless when the
+    # CLI is already installed (no uv involved) — the keys are inert there.
+    try:
+        from hermes_cli.managed_uv import managed_uv_env
+
+        env.update(managed_uv_env(base_env=env))
+    except Exception:  # pragma: no cover — defensive
+        pass
     env["PATH"] = _floor_subprocess_path(env.get("PATH", ""))
     env.setdefault("ANONYMIZED_TELEMETRY", "false")
     return env
@@ -232,31 +243,53 @@ def default_downgrade_notice() -> Optional[str]:
 
 
 def _managed_bin_dir() -> str:
-    """$HERMES_HOME/bin — where install.sh puts uv/uvx and install_cli() links browser-use."""
+    """$HERMES_HOME/bin — where install_cli() links browser-use (UV_TOOL_BIN_DIR); legacy installs
+    used to keep the managed uv/uvx here before the uv-isolation change."""
     return str(Path(get_hermes_home()) / "bin")
+
+
+def _managed_uv_dir() -> Optional[str]:
+    """Hermes' private managed uv dir ($HERMES_HOME/uv) — where install.sh / install.ps1 and the
+    runtime updater keep the managed uv + uvx binaries; never on PATH."""
+    try:
+        from hermes_cli.managed_uv import managed_uv_path
+
+        return str(managed_uv_path().parent)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug("Could not resolve managed uv dir: %s", e)
+        return None
 
 
 def _find_cli() -> Optional[List[str]]:
     """Locate the browser-use CLI, or None when it can't be run. MANAGED-FIRST: Hermes' own ``$HERMES_HOME/bin``
     copy always wins so every session drives one Hermes-controlled binary; PATH and the user-level tool dir
     (~/.local/bin, or uv's %APPDATA%/uv/bin on Windows — Desktop/TUI workers may start with a minimal PATH
-    that omits it) are fallbacks; uvx zero-install (same probe order) is last."""
+    that omits it) are fallbacks. The uvx zero-install tier probes the managed uv dir first ($HERMES_HOME/uv —
+    uvx lives next to the managed uv there), then the legacy bin/ copy; it deliberately never executes a
+    user's uvx as an internal fallback."""
     if os.name == "nt":
         appdata = os.environ.get("APPDATA")
         user_bin = str(Path(appdata) / "uv" / "bin") if appdata else None
     else:
         user_bin = str(Path(os.path.expanduser("~")) / ".local" / "bin")
     probe_paths = [p for p in (_managed_bin_dir(), None, user_bin) if p is None or p]  # None = PATH
-    for name, argv in (("browser-use", lambda b: [b]), ("uvx", lambda b: [b, "browser-use"])):
-        for probe_path in probe_paths:
-            found = shutil.which(name, path=probe_path)
-            if found:
-                return argv(found)
+    for probe_path in probe_paths:
+        direct = shutil.which("browser-use", path=probe_path)
+        if direct:
+            return [direct]
+    # uvx ships alongside the managed uv in the private uv/ dir; the pre-isolation bin/ copy is
+    # probed too until a legacy install migrates. The uvx tier runs INSIDE Hermes: a user's uvx is
+    # a separate toolchain and must not become an implicit dependency of Hermes' browser backend.
+    uvx_probe_paths = [p for p in (_managed_uv_dir(), _managed_bin_dir()) if p]
+    for probe_path in uvx_probe_paths:
+        uvx = shutil.which("uvx", path=probe_path)
+        if uvx:
+            return [uvx, "browser-use"]
     return None
 
 
 def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
-    """Install the browser-use CLI via ``uv tool install`` (managed uv via ``ensure_uv`` → uv on PATH), linking
+    """Install the browser-use CLI via ``uv tool install`` (managed uv via ``ensure_uv``), linking
     the binary into ``$HERMES_HOME/bin`` (``UV_TOOL_BIN_DIR``) so ``_find_cli()`` resolves it for every profile.
     Returns ``(ok, message)``; never raises. MANAGED-FIRST: only the managed copy short-circuits — a browser-use
     on PATH is a user-level side install and must not block provisioning the canonical copy (version drift)."""
@@ -267,15 +300,27 @@ def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
 
     def _managed_uv() -> Optional[str]:
         from hermes_cli.managed_uv import ensure_uv
+
         return str(ensure_uv() or "") or None
-    uv_bin = _quiet(_managed_uv, None, "Managed uv bootstrap unavailable") or shutil.which("uv")
+
+    # Managed-only (never the user's uv on PATH) + every uv write dir pinned
+    # inside Hermes' tree (managed_uv_env): the tool store, cache, and any
+    # Python it provisions never touch the user's uv state. UV_TOOL_BIN_DIR is
+    # pinned to $HERMES_HOME/bin so _find_cli() resolves the install.
+    uv_bin = _quiet(_managed_uv, None, "Managed uv bootstrap unavailable")
     if not uv_bin:
         return False, ("uv is not available and could not be bootstrapped. Install uv "
                        "(https://docs.astral.sh/uv/) and run `uv tool install browser-use`.")
-    env = {**os.environ, "UV_NO_CONFIG": "1"}
+    try:
+        from hermes_cli.managed_uv import managed_uv_env
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug("Managed uv env helper unavailable: %s", e)
+        return False, ("Managed uv is present but its environment helper could not be "
+                       "imported; cannot proceed with an isolated tool install.")
+    env = managed_uv_env(base_env=dict(os.environ), tool_bin_dir=bin_dir)
+    env["UV_NO_CONFIG"] = "1"
     try:
         Path(bin_dir).mkdir(parents=True, exist_ok=True)
-        env["UV_TOOL_BIN_DIR"] = bin_dir
     except OSError as e:
         logger.debug("Could not prepare %s: %s", bin_dir, e)
 

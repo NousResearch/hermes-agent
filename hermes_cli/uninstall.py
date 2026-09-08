@@ -259,18 +259,21 @@ _GATEWAY_SERVICE_REMOVERS = {
 # they work under Constrained Language Mode; new shells see them without WM_SETTINGCHANGE.
 
 
-def _hermes_path_markers(hermes_home: Path, *, include_managed_bin: bool = False) -> list[str]:
-    """Prefixes identifying Hermes-owned User-PATH entries (prefix match sweeps git\cmd, git\bin,
-    node...). ``include_managed_bin`` adds ``<root>\bin`` (launchers + managed uv) — only when that
-    dir is about to be deleted, so a keep-data uninstall keeps the working uv resolvable."""
+def _hermes_path_markers(hermes_home: Path, *, include_managed_runtime: bool = False) -> list[str]:
+    """Prefixes identifying Hermes-owned User-PATH entries (prefix match sweeps git\\cmd, git\\bin,
+    node...). ``include_managed_runtime`` adds ``<root>\\bin`` (the hermes launchers) and
+    ``<root>\\uv`` (the private managed uv/uvx) — only when those dirs are about to be deleted, so a
+    keep-data uninstall keeps the still-working managed tools resolvable."""
     root = str(hermes_home).rstrip("\\/")
-    subs = ("hermes-agent", "git", "node", "venv") + (("bin",) if include_managed_bin else ())
+    subs = ("hermes-agent", "git", "node", "venv") + (
+        ("bin", "uv") if include_managed_runtime else ())
     return [f"{root}\\{sub}" for sub in subs]
 
 
-def remove_path_from_windows_registry(hermes_home: Path, *, include_managed_bin: bool = False) -> list[str]:
+def remove_path_from_windows_registry(hermes_home: Path, *, include_managed_runtime: bool = False) -> list[str]:
     """Strip Hermes-owned entries from User-scope PATH in the registry (see ``_hermes_path_markers``)."""
-    markers = tuple(m.lower() for m in _hermes_path_markers(hermes_home, include_managed_bin=include_managed_bin))
+    markers = tuple(m.lower() for m in _hermes_path_markers(
+        hermes_home, include_managed_runtime=include_managed_runtime))
 
     def edit(winreg, key, removed):
         try:
@@ -625,17 +628,18 @@ def _perform_uninstall(
 
     # 2-3b. PATH entries, wrapper, Windows launchers, node symlinks. Windows: hermes_home is
     #    %VAR%-expanded because install.ps1 writes literal C:\Users\<u>\...; hermes\bin (launchers +
-    #    managed uv) leaves the PATH only when the full wipe below deletes it (keep-data keeps uv
-    #    resolvable), while the launchers themselves always go. Symlinks go only when they still
+    #    managed runtime dirs (launchers in hermes\bin, private uv/uvx in hermes\uv) leave the PATH
+    #    only when the full wipe below deletes them (keep-data keeps the managed tools resolvable),
+    #    while the launchers themselves always go. Symlinks go only when they still
     #    point into this home's node dir (never clobber nvm / user-managed Node).
     windows = _is_windows()
-    sweep_managed_bin = windows and full_uninstall and _is_default_hermes_home(hermes_home)
+    sweep_managed_runtime = windows and full_uninstall and _is_default_hermes_home(hermes_home)
     for on_this_platform, label, remove, success_fmt, none_msg in (
         (True, "Removing PATH entries from shell configs...",
          remove_path_from_shell_configs, "Updated {}", "No PATH entries found to remove in shell rc files"),
         (windows, "Removing PATH entries from Windows User environment...",
          lambda: remove_path_from_windows_registry(
-             Path(os.path.expandvars(str(hermes_home))), include_managed_bin=sweep_managed_bin),
+             Path(os.path.expandvars(str(hermes_home))), include_managed_runtime=sweep_managed_runtime),
          "Removed from User PATH: {}", "No Hermes-owned PATH entries in User environment"),
         (windows, "Removing HERMES_HOME / HERMES_GIT_BASH_PATH User env vars...",
          remove_hermes_env_vars_windows, "Removed User env var: {}", "No Hermes-set User env vars to remove"),

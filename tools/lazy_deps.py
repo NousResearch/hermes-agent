@@ -469,14 +469,16 @@ def _run_installer(cmd: list[str], **kw) -> subprocess.CompletedProcess:
 
 
 def _uv_binary() -> Optional[str]:
-    """Managed uv first ($HERMES_HOME/bin is never on PATH), then PATH. A lookup, not ensure_uv():
-    downloading uv mid-turn is more than the caller asked for; pip covers no-uv."""
+    """Hermes-managed uv only (``resolve_uv`` — the private ``$HERMES_HOME/uv`` dir is never on
+    PATH). Deliberately NOT a PATH fallback: Hermes must never drive the user's own uv. And a
+    lookup, not ``ensure_uv()``: downloading uv + migrating the Python runtime mid-turn is a far
+    bigger action than the caller asked for. ``None`` → the pip tier covers it."""
     try:
         from hermes_cli.managed_uv import resolve_uv
 
-        return resolve_uv() or shutil.which("uv")
+        return resolve_uv()
     except Exception:
-        return shutil.which("uv")
+        return None
 
 
 def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
@@ -507,10 +509,13 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         from tools.environments.local import hermes_subprocess_env
         uv_env = hermes_subprocess_env(inherit_credentials=False)
         uv_env["VIRTUAL_ENV"] = str(Path(sys.executable).parent.parent)
-        # Tier 1: uv. --compile-bytecode because uv writes no __pycache__ by default, so the first
-        # import would recompile the backend AND its transitives (_warm_installed_bytecode is the
-        # belt-and-braces pass for the spec's own roots on any tier).
+        # uv is fast and does not need pip in the venv; managed-only (see _uv_binary) so Hermes
+        # never drives the user's own uv. Pin every uv write dir into Hermes' own tree so this
+        # install cannot touch the user's uv tool store / cache / python store either.
         if uv_bin := _uv_binary():
+            from hermes_cli.managed_uv import managed_uv_env
+
+            uv_env.update(managed_uv_env(base_env=uv_env))
             try:
                 r = _run_installer([uv_bin, "pip", "install", "--compile-bytecode", *extra_args, *specs], timeout=timeout, env=uv_env)
                 if r.returncode != 0:

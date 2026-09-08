@@ -89,8 +89,8 @@ def test_launcher_names_stay_in_lockstep_with_install_ps1():
         assert name.startswith("hermes")  # never a generic name it could clobber
 
 
-class TestManagedBinPathMarker:
-    """The managed ``bin`` PATH entry goes only when the dir itself goes.
+class TestManagedPathMarkers:
+    """The managed runtime PATH entries (bin, uv) go only when the dirs go.
 
     Markers match against Windows registry PATH entries, so the inputs here
     are Windows-shaped path strings regardless of the host — feeding
@@ -99,18 +99,21 @@ class TestManagedBinPathMarker:
 
     HOME = r"C:\Users\me\AppData\Local\hermes"
     BIN_ENTRY = r"C:\Users\me\AppData\Local\hermes\bin"
+    UV_ENTRY = r"C:\Users\me\AppData\Local\hermes\uv"
 
-    def test_keep_data_markers_spare_the_managed_bin(self):
+    def test_keep_data_markers_spare_the_managed_runtime_dirs(self):
         markers = [m.lower() for m in uninstall._hermes_path_markers(Path(self.HOME))]
 
         assert not any(self.BIN_ENTRY.lower().startswith(m) for m in markers)
+        assert not any(self.UV_ENTRY.lower().startswith(m) for m in markers)
 
-    def test_full_wipe_markers_take_the_managed_bin(self):
+    def test_full_wipe_markers_take_the_managed_runtime_dirs(self):
         markers = [
             m.lower()
             for m in uninstall._hermes_path_markers(
-                Path(self.HOME), include_managed_bin=True
+                Path(self.HOME), include_managed_runtime=True
             )
         ]
 
         assert any(self.BIN_ENTRY.lower().startswith(m) for m in markers)
+        assert any(self.UV_ENTRY.lower().startswith(m) for m in markers)

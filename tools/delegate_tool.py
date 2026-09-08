@@ -527,14 +527,15 @@ def _build_top_level_description(*, independent_completions=None) -> str:
 
 _DESCRIPTION_HEAD = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
-    "final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
+    "completion result returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
     "(limit in the tasks description).\n\n"
     "Runs in the background: dispatch returns immediately with live transcript paths, and the call's results re-enter "
     "the conversation as a new message when its subagents finish ({delivery}). Results are delivered only "
     "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
     "wait or poll on transcripts, artifact files, or CI for a child. "
-    "While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
-    "child drifting.\n\n"
+    "While children run, `action` (list/steer/stop) controls them live: steer redirects or requests an "
+    "early summary without cancelling; stop is destructive cancellation "
+    "and may yield no usable summary.\n\n"
     "USE FOR: reasoning-heavy subtasks, work that would flood your context with intermediate data, or independent "
     "parallel workstreams.\n"
     "DO NOT USE FOR (use these instead):\n"
@@ -651,9 +652,11 @@ DELEGATE_TASK_SCHEMA = {
                 "Default 'spawn'. Live control of running children: "
                 "'list' = ids/goals/status/transcripts; 'steer' = queue "
                 "course-correction text into one child (subagent_id + "
-                "message) without stopping it; 'stop' = end one child "
-                "early (subagent_id; partial result still returns). "
-                "Control actions return immediately; goal/tasks are ignored unless spawning.",
+                "message) without stopping it; 'stop' = destructively "
+                "cancel one child (subagent_id). A completion status "
+                "returns, but usable partial output is not guaranteed; "
+                "use 'steer' to request an early summary. Control actions "
+                "return immediately; goal/tasks are ignored unless spawning.",
                 enum=["spawn", "list", "steer", "stop"],
             ),
             "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),

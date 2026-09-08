@@ -95,9 +95,12 @@ def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
         return pending if isinstance(pending, str) and pending.strip() else None
 
 def interrupt_subagent(subagent_id: str) -> bool:
-    """Request that one running subagent stop at its next iteration boundary
-    (cooperative: the flag propagates to in-flight tools and recurses into
-    grandchildren via AIAgent.interrupt()). True iff a matching subagent was found."""
+    """Request destructive cancellation of one running subagent.
+
+    Python cannot hard-kill the worker thread, but the interrupt propagates to
+    the child's in-flight tool call and recursively to grandchildren via
+    AIAgent.interrupt(). The child may therefore finish without a usable
+    summary. True iff a matching subagent was found and signalled."""
     with _active_subagents_lock:
         record = _active_subagents.get(subagent_id)
     agent = record.get("agent") if record else None
@@ -289,8 +292,11 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
 _CONTROL_OUTCOMES = {
     "stop": (
         "interrupt_requested",
-        "The subagent stops at its next iteration boundary (in-flight tool calls are asked to cancel). Its "
-        "partial result still re-enters the conversation as a completion message — do not wait or poll.",
+        "Destructive cancellation requested; the in-flight tool "
+        "call is asked to cancel. A completion status still "
+        "re-enters the conversation, but a usable partial "
+        "summary is not guaranteed. Use steer — not stop — to "
+        "request an early summary.",
         "Could not interrupt '{sid}' — it likely finished in the last "
         "moment. Its result arrives as a normal completion message.",
     ),

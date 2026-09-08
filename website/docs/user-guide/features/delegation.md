@@ -385,7 +385,8 @@ long response always counts as alive):
    (450s idle, 1200s while inside a tool — legitimately slow terminal
    commands and web fetches get the higher ceiling) is **interrupted** and
    given a 120s grace window. A child that unwinds in time delivers its
-   partial results through the normal completion path.
+   completion status and any available partial result through the normal
+   completion path; a usable partial summary is not guaranteed.
 3. A child that never returns is force-finalized with a terminal `stalled`
    completion event, so the owning session hears an outcome instead of
    going silent, and the async slot frees for new work.
@@ -462,7 +463,7 @@ The parent agent orchestrates its own running children with the same `delegate_t
 
 - **`list`** returns the conversation's live children: `subagent_id`, goal, status, `running_seconds`, `accepting_steer`, and the live transcript path. Ids also come back in the spawn dispatch response as `subagent_ids`.
 - **`steer`** queues a course correction into a running child without stopping it (delivery semantics below).
-- **`stop`** ends a child early at its next iteration boundary; the partial result still re-enters the conversation as a normal completion message.
+- **`stop`** requests destructive cancellation, including cancellation of the in-flight tool call. A completion status still re-enters the conversation, but a usable partial summary is not guaranteed. To ask a child to wrap up from its current state, use `steer` instead.
 
 Control actions run synchronously in-turn (never backgrounded), are scoped to the caller's own spawn tree — a conversation can never see or control another session's children — and never consume the per-turn subagent spawn cap, so `stop` keeps working even after the cap is hit.
 

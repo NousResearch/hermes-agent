@@ -381,6 +381,16 @@ def _run_agent(
 
     skills_prompt = _build_preloaded_skills_prompt(skills)
 
+    # The chat and cron paths both forward the configured cap; oneshot never did, so a set
+    # agent.max_turns was ignored. resolve_turn_limit() honors none/unlimited (sys.maxsize) and
+    # explicit 0 / null, so an unset cap stays unlimited.
+    from hermes_cli.config import resolve_turn_limit
+
+    max_turns = (cfg.get("agent") or {}).get("max_turns")
+    if max_turns is None:
+        max_turns = cfg.get("max_turns")
+    max_iterations = resolve_turn_limit(max_turns)
+
     session_db = _create_session_db_for_oneshot()
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
@@ -400,6 +410,7 @@ def _run_agent(
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
             ephemeral_system_prompt=skills_prompt,
+            max_iterations=max_iterations,
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
             # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
             # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.

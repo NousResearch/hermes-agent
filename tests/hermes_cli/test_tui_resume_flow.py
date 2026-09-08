@@ -151,6 +151,7 @@ def _stub_plugin_discovery(monkeypatch):
 
 def test_oneshot_wires_session_db_for_recall(monkeypatch):
     """hermes -z bypasses HermesCLI, but recall still needs SessionDB."""
+    from hermes_cli.config import resolve_turn_limit
     from hermes_cli.oneshot import _run_agent
 
     captured = {}
@@ -182,7 +183,11 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
-        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
+        mod(
+            "hermes_cli.config",
+            load_config=lambda: {"model": {"default": "m"}},
+            resolve_turn_limit=resolve_turn_limit,
+        ),
     )
     monkeypatch.setitem(
         sys.modules,

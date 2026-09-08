@@ -167,6 +167,18 @@ def _split_segments(output: str, sentinel: str) -> list[str]:
     return output.split(sentinel + "\n")
 
 
+# gRPC (google-cloud-pubsub in the Google Chat adapter) logs this after-fork
+# diagnostic into the same stream as command stdout. File operations parse
+# that stream, so leaving the line in place corrupts sizes, hashes and
+# post-write comparisons. Local patch, ebizmarts 2026-09-07 (v0.20.5),
+# re-ported onto v0.21.1 on 2026-09-08.
+_GRPC_FORK_POLL_NOISE_RE = re.compile(
+    r"(?m)^[IWEF]\d{4} \d{2}:\d{2}:\d{2}\.\d+ \d+ "
+    r"ev_poll_posix\.cc:\d+\] FD from fork parent still in poll list: "
+    r"fd\(\d+, generation: \d+\)\r?\n?"
+)
+_SHA256_DIGEST_LINE_RE = re.compile(r"(?m)^([0-9a-fA-F]{64})(?:\s|$)")
+
 class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     """File operations over any terminal backend exposing ``execute(command, cwd)``
     returning ``{"output": str, "returncode": int}``.
@@ -205,7 +217,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # child never received the input.
         if result.get("stdin_error") and exit_code == 0:
             exit_code = 1
-        return ExecuteResult(stdout=result.get("output", ""), exit_code=exit_code)
+        stdout = _GRPC_FORK_POLL_NOISE_RE.sub("", result.get("output", "") or "")
+        return ExecuteResult(stdout=stdout, exit_code=exit_code)
 
     def _has_command(self, cmd: str) -> bool:
         """Check if a command exists in the environment (cached); rg goes through
@@ -1193,7 +1206,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         try:
             hash_result = self._exec(f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null")
             if hash_result.exit_code == 0 and hash_result.stdout.strip():
-                disk_sha = hash_result.stdout.strip().split()[0]
+                # Native libraries can emit diagnostics after fork, and some
+                # terminal backends merge that output before sha256sum stdout.
+                # Parse a real digest line instead of trusting the first token.
+                digest_match = _SHA256_DIGEST_LINE_RE.search(hash_result.stdout)
+                if digest_match is None:
+                    return None, None
+                disk_sha = digest_match.group(1).lower()
                 if disk_sha != hashlib.sha256(content_bytes).hexdigest():
                     return False, WriteResult(error=(
                         f"Post-write verification failed for {path}: on-disk "

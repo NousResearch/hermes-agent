@@ -920,3 +920,19 @@ class TestEscapeNativeToolArg:
         assert node_cmds, f"no node command captured in: {commands}"
         assert "'C:/Users/alice/app/main.js'" in node_cmds[0]
         assert "/c/Users" not in node_cmds[0]
+
+
+# ── Local patch (ebizmarts): gRPC after-fork diagnostic stripped from stdout ──
+
+
+def test_exec_strips_grpc_fork_poll_diagnostic(mock_env):
+    mock_env.execute.return_value = {
+        "output": (
+            "I0826 11:08:16.577183 7276738 ev_poll_posix.cc:593] "
+            "FD from fork parent still in poll list: fd(46, generation: 1)\n"
+            "actual command output\n"
+        ),
+        "returncode": 0,
+    }
+    result = ShellFileOperations(mock_env)._exec("printf output")
+    assert result.stdout == "actual command output\n"

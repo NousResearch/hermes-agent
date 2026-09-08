@@ -71,3 +71,35 @@ class TestWriteVerification:
         assert "error" not in r
         assert f.read_text() == "content lands anyway\n"
         assert "verified" not in r or r.get("verified") is None
+
+
+# ── Local patch (ebizmarts): digest parse tolerates a noisy prefix line ──
+
+
+def test_hash_verification_ignores_non_hash_output_prefix(workdir):
+    # Some native libraries log after fork and their diagnostic is merged
+    # into command stdout before sha256sum output. Verification must find
+    # the digest line rather than assuming the first token is the digest.
+    f = workdir / "noisy-hash.txt"
+    import tools.file_operations as fo
+
+    real_exec = fo.ShellFileOperations._exec
+
+    def noisy_exec(self, cmd, **kw):
+        result = real_exec(self, cmd, **kw)
+        if "sha256sum" in cmd and result.exit_code == 0:
+            return fo.ExecuteResult(
+                stdout=(
+                    "W0826 11:08:16.577183 ev_poll_posix.cc:593] "
+                    "some other diagnostic that is not a digest\n"
+                    + result.stdout
+                ),
+                exit_code=result.exit_code,
+            )
+        return result
+
+    with mock_patch.object(fo.ShellFileOperations, "_exec", noisy_exec):
+        r = json.loads(write_file_tool(str(f), "content survives noisy output\n", task_id="t-wv-noisy"))
+    assert "error" not in r
+    assert r.get("verified") is True
+    assert f.read_text() == "content survives noisy output\n"

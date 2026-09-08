@@ -547,11 +547,22 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        "timeouts.tools.sequential_call",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key
         is_known, _ = _validate_config_key(key)
         assert is_known, f"Expected {key!r} to validate as known"
+
+    def test_timeouts_keys_do_not_suggest_timezone(self):
+        """``timeouts.*`` is a dynamic dotted-key namespace (agent/deadline.py resolve_timeout),
+        documented in cli-config.yaml.example but not enumerated in DEFAULT_CONFIG — it must be
+        accepted as an open dict, not flagged as unknown with the difflib ``timezone.*`` near-miss
+        (the misleading warning from #105628)."""
+        from hermes_cli.config import _validate_config_key
+        is_known, suggestion = _validate_config_key("timeouts.tools.concurrent_batch")
+        assert is_known, "timeouts.* paths must validate as known (open dict root)"
+        assert suggestion is None, f"Known key must not carry a suggestion, got {suggestion!r}"
 
     @pytest.mark.parametrize("key,expected_in_suggestion", [
         ("gateway.discord.gateway_restart_notification", None),  # no close suggestion

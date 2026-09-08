@@ -3169,7 +3169,11 @@ def _default_value_for_key(dotted_key: str):
 _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
     "providers", "credential_pool_strategies", "mcp_servers", "hooks", "quick_commands",
     "personalities", "command_allowlist", "model_catalog", "channel_prompts", "server_actions",
-    "secrets", "goals", "loops"})
+    "secrets", "goals", "loops",
+    # Dynamic dotted-key namespace resolved by agent/deadline.py resolve_timeout(); keys are
+    # documented in cli-config.yaml.example, not enumerated in DEFAULT_CONFIG (already accepted
+    # as a root by _EXTRA_KNOWN_ROOT_KEYS for structure validation).
+    "timeouts"})
 
 # Top-level keys whose sub-keys are partially schema-defined (e.g. a PlatformConfig dataclass) but
 # where users may add fields DEFAULT_CONFIG doesn't enumerate: validate the FIRST segment only.

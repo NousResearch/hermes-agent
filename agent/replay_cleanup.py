@@ -151,6 +151,10 @@ def canonicalize_replay_history(
     return strip_stale_dangerous_confirmations(cleaned, now=now)
 
 
+# Backward-compatible alias for the send-path name (2026-09-07 code).
+canonicalize_history_for_send = canonicalize_replay_history
+
+
 # --- Stale dangerous-confirmation text expiry ---
 
 # Short on purpose: a dangerous confirmation must not survive any restart or resume gap.
@@ -199,12 +203,21 @@ def strip_stale_dangerous_confirmations(
     cleaned: List[Dict[str, Any]] = []
     for msg in agent_history:
         ts = msg.get("timestamp") if isinstance(msg, dict) and msg.get("role") == "user" else None
-        if ts is None or not is_dangerous_confirmation(msg.get("content", "")) or (now - float(ts)) <= expiry_seconds:
+        try:
+            is_stale = (
+                ts is not None
+                and is_dangerous_confirmation(msg.get("content", ""))
+                and (float(now) - float(ts)) > expiry_seconds
+            )
+        except (ValueError, TypeError):
+            is_stale = False
+
+        if not is_stale:
             cleaned.append(msg)
             continue
         logger.debug(
             "Redacting stale dangerous-confirmation text in user message (age=%.1fs, expiry=%.1fs): %r",
-            now - float(ts), expiry_seconds, (msg.get("content") or "")[:80],
+            float(now) - float(ts), expiry_seconds, (msg.get("content") or "")[:80],
         )
         redacted = dict(msg)
         redacted["content"] = _EXPIRED_CONFIRMATION_SENTINEL

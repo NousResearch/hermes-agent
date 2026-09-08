@@ -586,6 +586,9 @@ class HostedRoomRuntime:
         try:
             with self.turn_lock(profile):
                 session = self._resolve_or_create(transport, profile, binding.room_id)
+                # Profile contention and session resolution may outlive this
+                # worker's authority. Recheck before contacting the executor.
+                state.require_active_lease(self.db_path, attempt.lease, clock=self.clock)
                 # A submit should fail before admission or return after it; an unexpected
                 # exception at that boundary is ambiguous, never a proven failure.
                 submit_attempted, session_id = True, _session_id(session)

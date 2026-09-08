@@ -166,6 +166,17 @@ ls -la ~/.hermes/mem0_qdrant
 curl http://localhost:6333/healthz
 ```
 
+### OSS: Qdrant "Api key is used with an insecure connection" warning
+
+qdrant-client prints this warning whenever an API key is configured alongside a non-HTTPS url. For same-network deployments where Hermes and Qdrant run as containers on one private Docker network (no TLS termination needed intra-network, the key is just Qdrant's own auth token), opt in to silence exactly this warning:
+
+```bash
+# ~/.hermes/.env
+HERMES_QDRANT_ALLOW_INSECURE=1
+```
+
+Only set this when Qdrant is not reachable from the public internet — the warning stays on by default as a safety net for exposed instances.
+
 ### OSS: PGVector connection refused
 
 ```bash

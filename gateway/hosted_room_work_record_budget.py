@@ -47,6 +47,32 @@ def usage_sql(conn):
     return total, count
 
 
+def contribution_sql(table, prefix):
+    """Effective bytes/rows of one value, including its exact transfer credit."""
+    from gateway import hosted_room_work_records as records
+    from gateway import hosted_room_work_storage as storage
+    from gateway.hosted_room_recovery_evidence import exact_row_sql, OBJECT
+    if table == RECOVERY_TABLE:
+        credits = duplicate_credit_sql(prefix)
+        return tuple(f"({size})-({credit})" for size, credit in zip(
+            (recovery_size_sql(prefix), recovery_count_sql(prefix)), credits))
+    size = storage.row_size_sql(table, prefix)
+    if table not in (records.TARGET_TABLE, storage.INVALID_TABLE):
+        return size, "1"
+    scope = f"AND {prefix}source_table='{records.TARGET_TABLE}'" if table == storage.INVALID_TABLE else ""
+    # EXISTS counts an original once per decision, never once per repeated entry.
+    # Include disposition and storage types: even a reserved-size change may
+    # invalidate an exact copy and thus increase effective retained usage.
+    credit = f"""(SELECT COUNT(*) FROM {RECOVERY_TABLE} decision
+        WHERE decision.room_id={prefix}room_id {scope}
+        AND decision.status='transferring' AND json_valid(decision.work_record_json)
+        AND json_extract(decision.work_record_json,'$.object')='{OBJECT}'
+        AND json_extract(decision.work_record_json,'$.version')=2
+        AND EXISTS (SELECT 1 FROM json_each(decision.work_record_json,'$.rows.{table}') item
+                    WHERE {exact_row_sql(table, prefix=prefix)}))"""
+    return f"({size})*(1-({credit}))", f"1-({credit})"
+
+
 def install_recovery_budget_guards(conn):
     """Persist the same accountant for direct SQL and older Python writers."""
     from gateway import hosted_room_work_records as records
@@ -56,14 +82,23 @@ def install_recovery_budget_guards(conn):
     total, count = usage_sql(conn)
     owners = (records.SOURCE_TABLE, records.TARGET_TABLE, records.PENDING_TABLE, storage.INVALID_TABLE, RECOVERY_TABLE)
     for table in owners:
+        keys = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})") if row["pk"]]
+        key = " AND ".join(f"prior.{k}=NEW.{k}" for k in keys)
         for operation in ("INSERT", "UPDATE"):
             name = f"trg_work_budget_{table}_{operation.lower()}"
             conn.execute(f"DROP TRIGGER IF EXISTS {name}")
-            # Updates preserving all evidence bytes may still freeze dispositions
-            # or clean up outcomes in an already-full database. No metadata growth.
-            fields = (*RECOVERY_FIELDS, "status") if table == RECOVERY_TABLE else storage.retained_fields(table)
-            unchanged = " AND ".join(f"NEW.{k} IS OLD.{k} AND typeof(NEW.{k})=typeof(OLD.{k})" for k in fields)
-            exempt = f"AND NOT ({unchanged})" if operation == "UPDATE" else ""
-            conn.execute(f"""CREATE TRIGGER {name} AFTER {operation} ON {table}
-                WHEN (({total})>{int(records.MAX_STORE_BYTES)} OR ({count})>{int(records.MAX_STORE_ROWS)}) {exempt}
+            new_bytes, new_rows = contribution_sql(table, "NEW.")
+            old = contribution_sql(table, "OLD." if operation == "UPDATE" else "prior.")
+            if operation == "INSERT":
+                # BEFORE sees the row an INSERT OR REPLACE would remove. After
+                # conflict resolution that evidence is gone and cannot be charged
+                # correctly. Immutable replacements remain separately forbidden.
+                old = tuple(f"COALESCE((SELECT {part} FROM {table} prior WHERE {key}),0)" for part in old)
+            old_bytes, old_rows = old
+            conn.execute(f"""CREATE TRIGGER {name} BEFORE {operation} ON {table}
+                WHEN (SELECT (byte_delta>0 OR row_delta>0) AND
+                    (({total})+byte_delta>{int(records.MAX_STORE_BYTES)}
+                     OR ({count})+row_delta>{int(records.MAX_STORE_ROWS)})
+                    FROM (SELECT ({new_bytes})-({old_bytes}) AS byte_delta,
+                                 ({new_rows})-({old_rows}) AS row_delta))
                 BEGIN SELECT RAISE(ABORT, 'work record storage is full'); END""")

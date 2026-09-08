@@ -139,6 +139,111 @@ def test_transferring_status_cannot_turn_duplicate_credit_into_quota_bypass(save
         conn.execute("RELEASE simulated_transfer")
 
 
+def usage(conn):
+    from gateway.hosted_room_work_record_budget import usage_sql
+    total, count = usage_sql(conn)
+    return tuple(conn.execute(f"SELECT {total},{count}").fetchone())
+
+
+def retain_transfer(conn, view, *, status="transferring"):
+    fields = "room_id,recovery_id,snapshot_id,source_gateway_id,source_epoch,target_gateway_id,history_seq,work_record_json,created_at,status"
+    conn.execute(f"INSERT INTO {TABLE}({fields}) VALUES(?,?,?,?,?,?,?,?,?,?)", (
+        "room", "cleanup-decision", view["snapshot_id"], view["source_authority"]["gateway_id"],
+        view["source_authority"]["epoch"], TARGET, view["saved_through_seq"],
+        records.encode(view["evidence"]), 123.0, status))
+
+
+@pytest.mark.parametrize("limit", ["bytes", "rows"])
+@pytest.mark.parametrize("operation", ["ack", "source-update", "source-replace", "pending-update",
+                                       "pending-replace", "target-update", "target-replace"])
+def test_overlimit_cleanup_preserves_non_growth(saved, monkeypatch, limit, operation):
+    target = saved[1]
+    if not operation.startswith("target"):
+        stage(saved)
+    rooms.create_room(target, room_id="another", name="Other", authority_gateway_id=TARGET,
+                      members=[{"profile": "default", "handle": "writer"}])
+    with rooms._transaction(target, immediate=True) as conn:
+        record = records.prepare_delivery_locked(conn, room_id="another", target_install_id="install:peer",
+            route_generation="route", local_gateway_id=TARGET, through_seq=0)
+        assert record is not None
+        conn.execute("SAVEPOINT cleanup")
+        if operation.startswith("target"):
+            initialize(conn)
+            view = recovery.prepare_recovery_locked(conn, room_id="room", target_gateway_id=TARGET, evidence=True)
+            # Retain the envelope with no temporary credit. The deferred namespace
+            # reference stays entirely inside this rolled-back SQLite savepoint.
+            retain_transfer(conn, view, status="pending_reconciliation")
+        table = {"ack": records.PENDING_TABLE, "source": records.SOURCE_TABLE,
+                 "pending": records.PENDING_TABLE, "target": records.TARGET_TABLE}[operation.split("-")[0]]
+        conn.execute(f"UPDATE {table} SET record_json=record_json||'  '")
+        row = dict(conn.execute(f"SELECT * FROM {table}").fetchone())
+        before = usage(conn)
+        bound = before[0] - 100 if limit == "bytes" else before[1] - 1
+        monkeypatch.setattr(records, "MAX_STORE_BYTES" if limit == "bytes" else "MAX_STORE_ROWS", bound)
+        records.initialize(conn)
+        if operation == "ack":
+            assert records.delivery_status_locked(conn, room_id="another", target_install_id="install:peer",
+                route_generation="route", record=record, status="acked")
+            field = "status"
+            expected = "acked"
+        else:
+            field = "record_json"
+            expected = row[field][:-2]
+            if operation.endswith("replace"):
+                replacement = {**row, field: expected}
+                conn.execute(f"INSERT OR REPLACE INTO {table} ({','.join(replacement)}) "
+                    f"VALUES ({','.join('?' for _ in replacement)})", tuple(replacement.values()))
+            else:
+                conn.execute(f"UPDATE {table} SET {field}=?", (expected,))
+        assert usage(conn) == (before[0] - 2, before[1])
+        assert usage(conn)[0 if limit == "bytes" else 1] > bound
+        assert conn.execute(f"SELECT {field} FROM {table}").fetchone()[0] == expected
+        # Neither unchanged payload nor a full row store exempts metadata growth.
+        after = usage(conn)
+        with pytest.raises(sqlite3.IntegrityError, match="storage is full"):
+            conn.execute(f"UPDATE {table} SET digest=digest||' '")
+        changed = dict(conn.execute(f"SELECT * FROM {table}").fetchone())
+        changed["digest"] += " "
+        with pytest.raises(sqlite3.IntegrityError, match="storage is full"):
+            conn.execute(f"INSERT OR REPLACE INTO {table} ({','.join(changed)}) "
+                f"VALUES ({','.join('?' for _ in changed)})", tuple(changed.values()))
+        assert usage(conn) == after
+        conn.execute("ROLLBACK TO cleanup")
+        conn.execute("RELEASE cleanup")
+
+
+@pytest.mark.parametrize("limit", ["bytes", "rows"])
+@pytest.mark.parametrize("change", ["status", "shrink-update", "shrink-replace", "disposition"])
+def test_overlimit_credit_loss_is_effective_growth(saved, monkeypatch, limit, change):
+    with rooms._transaction(saved[1], immediate=True) as conn:
+        initialize(conn)
+        conn.execute(f"UPDATE {records.TARGET_TABLE} SET record_json=record_json||'  '")
+        view = recovery.prepare_recovery_locked(conn, room_id="room", target_gateway_id=TARGET, evidence=True)
+        conn.execute("SAVEPOINT credit_loss")
+        retain_transfer(conn, view)
+        before = usage(conn)
+        monkeypatch.setattr(records, "MAX_STORE_BYTES" if limit == "bytes" else "MAX_STORE_ROWS",
+                            before[0] - 1 if limit == "bytes" else before[1] - 1)
+        records.initialize(conn)
+        row = dict(conn.execute(f"SELECT * FROM {records.TARGET_TABLE}").fetchone())
+        with pytest.raises(sqlite3.IntegrityError, match="storage is full"):
+            if change == "status":
+                conn.execute(f"UPDATE {TABLE} SET status='pending_reconciliation'")
+            elif change == "disposition":
+                conn.execute(f"UPDATE {records.TARGET_TABLE} SET disposition='historical'")
+            elif change == "shrink-update":
+                conn.execute(f"UPDATE {records.TARGET_TABLE} SET record_json=?", (row["record_json"][:-2],))
+            else:
+                row["record_json"] = row["record_json"][:-2]
+                conn.execute(f"INSERT OR REPLACE INTO {records.TARGET_TABLE} ({','.join(row)}) "
+                    f"VALUES ({','.join('?' for _ in row)})", tuple(row.values()))
+        assert usage(conn) == before
+        assert conn.execute(f"SELECT status FROM {TABLE}").fetchone()[0] == "transferring"
+        assert conn.execute(f"SELECT disposition FROM {records.TARGET_TABLE}").fetchone()[0] == "current"
+        conn.execute("ROLLBACK TO credit_loss")
+        conn.execute("RELEASE credit_loss")
+
+
 def test_envelope_overhead_is_not_free(saved, monkeypatch):
     target = saved[1]
     monkeypatch.setattr(records, "MAX_STORE_BYTES", expected_recovery_bytes(target) - 1)

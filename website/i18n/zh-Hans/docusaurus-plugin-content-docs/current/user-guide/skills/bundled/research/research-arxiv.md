@@ -21,7 +21,7 @@ description: "通过关键词、作者、分类或 ID 搜索 arXiv 论文"
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Research`, `Arxiv`, `Papers`, `Academic`, `Science`, `API` |
-| 相关 skill | [`ocr-and-documents`](/user-guide/skills/bundled/productivity/productivity-ocr-and-documents) |
+| 相关 skill | `pdf` |
 
 ## 参考：完整 SKILL.md
 
@@ -173,7 +173,7 @@ web_extract(urls=["https://arxiv.org/abs/2402.03300"])
 web_extract(urls=["https://arxiv.org/pdf/2402.03300"])
 ```
 
-本地 PDF 处理请参阅 `ocr-and-documents` skill。
+本地 PDF 处理请参阅 `pdf` skill。
 
 ## 常用分类
 
@@ -283,7 +283,7 @@ curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun
 - arXiv ID 格式：旧格式（`hep-th/0601001`）与新格式（`2402.03300`）
 - PDF：`https://arxiv.org/pdf/{id}` — 摘要：`https://arxiv.org/abs/{id}`
 - HTML（如有）：`https://arxiv.org/html/{id}`
-- 本地 PDF 处理请参阅 `ocr-and-documents` skill
+- 本地 PDF 处理请参阅 `pdf` skill
 
 ## ID 版本控制
 

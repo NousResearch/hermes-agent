@@ -77,14 +77,14 @@ def _stamp_event(obj: dict) -> None:
             evicted_seq, _event, evicted_size = buf.popleft()
             _replay_buffer_bytes[sid] -= evicted_size
             _replay_total_bytes -= evicted_size
-            _replay_evicted_through[sid] = evicted_seq
+            _replay_evicted_through[sid] = max(_replay_evicted_through.get(sid, 0), evicted_seq)
         while _replay_total_bytes > _REPLAY_PROCESS_BYTES_MAX:
             for evict_sid, evict_buf in _replay_buffers.items():
                 if evict_buf:
                     evicted_seq, _event, evicted_size = evict_buf.popleft()
                     _replay_buffer_bytes[evict_sid] -= evicted_size
                     _replay_total_bytes -= evicted_size
-                    _replay_evicted_through[evict_sid] = evicted_seq
+                    _replay_evicted_through[evict_sid] = max(_replay_evicted_through.get(evict_sid, 0), evicted_seq)
                     break
 
 

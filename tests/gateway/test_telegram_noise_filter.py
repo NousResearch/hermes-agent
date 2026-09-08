@@ -343,3 +343,25 @@ def test_chat_gateways_redact_all_issue_23810_credential_shapes(platform, shape_
     # Prose around the secret is preserved — redaction is surgical.
     assert "here is the token you asked me to echo" in sanitized
     assert sanitized.endswith("done.")
+
+
+@pytest.mark.parametrize("surface", ["final", "status"])
+@pytest.mark.parametrize("reset, expected", [
+    ("resets 5:20pm (America/New_York)", "resets 5:20pm (America/New_York)"),
+    ("resets 5:20 p.m. ET", "resets 5:20 p.m. ET"),
+    ("resets 5:20pm (America/Argentina/ComodRivadavia_Daylight_Saving_Region)", "resets 5:20pm"),
+])
+def test_chat_session_limit_preserves_whole_reset_hint(surface, reset, expected):
+    raw = "API call failed after 2 retries. Internal error: session limit · " + reset + ". private provider detail"
+    if surface == "final":
+        sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+    else:
+        sanitized = _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", raw)
+    assert sanitized is not None
+    assert "usage/session limit" in sanitized
+    assert expected in sanitized
+    assert "Internal error" not in sanitized
+    assert "private provider detail" not in sanitized
+    assert sanitized.count("(") == sanitized.count(")")
+    if "ComodRivadavia" in reset:
+        assert "America/" not in sanitized

@@ -1792,3 +1792,17 @@ class TestNousWelcomeTier:
         result = classify_api_error(MockAPIError("forbidden", status_code=403, body={"message": "forbidden"}), provider="nous")
         assert result.reason == FailoverReason.auth
         assert "welcome_route" not in result.error_context
+
+@pytest.mark.parametrize("status", [None, 402, 429])
+@pytest.mark.parametrize("message, transient", [
+    ("You've hit your session limit · resets 5:20pm (America/New_York)", True),
+    ("API call failed after 2 retries. Session limit · reset at 9:00", True),
+    ("You've hit your session limit", False),
+    ("Your trial quota never resets — upgrade to continue", False),
+    ("Usage limit exceeded. The free plan resets monthly; upgrade.", False),
+])
+def test_session_limit_requires_concrete_reset_signal(status, message, transient):
+    result = classify_api_error(MockAPIError(message, status_code=status), provider="claude-acp")
+    assert result.reason == (FailoverReason.rate_limit if transient else FailoverReason.billing)
+    assert result.retryable is transient
+    assert result.should_fallback is True

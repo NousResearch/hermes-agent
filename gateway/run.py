@@ -382,7 +382,7 @@ _GATEWAY_AUTH_ERROR_RE = re.compile(
     re.IGNORECASE)
 
 _GATEWAY_RATE_LIMIT_RE = re.compile(
-    r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)", re.IGNORECASE)
+    r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit|session\s+limit)", re.IGNORECASE)
 
 # Connection-failure markers: the first 8 also anchor the provider-failure envelope shape below.
 _CONNECTION_ERROR_MARKERS = (
@@ -615,6 +615,12 @@ def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     for pattern, reply in _PROVIDER_ERROR_REPLIES:
         if pattern.search(text):
+            if pattern is _GATEWAY_RATE_LIMIT_RE:
+                from gateway.run_reset_hint import extract_gateway_reset_hint
+
+                hint = extract_gateway_reset_hint(text)
+                if hint:
+                    return f"⏱️ The model provider hit its usage/session limit — {hint}. Please try again after that."
             return reply
     return (
         "⚠️ The model provider failed after retries. I kept raw provider details "

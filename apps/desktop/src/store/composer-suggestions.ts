@@ -135,7 +135,9 @@ export function registerDraftProvider(name: string, provider: DraftProvider): ()
   draftProviders.set(name, provider)
 
   return () => {
-    draftProviders.delete(name)
+    if (draftProviders.get(name) === provider) {
+      draftProviders.delete(name)
+    }
   }
 }
 

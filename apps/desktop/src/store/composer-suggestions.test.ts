@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   $composerSuggestionsBySession,
   type ComposerSuggestion,
   markSuggestionInvoked,
   offerSuggestions,
+  registerDraftProvider,
+  sampleComposerDraft,
   suggestionKey
 } from './composer-suggestions'
 
@@ -122,5 +124,23 @@ describe('composer suggestion bus', () => {
     expect($composerSuggestionsBySession.get().s9).toBe(first)
 
     offerSuggestions('s9', 'test', [])
+  })
+
+  it('keeps a replacement draft provider when the old registration cleans up', async () => {
+    vi.useFakeTimers()
+
+    const unregisterOld = registerDraftProvider('hot-provider', async () => [])
+    const unregisterNew = registerDraftProvider('hot-provider', async () => [suggestion('fresh', 'hot-provider')])
+
+    try {
+      unregisterOld()
+      sampleComposerDraft('hot-session', 'install linear')
+      await vi.runAllTimersAsync()
+
+      expect(pillsFor('hot-session')).toEqual(['fresh'])
+    } finally {
+      unregisterNew()
+      vi.useRealTimers()
+    }
   })
 })

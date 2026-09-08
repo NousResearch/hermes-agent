@@ -257,3 +257,161 @@ def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch):
         assert second["approved"] is False, f"yolo leaked {command!r} (check_all_command_guards)"
         assert second.get("hardline") is True
         assert "BLOCKED (hardline)" in second["message"]
+
+
+# ---------------------------------------------------------------------------
+# Review follow-up: two escape hatches that survived the first revision.
+#
+# Both reproduce on clean main as well, so neither was introduced here — but
+# this change is what claims the non-bypassable floor for these verbs, so it
+# is what has to close them.
+# ---------------------------------------------------------------------------
+
+# #1 — a shell-quoted DEVICE OPERAND is a real target, not prose. `cat x >
+# "/dev/disk0"` performs exactly the write the bare spelling does, but the
+# redirect rule is quote-masked (_QUOTE_MASKED_HARDLINE_DESCRIPTIONS) and the
+# mask blanked the path before the rule saw it; the `dd` rule wanted `of=`
+# followed immediately by an unquoted device. Both landed in the dangerous
+# tier at best, and that is the tier `--yolo` / `approvals.mode: off` exists
+# to skip.
+_QUOTED_OPERAND_HARDLINE_BLOCK = [
+    'cat x > "/dev/disk0"',
+    "cat x > '/dev/disk0'",
+    'cat x > "/dev/sda"',
+    "cat x > '/dev/nvme0n1'",
+    'cat x >"/dev/sda"',
+    'cat x >> "/dev/sda"',
+    'cat x >  "/dev/rdisk0"',
+    'cat x > "/dev/mapper/vg-root"',
+    'cat x > "/dev/disk/by-id/ata-Samsung_SSD"',
+    'dd if=/dev/zero of="/dev/disk0"',
+    "dd if=/dev/zero of='/dev/disk0'",
+    'dd if=/dev/zero of="/dev/sda" bs=1m',
+    "dd if=/dev/zero of='/dev/nvme0n1'",
+]
+
+# #2 — the verb reaching the disk without ever appearing at _CMDPOS: spelled as
+# a path, run behind a scheduling/buffering wrapper, or dispatched by a
+# multicall binary. Measured on clean main, every one of these is BOTH
+# hardline=False and dangerous=False — no tier at all.
+_EXEC_POSITION_HARDLINE_BLOCK = [
+    # absolute and relative paths
+    "/usr/sbin/wipefs -a /dev/sda",
+    "/sbin/mkfs.ext4 /dev/sda1",
+    "/usr/local/bin/shred -n1 /dev/sda",
+    "/sbin/newfs_hfs /dev/disk2",
+    "./wipefs -a /dev/sda",
+    "../sbin/wipefs --all /dev/sda",
+    # scheduling / buffering wrappers
+    "nice blkdiscard /dev/sda",
+    "nice -n 10 sgdisk -Z /dev/sda",
+    "nice mkswap /dev/sda1",
+    "command mke2fs /dev/sda1",
+    "command shred -n 1 -z /dev/sda",
+    "stdbuf -oL dd if=/dev/zero of=/dev/sda",
+    "ionice -c3 blkdiscard /dev/nvme0n1",
+    "taskset -c 0 dd if=/dev/zero of=/dev/sda",
+    "chrt -f 1 blkdiscard /dev/sda",
+    # multicall binaries
+    "busybox dd if=/dev/zero of=/dev/sda",
+    "toybox dd if=/dev/zero of=/dev/sda",
+    "/bin/busybox dd if=/dev/zero of=/dev/sda",
+    # stacked with the wrappers _CMDPOS already peeled
+    "sudo /usr/sbin/wipefs -a /dev/sda",
+    "sudo nice blkdiscard /dev/sda",
+]
+
+# The traps the two widenings could plausibly spring. A path is allowed in
+# front of the verb, so a filename that merely CONTAINS a verb name must not
+# read as a command; a wrapper is peeled, so the wrapper in front of something
+# harmless must stay harmless; a quoted redirect operand is now visible, so an
+# ordinary quoted filename must not start blocking.
+_REVIEW_FOLLOWUP_ALLOW = [
+    # a path that only contains the verb name
+    "\n/opt/mkfs-notes.txt",
+    "\n/var/log/mkfs-notes.txt",
+    "./mkfs-helper.sh --dry-run",
+    "\n/usr/share/doc/wipefs-readme",
+    "\n/etc/init.d/mkfs-cron status",
+    "cat /var/log/dd.log",
+    "tail -f /var/log/shutdown.log",
+    # a peeled wrapper in front of something ordinary
+    "nice make -j4",
+    "nice -n 19 python train.py",
+    "command ls -la",
+    "busybox ls /tmp",
+    "stdbuf -oL grep foo bar.txt",
+    "ionice -c3 rsync a b",
+    # ordinary quoted redirect targets
+    'echo hi > "out.txt"',
+    'printf "%s" > "some file.txt"',
+    'npm run build > "build log.txt"',
+    'cat x > "/dev/null"',
+    # and the prose contract from #93640, restated against the quoted-operand fix
+    'echo "cat x > /dev/disk0"',
+    'echo "cat x > /dev/sda"',
+    "echo 'cat x > /dev/sda'",
+    "git commit -m 'ran dd if=/dev/zero of=/dev/disk0 once'",
+    'git commit -m "dd if=/dev/zero of=/dev/sda is what broke it"',
+]
+
+
+@pytest.mark.parametrize("command", _QUOTED_OPERAND_HARDLINE_BLOCK)
+def test_quoting_the_device_operand_is_not_a_bypass(command):
+    """Shell quoting around the operand must not change the hardline verdict."""
+    is_hardline, description = detect_hardline_command(command)
+    assert is_hardline, f"quoted device operand slipped the floor: {command!r}"
+    assert description
+
+
+@pytest.mark.parametrize("command", _EXEC_POSITION_HARDLINE_BLOCK)
+def test_the_verb_reaches_the_floor_from_any_executable_position(command):
+    """A path, a wrapper or a multicall dispatch is not a way around the floor."""
+    is_hardline, description = detect_hardline_command(command)
+    assert is_hardline, f"verb never reached command position: {command!r}"
+    assert description
+
+
+@pytest.mark.parametrize("command", _REVIEW_FOLLOWUP_ALLOW)
+def test_the_two_widenings_do_not_invent_commands(command):
+    """Neither widening may turn a filename, a wrapper or prose into a block."""
+    is_hardline, description = detect_hardline_command(command)
+    assert not is_hardline, (
+        f"review follow-up false-positived the floor: {command!r} (got: {description})"
+    )
+    assert description is None
+
+
+def test_yolo_cannot_bypass_a_quoted_operand(clean_session, monkeypatch):
+    """The quoted spellings previously reached the dangerous tier at best, and
+    that is exactly the tier yolo skips."""
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    for command in ('cat x > "/dev/disk0"', "cat x > '/dev/sda'",
+                    'dd if=/dev/zero of="/dev/disk0"',
+                    "dd if=/dev/zero of='/dev/nvme0n1'",
+                    'cat x >> "/dev/mapper/vg-root"'):
+        first = check_dangerous_command(command, "local")
+        assert first["approved"] is False, f"yolo leaked {command!r} (check_dangerous_command)"
+        assert first.get("hardline") is True
+
+        second = check_all_command_guards(command, "local")
+        assert second["approved"] is False, f"yolo leaked {command!r} (check_all_command_guards)"
+        assert second.get("hardline") is True
+        assert "BLOCKED (hardline)" in second["message"]
+
+
+def test_yolo_cannot_bypass_an_alternate_executable_position(clean_session, monkeypatch):
+    """These had no tier at all before, so yolo ran them without a prompt."""
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    for command in ("/usr/sbin/wipefs -a /dev/sda", "nice blkdiscard /dev/sda",
+                    "command mke2fs /dev/sda1", "busybox dd if=/dev/zero of=/dev/sda",
+                    "/sbin/mkfs.ext4 /dev/sda1", "nice -n 10 sgdisk -Z /dev/sda",
+                    "sudo /usr/sbin/wipefs -a /dev/sda"):
+        first = check_dangerous_command(command, "local")
+        assert first["approved"] is False, f"yolo leaked {command!r} (check_dangerous_command)"
+        assert first.get("hardline") is True
+
+        second = check_all_command_guards(command, "local")
+        assert second["approved"] is False, f"yolo leaked {command!r} (check_all_command_guards)"
+        assert second.get("hardline") is True
+        assert "BLOCKED (hardline)" in second["message"]

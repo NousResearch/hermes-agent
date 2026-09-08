@@ -84,6 +84,22 @@ _CMDPOS = (
 )
 
 
+# Executable position for the raw-device floor. _CMDPOS alone peels sudo/env/exec/nohup/setsid/
+# time, so a verb spelled as a path (`/usr/sbin/wipefs -a /dev/sda`), run behind a scheduling or
+# buffering wrapper (`nice blkdiscard`, `nice -n 10 sgdisk -Z`, `command mke2fs`, `stdbuf -oL dd`)
+# or dispatched by a multicall binary (`busybox dd if=/dev/zero of=/dev/sda`) reached the disk with
+# no floor at all — measured on clean main, all four are hardline=False AND dangerous=False.
+# Deliberately scoped to the device/format/wipe rules: the same gap on rm/shutdown belongs to the
+# executable-position lineage in #58643 (paths, wrappers) and #65393 (BusyBox/toybox), and widening
+# every hardline rule here would collide with that work rather than complement it.
+_CMDPOS_EXEC = (
+    _CMDPOS
+    + r'(?:(?:command|builtin|nice|ionice|stdbuf|chrt|taskset)\s+(?:-[^\s]+\s+|\d+\s+)*)*'
+    + r'(?:(?:[\w.+-]*/)*(?:busybox|toybox)\s+)?'
+    + r'(?:[\w.+-]*/)*'
+)
+
+
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
 # quote pair (`rm -rf "/"`, `rm -rf "$HOME"`) OR bare with a terminator (whitespace, end, or
 # `) ` ; | &` so `$(rm -rf /)` is caught). A bare-token-only anchor lets quoted spellings slip past the floor.
@@ -115,7 +131,7 @@ HARDLINE_PATTERNS = [
     # and the macOS newfs_<fs> family are gated on a raw block device operand instead, because
     # `mkswap /swapfile` / `newfs_hfs disk.dmg` write a FILE and must keep working. diskutil is
     # gated on its destructive verbs — `diskutil list|info|mount|unmount|apfs list` are read-only.
-    (_CMDPOS + r'(?:(?:mkfs(?:\.[a-z0-9]+)?|mke2fs)\b'
+    (_CMDPOS_EXEC + r'(?:(?:mkfs(?:\.[a-z0-9]+)?|mke2fs)(?=\s|$|[;|&)])'
      rf'|(?:mkswap|newfs(?:_[a-z0-9]+)?)\b[^;|&\n]*{_BLOCK_DEVICE_PATH}'
      r'|diskutil\s+(?:[a-z]+\s+)?(?:erase(?:disk|volume)|zerodisk|randomdisk|secureerase|reformat|partitiondisk)\b)',
      "format filesystem (mkfs)"),
@@ -123,14 +139,14 @@ HARDLINE_PATTERNS = [
     # raw sectors of the device it is pointed at. Every branch needs BOTH its destructive flag and a
     # raw block device operand on the same command, so `wipefs /dev/sda` (prints signatures),
     # `sgdisk -p /dev/sda` (prints the table), `blkdiscard --help` and `shred secret.txt` still run.
-    (_CMDPOS + r'(?:wipefs\b(?=[^;|&\n]*\s(?:-[a-z]*a[a-z]*|--all)\b)'
+    (_CMDPOS_EXEC + r'(?:wipefs\b(?=[^;|&\n]*\s(?:-[a-z]*a[a-z]*|--all)\b)'
      r'|sgdisk\b(?=[^;|&\n]*\s(?:-z|--zap-all|-o|--clear)\b)'
      r'|blkdiscard\b|shred\b)'
      rf'(?=[^;|&\n]*{_BLOCK_DEVICE_PATH})', "wipe raw block device"),
     # `dd` is a command-name token, so anchor it to command position like mkfs/rm/shutdown (#93392): quoted
     # prose such as `git commit -m "never dd of=/dev/sda"` is an argument, not a command. The argument tail
     # ([^\n]*of=/dev/...) is kept so flag order doesn't matter.
-    (_CMDPOS + rf'dd\b[^\n]*\bof={_BLOCK_DEVICE_PATH}', "dd to raw block device"),
+    (_CMDPOS_EXEC + rf'dd\b[^\n]*\bof=["\']?{_BLOCK_DEVICE_PATH}', "dd to raw block device"),
     # Positionless rules (no command-name token: `>` sits mid-command, the fork bomb is a function
     # definition) are matched against a QUOTE-MASKED variant (_QUOTE_MASKED_HARDLINE_DESCRIPTIONS /
     # _mask_quoted_prose) so quoted prose cannot trip them; sh -c / bash -c / eval payloads still scan raw.
@@ -139,7 +155,7 @@ HARDLINE_PATTERNS = [
     # of the command (see _QUOTE_MASKED_HARDLINE / _mask_quoted_strings) so quoted prose (`echo "cat f >
     # /dev/sda"`) cannot trip it, while shell-carrying wrappers (sh -c / bash -c / eval) still surface their
     # payload as a raw detection variant — quoting is not a bypass (#93392).
-    (rf'>\s*{_BLOCK_DEVICE_PATH}\b', "redirect to raw block device"),
+    (rf'>\s*["\']?{_BLOCK_DEVICE_PATH}\b', "redirect to raw block device"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
@@ -180,11 +196,31 @@ def _mask_quoted_prose(command: str) -> str:
     Detection-only rewrite used by the quote-masked hardline rules (redirect-to-block-device, fork bomb):
     text inside single or double quotes is data the shell passes as an argument, so `echo "cat f >
     /dev/sda"` must not trip the unconditional floor (#93392). Unquoted text is untouched.
+
+    One exception, and it is the whole difference between prose and a target: a quoted span opened
+    immediately after an UNQUOTED redirect operator is the redirection's operand, not prose. The
+    shell writes to it either way, so `cat x > "/dev/disk0"` must reach the floor exactly as the
+    bare spelling does. `echo "cat x > /dev/disk0"` keeps its quote opened after `echo`, with the
+    `>` inside the quoted run, so it stays masked and stays allowed.
     """
-    return "".join(
-        command[i:j] if quote is None or kind in ("quote", "subst") else " " * (j - i)
-        for kind, i, j, quote in _scan_shell(command, subst="q", naive_backtick=True)
-    )
+    out: list[str] = []
+    last_significant = ""
+    keep_operand = False
+    for kind, i, j, quote in _scan_shell(command, subst="q", naive_backtick=True):
+        if kind == "quote":
+            # `quote` is the state the step was READ in, so None marks the opening quote.
+            keep_operand = quote is None and last_significant == ">"
+            out.append(command[i:j])
+            continue
+        if quote is None or kind == "subst" or keep_operand:
+            piece = command[i:j]
+            out.append(piece)
+            stripped = piece.rstrip()
+            if stripped and quote is None:
+                last_significant = stripped[-1]
+        else:
+            out.append(" " * (j - i))
+    return "".join(out)
 
 
 # ---- Sudo stdin guard: without SUDO_PASSWORD configured, an explicit "sudo -S" is the LLM piping

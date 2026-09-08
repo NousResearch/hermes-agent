@@ -910,6 +910,38 @@ class TestContinuity:
         assert args.args[1].startswith("[claude_code preset]")
 
 
+    def test_reuse_turn_survives_an_unresolvable_workspace(self, monkeypatch):
+        """The workspace fence is an optimisation, not a safety gate.
+
+        ``resolve_agent_cwd()`` raises for real -- a deleted launch directory,
+        or a refusal terminal scope -- and the session-reuse path never
+        resolved a cwd before the fence existed. An unresolvable workspace must
+        leave the live session alone, not kill the turn; the resume binding
+        still declines a foreign session on its own.
+        """
+        import agent.runtime_cwd as runtime_cwd
+
+        def _deleted_launch_dir():
+            raise FileNotFoundError("launch directory was removed")
+
+        monkeypatch.setattr(runtime_cwd, "resolve_agent_cwd", _deleted_launch_dir)
+
+        agent = _make_agent()
+        agent._claude_sdk_session._cwd = "/workspace/a"
+        agent._claude_sdk_session.run_turn.return_value = _make_turn()
+
+        result = run_claude_agent_sdk_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[{"role": "user", "content": "hi"}],
+            effective_task_id="task-1",
+        )
+
+        assert result["final_response"] == "SDK_ASSISTANT"
+        assert agent._claude_sdk_session is not None
+
+
 class TestSessionResumeField:
     def test_resume_rides_options_when_set(self):
         session, holder = _make_session(

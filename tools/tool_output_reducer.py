@@ -30,6 +30,10 @@ def extract_high_snr_blocks(text: str, max_blocks: int = 5, context_lines: int =
     if not text:
         return []
 
+    # Fast head/tail slice guard on large text before regex to eliminate ReDoS risk
+    if len(text) > 200_000:
+        text = text[:100_000] + "\n\n" + text[-100_000:]
+
     extracted: List[Tuple[int, int, str]] = []  # (start_char, end_char, block_text)
 
     # 1. Match multi-line structured error blocks
@@ -81,6 +85,14 @@ def extract_high_snr_blocks(text: str, max_blocks: int = 5, context_lines: int =
     return unique_blocks
 
 
+def _is_json_like(text: str) -> bool:
+    """Check if text appears to be JSON (object or array) to avoid inserting disruptive banners."""
+    stripped = text.strip()
+    return (stripped.startswith("{") and stripped.endswith("}")) or (
+        stripped.startswith("[") and stripped.endswith("]")
+    )
+
+
 def reduce_tool_output(output: str, max_chars: int) -> str:
     """Intelligently reduce large tool output preserving high-SNR errors and head/tail context.
     
@@ -90,8 +102,9 @@ def reduce_tool_output(output: str, max_chars: int) -> str:
     if len(output) <= max_chars:
         return output
 
-    # Find high SNR blocks
-    snr_blocks = extract_high_snr_blocks(output)
+    # Find high SNR blocks (skip banner injection if JSON-like payload)
+    is_json = _is_json_like(output)
+    snr_blocks = [] if is_json else extract_high_snr_blocks(output)
     
     # Calculate budgets
     overhead = 250  # notices and separators
@@ -100,15 +113,16 @@ def reduce_tool_output(output: str, max_chars: int) -> str:
     if not snr_blocks:
         # Standard head/tail fallback
         head_chars = int(available_chars * 0.4)
-        tail_chars = available_chars - head_chars
+        tail_chars = max(0, available_chars - head_chars)
         omitted = len(output) - head_chars - tail_chars
         notice = f"\n\n... [OUTPUT TRUNCATED - {omitted} chars omitted out of {len(output)} total] ...\n\n"
-        return output[:head_chars] + notice + output[-tail_chars:] if tail_chars > 0 else output[:head_chars] + notice
+        tail_slice = output[-tail_chars:] if tail_chars > 0 else ""
+        return output[:head_chars] + notice + tail_slice
 
     # Allocate budget: 20% head, 25% tail, 55% high-SNR error diagnostics
     head_chars = int(available_chars * 0.20)
     tail_chars = int(available_chars * 0.25)
-    snr_budget = available_chars - head_chars - tail_chars
+    snr_budget = max(0, available_chars - head_chars - tail_chars)
 
     # Format SNR blocks within snr_budget
     snr_sections: List[str] = []
@@ -123,9 +137,13 @@ def reduce_tool_output(output: str, max_chars: int) -> str:
                 snr_sections.append(blk[:remaining] + "\n... [error block clipped]")
             break
 
-    snr_content = "\n\n--- [HIGH-SNR DIAGNOSTIC / ERROR BLOCKS EXTRACTED FROM OMITTED LOGS] ---\n" + "\n\n---\n".join(snr_sections)
+    if snr_sections:
+        snr_content = "\n\n--- [HIGH-SNR DIAGNOSTIC / ERROR BLOCKS EXTRACTED FROM OMITTED LOGS] ---\n" + "\n\n---\n".join(snr_sections)
+    else:
+        snr_content = ""
     
     omitted = max(0, len(output) - head_chars - tail_chars - len(snr_content))
     notice = f"\n\n... [OUTPUT REDUCED - {omitted} chars omitted out of {len(output)} total] ...{snr_content}\n\n... [RECENT LOG TAIL] ...\n\n"
 
-    return output[:head_chars] + notice + output[-tail_chars:]
+    tail_slice = output[-tail_chars:] if tail_chars > 0 else ""
+    return output[:head_chars] + notice + tail_slice

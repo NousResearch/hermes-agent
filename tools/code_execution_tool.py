@@ -51,8 +51,9 @@ MAX_SPILLED_STDOUT_BYTES = 5_000_000
 
 
 def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
-    """Cap stdout by bytes with high-SNR error preservation and explicit truncation metadata."""
-    from tools.tool_output_reducer import reduce_tool_output
+    """Cap stdout by bytes (40% head / 60% tail) with explicit truncation metadata: byte counts
+    ride alongside the textual marker because a client layer can miss or re-truncate it. The
+    omitted middle is spilled to cache/exec and the result carries the path (recover-don't-rerun)."""
     stdout_bytes = stdout_text.encode("utf-8", errors="replace")
     total = len(stdout_bytes)
     captured = min(total, MAX_STDOUT_BYTES)
@@ -60,14 +61,17 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
                                 "stdout_bytes_total": total, "stdout_bytes_omitted": total - captured}
     if total <= MAX_STDOUT_BYTES:
         return stdout_bytes.decode("utf-8", errors="replace"), metadata
-    text = reduce_tool_output(stdout_text, MAX_STDOUT_BYTES)
+    head_bytes = int(MAX_STDOUT_BYTES * 0.4)
+    text = (stdout_bytes[:head_bytes].decode("utf-8", errors="replace")
+            + f"\n\n... [OUTPUT TRUNCATED - {total - captured:,} bytes omitted out of {total:,} total] ...\n\n"
+            + stdout_bytes[head_bytes - MAX_STDOUT_BYTES:].decode("utf-8", errors="replace"))
     metadata["warning"] = ("execute_code stdout was truncated; the script did run, but only "
-                           "the captured head/tail/diagnostic output is included. Re-run only with "
+                           "the captured head/tail output is included. Re-run only with "
                            "narrower output if the omitted data is required.")
     spill_path = _spill_full_stdout(stdout_text)
     if spill_path:
         metadata["stdout_spill_path"] = spill_path
-        metadata["warning"] = ("execute_code stdout was truncated (head/tail/diagnostic shown); the "
+        metadata["warning"] = ("execute_code stdout was truncated (head/tail shown); the "
                                f"script did run. FULL output saved to {spill_path} — page it "
                                f'with read_file(path="{spill_path}", offset=...) instead of re-running.')
     return text, metadata

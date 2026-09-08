@@ -258,3 +258,22 @@ so reusable/manual paths stay valid (a workflow needs at least one trigger):
 - Local full-check caveat: run-workspace-checks runs all checks concurrently; on a
   4-core box use `--concurrency 1` or the ui suite alone reports 30+ minutes of
   CPU-starvation overhead.
+
+## Execution log (2026-09-08) — Phase G, the release
+
+- PR #35 merged 2026-09-04 (real merge, `637e01d9bb`); ci green on the merge commit.
+- `release-on-merge.yml` run 33832767206 did NOT ship v0.21.0: the macOS desktop
+  job failed its main-process tests on ONE upstream test — the POSIX managed
+  launcher test hard-codes `hermesPath: '/bin/true'`, and macOS has `true` only
+  at `/usr/bin/true`, so `env … /bin/true update --yes` exits 127 and the
+  launcher publishes that as the status. Linux passed; the other jobs were
+  cancelled behind the failure. Upstream never sees it: its only macOS lane is
+  the Python suite. Not a merge regression — reproduces on clean v2026.8.31.
+- Fix: the test resolves `/bin/true` else `/usr/bin/true` at runtime
+  (`TRUE_BINARY`); recorded in the patch inventory under Desktop app. Upstream
+  has not touched either file since the base tag (checked against upstream/main
+  2026-09-08), so this is a fork-carried patch and an upstream PR candidate.
+- The re-cut: merging the fix `dev` → `main` fires the release again; the test
+  path is release-relevant to the gate (`apps/desktop/electron/` is not in its
+  skip list), so expect `v0.21.0` (first cut of the product version — no
+  `-forgeguard.N` suffix, since no v0.21.0 release exists yet).

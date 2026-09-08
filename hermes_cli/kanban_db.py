@@ -848,6 +848,8 @@ class Event:
 
 # --- Schema ---
 
+from hermes_cli.kanban_recipes_store import RECIPE_SCHEMA_SQL
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS tasks (
     id                   TEXT PRIMARY KEY,
@@ -1044,7 +1046,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
-"""
+""" + RECIPE_SCHEMA_SQL
 
 
 # --- ID generation ---
@@ -1232,6 +1234,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    _resolved_recipe_context: Optional[dict] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1269,34 +1272,34 @@ def create_task(
 
     # A project-scoped board anchors every new task to its project's repo
     # (deterministic worktree + branch) without each surface repeating it.
-    if project_id is None:
+    if _resolved_recipe_context is None and project_id is None:
         try:
             project_id = (_board_meta_for(board).get("project_id") or "").strip() or None
         except Exception:
             pass
 
-    project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
-        conn, project_id, project_source_task_id, workspace_kind, workspace_path
-    )
+    if _resolved_recipe_context is None:
+        project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
+            conn, project_id, project_source_task_id, workspace_kind, workspace_path
+        )
+    else:
+        # Recipe resolution already froze this context. Do not reopen registries
+        # or board defaults between nodes; native path/branch generation stays below.
+        from types import SimpleNamespace
+
+        project_id = _resolved_recipe_context.get("id")
+        project_repo = _resolved_recipe_context.get("repo")
+        project_obj = (SimpleNamespace(id=project_id, slug=_resolved_recipe_context["slug"])
+                       if project_id else None)
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
-
-    # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
-    # race may insert twice, the next lookup stabilises on the newest.
-    if idempotency_key:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1", (idempotency_key,),
-        ).fetchone()
-        if row:
-            return row["id"]
 
     now = int(time.time())
 
     # Only persistent kinds inherit the board ``default_workdir``: a scratch
     # task inheriting it would point cleanup at the user's source tree.
-    if workspace_path is None and project_repo is None and workspace_kind in {"dir", "worktree"}:
+    if (_resolved_recipe_context is None and workspace_path is None
+            and project_repo is None and workspace_kind in {"dir", "worktree"}):
         board_default = _board_meta_for(board).get("default_workdir")
         if board_default:
             workspace_path = str(board_default)
@@ -1308,6 +1311,16 @@ def create_task(
             # allow_nested: graph builders compose create_task under one outer
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
+                # Serialize the absent-key decision with insertion. Keep legacy
+                # archive-sensitive semantics without a duplicate-breaking index.
+                if idempotency_key:
+                    row = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? "
+                        "AND status != 'archived' "
+                        "ORDER BY created_at DESC, rowid DESC LIMIT 1", (idempotency_key,),
+                    ).fetchone()
+                    if row:
+                        return row["id"]
                 task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
@@ -3574,6 +3587,8 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     now = int(time.time())
     lines: list[str] = []
     _ctx_header(lines, task)
+    from hermes_cli.kanban_recipes_runtime import append_input_context
+    append_input_context(lines, conn, task_id)
     _ctx_attachments(lines, list_attachments(conn, task_id))
     _ctx_prior_attempts(lines, conn, task_id, now)
     _ctx_parent_results(lines, conn, task_id, now)

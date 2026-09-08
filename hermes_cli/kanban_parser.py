@@ -134,8 +134,25 @@ _BOARD_SPECS = [
     )),
 ]
 
+_RECIPE_INVOCATION = (
+    _arg("definition", help="Portable recipe JSON file"),
+    _arg("--inputs", help="Invocation inputs JSON file"),
+    _arg("--bindings", help="Local role/project bindings JSON file"),
+    _json_flag(),
+)
+_RECIPE_SPECS = [
+    _cmd("validate", _RECIPE_INVOCATION, help="Validate a recipe without writing storage"),
+    _cmd("run", [*_RECIPE_INVOCATION, _arg("--key", required=True)],
+         help="Instantiate an atomic native task graph"),
+    _cmd("show", [_arg("instance_id"), _json_flag()], help="Inspect a stored recipe instance"),
+    _cmd("export", [_arg("instance_id"), _arg("--output", required=True),
+                    _arg("--overwrite", action="store_true"), _json_flag()],
+         help="Export only the original portable definition"),
+]
+
 # Top-level ``hermes kanban <action>`` records, in ``--help`` order.
 _SPECS = [
+    _cmd("recipe", children=("recipe_action", _RECIPE_SPECS), help="Reusable task recipes"),
     _cmd("init", help="Create kanban.db if missing (idempotent)"),
     _cmd("boards", children=("boards_action", _BOARD_SPECS),
          help="Manage kanban boards (one board per project / workstream)",

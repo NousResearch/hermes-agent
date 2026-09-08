@@ -48,7 +48,8 @@ ARCHIVE_FORMAT_VERSION = 1
 # if it is in one of these — terminal and already-parked tasks are left
 # alone rather than having their history rewritten.
 _DISPATCHABLE_STATUSES = ("ready", "running", "todo", "scheduled")
-_COUNTED_TABLES = ("tasks", "task_links", "task_comments", "task_events", "task_runs", "task_attachments")
+_COUNTED_TABLES = ("tasks", "task_links", "task_comments", "task_events", "task_runs", "task_attachments",
+                   "recipe_instances", "recipe_instance_tasks")
 
 
 def _placeholders(items) -> str:
@@ -101,6 +102,8 @@ def _scrub_local_state(conn: sqlite3.Connection) -> None:
         (int(time.time()),),
     )
     conn.execute("UPDATE task_runs SET claim_lock = NULL, worker_pid = NULL")
+    from hermes_cli.kanban_recipes_runtime import fence_imported_recipes
+    fence_imported_recipes(conn)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -313,6 +316,13 @@ def import_board(
         staged_db = extracted / "kanban.db"
         if not staged_db.is_file():
             raise ValueError("archive is missing kanban.db")
+
+        # Fence recipe history while the DB is private, not after the board
+        # directory becomes discoverable to a concurrent dispatcher.
+        from hermes_cli.kanban_recipes_runtime import fence_imported_recipes
+        with contextlib.closing(sqlite3.connect(str(staged_db))) as staged_conn:
+            fence_imported_recipes(staged_conn)
+            staged_conn.commit()
 
         requested = kb._normalize_board_slug(slug or manifest.get("board") or archive_root)
         if not requested:

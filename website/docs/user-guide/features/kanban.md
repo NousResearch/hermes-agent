@@ -10,6 +10,9 @@ description: "Durable SQLite-backed task board for coordinating multiple Hermes 
 
 Hermes Kanban is a durable task board, shared across all your Hermes profiles, that lets multiple named agents collaborate on work without fragile in-process subagent swarms. Every task is a row in `~/.hermes/kanban.db`; every handoff is a row anyone can read and write; every worker is a full OS process with its own identity.
 
+For reusable parameterized task graphs, see [Kanban recipes](./kanban-recipes).
+Recipes create fresh tasks. Board export/import preserves execution history.
+
 ### Completion checkpoints before the iteration cap
 
 Dispatcher-owned workers get one checkpoint notice near 90% of their finite iteration

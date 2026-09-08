@@ -8,13 +8,14 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 
 logger = logging.getLogger(__name__)
 _settings: dict[str, tuple[int, int]] = {}
@@ -45,9 +46,9 @@ def configure(config: dict) -> None:
         # Cold/default-off loads don't even resolve the profile. A live disable must remove
         # this profile's earlier opt-in, without disabling other concurrently active profiles.
         if _settings:
-            _settings.pop(str(get_hermes_home()), None)
+            _settings.pop(hermes_home_key(), None)
         return
-    home = str(get_hermes_home())
+    home = hermes_home_key()
     log = config.get("logging") or {}
     try:
         limits = (max(1, int(log.get("max_size_mb", 5))) * 1024 * 1024,
@@ -66,7 +67,7 @@ def _canonical(record: dict) -> bytes:
 
 
 def is_enabled() -> bool:
-    return bool(_settings) and str(get_hermes_home()) in _settings
+    return bool(_settings) and hermes_home_key() in _settings
 
 
 def decision_actor(payload: dict) -> str:
@@ -96,13 +97,40 @@ def _try_file_lock(handle) -> bool:
 
 
 @contextmanager
+def _open_private_file(path: Path, *, append: bool = False):
+    """Adapt enzo-adami's #90186 permission and no-follow postconditions to all audit I/O."""
+    if path.is_symlink():
+        raise OSError("Approval audit refuses symlinks")
+    flags = os.O_RDWR | os.O_CREAT | os.O_APPEND if append else os.O_RDONLY
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        opened = os.fstat(descriptor)
+        current = path.lstat()
+        # Also covers Windows, where O_NOFOLLOW is unavailable: no write/chmod
+        # occurs unless the opened regular file is still the non-symlink entry.
+        if not stat.S_ISREG(current.st_mode) or not os.path.samestat(opened, current):
+            raise OSError("Approval audit file changed during open")
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        else:
+            os.chmod(path, 0o600)
+        with os.fdopen(descriptor, "a+b" if append else "rb") as handle:
+            descriptor = None  # fdopen owns the descriptor from here, including error cleanup.
+            yield handle
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+@contextmanager
 def _writer_lock(path: Path):
     # One shared budget bounds contention on BOTH the in-process and OS locks.
     deadline = time.monotonic() + _LOCK_TIMEOUT
     if not _lock.acquire(timeout=_LOCK_TIMEOUT):
         raise TimeoutError("Approval audit thread lock timeout")
     try:
-        with path.open("a+b") as handle:
+        with _open_private_file(path, append=True) as handle:
             while not _try_file_lock(handle):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -133,7 +161,7 @@ def _sync_directory(path: Path) -> None:
 
 def _tail_hash(path: Path) -> str:
     try:
-        with path.open("rb") as handle:
+        with _open_private_file(path) as handle:
             handle.seek(0, os.SEEK_END)
             size = handle.tell()
             if not size:
@@ -162,7 +190,9 @@ def _tail_hash(path: Path) -> str:
 
 
 def _append(path: Path, record: dict, max_bytes: int, backups: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent.is_symlink() or path.is_symlink():
+        raise OSError("Approval audit refuses symlinks")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with _writer_lock(path.with_suffix(".jsonl.lock")):
         # A rollover may have completed just before a previous writer crashed.
         predecessor = path if path.exists() and path.stat().st_size else Path(str(path) + ".1")
@@ -175,7 +205,7 @@ def _append(path: Path, record: dict, max_bytes: int, backups: int) -> None:
                 if source.exists():
                     os.replace(source, Path(f"{path}.{index}"))
             _sync_directory(path.parent)
-        with path.open("ab") as handle:
+        with _open_private_file(path, append=True) as handle:
             handle.write(line)
             handle.flush()
             os.fsync(handle.fileno())
@@ -186,7 +216,7 @@ def record_decision(payload: dict) -> None:
     if not _settings:
         return
     home = get_hermes_home()
-    limits = _settings.get(str(home))
+    limits = _settings.get(hermes_home_key(home))
     if limits is None:
         return
     try:
@@ -212,7 +242,7 @@ def record_decision(payload: dict) -> None:
             "description": _digest(payload.get("description", "")),
             "content_redacted": _digest(payload.get("command", "")),
         }
-        _append(home / "logs" / "approvals.jsonl", record, *limits)
+        _append(home.resolve() / "logs" / "approvals.jsonl", record, *limits)
     except Exception as exc:
         # Exception text can contain payloads or paths. Keep diagnostics content-free.
         logger.warning("Approval audit write failed (%s)", type(exc).__name__)

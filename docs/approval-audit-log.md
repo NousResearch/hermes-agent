@@ -13,6 +13,21 @@ never reads config or accesses files when disabled. The profile-aware destinatio
 is `logs/approvals.jsonl` under `get_hermes_home()` (normally
 `~/.hermes/logs/approvals.jsonl`). There is no network exporter.
 
+Audit settings are published while the config publication lock remains held;
+a delayed loader cannot overwrite a newer generation's enable/disable decision.
+The registry uses `hermes_home_key()`, so a profile's symlink and resolved spellings
+share the same opt-in and disable state. Writes use the resolved home directory.
+
+On POSIX, audit JSONL and lock files are created with mode `0600`; existing
+permissive files are tightened through their open descriptors before use. A new
+`logs/` directory is created with mode `0700`; an existing directory's permissions
+are preserved. Planted symlinks at the active log, lock file, or `logs/` directory
+are refused with a warning. File opens use `O_NOFOLLOW` where available and check
+the opened file against the non-symlink directory entry before any write/chmod.
+Windows retains its inherited ACL semantics rather than POSIX permission guarantees.
+The permission and symlink postconditions are adapted from enzo-adami's
+[PR #90186](https://github.com/NousResearch/hermes-agent/pull/90186).
+
 Responses on the command/code approval, protected-instruction-file approval, MCP
 elicitation, smart approval, and gateway wait paths are sent to the sink. Selected
 plugin transports are recorded too, including request-redaction failures and

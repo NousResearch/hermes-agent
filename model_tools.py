@@ -763,8 +763,9 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
         dispatch_kwargs["enabled_tools"] = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
     else:
         dispatch_kwargs["user_task"] = user_task
-        # Framework execution context, never sourced from function_args: lets
-        # registry-dispatched (plugin) handlers nested-dispatch clarify.
+    # Framework execution context, never sourced from function_args: lets
+    # registry-dispatched (plugin) handlers nested-dispatch clarify.
+    if clarify_callback is not None:
         dispatch_kwargs["clarify_callback"] = clarify_callback
 
     def _dispatch(next_args: Dict[str, Any]) -> Any:

@@ -19,6 +19,7 @@ free Ox Alpha model failed under an OpenCode subscription:
 """
 
 import os
+import re
 from unittest import mock
 
 import pytest
@@ -64,6 +65,14 @@ class TestFreeRuntime:
         headers = opencode_zen_free_headers()
         assert headers["Authorization"] == ""
         assert headers["X-Title"] == "Hermes Agent"
+
+    def test_headers_pass_relay_fingerprint_and_session_gates(self):
+        # The Zen relay 429s any non-first-party User-Agent (issue #42074) and 400s
+        # MissingSessionID when x-opencode-session is absent; keyless headers must always
+        # pass both admission gates. Value is detected/derived at runtime, never pinned.
+        headers = opencode_zen_free_headers()
+        assert re.match(r"^opencode/\d+\.\d+", headers["User-Agent"])
+        assert headers["x-opencode-session"].startswith("ses_")
 
 
 class TestRuntimeProviderKeylessRouting:

@@ -46,6 +46,27 @@ groupchat:
 Provider credentials remain in Hermes's existing credential store. Groupchat
 does not copy secrets into its configuration or decision logs.
 
+### Privacy and external filter models
+
+The filter provider is configurable; Groupchat is not tied to Mistral or any
+other model vendor. The example above shows the default model chain, while the
+dashboard and `groupchat.filter_model` setting let operators choose the primary
+provider, model, and fallbacks.
+
+Model-based filtering sends conversation content to the configured provider:
+
+- relevance scoring sends the newest inbound message together with recent room
+  messages used as context;
+- short-reply classification sends the proposed reply together with the
+  immediately preceding inbound context;
+- if a fallback is used, that fallback provider can receive the same content.
+
+Operators should therefore select providers whose data-processing terms are
+appropriate for the rooms where Groupchat is enabled. Deterministic pattern
+checks run locally. Decision logs deliberately omit message bodies and prompts,
+but that log privacy does not prevent configured model requests from leaving
+the machine.
+
 The transport must already forward unmentioned group messages. For Matrix,
 that means the effective setting must be `require_mention: false`. With
 `require_mention: true`, direct mentions and outbound filtering still work,

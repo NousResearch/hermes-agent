@@ -169,6 +169,35 @@ describe('session-control store', () => {
     expect(entry.loading).toBe(false)
   })
 
+  it('keeps a reachable busy mutation rejection retryable rather than marking the control unavailable', async () => {
+    applySessionControlSnapshot('s1', FULL_SNAPSHOT)
+    useGateway(vi.fn(async () => { throw new JsonRpcGatewayError('Goal is busy with a live session.', { code: 4004 }) }))
+
+    await expect(runSessionControlAction('s1', 'goal.update', { prompt: 'new objective' })).rejects.toThrow('Goal is busy')
+
+    expect($sessionControlBySession.get().s1).toMatchObject({
+      capability: 'supported',
+      error: null,
+      actionError: 'Goal is busy with a live session.',
+      loading: false,
+      pendingAction: null,
+      snapshot: { revision: FULL_SNAPSHOT.revision }
+    })
+  })
+
+  it('keeps a transport action failure unavailable after a prior busy rejection', async () => {
+    applySessionControlSnapshot('s1', FULL_SNAPSHOT)
+    useGateway(
+      vi.fn()
+        .mockRejectedValueOnce(new JsonRpcGatewayError('Goal is busy with a live session.', { code: 4004 }))
+        .mockRejectedValueOnce(new Error('connection reset'))
+    )
+
+    await expect(runSessionControlAction('s1', 'goal.pause')).rejects.toThrow('Goal is busy')
+    await expect(runSessionControlAction('s1', 'goal.pause')).rejects.toThrow('connection reset')
+    expect($sessionControlBySession.get().s1).toMatchObject({ error: 'connection reset', actionError: null })
+  })
+
   it('downgrades a current action method-not-found once, preserves its snapshot, and still rejects', async () => {
     applySessionControlSnapshot('s1', FULL_SNAPSHOT)
     useGateway(

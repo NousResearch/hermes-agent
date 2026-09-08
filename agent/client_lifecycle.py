@@ -64,6 +64,22 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
     return bool(isinstance(api_key, str) and api_key.strip() and isinstance(base_url, str) and base_url.strip())
 
 
+def _oauth_account_identity(token: Any) -> Optional[str]:
+    """Return a stable account claim from a Codex/xAI OAuth access token."""
+    try:
+        from hermes_cli.auth_constants import _decode_jwt_claims
+
+        claims = _decode_jwt_claims(token)
+    except Exception:
+        return None
+    nested = claims.get("https://api.openai.com/auth")
+    account = nested.get("chatgpt_account_id") if isinstance(nested, dict) else None
+    for value in (account, claims.get("sub"), claims.get("email")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
@@ -563,12 +579,21 @@ class ClientLifecycleMixin:
             return False
         singleton_key = str(singleton_now.get("api_key") or "").strip()
         old_key = str(self.api_key or "").strip()
-        if singleton_key and old_key and singleton_key != old_key:
+        expected_identity = _oauth_account_identity(old_key)
+        if not expected_identity:
             logger.debug(
-                "%s singleton tokens differ from the active api_key; skipping singleton force-refresh to avoid "
-                "silent account swap. Reactive credential rotation should go through the pool.", self.provider,
+                "%s active token has no stable account claim; skipping singleton refresh to avoid a silent "
+                "account swap.", self.provider,
             )
             return False
+        if singleton_key and old_key and singleton_key != old_key:
+            singleton_identity = _oauth_account_identity(singleton_key)
+            if singleton_identity != expected_identity:
+                logger.debug(
+                    "%s singleton token belongs to an unknown or different account; skipping refresh to avoid "
+                    "a silent account swap.", self.provider,
+                )
+                return False
         try:
             creds = resolve(force_refresh=force)
         except Exception as exc:
@@ -576,6 +601,12 @@ class ClientLifecycleMixin:
             return False
         api_key, base_url = creds.get("api_key"), creds.get("base_url")
         if not _valid_credential_pair(api_key, base_url):
+            return False
+        refreshed_identity = _oauth_account_identity(api_key)
+        if expected_identity and refreshed_identity != expected_identity:
+            logger.warning(
+                "%s refreshed token belongs to a different or unknown account; refusing to adopt it.", self.provider,
+            )
             return False
         # No NEW token minted (the resolver returns the same stale token when refresh fails) → False.
         if old_key and api_key.strip() == old_key:

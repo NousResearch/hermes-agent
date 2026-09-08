@@ -410,6 +410,39 @@ class TestPrompt:
         assert resp.stop_reason == "refusal"
 
     @pytest.mark.asyncio
+    async def test_failed_turn_surfaces_error_after_partial_stream_and_refuses(self, agent, mock_manager):
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.agent.model = "test-model"
+        state.agent.provider = "openai-codex"
+        state.agent.run_conversation.return_value = {
+            "final_response": "Authentication expired; renew this account and retry.",
+            "messages": [],
+            "failed": True,
+            "failure_reason": "auth",
+        }
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        result = await agent._finish_turn(
+            state, resp.session_id, mock_conn, state.agent.run_conversation.return_value,
+            state.agent.session_id, streamed_message=True,
+        )
+
+        assert result.stop_reason == "refusal"
+        updates = [
+            call.kwargs.get("update", call.args[1] if len(call.args) > 1 else None)
+            for call in mock_conn.session_update.await_args_list
+        ]
+        assert any(
+            isinstance(update, AgentMessageChunk)
+            and update.content.text == "Authentication expired; renew this account and retry."
+            for update in updates
+        )
+
+    @pytest.mark.asyncio
     async def test_prompt_binds_session_id_into_subprocess_env(self, agent, mock_manager):
         """The ACP prompt path must bridge the session id into child subprocesses.
 

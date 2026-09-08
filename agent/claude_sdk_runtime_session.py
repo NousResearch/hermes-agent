@@ -1,14 +1,27 @@
-"""Per-turn visibility wiring for the claude-agent-sdk runtime.
+"""Session creation and per-turn wiring for the claude-agent-sdk runtime.
 
 What used to be closures nested in ``run_claude_agent_sdk_turn`` are small
-owner objects and module-level functions that take the agent explicitly.
-Extracted from ``claude_sdk_runtime.py``.
+owner objects and module-level functions that take the agent explicitly; the
+session receives the per-agent ones bound with ``functools.partial``. Lifetime
+split kept visible: ``_make_visibility_callbacks`` refreshes every turn, while
+``_create_session`` (approval callback, prompt append, budget, bridge inputs) is
+session-creation work. Extracted from ``claude_sdk_runtime.py``.
 """
 
 from __future__ import annotations
 
+import functools
 import logging
 import threading
+from dataclasses import dataclass
+from typing import Any, Optional
+
+from agent.claude_sdk_runtime_compaction import _on_compact_boundary, _on_compaction
+from agent.claude_sdk_runtime_prompt import build_system_prompt_append
+from agent.claude_sdk_runtime_tools import (
+    _hybrid_bridge_enabled,
+    _snapshot_agent_tools_with_mcp_refresh,
+)
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("agent.claude_sdk_runtime")
@@ -110,3 +123,316 @@ def _approval_bypass_active(agent) -> bool:
         return is_approval_bypass_active_for_session(session_key)
     except Exception:
         return False
+
+
+def _on_tool_started(agent, tool_name: str, preview: str, args: dict) -> None:
+    # Claude SDK tool calls bypass the native tool executor, so mirror
+    # its shared activity updates here. The gateway heartbeat reads
+    # get_activity_summary(), which derives its useful current action
+    # from these fields; without this, an active SDK turn remains
+    # stuck at its initial "initializing" state.
+    agent._sdk_issued_tool_effect = True
+    agent._current_tool = tool_name
+    try:
+        agent._touch_activity(f"executing tool: {tool_name}")
+    except Exception:
+        logger.debug("claude-sdk activity update failed", exc_info=True)
+    progress_callback = getattr(agent, "tool_progress_callback", None)
+    if progress_callback is None:
+        return
+    try:
+        progress_callback("tool.started", tool_name, preview, args)
+    except Exception:
+        logger.debug(
+            "claude-sdk tool-progress callback raised", exc_info=True
+        )
+
+
+def _relay_stream_delta(agent, text: str) -> None:
+    # Late-bound: the gateway assigns stream_delta_callback per turn
+    # AFTER the session exists (and clears it between turns).
+    # Fan out to BOTH display sinks, mirroring the native runtimes
+    # (run_agent.py: [self.stream_delta_callback, self._stream_callback]).
+    # `stream_delta_callback` is the CLI/TUI sink. `_stream_callback` is
+    # the one the JSON-RPC gateway installs via run_conversation's
+    # `stream_callback=` kwarg, and that is the sink the DESKTOP listens
+    # on (it feeds the `message.delta` notification). Relaying only to
+    # the first meant the desktop never streamed on this runtime, no
+    # matter how the operator set display.streaming.
+    callbacks = [
+        cb
+        for cb in (
+            getattr(agent, "stream_delta_callback", None),
+            getattr(agent, "_stream_callback", None),
+        )
+        if cb is not None
+    ]
+    if not callbacks:
+        return
+    # Record BEFORE the sinks run, deliberately: a sink that raises
+    # *after* handing text to the user must still count as streamed, or
+    # the turn fails over and replays output the user already saw
+    # (pinned by test_stream_relay_records_delivery_before_display_
+    # callback). The accumulator answers "was this released?", not
+    # "did a surface paint it?".
+    agent._record_streamed_assistant_text(text)
+    for cb in callbacks:
+        try:
+            cb(text)
+        except Exception:
+            logger.debug("stream delta relay raised", exc_info=True)
+        else:
+            # Separate signal for the interim relay: sealing a segment
+            # is only safe once a sink actually accepted a delta.
+            agent._sdk_stream_sink_accepted = True
+
+
+@dataclass
+class _BackgroundResultDelivery:
+    """Enqueue a finished background answer burst for DIRECT platform delivery.
+
+    The completion is the AGENT'S OWN finished answer — it must go straight to
+    the platform outbound lane, never back into the model as a synthetic
+    delegation (2026-08-06 self-echo: the model recognized its own text, refused
+    to "relay" it, and the report never left the box). The watcher delivers each
+    payload as its own outbound message, in order.
+
+    The creation-time snapshots survive as FALLBACKS only — the SDK session
+    outlives hermes session rotations, so anything read at creation can be stale
+    by the time a background completion fires. Parent/route are resolved AT
+    DELIVERY TIME: a completion firing after a hermes session rotation must carry
+    the LIVE session id, not the creation-time snapshot — the gateway classifies a
+    rotated-away parent as permanently gone and drops the delivery.
+    """
+
+    agent: Any
+    session_key: str
+    parent_session_id: Any
+    model: Any
+
+    def __call__(self, texts: list[str]) -> None:
+        agent = self.agent
+        try:
+            from tools.approval_context import (
+                get_current_session_key as _live_key_fn,
+            )
+
+            _live_key = _live_key_fn() or ""
+        except Exception:
+            _live_key = ""
+        # This callback fires on the SDK loop thread, where the
+        # get_current_session_key contextvar may be unset — an empty
+        # live read falls back to the creation-time snapshot rather
+        # than losing the route.
+        session_key = _live_key or self.session_key
+        parent_session_id = (
+            getattr(agent, "session_id", None) or self.parent_session_id
+        )
+        model = getattr(agent, "model", None) or self.model
+        try:
+            import time as _time
+
+            from tools.process_registry import process_registry
+
+            now = _time.time()
+            process_registry.completion_queue.put({
+                "type": "sdk_background_result",
+                "payloads": list(texts),
+                "session_key": session_key,
+                "parent_session_id": parent_session_id,
+                "model": model,
+                "dispatched_at": now,
+                "completed_at": now,
+            })
+        except Exception:
+            logger.warning(
+                "claude-sdk background-result enqueue failed — "
+                "answer may be lost", exc_info=True,
+            )
+
+
+def _build_approval_callback(agent):
+    """The per-session approval callback: the CLI's thread-local one, else the gateway bridge."""
+    try:
+        from tools.terminal_tool import _get_approval_callback
+        approval_callback = _get_approval_callback()
+    except Exception:
+        approval_callback = None
+    if approval_callback is None:
+        # Gateway turns have no thread-local CLI callback — without this
+        # bridge the SDK denies every un-allowlisted tool silently, no
+        # prompt reaching the user, even though the gateway registers a
+        # notify channel around every turn (production finding on a 24/7
+        # telegram deployment). The builder returns None for surfaces
+        # that are not gateway-shaped, so CLI posture is unchanged; the
+        # context_provider hands it the per-turn snapshot refreshed by
+        # run_claude_agent_sdk_turn, so cron-ness and the session key are
+        # resolved per CALL (a cron-born session must not be frozen into
+        # forever-deny).
+        try:
+            from tools.approval_sdk_gateway import build_sdk_gateway_approval_callback
+            approval_callback = build_sdk_gateway_approval_callback(
+                context_provider=lambda: (
+                    getattr(agent, "_sdk_approval_turn_ctx", None) or {}
+                ),
+            )
+        except Exception:
+            approval_callback = None
+    return approval_callback
+
+
+def _background_result_sink(agent) -> Optional[_BackgroundResultDelivery]:
+    """Delivery half of the stream-ownership fix, config-gated (default OFF).
+
+    When the CLI finishes a background Agent task between turns, the session
+    captures the answer burst and this callback enqueues it as an
+    "sdk_background_result" completion event; the gateway watcher sends it
+    DIRECTLY on the platform outbound lane (completion_queue →
+    _async_delegation_watcher → adapter send). In-memory at-least-once, same as
+    the watcher's requeue semantics. Default OFF per the block's
+    upstream-conservative contract (every default falsy — pinned by
+    test_canonical_defaults); gateway-bot deployments opt in.
+    """
+    from agent.transports.claude_agent_sdk_session import _provider_flag
+
+    if not _provider_flag("deliver_background_results", default=False):
+        return None
+    # Creation-time snapshots survive as FALLBACKS only — the SDK
+    # session outlives hermes session rotations, so anything read
+    # here can be stale by the time a background completion fires.
+    try:
+        from tools.approval_context import get_current_session_key
+
+        _bg_session_key = get_current_session_key() or ""
+    except Exception:
+        _bg_session_key = ""
+    return _BackgroundResultDelivery(
+        agent=agent,
+        session_key=_bg_session_key,
+        parent_session_id=getattr(agent, "session_id", None),
+        model=getattr(agent, "model", None),
+    )
+
+
+def _configured_max_budget_usd() -> Optional[float]:
+    """agent.claude_agent_sdk.max_budget_usd from config.yaml.
+
+    Forwarded to the SDK's ``max_budget_usd`` option: the query stops with an
+    ``error_max_budget_usd`` result once exceeded (which run_turn already
+    surfaces as "SDK turn ended: error_max_budget_usd"). None/absent — the
+    canonical default — means no budget, i.e. current behavior. Non-numeric
+    or non-positive values are ignored with a warning rather than passed
+    through: a 0 cap would fail every turn instantly, and a typo must never
+    become a silent behavior change."""
+    from agent.transports.claude_agent_sdk_session import _provider_config
+
+    raw = _provider_config().get("max_budget_usd")
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, bool):
+        # YAML `true` would float() to 1.0 — a nonsense budget, reject it.
+        logger.warning(
+            "agent.claude_agent_sdk.max_budget_usd=%r is not a number — "
+            "ignoring (no budget cap).", raw,
+        )
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "agent.claude_agent_sdk.max_budget_usd=%r is not a number — "
+            "ignoring (no budget cap).", raw,
+        )
+        return None
+    if value <= 0:
+        logger.warning(
+            "agent.claude_agent_sdk.max_budget_usd=%r must be positive — "
+            "ignoring (no budget cap).", raw,
+        )
+        return None
+    return value
+
+
+def _create_session(
+    agent,
+    *,
+    resume_id: Optional[str],
+    on_interim_assistant,
+    on_tool_iteration,
+) -> None:
+    """Build the SDK session for this agent (session-creation work, not per turn)."""
+    from agent.runtime_cwd import resolve_agent_cwd, resolve_context_cwd
+    from agent.transports.claude_agent_sdk_session import ClaudeAgentSdkSession
+
+    cwd = str(resolve_agent_cwd())
+    context_cwd = resolve_context_cwd()
+    approval_callback = _build_approval_callback(agent)
+
+    append = build_system_prompt_append(
+        platform=getattr(agent, "platform", None),
+        session_id=getattr(agent, "session_id", None),
+        model=getattr(agent, "model", None),
+        cwd=str(context_cwd) if context_cwd is not None else None,
+        include_project_context=not bool(
+            getattr(agent, "skip_context_files", False)
+        ),
+    )
+
+    on_unsolicited_result = _background_result_sink(agent)
+
+    agent._claude_sdk_session = ClaudeAgentSdkSession(
+        cwd=cwd,
+        model=getattr(agent, "model", None) or None,
+        approval_callback=approval_callback,
+        approval_bypass_provider=functools.partial(_approval_bypass_active, agent),
+        on_tool_started=functools.partial(_on_tool_started, agent),
+        system_prompt_append=append,
+        hermes_session_id=getattr(agent, "session_id", None),
+        resume_session_id=resume_id,
+        on_stream_delta=functools.partial(_relay_stream_delta, agent),
+        on_interim_assistant=on_interim_assistant,
+        on_tool_iteration=on_tool_iteration,
+        on_unsolicited_result=on_unsolicited_result,
+        on_compaction=functools.partial(_on_compaction, agent),
+        on_compact_boundary=functools.partial(_on_compact_boundary, agent),
+        # Operator budget cap (agent.claude_agent_sdk.max_budget_usd);
+        # None = no budget. Read per session creation so a config edit
+        # applies on the next session, same as the append snapshot.
+        max_budget_usd=_configured_max_budget_usd(),
+        # Hybrid MCP bridge inputs (ported from PR #56413). Passing the
+        # live agent + its OpenAI-format tool list activates an in-process
+        # MCP server that exposes the full Hermes tool registry — so
+        # proxified third-party MCP servers become reachable from inside
+        # the SDK loop, not just the ~25 curated stdio tools.
+        #
+        # Off by default (agent.claude_agent_sdk.hybrid_mcp_bridge:
+        # false) so a green-field upgrade is byte-identical to fcava's
+        # stdio-only behaviour — the wide bridge exposes agent-level
+        # tools whose enablement is a security choice. Operators opt in
+        # explicitly.
+        #
+        # agent.tools is a snapshot taken at agent build time and never
+        # re-reads the registry (see tools/mcp_tool.py::refresh_agent_mcp_tools
+        # docstring). If an HTTP MCP finished connecting AFTER that snapshot
+        # (e.g. slow initial handshake, or /reload-mcp), its tools would be
+        # invisible to the hybrid bridge. Force a refresh here so the bridge
+        # sees the current registry — the same call turn_context.py does
+        # between turns, but pulled forward so it also applies to the
+        # session-creation build.
+        agent=(agent if _hybrid_bridge_enabled() else None),
+        tools=(
+            _snapshot_agent_tools_with_mcp_refresh(agent)
+            if _hybrid_bridge_enabled()
+            else None
+        ),
+    )
+    # The prologue persisted Hermes' native composed prompt — a prompt
+    # this runtime never sends. Overwrite the snapshot with the
+    # EFFECTIVE prompt so the audit trail tells the truth.
+    try:
+        if getattr(agent, "_session_db", None) and agent.session_id:
+            agent._session_db.update_system_prompt(
+                agent.session_id, "[claude_code preset]\n\n" + (append or "")
+            )
+    except Exception:
+        logger.debug("effective-prompt snapshot failed", exc_info=True)

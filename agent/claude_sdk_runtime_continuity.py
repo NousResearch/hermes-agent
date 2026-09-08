@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from agent.claude_sdk_runtime_state import _SdkTurnState
+
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("agent.claude_sdk_runtime")
 
@@ -85,3 +87,30 @@ def _render_continuity_digest(prior_messages: List[Dict[str, Any]]) -> str:
         "context was lost; recent turns from the stored transcript, oldest "
         "first:]\n" + body + "\n[End digest. The user's new message follows.]\n\n"
     )
+
+
+def _persist_turn(agent, state: _SdkTurnState) -> None:
+    """Flush the projected rows FIRST, then persist the SDK resume id."""
+    turn = state.turn
+    messages = state.messages
+    if turn.projected_messages:
+        messages.extend(turn.projected_messages)
+        # Early-return path bypasses conversation_loop's per-step persistence;
+        # flush the new projected rows ourselves (idempotent via the intrinsic
+        # _DB_PERSISTED_MARKER — the user turn was flushed at turn start).
+        if getattr(agent, "_session_db", None) is not None:
+            try:
+                agent._flush_messages_to_session_db(messages)
+            except Exception:
+                logger.debug(
+                    "claude-sdk projected-message flush failed", exc_info=True
+                )
+
+    if not getattr(turn, "should_retire", False) and state.failover_reason is None:
+        # Persist the SDK session id for restart/eviction/interrupt resume.
+        # AFTER the flush on purpose: the flush's _ensure_db_session retry is
+        # what (re)creates the session row when turn-start persistence hit a
+        # transient lock — storing first would silently discard the id.
+        thread_id = getattr(turn, "thread_id", None)
+        if thread_id:
+            _store_sdk_session_id(agent, thread_id)

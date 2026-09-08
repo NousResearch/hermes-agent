@@ -313,10 +313,18 @@ class TurnRunner:
         def visible_tasks(self) -> List[Dict[str, str]]:
             return [self.tasks[task_id] for task_id in self.task_order[-8:]]
 
+        def card_title(self) -> str:
+            getter = getattr(self.adapter, "native_task_card_title", None)
+            try:
+                title = str(getter() or "").strip() if callable(getter) else ""
+            except Exception:
+                title = ""
+            return title or "Hermes is working"
+
         def fallback_text(self) -> str:
             labels = {"in_progress": "running", "complete": "complete", "error": "error"}
             lines = [f"- {t['title']} - {labels.get(t['status'], t['status'])}" for t in self.visible_tasks()]
-            return "Hermes is working\n" + "\n".join(lines)
+            return self.card_title() + "\n" + "\n".join(lines)
 
         def _upsert(self, call_id: str, title: str) -> Dict[str, str]:
             if call_id not in self.tasks:
@@ -382,7 +390,7 @@ class TurnRunner:
             return
         if not st.native_failed:
             result = await st.adapter.send_native_task_card_progress(
-                chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title="Hermes is working",
+                chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title=st.card_title(),
                 reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
             )
             if getattr(result, "success", False):

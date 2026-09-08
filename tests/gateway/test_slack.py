@@ -5041,6 +5041,21 @@ class TestNativeTaskCardProgress:
             PlatformConfig(enabled=True, token="xoxb-fake-token")
         ).native_task_cards_enabled() is False
 
+    def test_task_card_title_is_configurable(self):
+        config = PlatformConfig(
+            enabled=True,
+            token="xoxb-fake-token",
+            extra={"native_task_cards": True, "task_card_title": "  Talos is working  "},
+        )
+
+        assert SlackAdapter(config).native_task_card_title() == "Talos is working"
+        assert SlackAdapter(
+            PlatformConfig(enabled=True, token="xoxb-fake-token", extra={"task_card_title": ""})
+        ).native_task_card_title() == "Hermes is working"
+        assert SlackAdapter(
+            PlatformConfig(enabled=True, token="xoxb-fake-token")
+        ).native_task_card_title() == "Hermes is working"
+
     @pytest.mark.asyncio
     async def test_native_updates_are_serialized_and_workspace_scoped(self, adapter):
         team_client = AsyncMock()

@@ -3579,7 +3579,34 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     _ctx_parent_results(lines, conn, task_id, now)
     _ctx_role_history(lines, conn, task, now)
     _ctx_comments(lines, list_comments(conn, task_id), now)
+    _ctx_memory(lines, task_id, task)
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _ctx_memory(lines: list[str], task_id: str, task: Any) -> None:
+    title = getattr(task, "title", "") or ""
+    body = getattr(task, "body", "") or ""
+    query = " ".join(p for p in [title, body] if p and p.strip())
+    if not query:
+        return
+    try:
+        import subprocess
+        from pathlib import Path
+        script = Path(__file__).resolve().parents[1] / "scripts" / "search_memory.py"
+        out = subprocess.check_output(
+            ["python3", str(script), query, "--task-id", task_id, "--top", "5"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        )
+    except Exception:
+        return
+    hits = [line for line in out.splitlines() if line.startswith("- score=")]
+    if not hits:
+        return
+    lines.append("## Retrieved prior memory")
+    for hit in hits[:5]:
+        lines.append(hit)
+    lines.append("")
 
 
 def _ctx_cap(s: Optional[str], limit: int = _CTX_MAX_FIELD_BYTES) -> str:

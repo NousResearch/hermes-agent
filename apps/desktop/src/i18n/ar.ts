@@ -1069,6 +1069,10 @@ export const ar = defineLocale({
     failedToUpdate: name => `فشل تحديث ${name}`
   },
   agents: {
+    extendedTranscript: 'سجل موسّع',
+    transcriptTruncated: 'عرض أحدث 16 KiB',
+    transcriptUnavailable: 'السجل المباشر غير متاح',
+
     close: 'إغلاق الوكلاء',
     title: 'شجرة التوليد',
     subtitle: 'نشاط الوكلاء الفرعيين المباشر للدور الحالي.',
@@ -1080,6 +1084,14 @@ export const ar = defineLocale({
     streaming: 'جار البث',
     files: 'الملفات',
     moreFiles: count => `+${count} ملفات إضافية`,
+    moreAgents: count => `${count} وكلاء إضافيون`,
+    queued: 'في قائمة الانتظار',
+    waitingActivity: 'بانتظار النشاط',
+    steer: 'توجيه',
+    steerPlaceholder: 'تعليمات لهذا الوكيل الفرعي',
+    steerQueued: 'في انتظار نقطة التحقق التالية',
+    stopRequested: 'تم طلب الإيقاف',
+    requestRejected: 'لم يقبل الوكيل الفرعي الطلب',
     delegation: index => `التفويض ${index}`,
     workers: count => `${count} عامل`,
     workersActive: count => `${count} نشط`,

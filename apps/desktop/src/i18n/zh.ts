@@ -456,6 +456,9 @@ export const zh: Translations = {
         sources: { bundled: '内置', user: '用户', git: 'git', project: '项目', entrypoint: 'pip' }
       },
       installModal: {
+        installFromGit: '从 Git 安装',
+        reviewRepository: '检查仓库',
+        repoPlaceholder: 'https://github.com/owner/repo',
         title: '安装插件',
         description: '在安装前查看此仓库包含哪些组件。',
         repoLabel: '仓库',
@@ -1754,6 +1757,10 @@ export const zh: Translations = {
     resetToMine: '返回我的图谱'
   },
   agents: {
+    extendedTranscript: '扩展记录',
+    transcriptTruncated: '显示最新 16 KiB',
+    transcriptUnavailable: '实时记录不可用',
+
     close: '关闭代理',
     title: '派生树',
     subtitle: '当前回合的子代理实时活动。',
@@ -1765,6 +1772,14 @@ export const zh: Translations = {
     streaming: '流式传输',
     files: '文件',
     moreFiles: count => `还有 ${count} 个文件`,
+    moreAgents: count => `还有 ${count} 个子代理`,
+    queued: '排队中',
+    waitingActivity: '等待活动',
+    steer: '引导',
+    steerPlaceholder: '此子代理的指令',
+    steerQueued: '已排队，等待下一个检查点',
+    stopRequested: '已请求停止',
+    requestRejected: '子代理未接受请求',
     delegation: index => `派发 ${index}`,
     workers: count => `${count} 个工作单元`,
     workersActive: count => `${count} 个活跃`,

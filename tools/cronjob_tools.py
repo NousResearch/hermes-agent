@@ -168,6 +168,8 @@ def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
         return " (output saved locally only)"
     err = str(refreshed.get("last_delivery_error") or "").strip()
     if not err:
+        if refreshed.get("last_delivery_queued"):
+            return " (output queued for Bot Chat; completion unverified, do not resend)"
         return " (output was delivered there by the job itself)"
     return f" (⚠ delivery FAILED: {err[:200]})"
 
@@ -317,7 +319,7 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         # That is NOT a success for the caller — the calling agent relays this result — so report it as
         # failed and surface the delivery error, which lives in last_delivery_error (last_error is None for
         # these runs, and a bare success=False with error=None reads as an unexplained failure). See #83993.
-        ok = last_status == "ok"
+        ok = last_status in {"ok", "delivery_queued"}
         if execution is not None and execution.get("status") != "completed":
             ok = False
             run_error = execution.get("error") or f"execution ended in {execution.get('status') or 'unknown'} state"

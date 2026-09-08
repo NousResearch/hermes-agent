@@ -43,7 +43,7 @@ export function contextBar(percent: number | undefined, width = 10): string {
 
 export function usageContextLabel(usage: UsageStats): string {
   if (usage.context_max) {
-    return `${usage.context_estimated ? "~" : ""}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max)}`
+    return `${usage.context_estimated ? '~' : ''}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max)}`
   }
 
   return usage.total > 0 ? `${compactNumber(usage.total)} tok` : ''

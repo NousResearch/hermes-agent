@@ -410,6 +410,9 @@ export interface Translations {
         sources: Record<string, string>
       }
       installModal: {
+        installFromGit: string
+        reviewRepository: string
+        repoPlaceholder: string
         title: string
         description: string
         repoLabel: string
@@ -1393,6 +1396,9 @@ export interface Translations {
     resetToMine: string
   }
   agents: {
+    extendedTranscript: string
+    transcriptTruncated: string
+    transcriptUnavailable: string
     close: string
     title: string
     subtitle: string
@@ -1404,6 +1410,14 @@ export interface Translations {
     streaming: string
     files: string
     moreFiles: (count: number) => string
+    moreAgents: (count: number) => string
+    queued: string
+    waitingActivity: string
+    steer: string
+    steerPlaceholder: string
+    steerQueued: string
+    stopRequested: string
+    requestRejected: string
     delegation: (index: number) => string
     workers: (count: number) => string
     workersActive: (count: number) => string

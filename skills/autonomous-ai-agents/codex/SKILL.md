@@ -31,7 +31,7 @@ changes remain inspectable and reversible; read-only analysis can run elsewhere.
 - OpenAI auth configured: either `OPENAI_API_KEY` or Codex OAuth credentials
   from the Codex CLI login flow
 - Use `pty=true` for the interactive `codex` TUI
-- Use `pty=false` for non-interactive `codex exec` automation
+- Use `pty=false` for non-interactive `codex exec` and `codex review`
 
 For Hermes itself, `model.provider: openai-codex` uses Hermes-managed Codex
 OAuth from `~/.hermes/auth.json` after `hermes auth add openai-codex`. For the
@@ -94,10 +94,10 @@ In that context, prefer:
 codex exec --sandbox danger-full-access "<task>"
 ```
 
-This is a host-specific fallback, not a universal default. Use process or container
-boundaries as the safety layer: explicit `workdir`, clean Git status before launch,
-narrow task prompts, `git diff` review, targeted tests, and human/agent confirmation
-before committing broad changes.
+Use this host-specific fallback only when the host already provides an isolated
+runner or container. An explicit `workdir`, clean Git status, narrow prompts,
+`git diff` review, and targeted tests help keep changes inspectable; they do not
+replace sandboxing. Review broad changes before committing them.
 
 ## PR Reviews
 
@@ -145,7 +145,7 @@ terminal(command="gh pr comment 86 --body '<review>'", workdir="~/project")
 
 ## Rules
 
-1. **Match PTY to mode** — interactive `codex` needs `pty=true`; non-interactive `codex exec` uses `pty=false`
+1. **Match PTY to mode** — interactive `codex` needs `pty=true`; non-interactive `codex exec` and `codex review` use `pty=false`
 2. **Keep writes in Git** — use a repository for coding; non-repo analysis must opt in with `--skip-git-repo-check` and stay read-only
 3. **Use `exec` for one-shots** — `codex exec "prompt"` runs and exits cleanly
 4. **`--sandbox workspace-write` for building** — auto-approves changes within the sandbox (`--full-auto` is deprecated for this)

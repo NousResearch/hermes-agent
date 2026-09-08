@@ -237,12 +237,19 @@ def _synthesize_builtin(engine: str, text: str, file_str: str, tts_config: Dict[
 
 def _finalize_voice_delivery(
     file_str: str, provider: str, command_provider_config: Optional[Dict[str, Any]], want_opus: bool,
+    platform: str = "",
 ) -> tuple:
     """Voice-bubble eligibility (Opus-converting when needed) -> ``(path, voice_compatible)``.
 
     Command/plugin providers are documents unless they opt in via ``voice_compatible``; native-Opus
     built-ins qualify when the platform wants Opus and they wrote .ogg; MP3/WAV built-ins are
     ffmpeg-converted only when the platform needs Opus."""
+    # WeCom renders native voice bubbles only as ``audio/amr``
+    # (VOICE_SUPPORTED_MIMES in the WeCom adapter); transcoding AMR to Opus
+    # there would make the bubble undeliverable. Keep AMR as-is and mark it
+    # voice-compatible for WeCom sessions (#78595).
+    if platform == "wecom" and file_str.endswith(".amr"):
+        return file_str, True
     if command_provider_config is not None:
         opted_in = _is_command_tts_voice_compatible(command_provider_config)
     elif provider not in BUILTIN_TTS_PROVIDERS:
@@ -328,6 +335,7 @@ def _tool_failure(prefix: str, provider: str, exc: BaseException) -> str:
 def _text_to_speech_single(
     text: str, file_str: str, *, provider: str, tts_config: Dict[str, Any],
     command_provider_config: Optional[Dict[str, Any]], want_opus: bool, instructions: Optional[str],
+    platform: str = "",
 ) -> str:
     """Synthesize one provider-safe chunk into *file_str*; returns the result envelope.
 
@@ -360,7 +368,7 @@ def _text_to_speech_single(
         # Sniff once for every provider: MP3/WAV bytes in a .ogg path render as 0-second bubbles.
         file_str = _repair_ogg_container(file_str)
         file_str, voice_compatible = _finalize_voice_delivery(
-            file_str, provider, command_provider_config, want_opus)
+            file_str, provider, command_provider_config, want_opus, platform)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{os.path.getsize(file_str):,}", provider)
         return json.dumps({
             "success": True, "file_path": file_str, "media_tag": _media_tag([file_str], voice_compatible),
@@ -446,7 +454,7 @@ def text_to_speech_tool(
         encoded_paths, chunk_results = _synthesize_chunks(
             chunks, base_path, generated_artifacts, provider=provider, tts_config=tts_config,
             command_provider_config=command_provider_config, want_opus=want_opus,
-            instructions=instructions)
+            instructions=instructions, platform=platform)
         voice_compatible = bool(chunk_results) and all(bool(r.get("voice_compatible")) for r in chunk_results)
         delivery_base = base_path.with_suffix(Path(encoded_paths[0]).suffix)
         final_paths, combined_chunks = _build_audio_delivery_files(

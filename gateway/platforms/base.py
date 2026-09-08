@@ -38,7 +38,7 @@ def _consume_detached_handler_exception(task: "asyncio.Task") -> None:
 # Hermes but not to sendAudio).
 _AUDIO_MIME_TYPES = {
     ".ogg": "audio/ogg", ".opus": "audio/opus", ".mp3": "audio/mpeg", ".m2a": "audio/mpeg",
-    ".wav": "audio/wav", ".m4a": "audio/m4a", ".flac": "audio/flac"}
+    ".wav": "audio/wav", ".m4a": "audio/m4a", ".flac": "audio/flac", ".amr": "audio/amr"}
 _AUDIO_EXTS = frozenset(_AUDIO_MIME_TYPES)
 # Outbound dispatch partition for MEDIA/local files (image batch vs send_video).
 _VIDEO_EXTS = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"})

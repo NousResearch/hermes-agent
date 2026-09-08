@@ -66,6 +66,7 @@ class GatewayAgentCacheMixin:
                 "honcho.user_peer_aliases": sorted(aliases.items()) if isinstance(aliases, dict) else [],
                 "honcho.session_peer_prefix": bool(hcfg.session_peer_prefix),
                 "honcho.session_ai_peer_prefix": bool(hcfg.session_ai_peer_prefix),
+                "honcho.workspace": hcfg.workspace_id,
             }
             cls._HONCHO_CACHE_BUSTING_MEMO = {memo_key: values}
             return dict(values)

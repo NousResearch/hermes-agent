@@ -9,6 +9,7 @@ returns a ``TurnContext`` with only the locals the loop reads back.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -527,6 +528,47 @@ def _stage_turn_user_message(
     return user_msg, pending_cli_message
 
 
+# A re-running caller sets this for the retried process. Adoption is OPT-IN because the
+# transcript alone cannot tell a re-run from a new message: a person who re-sends the same word
+# after a failed turn has sent a SECOND real message, with its own platform id, and it must get
+# its own row. Only a caller replaying an identical delivery knows the difference.
+RESUME_UNANSWERED_TURN_ENV = "HERMES_RESUME_UNANSWERED_TURN"
+_RESUME_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _resume_unanswered_requested() -> bool:
+    return str(os.environ.get(RESUME_UNANSWERED_TURN_ENV, "")).strip().lower() in _RESUME_TRUTHY
+
+
+def _resumes_unanswered_user_turn(messages: List[Any], user_msg: Dict[str, Any]) -> bool:
+    """True when this process was told it is re-running a delivery whose user row is ALREADY the
+    transcript tail — a previous attempt persisted it and died before answering.
+
+    A failed turn still persists its user row, so a re-run in a FRESH process rebuilds the row as
+    a new object (``_DB_PERSISTED_MARKER`` is in-process only) and appends a second identical copy;
+    the recipient is then shown the same message twice inside one prompt. Adoption fixes that, but
+    it is gated three ways so it can never swallow a real message:
+
+    * the caller must set ``HERMES_RESUME_UNANSWERED_TURN`` — inferring a re-run from an identical
+      tail alone would eat the second of two deliberate identical sends;
+    * a message carrying a ``platform_message_id`` is a distinct platform delivery and is never
+      adopted (the id is load-bearing for restart drain-window dedup);
+    * the tail must be an UNANSWERED user row with the same content — a completed turn ends with an
+      assistant row.
+    """
+    if not _resume_unanswered_requested():
+        return False
+    if user_msg.get("platform_message_id"):
+        return False
+    tail = messages[-1] if messages else None
+    return (
+        isinstance(tail, dict)
+        and tail.get("role") == "user"
+        and tail.get("content") == user_msg.get("content")
+        and bool(user_msg.get("content"))
+    )
+
+
 def _hydrate_from_history(agent: Any, conversation_history: Optional[List[Any]]) -> None:
     """Hydrate process-local state from persisted history on the first resumed turn."""
     if not conversation_history:
@@ -839,8 +881,19 @@ def build_turn_context(
     _hydrate_from_history(agent, conversation_history)
     # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)
-    # Append the user message now that close persistence is safe.
-    append_message(messages, user_msg)
+    # Append the user message now that close persistence is safe — unless this turn is a
+    # re-run of one that died before answering, whose identical user row is already the tail.
+    if _resumes_unanswered_user_turn(messages, user_msg):
+        # The adopted row is already durable, so the freshly staged CLI dict is obsolete. Drop the
+        # CLI's reference to it as well: the close path appends any staged dict that is not
+        # identity-present in ``messages`` (``_persist_active_session_before_close``), which would
+        # write the very duplicate this guard prevents — and write it AFTER the answer, leaving the
+        # transcript ending on an unanswered user row (the #43849 replay state).
+        if pending_cli_message is user_msg:
+            agent._pending_cli_user_message = None
+            pending_cli_message = None
+    else:
+        append_message(messages, user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
 

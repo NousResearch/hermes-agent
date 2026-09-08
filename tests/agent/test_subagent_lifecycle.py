@@ -161,6 +161,34 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
     assert parent.session_cost_status == "estimated"
 
 
+def test_memory_scope_inheritance_is_explicit_and_parent_bounded(monkeypatch):
+    parent = SimpleNamespace(session_id="parent-memory", enabled_toolsets=["file"], _memory_manager=None)
+    builds = []
+
+    def build(**kwargs):
+        builds.append(kwargs)
+        return FakeChild(f"sa-memory-{len(builds)}")
+
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
+    monkeypatch.setattr(
+        "tools.delegate_tool._run_single_child",
+        lambda *_args, **_kwargs: {"status": "completed", "summary": "ok"},
+    )
+    service = SubagentLifecycleService(lambda: parent)
+
+    handle = service.launch(SubagentLaunchRequest(goal="isolated by default"))
+    service.wait(handle, timeout_seconds=1)
+    assert builds[-1]["inherit_memory_scope"] is False
+
+    with pytest.raises(SubagentLifecycleError, match="active parent memory provider"):
+        service.launch(SubagentLaunchRequest(goal="no provider", inherit_memory_scope=True))
+    with pytest.raises(SubagentLifecycleError, match="must be a boolean"):
+        service.launch(SubagentLaunchRequest(goal="bad flag", inherit_memory_scope="yes"))
+
+    parent._memory_manager = object()
+    handle = service.launch(SubagentLaunchRequest(goal="share the verified scope", inherit_memory_scope=True))
+    service.wait(handle, timeout_seconds=1)
+    assert builds[-1]["inherit_memory_scope"] is True
 
 
 def test_agent_turn_binds_and_clears_lifecycle_parent(monkeypatch):

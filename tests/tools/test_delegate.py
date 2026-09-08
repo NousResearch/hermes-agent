@@ -372,6 +372,55 @@ class TestDelegateTask(unittest.TestCase):
             _, kwargs = MockAgent.call_args
             self.assertIsNone(kwargs["session_db"])
 
+    def test_child_memory_scope_is_opt_in_without_reusing_route_identity(self):
+        from agent.agent_init import _GATEWAY_IDENTITY_PARAMS, _memory_provider_init_kwargs
+
+        parent = _make_mock_parent(depth=0)
+        for name in _GATEWAY_IDENTITY_PARAMS:
+            setattr(parent, f"_{name}", None)
+        parent.platform = "msteams"
+        parent._chat_id = "19:meeting-room@example"
+        parent._gateway_session_key = "agent:main:msteams:group:meeting-room"
+        parent._user_id = "employee-42"
+        parent._session_db = None
+        captures = []
+
+        def make_child(**kwargs):
+            child = MagicMock()
+            child.platform = kwargs["platform"]
+            child.session_id = f"child-{len(captures)}"
+            child._session_db = None
+            for name in _GATEWAY_IDENTITY_PARAMS:
+                setattr(child, f"_{name}", None)
+            captures.append((kwargs, _memory_provider_init_kwargs(child, child.platform)))
+            return child
+
+        with patch("run_agent.AIAgent", side_effect=make_child):
+            isolated = _build_child_agent(
+                task_index=0, goal="isolated", context=None, toolsets=None,
+                model=None, max_iterations=10, parent_agent=parent, task_count=1,
+            )
+            inherited = _build_child_agent(
+                task_index=1, goal="inherit", context=None, toolsets=None,
+                model=None, max_iterations=10, parent_agent=parent, task_count=1,
+                inherit_memory_scope=True,
+            )
+
+        isolated_kwargs, isolated_scope = captures[0]
+        inherited_kwargs, inherited_scope = captures[1]
+        self.assertTrue(isolated_kwargs["skip_memory"])
+        self.assertEqual(isolated_scope["platform"], "subagent")
+        self.assertNotIn("chat_id", isolated_scope)
+        self.assertFalse(inherited_kwargs["skip_memory"])
+        self.assertEqual(inherited_scope["platform"], "msteams")
+        self.assertEqual(inherited_scope["chat_id"], parent._chat_id)
+        self.assertEqual(inherited_scope["gateway_session_key"], parent._gateway_session_key)
+        self.assertEqual(inherited_scope["session_id"], inherited.session_id)
+        self.assertEqual(inherited.platform, "subagent")
+        self.assertIsNone(inherited._chat_id)
+        self.assertIsNone(inherited._gateway_session_key)
+        self.assertEqual(isolated.platform, "subagent")
+
     def test_child_dedicated_db_follows_parents_db_path(self):
         """Per-profile parents: the child's dedicated handle must target the
         parent's database FILE, not the launch profile's default state.db.

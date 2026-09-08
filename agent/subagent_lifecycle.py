@@ -58,6 +58,7 @@ class SubagentLaunchRequest:
     correlation_id: Optional[str] = None
     metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     timeout_seconds: Optional[float] = None
+    inherit_memory_scope: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -227,6 +228,7 @@ _REQUEST_REJECTIONS: tuple[tuple[Callable[[Any], bool], str], ...] = (
      "working_directory is not supported because Hermes delegates use isolated task environments."),
     (lambda r: bool(r.blocked_tools),
      "Per-tool blocking is not supported; use allowed_toolsets. Hermes always blocks unsafe child tools."),
+    (lambda r: type(r.inherit_memory_scope) is not bool, "inherit_memory_scope must be a boolean."),
 )
 
 
@@ -261,6 +263,7 @@ class SubagentLifecycleService:
             task_index=0, goal=request.goal, context=request.context,
             toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
             model=request.model, max_iterations=DEFAULT_MAX_ITERATIONS, task_count=1, parent_agent=parent, role=request.role,
+            inherit_memory_scope=request.inherit_memory_scope,
         )
         subagent_id = str(getattr(child, "_subagent_id", "") or "")
         if not subagent_id:
@@ -405,6 +408,8 @@ class SubagentLifecycleService:
             raise SubagentLifecycleError("metadata must be JSON-serializable.") from exc
         if metadata_bytes > _MAX_METADATA_BYTES:
             raise SubagentLifecycleError("metadata exceeds 8192 bytes.")
+        if request.inherit_memory_scope and getattr(parent, "_memory_manager", None) is None:
+            raise SubagentLifecycleError("inherit_memory_scope requires an active parent memory provider.")
         if not request.allowed_toolsets:
             return
         from toolsets import TOOLSETS

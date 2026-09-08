@@ -174,6 +174,8 @@ def _build_child_agent(
     # callers such as /review pass auxiliary.review here so fallback policy is
     # not accidentally read from the general delegation block.
     routing_cfg: Optional[Dict[str, Any]] = None,
+    # Plugin lifecycle only: opt in to the active parent's memory-provider scope.
+    inherit_memory_scope: bool = False,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
 ):
@@ -181,6 +183,7 @@ def _build_child_agent(
     inheritance so children can run on a different provider:model pair."""
     import uuid as _uuid
     from run_agent import AIAgent
+    from agent.agent_init import _bind_memory_scope_parent
     from agent.delegation_context import delegated_child_context
     # Role is depth-derived: a child may delegate iff the kill switch is on and
     # depth budget remains below max_spawn_depth. The `role` arg is ignored.
@@ -229,13 +232,13 @@ def _build_child_agent(
         request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
     parent_sid = getattr(parent_agent, "session_id", None)
     child_session_db = _open_child_session_db(parent_agent)
-    with delegated_child_context():
+    with delegated_child_context(), _bind_memory_scope_parent(parent_agent if inherit_memory_scope else None):
         try:
             child = AIAgent(
                 **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
-                skip_context_files=True, skip_memory=True, clarify_callback=None,
+                skip_context_files=True, skip_memory=not inherit_memory_scope, clarify_callback=None,
                 thinking_callback=(
                     (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
                     if child_progress_cb else None

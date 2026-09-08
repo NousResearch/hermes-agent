@@ -59,3 +59,8 @@ parent-broadening toolsets are rejected, and per-tool blocks, working-directory
 overrides, and per-launch timeouts are explicitly rejected until Hermes can
 support them without weakening isolation. Use `allowed_toolsets` to narrow a
 child; Hermes's existing unsafe-tool block remains enforced.
+
+Children skip memory by default. A plugin may set `inherit_memory_scope=True`
+to let a child participate in the active parent's memory-provider scope. The
+host copies that scope from the verified parent; callers cannot supply a chat
+ID or routing key. The request fails when the parent has no active provider.

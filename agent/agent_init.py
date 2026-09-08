@@ -9,6 +9,7 @@ Symbols that tests patch on ``run_agent.*`` (``OpenAI``, ``get_tool_definitions`
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import re
@@ -17,7 +18,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
@@ -49,6 +50,20 @@ logger = logging.getLogger("run_agent")
 
 # Deduped: the gateway builds a fresh AIAgent per message, so it would warn every turn.
 _warned_unavailable_providers: set[str] = set()
+_MEMORY_SCOPE_OVERRIDE: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+    "hermes_memory_scope_override", default=None,
+)
+
+
+@contextmanager
+def _bind_memory_scope_parent(parent: Any):
+    """Temporarily source memory-provider scope from a host-owned parent agent."""
+    scope = _memory_scope_kwargs(parent, getattr(parent, "platform", None)) if parent is not None else None
+    token = _MEMORY_SCOPE_OVERRIDE.set(scope)
+    try:
+        yield
+    finally:
+        _MEMORY_SCOPE_OVERRIDE.reset(token)
 
 
 def _warn_memory_provider_unavailable(name: str, reason: str = "") -> None:
@@ -1199,20 +1214,11 @@ def _apply_display_config(agent, _agent_cfg, platform):
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
 
 
-def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
-    """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
-    gateway status travels a different path and the indicator no-ops without it)."""
-    kwargs = {
-        "session_id": agent.session_id,
-        "platform": platform or "cli",
-        "hermes_home": str(get_hermes_home()),
-        "agent_context": "primary",
-    }
-    if kwargs["platform"] == "cli":
-        kwargs["warning_callback"] = agent._emit_warning
-        kwargs["status_callback"] = agent._emit_status
+def _memory_scope_kwargs(agent, platform) -> Dict[str, Any]:
+    """Stable provider scope copied without retaining the source agent."""
+    kwargs = {"platform": platform or "cli"}
     # Session title (e.g. honcho derives chat-scoped session keys from it).
-    if agent._session_db:
+    if getattr(agent, "_session_db", None):
         with suppress(Exception):
             _st = agent._session_db.get_session_title(agent.session_id)
             if _st:
@@ -1220,9 +1226,24 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
     # Honcho session isolation).
     for _ident in _GATEWAY_IDENTITY_PARAMS:
-        _val = getattr(agent, f"_{_ident}")
+        _val = getattr(agent, f"_{_ident}", None)
         if _val:
             kwargs[_ident] = _val
+    return kwargs
+
+
+def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
+    """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
+    gateway status travels a different path and the indicator no-ops without it)."""
+    kwargs = {
+        "session_id": agent.session_id,
+        "hermes_home": str(get_hermes_home()),
+        "agent_context": "primary",
+        **(_MEMORY_SCOPE_OVERRIDE.get() or _memory_scope_kwargs(agent, platform)),
+    }
+    if kwargs["platform"] == "cli":
+        kwargs["warning_callback"] = agent._emit_warning
+        kwargs["status_callback"] = agent._emit_status
     # Profile identity for per-profile provider scoping
     with suppress(Exception):
         from hermes_cli.profiles import get_active_profile_name

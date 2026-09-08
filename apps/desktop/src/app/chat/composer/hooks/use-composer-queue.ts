@@ -349,6 +349,7 @@ export function useComposerQueue({
       if (cancelled) {
         return
       }
+
       const fails = (drainFailuresRef.current.get(entry.id) ?? 0) + 1
       drainFailuresRef.current.set(entry.id, fails)
 

@@ -979,7 +979,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         </Box>
       )}
 
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column" flexShrink={0} marginTop={1}>
         <Text color={t.color.accent} wrap="truncate-end">{replayMode ? 'Enter/d detail' : 'Enter/t tail · d detail'} · e steer · x stop · Esc back</Text>
         {flash ? <Text color={t.color.accent} wrap="truncate-end">{flash}</Text> : null}
 

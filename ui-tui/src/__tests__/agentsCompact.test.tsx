@@ -8,9 +8,11 @@ import { expect, it, vi } from 'vitest'
 import { renderToScreen } from '../../packages/hermes-ink/src/ink/render-to-screen.js'
 import { cellAtIndex } from '../../packages/hermes-ink/src/ink/screen.js'
 import { applyAgentSnapshot } from '../app/agentRoster.js'
+import { getInputSelection } from '../app/inputSelectionStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
 import { AgentsOverlay } from '../components/agentsOverlay.js'
 import { AgentsPanelView } from '../components/agentsPanel.js'
+import { TextInput } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { buildAgentRows } from '../lib/agentRows.js'
 import { DEFAULT_THEME } from '../theme.js'
@@ -61,6 +63,17 @@ it('opens the selected live transcript on Enter while details remain independent
     output = ''
     stdin.write('t')
     await vi.waitFor(() => expect(output).toContain('CHILD_TOOL_OUTPUT'))
+    const cursorSnapshotRef = { current: null }
+    const onChange = vi.fn()
+    view.rerender(<TextInput cursorSnapshotRef={cursorSnapshotRef} onChange={onChange} value="draft" />)
+    await vi.waitFor(() => expect(getInputSelection()?.value).toBe('draft'))
+    stdin.write('\x1b[D')
+    await vi.waitFor(() => expect(getInputSelection()?.start).toBe(4))
+    view.rerender(<Box />)
+    view.rerender(<TextInput cursorSnapshotRef={cursorSnapshotRef} onChange={onChange} value="draft" />)
+    await vi.waitFor(() => expect(getInputSelection()?.start).toBe(4))
+    stdin.write('!')
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith('draf!t'))
   } finally {
     view.unmount()
     view.cleanup()

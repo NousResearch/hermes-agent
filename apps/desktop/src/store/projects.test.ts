@@ -18,6 +18,7 @@ import {
   enterProject,
   exitProjectScope,
   fetchProjectSessions,
+  followActiveSessionCwd,
   openProjectCreate,
   pickProjectFolder,
   projectIdForCwd,
@@ -923,5 +924,73 @@ describe('tombstone pruning', () => {
     await refreshProjectTree()
 
     expect($removedSessionIds.get().has('sess-1')).toBe(false)
+  })
+})
+
+describe('followActiveSessionCwd (#105207)', () => {
+  const REPO_CWD = '/repo/ys/src'
+
+  function gatewayServingRepoProject() {
+    const project = {
+      id: 'p_ys',
+      label: 'Yoon-Suin',
+      path: '/repo/ys',
+      isAuto: false,
+      isNoProject: false,
+      repos: [],
+      sessionCount: 1
+    }
+
+    const request = vi.fn(async (method: string) => {
+      if (method === 'projects.list') {
+        return { active_id: 'p_ys', projects: [project], scoped_session_ids: [] }
+      }
+
+      return { active_id: 'p_ys', projects: [project], scoped_session_ids: [] }
+    })
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    return request
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $projectScope.set(ALL_PROJECTS)
+    $activeProjectId.set(null)
+    $projectsRpcAvailable.set(null)
+  })
+
+  it('keeps a flat Recents view — no silent flip into project grouping (#105207)', async () => {
+    setSidebarAgentsGrouped(false)
+    const request = gatewayServingRepoProject()
+
+    await followActiveSessionCwd(REPO_CWD)
+
+    // The user's flat view is preserved: data refreshes, but the sidebar is
+    // not re-grouped and no project drill-in happens.
+    expect($sidebarAgentsGrouped.get()).toBe(false)
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
+    expect(request).toHaveBeenCalledWith('projects.list', expect.anything())
+  })
+
+  it('still drills into the session project when the project tree is already visible', async () => {
+    setSidebarAgentsGrouped(true)
+    gatewayServingRepoProject()
+
+    await followActiveSessionCwd(REPO_CWD)
+
+    expect($sidebarAgentsGrouped.get()).toBe(true)
+    expect($projectScope.get()).toBe('p_ys')
+  })
+
+  it('does not flip a flat view when the cwd is outside every project', async () => {
+    setSidebarAgentsGrouped(false)
+    gatewayServingRepoProject()
+
+    await followActiveSessionCwd('/home/user/elsewhere')
+
+    expect($sidebarAgentsGrouped.get()).toBe(false)
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
   })
 })

@@ -15,7 +15,7 @@ import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { persistentAtom } from '@/lib/persisted'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
-import { setSidebarAgentsGrouped } from '@/store/layout'
+import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -250,15 +250,18 @@ export async function followActiveSessionCwd(cwd: string): Promise<void> {
   // Resolve only after the refresh, so a just-created/auto project is in the tree.
   const projectId = projectIdForCwd(target)
 
-  if (projectId) {
-    // The Projects tree only renders in grouped mode, so flip the sidebar into
-    // it — otherwise following from the flat Sessions list would change scope
-    // invisibly. Then drill into the thread's project.
-    setSidebarAgentsGrouped(true)
+  // The Projects tree only renders in grouped mode, and flipping the sidebar
+  // from a flat view is the user's choice, not the agent's: a session
+  // activation whose cwd sits in a repo must not silently replace the flat
+  // "Recents" list with project buckets (#105207). Follow the relocated
+  // session's project only when the project tree is already the visible
+  // surface — in a flat view the refresh above still keeps rows/data live.
+  if (!projectId || !$sidebarAgentsGrouped.get()) {
+    return
+  }
 
-    if (projectId !== $projectScope.get()) {
-      enterProject(projectId)
-    }
+  if (projectId !== $projectScope.get()) {
+    enterProject(projectId)
   }
 }
 

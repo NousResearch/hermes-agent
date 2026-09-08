@@ -4,7 +4,7 @@ manifest_version: 1
 
 name: aave
 description: 'Aave V3 and V4: lending markets, positions, rewards, governance, and unsigned transaction building.'
-source: https://mcp.aave.com/llms.txt
+source: https://aave.com/docs/mcp
 
 # Official protocol-hosted remote MCP (URL-only - Hermes never spawns a local
 # process for this entry). No authentication required (verified live

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -283,12 +284,86 @@ class SessionMessagesMixin:
         def _do(conn):
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
+            # DB-level dedupe guard (#79576): a platform_message_id maps to
+            # exactly ONE transcript row per session. When a row already
+            # exists, skip the insert and return the existing row id instead
+            # of stacking a duplicate user turn. The gateway's #47237 check
+            # (has_platform_message_id) runs outside this transaction, so it
+            # can race with a sibling writer (gateway + agent processes, or
+            # two retries of the same Telegram update); this in-transaction
+            # check is atomic under BEGIN IMMEDIATE and also covers paths
+            # that never consulted the guard (crash-resilience persist,
+            # shutdown flush). Rows without a platform_message_id are never
+            # deduped. Only live (active = 1) and compaction-archived
+            # (compacted = 1) rows shadow a re-insert: rewound/undo rows
+            # (active = 0, compacted = 0 — the user took the turn back) do
+            # not, so a platform redelivery of a rewound turn re-inserts
+            # instead of being silently swallowed.
+            if platform_message_id is not None:
+                _existing = conn.execute(
+                    "SELECT id FROM messages "
+                    "WHERE session_id = ? AND platform_message_id = ? "
+                    "AND (active = 1 OR compacted = 1) LIMIT 1",
+                    (session_id, platform_message_id),
+                ).fetchone()
+                if _existing is not None:
+                    return _existing[0]
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    @staticmethod
+    def _dedupe_batch_by_platform_message_id(
+        conn: sqlite3.Connection, session_id: str, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Drop rows whose platform_message_id already exists for the session.
+
+        Enforces the one-platform_message_id-per-session invariant for the
+        batch write path (issue #79576). Rows without a platform_message_id
+        (or ``message_id`` alias) pass through untouched. Within-batch
+        duplicates keep only the first occurrence. Runs inside the caller's
+        write transaction, so the existence check and the inserts commit
+        atomically — closing the check-then-insert race that the gateway's
+        #47237 guard has when a sibling writer (gateway + agent processes)
+        persists the same inbound turn concurrently.
+
+        Only live (``active = 1``) and compaction-archived (``compacted = 1``)
+        rows shadow a re-insert. Rewound/undo rows (``active = 0``,
+        ``compacted = 0`` — the user took the turn back) do not, so a
+        platform redelivery of a rewound turn re-inserts under the same id
+        instead of being silently dropped. Same visibility contract as
+        ``append_message``'s in-transaction check and search's
+        ``(active = 1 OR compacted = 1)`` discoverability rule.
+        """
+        filtered: List[Dict[str, Any]] = []
+        seen_in_batch: set = set()
+        existing: Optional[set] = None
+        for msg in messages:
+            platform_msg_id = msg.get("platform_message_id") or msg.get("message_id")
+            if platform_msg_id is None:
+                filtered.append(msg)
+                continue
+            if platform_msg_id in seen_in_batch:
+                continue
+            if existing is None:
+                existing = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT platform_message_id FROM messages "
+                        "WHERE session_id = ? AND platform_message_id IS NOT NULL "
+                        "AND (active = 1 OR compacted = 1)",
+                        (session_id,),
+                    ).fetchall()
+                }
+            if platform_msg_id in existing:
+                continue
+            existing.add(platform_msg_id)
+            seen_in_batch.add(platform_msg_id)
+            filtered.append(msg)
+        return filtered
 
     def append_messages_batch(
         self, session_id: str, messages: List[Dict[str, Any]], compression_lock_holder: Optional[str] = None,
@@ -306,8 +381,22 @@ class SessionMessagesMixin:
         def _do(conn):
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
+            # DB-level dedupe guard (#79576): same invariant as
+            # append_message — one platform_message_id per session. The
+            # turn-boundary flush and the gateway's crash-resilience persist
+            # can both try to write the same inbound user turn, and the
+            # pre-write has_platform_message_id check (#47237) can race with
+            # a sibling writer, so enforce the invariant atomically here
+            # instead of relying on callers. Rows without a
+            # platform_message_id are never deduped. Dedupe runs BEFORE the
+            # main-side repair pass so repair only sees surviving rows.
+            filtered = self._dedupe_batch_by_platform_message_id(
+                conn, session_id, messages
+            )
+            if not filtered:
+                return 0
             from agent.transcript_repair import resolve_and_repair_transcript_batch
-            inserted_rows = resolve_and_repair_transcript_batch(conn, session_id, messages,
+            inserted_rows = resolve_and_repair_transcript_batch(conn, session_id, filtered,
                 encode_content_fn=self._encode_content, decode_content_fn=self._decode_content)
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
@@ -1063,9 +1152,18 @@ class SessionMessagesMixin:
         Uses the idx_messages_platform_msg_id partial index for efficient lookup. Used by the gateway's
         transient-failure dedupe guard (#47237) to skip re-persisting a user message that was already saved
         on a prior retry of the same inbound platform message.
+
+        Mirrors the dedupe visibility contract of ``append_message`` /
+        ``_dedupe_batch_by_platform_message_id``: soft-archived rewind/undo
+        rows (``active=0``, ``compacted=0`` — the user took the turn back)
+        do NOT count as existing, so a platform redelivery of a rewound turn
+        re-inserts instead of being silently swallowed. Compaction-archived
+        rows (``compacted=1``) DO count — re-inserting a summarized-away
+        turn would resurrect it after in-place compaction.
         """
         return self._read_one(
-            "SELECT 1 FROM messages WHERE session_id = ? AND platform_message_id = ? LIMIT 1",
+            "SELECT 1 FROM messages WHERE session_id = ? AND platform_message_id = ? "
+            "AND (active = 1 OR compacted = 1) LIMIT 1",
             (session_id, platform_message_id)) is not None
 
     def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:

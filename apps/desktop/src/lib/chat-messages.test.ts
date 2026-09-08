@@ -577,6 +577,31 @@ describe('preserveLocalAssistantErrors', () => {
     expect(merged[2]?.error).toBe('OpenRouter 403')
   })
 
+  it('reinserts an omitted older error turn at its original timeline position', () => {
+    const nextMessages: ChatMessage[] = [
+      { id: 'stored-first-user', parts: [{ text: 'first', type: 'text' }], role: 'user' },
+      { id: 'stored-first-assistant', parts: [{ text: 'first answer', type: 'text' }], role: 'assistant' },
+      { id: 'stored-third-user', parts: [{ text: 'third', type: 'text' }], role: 'user' },
+      { id: 'stored-third-assistant', parts: [{ text: 'third answer', type: 'text' }], role: 'assistant' }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      ...nextMessages.slice(0, 2),
+      { id: 'user-failed', parts: [{ text: 'second', type: 'text' }], role: 'user' },
+      { error: 'provider failed', id: 'assistant-failed', parts: [], role: 'assistant' },
+      ...nextMessages.slice(2)
+    ]
+
+    expect(preserveLocalAssistantErrors(nextMessages, currentMessages).map(message => message.id)).toEqual([
+      'stored-first-user',
+      'stored-first-assistant',
+      'user-failed',
+      'assistant-failed',
+      'stored-third-user',
+      'stored-third-assistant'
+    ])
+  })
+
   it('does not keep orphan local user turns when there is no inline assistant error', () => {
     const nextMessages: ChatMessage[] = [
       {

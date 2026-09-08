@@ -11786,7 +11786,10 @@ async function ensureRegistryBackend(
     token: null,
     connectionPromise: null,
     lastActiveAt: Date.now(),
-    remoteBaseUrl: null
+    remoteBaseUrl: null,
+    // URL/cloud profiles from one registry source use the same endpoint and
+    // credentials. SSH profiles own distinct tunnels and must probe alone.
+    sharedProbeKey: source.kind === 'ssh' ? null : source.id
   }
 
   entry.connectionPromise = connectRegistryBackend(

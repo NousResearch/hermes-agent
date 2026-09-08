@@ -17,9 +17,7 @@ export interface RemoteLivenessFailure {
 
 interface RemoteConnectionDescriptor {
   baseUrl?: null | string
-  connectionId?: null | string
   mode?: null | string
-  sharedRemote?: boolean
 }
 
 export interface RevalidateRemoteConnectionOptions<TConnection extends RemoteConnectionDescriptor> {
@@ -178,6 +176,8 @@ export interface PooledRemoteEntry<TConnection extends RemoteConnectionDescripto
   connectionPromise?: null | Promise<TConnection>
   process?: unknown
   remoteBaseUrl?: null | string
+  /** Producer-owned identity for descriptors that make the same authenticated request. */
+  sharedProbeKey?: null | string
 }
 
 export interface RevalidatePooledRemoteBackendsOptions<TConnection extends RemoteConnectionDescriptor> {
@@ -208,49 +208,55 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
   tracker
 }: RevalidatePooledRemoteBackendsOptions<TConnection>): Promise<{ dropped: string[] }> {
   const remotes = [...entries].filter(([, entry]) => !entry.process && entry.remoteBaseUrl)
-  const probeGroups = new Map<string, { connection: TConnection; profiles: string[] }>()
+  const probeGroups = new Map<string, typeof remotes>()
   const dropped: string[] = []
 
   for (const [profile, entry] of remotes) {
-    if (!entry.connectionPromise) {
-      log(`Pooled remote backend for profile "${profile}" has no connection descriptor; dropping stale entry.`)
-      stopBackend(profile)
-      dropped.push(profile)
-
-      continue
-    }
-
-    let connection: TConnection
-
-    try {
-      connection = await entry.connectionPromise
-    } catch {
-      log(`Pooled remote backend for profile "${profile}" has an unavailable connection descriptor; dropping stale entry.`)
-      stopBackend(profile)
-      dropped.push(profile)
-
-      continue
-    }
-
     const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
-    const connectionId = String(connection.connectionId ?? '').trim()
-    const sharesProbe = connection.sharedRemote === true && connectionId.length > 0
-    const failureKey = sharesProbe ? `shared:${connectionId}:${baseUrl}` : `profile:${profile}:${baseUrl}`
-    const group = probeGroups.get(failureKey)
+    const sharedProbeKey = String(entry.sharedProbeKey ?? '').trim()
+    const failureKey = sharedProbeKey ? `shared:${sharedProbeKey}:${baseUrl}` : `profile:${profile}:${baseUrl}`
+    const group = probeGroups.get(failureKey) ?? []
 
-    if (group) {
-      group.profiles.push(profile)
-    } else {
-      probeGroups.set(failureKey, { connection, profiles: [profile] })
-    }
+    group.push([profile, entry])
+    probeGroups.set(failureKey, group)
   }
 
   await Promise.all(
-    [...probeGroups].map(async ([failureKey, group]) => {
-      const profile = group.profiles[0]
+    [...probeGroups].map(async ([failureKey, members]) => {
+      const availableProfiles: string[] = []
+      let connection: TConnection | null = null
+
+      for (const [profile, entry] of members) {
+        if (!entry.connectionPromise) {
+          log(`Pooled remote backend for profile "${profile}" has no connection descriptor; dropping stale entry.`)
+          stopBackend(profile)
+          dropped.push(profile)
+
+          continue
+        }
+
+        try {
+          const resolved = await entry.connectionPromise
+
+          connection ??= resolved
+          availableProfiles.push(profile)
+        } catch {
+          log(
+            `Pooled remote backend for profile "${profile}" has an unavailable connection descriptor; dropping stale entry.`
+          )
+          stopBackend(profile)
+          dropped.push(profile)
+        }
+      }
+
+      if (!connection) {
+        return
+      }
+
+      const profile = availableProfiles[0]
 
       try {
-        await probe(group.connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+        await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
         tracker.recordSuccess(failureKey)
       } catch {
         const failure = tracker.recordFailure(failureKey)
@@ -265,7 +271,7 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
 
         log(`Pooled remote backend for profile "${profile}" failed liveness probe; dropping stale descriptor.`)
 
-        for (const siblingProfile of group.profiles) {
+        for (const siblingProfile of availableProfiles) {
           stopBackend(siblingProfile)
           dropped.push(siblingProfile)
         }

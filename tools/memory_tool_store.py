@@ -28,6 +28,22 @@ def _scan_memory_content(content: str) -> Optional[str]:
     return _first_threat_message(content, scope="strict")
 
 
+def _scan_operations(operations: List[Dict[str, Any]]) -> Optional[str]:
+    """First ``Operation N: <threat error>`` in a batch, or None.
+
+    Shared by the write-time guard in ``memory_tool`` and by ``apply_batch`` so the
+    approval gate cannot change the verdict: content refused when the gate is off must
+    be refused before staging when it is on. Reads the ``new_text`` alias too —
+    ``_apply_batch_op`` applies it, so scanning only ``content`` left a bypass."""
+    for i, op in enumerate(operations):
+        op = op if isinstance(op, dict) else {}
+        if op.get("action") in {"add", "replace"}:
+            content = op.get("content") or op.get("new_text")
+            if content and (scan_error := _scan_memory_content(content)):
+                return f"Operation {i + 1}: {scan_error}"
+    return None
+
+
 def _error(message: str, **extra) -> Dict[str, Any]:
     return {"success": False, "error": message, **extra}
 
@@ -304,10 +320,10 @@ class MemoryStore:
             return _error("operations list is empty.")
         ops = [op or {} for op in operations]
         # Scan every add/replace content BEFORE touching disk -- one poisoned op rejects the batch.
-        for i, op in enumerate(ops):
-            scan_error = op.get("action") in {"add", "replace"} and op.get("content") and _scan_memory_content(op["content"])
-            if scan_error:
-                return _error(f"Operation {i + 1}: {scan_error}")
+        # Also runs at the tool boundary (ahead of the approval gate); kept here because
+        # apply_memory_pending() and direct store callers reach this method without it.
+        if scan_error := _scan_operations(ops):
+            return _error(scan_error)
 
         def _apply(entries, limit):
             working = list(entries)  # only committed if the whole batch validates

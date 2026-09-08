@@ -1303,6 +1303,7 @@ export interface LocalModelsStatus {
 
 export interface LocalHardware {
   uma: boolean
+  cpu_only?: boolean
   vram_total_bytes: number
   vram_usable_bytes: number
   ram_total_bytes: number

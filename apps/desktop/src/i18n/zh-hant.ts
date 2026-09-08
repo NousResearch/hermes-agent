@@ -1052,6 +1052,7 @@ export const zhHant = defineLocale({
       vram: label => `${label} 顯示記憶體`,
       ram: label => `${label} 記憶體`,
       unifiedMemory: '統一記憶體',
+      cpuOnlyMemory: '僅 CPU — 未偵測到 GPU',
       modelsTitle: '模型',
       recommended: '推薦',
       recommendedReason: {

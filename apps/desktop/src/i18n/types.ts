@@ -1031,6 +1031,7 @@ export interface Translations {
       vram: (label: string) => string
       ram: (label: string) => string
       unifiedMemory: string
+      cpuOnlyMemory: string
       modelsTitle: string
       recommended: string
       /** Recommended-badge tooltip by resolver branch; unknown keys (newer

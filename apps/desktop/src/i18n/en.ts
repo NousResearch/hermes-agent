@@ -1188,6 +1188,7 @@ export const en: Translations = {
       vram: label => `${label} GPU memory`,
       ram: label => `${label} RAM`,
       unifiedMemory: 'Unified memory',
+      cpuOnlyMemory: 'CPU only — no GPU detected',
       modelsTitle: 'Models',
       recommended: 'Recommended',
       /* The Recommended badge's tooltip, keyed by the resolver branch that

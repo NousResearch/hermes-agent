@@ -505,9 +505,16 @@ def local_models_hardware():
     """The budget as plain facts, polled by the pane and statusbar. Sync def: shells out to nvidia-smi — threadpool."""
     budget = hardware.probe_budget()
     ram_total, ram_avail = hardware._ram_bytes()
+    # CPU-only hosts have no VRAM; vram fields stay 0 so the UI doesn't claim
+    # "31GB GPU memory" on a machine with no GPU (#105389).
+    is_cpu_only = bool(getattr(budget, "cpu_only", False))
     out = {
-        "uma": budget.uma, "vram_total_bytes": budget.total_device_bytes, "vram_usable_bytes": budget.usable_vram_bytes,
-        "ram_total_bytes": ram_total, "ram_available_bytes": ram_avail, "vram_label": _human_gb(budget.total_device_bytes),
+        "uma": budget.uma,
+        "cpu_only": is_cpu_only,
+        "vram_total_bytes": 0 if is_cpu_only else budget.total_device_bytes,
+        "vram_usable_bytes": 0 if is_cpu_only else budget.usable_vram_bytes,
+        "ram_total_bytes": ram_total, "ram_available_bytes": ram_avail,
+        "vram_label": _human_gb(0 if is_cpu_only else budget.total_device_bytes),
         "gpu_name": None, "gpu_util_percent": None, "vram_used_bytes": None,
     }
     out.update(_quiet(_nvidia_smi_facts, {}))

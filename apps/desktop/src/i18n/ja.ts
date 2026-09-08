@@ -1092,6 +1092,7 @@ export const ja = defineLocale({
       vram: label => `GPU メモリ ${label}`,
       ram: label => `RAM ${label}`,
       unifiedMemory: 'ユニファイドメモリ',
+      cpuOnlyMemory: 'CPU のみ — GPU なし',
       modelsTitle: 'モデル',
       recommended: 'おすすめ',
       recommendedReason: {

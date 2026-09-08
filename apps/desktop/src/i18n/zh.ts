@@ -1387,6 +1387,7 @@ export const zh: Translations = {
       vram: label => `${label} 显存`,
       ram: label => `${label} 内存`,
       unifiedMemory: '统一内存',
+      cpuOnlyMemory: '仅 CPU — 未检测到 GPU',
       modelsTitle: '模型',
       recommended: '推荐',
       recommendedReason: {

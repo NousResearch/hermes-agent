@@ -181,9 +181,15 @@ PLEASANT_FLOOR_TOK_S = 20.0
 def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant, budget: HardwareBudget, *,
                            spilled: bool = False) -> float:
     """Memory-bound decode prediction for ordering and floor-gating."""
-    bandwidth = (_HOST_BANDWIDTH_GB_S if spilled
-                 else _UMA_BANDWIDTH_GB_S if budget.uma
-                 else _DISCRETE_BANDWIDTH_GB_S)
+    # Pure CPU hosts (no GPU) stream from host RAM even when select_variant
+    # marks them as resident against the UMA pool — use host bandwidth so
+    # the recommendation doesn't claim GPU-like speed on a CPU (#105389).
+    if getattr(budget, "cpu_only", False):
+        bandwidth = _HOST_BANDWIDTH_GB_S
+    else:
+        bandwidth = (_HOST_BANDWIDTH_GB_S if spilled
+                     else _UMA_BANDWIDTH_GB_S if budget.uma
+                     else _DISCRETE_BANDWIDTH_GB_S)
     bytes_per_token = max(1.0, variant.size_bytes * entry.decode_fraction)
     return bandwidth * 1e9 / bytes_per_token
 

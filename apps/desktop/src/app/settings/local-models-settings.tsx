@@ -530,17 +530,27 @@ export function LocalModelsSettings() {
               </span>
             )}
 
-            <span className="inline-flex items-center gap-1.5">
-              <Cpu className="size-3.5" />
-              {copy.vram(gbLabel(hardware.vram_total_bytes))}
-            </span>
+            {hardware.cpu_only ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Cpu className="size-3.5" />
+                {copy.ram(gbLabel(hardware.ram_total_bytes))}
+              </span>
+            ) : (
+              <>
+                <span className="inline-flex items-center gap-1.5">
+                  <Cpu className="size-3.5" />
+                  {copy.vram(gbLabel(hardware.vram_total_bytes))}
+                </span>
 
-            <span className="inline-flex items-center gap-1.5">
-              <Package className="size-3.5" />
-              {copy.ram(gbLabel(hardware.ram_total_bytes))}
-            </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <Package className="size-3.5" />
+                  {copy.ram(gbLabel(hardware.ram_total_bytes))}
+                </span>
+              </>
+            )}
 
-            {hardware.uma && <Pill>{copy.unifiedMemory}</Pill>}
+            {hardware.uma && !hardware.cpu_only && <Pill>{copy.unifiedMemory}</Pill>}
+            {hardware.cpu_only && <Pill>{copy.cpuOnlyMemory}</Pill>}
           </div>
         ) : (
           <p className="py-1 text-[length:var(--conversation-caption-font-size)] text-muted-foreground">

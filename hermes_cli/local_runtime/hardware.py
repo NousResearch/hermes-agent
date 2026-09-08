@@ -250,10 +250,10 @@ def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
     return None
 
 
-def _uma_budget(base: int, total: int) -> HardwareBudget:
+def _uma_budget(base: int, total: int, *, cpu_only: bool = False) -> HardwareBudget:
     usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
     return HardwareBudget(usable_vram_bytes=usable, total_device_bytes=total,
-                          ram_available_bytes=0, uma=True)
+                          ram_available_bytes=0, uma=True, cpu_only=cpu_only)
 
 
 def probe_budget(*, planning: bool = False) -> HardwareBudget:
@@ -290,9 +290,30 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
         return _uma_budget(base, unified)
 
     if vram is None:
-        # No NVIDIA device visible: Metal/Vulkan/CPU paths budget from RAM as UMA (Apple
-        # Silicon) — conservative for discrete AMD until a vendor probe lands.
-        return _uma_budget(ram_total if planning else ram_avail, ram_total)
+        # No NVIDIA device visible: distinguish Apple Silicon (unified, high
+        # bandwidth) from pure CPU hosts (weights stream over host RAM).
+        # On macOS the unified pool is real GPU memory; on Windows/Linux
+        # without a GPU, treat RAM as host memory so the recommendation
+        # prices CPU inference at host bandwidth and avoids claiming
+        # "GPU memory" that doesn't exist (issue #105389).
+        if sys.platform == "darwin":
+            return _uma_budget(ram_total if planning else ram_avail, ram_total)
+        # If the allocator reports a pool (CUDA driver or engine) but without
+        # an INTEGRATED verdict, preserve the conservative RAM-as-UMA fallback
+        # tested in test_engine_fallback_without_smi_stays_conservative: a
+        # pool claim alone must not flip the verdict, and a pure CPU host has
+        # no pool at all.
+        view = _device_pool_view()
+        if view is not None:
+            return _uma_budget(ram_total if planning else ram_avail, ram_total)
+        # Pure CPU: no VRAM and no allocator pool — models spill from host
+        # RAM, priced at HOST bandwidth, and the UI will not claim GPU memory.
+        return HardwareBudget(
+            usable_vram_bytes=0,
+            total_device_bytes=0,
+            ram_available_bytes=ram_total if planning else ram_avail,
+            uma=False,
+            cpu_only=True)
 
     total, free = vram
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))

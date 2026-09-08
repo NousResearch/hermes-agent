@@ -71,6 +71,9 @@ class HardwareBudget:
     total_device_bytes: int
     ram_available_bytes: int
     uma: bool = False
+    # True when the budget represents a pure CPU host with no GPU — weights stream
+    # from host RAM over the system bus. Used for bandwidth-aware recommendations.
+    cpu_only: bool = False
 
 
 def profile_from_gguf(header: GGUFHeader) -> ModelProfile:

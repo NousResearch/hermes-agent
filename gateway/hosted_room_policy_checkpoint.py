@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from gateway import hosted_rooms
-from gateway.hosted_rooms_common import DbPath, compact_json, fenced_update
+from gateway.hosted_rooms_common import DbPath, compact_json, fenced_update, table_exists
 
 
 MAX_ACTIVE_POLICY_EVENTS = 64
@@ -246,10 +246,42 @@ class HostedRoomPolicyCheckpoint:
                SET stopped_through_seq=MAX(stopped_through_seq, ?) WHERE room_id=?""",
             (int(event["seq"]), str(event["room_id"])))
 
+    @staticmethod
+    def _recovery_record(conn, room_id):
+        from gateway.hosted_room_manual_promotion_schema import TABLE
+        return conn.execute(f"SELECT * FROM {TABLE} WHERE room_id=?", (room_id,)).fetchone() if table_exists(conn, TABLE) else None
+
+    @staticmethod
+    def _checked_recovery_floor(record, event, payload):
+        if (record is None or record["status"] != "active"
+                or event["actor"] != {"kind": "system", "id": "authority-control"}
+                or event["seq"] != record["history_seq"] + 1
+                or event["authority_epoch"] != record["source_epoch"] + 1
+                or type(payload.get("authority_epoch")) is not int
+                or any(payload.get(key) != expected for key, expected in {
+                    "recovery_id": record["recovery_id"], "saved_recovery_point": record["snapshot_id"],
+                    "previous_gateway_id": record["source_gateway_id"],
+                    "authority_gateway_id": record["target_gateway_id"],
+                    "authority_epoch": record["source_epoch"] + 1,
+                }.items())):
+            raise RuntimeError("The Group Chat recovery record is missing, changed, or not ready.")
+        return int(event["seq"])
+
+    def _apply_authority_claim(self, conn, event, payload):
+        if "recovery_id" not in payload:
+            return
+        record = self._recovery_record(conn, event["room_id"])
+        if record is not None and event["seq"] <= record["history_seq"]:
+            return  # A previous recovery is part of this decision's saved prefix.
+        self._checked_recovery_floor(record, event, payload)
+        # This is a planning floor, not a claim that earlier tool effects were
+        # cancelled. Their exact saved work records remain in the recovery row.
+        self._apply_stop_requested(conn, event, payload)
+
     _APPLY_BY_KIND: dict[str, Callable[..., None]] = {
         "message.user": _apply_user_message, "message.member": _apply_discussion_event,
         **dict.fromkeys(_TERMINAL_KINDS, _apply_discussion_event), "room.activity": _apply_room_activity,
-        "room.stop_requested": _apply_stop_requested}
+        "room.stop_requested": _apply_stop_requested, "authority.claimed": _apply_authority_claim}
 
     def _apply_event(self, conn: sqlite3.Connection, event: Mapping[str, Any]) -> None:
         handler = self._APPLY_BY_KIND.get(_text(event, "kind"))
@@ -306,9 +338,20 @@ class HostedRoomPolicyCheckpoint:
         """Return only the oldest active discussion and its watermark set."""
         through_seq = self.sync(room_id=room_id, latest_seq=latest_seq)
         with self._connect() as conn:
+            conn.execute("BEGIN")
+            _require_room(conn, room_id)
             cursor = conn.execute(
                 "SELECT stopped_through_seq FROM hosted_room_policy_cursors WHERE room_id=?", (room_id,)).fetchone()
             stopped_through_seq = int(cursor["stopped_through_seq"])
+            recovery = self._recovery_record(conn, room_id)
+            if recovery is not None:
+                claim = conn.execute(f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND seq=?",
+                                     (room_id, recovery["history_seq"] + 1)).fetchone()
+                if claim is None:
+                    raise RuntimeError("The Group Chat recovery claim is missing.")
+                event = _event_from_room_row(claim)
+                stopped_through_seq = max(stopped_through_seq,
+                    self._checked_recovery_floor(recovery, event, event["payload"]))
             thread = conn.execute("""SELECT thread_id, discussion_event_id FROM hosted_room_policy_threads
                    WHERE room_id=? AND completed=0 AND latest_user_seq>?
                    ORDER BY latest_user_seq, thread_id LIMIT 1""", (room_id, stopped_through_seq)).fetchone()

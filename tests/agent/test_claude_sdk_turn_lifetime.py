@@ -452,7 +452,7 @@ class TestTurnLifetime:
         # callback captures the watch object at entry; a stale decrement
         # lands on the dead watch.
         _plant_claude_agent_sdk_stand_in(monkeypatch)
-        from agent.transports import claude_agent_sdk_session as session_mod
+        from agent.transports import claude_agent_sdk_session_watchdog as session_mod
 
         release = threading.Event()
 
@@ -503,9 +503,7 @@ class TestTurnLifetimeConfig:
         )
 
     def test_turn_timeout_reader_validation(self, monkeypatch):
-        from agent.transports.claude_agent_sdk_session import (
-            _configured_turn_timeout,
-        )
+        from agent.transports.claude_agent_sdk_session_config import _configured_turn_timeout
 
         self._patch_block(monkeypatch, {"turn_timeout": 1500})
         assert _configured_turn_timeout() == 1500.0
@@ -520,7 +518,7 @@ class TestTurnLifetimeConfig:
         assert _configured_turn_timeout() is None
 
     def test_post_tool_quiet_reader_validation(self, monkeypatch):
-        from agent.transports.claude_agent_sdk_session import (
+        from agent.transports.claude_agent_sdk_session_config import (
             _configured_post_tool_quiet_timeout,
         )
 
@@ -577,7 +575,7 @@ class TestTurnLifetimeConfig:
         # Deterministic unit coverage of the verdict rules (no threads).
         # Module-LOCAL time shadow — patching stdlib time.monotonic
         # process-wide would freeze asyncio loop clocks in concurrent tests.
-        from agent.transports import claude_agent_sdk_session as session_mod
+        from agent.transports import claude_agent_sdk_session_watchdog as session_mod
 
         clock = {"now": 1000.0}
         monkeypatch.setattr(

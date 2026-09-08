@@ -368,18 +368,18 @@ class TestHybridServerBuild:
 
 class TestConfiguredHybridExclude:
     def _patch_provider_config(self, monkeypatch, value):
-        from agent.transports import claude_agent_sdk_session as mod
+        from agent.transports import claude_agent_sdk_session_config as mod
 
         monkeypatch.setattr(mod, "_provider_config", lambda: {"hybrid_mcp_bridge_exclude": value})
 
     def test_default_empty_list_when_missing(self, monkeypatch):
-        from agent.transports import claude_agent_sdk_session as mod
+        from agent.transports import claude_agent_sdk_session_config as mod
 
         monkeypatch.setattr(mod, "_provider_config", lambda: {})
         assert mod._configured_hybrid_exclude() == []
 
     def test_returns_stripped_deduped_names(self, monkeypatch):
-        from agent.transports import claude_agent_sdk_session as mod
+        from agent.transports import claude_agent_sdk_session_config as mod
 
         self._patch_provider_config(
             monkeypatch,
@@ -391,13 +391,13 @@ class TestConfiguredHybridExclude:
         ]
 
     def test_non_list_returns_empty(self, monkeypatch):
-        from agent.transports import claude_agent_sdk_session as mod
+        from agent.transports import claude_agent_sdk_session_config as mod
 
         self._patch_provider_config(monkeypatch, "delegate_task")
         assert mod._configured_hybrid_exclude() == []
 
     def test_non_string_entries_dropped(self, monkeypatch):
-        from agent.transports import claude_agent_sdk_session as mod
+        from agent.transports import claude_agent_sdk_session_config as mod
 
         self._patch_provider_config(monkeypatch, ["delegate_task", 42, None, ""])
         assert mod._configured_hybrid_exclude() == ["delegate_task"]
@@ -414,7 +414,7 @@ class TestHybridBridgeEnabledGate:
 
     def test_default_disabled(self, monkeypatch):
         from agent import claude_sdk_runtime as runtime
-        from agent.transports import claude_agent_sdk_session as sess
+        from agent.transports import claude_agent_sdk_session_config as sess
 
         monkeypatch.setattr(sess, "_provider_config", lambda: {})
         assert runtime._hybrid_bridge_enabled() is False
@@ -423,6 +423,7 @@ class TestHybridBridgeEnabledGate:
         self, monkeypatch, fake_sdk, stub_invoke_deps
     ):
         from agent.transports import claude_agent_sdk_session as sess
+        from agent.transports import claude_agent_sdk_session_config as sess_cfg
 
         http_loader = types.SimpleNamespace(calls=0)
 
@@ -435,7 +436,7 @@ class TestHybridBridgeEnabledGate:
                 }
             }
 
-        monkeypatch.setattr(sess, "_provider_config", lambda: {})
+        monkeypatch.setattr(sess_cfg, "_provider_config", lambda: {})
         monkeypatch.setattr(sess, "_http_mcp_entries_from_config", _load_http)
         session = sess.ClaudeAgentSdkSession(
             cwd="/tmp",
@@ -452,9 +453,10 @@ class TestHybridBridgeEnabledGate:
         self, monkeypatch, fake_sdk, stub_invoke_deps
     ):
         from agent.transports import claude_agent_sdk_session as sess
+        from agent.transports import claude_agent_sdk_session_config as sess_cfg
 
         monkeypatch.setattr(
-            sess, "_provider_config", lambda: {"hybrid_mcp_bridge": True}
+            sess_cfg, "_provider_config", lambda: {"hybrid_mcp_bridge": True}
         )
         monkeypatch.setattr(
             sess,
@@ -482,7 +484,7 @@ class TestHybridBridgeEnabledGate:
 
     def test_enabled_when_flag_true(self, monkeypatch):
         from agent import claude_sdk_runtime as runtime
-        from agent.transports import claude_agent_sdk_session as sess
+        from agent.transports import claude_agent_sdk_session_config as sess
 
         monkeypatch.setattr(
             sess, "_provider_config", lambda: {"hybrid_mcp_bridge": True}
@@ -494,7 +496,7 @@ class TestHybridBridgeEnabledGate:
         strings don't silently degrade to ``bool("true") = True`` semantics
         the operator didn't intend — pin the behaviour."""
         from agent import claude_sdk_runtime as runtime
-        from agent.transports import claude_agent_sdk_session as sess
+        from agent.transports import claude_agent_sdk_session_config as sess
 
         monkeypatch.setattr(
             sess, "_provider_config", lambda: {"hybrid_mcp_bridge": "true"}

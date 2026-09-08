@@ -123,6 +123,9 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
         return tool_error("operations must be a non-empty array.", success=False)
     if len(operations) > _BATCH_MAX_OPS:
         return tool_error(f"operations is capped at {_BATCH_MAX_OPS} ops per call.", success=False)
+    # Work on copies: author normalization is part of the staged payload, but
+    # skill_manage must not mutate the caller's operation dictionaries.
+    operations = [dict(op) if isinstance(op, dict) else op for op in operations]
     if any(isinstance(op, dict) and op.get("action") == "delete" for op in operations):
         if len(operations) != 1:
             return tool_error("delete must be the SOLE op in its call — it doesn't "
@@ -135,6 +138,12 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
     names, err = _validate_batch_ops(operations, default_name, tool_error)
     if err is not None:
         return err
+    for i, op in enumerate(operations):
+        if isinstance(op, dict) and op.get("action") == "create" and op.get("content"):
+            normalized, author_error = _smt._ensure_new_skill_author(op["content"])
+            if author_error:
+                return tool_error(f"operations[{i}]: {author_error}", success=False)
+            op["content"] = normalized
     if not _smt._skill_gate_bypass.get():
         # Approval gate for the WHOLE batch as one pending write.
         def _staging(wa):

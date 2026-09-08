@@ -1327,6 +1327,11 @@ DEFAULT_CONFIG = {
         # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to
         # HERMES_HOME, scanned alongside the local dir.
         "create_dir": "",
+        # Optional provenance policy for new locally created skills. When set,
+        # local creation surfaces inject this author when absent and reject a
+        # conflicting explicit author. Hub installs and existing skills are
+        # unchanged. Empty = disabled.
+        "required_author": "",
         # In a git checkout, <root>/.hermes/skills/ and <root>/.agents/skills/ load as the
         # highest-precedence tier — ONLY if the root is in trusted_project_dirs. false = no scan, no
         # untrusted-skills notice.

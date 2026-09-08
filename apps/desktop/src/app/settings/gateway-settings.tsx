@@ -29,6 +29,7 @@ import { notify, notifyError, readableError } from '@/store/notifications'
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
 import { ManagedUpdatesSection } from './managed-updates-section'
+import { MobileCompanionPairing } from './mobile-companion-pairing'
 import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
 
@@ -1567,6 +1568,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
           connection controls. Hidden in the embedded (boot-recovery) form. */}
       {embedded ? null : (
         <>
+          <MobileCompanionPairing />
           <ConnectionsRegistrySection />
           {/* Per-connection driver for the transactional managed SSH update
               engine (#95942). Renders only when SSH sources are registered and

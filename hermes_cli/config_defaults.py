@@ -887,6 +887,7 @@ DEFAULT_CONFIG = {
             "wecom": {"streaming": True},
         },
         # Gateway runtime footer on the FINAL message, e.g. `model · 68% · ~/projects/hermes`.
+        # Fields: model, context_pct, tokens (session total), cost (known estimate), latency, cwd.
         # Per-platform: display.platforms.<platform>.runtime_footer.
         "runtime_footer": {
             "enabled": False,

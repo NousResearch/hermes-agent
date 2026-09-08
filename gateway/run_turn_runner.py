@@ -1745,6 +1745,9 @@ class TurnRunner:
             "last_prompt_tokens": getattr(comp, "last_prompt_tokens", 0) if has_comp else 0,
             "input_tokens": getattr(agent, "session_prompt_tokens", 0) if has_comp else 0,
             "output_tokens": getattr(agent, "session_completion_tokens", 0) if has_comp else 0,
+            "total_tokens": getattr(agent, "session_total_tokens", 0) if agent else 0,
+            "estimated_cost_usd": getattr(agent, "session_estimated_cost_usd", None) if agent else None,
+            "cost_status": getattr(agent, "session_cost_status", None) if agent else None,
             "model": getattr(agent, "model", None) if agent else None,
             "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
         }

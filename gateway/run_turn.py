@@ -1465,6 +1465,9 @@ class GatewayTurnMixin:
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                 context_length=agent_result.get("context_length") or None,
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
+                total_tokens=agent_result.get("total_tokens"),
+                estimated_cost_usd=agent_result.get("estimated_cost_usd"),
+                cost_status=agent_result.get("cost_status"),
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)

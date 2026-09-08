@@ -478,7 +478,11 @@ def _cached_only_pricing(normalized: str) -> dict[str, dict[str, str]]:
     cache_key = _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized))
     if cache_key is None and normalized in ("openrouter", "ai-gateway", "fireworks"):
         cache_key = _STATIC_PRICING_SCOPES[normalized]()
-    return (_cached_catalog(cache_key) or {}) if cache_key else {}
+    # The catalog is cached per credential under base_url + "\x00auth:<fingerprint>"
+    # (two credentials never share an entry), so a bare-url lookup misses every
+    # authenticated read. peek_cached_pricing scans the authed-prefixed entries
+    # first and falls back to the bare key — the same precedence fetch uses.
+    return peek_cached_pricing(cache_key) if cache_key else {}
 
 
 def get_pricing_for_provider(

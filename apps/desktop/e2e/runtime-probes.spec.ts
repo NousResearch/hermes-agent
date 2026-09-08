@@ -130,9 +130,19 @@ test('runtime import probe can complete I/O with its actual Electron parent', as
       .split('\n')
       .map(line => JSON.parse(line))
 
+    // The launch handle's PID can differ from Electron main on Windows. Use
+    // the browser process executing this callback: its I/O must stay live.
+    const main = await running.app.evaluate(() => ({
+      pid: process.pid,
+      type: (process as NodeJS.Process & { type?: string }).type,
+      electron: process.versions.electron
+    }))
+
+    expect(main.type).toBe('browser')
+    expect(main.electron).toBeTruthy()
     expect(reply.home).toBe(sandbox.hermesHome)
-    expect(reply.pid).not.toBe(running.app.process().pid)
-    expect(reply.parent_pid).toBe(running.app.process().pid)
+    expect(reply.pid).not.toBe(main.pid)
+    expect(reply.parent_pid).toBe(main.pid)
     expect(accepted).toContainEqual({ parentPid: reply.parent_pid, childPid: reply.pid })
     expect(fs.existsSync(path.join(hook, 'failed.txt'))).toBe(false)
     await waitForAppReady({ ...running, mock, mockUrl: mock.url, sandbox, cleanup: async () => {} })

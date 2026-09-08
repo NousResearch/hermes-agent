@@ -14,6 +14,8 @@ from agent.claude_sdk_runtime_context import (
     _sync_context_length_from_cli,
 )
 
+from agent.claude_sdk_runtime_state import _SdkTurnState
+
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("agent.claude_sdk_runtime")
 
@@ -202,3 +204,40 @@ def _record_claude_sdk_usage(agent, turn) -> dict[str, Any]:
         "cost_status": cost_status,
         "cost_source": cost_source,
     }
+
+
+def _account_turn(agent, state: _SdkTurnState) -> None:
+    """Post-turn accounting: the skill-nudge counter, usage attribution, the
+    skill-review cadence and the external memory sync."""
+    turn = state.turn
+    # Counter ticks — _turns_since_memory/_user_turn_count are incremented by
+    # run_conversation()'s pre-loop block; only _iters_since_skill is ours.
+    agent._iters_since_skill = (
+        getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
+    )
+    state.usage_result = (
+        _record_claude_sdk_usage(agent, turn)
+        if getattr(turn, "api_call_made", True)
+        else {}
+    )
+
+    state.should_review_skills = False
+    # Skill-review cadence belongs to review policy, not foreground tool
+    # availability. If routed, a distinct normal runtime owns optional writes.
+    if (
+        agent._skill_nudge_interval > 0
+        and agent._iters_since_skill >= agent._skill_nudge_interval
+    ):
+        state.should_review_skills = True
+        agent._iters_since_skill = 0
+
+    if not turn.interrupted and turn.error is None:
+        try:
+            agent._sync_external_memory_for_turn(
+                original_user_message=state.original_user_message,
+                final_response=turn.final_text,
+                interrupted=False,
+                messages=state.messages,
+            )
+        except Exception:
+            logger.debug("external memory sync raised", exc_info=True)

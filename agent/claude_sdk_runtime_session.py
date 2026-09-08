@@ -14,10 +14,17 @@ import functools
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
+from agent.redact import redact_sensitive_text
 from agent.claude_sdk_runtime_compaction import _on_compact_boundary, _on_compaction
+from agent.claude_sdk_runtime_continuity import (
+    _persisted_sdk_session_id,
+    _render_continuity_digest,
+    _store_sdk_session_id,
+)
 from agent.claude_sdk_runtime_prompt import build_system_prompt_append
+from agent.claude_sdk_runtime_state import _SdkTurnState
 from agent.claude_sdk_runtime_tools import (
     _hybrid_bridge_enabled,
     _snapshot_agent_tools_with_mcp_refresh,
@@ -436,3 +443,127 @@ def _create_session(
             )
     except Exception:
         logger.debug("effective-prompt snapshot failed", exc_info=True)
+
+
+def _refresh_turn_visibility(agent, state: _SdkTurnState) -> None:
+    """Per-turn: fresh visibility callbacks, pushed onto an already-live session."""
+    state.on_interim_assistant, state.on_tool_iteration = _make_visibility_callbacks(agent)
+    live_session = getattr(agent, "_claude_sdk_session", None)
+    if live_session is not None:
+        try:
+            live_session.set_turn_visibility_callbacks(
+                on_interim_assistant=state.on_interim_assistant,
+                on_tool_iteration=state.on_tool_iteration,
+            )
+        except Exception:
+            logger.debug("claude-sdk visibility callback refresh failed", exc_info=True)
+
+
+def _run_sdk_attempts(agent, state: _SdkTurnState) -> Optional[Dict[str, Any]]:
+    """Drive the turn through the session: resume when an id is persisted,
+    retire and retry ONCE with the continuity digest on a failed or stale
+    resume.
+
+    Sets ``state.turn`` / ``state.resumed``. Returns the failed result dict
+    when the session RAISED (a dead turn, not a recoverable partial), else
+    None.
+    """
+    user_input = state.user_input
+    messages = state.messages
+    turn = None
+    resumed = False
+    send_input = user_input
+    for attempt in (0, 1):
+        if not hasattr(agent, "_claude_sdk_session") or agent._claude_sdk_session is None:
+            resume_id = _persisted_sdk_session_id(agent) if attempt == 0 else None
+            resumed = bool(resume_id)
+            send_input = user_input
+            if not resume_id and len(messages) > 1:
+                digest = _render_continuity_digest(messages[:-1])
+                if digest:
+                    if isinstance(user_input, list):
+                        send_input = [
+                            {"type": "text", "text": digest},
+                            *user_input,
+                        ]
+                    else:
+                        send_input = digest + user_input
+            _create_session(
+                agent,
+                resume_id=resume_id,
+                on_interim_assistant=state.on_interim_assistant,
+                on_tool_iteration=state.on_tool_iteration,
+            )
+
+        try:
+            turn = agent._claude_sdk_session.run_turn(user_input=send_input)
+        except Exception as exc:
+            safe_exc = redact_sensitive_text(str(exc), force=True)
+            # A PreCompact hook may have opened a transient user-visible status.
+            # This exception bypasses the normal terminal edge below; clear it
+            # here so a later unrelated turn cannot announce stale completion.
+            if getattr(agent, "_sdk_compaction_pending", False):
+                agent._sdk_compaction_pending = False
+                try:
+                    emit = getattr(agent, "_emit_status", None)
+                    if callable(emit):
+                        emit("⚠️ Context compaction interrupted")
+                except Exception:
+                    logger.debug("failed to close interrupted compaction status", exc_info=True)
+            # Do not use logger.exception here: it appends the raw exception
+            # string after the redacted message to the log record.
+            logger.error("claude-agent-sdk turn failed: %s", safe_exc)
+            try:
+                agent._claude_sdk_session.close()
+            except Exception:
+                pass
+            agent._claude_sdk_session = None
+            if resumed and attempt == 0:
+                # A raising RESUMED session is a suspect resume — clear the
+                # id and give the turn one fresh chance (digest included).
+                _store_sdk_session_id(agent, None)
+                resumed = False
+                continue
+            return {
+                "final_response": f"claude-agent-sdk turn failed: {safe_exc}",
+                "messages": messages,
+                "api_calls": 0,
+                "completed": False,
+                "partial": True,
+                # run_turn consumes its own exceptions into TurnResult, so
+                # anything RAISING here is a dead turn, not a recoverable
+                # partial — mark it failed so one-shot runs exit nonzero
+                # (mirrors conversation_loop's generic non-retryable return).
+                "failed": True,
+                "error": safe_exc,
+            }
+
+        if getattr(turn, "should_retire", False):
+            logger.warning(
+                "claude-agent-sdk session retired (turn error: %s)",
+                redact_sensitive_text(str(turn.error or ""), force=True),
+            )
+            try:
+                agent._claude_sdk_session.close()
+            except Exception:
+                pass
+            agent._claude_sdk_session = None
+            # Error/timeout retire always clears the persisted resume id —
+            # never resume a conversation that just failed.
+            _store_sdk_session_id(agent, None)
+            if (
+                resumed
+                and attempt == 0
+                and not getattr(turn, "interrupted", False)
+            ):
+                # Stale/failed resume: one fresh retry with digest. Never for
+                # an INTERRUPTED retire (user /stop that killed the CLI, or a
+                # hard watchdog trip) — re-running the stopped turn in full
+                # would evaporate the stop and deliver the answer anyway.
+                resumed = False
+                continue
+        break
+
+    state.turn = turn
+    state.resumed = resumed
+    return None

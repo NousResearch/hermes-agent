@@ -1835,13 +1835,18 @@ DEFAULT_CONFIG = {
         "providers": {},
     },
     # Per-model metadata overrides. Fields: context_window, supports_tools,
-    # supports_vision, supports_reasoning, model_family. <provider>.<model_id> wins over
+    # supports_vision, supports_reasoning, model_family, canonical_model. <provider>.<model_id> wins over
     # models.dev/OpenRouter/hardcoded defaults for the fields it sets (chain order in
     # agent/model_metadata.py). <provider>._default and top-level _default fill gaps ONLY for models
     # the catalog does not know, so they never clamp known models. Unknown ids start from safe
     # defaults (200K context, tools on, vision/reasoning off) and get patched. Provider keys: Hermes
     # or models.dev id; model ids match case-insensitively. Example: {"custom:my-local-vllm":
     # {"my-llava-model": {"context_window": 8192}}}
+    # Custom-endpoint aliases (routers/proxies): `supports_reasoning: true` opts the alias into
+    # reasoning extra_body (otherwise custom hosts never send it); `canonical_model` names the
+    # upstream model the alias resolves to, so model-specific rules (e.g. Codex Astra effort clamping)
+    # apply. Example: {"my-router": {"astra-alias": {"canonical_model": "gpt-6-astra",
+    # "supports_reasoning": true}}}
     # Semantics: 1. NOTE: an explicit model.context_length (global) and a custom_providers per-model
     # context_length are user settings at other layers and are consulted in the resolution chain order
     # documented in agent/model_metadata.py. 2. See #84482, #8731.

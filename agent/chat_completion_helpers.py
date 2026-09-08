@@ -1330,7 +1330,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         request_overrides=request_overrides, session_id=getattr(agent, "session_id", None),
         cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx,
         provider_preferences=_prefs or None, openrouter_min_coding_score=agent.openrouter_min_coding_score,
-        supports_reasoning=agent._supports_reasoning_extra_body(),
+        supports_reasoning=agent._supports_reasoning_extra_body(), provider=agent.provider,
         qwen_session_metadata=_qwen_meta)
     if _profile:
         # Profiles handle per-provider quirks via hooks fed the context above.

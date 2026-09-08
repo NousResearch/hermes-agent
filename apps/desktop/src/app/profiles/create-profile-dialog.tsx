@@ -28,7 +28,7 @@ export function isValidProfileName(name: string): boolean {
 
 // Self-contained create flow (name + clone toggle + optional SOUL.md). Owns the
 // createProfile/updateProfileSoul calls so every caller just refreshes/selects
-// via onCreated. A new profile is blank by default; cloning is an explicit choice.
+// via onCreated. SOUL left blank keeps the cloned/blank persona untouched.
 export function CreateProfileDialog({
   onClose,
   onCreated,
@@ -43,7 +43,7 @@ export function CreateProfileDialog({
   const { t } = useI18n()
   const p = t.profiles
   const [name, setName] = useState('')
-  const [cloneFrom, setCloneFrom] = useState<null | string>(null)
+  const [cloneFrom, setCloneFrom] = useState<null | string>('default')
   const [soul, setSoul] = useState('')
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
@@ -54,7 +54,7 @@ export function CreateProfileDialog({
     }
 
     setName('')
-    setCloneFrom(null)
+    setCloneFrom('default')
     setSoul('')
     setError(null)
     setStatus('idle')

@@ -114,7 +114,11 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
   const limit = 12
   const coordinator = new LocalBackendSpawnCoordinator(limit)
   const livePids = new Set<number>()
-  const seenPids = new Set<number>()
+  // Count spawns rather than collecting distinct pids: the coordinator releases
+  // each slot once its child has exited, so later waves can legitimately be
+  // handed a pid the OS just freed. Windows recycles pids promptly enough that
+  // a Set of them lands below 100 on most runs.
+  let spawned = 0
   let maxLive = 0
 
   await Promise.all(
@@ -128,7 +132,7 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
 
         assert.ok(child.pid)
         livePids.add(child.pid)
-        seenPids.add(child.pid)
+        spawned += 1
         maxLive = Math.max(maxLive, livePids.size)
 
         await new Promise<void>((resolve, reject) => {
@@ -149,7 +153,7 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
     })
   )
 
-  assert.equal(seenPids.size, 100)
+  assert.equal(spawned, 100)
   assert.equal(maxLive, limit)
   assert.equal(livePids.size, 0)
   assert.equal(coordinator.activeCount, 0)

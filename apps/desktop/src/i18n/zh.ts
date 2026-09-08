@@ -3465,6 +3465,7 @@ export const zh: Translations = {
     closePane: '关闭预览面板',
     loading: '正在加载预览',
     unavailable: '预览不可用',
+    fileGoneBody: '该文件可能已被移动、重命名或删除。',
     opening: '正在打开...',
     hide: '隐藏',
     openPreview: '打开预览',

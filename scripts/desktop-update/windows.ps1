@@ -1606,8 +1606,8 @@ try {
 
     # A zero-exit update is not proof that the runtime survived the update.
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
-        $verifyCode = "import hermes_cli.main; from pathlib import Path; from hermes_cli.desktop_update_verify import verify_windows_desktop_update; verify_windows_desktop_update(Path.cwd())"
-        $verify = Invoke-HermesStep $pythonExe @("-c", $verifyCode) "verify"
+        $verifyCode = "import sys; import hermes_cli.main; from pathlib import Path; from hermes_cli.desktop_update_verify import verify_windows_desktop_update; verify_windows_desktop_update(Path(sys.argv[1]))"
+        $verify = Invoke-HermesStep $pythonExe @("-c", $verifyCode, $InstallRoot) "verify"
         if ($verify.Code -ne 0) {
             $finalCode = 8
             $finalMsg = "The updated Hermes runtime or Desktop build failed verification. Repair the installation and review antivirus quarantine before retrying."

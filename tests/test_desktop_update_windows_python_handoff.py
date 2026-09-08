@@ -124,3 +124,45 @@ def test_desktop_relaunch_waits_for_an_in_place_rebuild() -> None:
     assert "if ((Get-Date) -ge $relaunchDeadline)" in body
     assert "Start-Sleep -Milliseconds 500" in body
     assert "[System.Windows.Forms.Application]::DoEvents()" in body
+
+
+def test_verify_step_receives_the_checkout_explicitly() -> None:
+    """The verify subprocess must not trust its inherited cwd.
+
+    The hand-off host is spawned via ``cmd start /min`` from the Desktop
+    updater, so the verify step's working directory is not the checkout.
+    ``Path.cwd()`` therefore resolved to the updater host's directory and
+    ``verify_windows_desktop_update`` reported a freshly built Desktop
+    executable as missing. The checkout is known here as ``$InstallRoot``
+    and is passed as an explicit argument.
+    """
+    source = _handoff_source()
+
+    assert "verify_windows_desktop_update(Path.cwd())" not in source, (
+        "The Windows hand-off verify step still resolves the project root "
+        "from Path.cwd(); the verify subprocess inherits the updater host's "
+        "directory, not the checkout, so a healthy update fails verification."
+    )
+    assert "verify_windows_desktop_update(Path(sys.argv[1]))" in source, (
+        "The verify step should take its project root from an explicit "
+        "argv[1] passed by the hand-off."
+    )
+    assert '@("-c", $verifyCode, $InstallRoot)' in source, (
+        "The verify invocation must pass $InstallRoot so the project root "
+        "does not depend on the subprocess working directory."
+    )
+
+    # The inline program must actually be runnable: sys.argv needs its import,
+    # and the whole string has to compile as Python before it ships.
+    program = re.search(
+        r'\$verifyCode = "(.*?verify_windows_desktop_update\(Path\(sys\.argv\[1\]\)\))"',
+        source,
+    )
+    assert program is not None, (
+        "Expected the verify step inline program to resolve its project root "
+        "from sys.argv."
+    )
+    assert program.group(1).startswith("import sys;"), (
+        "The verify inline program uses sys.argv and must import sys itself."
+    )
+    compile(program.group(1), "<verifyCode>", "exec")

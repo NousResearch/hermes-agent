@@ -124,3 +124,31 @@ def test_desktop_relaunch_waits_for_an_in_place_rebuild() -> None:
     assert "if ((Get-Date) -ge $relaunchDeadline)" in body
     assert "Start-Sleep -Milliseconds 500" in body
     assert "[System.Windows.Forms.Application]::DoEvents()" in body
+
+
+def test_verify_step_passes_install_root_not_cwd() -> None:
+    """The post-update verify must resolve the checkout from ``$InstallRoot``.
+
+    ``verify_windows_desktop_update`` expects the checkout root
+    (``HERMES_HOME\\hermes-agent``) and resolves ``apps/desktop/release`` under
+    it. The hand-off is spawned with ``cwd: HERMES_HOME`` (not the checkout
+    root), so ``Path.cwd()`` points one level too high and the verify reports
+    "The updated Desktop executable is missing" (exit 8) even though the update
+    itself succeeded. The verify must receive ``$InstallRoot`` explicitly.
+    """
+    source = _read()
+
+    assert "verify_windows_desktop_update(Path.cwd())" not in source, (
+        "The verify step must not resolve the checkout from Path.cwd(): the "
+        "hand-off runs with cwd=HERMES_HOME, one level above the checkout root, "
+        "so Path.cwd() makes the verify report a missing executable after a "
+        "successful update. Pass $InstallRoot explicitly instead."
+    )
+    assert "verify_windows_desktop_update(Path(sys.argv[1]))" in source, (
+        "The verify step must resolve the checkout from $InstallRoot via "
+        "sys.argv[1]."
+    )
+    assert '@("-c", $verifyCode, $InstallRoot) "verify"' in source, (
+        "The verify Invoke-HermesStep must forward $InstallRoot as the script "
+        "argument so sys.argv[1] resolves to the checkout root."
+    )

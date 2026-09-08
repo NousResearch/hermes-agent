@@ -797,6 +797,52 @@ class TestReconnectSeenUidsRestore(unittest.TestCase):
         asyncio.run(adapter.disconnect())
 
 
+class TestEmailOutboundMetadata(unittest.TestCase):
+    """Gateway control/status messages must never become client email."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_system_generated_messages_are_suppressed(self):
+        import asyncio
+
+        for metadata in (
+            {"is_approval_prompt": True},
+            {"_interim_send": True},
+            {"non_conversational": True},
+        ):
+            with self.subTest(metadata=metadata):
+                adapter = self._make_adapter()
+                adapter._run_send = AsyncMock()
+
+                result = asyncio.run(adapter.send("client@test.com", "internal status", metadata=metadata))
+
+                self.assertTrue(result.success)
+                self.assertIsNone(result.message_id)
+                adapter._run_send.assert_not_awaited()
+
+    def test_normal_reply_still_reaches_smtp_sender(self):
+        import asyncio
+
+        for metadata in (None, {}, {"_interim_send": False}, {"thread_id": "abc"}):
+            with self.subTest(metadata=metadata):
+                adapter = self._make_adapter()
+                adapter._run_send = AsyncMock(return_value=SendResult(success=True, message_id="<reply@test>"))
+
+                result = asyncio.run(adapter.send("client@test.com", "approved reply", metadata=metadata))
+
+                self.assertEqual(result.message_id, "<reply@test>")
+                adapter._run_send.assert_awaited_once()
+
+
 class TestSendEmailStandalone(unittest.TestCase):
     """Test the standalone _send_email function in send_message_tool."""
 

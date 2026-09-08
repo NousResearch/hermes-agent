@@ -91,6 +91,15 @@ from agent.transports.claude_agent_sdk_session_watchdog import (
     _swallow_interrupt_result,
     _swallow_steer_result,
 )
+from agent.transports.claude_agent_sdk_session_billing import (
+    ClaudeSdkBillingMixin,
+)
+from agent.transports.claude_agent_sdk_session_compaction import (
+    ClaudeSdkCompactionMixin,
+)
+from agent.transports.claude_agent_sdk_session_notify import (
+    ClaudeSdkNotifyMixin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +126,7 @@ _SDK_AUTO_ALLOWED_MCP_TOOLS = frozenset({
 })
 
 
-class ClaudeAgentSdkSession(ClaudeSdkChildProcessMixin):
+class ClaudeAgentSdkSession(ClaudeSdkNotifyMixin, ClaudeSdkCompactionMixin, ClaudeSdkBillingMixin, ClaudeSdkChildProcessMixin):
     """One SDK client per Hermes session, lifetime owned by AIAgent.
 
     Not thread-safe from the caller's side — one caller drives it at a time,
@@ -247,17 +256,6 @@ class ClaudeAgentSdkSession(ClaudeSdkChildProcessMixin):
         self._billing_evidence: dict[str, Any] = {}
         self._billing_guard_error: Optional[str] = None
 
-    def set_turn_visibility_callbacks(
-        self,
-        *,
-        on_interim_assistant: Optional[Callable[[str], None]],
-        on_tool_iteration: Optional[Callable[[], None]],
-    ) -> None:
-        """Atomically install current-turn, runtime-owned visibility hooks."""
-        with self._turn_callback_lock:
-            self._on_interim_assistant = on_interim_assistant
-            self._on_tool_iteration = on_tool_iteration
-
     # ---------- lifecycle ----------
 
     def ensure_started(self) -> str:
@@ -342,231 +340,6 @@ class ClaudeAgentSdkSession(ClaudeSdkChildProcessMixin):
 
     def __exit__(self, *exc: Any) -> None:
         self.close()
-
-    # ---------- compaction ----------
-
-    def _build_compaction_hooks(self) -> Optional[dict]:
-        """PreCompact -> watchdog suspension, and on_compaction(trigger).
-
-        ``trigger`` is the SDK's own literal: "auto" for the CLI's automatic
-        compaction (the one that silently stalls a turn) or "manual" for an
-        explicit /compact. The callback is best-effort: it must never fail the
-        hook, because refusing a hook can block the compaction itself.
-
-        Wired even when ``_on_compaction`` is None. The hook's primary job is
-        no longer the status notice but telling _TurnWatch that the coming
-        silence is legitimate; skipping it when only the status callback is
-        unset would leave the turn killable mid-compaction for no benefit.
-        """
-        try:
-            from claude_agent_sdk import HookMatcher
-        except Exception:  # pragma: no cover - SDK predates hooks
-            logger.debug("claude-agent-sdk: HookMatcher unavailable", exc_info=True)
-            return None
-
-        async def _on_pre_compact(input_data, tool_use_id, context):
-            # FIRST and unconditionally, outside the try: if a status callback
-            # raises, the suspension must still be in place. This ordering is
-            # the fix -- everything below is the pre-existing status notice.
-            #
-            # getattr, not attribute access: a hook that raises AttributeError
-            # would break the very turn it exists to protect, and the attribute
-            # is genuinely absent on sessions built without __init__.
-            watch = getattr(self, "_turn_watch", None)
-            if watch is not None:
-                watch.compaction_begin()
-            try:
-                trigger = ""
-                if isinstance(input_data, dict):
-                    trigger = str(input_data.get("trigger") or "")
-                if self._on_compaction is not None:
-                    self._on_compaction(trigger or "auto")
-            except Exception:
-                logger.debug("compaction status callback failed", exc_info=True)
-            return {}
-
-        return {"PreCompact": [HookMatcher(hooks=[_on_pre_compact])]}
-
-    def _handle_compact_boundary(self, message: Any) -> None:
-        """compact_boundary -> on_compact_boundary(trigger): compaction FINISHED.
-
-        The SDK exposes ``PreCompact`` as a hook but has no post-side
-        counterpart, which is why the completion edge was originally deferred to
-        the end of the turn. That was wrong: the CLI *does* announce completion,
-        as a plain ``system`` message with ``subtype="compact_boundary"``, and
-        the SDK's parser passes unknown subtypes through its generic fallback,
-        so it arrives on the normal message stream mid-turn.
-
-        The distinction is not cosmetic. Emitting at turn end put the notice in
-        the one place it could never be seen: non-durable statuses are deleted
-        by end-of-turn progress cleanup, so it was created and destroyed in the
-        same instant (measured 2026-08-16 -- boundary at 07:41:16, deferred emit
-        at 07:42:17, 61s late and invisible). Firing here restores the native
-        contract every other provider already follows -- notice right after
-        compaction, cleaned up with the rest of the turn's progress -- and makes
-        COMPACTION_DONE_STATUS's "continuing turn" literally true again.
-
-        Best-effort by construction: a raising callback must not break the turn
-        that is still streaming.
-        """
-        if (
-            type(message).__name__ != "SystemMessage"
-            or getattr(message, "subtype", "") != "compact_boundary"
-        ):
-            return
-        # Lift the suspension before anything else -- including the unwired-
-        # callback early return further down. Leaving it armed would hold the
-        # gate open until the bounded ceiling on every compacting turn.
-        # getattr for the same reason as the PreCompact side: this runs on the
-        # message drain, where an AttributeError would break a streaming turn.
-        watch = getattr(self, "_turn_watch", None)
-        if watch is not None:
-            watch.compaction_end()
-        data = getattr(message, "data", None)
-        metadata = None
-        if isinstance(data, dict):
-            # The SDK hands this over snake_cased ("compact_metadata", observed
-            # in production 2026-08-16); the CLI's own transcript writes the
-            # camelCase original. Accept both so the trigger stays accurate if
-            # the normalization changes -- an unreadable trigger is not fatal
-            # (it falls back to "auto"), just less honest.
-            metadata = data.get("compact_metadata") or data.get("compactMetadata")
-        trigger = ""
-        if isinstance(metadata, dict):
-            trigger = str(metadata.get("trigger") or "")
-        logger.info(
-            "claude-agent-sdk compact_boundary: session=%s trigger=%s",
-            getattr(message, "session_id", None) or self._session_id or "none",
-            trigger or "unknown",
-        )
-        if self._on_compact_boundary is None:
-            return
-        try:
-            self._on_compact_boundary(trigger or "auto")
-        except Exception:
-            logger.debug("compact_boundary callback failed", exc_info=True)
-
-    def _observe_billing_evidence(self, message: Any) -> None:
-        """Record the CLI's machine-readable billing lane and fail closed.
-
-        Environment scrubbing protects against billing vectors Hermes knows
-        about. The child remains the authority for what it actually selected:
-        ``system/init.apiKeySource`` reports API-key use, while the pinned SDK's
-        typed ``RateLimitEvent`` exposes subscription Extra Usage. Unless the
-        operator explicitly set ``allow_metered_key``, either signal is a
-        fatal configuration/account-state mismatch, not an "included" turn.
-        """
-        name = type(message).__name__
-        if name == "SystemMessage" and getattr(message, "subtype", "") == "init":
-            data = getattr(message, "data", None)
-            if isinstance(data, dict) and (
-                "apiKeySource" in data or "api_key_source" in data
-            ):
-                source = data.get("apiKeySource", data.get("api_key_source"))
-                source_text = str(source or "none").strip() or "none"
-                self._billing_evidence["api_key_source"] = source_text
-                if (
-                    not self._allow_metered
-                    and source_text.lower() != "none"
-                    and self._billing_guard_error is None
-                ):
-                    self._billing_guard_error = (
-                        "claude-agent-sdk billing guard: the CLI reported "
-                        f"API-key source {source_text!r}. Remove the metered "
-                        "credential, or set agent.claude_agent_sdk."
-                        "allow_metered_key: true to opt in explicitly."
-                    )
-            return
-
-        if name != "RateLimitEvent":
-            return
-        info = getattr(message, "rate_limit_info", None)
-        if info is None:
-            return
-        raw = getattr(info, "raw", None)
-        raw = raw if isinstance(raw, dict) else {}
-        is_using_overage = raw.get("isUsingOverage")
-        if isinstance(is_using_overage, bool):
-            self._billing_evidence["is_using_overage"] = is_using_overage
-        overage_status = getattr(info, "overage_status", None)
-        if overage_status is None:
-            overage_status = raw.get("overageStatus")
-        if overage_status is not None:
-            self._billing_evidence["overage_status"] = str(overage_status)
-        rate_limit_type = getattr(info, "rate_limit_type", None)
-        if rate_limit_type is None:
-            rate_limit_type = raw.get("rateLimitType")
-        if rate_limit_type is not None:
-            self._billing_evidence["rate_limit_type"] = str(rate_limit_type)
-
-        if self._allow_metered or self._billing_guard_error is not None:
-            return
-        if is_using_overage is True:
-            self._billing_guard_error = (
-                "claude-agent-sdk billing guard: metered subscription Extra "
-                "Usage is active. Disable Extra Usage in the Claude account, "
-                "or set agent.claude_agent_sdk.allow_metered_key: true to "
-                "opt in explicitly."
-            )
-        elif str(overage_status or "").lower() in {"allowed", "allowed_warning"}:
-            self._billing_guard_error = (
-                "claude-agent-sdk billing guard: subscription extra usage is "
-                "enabled and could silently become metered when the included "
-                "limit is exhausted. Disable Extra Usage in the Claude "
-                "account, or set agent.claude_agent_sdk.allow_metered_key: "
-                "true to opt in explicitly."
-            )
-
-    def _reported_billing_mode(self) -> str:
-        source = str(self._billing_evidence.get("api_key_source") or "").lower()
-        using_overage = self._billing_evidence.get("is_using_overage")
-        rate_limit_type = str(
-            self._billing_evidence.get("rate_limit_type") or ""
-        ).lower()
-        if (source and source != "none") or using_overage is True:
-            return "sdk_reported_metered"
-        if rate_limit_type == "overage" and using_overage is not False:
-            return "sdk_reported_metered"
-        if not self._allow_metered:
-            # Any contrary evidence trips the guard before accounting.
-            return "subscription_included"
-        if source == "none" and using_overage is False:
-            return "subscription_included"
-        return "unknown"
-
-    # ---------- context usage ----------
-
-    def context_usage(self) -> Optional[dict]:
-        """Live context usage reported by the CLI, or None if unavailable.
-
-        Ground truth, unlike Hermes' own estimate on this lane: api_messages
-        holds FULL tool payloads that are never sent to the CLI, so the local
-        estimate over-reports by an order of magnitude (1.5-2.4M tokens for a
-        transcript whose real size was ~111k). Callers that need a real number
-        -- status lines, compaction heuristics -- must use this instead.
-
-        Returns the SDK's ContextUsageResponse mapping: totalTokens, maxTokens
-        (already reduced by the autocompact buffer), contextWindow, the
-        percentage used, model, and isAutoCompactEnabled.
-
-        Best-effort by design: a disconnected session, an older SDK without the
-        method, or a query failure all yield None rather than raising into a
-        status path.
-        """
-        client = self._client
-        if client is None or self._loop is None:
-            return None
-        getter = getattr(client, "get_context_usage", None)
-        if not callable(getter):
-            return None  # SDK predates get_context_usage()
-        try:
-            usage = self._run_coro(getter(), timeout=10.0)
-        except Exception:
-            logger.debug(
-                "claude-agent-sdk context-usage query failed", exc_info=True
-            )
-            return None
-        return usage if isinstance(usage, dict) else None
 
     # ---------- interrupt ----------
 
@@ -1516,82 +1289,6 @@ class ClaudeAgentSdkSession(ClaudeSdkChildProcessMixin):
         except Exception:  # pragma: no cover - loop already gone
             pass
 
-    def _forward_stream_delta(self, message: Any) -> None:
-        """Relay a top-level text delta to the display callback (never the
-        transcript). Subagent streams (parent_tool_use_id set) stay quiet."""
-        if self._on_stream_delta is None:
-            return
-        if getattr(message, "parent_tool_use_id", None):
-            return
-        event = getattr(message, "event", None) or {}
-        if event.get("type") != "content_block_delta":
-            return
-        delta = event.get("delta") or {}
-        if delta.get("type") != "text_delta":
-            return
-        text = delta.get("text")
-        if not text:
-            return
-        try:
-            self._on_stream_delta(text)
-        except Exception:  # pragma: no cover - display callback
-            logger.debug("stream delta callback raised", exc_info=True)
-
-    def _notify_interim_assistant(self, message: Any) -> None:
-        """Relay completed tool-adjacent assistant prose as commentary."""
-        if getattr(message, "parent_tool_use_id", None):
-            return
-        with self._turn_callback_lock:
-            callback = self._on_interim_assistant
-        if callback is None:
-            return
-        if type(message).__name__ != "AssistantMessage":
-            return
-        blocks = list(getattr(message, "content", None) or [])
-        if not any(type(block).__name__ == "ToolUseBlock" for block in blocks):
-            return
-        text = "\n".join(
-            str(getattr(block, "text", "") or "")
-            for block in blocks
-            if type(block).__name__ == "TextBlock" and getattr(block, "text", "")
-        ).strip()
-        if not text:
-            return
-        try:
-            callback(text)
-        except Exception:  # pragma: no cover - display callback
-            logger.debug("interim assistant callback raised", exc_info=True)
-
-    def _notify_tool_iteration(self) -> None:
-        with self._turn_callback_lock:
-            callback = self._on_tool_iteration
-        if callback is None:
-            return
-        try:
-            callback()
-        except Exception:  # pragma: no cover - display callback
-            logger.debug("tool-iteration callback raised", exc_info=True)
-
-    def _notify_tool_started(self, message: Any) -> None:
-        """Bridge ToolUseBlocks to Hermes tool-progress (gateway breadcrumbs),
-        mirroring codex_runtime._codex_note_to_tool_progress (#38835)."""
-        if self._on_tool_started is None:
-            return
-        if type(message).__name__ != "AssistantMessage":
-            return
-        for block in getattr(message, "content", None) or []:
-            if type(block).__name__ != "ToolUseBlock":
-                continue
-            name = getattr(block, "name", "") or "unknown"
-            args = getattr(block, "input", None) or {}
-            if not isinstance(args, dict):
-                args = {"input": args}
-            preview = _tool_preview(name, args)
-            try:
-                self._on_tool_started(name, preview, args)
-            except Exception:  # pragma: no cover - display callback
-                logger.debug("tool-progress callback raised", exc_info=True)
-
     def build_option_fields(self) -> dict[str, Any]:
         """The ClaudeAgentOptions field dict — plain data so tests can assert
         on it without importing the SDK."""
@@ -2026,12 +1723,3 @@ class ClaudeAgentSdkSession(ClaudeSdkChildProcessMixin):
                 log_tool_identity, _safe_sdk_deny_log_reason(message),
             )
         return PermissionResultDeny(message=message)
-
-
-def _tool_preview(name: str, args: dict) -> str:
-    """Short human preview of a tool call for progress breadcrumbs."""
-    for key in ("command", "file_path", "path", "url", "query", "prompt"):
-        value = args.get(key)
-        if isinstance(value, str) and value:
-            return value[:120]
-    return name

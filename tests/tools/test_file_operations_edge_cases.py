@@ -9,7 +9,8 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
-from tools.file_operations import ShellFileOperations, _parse_search_context_line
+from tools.file_operations import ShellFileOperations
+from tools.file_operations_search import _parse_search_context_line
 
 
 # =========================================================================
@@ -236,7 +237,7 @@ class TestPaginationBounds:
             commands.append(command)
             if command.startswith("test -e"):
                 return MagicMock(exit_code=0, stdout="exists")
-            if command.startswith("rg --files"):
+            if "--files" in command:
                 return MagicMock(exit_code=0, stdout="a.py\n")
             return MagicMock(exit_code=0, stdout="")
 
@@ -245,9 +246,9 @@ class TestPaginationBounds:
             result = ops.search("*.py", target="files", path=".", offset=-4, limit=-2)
 
         assert result.files == ["a.py"]
-        rg_commands = [cmd for cmd in commands if cmd.startswith("rg --files")]
+        rg_commands = [cmd for cmd in commands if "--files" in cmd]
         assert rg_commands
-        assert "| head -n 1" in rg_commands[0]
+        assert "| head -n 2" in rg_commands[0]
 
 
 # =========================================================================

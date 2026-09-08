@@ -320,6 +320,7 @@ describe('SessionTile workspace scope', () => {
 
     $selectedStoredSessionId.set('bot-chat')
     openSessionTile('bot-chat', 'center', undefined, undefined, scope)
+    $layoutTree.set(group(['workspace', tilePane('bot-chat')], { active: 'workspace', id: 'main' }))
 
     expect($sessionTiles.get()).toEqual([
       expect.objectContaining({
@@ -337,6 +338,7 @@ describe('SessionTile workspace scope', () => {
     // new tip must front that tile, not open the same chat twice.
     setSessions([{ _lineage_ids: ['seg-1', 'seg-2', 'seg-3'], _lineage_root_id: 'seg-1', id: 'seg-3' } as never])
     openSessionTile('seg-2')
+    $layoutTree.set(group(['workspace', tilePane('seg-2')], { active: 'workspace', id: 'main' }))
 
     expect(focusOpenSession('seg-3')).toBe('tile')
     expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['seg-2'])
@@ -487,6 +489,7 @@ describe('focusWorkspaceOwnerSessionTile', () => {
     openSessionTile('thread', 'center', 'workspace', undefined, botA)
     rememberActivePane(workspaceScopeKey('bots', 'bot:a'), tilePane('closed-bot-chat'))
     $sessionTiles.set($sessionTiles.get().filter(t => t.storedSessionId !== 'closed-bot-chat'))
+    $layoutTree.set(group(['workspace', tilePane('thread')], { active: 'workspace', id: 'main' }))
 
     expect(focusWorkspaceOwnerSessionTile('bot:a')).toBe('thread')
   })
@@ -533,6 +536,7 @@ describe('focusWorkspaceOwnerSessionTile', () => {
 
     it('a throwing probe keeps the tile — reconciliation must not break the click', () => {
       openSessionTile('bot-chat', 'center', 'workspace', undefined, botA)
+      $layoutTree.set(group(['workspace', tilePane('bot-chat')], { active: 'workspace', id: 'main' }))
 
       expect(
         focusWorkspaceOwnerSessionTile('bot:a', () => {
@@ -542,8 +546,9 @@ describe('focusWorkspaceOwnerSessionTile', () => {
       expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['bot-chat'])
     })
 
-    it('no probe keeps the old behavior byte for byte', () => {
+    it('fronts a visible tile without a probe', () => {
       openSessionTile('bot-chat', 'center', 'workspace', undefined, botA)
+      $layoutTree.set(group(['workspace', tilePane('bot-chat')], { active: 'workspace', id: 'main' }))
 
       expect(focusWorkspaceOwnerSessionTile('bot:a')).toBe('bot-chat')
       expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['bot-chat'])

@@ -3,38 +3,27 @@
 import contextlib
 import io
 import os
+import sys
+from pathlib import Path
 
 import pytest
+import yaml
 
-import hermes_cli.doctor as doctor
+import hermes_cli.doctor_mcp as doctor
 
 
-def _run(monkeypatch, servers, *, effective=None, resolve=None, safe_env=None):
-    """Run the preflight against raw/effective config and return its report."""
-    import hermes_cli.config as config
-    import tools.mcp_tool as mcp_tool
-
-    if effective is None:
-        effective = (
-            {
-                name: entry for name, entry in servers.items()
-                if isinstance(entry, dict)
-            }
-            if isinstance(servers, dict)
-            else {}
-        )
-    monkeypatch.setattr(config, "load_config", lambda: {"mcp_servers": servers})
-    monkeypatch.setattr(mcp_tool, "_load_mcp_config", lambda: effective)
+def _run(monkeypatch, servers, *, resolve=None, safe_env=None):
+    """Run the preflight against config and return its report."""
+    monkeypatch.setattr(doctor, "load_config", lambda: {"mcp_servers": servers})
     if resolve is not None:
-        monkeypatch.setattr(mcp_tool, "_resolve_stdio_command", resolve)
+        monkeypatch.setattr(doctor, "_resolve_stdio_command", resolve)
     if safe_env is not None:
-        monkeypatch.setattr(mcp_tool, "_build_safe_env", safe_env)
+        monkeypatch.setattr(doctor, "_build_safe_env", safe_env)
 
-    issues: list[str] = []
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        doctor._doctor_mcp_servers(issues)
-    return buf.getvalue(), issues
+        finding = doctor._check_mcp_servers(False)
+    return buf.getvalue(), finding.manual_issues
 
 
 def _executable(tmp_path, name="srv"):
@@ -132,7 +121,7 @@ class TestStdioServers:
             resolve=lambda cmd, env: (cmd, env),
         )
         assert "not found on PATH" in out
-        assert any("definitely-not-installed" in i for i in issues)
+        assert any("local.command" in i for i in issues)
 
     def test_resolved_but_missing_file_fails(self, monkeypatch, tmp_path):
         ghost = tmp_path / "gone" / "server"
@@ -142,7 +131,7 @@ class TestStdioServers:
             resolve=lambda cmd, env: (str(ghost), env),
         )
         assert "command not found" in out
-        assert any(str(ghost) in i for i in issues)
+        assert any("local.command" in i for i in issues)
 
     def test_non_string_command_fails(self, monkeypatch):
         out, issues = _run(monkeypatch, {"local": {"command": None}})
@@ -234,7 +223,7 @@ class TestStdioServers:
         )
         assert "could not build child environment" in out
         assert "MCP server 'local' (stdio)" not in out
-        assert any("env configuration" in i for i in issues)
+        assert any("local.env" in i for i in issues)
 
     def test_populated_declared_env_passes(self, monkeypatch, tmp_path):
         binary = _executable(tmp_path)
@@ -255,9 +244,9 @@ class TestStdioServers:
         )
         assert "command not found" in out
         assert "MCP server 'local' (stdio)" not in out
-        assert any("is not a file" in i for i in issues)
+        assert any("existing executable file" in i for i in issues)
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX executable-bit check")
+    @pytest.mark.linux_only
     def test_non_executable_command_fails(self, monkeypatch, tmp_path):
         binary = tmp_path / "srv"
         binary.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -275,37 +264,94 @@ class TestStdioServers:
 
 class TestResilience:
     def test_config_read_failure_warns_but_does_not_raise(self, monkeypatch):
-        import tools.mcp_tool as mcp_tool
-
         def _boom():
             raise RuntimeError("config exploded")
 
-        monkeypatch.setattr(mcp_tool, "_load_mcp_config", _boom)
-        issues: list[str] = []
+        monkeypatch.setattr(doctor, "load_config", _boom)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            doctor._doctor_mcp_servers(issues)
+            finding = doctor._check_mcp_servers(False)
         assert "Could not read mcp_servers" in buf.getvalue()
+        assert finding.manual_issues
 
-    def test_makes_no_subprocess_or_socket_calls(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("should_fix", [False, True])
+    def test_makes_no_subprocess_or_socket_calls(self, monkeypatch, tmp_path, should_fix):
         """The preflight is static: it must not launch or dial anything."""
         import socket
         import subprocess
 
+        from hermes_cli.env_loader import load_hermes_dotenv
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("DOCTOR_TEST_TOKEN", "")  # Restore the environment after dotenv loads it.
+        servers = {
+            "local": {"command": Path(sys.executable).name,
+                      "env": {"PATH": str(Path(sys.executable).parent),
+                              "API_KEY": "${DOCTOR_TEST_TOKEN}"}},
+            "remote": {"url": "https://mcp.example.com/mcp",
+                       "headers": {"Authorization": "Bearer ${DOCTOR_TEST_TOKEN}"}},
+        }
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"mcp_servers": servers}), encoding="utf-8")
+        (tmp_path / ".env").write_text("DOCTOR_TEST_TOKEN=preflight-private-canary\n", encoding="utf-8")
+        load_hermes_dotenv(hermes_home=tmp_path, project_env=tmp_path / ".env")
+        before = (tmp_path / "config.yaml").read_bytes()
+        calls = []
+
         def _fail(*a, **k):
+            calls.append(True)
             raise AssertionError("preflight must not spawn subprocesses")
 
         monkeypatch.setattr(subprocess, "run", _fail)
         monkeypatch.setattr(subprocess, "Popen", _fail)
         monkeypatch.setattr(socket, "create_connection", _fail)
-
-        binary = _executable(tmp_path)
-        out, _ = _run(
-            monkeypatch,
-            {
-                "local": {"command": "srv"},
-                "remote": {"url": "https://mcp.example.com/mcp"},
-            },
-            resolve=lambda cmd, env: (str(binary), env),
-        )
+        monkeypatch.setattr(socket.socket, "connect", _fail)
+        monkeypatch.setattr(os, "system", _fail)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            finding = doctor._check_mcp_servers(should_fix)
+        out = buf.getvalue()
         assert "(stdio)" in out and "(http)" in out
+        assert finding.manual_issues == []
+        assert calls == []  # Includes attempts swallowed by best-effort runtime helpers.
+        assert "preflight-private-canary" not in out
+        assert (tmp_path / "config.yaml").read_bytes() == before
+
+    @pytest.mark.parametrize("enabled", [False, "false", "off"])
+    def test_disabled_servers_do_not_need_launchable_config(self, tmp_path, monkeypatch, capsys, enabled):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"mcp_servers": {
+            "disabled": {"enabled": enabled, "command": "not-installed", "env": {"TOKEN": "${UNSET_TOKEN}"}},
+            "working": {"command": sys.executable},
+        }}), encoding="utf-8")
+
+        finding = doctor._check_mcp_servers(False)
+
+        out = capsys.readouterr().out
+        assert "disabled; launch checks skipped" in out
+        assert "MCP server 'working' (stdio)" in out
+        assert finding.manual_issues == []
+
+    @pytest.mark.parametrize("entry", [
+        {"command": "${DOCTOR_PRIVATE_VALUE}"},
+        {"url": "ftp://user:${DOCTOR_PRIVATE_VALUE}@example.com/mcp"},
+        {"url": "https://example.com/mcp", "headers": {"Authorization": "${DOCTOR_MISSING_VALUE}"}},
+    ])
+    def test_registered_check_reports_bad_config_without_values(self, tmp_path, monkeypatch, capsys, entry):
+        from argparse import Namespace
+        from hermes_cli import doctor as command
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("DOCTOR_PRIVATE_VALUE", "preflight-private-canary")
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"mcp_servers": {
+            "broken": entry, "working": {"command": sys.executable},
+        }}), encoding="utf-8")
+        checks = [(title, check) for title, check in command.DOCTOR_CHECKS if title == "MCP Servers"]
+        assert checks, "the static check must be registered in hermes doctor"
+        monkeypatch.setattr(command, "DOCTOR_CHECKS", checks)
+
+        command.run_doctor(Namespace(fix=False, live=False))
+
+        out = capsys.readouterr().out
+        assert "mcp_servers.broken" in out  # Included in doctor's actionable summary.
+        assert "MCP server 'working' (stdio)" in out
+        assert "preflight-private-canary" not in out

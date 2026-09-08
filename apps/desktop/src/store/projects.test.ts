@@ -133,6 +133,14 @@ describe('project scope', () => {
 })
 
 describe('projects RPC profile forwarding', () => {
+  it('distinguishes a failed drill-in from an empty project', async () => {
+    const failure = new Error('gateway read failed')
+    const request = vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce({ project: null })
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as unknown as ReturnType<typeof activeGateway>)
+    await expect(fetchProjectSessions('p_123')).rejects.toBe(failure)
+    await expect(fetchProjectSessions('p_123')).resolves.toBeNull()
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     $activeGatewayProfile.set('default')

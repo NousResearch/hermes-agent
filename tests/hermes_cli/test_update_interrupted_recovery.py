@@ -10,6 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import hermes_cli.main as m
+import hermes_cli.main_install_repair as hermes_cli_main_install_repair
+from hermes_cli import main_install_repair
+from hermes_cli import update_cmd
 
 
 def test_marker_round_trip(tmp_path, monkeypatch):
@@ -34,12 +37,14 @@ def test_marker_round_trip(tmp_path, monkeypatch):
 
 def _stub_install_env(monkeypatch, m, seen):
     """Common stubs so recovery's install path is inert and observable."""
+    import hermes_cli.main_install_repair as hermes_cli_main_install_repair
 
     class R:
         returncode = 0
 
     monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: R())
     monkeypatch.setattr(m, "_is_termux_env", lambda *a, **k: False)
+    monkeypatch.setattr(hermes_cli_main_install_repair, "_is_termux_env", lambda *a, **k: False)
     monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: None)
     # The install executor moved to hermes_cli._install_repair (shared between
     # the pre-import early pass and this late recovery path) — stub WHERE it
@@ -68,15 +73,18 @@ def test_recovery_self_lock_does_not_clear_core_marker_via_import_probes(
     shim.write_text("")
 
     monkeypatch.setattr(m, "_is_windows", lambda: True)
+    monkeypatch.setattr(hermes_cli_main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(m, "_venv_scripts_dir", lambda: scripts_dir)
-    monkeypatch.setattr(m, "_hermes_exe_shims", lambda d: [shim])
-    monkeypatch.setattr(
-        m,
-        "_default_venv_install_target",
+    monkeypatch.setattr(hermes_cli_main_install_repair, "_venv_scripts_dir", lambda: scripts_dir)
+    monkeypatch.setattr(main_install_repair, "_hermes_exe_shims", lambda d: [shim])
+    monkeypatch.setattr(main_install_repair, "_default_venv_install_target",
         lambda: (["uv", "pip"], {"VIRTUAL_ENV": str(tmp_path / "venv")}),
     )
     monkeypatch.setattr(
         m, "_repair_venv_via_import_probes", lambda *a, **k: "healthy"
+    )
+    monkeypatch.setattr(
+        hermes_cli_main_install_repair, "_repair_venv_via_import_probes", lambda *a, **k: "healthy"
     )
 
     class FakeProc:

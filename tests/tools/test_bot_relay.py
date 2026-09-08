@@ -84,6 +84,9 @@ def test_resolve_remote_target_forms(root):
     assert bot_relay.resolve_remote_target("default", roster)["connection_id"] == "cloud-1"
     # exact connection-qualified form
     assert bot_relay.resolve_remote_target("hermes@cloud-1", roster)["profile"] == "default"
+    # profile@connection — the form Desktop's mention middleware annotates
+    # for remote bots (#97678); the UI alias form must not be required
+    assert bot_relay.resolve_remote_target("default@cloud-1", roster)["profile"] == "default"
     assert bot_relay.resolve_remote_target("hermes@nope", roster) is None
     assert bot_relay.resolve_remote_target("ghost", roster) is None
 
@@ -284,18 +287,12 @@ def _fresh_probe_cache():
 
 
 def test_tool_injects_despite_legacy_soul_protocol(tmp_path):
-    """The legacy-SOUL dedupe empties the SECTION, never the TOOL.
-
-    Regression: upgraded installs whose SOUL.md still carries the old
-    plugin-appended protocol silently lost message_agent because the gate
-    keyed on section non-emptiness.
-    """
+    """A SOUL.md still carrying the plugin-appended protocol must not cost the TOOL (nor,
+    since load-time stripping, the live section)."""
     from tools import bot_mode_probe
 
     home = _managed_home(tmp_path, legacy_soul=True)
-    # Premise: the dedupe really does empty the section for this profile...
-    assert bot_mode_probe.get_bot_mode_protocol_section(home) == ""
-    # ...but the install is managed, so the tool must still inject.
+    assert bot_mode_probe.get_bot_mode_protocol_section(home) != ""
     agent = _FakeAgent(home)
     assert ensure_message_agent_tool(agent) is True
     assert [t["function"]["name"] for t in agent.tools] == [MESSAGE_AGENT_TOOL_NAME]

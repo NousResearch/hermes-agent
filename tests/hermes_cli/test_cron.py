@@ -170,12 +170,24 @@ class TestUnverifiedDeliveryVisibility:
 
 
 class TestCronDoctor:
-    def test_doctor_reports_cron_health_issues(self, tmp_cron_dir, capsys):
-        job = create_job(prompt="Daily digest", schedule="every 1h", script="missing.py")
+    def test_doctor_reports_cron_health_issues(self, tmp_cron_dir, capsys, monkeypatch):
+        from hermes_constants import get_hermes_home
+        monkeypatch.setattr("cron.jobs.HERMES_DIR", tmp_cron_dir)
+        scripts_dir = tmp_cron_dir / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "ok.py").write_text("print('ok')\n", encoding="utf-8")
+        validation_scripts_dir = get_hermes_home() / "scripts"
+        validation_scripts_dir.mkdir(parents=True, exist_ok=True)
+        (validation_scripts_dir / "ok.py").write_text("print('ok')\n", encoding="utf-8")
+        job = create_job(
+            prompt="Daily digest", schedule="every 1h", script="ok.py", target="scheduler"
+        )
         jobs = load_jobs()
         jobs[0]["last_status"] = "error"
         jobs[0]["last_error"] = "Provider returned error"
         jobs[0]["last_delivery_error"] = "telegram timeout"
+        jobs[0]["script"] = "missing.py"
+        jobs[0].pop("target", None)
         save_jobs(jobs)
 
         rc = cron_command(Namespace(cron_command="doctor"))
@@ -189,11 +201,16 @@ class TestCronDoctor:
         assert "hermes cron edit" in out
         assert "script not found" in out
 
-    def test_doctor_reports_healthy_jobs(self, tmp_cron_dir, capsys):
+    def test_doctor_reports_healthy_jobs(self, tmp_cron_dir, capsys, monkeypatch):
+        from hermes_constants import get_hermes_home
+        monkeypatch.setattr("cron.jobs.HERMES_DIR", tmp_cron_dir)
         scripts_dir = tmp_cron_dir / "scripts"
         scripts_dir.mkdir()
         (scripts_dir / "ok.py").write_text("print('ok')\n", encoding="utf-8")
-        create_job(prompt="Daily digest", schedule="every 1h", script="ok.py")
+        validation_scripts_dir = get_hermes_home() / "scripts"
+        validation_scripts_dir.mkdir(parents=True, exist_ok=True)
+        (validation_scripts_dir / "ok.py").write_text("print('ok')\n", encoding="utf-8")
+        create_job(prompt="Daily digest", schedule="every 1h", script="ok.py", target="scheduler")
 
         rc = cron_command(Namespace(cron_command="doctor"))
 
@@ -563,6 +580,15 @@ class TestSlashCronListLastStatus:
         out = self._run_list(tmp_cron_dir, capsys)
         assert "Last run: 2026-09-01T07:00:00+00:00 (delivery_failed: telegram: 502 Bad Gateway)" in out
 
+    def test_ok_stays_plain(self, tmp_cron_dir, capsys):
+        create_job(prompt="Nightly brief", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["last_run_at"] = "2026-09-01T07:00:00+00:00"
+        jobs[0]["last_status"] = "ok"
+        save_jobs(jobs)
+
+        out = self._run_list(tmp_cron_dir, capsys)
+        assert "(ok)" in out
 
 
 class TestStatusSurfacesDeadScheduler:
@@ -673,3 +699,14 @@ class TestSlashCronRunSkipped:
         out = capsys.readouterr().out
         assert "Job is paused/disabled; resume it before running." in out
         assert "Triggered" not in out and "next scheduler tick" not in out
+
+
+def test_cron_doctor_does_not_probe_backend_native_paths_on_scheduler():
+    job = {
+        "enabled": False,
+        "target": "backend",
+        "script": "/backend-only/collect.py",
+        "workdir": "/backend-only/project",
+    }
+
+    assert cron_cli._cron_doctor_issues_for_job(job) == []

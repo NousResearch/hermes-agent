@@ -84,11 +84,13 @@ def test_cronjob_tool_create_no_agent_without_script_errors(hermes_env):
     assert "no_agent=True requires a script" in result.get("error", "")
 
 
-def test_cronjob_tool_create_rejects_invalid_no_agent_scripts_in_active_profile(hermes_env):
+def test_cronjob_tool_create_rejects_invalid_no_agent_scripts_in_active_profile(
+    hermes_env, monkeypatch,
+):
     from cron.jobs import load_jobs
     from tools.cronjob_tools import cronjob
 
-    missing = hermes_env / "scripts" / "missing.sh"
+    monkeypatch.setattr(pathlib.Path, "home", lambda: hermes_env.parent)
     missing_result = json.loads(cronjob(
         action="create",
         schedule="every 5m",
@@ -105,9 +107,11 @@ def test_cronjob_tool_create_rejects_invalid_no_agent_scripts_in_active_profile(
     ))
 
     assert missing_result.get("success") is False
-    assert f"Script file not found: {missing}" in missing_result.get("error", "")
+    assert "Script file not found: ~/.hermes/scripts/missing.sh" in missing_result.get("error", "")
     assert absolute_result.get("success") is False
-    assert str(hermes_env / "scripts") in absolute_result.get("error", "")
+    assert "~/.hermes/scripts" in absolute_result.get("error", "")
+    assert str(hermes_env) not in missing_result.get("error", "")
+    assert str(hermes_env) not in absolute_result.get("error", "")
     assert load_jobs() == []
 
 

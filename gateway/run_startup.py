@@ -667,7 +667,7 @@ class GatewayStartupMixin:
         if cancel_event.is_set():
             return None
         if service is None:
-            raise RuntimeError("Group Chat worker has no bound session backend")
+            return None
         status = service.runtime.status()
         if not status.get("running") or status.get("stopping"):
             raise RuntimeError("Group Chat worker did not start")
@@ -689,10 +689,7 @@ class GatewayStartupMixin:
     async def _hosted_room_worker_watcher(self, interval: float = 1.0) -> None:
         """Keep the room worker alive for the messaging gateway lifetime."""
         while self._running:
-            try:
-                await self._ensure_hosted_room_worker()
-            except Exception:
-                logger.error("Hosted Group Chat recovery failed; will retry", exc_info=True)
+            await self._ensure_hosted_room_worker()
             await asyncio.sleep(interval)
 
     async def _stop_hosted_room_worker(self, timeout: float = 5.0) -> bool:
@@ -1217,13 +1214,7 @@ class GatewayStartupMixin:
     async def _start_post_connect_services(self, connected_count: int) -> None:
         """Room worker, heartbeat, gateway:startup hook, channel directory, /update notice."""
         from gateway.run import _hermes_home
-        try:
-            await self._ensure_hosted_room_worker()
-        except Exception:
-            logger.error(
-                "Group Chat worker failed to start; mutating Group Chat commands "
-                "will fail closed until supervision recovers it", exc_info=True,
-            )
+        await self._ensure_hosted_room_worker()
         self._spawn_supervised(self._hosted_room_worker_watcher, "hosted_room_worker")
         self._start_loop_heartbeat_task()
         from gateway.run_heartbeat_restore import restore_heartbeat_watches

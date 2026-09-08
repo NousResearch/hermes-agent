@@ -5,10 +5,20 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type * as Client from './hosted-room-client'
 import type * as Controls from './hosted-room-controls'
 import { hostedPendingActions, hostedRoomKey } from './hosted-room-protocol'
-import { translateBots } from './i18n-test-helper'
+import { botsTranslator } from './i18n-test-helper'
 import type { Attachment } from './types'
 
-const { host } = vi.hoisted(() => ({ host: {} as Record<string, unknown> }))
+const { host, language } = vi.hoisted(() => ({
+  host: {} as Record<string, unknown>,
+  language: { locale: 'en' as 'en' | 'ja' | 'zh' | 'zh-hant' }
+}))
+
+vi.mock('../../i18n/context', async importOriginal => {
+  const actual = await importOriginal<Record<string, unknown>>()
+  const { TRANSLATIONS } = await import('../../i18n/catalog')
+
+  return { ...actual, useI18n: () => ({ t: TRANSLATIONS[language.locale], locale: language.locale }) }
+})
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock } = await import('./group-test-utils')
   const { useStore } = await import('@nanostores/react')
@@ -16,13 +26,14 @@ vi.mock('@hermes/plugin-sdk', async () => {
   return {
     ...await pluginSdkMock(host),
     useValue: useStore,
-    usePluginI18n: () => translateBots,
+    useI18n: (await import('../../i18n/context')).useI18n,
+    usePluginI18n: () => botsTranslator(language.locale),
     ConfirmDialog: (await import('../../components/ui/confirm-dialog')).ConfirmDialog,
     Button: ({ size: _size, variant: _variant, ...props }: ComponentProps<'button'> & { size?: string, variant?: string }) => <button type="button" {...props} />,
     RowButton: (props: ComponentProps<'button'>) => <button type="button" {...props} />,
     Codicon: () => null,
     GlyphSpinner: () => null,
-    ErrorState: ({ description }: { description: string }) => <p>{description}</p>
+    ErrorState: ({ description, title }: { description: string; title: string }) => <><h2>{title}</h2><p>{description}</p></>
   }
 })
 
@@ -44,9 +55,10 @@ let client: typeof Client
 let controls: typeof Controls
 
 beforeEach(async () => {
+  language.locale = 'en'
   vi.resetModules()
   const { atom } = await import('nanostores')
-  host.state = { gateway: atom('open') }
+  host.state = { gateway: atom('open'), connectionId: atom(identity.connectionId) }
   client = await import('./hosted-room-client')
   controls = await import('./hosted-room-controls')
   client.$hostedRooms.set({ [key]: {
@@ -250,4 +262,90 @@ it.each([
   const view = render(<controls.HostedRoomAttachment attachment={media} eventId="event-a" roomKey={key} />)
   fireEvent.click(screen.getByRole('button', { name: 'Open attachment: test.txt' }))
   await waitFor(() => expect(view.container.querySelector(tag)?.getAttribute('src')).toBe(`data:${mime};base64,dGVzdA==`))
+})
+
+it.each([
+  ['en', 'Hosted group chats'], ['ja', 'ホスト型グループチャット'],
+  ['zh', '托管群聊'], ['zh-hant', '託管群組聊天']
+] as const)('renders %s discovery and attachment accessible names without translating filenames', async (locale, heading) => {
+  language.locale = locale
+  const b = botsTranslator(locale)
+  const { TRANSLATIONS } = await import('../../i18n/catalog')
+  const discover = vi.spyOn(client, 'discoverHostedRooms').mockResolvedValue(undefined)
+  const onOpen = vi.fn()
+  const view = render(<controls.HostedRoomDirectory onOpen={onOpen} />)
+  expect(screen.getByRole('region', { name: heading })).toBeTruthy()
+  expect(screen.getByText(b('hosted.empty'))).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: TRANSLATIONS[locale].common.refresh }))
+  expect(discover).toHaveBeenLastCalledWith(identity.connectionId)
+  act(() => client.$hostedDirectories.set({ [identity.connectionId]: { keys: [key], loading: false } }))
+  fireEvent.click(screen.getByRole('button', { name: `Mock room${b('hosted.hosted')}` }))
+  expect(onOpen).toHaveBeenCalledExactlyOnceWith(key)
+  view.unmount()
+
+  let finish!: (value: Attachment) => void
+  vi.mocked(client.fetchHostedAttachment).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+  render(<controls.HostedRoomAttachment attachment={attachment} eventId="event-a" roomKey={key} />)
+  fireEvent.click(screen.getByRole('button', { name: b('hosted.openAttachment', 'test.txt') }))
+  expect((screen.getByRole('button', { name: b('hosted.loadingAttachment', 'test.txt') }) as HTMLButtonElement).disabled).toBe(true)
+  await act(async () => { finish({ ...attachment, data: 'data:text/plain;base64,dGVzdA==' }) })
+  expect(screen.getByRole('link', { name: `${TRANSLATIONS[locale].fileMenu.download} test.txt` }).getAttribute('download')).toBe('test.txt')
+
+  const unnamed = { ...attachment, name: '', kind: 'image' as const, mime: 'image/png' }
+  vi.mocked(client.fetchHostedAttachment).mockResolvedValue({ ...unnamed, data: 'data:image/png;base64,dGVzdA==' })
+  render(<controls.HostedRoomAttachment attachment={unnamed} eventId="event-b" roomKey={key} />)
+  fireEvent.click(screen.getByRole('button', { name: b('hosted.openAttachment', b('hosted.attachment')) }))
+  await screen.findByRole('img', { name: b('hosted.attachment') })
+  expect(screen.getByRole('link', { name: `${TRANSLATIONS[locale].fileMenu.download} ${b('hosted.attachment')}` }).getAttribute('download')).toBe('attachment')
+})
+
+it.each(['en', 'ja', 'zh', 'zh-hant'] as const)('renders %s recovery copy and accessible dialogs while preserving exact actions and raw errors', async locale => {
+  language.locale = locale
+  const b = botsTranslator(locale)
+  const { TRANSLATIONS } = await import('../../i18n/catalog')
+  const t = TRANSLATIONS[locale]
+  const delivery = { event_id: 'output', chunk_index: 1, attempt: 2, profile: 'helper', thread_id: 'thread', status: 'uncertain' as const }
+  const resolve = vi.spyOn(client, 'resolveHostedTelegramDelivery').mockResolvedValue(undefined)
+  const stop = vi.spyOn(client, 'stopHostedRoom').mockResolvedValue(undefined)
+  const send = vi.spyOn(client, 'sendHostedInput').mockResolvedValue(true)
+  const discard = vi.spyOn(client, 'discardHostedInput').mockResolvedValue(undefined)
+  const cache = client.$hostedRooms.get()[key]
+  client.$hostedRooms.set({ [key]: { ...cache, error: 'backend_free_text: receipt mismatch',
+    capabilities: { ...cache.capabilities!, telegramRecovery: true },
+    pending: { eventId: 'saved-id', text: 'user text', threadId: '', attachments: [{ ...attachment, name: '' }] },
+    telegramStatus: { room_id: identity.roomId, chat_id: -999, blocked: true, attention: delivery }
+  } })
+  render(<controls.HostedRoomStatus roomKey={key} visible={false} />)
+  expect(screen.getByText(`${b('hosted.telegramBlocked')} · ${b('hosted.replayedThrough', 0)}`)).toBeTruthy()
+  expect(screen.getByText(b('hosted.deliveryDetail', -999, 'helper', 'output', 2, 2, b('hosted.deliveryStatus.uncertain')))).toBeTruthy()
+  expect(screen.getByRole('heading', { name: b('hosted.roomUnavailable') })).toBeTruthy()
+  expect(screen.getByText('backend_free_text: receipt mismatch')).toBeTruthy()
+  expect(screen.getByText('Shell command')).toBeTruthy()
+  expect(screen.getByText(b('hosted.savedAttachments', b('hosted.attachment')))).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: b('hosted.stopRoomWork') }))
+  expect(stop).toHaveBeenCalledExactlyOnceWith(key)
+  fireEvent.click(screen.getByRole('button', { name: b('hosted.retryTask') }))
+  expect(client.retryHostedTask).toHaveBeenCalledExactlyOnceWith(key, 'task-b')
+  fireEvent.click(screen.getByRole('button', { name: b('hosted.allowOnce') }))
+  fireEvent.click(screen.getByRole('button', { name: b('hosted.deny') }))
+  expect(client.approveHostedTask).toHaveBeenNthCalledWith(1, key, hostedPendingActions({ pending_actions: [approval] })[0], 'once')
+  expect(client.approveHostedTask).toHaveBeenNthCalledWith(2, key, hostedPendingActions({ pending_actions: [approval] })[0], 'deny')
+  fireEvent.click(screen.getByRole('button', { name: b('hosted.retrySavedInput') }))
+  expect(send).toHaveBeenCalledExactlyOnceWith(key)
+
+  fireEvent.click(screen.getByRole('button', { name: b('group.discardSavedInput') }))
+  expect(screen.getByRole('dialog', { name: b('group.discardSavedTitle') }).textContent).toContain(b('group.discardSavedWarning'))
+  fireEvent.click(screen.getByRole('button', { name: t.common.cancel }))
+  expect(discard).not.toHaveBeenCalled()
+
+  fireEvent.click(screen.getByRole('button', { name: b('hosted.authorizeDeliveryRetry') }))
+  expect(screen.getByRole('dialog', { name: b('hosted.reconcileDeliveryTitle') }).textContent).toContain(b('hosted.retryPartWarning'))
+  expect(screen.getByRole('button', { name: b('hosted.retryPart') })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: t.common.cancel }))
+  expect(resolve).not.toHaveBeenCalled()
+  fireEvent.change(screen.getByRole('textbox', { name: b('hosted.telegramMessageId') }), { target: { value: '777' } })
+  fireEvent.click(screen.getByRole('button', { name: b('hosted.markDelivered') }))
+  expect(screen.getByRole('dialog').textContent).toContain(b('hosted.confirmDeliveredWarning', 777))
+  fireEvent.click(screen.getByRole('button', { name: b('hosted.confirmDelivered') }))
+  await waitFor(() => expect(resolve).toHaveBeenCalledExactlyOnceWith(key, delivery, 'confirmed-delivered', 777))
 })

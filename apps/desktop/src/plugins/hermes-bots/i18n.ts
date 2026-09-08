@@ -35,6 +35,55 @@ import { useMemo } from 'react'
 import { getPluginCtx } from './shared'
 
 type BotsMessages = {
+  /** Gateway-hosted room chrome; backend text and command syntax stay verbatim. */
+  hosted: {
+    groupChats: string
+    empty: string
+    hosted: string
+    attachment: string
+    openAttachment: (name: string) => string
+    loadingAttachment: (name: string) => string
+    telegramBlocked: string
+    workerUnavailable: string
+    blocked: string
+    idle: string
+    gatewayHosted: string
+    attachmentsEnabled: string
+    textOnly: string
+    persistentProcess: string
+    noPersistence: string
+    replayedThrough: (cursor: number) => string
+    refreshRoom: string
+    stopRoomWork: string
+    deliveryStatus: { uncertain: string; rejected: string; sending: string; retry_authorized: string }
+    deliveryDetail: (chatId: number, profile: string, eventId: string, part: number, attempt: number, status: string) => string
+    telegramCooldown: (until: string) => string
+    telegramReadback: string
+    noTelegramRecovery: string
+    telegramMessageId: string
+    markDelivered: string
+    authorizeDeliveryRetry: string
+    pausedByYou: (members: string, handle: string) => string
+    noPersistentHolds: string
+    uncertainTask: (taskId: string) => string
+    retryTask: string
+    waitingForApproval: (member: string) => string
+    noCommandPreview: string
+    allowOnce: string
+    deny: string
+    unsupportedActions: (count: number) => string
+    identityUnavailable: string
+    roomUnavailable: string
+    pendingInput: (text: string) => string
+    savedAttachments: (names: string) => string
+    retrySavedInput: string
+    retryPart: string
+    confirmDelivered: string
+    deliveryConfirmation: (chatId: number, profile: string, eventId: string, part: number, attempt: number) => string
+    retryPartWarning: string
+    confirmDeliveredWarning: (messageId: number) => string
+    reconcileDeliveryTitle: string
+  }
   /** Left rail: the bot + group-chat roster. */
   roster: {
     search: string
@@ -272,6 +321,54 @@ type BotsMessages = {
 }
 
 const en: BotsMessages = {
+  hosted: {
+    groupChats: 'Hosted group chats',
+    empty: 'No hosted rooms on this gateway. Create one on the gateway, then refresh.',
+    hosted: 'Hosted',
+    attachment: 'attachment',
+    openAttachment: name => `Open attachment: ${name}`,
+    loadingAttachment: name => `Loading: ${name}`,
+    telegramBlocked: 'Telegram delivery blocked',
+    workerUnavailable: 'Worker unavailable',
+    blocked: 'Blocked',
+    idle: 'Idle',
+    gatewayHosted: 'Gateway-hosted',
+    attachmentsEnabled: 'Attachments enabled',
+    textOnly: 'Text only',
+    persistentProcess: 'Gateway reports an independently hosted process.',
+    noPersistence: 'Gateway does not advertise persistence. Work only survives Desktop exit on an independently run gateway.',
+    replayedThrough: cursor => `Replayed through ${cursor}`,
+    refreshRoom: 'Refresh room',
+    stopRoomWork: 'Stop room work',
+    deliveryStatus: { uncertain: 'uncertain', rejected: 'rejected', sending: 'sending', retry_authorized: 'retry_authorized' },
+    deliveryDetail: (chatId, profile, eventId, part, attempt, status) => `Telegram chat ${chatId}: ${profile}, event ${eventId}, part ${part}, attempt ${attempt}: ${status}.`,
+    telegramCooldown: until => `Telegram cooldown until ${until}.`,
+    telegramReadback: 'Check this exact part and sender in Telegram first. The Bot API cannot read chat history; these controls record your external readback, not Telegram proof. No model task is rerun.',
+    noTelegramRecovery: 'This gateway does not advertise Telegram delivery recovery. Update the backend to reconcile this part.',
+    telegramMessageId: 'Telegram message ID (last numeric segment of the copied message link)',
+    markDelivered: 'Mark delivered',
+    authorizeDeliveryRetry: 'Authorize delivery retry',
+    pausedByYou: (members, handle) => `Paused by you: ${members}. Send “@${handle} resume” (or “@all resume”) in the room to release them; Stop pauses everyone.`,
+    noPersistentHolds: 'This gateway does not report durable pauses. Stop cancels current work here, but a paused bot may run again on the next message.',
+    uncertainTask: taskId => `Task ${taskId} has an uncertain outcome. Retry asks the gateway to reconcile it before executing again.`,
+    retryTask: 'Retry task',
+    waitingForApproval: member => `${member} is waiting for approval.`,
+    noCommandPreview: 'Command preview unavailable. Only denial is safe here.',
+    allowOnce: 'Allow once',
+    deny: 'Deny',
+    unsupportedActions: count => `${count} pending actions cannot be safely identified by this Desktop. Resolve them on the gateway.`,
+    identityUnavailable: 'Hosted room identity is unavailable. Reopen it from the owning gateway.',
+    roomUnavailable: 'Hosted room unavailable',
+    pendingInput: text => `Pending input, acceptance may be uncertain: ${text}`,
+    savedAttachments: names => `Saved attachments: ${names}`,
+    retrySavedInput: 'Retry saved input',
+    retryPart: 'Retry this part',
+    confirmDelivered: 'Confirm delivered',
+    deliveryConfirmation: (chatId, profile, eventId, part, attempt) => `Telegram chat ${chatId}, ${profile}: ${eventId}, part ${part}, attempt ${attempt}.`,
+    retryPartWarning: 'Retry only after external readback in Telegram shows this exact part was not delivered. An ambiguous send may already have arrived: retry can create a duplicate. Only this part is authorized, without rerunning the agent.',
+    confirmDeliveredWarning: messageId => `Confirm you checked the exact chat, sender and part in Telegram and message ${messageId} is its delivered copy. This records your assertion and skips sending only this part. The Bot API cannot verify chat history.`,
+    reconcileDeliveryTitle: 'Reconcile Telegram delivery?'
+  },
   roster: {
     search: 'Search bots and group chats',
     searchPlaceholder: 'Search bots and group chats…',
@@ -495,6 +592,54 @@ const en: BotsMessages = {
 }
 
 const ja: BotsMessages = {
+  hosted: {
+    groupChats: 'ホスト型グループチャット',
+    empty: 'このゲートウェイにホスト型ルームはありません。ゲートウェイで作成してから更新してください。',
+    hosted: 'ホスト型',
+    attachment: '添付ファイル',
+    openAttachment: name => `添付ファイルを開く: ${name}`,
+    loadingAttachment: name => `読み込み中: ${name}`,
+    telegramBlocked: 'Telegram 配信がブロックされています',
+    workerUnavailable: 'ワーカーを利用できません',
+    blocked: 'ブロック中',
+    idle: '待機中',
+    gatewayHosted: 'ゲートウェイでホスト',
+    attachmentsEnabled: '添付ファイル有効',
+    textOnly: 'テキストのみ',
+    persistentProcess: 'ゲートウェイは独立してホストされたプロセスを報告しています。',
+    noPersistence: 'ゲートウェイは永続化をサポートすると報告していません。Desktop 終了後も処理が続くのは、独立して実行されているゲートウェイだけです。',
+    replayedThrough: cursor => `${cursor} まで再生済み`,
+    refreshRoom: 'ルームを更新',
+    stopRoomWork: 'ルームの処理を停止',
+    deliveryStatus: { uncertain: '結果不明', rejected: '拒否済み', sending: '送信中', retry_authorized: '再試行承認済み' },
+    deliveryDetail: (chatId, profile, eventId, part, attempt, status) => `Telegram チャット ${chatId}: ${profile}、イベント ${eventId}、パート ${part}、試行 ${attempt}: ${status}。`,
+    telegramCooldown: until => `Telegram の待機期間は ${until} までです。`,
+    telegramReadback: 'まず Telegram でこの正確なパートと送信者を確認してください。Bot API はチャット履歴を読めません。この操作は外部での確認結果を記録するもので、Telegram による証明ではありません。モデルのタスクは再実行されません。',
+    noTelegramRecovery: 'このゲートウェイは Telegram 配信の復旧をサポートすると報告していません。このパートを照合するにはバックエンドを更新してください。',
+    telegramMessageId: 'Telegram メッセージ ID（コピーしたメッセージリンクの最後の数値部分）',
+    markDelivered: '配信済みにする',
+    authorizeDeliveryRetry: '配信の再試行を承認',
+    pausedByYou: (members, handle) => `あなたが一時停止: ${members}。ルームで「@${handle} resume」（または「@all resume」）を送信して再開してください。停止すると全員が一時停止します。`,
+    noPersistentHolds: 'このゲートウェイは永続的な一時停止を報告していません。停止は現在の処理をキャンセルしますが、一時停止したボットが次のメッセージで再び動作する場合があります。',
+    uncertainTask: taskId => `タスク ${taskId} の結果は不明です。再試行すると、ゲートウェイは再実行の前に結果を照合します。`,
+    retryTask: 'タスクを再試行',
+    waitingForApproval: member => `${member} は承認を待っています。`,
+    noCommandPreview: 'コマンドのプレビューを利用できません。ここでは拒否のみが安全です。',
+    allowOnce: '今回のみ許可',
+    deny: '拒否',
+    unsupportedActions: count => `この Desktop では ${count} 件の保留中の操作を安全に識別できません。ゲートウェイで解決してください。`,
+    identityUnavailable: 'ホスト型ルームの識別情報を利用できません。所有するゲートウェイから開き直してください。',
+    roomUnavailable: 'ホスト型ルームを利用できません',
+    pendingInput: text => `保留中の入力（受け付けられたか不明な場合があります）: ${text}`,
+    savedAttachments: names => `保存済みの添付ファイル: ${names}`,
+    retrySavedInput: '保存済みの入力を再試行',
+    retryPart: 'このパートを再試行',
+    confirmDelivered: '配信済みと確認',
+    deliveryConfirmation: (chatId, profile, eventId, part, attempt) => `Telegram チャット ${chatId}、${profile}: ${eventId}、パート ${part}、試行 ${attempt}。`,
+    retryPartWarning: 'Telegram で外部確認し、この正確なパートが未配信であることを確認した場合のみ再試行してください。結果不明の送信はすでに届いている可能性があり、再試行で重複する場合があります。このパートのみを承認し、エージェントは再実行しません。',
+    confirmDeliveredWarning: messageId => `Telegram で正確なチャット、送信者、パートを確認し、メッセージ ${messageId} がその配信済みコピーであることを確認してください。これはあなたの申告を記録し、このパートの送信だけをスキップします。Bot API はチャット履歴を検証できません。`,
+    reconcileDeliveryTitle: 'Telegram 配信を照合しますか？'
+  },
   roster: {
     search: 'ボットとグループチャットを検索',
     searchPlaceholder: 'ボットとグループチャットを検索…',
@@ -717,6 +862,54 @@ const ja: BotsMessages = {
 }
 
 const zh: BotsMessages = {
+  hosted: {
+    groupChats: '托管群聊',
+    empty: '此网关上没有托管房间。请在网关上创建一个，然后刷新。',
+    hosted: '托管',
+    attachment: '附件',
+    openAttachment: name => `打开附件：${name}`,
+    loadingAttachment: name => `正在加载：${name}`,
+    telegramBlocked: 'Telegram 投递受阻',
+    workerUnavailable: '工作进程不可用',
+    blocked: '受阻',
+    idle: '空闲',
+    gatewayHosted: '网关托管',
+    attachmentsEnabled: '附件已启用',
+    textOnly: '仅文本',
+    persistentProcess: '网关报告存在独立托管的进程。',
+    noPersistence: '网关未声明支持持久运行。只有独立运行的网关才能在退出 Desktop 后继续工作。',
+    replayedThrough: cursor => `已回放至 ${cursor}`,
+    refreshRoom: '刷新房间',
+    stopRoomWork: '停止房间工作',
+    deliveryStatus: { uncertain: '结果不确定', rejected: '已拒绝', sending: '正在发送', retry_authorized: '已授权重试' },
+    deliveryDetail: (chatId, profile, eventId, part, attempt, status) => `Telegram 聊天 ${chatId}：${profile}，事件 ${eventId}，第 ${part} 部分，第 ${attempt} 次尝试：${status}。`,
+    telegramCooldown: until => `Telegram 冷却期至 ${until}。`,
+    telegramReadback: '请先在 Telegram 中核对这一确切部分及发送者。Bot API 无法读取聊天历史；这些控件记录的是你在外部核查的结果，而非 Telegram 的证明。不会重新运行任何模型任务。',
+    noTelegramRecovery: '此网关未声明支持 Telegram 投递恢复。请更新后端以核对此部分。',
+    telegramMessageId: 'Telegram 消息 ID（复制的消息链接中最后一段数字）',
+    markDelivered: '标记为已投递',
+    authorizeDeliveryRetry: '授权重试投递',
+    pausedByYou: (members, handle) => `你已暂停：${members}。在房间中发送“@${handle} resume”（或“@all resume”）以恢复它们；停止会暂停所有成员。`,
+    noPersistentHolds: '此网关未报告支持持久暂停。停止会取消此处当前的工作，但已暂停的机器人可能在下一条消息时再次运行。',
+    uncertainTask: taskId => `任务 ${taskId} 的结果不确定。重试会要求网关在再次执行前核对结果。`,
+    retryTask: '重试任务',
+    waitingForApproval: member => `${member} 正在等待批准。`,
+    noCommandPreview: '命令预览不可用。此处只有拒绝才是安全的。',
+    allowOnce: '仅允许一次',
+    deny: '拒绝',
+    unsupportedActions: count => `此 Desktop 无法安全识别 ${count} 项待处理操作。请在网关上解决。`,
+    identityUnavailable: '托管房间的身份信息不可用。请从所属网关重新打开。',
+    roomUnavailable: '托管房间不可用',
+    pendingInput: text => `待处理输入，是否已接受可能不确定：${text}`,
+    savedAttachments: names => `已保存的附件：${names}`,
+    retrySavedInput: '重试已保存的输入',
+    retryPart: '重试此部分',
+    confirmDelivered: '确认已投递',
+    deliveryConfirmation: (chatId, profile, eventId, part, attempt) => `Telegram 聊天 ${chatId}，${profile}：${eventId}，第 ${part} 部分，第 ${attempt} 次尝试。`,
+    retryPartWarning: '只有在 Telegram 中外部核查确认这一确切部分未投递后才能重试。结果不明的发送可能已经到达：重试可能造成重复。仅授权此部分，不会重新运行代理。',
+    confirmDeliveredWarning: messageId => `请确认你已在 Telegram 中核对确切的聊天、发送者和部分，且消息 ${messageId} 是其已投递的副本。这会记录你的声明，并仅跳过此部分的发送。Bot API 无法验证聊天历史。`,
+    reconcileDeliveryTitle: '核对 Telegram 投递？'
+  },
   roster: {
     search: '搜索机器人和群聊',
     searchPlaceholder: '搜索机器人和群聊…',
@@ -935,6 +1128,54 @@ const zh: BotsMessages = {
 }
 
 const zhHant: BotsMessages = {
+  hosted: {
+    groupChats: '託管群組聊天',
+    empty: '此閘道上沒有託管房間。請在閘道上建立一個，然後重新整理。',
+    hosted: '託管',
+    attachment: '附件',
+    openAttachment: name => `開啟附件：${name}`,
+    loadingAttachment: name => `正在載入：${name}`,
+    telegramBlocked: 'Telegram 投遞受阻',
+    workerUnavailable: '工作程序不可用',
+    blocked: '受阻',
+    idle: '閒置',
+    gatewayHosted: '閘道託管',
+    attachmentsEnabled: '附件已啟用',
+    textOnly: '僅文字',
+    persistentProcess: '閘道回報存在獨立託管的程序。',
+    noPersistence: '閘道未宣告支援持續執行。只有獨立執行的閘道才能在結束 Desktop 後繼續工作。',
+    replayedThrough: cursor => `已重播至 ${cursor}`,
+    refreshRoom: '重新整理房間',
+    stopRoomWork: '停止房間工作',
+    deliveryStatus: { uncertain: '結果不確定', rejected: '已拒絕', sending: '正在傳送', retry_authorized: '已授權重試' },
+    deliveryDetail: (chatId, profile, eventId, part, attempt, status) => `Telegram 聊天 ${chatId}：${profile}，事件 ${eventId}，第 ${part} 部分，第 ${attempt} 次嘗試：${status}。`,
+    telegramCooldown: until => `Telegram 冷卻期至 ${until}。`,
+    telegramReadback: '請先在 Telegram 中核對這個確切部分及傳送者。Bot API 無法讀取聊天歷史；這些控制項記錄的是您在外部核查的結果，而非 Telegram 的證明。不會重新執行任何模型任務。',
+    noTelegramRecovery: '此閘道未宣告支援 Telegram 投遞復原。請更新後端以核對此部分。',
+    telegramMessageId: 'Telegram 訊息 ID（複製的訊息連結中最後一段數字）',
+    markDelivered: '標記為已投遞',
+    authorizeDeliveryRetry: '授權重試投遞',
+    pausedByYou: (members, handle) => `您已暫停：${members}。在房間中傳送「@${handle} resume」（或「@all resume」）以恢復它們；停止會暫停所有成員。`,
+    noPersistentHolds: '此閘道未回報支援持久暫停。停止會取消此處目前的工作，但已暫停的機器人可能在下一則訊息時再次執行。',
+    uncertainTask: taskId => `任務 ${taskId} 的結果不確定。重試會要求閘道在再次執行前核對結果。`,
+    retryTask: '重試任務',
+    waitingForApproval: member => `${member} 正在等待批准。`,
+    noCommandPreview: '命令預覽不可用。此處只有拒絕才是安全的。',
+    allowOnce: '僅允許一次',
+    deny: '拒絕',
+    unsupportedActions: count => `此 Desktop 無法安全識別 ${count} 項待處理操作。請在閘道上解決。`,
+    identityUnavailable: '託管房間的身分資訊不可用。請從所屬閘道重新開啟。',
+    roomUnavailable: '託管房間不可用',
+    pendingInput: text => `待處理輸入，是否已接受可能不確定：${text}`,
+    savedAttachments: names => `已儲存的附件：${names}`,
+    retrySavedInput: '重試已儲存的輸入',
+    retryPart: '重試此部分',
+    confirmDelivered: '確認已投遞',
+    deliveryConfirmation: (chatId, profile, eventId, part, attempt) => `Telegram 聊天 ${chatId}，${profile}：${eventId}，第 ${part} 部分，第 ${attempt} 次嘗試。`,
+    retryPartWarning: '只有在 Telegram 中外部核查確認這個確切部分未投遞後才能重試。結果不明的傳送可能已經到達：重試可能造成重複。僅授權此部分，不會重新執行代理。',
+    confirmDeliveredWarning: messageId => `請確認您已在 Telegram 中核對確切的聊天、傳送者和部分，且訊息 ${messageId} 是其已投遞的副本。這會記錄您的聲明，並僅跳過此部分的傳送。Bot API 無法驗證聊天歷史。`,
+    reconcileDeliveryTitle: '核對 Telegram 投遞？'
+  },
   roster: {
     search: '搜尋機器人和群組聊天',
     searchPlaceholder: '搜尋機器人和群組聊天…',

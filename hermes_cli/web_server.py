@@ -171,12 +171,23 @@ async def _lifespan(app: "FastAPI"):
     hosted_room_start_cancel = threading.Event()
 
     def _start_hosted_rooms() -> None:
+        started = False
+        retry_delay = 1.0
         try:
             while not hosted_room_start_cancel.is_set():
                 try:
                     _hosted_groups.start_hosted_room_service(cancel_event=hosted_room_start_cancel)
-                except Exception:
-                    _log.exception("Hosted Group Chat recovery failed; will retry")
+                except Exception as exc:
+                    if not started:
+                        _log.exception("Hosted Group Chat startup failed; repair configuration and restart the backend")
+                        return
+                    _log.warning("Hosted Group Chat recovery failed; retry in %ss: %s", retry_delay, exc)
+                    if hosted_room_start_cancel.wait(retry_delay):
+                        break
+                    retry_delay = min(60.0, retry_delay * 2)
+                    continue
+                started = True
+                retry_delay = 1.0
                 if hosted_room_start_cancel.wait(1.0):
                     break
         finally:

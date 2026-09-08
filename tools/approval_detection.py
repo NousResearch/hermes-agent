@@ -83,6 +83,30 @@ _HARDLINE_SYSTEM_DIRS = (r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/
 # must be an actual command word — "rm -rf /" as DATA in `git commit -m "…rm -rf /…"` must not trip the floor.
 _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 
+# Fork bomb: a function whose body pipes itself into itself, backgrounds the pair, and is then
+# invoked. `:` is only the canonical NAME — `bomb(){ bomb|bomb& };bomb` forks exactly as hard — so the
+# name is CAPTURED and back-referenced instead of hardcoded. The self-reference IS the bomb, which is
+# why `a(){ a|b& };a` and `g(){ g_helper|g_other& };g` (and a definition that is never invoked) stay
+# off the floor. Positionless — a definition carries no command-name token to anchor — so it matches
+# the quote-masked variant like the block-device redirect (_QUOTE_MASKED_HARDLINE_DESCRIPTIONS).
+# Each optional part hangs off a literal, never between two `\s*` runs: an ambiguous whitespace split
+# is what turns a failing match into quadratic backtracking.
+_FORK_BOMB = (r'(?<!\w)(?:function\s+)?(:|[a-z_][a-z0-9_.-]*)\s*(?:\(\s*\)\s*)?'
+              r'\{\s*\1\s*\|\s*\1\s*&\s*(?:;\s*)?\}[^\S\n]*[;\n]\s*\1(?!\w)')
+
+# `-1` (every process) as a kill TARGET. Where it sits decides what it means. As the FIRST token after
+# `kill` it is a signal: `kill -1 1234` is the SIGHUP reload idiom (signal 1 = HUP) that `kill -HUP 1234`
+# spells longhand, and the floor cannot be approved, so blocking it leaves no way to run it at all. Any
+# LATER token `-1` is the pid operand -1, i.e. everything: after a signal (`kill -9 -1`), after a flag
+# whose value is a separate token (`kill -s KILL -1` — the old `(-[^\s]+\s+)*` rule consumed `-s` and
+# read `KILL` as the target, which is how that spelling walked past the floor), after `--`, or after
+# other pids (`kill 1234 -1`, which the old rule missed too). Bare `kill -1` with no operand stays on
+# the floor as before. `-1` must be a whole token, so `kill -19 1234` (SIGSTOP) and `kill -- -1234` (a
+# process group) are not read as `-1`. Tokens are whitespace-delimited, so a failing match has one
+# parse per token and cannot backtrack quadratically.
+_KILL_ALL_TARGET = (r'(?:[^\s;&|]+\s+)+-1(?=[\s;&|)`<>#]|$)'
+                    r'|-1(?=\s*(?:[;&|)`<>#]|$))')
+
 HARDLINE_PATTERNS = [
     # Root path: any root-anchored path whose components collapse to "/" in the shell ("/", "//",
     # "/.", "/./", "/../..", optional trailing glob). Each inter-slash segment must be exactly "."
@@ -108,10 +132,11 @@ HARDLINE_PATTERNS = [
     # /dev/sda"`) cannot trip it, while shell-carrying wrappers (sh -c / bash -c / eval) still surface their
     # payload as a raw detection variant — quoting is not a bypass (#93392).
     (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
-    (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
-    # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
-    # everything"` doesn't trip (#93392).
-    (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    (_FORK_BOMB, "fork bomb"),
+    # Kill every process on the system: `kill` aimed at pid -1, plus killall5, whose entire job is
+    # signaling every process. Command-name anchored so `echo "kill -1 sends SIGHUP to everything"`
+    # doesn't trip (#93392); killall5 lives in /sbin, often off PATH, so an explicit path is anchored too.
+    (_CMDPOS + rf'(?:kill\s+(?:{_KILL_ALL_TARGET})|(?:[\w./-]*/)?killall5\b)', "kill all processes"),
     (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
@@ -277,7 +302,7 @@ DANGEROUS_PATTERNS = [
     (r'\bkillall\s+(-[^\s]*\s+)*-(9|KILL|SIGKILL)\b', "force kill processes (killall -KILL)"),
     (r'\bkillall\s+(-[^\s]*\s+)*-s\s+(KILL|SIGKILL|9)\b', "force kill processes (killall -s KILL)"),
     (r'\bkillall\s+(-[^\s]*\s+)*-r\b', "kill processes by regex (killall -r)"),
-    (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
+    (_FORK_BOMB, "fork bomb"),
     # Shell -c is parsed structurally by _execution_flag_findings(); a regex searching a dash-token
     # for "c" also matched --norc/--rcfile/--restricted.
     (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),

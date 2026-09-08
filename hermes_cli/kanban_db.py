@@ -517,7 +517,7 @@ def worker_logs_dir(board: Optional[str] = None) -> Path:
 
 
 def board_metadata_path(board: Optional[str] = None) -> Path:
-    """``board.json`` path — display metadata only; the directory slug is the identity."""
+    """``board.json`` settings path; the directory slug is the identity."""
     return board_dir(_slug_or_default(board)) / "board.json"
 
 
@@ -526,9 +526,13 @@ def _default_board_display_name(slug: str) -> str:
     return " ".join(part.capitalize() for part in slug.replace("_", "-").split("-") if part) or slug
 
 
-def read_board_metadata(board: Optional[str] = None) -> dict:
-    """``board.json`` merged over defaults, plus ``slug`` and ``db_path``. Never
-    raises — a missing/malformed file yields the synthesized entry."""
+def read_board_metadata(
+    board: Optional[str] = None, *, strict: bool = False, metadata_path: Optional[Path] = None,
+) -> dict:
+    """Native settings plus defaults. Strict policy reads reject malformed files;
+    the ordinary display read still synthesizes defaults. Missing is unconfigured.
+    ``metadata_path`` lets enforcement bind to an already-open DB, not a selector.
+    """
     slug = _slug_or_default(board)
     meta: dict[str, Any] = {
         "slug": slug,
@@ -543,16 +547,20 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "archived": False,
     }
     try:
-        p = board_metadata_path(slug)
-        if p.exists():
-            raw = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                # Never let the metadata file claim a different slug than
-                # its directory — trust the filesystem.
-                raw["slug"] = slug
-                meta.update(raw)
-    except (OSError, json.JSONDecodeError):
+        p = metadata_path if metadata_path is not None else board_metadata_path(slug)
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            # Never let the metadata file claim a different slug than
+            # its directory — trust the filesystem.
+            raw["slug"] = slug
+            meta.update(raw)
+        elif strict:
+            raise ValueError("board metadata must be an object")
+    except FileNotFoundError:
         pass
+    except (OSError, ValueError, UnicodeError):
+        if strict:
+            raise
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
 
@@ -561,6 +569,7 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    pre_claim: Optional[dict] = None, clear_pre_claim: bool = False,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
@@ -570,6 +579,13 @@ def write_board_metadata(
     meta = read_board_metadata(slug)
     # db_path is derived on every read; never persist it into board.json.
     meta.pop("db_path", None)
+    if pre_claim is not None:
+        from hermes_cli.kanban_db_policy import validate_policy
+        if clear_pre_claim:
+            raise ValueError("cannot set and clear pre_claim together")
+        meta["pre_claim"] = validate_policy(pre_claim)
+    elif clear_pre_claim:
+        meta.pop("pre_claim", None)
     if name is not None:
         meta["name"] = str(name).strip() or _default_board_display_name(slug)
     for key, value in (("description", description), ("icon", icon), ("color", color)):
@@ -2007,6 +2023,10 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
+    from hermes_cli import kanban_db_policy
+    policy = kanban_db_policy.board_policy(conn)
+    if policy is not None:
+        return kanban_db_policy.recompute_ready(conn, policy, failure_limit)
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
@@ -2125,10 +2145,13 @@ def claim_task(
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
     """
-    now = int(time.time())
     lock = claimer or _claimer_id()
-    expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
-    with write_txn(conn):
+    from hermes_cli.kanban_db_policy import policy_transaction
+    with policy_transaction(conn, task_id, "ready") as allowed:
+        if not allowed:
+            return None
+        now = int(time.time())
+        expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
         # Single enforcement point: never ready -> running with an undone
         # parent, whichever writer set 'ready'. Demote to 'todo';
         # recompute_ready re-promotes when the parents finish.
@@ -2158,10 +2181,13 @@ def claim_review_task(
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
     separately from the implementer."""
-    now = int(time.time())
     lock = claimer or _claimer_id()
-    expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
-    with write_txn(conn):
+    from hermes_cli.kanban_db_policy import policy_transaction
+    with policy_transaction(conn, task_id, "review") as allowed:
+        if not allowed:
+            return None
+        now = int(time.time())
+        expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
         if not _parents_satisfied(conn, task_id):
             demoted = conn.execute(
                 "UPDATE tasks SET status = 'todo' "

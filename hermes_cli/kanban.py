@@ -182,7 +182,11 @@ def kanban_command(args: argparse.Namespace) -> int:
         # init_db is idempotent (one sqlite_master SELECT when tables exist) and prevents
         # "no such table: tasks" on first use from a fresh HERMES_HOME.
         try:
-            kb.init_db()
+            observational = (
+                action in ("list", "ls") and bool(getattr(args, "no_promote", False))
+            ) or (action == "show" and bool(getattr(args, "read_only", False)))
+            if not observational:
+                kb.init_db()
         except Exception as exc:
             return _err(f"kanban: could not initialize database: {exc}")
 
@@ -221,7 +225,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
 
 _DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
     "create", "new", "rm", "remove", "delete", "switch", "use", "rename",
-    "set-default-workdir", "import",
+    "set-default-workdir", "set-pre-claim", "import",
 })
 
 
@@ -414,9 +418,11 @@ def _cmd_list(args: argparse.Namespace) -> int:
     assignee = args.assignee
     if args.mine and not assignee:
         assignee = _profile_author()
-    with kbc.connect_closing() as conn:
+    no_promote = bool(getattr(args, "no_promote", False))
+    with kbc.connect_closing(read_only=no_promote) as conn:
         # Cheap mini-dispatch so list reflects dependencies cleared since the last tick.
-        kb.recompute_ready(conn)
+        if not no_promote:
+            kb.recompute_ready(conn)
         tasks = kb.list_tasks(
             conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,
             include_archived=args.archived, order_by=getattr(args, "sort", None),
@@ -471,7 +477,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         return rc
     graph = None
     want_json = getattr(args, "json", False)
-    with kbc.connect_closing() as conn:
+    with kbc.connect_closing(read_only=bool(getattr(args, "read_only", False))) as conn:
         task = kb.get_task(conn, args.task_id)
         if not task:
             return _err(f"no such task: {args.task_id}")
@@ -489,7 +495,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         _print_json({
             "task": _task_to_dict(task), "latest_summary": latest_summary, "parents": parents, "children": children,
             "comments": [_obj_dict(c, ("author", "body", "created_at")) for c in comments],
-            "events": [_obj_dict(e, ("kind", "payload", "created_at", "run_id")) for e in events],
+            "events": [_obj_dict(e, ("id", "kind", "payload", "created_at", "run_id")) for e in events],
             "runs": [_obj_dict(r, _SHOW_RUN_FIELDS) for r in runs],
         })
         return 0

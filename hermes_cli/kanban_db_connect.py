@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
 import random
 import re
 import secrets
@@ -157,11 +158,18 @@ def _cross_process_init_lock(path: Path):
             handle.close()
 
 
+_DISPATCH_HELD = threading.local()
+
+
 @contextlib.contextmanager
-def _dispatch_tick_lock(db_path: Path):
+def _dispatch_tick_lock(db_path: Path, *, reentrant: bool = False, required: bool = False):
     """Non-blocking single-writer guard around one dispatcher tick; yields
     ``True`` if this process holds the board's ``.dispatch.lock``, else
     ``False`` (caller skips the tick).
+
+    Internal policy callers may join the same PID/thread's actual held FD with
+    ``reentrant=True``. Ordinary nested ticks remain non-reentrant. ``required``
+    refuses the legacy open-failure fallback; fallback is never recorded as ownership.
 
     Two dispatchers (e.g. an orphan gateway escaping its service cgroup) both
     pass ``busy_timeout`` and race on WAL frames — the root cause of
@@ -177,6 +185,14 @@ def _dispatch_tick_lock(db_path: Path):
     lock is the defense-in-depth that prevents two dispatchers from ever writing concurrently *regardless of
     how the second one got there*.
     """
+    db_path = db_path.resolve()
+    owned = getattr(_DISPATCH_HELD, "handles", None)
+    if owned is None:
+        owned = _DISPATCH_HELD.handles = {}
+    owner = owned.get(db_path)
+    if reentrant and owner and owner[0] == os.getpid() and not owner[1].closed:
+        yield True
+        return
     lock_path = db_path.with_name(db_path.name + ".dispatch.lock")
     handle = None
     acquired = False
@@ -190,14 +206,17 @@ def _dispatch_tick_lock(db_path: Path):
     except OSError:
         # Can't even open the lock file (permissions, read-only FS): degrade to
         # a no-op so a probe failure never blocks dispatch.
-        acquired = True
+        acquired = not required
         handle = None
+    if acquired and handle is not None:
+        owned[db_path] = (os.getpid(), handle)
     try:
         yield acquired
     finally:
         if handle is not None:
             try:
                 if acquired:
+                    owned.pop(db_path, None)
                     _unlock(handle)
             except (OSError, AttributeError):
                 pass
@@ -664,7 +683,9 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
     return conn, out
 
 
-def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
+def connect(
+    db_path: Optional[Path] = None, *, board: Optional[str] = None, read_only: bool = False,
+) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB. WAL is (re)enabled on
     every connection so a re-created file stays robust; the first connection
     per path auto-runs :func:`init_db`, later ones skip via
@@ -673,14 +694,14 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     ``<root>/kanban/current`` -> ``default``)."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
     from agent.delegation_context import is_delegated_child_process_context
-    if is_delegated_child_process_context():
-        # Reads must not enter schema/backfill write transactions. Never create a
-        # missing board or migrate on a descendant's behalf; the owner initializes it.
-        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    if read_only or is_delegated_child_process_context():
+        # Observational policy reads, like descendants, must not initialize or
+        # migrate. The owner establishes the schema before these reads are possible.
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, isolation_level=None)
         conn.row_factory = sqlite3.Row
         if not _schema_is_present(conn):
             conn.close()
-            raise PermissionError("Kanban descendants require an initialized board; ask its owner to initialize it")
+            raise PermissionError("Read-only Kanban access requires an initialized board; ask its owner to initialize it")
         return conn
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -734,7 +755,9 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
 
 
 @contextlib.contextmanager
-def connect_closing(db_path: Optional[Path] = None, *, board: Optional[str] = None):
+def connect_closing(
+    db_path: Optional[Path] = None, *, board: Optional[str] = None, read_only: bool = False,
+):
     """Open a kanban DB connection and guarantee it is closed on exit. Use
     instead of ``with kb.connect() as conn:`` — sqlite3's context manager only
     commits/rolls back, it does NOT close the fd, so long-lived processes
@@ -742,7 +765,7 @@ def connect_closing(db_path: Optional[Path] = None, *, board: Optional[str] = No
 
     See #33159 for the production incident.
     """
-    conn = connect(db_path=db_path, board=board)
+    conn = connect(db_path=db_path, board=board, read_only=read_only)
     try:
         yield conn
     finally:

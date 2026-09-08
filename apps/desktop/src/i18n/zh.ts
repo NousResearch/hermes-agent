@@ -4,11 +4,14 @@ import type { Translations } from './types'
 
 export const zh: Translations = {
   sessionImport: {
+    sources: '来源',
+    grok: 'Grok Bot',
+    grokNotice: 'Grok Bot 仅导入本地缓存的文本。历史记录可能不完整，包括缺少较早的消息或回复。',
     title: '从其他应用继续',
-    subtitle: '导入已连接计算机上的本地对话。不包含仅存储在云端的会话。',
+    subtitle: '将此计算机上的本地对话导入所选智能体。不包含仅存储在云端的会话。',
     action: '导入会话',
     readingFrom: '读取自',
-    connectedComputer: '已连接的计算机',
+    connectedComputer: '此计算机',
     destination: '导入到',
     all: '全部',
     search: '搜索已加载的会话',
@@ -27,7 +30,7 @@ export const zh: Translations = {
     previewLoading: '正在打开预览',
     previewError: '预览不可用',
     previewHelp: '源文件可能已移动或更改。请刷新列表后重试。',
-    previewLimit: '预览已缩短，便于阅读。导入时会复制完整对话。',
+    previewLimit: '预览已缩短，便于阅读。将导入所有可用的对话文本。',
     you: '你',
     snapshot: '此对话已导入 Hermes。打开现有副本即可继续。',
     copyNotice: '复制对话文本，不更改源文件。不包含工具输出和推理内容。',

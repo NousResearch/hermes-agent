@@ -1,7 +1,7 @@
 import { requestGatewayForAgent } from '@/store/gateway'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 
-export type ForeignSource = 'claude' | 'cowork' | 'codex'
+export type ForeignSource = 'claude' | 'cowork' | 'codex' | 'grok'
 
 export interface ForeignSession {
   id: string
@@ -37,9 +37,15 @@ export interface ForeignImportResult {
   already_imported: boolean
 }
 
+export interface ForeignSnapshot {
+  origin: { tool: string; path: string; foreign_session_id: string | null }
+  messages: { role: string; content: string }[]
+  title: string
+}
+
 export function foreignRequest<T>(
   owner: SessionOwnerRoute,
-  method: 'list' | 'preview' | 'import',
+  method: 'list' | 'preview' | 'export' | 'import',
   params: Record<string, unknown>,
   signal?: AbortSignal
 ) {

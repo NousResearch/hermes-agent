@@ -4,11 +4,14 @@ import { defineLocale } from './define-locale'
 
 export const zhHant = defineLocale({
   sessionImport: {
+    sources: '來源',
+    grok: 'Grok Bot',
+    grokNotice: 'Grok Bot 僅匯入本機快取的文字。歷程記錄可能不完整，包括缺少較早的訊息或回覆。',
     title: '從其他應用程式繼續',
-    subtitle: '匯入已連線電腦上的本機對話。不包含僅儲存在雲端的工作階段。',
+    subtitle: '將此電腦上的本機對話匯入所選代理程式。不包含僅儲存在雲端的工作階段。',
     action: '匯入工作階段',
     readingFrom: '讀取自',
-    connectedComputer: '已連線的電腦',
+    connectedComputer: '此電腦',
     destination: '匯入至',
     all: '全部',
     search: '搜尋已載入的工作階段',
@@ -27,7 +30,7 @@ export const zhHant = defineLocale({
     previewLoading: '正在開啟預覽',
     previewError: '無法預覽',
     previewHelp: '來源檔案可能已移動或變更。請重新整理清單後重試。',
-    previewLimit: '預覽已縮短，方便閱讀。匯入時會複製完整對話。',
+    previewLimit: '預覽已縮短，方便閱讀。將匯入所有可用的對話文字。',
     you: '你',
     snapshot: '此對話已匯入 Hermes。開啟現有副本即可繼續。',
     copyNotice: '複製對話文字，不變更來源檔案。不包含工具輸出和推理內容。',

@@ -665,16 +665,27 @@ the id plus a ready-to-paste `hermes --resume <id>` command.
 straight into the imported conversation.
 
 **Hermes Desktop** has the same importer under **Import session** in the
-sidebar (also in the command palette). It lists the logs on the machine the
-connected backend runs on — not the computer running the app — shows a
-read-only preview, and **Continue in Hermes** copies the conversation into the
-selected profile. Desktop also offers local Claude Cowork when its Claude
-Desktop session folder exists on that backend computer. It checks Claude's
-macOS Application Support and Windows AppData/MSIX locations. Cloud-only Claude
-Cowork and ChatGPT Work sessions are not included. Browsing never writes to
-your session store, importing never
+sidebar (also in the command palette). It lists local logs on the computer
+running Desktop, shows a read-only preview, and **Continue in Hermes** copies
+the conversation into the selected local, remote, or cloud profile. Desktop
+also offers local Claude Cowork when its Claude Desktop session folder exists
+on this computer. It checks Claude's macOS Application Support and Windows
+AppData/MSIX locations. Cloud-only Claude Cowork and ChatGPT Work sessions are
+not included. Browsing never writes to your session store, importing never
 touches the source file, and importing the same log twice opens the existing
-copy instead of making another.
+copy instead of making another. Source buttons above the list and preview filter
+these local conversations without hiding the other available sources in a menu.
+
+**Grok Bot** appears when transcript replica blobs exist in
+`~/Library/Application Support/Grok Bot/sand-client-persistence/` on macOS.
+When the same account’s cached roster contains an exact bot ID match, the bot name
+appears beneath the conversation title. Missing or unsupported roster metadata
+leaves that subtitle empty; the conversation title is unchanged.
+Only schema-1 transcript replicas and the matching schema-4 roster (up to 1 MiB)
+are read; other cache slices and `~/.grokbot` configuration or credentials are not accessed. Cached history can be incomplete,
+including missing older messages or replies. Text messages are imported; widgets,
+approval prompts, and tool results are skipped. No Windows or Linux Grok cache
+location is currently supported. Cowork and Grok discovery remain Desktop-only.
 
 What carries over: the ordered user/assistant conversation, with tool
 activity condensed to short `[ran tool: …]` notes inside assistant turns.

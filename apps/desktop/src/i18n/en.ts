@@ -4,11 +4,14 @@ import type { Translations } from './types'
 
 export const en: Translations = {
   sessionImport: {
+    sources: 'Sources',
+    grok: 'Grok Bot',
+    grokNotice: 'Grok Bot imports only locally cached text. History may be incomplete, including missing older messages or replies.',
     title: 'Continue from another app',
-    subtitle: 'Import local conversations from the connected computer. Cloud-only sessions are not included.',
+    subtitle: 'Import local conversations from this computer into the selected agent. Cloud-only sessions are not included.',
     action: 'Import session',
     readingFrom: 'Reading from',
-    connectedComputer: 'the connected computer',
+    connectedComputer: 'this computer',
     destination: 'Import into',
     all: 'All',
     search: 'Search loaded sessions',
@@ -27,7 +30,7 @@ export const en: Translations = {
     previewLoading: 'Opening preview',
     previewError: 'Preview unavailable',
     previewHelp: 'The source may have moved or changed. Refresh the list and try again.',
-    previewLimit: 'Preview shortened for readability. The complete conversation is imported.',
+    previewLimit: 'Preview shortened for readability. All available conversation text is imported.',
     you: 'You',
     snapshot: 'This conversation is already in Hermes. Open your existing copy to continue.',
     copyNotice:

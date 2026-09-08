@@ -4,11 +4,14 @@ import { defineLocale } from './define-locale'
 
 export const ja = defineLocale({
   sessionImport: {
+    sources: '読み込み元',
+    grok: 'Grok Bot',
+    grokNotice: 'Grok Bot はローカルにキャッシュされたテキストのみ取り込みます。過去のメッセージや返信が欠けているなど、履歴が不完全な場合があります。',
     title: '別のアプリから続ける',
-    subtitle: '接続先のコンピューターにあるローカルの会話を取り込みます。クラウドのみのセッションは含まれません。',
+    subtitle: 'このコンピューターにあるローカルの会話を選択したエージェントに取り込みます。クラウドのみのセッションは含まれません。',
     action: 'セッションを取り込む',
     readingFrom: '読み込み元',
-    connectedComputer: '接続先のコンピューター',
+    connectedComputer: 'このコンピューター',
     destination: '取り込み先',
     all: 'すべて',
     search: '読み込み済みのセッションを検索',
@@ -27,7 +30,7 @@ export const ja = defineLocale({
     previewLoading: 'プレビューを開いています',
     previewError: 'プレビューできません',
     previewHelp: '元のファイルが移動または変更された可能性があります。一覧を更新してください。',
-    previewLimit: '読みやすいようにプレビューを省略しています。取り込み時は会話全体をコピーします。',
+    previewLimit: 'プレビューは読みやすいように省略しています。利用可能な会話テキストをすべて取り込みます。',
     you: 'あなた',
     snapshot: 'この会話は取り込み済みです。既存のコピーを開いて続けられます。',
     copyNotice: '会話のテキストをコピーします。元のファイルは変更されません。ツール出力と推論は含まれません。',

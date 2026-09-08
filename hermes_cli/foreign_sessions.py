@@ -3,6 +3,8 @@ imported history must satisfy the provider role-alternation invariant (see ``_me
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import json
 import os
@@ -26,8 +28,9 @@ _SOURCE_LABELS = {
     "claude": "Claude Code",
     "cowork": "Claude Cowork",
     "codex": "ChatGPT Work / Codex",
+    "grok": "Grok Bot",
 }
-_SOURCE_DB_NAMES = {"claude": "claude-code", "cowork": "claude-cowork", "codex": "codex-cli"}
+_SOURCE_DB_NAMES = {"claude": "claude-code", "cowork": "claude-cowork", "codex": "codex-cli", "grok": "grok-bot"}
 
 
 @dataclass
@@ -167,12 +170,65 @@ def parse_codex_session(path: Path) -> Dict[str, Any]:
     return _parsed(turns, cwd, session_id)
 
 
+def _grok_transcript_key(path: Path) -> Optional[str]:
+    try:
+        key = base64.b32decode(path.stem.upper() + "=" * (-len(path.stem) % 8)).decode("utf-8")
+    except (ValueError, binascii.Error, UnicodeError):
+        return None
+    return key if "transcript.replica" in key else None
+
+
+def parse_grok_session(path: Path) -> Dict[str, Any]:
+    """Read only schema-1 transcript replicas, not Grok's credentials or other cache slices."""
+    key = _grok_transcript_key(path)
+    if key is None:
+        raise ValueError("Not a Grok Bot transcript replica")
+    path = path.resolve()
+    if not any(path.is_relative_to(root) for root in _source_roots("grok")):
+        raise ValueError("Grok Bot transcript is outside the local cache")
+    # ponytail: match the existing desktop log bound; no new cross-gateway limit on local imports.
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(fd, "rb") as stream:
+        if not S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("Grok Bot transcript is not a regular file")
+        raw = stream.read(32 * 1024 * 1024 + 1)
+    if len(raw) > 32 * 1024 * 1024:
+        raise ValueError("Grok Bot cache exceeds the 32 MB import limit")
+    data = json.loads(raw)
+    value = data.get("value") if isinstance(data, dict) and data.get("schemaVersion") == 1 else None
+    entries = value.get("entries") if isinstance(value, dict) else None
+    if not isinstance(entries, list):
+        raise ValueError("Unsupported Grok Bot transcript cache")
+    turns, seen = [], set()
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]:
+            continue
+        if entry["id"] in seen:
+            continue
+        kind = entry.get("kind")
+        message = entry.get("message")
+        # Grok renders send-message text as bot output; message entries carry the speaker role.
+        if kind == "send-message" and isinstance(message, dict) and message.get("type") == "text":
+            message = {"role": "assistant", "content": message.get("content")}
+        elif kind == "message" and entry.get("role") in ("user", "assistant"):
+            message = {"role": "assistant" if entry.get("fromAgent") else entry["role"],
+                       "content": entry.get("content")}
+        else:
+            continue
+        if turn := _message_turn(message):
+            seen.add(entry["id"])
+            turns.append(turn)
+    return _parsed(turns, None, key)
+
+
 # source -> (default root under ~, glob pattern, recursive, parser)
 _SOURCES = {
     "claude": ((".claude", "projects"), "*/*.jsonl", False, parse_claude_session),
     "cowork": (("Library", "Application Support", "Claude", "local-agent-mode-sessions"),
                "*/*/local_*/.claude/projects/*/*.jsonl", False, parse_claude_session),
     "codex": ((".codex", "sessions"), "rollout-*.jsonl", True, parse_codex_session),
+    "grok": (("Library", "Application Support", "Grok Bot", "sand-client-persistence"),
+             "*.blob", False, parse_grok_session),
 }
 
 
@@ -181,6 +237,9 @@ def _source_roots(source: str, *, home: Optional[Path] = None, platform: Optiona
     """Default storage roots for one source. Cowork follows Claude Desktop's platform layout."""
     default_root, _, _, _ = _SOURCES[source]
     home = home or Path.home()
+    if source == "grok":
+        # Only the macOS cache location has been verified.
+        return [home.joinpath(*default_root).resolve()] if (platform or sys.platform) == "darwin" else []
     if source != "cowork":
         return [home.joinpath(*default_root).resolve()]
 
@@ -211,6 +270,8 @@ def _walk(source: str, root: Optional[Path] = None) -> List[Tuple[Path, os.stat_
     for source_root in roots:
         for path in ((source_root.rglob(pattern) if recursive else source_root.glob(pattern))
                      if source_root.is_dir() else ()):
+            if source == "grok" and _grok_transcript_key(path) is None:
+                continue
             try:
                 resolved = path.resolve()
                 st = resolved.stat()

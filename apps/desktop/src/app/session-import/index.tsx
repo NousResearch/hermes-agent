@@ -8,7 +8,6 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { SearchField } from '@/components/ui/search-field'
-import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { setSessionOwnerHint } from '@/store/session'
@@ -22,6 +21,7 @@ import {
   type ForeignPage,
   type ForeignPreview,
   foreignRequest,
+  type ForeignSnapshot,
   type ForeignSource
 } from './api'
 
@@ -42,6 +42,8 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
   const lifetime = useRef<AbortController | null>(null)
+  const sourceOwner = owner.connectionId === 'local' ? owner : { connectionId: 'local', profile: 'default' }
+  const crossGateway = sourceOwner.connectionId !== owner.connectionId
   // eslint-disable-next-line no-restricted-syntax -- lifetime cancellation, not a mirrored reactive value
   useEffect(() => {
     const controller = new AbortController()
@@ -50,13 +52,14 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
     return () => controller.abort()
   }, [])
   const scope = [owner.connectionId, owner.profile]
+  const sourceScope = [sourceOwner.connectionId, sourceOwner.profile]
 
   const sessions = useInfiniteQuery({
-    queryKey: ['foreign-sessions', ...scope, source],
+    queryKey: ['foreign-sessions', ...sourceScope, source],
     initialPageParam: 0,
     queryFn: ({ pageParam, signal }) =>
       foreignRequest<ForeignPage>(
-        owner,
+        sourceOwner,
         'list',
         {
           source: source === 'all' ? null : source,
@@ -89,8 +92,12 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
   const current = rows.find(row => row.id === selected)
 
   const preview = useQuery({
-    queryKey: ['foreign-preview', ...scope, selected],
-    queryFn: ({ signal }) => foreignRequest<ForeignPreview>(owner, 'preview', { id: selected }, signal),
+    queryKey: ['foreign-preview', ...sourceScope, selected],
+    queryFn: async ({ signal }) => {
+      const result = await foreignRequest<ForeignPreview>(sourceOwner, 'preview', { id: selected }, signal)
+
+      return crossGateway ? { ...result, already_imported: null } : result
+    },
     enabled: Boolean(current),
     retry: false
   })
@@ -108,7 +115,13 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
     setError('')
 
     try {
-      const result = await foreignRequest<ForeignImportResult>(owner, 'import', { id: current.id }, signal)
+      const params = crossGateway
+        ? {
+            snapshot: await foreignRequest<ForeignSnapshot>(sourceOwner, 'export', { id: current.id }, signal)
+          }
+        : { id: current.id }
+
+      const result = await foreignRequest<ForeignImportResult>(owner, 'import', params, signal)
       setSessionOwnerHint(result.session_id, owner)
       void queryClient.invalidateQueries({ queryKey: ['foreign-preview', ...scope] })
       void queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -163,6 +176,35 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
               {copy.destination} {owner.targetProfile ?? owner.profile}
             </span>
           </div>
+          <div aria-label={copy.sources} className="mt-5 flex w-full flex-wrap gap-2" role="group">
+            {(['all', ...availableSources] as const).map(value => (
+              <Button
+                aria-pressed={source === value}
+                className="max-w-full whitespace-normal text-start"
+                key={value}
+                onClick={() => {
+                  setSource(value)
+                  setSelected(null)
+                  setError('')
+                }}
+                size="sm"
+                variant={source === value ? 'secondary' : 'ghost'}
+              >
+                {
+                  {
+                    all: copy.all,
+                    claude: 'Claude Code',
+                    cowork: 'Claude Cowork',
+                    codex: 'ChatGPT Work / Codex',
+                    grok: copy.grok
+                  }[value]
+                }
+              </Button>
+            ))}
+          </div>
+          {(source === 'grok' || current?.source === 'grok') && (
+            <p className="mt-3 text-xs text-(--ui-text-secondary)">{copy.grokNotice}</p>
+          )}
         </header>
         <div className="grid min-h-0 flex-1 grid-cols-[minmax(17rem,0.85fr)_minmax(0,1.6fr)] border-t border-(--ui-stroke-tertiary) max-[760px]:grid-cols-1">
           <aside
@@ -172,20 +214,6 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
             )}
           >
             <div className="flex flex-col gap-5 px-6 pb-4 pt-6">
-              <SegmentedControl
-                onChange={value => {
-                  setSource(value as 'all' | ForeignSource)
-                  setSelected(null)
-                  setError('')
-                }}
-                options={[
-                  { id: 'all', label: copy.all },
-                  ...(availableSources.includes('claude') ? [{ id: 'claude', label: 'Claude Code' }] : []),
-                  ...(availableSources.includes('cowork') ? [{ id: 'cowork', label: 'Claude Cowork' }] : []),
-                  ...(availableSources.includes('codex') ? [{ id: 'codex', label: 'ChatGPT Work / Codex' }] : [])
-                ]}
-                value={source}
-              />
               {rows.length > 0 && (
                 <SearchField
                   aria-label={copy.search}

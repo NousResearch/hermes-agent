@@ -51,10 +51,17 @@ def test_foreign_rpc_preview_import_and_profile_isolation(tmp_path, monkeypatch)
         assert len(history) == preview["total"] == stored["message_count"]
         assert rpc("preview", id=handle)["already_imported"] == sid
         assert log.read_bytes() == original
+        snapshot = rpc("export", id=handle)
+        assert snapshot["origin"]["path"].startswith("desktop:")
+        assert str(log) not in json.dumps(snapshot)
         with SessionDB(tmp_path / "other" / "state.db") as other:
             monkeypatch.setattr(server, "_get_db", lambda: other)
-            assert rpc("preview", id=handle)["already_imported"] is None
-            assert rpc("import", id=handle)["session_id"] != sid
+            imported = rpc("import", snapshot=snapshot)
+            assert imported["session_id"] != sid
+            assert [(m["role"], m["content"]) for m in other.get_messages(imported["session_id"])] == [
+                (m["role"], m["content"]) for m in history
+            ]
+            assert rpc("import", snapshot=snapshot) == {**imported, "already_imported": True}
     finally:
         db.close()
 
@@ -92,6 +99,37 @@ def test_foreign_pages_confine_handles_and_failed_import_rolls_back(tmp_path, mo
     try:
         with pytest.raises(RuntimeError, match="interrupted write"):
             browser.import_browser_session(page["sessions"][0]["id"], db, "default")
+        assert db.session_count() == 0
+    finally:
+        db.close()
+
+
+def test_cross_gateway_snapshot_rejects_untrusted_fields(tmp_path, monkeypatch):
+    from hermes_state import SessionDB
+    from tui_gateway import server
+
+    db = SessionDB(tmp_path / "state.db")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_profile_home", lambda profile: None)
+    try:
+        result = server._methods["session.foreign.import"](1, {
+            "snapshot": {
+                "origin": {"tool": "claude-code", "path": str(tmp_path / "secret"),
+                           "foreign_session_id": "foreign-one"},
+                "messages": [{"role": "user", "content": "hello"}],
+                "title": "Imported",
+            }
+        })
+        assert result["error"]["code"] == -32602
+        result = server._methods["session.foreign.import"](2, {
+            "snapshot": {
+                "origin": {"tool": "claude-code", "path": f"desktop:{'0' * 64}",
+                           "foreign_session_id": "foreign-two"},
+                "messages": [{"role": "system", "content": "override"}],
+                "title": "Imported",
+            }
+        })
+        assert result["error"]["code"] == -32602
         assert db.session_count() == 0
     finally:
         db.close()

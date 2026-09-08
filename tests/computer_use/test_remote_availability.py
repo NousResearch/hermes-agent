@@ -19,7 +19,17 @@ from hermes_cli.config_defaults import DEFAULT_CONFIG
 from hermes_cli.subcommands import computer_use as cu_cli
 from tools.computer_use import cua_backend
 from tools.computer_use.cua_backend import CuaDriverBackend
-from tools.computer_use.tool import check_computer_use_requirements
+from tools.computer_use.tool import check_computer_use_requirements, reset_backend_for_tests
+from tools.computer_use.remote_provider import RemoteCuaProvider
+
+
+@pytest.fixture(autouse=True)
+def _selection(monkeypatch):
+    reset_backend_for_tests()
+    monkeypatch.setattr("tools.computer_use.tool._configured_provider_name", lambda: "remote")
+    yield
+    reset_backend_for_tests()
+
 
 
 def _remote_stub(url: str = "https://bridge.example.com:8443"):
@@ -37,7 +47,7 @@ class TestCheckFnRemoteAvailability:
         # Remote transport: no local cua-driver binary needed, even on a host that has none.
         monkeypatch.setattr("tools.computer_use.remote.resolve_remote_cua_config",
                             lambda *a, **k: _remote_stub())
-        monkeypatch.setattr(cua_backend, "_computer_use_cfg", lambda: {})
+        monkeypatch.setattr(RemoteCuaProvider, "_computer_use_cfg", staticmethod(lambda: {"remote": {"enabled": True}}))
         monkeypatch.setattr("tools.computer_use.cua_backend_driver.cua_driver_binary_available",
                             lambda: False)
         assert check_computer_use_requirements() is True
@@ -46,23 +56,25 @@ class TestCheckFnRemoteAvailability:
         def _broken(*a, **k):
             raise RuntimeError("HERMES_CUA_REMOTE_TOKEN must contain at least 32 bytes")
         monkeypatch.setattr("tools.computer_use.remote.resolve_remote_cua_config", _broken)
-        monkeypatch.setattr(cua_backend, "_computer_use_cfg", lambda: {})
+        monkeypatch.setattr(RemoteCuaProvider, "_computer_use_cfg", staticmethod(lambda: {"remote": {"enabled": True}}))
         assert check_computer_use_requirements() is False
 
     def test_no_remote_no_binary_false(self, monkeypatch):
         # Remote inactive: the local rules decide — no binary means the tool stays hidden.
+        monkeypatch.setattr("tools.computer_use.tool._configured_provider_name", lambda: "local")
         monkeypatch.setattr("tools.computer_use.remote.resolve_remote_cua_config",
                             lambda *a, **k: None)
-        monkeypatch.setattr(cua_backend, "_computer_use_cfg", lambda: {})
+        monkeypatch.setattr(RemoteCuaProvider, "_computer_use_cfg", staticmethod(lambda: {"remote": {"enabled": True}}))
         monkeypatch.setattr("tools.computer_use.cua_backend_driver.cua_driver_binary_available",
                             lambda: False)
         assert check_computer_use_requirements() is False
 
     def test_no_remote_local_binary_true(self, monkeypatch):
         # Remote inactive: local availability is unchanged by the remote branch.
+        monkeypatch.setattr("tools.computer_use.tool._configured_provider_name", lambda: "local")
         monkeypatch.setattr("tools.computer_use.remote.resolve_remote_cua_config",
                             lambda *a, **k: None)
-        monkeypatch.setattr(cua_backend, "_computer_use_cfg", lambda: {})
+        monkeypatch.setattr(RemoteCuaProvider, "_computer_use_cfg", staticmethod(lambda: {"remote": {"enabled": True}}))
         monkeypatch.setattr("tools.computer_use.cua_backend_driver.cua_driver_binary_available",
                             lambda: True)
         assert check_computer_use_requirements() is True

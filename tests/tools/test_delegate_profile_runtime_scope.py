@@ -135,6 +135,7 @@ def test_profile_scope_does_not_mutate_process_environment(tmp_path, monkeypatch
 
 
 def test_child_execution_enters_target_profile_scope(tmp_path, monkeypatch):
+    (tmp_path / "target").mkdir(parents=True, exist_ok=True)
     child = SimpleNamespace(_delegate_profile_home=tmp_path / "target")
     observed = []
 
@@ -149,3 +150,14 @@ def test_child_execution_enters_target_profile_scope(tmp_path, monkeypatch):
     assert observed[0][0] == tmp_path / "target"
     assert observed[0][1] == {}
     assert current_secret_scope() is None
+
+
+def test_child_scope_ignores_non_directory_profile_home():
+    """A MagicMock/Nonexistent home must not scaffold MagicMock/... dirs under
+    the repo: non-directory homes fall through to a no-op scope."""
+    from contextlib import nullcontext
+    from unittest.mock import MagicMock
+    scope = dt._child_profile_scope(MagicMock())
+    assert isinstance(scope, type(nullcontext()))
+    scope = dt._child_profile_scope(SimpleNamespace(_delegate_profile_home="/nonexistent-profile-home-xyz"))
+    assert isinstance(scope, type(nullcontext()))

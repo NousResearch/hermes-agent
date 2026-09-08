@@ -53,6 +53,10 @@ class _Batch:
     max_iterations: Optional[int] = None
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
+    # The async registry row this unit runs under (``<call_id>-k`` for split
+    # calls). Carried so detached per-child persistence and failure notices
+    # land on the unit's own durable row for crash recovery.
+    unit_id: Optional[str] = None
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -69,7 +73,7 @@ class _Batch:
 def _announce_batch(parent_agent, n_tasks: int, live_deleg_id: Optional[str]) -> None:
     """Announce the batch tag once so interleaved ``[tag n/N]`` lines are attributable."""
     if n_tasks > 1 and live_deleg_id:
-        _hdr = f"  🔀 [{format_batch_tag(live_deleg_id)}] delegating {n_tasks} tasks"
+        _hdr = f"  🔀 [{format_batch_tag(live_deleg_id, parent_agent)}] delegating {n_tasks} tasks"
         _print_completion_line(parent_agent, getattr(parent_agent, "_delegate_spinner", None), _hdr, console_line=_hdr)
 
 def _capture_origin() -> tuple[str, str, Any, Any]:
@@ -102,20 +106,45 @@ def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tas
 
 
 def _record_child_completion(batch: _Batch, entry: Dict[str, Any]) -> None:
-    """Persist child completion and surface a per-unit failure notice."""
-    if not batch.live_deleg_id:
+    """Persist one finished child on the unit's own durable row.
+
+    Split calls persist one async row per unit (``<call_id>-k``); the unit id
+    is fixed on the carved-out ``_Batch`` before its runner can start, so a
+    crash before the join loses only children that had not finished. The sync
+    path has no unit row: ``unit_id`` is None and this is a no-op (nothing
+    durable to recover until the unit is dispatched).
+    """
+    unit_id = batch.unit_id or batch.live_deleg_id
+    if not unit_id:
         return
     with _quiet("Child partial persistence failed", exc_info=True):
-        from tools.async_delegation import record_unit_child, push_task_failure_notice
-        task_index = entry.get("task_index", -1)
-        record_unit_child(batch.live_deleg_id, task_index, entry)
-        if entry.get("status") in {"error", "failed", "timeout", "interrupted"}:
-            push_task_failure_notice(
-                batch.live_deleg_id,
-                task_index,
-                entry.get("error") or "child failed",
-                batch.group,
-            )
+        from tools.async_delegation import record_unit_child
+        record_unit_child(unit_id, dict(entry))
+
+
+def _maybe_emit_failure_notice(batch: _Batch, entry: Dict[str, Any], remaining: int) -> None:
+    """Emit one interim notice for a failed child of a still-running detached unit.
+
+    Separate from the unit's final durable result (which still arrives once):
+    a sibling still running means the parent would otherwise learn of the
+    failure only when the slowest sibling finishes. Sync runs and the final
+    child of a unit emit nothing here.
+    """
+    if batch.unit_id is None:
+        return
+    if remaining <= 0:
+        return
+    if entry.get("status") not in SUBAGENT_FAILURE_STATUSES:
+        return
+    with _quiet("task failure notice failed", exc_info=True):
+        from tools.async_delegation import push_task_failure_notice
+        _i = entry.get("task_index", -1)
+        _live = batch.live_paths[_i] if isinstance(_i, int) and 0 <= _i < len(batch.live_paths) else None
+        push_task_failure_notice(
+            batch.unit_id, {**entry, **({"live_transcript": _live} if _live else {})},
+            n_tasks=len(batch.task_list),
+        )
+
 
 def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interrupt: bool) -> None:
     """Run the batch's children in parallel, appending entries to ``results`` (sorted by task_index on return, one
@@ -128,7 +157,7 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
     parent_agent, n_tasks = batch.parent_agent, len(batch.task_list)
     task_labels = [t["goal"][:40] for t in batch.task_list]
     spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
-    _tag = format_batch_tag(batch.live_deleg_id)
+    _tag = format_batch_tag(batch.live_deleg_id, parent_agent)
     # Fabricated entries for still-pending / raised futures carry the correct _delegate_role.
     _child_by_index = {i: child for (i, _, child) in batch.children}
     n_here = len(batch.children)  # a per-group unit runs a subset; ``n_tasks`` keeps the call-wide ``i/N`` slot
@@ -154,8 +183,16 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
             for future in done:
                 entry = _entry_of(future, futures[future])
                 results.append(entry)
-                _record_child_completion(batch, entry)
-                _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_here - len(results))
+                remaining = n_here - len(results)
+                # Detached unit: a crash before the join must not lose children
+                # that already finished; a still-running sibling means a failed
+                # child is surfaced NOW via an interim notice, not when the
+                # slowest sibling finishes. Sync runs record nothing here
+                # (no durable unit row) and emit no notices.
+                if not honor_parent_interrupt and batch.unit_id:
+                    _record_child_completion(batch, entry)
+                    _maybe_emit_failure_notice(batch, entry, remaining)
+                _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, remaining)
     results.sort(key=lambda r: r["task_index"])  # match input order
 
 def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True) -> dict:
@@ -168,7 +205,10 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     if len(batch.children) == 1:
         entry = batch.run_child(*batch.children[0])
         results.append(entry)
-        _record_child_completion(batch, entry)
+        # Single-child detached unit: the same crash window applies as in
+        # the parallel path. Sync runs carry no unit id (no durable row).
+        if not honor_parent_interrupt and batch.unit_id:
+            _record_child_completion(batch, entry)
     else:
         _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
 
@@ -315,14 +355,15 @@ def _batch_progress_token(child_agents: List[Any]) -> tuple:
 
 _BACKGROUND_NOTES = {
     "one": (
-        "Subagent is running in the background. You and the user can keep working; its full result re-enters the "
-        "conversation as a new message when it finishes. Do not wait or poll — just continue."
+        "Subagent is running in the background; its full result re-enters the conversation as a new message when it "
+        "finishes. Results are delivered only after you END YOUR TURN: do anything that does not depend on it, then "
+        "stop with a one-line status. Do not poll its transcript or artifacts to wait for it."
     ),
     "many": (
-        "{n} subagents are running in parallel in the background as {k} independent unit(s). You and the user can keep "
-        "working; each unit's results re-enter the conversation as their own message as soon as THAT unit finishes "
-        "(tasks sharing a `group` finish together; ungrouped tasks report individually), so act on each as it lands. "
-        "Do not wait or poll — just continue."
+        "{n} subagents are running in parallel in the background as {k} completion unit(s); each unit's results "
+        "re-enter the conversation as their own new message when THAT unit finishes. Results are delivered only "
+        "after you END YOUR TURN: do anything that does not depend on them, then stop with a one-line status. Do not "
+        "poll transcripts or artifacts to wait for them."
     ),
     "control_hint": (
         "While a child runs you can orchestrate it live with this same tool: delegate_task(action='list') to see live "
@@ -361,7 +402,13 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
 def _units_of(batch: _Batch) -> List[_Batch]:
     """Partition the call's children into async units: one per distinct task ``group`` (first-appearance order) and
     one per ungrouped task. Each unit is a ``_Batch`` sharing the call's task_list/transcripts but owning a subset of
-    ``children``, so a unit joins only on itself and its completion re-enters the conversation on its own."""
+    ``children``, so a unit joins only on itself and its completion re-enters the conversation on its own.
+
+    Off by default (``delegation.independent_completions``): the whole call is ONE unit and returns as one message.
+    A per-task flurry of completions (one new turn each) fragmented orchestrators that had no plan for it."""
+    from tools.delegate_tool_config import _get_independent_completions
+    if not _get_independent_completions():
+        return [batch]
     members: Dict[Any, List[tuple]] = {}
     for i, t, c in batch.children:
         g = t.get("group")
@@ -419,6 +466,8 @@ def _dispatch_background(batch: _Batch) -> str:
         # One unit keeps the live-transcript directory's id so the returned delegation_id matches
         # cache/delegation/live/<id>/; several units suffix it (-1, -2, ...) and the call keeps the bare id.
         unit_id = batch.live_deleg_id if len(units) == 1 else (f"{batch.live_deleg_id}-{k + 1}" if batch.live_deleg_id else None)
+        from tools.async_delegation import _new_delegation_id
+        unit.unit_id = unit_id = unit_id or _new_delegation_id()  # fixed before the runner can start
         dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
         if dispatch.get("status") == "dispatched":
             slot_key = slot_key or dispatch["delegation_id"]

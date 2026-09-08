@@ -108,7 +108,23 @@ def _open_child_session_db(parent_agent) -> Any:
         return None
     with _quiet("subagent: failed to open dedicated SessionDB; child persistence disabled", exc_info=True):
         from hermes_state_registry import acquire
+        from pathlib import Path as _Path
         _parent_db_path = getattr(parent_session_db, "db_path", None)
+        # Test doubles (MagicMock parent without a real SessionDB) expose a
+        # truthy Mock for db_path: Path() of it would be a ``MagicMock/...``
+        # relative path and acquire() would scaffold profile dirs under the
+        # repo. Only real filesystem paths open a handle.
+        try:
+            _as_path = _Path(str(_parent_db_path)) if _parent_db_path is not None else None
+        except Exception:
+            return None
+        if _as_path is None:
+            return acquire()
+        try:
+            if not _as_path.is_absolute() or not _as_path.parent.is_dir():
+                return None
+        except Exception:
+            return None
         return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
     return None
 
@@ -141,11 +157,24 @@ def _profile_scope_or_null(profile: Optional[str], profile_content: Optional[Dic
 
 
 def _child_profile_scope(child):
-    """Re-enter a child's target scope for its complete run, including cleanup."""
+    """Re-enter a child's target scope for its complete run, including cleanup.
+
+    Test doubles (MagicMock/SimpleNamespace without a real profile home) fall
+    through to a no-op: a MagicMock attribute is truthy but ``Path()`` of it
+    would point at a ``MagicMock/...`` relative path and ``ensure_hermes_home``
+    would scaffold profile dirs under the repo. Only real directory homes
+    enter the scope.
+    """
     from contextlib import nullcontext
+    from pathlib import Path
 
     home = getattr(child, "_delegate_profile_home", None)
     if not home:
+        return nullcontext()
+    try:
+        if not Path(home).is_dir():
+            return nullcontext()
+    except Exception:
         return nullcontext()
     from agent.profile_runtime_scope import profile_runtime_scope
     return profile_runtime_scope(home)

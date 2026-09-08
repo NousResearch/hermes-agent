@@ -104,6 +104,10 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     evt_type = evt.get("type", "completion")
     if evt_type == "async_delegation":
         # No process session_id: else every completion keys as ("", "async_delegation") and the second is suppressed forever.
+        # An early per-task failure notice must not collapse with the batch's final result (nor with a sibling's notice).
+        if evt.get("task_failure_notice"):
+            task_idx = ((evt.get("results") or [{}])[0] or {}).get("task_index", "")
+            return (evt.get("delegation_id", ""), evt_type, "task_failure", task_idx)
         return (evt.get("delegation_id", ""), evt_type)
     extra = _DEDUP_EXTRA_FIELDS.get("watch_overflow_" if evt_type.startswith("watch_overflow_") else evt_type, ())
     return (evt.get("session_id", ""), evt_type, *(evt.get(f, 0 if f == "suppressed" else "") for f in extra))

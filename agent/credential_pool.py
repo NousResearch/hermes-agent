@@ -11,10 +11,12 @@ import threading
 import time
 import uuid
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
@@ -48,43 +50,34 @@ from hermes_cli.auth import (
 )
 logger = logging.getLogger(__name__)
 
-# Process-level memo for _load_config_safe().  get_pool_strategy() calls this
-# once per CredentialPool.__init__(), and list_authenticated_providers() builds
-# one CredentialPool per provider row. The underlying load_config_readonly()
-# already has an in-process cache, but the repeated function calls and their
-# env-snapshot validation still show up in cProfile as ~70 load_config hits.
-# Cache on (config_path, mtime_ns, size) so external edits are observed on the
-# next call while a single picker invocation pays the cost once.
-_LOAD_CONFIG_SAFE_CACHE: Dict[str, Tuple[Tuple[int, int], Optional[dict]]] = {}
+# A listing owns its snapshot; another thread or the next invocation loads fresh config.
+_POOL_CONFIG_SNAPSHOT: ContextVar[Optional[Dict[str, dict]]] = ContextVar(
+    "_POOL_CONFIG_SNAPSHOT", default=None,
+)
+
+
+@contextmanager
+def pool_config_snapshot() -> Iterator[None]:
+    """Reuse read-only config only while building one provider listing."""
+    token = _POOL_CONFIG_SNAPSHOT.set({})
+    try:
+        yield
+    finally:
+        _POOL_CONFIG_SNAPSHOT.reset(token)
 
 
 def _load_config_safe() -> Optional[dict]:
-    """Load config.yaml read-only, returning None on any error.
-
-    ``load_config_readonly()`` skips the deepcopy ``load_config()`` pays per
-    call; the picker calls ``load_pool()`` once per provider row, which made
-    that copy the dominant cost of ``model.options``.
-
-    This wrapper memoises on ``config.yaml`` (mtime, size) so the 60+ provider
-    rows in a single ``list_authenticated_providers()`` call share one load.
-    """
+    """Load current config read-only, sharing one load inside a picker snapshot."""
     try:
         from hermes_cli.config import get_config_path, load_config_readonly
 
-        config_path = get_config_path()
-        key = str(config_path)
-        try:
-            st = config_path.stat()
-            sig: Tuple[int, int] = (st.st_mtime_ns, st.st_size)
-        except FileNotFoundError:
-            sig = (0, 0)
-
-        cached = _LOAD_CONFIG_SAFE_CACHE.get(key)
-        if cached is not None and cached[0] == sig:
-            return cached[1]
-
+        snapshot = _POOL_CONFIG_SNAPSHOT.get()
+        key = str(get_config_path())
+        if snapshot is not None and key in snapshot:
+            return snapshot[key]
         config = load_config_readonly()
-        _LOAD_CONFIG_SAFE_CACHE[key] = (sig, config)
+        if snapshot is not None:
+            snapshot[key] = config
         return config
     except Exception:
         return None
@@ -983,6 +976,8 @@ class CredentialPool(CredentialPoolAdminMixin):
                 # Mirrors _available_entries(clear_expired=False,
                 # refresh=False) minus the mutating prune/sync/persist paths.
                 if entry.auth_type == AUTH_TYPE_API_KEY and not entry.runtime_api_key:
+                    continue
+                if entry.auth_type == AUTH_TYPE_OAUTH and not (entry.access_token or "").strip():
                     continue
                 if entry.last_status == STATUS_DEAD:
                     continue

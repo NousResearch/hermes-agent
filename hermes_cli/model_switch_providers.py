@@ -1161,24 +1161,27 @@ def list_authenticated_providers(
         refresh=refresh, excluded={str(p).strip().lower() for p in (excluded_providers or []) if p},
         curated=_build_curated_lists(current_provider, current_base_url, current_model))
 
-    # Warm the disk cache in parallel before the serial section loops (otherwise 15-30s of live
-    # round-trips on a cold cache). Skipped when refresh=True (serial path force-refreshes) and
-    # for <=3 providers (serial is fast enough; avoids thread-pool overhead).
-    prefetch_slugs = [] if refresh else _collect_authed_provider_slugs(data, b.curated, excluded_providers or [], _pool_cache=b.pool_cache)
-    if len(prefetch_slugs) > 3:
-        try:
-            _prefetch_provider_models_parallel(prefetch_slugs)
-        except Exception:
-            pass  # best-effort; serial path still works
+    from agent.credential_pool import pool_config_snapshot
 
-    _lap_builtin_rows(b, data, user_providers)
-    _lap_overlay_rows(b, data)
-    _lap_canonical_rows(b)
-    if user_providers and isinstance(user_providers, dict):
-        _lap_user_provider_rows(b, user_providers)
-    _lap_bare_custom_row(b, custom_providers)
-    if custom_providers and isinstance(custom_providers, list):
-        _lap_custom_provider_rows(b, custom_providers)
+    with pool_config_snapshot():
+        # Warm the disk cache in parallel before the serial section loops (otherwise 15-30s of live
+        # round-trips on a cold cache). Skipped when refresh=True (serial path force-refreshes) and
+        # for <=3 providers (serial is fast enough; avoids thread-pool overhead).
+        prefetch_slugs = [] if refresh else _collect_authed_provider_slugs(data, b.curated, excluded_providers or [], _pool_cache=b.pool_cache)
+        if len(prefetch_slugs) > 3:
+            try:
+                _prefetch_provider_models_parallel(prefetch_slugs)
+            except Exception:
+                pass  # best-effort; serial path still works
+
+        _lap_builtin_rows(b, data, user_providers)
+        _lap_overlay_rows(b, data)
+        _lap_canonical_rows(b)
+        if user_providers and isinstance(user_providers, dict):
+            _lap_user_provider_rows(b, user_providers)
+        _lap_bare_custom_row(b, custom_providers)
+        if custom_providers and isinstance(custom_providers, list):
+            _lap_custom_provider_rows(b, custom_providers)
     return _finalize_picker_rows(b.results, user_providers, current_model)
 
 

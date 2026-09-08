@@ -50,7 +50,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Prepare OSV output directory
-        run: mkdir -p /tmp/osv-results
+        run: mkdir -p osv-results
 
       - name: Run OSV scanner
         uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
@@ -58,7 +58,7 @@ jobs:
           # Scan explicit lockfiles rather than recursing, so we only look at
           # the five sources of truth and skip vendored / test / worktree dirs.
           scan-args: |-
-            --output=/tmp/osv-results/results.json
+            --output=osv-results/results.json
             --format=json
             --lockfile=uv.lock
             --lockfile=package-lock.json
@@ -71,8 +71,8 @@ jobs:
         uses: google/osv-scanner-action/osv-reporter-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
         with:
           scan-args: |-
-            --output=/tmp/osv-results/osv-results.sarif
-            --new=/tmp/osv-results/results.json
+            --output=osv-results/osv-results.sarif
+            --new=osv-results/results.json
             --gh-annotations=false
             --fail-on-vuln=false
 
@@ -81,7 +81,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: OSV Scanner SARIF file
-          path: /tmp/osv-results/osv-results.sarif
+          path: osv-results/osv-results.sarif
           retention-days: 5
           if-no-files-found: error
 
@@ -89,7 +89,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: github/codeql-action/upload-sarif@cdefb33c0f6224e58673d9004f47f7cb3e328b89 # v4.31.10
         with:
-          sarif_file: /tmp/osv-results/osv-results.sarif
+          sarif_file: osv-results/osv-results.sarif
 
       - name: Emit review_status
         id: emit
@@ -98,12 +98,12 @@ jobs:
           set -euo pipefail
           STATUS="[]"
 
-          if [ -f /tmp/osv-results/osv-results.sarif ]; then
+          if [ -f osv-results/osv-results.sarif ]; then
             # Count vulnerabilities from the SARIF file
             VULN_COUNT=$(python3 -c "
           import json, sys
           try:
-              with open('/tmp/osv-results/osv-results.sarif') as f:
+              with open('osv-results/osv-results.sarif') as f:
                   data = json.load(f)
               count = 0
               vulns = []
@@ -127,7 +127,7 @@ jobs:
               VULN_DETAIL=$(python3 -c "
           import json, sys
           try:
-              with open('/tmp/osv-results/osv-results.sarif') as f:
+                  with open('osv-results/osv-results.sarif') as f:
                   data = json.load(f)
               vulns = []
               for run in data.get('runs', []):

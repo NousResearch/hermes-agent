@@ -68,7 +68,6 @@ export class SessionStateCache extends Map<string, ClientSessionState> {
   override set(runtimeId: string, state: ClientSessionState): this {
     super.set(runtimeId, state)
     this.#touch(runtimeId)
-    this.#weight(state)
 
     return this
   }

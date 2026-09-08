@@ -84,6 +84,21 @@ describe('SessionStateCache', () => {
     stringify.mockRestore()
   })
 
+  it('never measures a pinned active transcript while streaming', () => {
+    const cache = new SessionStateCache({ isReferenced: () => true, onEvict: () => undefined })
+    const state = settled('active', 'stream')
+    const stringify = vi.spyOn(JSON, 'stringify')
+    try {
+      for (let flush = 0; flush < 20; flush += 1) {
+        cache.set('active', { ...state, messages: [...state.messages] })
+        cache.prune()
+      }
+      expect(stringify).not.toHaveBeenCalled()
+    } finally {
+      stringify.mockRestore()
+    }
+  })
+
   it('uses transcript bytes as well as count', () => {
     const evicted: string[] = []
 

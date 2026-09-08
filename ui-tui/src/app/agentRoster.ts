@@ -41,25 +41,8 @@ export function mergeAgentRoster(events: SubagentProgress[], data: SubagentListR
     })
   }
 
-  for (const d of data.delegations) {
-    if (!['running', 'finalizing', 'dispatched', 'queued'].includes(d.status ?? '')) {continue}
-
-    if ([...merged.values()].some(s => s.delegationId === d.delegation_id || d.subagent_ids?.includes(s.id))) {continue}
-    merged.set(d.delegation_id, {
-      id: d.delegation_id,
-      goal: d.goal || 'Starting delegation',
-      depth: 0,
-      index: merged.size,
-      parentId: null,
-      notes: [],
-      thinking: [],
-      tools: [],
-      taskCount: 1,
-      toolCount: 0,
-      status: 'queued',
-      startedAt: d.dispatched_at == null ? undefined : d.dispatched_at * 1000
-    })
-  }
+  // Async records are completion units, not agents. Independent completions can
+  // give them different IDs from the actual children; never invent extra rows.
 
   return [...merged.values()]
 }

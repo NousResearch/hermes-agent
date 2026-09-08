@@ -12,7 +12,7 @@ it('lets the agents shortcut leave the composer without stealing redo', () => {
 it('merges one row per actual child and does not notify unchanged snapshots', () => {
   const data = {
     subagents: [{ subagent_id: 'child', delegation_id: 'batch', goal: 'inspect', started_at: 1 }],
-    delegations: [{ delegation_id: 'batch', status: 'running', subagent_ids: ['child'] }]
+    delegations: [{ delegation_id: 'batch-1', status: 'running', subagent_ids: [] }]
   }
 
   applyAgentSnapshot('session', data)

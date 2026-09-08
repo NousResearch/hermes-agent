@@ -411,4 +411,68 @@ import {
   console.log('  ✓ captioned failed download keeps caption and appends note');
 }
 
+// -- inbound voice-note classification (forwarded voice notes lose ptt) ---
+
+{
+  const { isVoiceNoteAudioMessage } = await import('./bridge_helpers.js');
+  // Direct voice note: ptt flag alone decides.
+  assert.equal(isVoiceNoteAudioMessage({ ptt: true, mimetype: 'audio/ogg; codecs=opus', waveform: 'AAA' }), true);
+  assert.equal(isVoiceNoteAudioMessage({ ptt: true, mimetype: 'audio/mpeg', waveform: 'AAA' }), true);
+  // Forwarded voice note: re-encoded without ptt, keeps ogg/opus + waveform.
+  assert.equal(isVoiceNoteAudioMessage({ mimetype: 'audio/ogg; codecs=opus', waveform: 'AAA' }), true);
+  assert.equal(isVoiceNoteAudioMessage({ mimetype: 'audio/ogg', waveform: 'AAA' }), true);
+  assert.equal(isVoiceNoteAudioMessage({ waveform: 'AAA' }), true); // missing mimetype falls back to ogg
+  // Plain audio: no voice-note shape -> stays out of the STT pipeline.
+  assert.equal(isVoiceNoteAudioMessage({ mimetype: 'audio/mpeg', seconds: 3 }), false);
+  assert.equal(isVoiceNoteAudioMessage({ mimetype: 'audio/mp4' }), false);
+  assert.equal(isVoiceNoteAudioMessage({ mimetype: 'audio/ogg; codecs=opus' }), false); // no waveform
+  assert.equal(isVoiceNoteAudioMessage(null), false);
+  assert.equal(isVoiceNoteAudioMessage(undefined), false);
+  console.log('  ✓ isVoiceNoteAudioMessage separates voice-note shape from plain audio');
+}
+
+{
+  // Forwarded voice note: audioMessage without ptt but ogg/opus + waveform.
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'fwd-voice-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      messageTimestamp: 123,
+      message: {
+        audioMessage: { mimetype: 'audio/ogg; codecs=opus', seconds: 4, waveform: 'AAA' },
+      },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15551234567@s.whatsapp.net',
+    senderNumber: '15551234567',
+    downloadMedia: async () => Buffer.from(''),
+  });
+  assert.equal(event.hasMedia, true);
+  assert.equal(event.mediaType, 'ptt'); // -> adapter VOICE -> STT pipeline
+  assert.equal(event.nativeType, 'audioMessage');
+  assert.equal(event.mime, 'audio/ogg; codecs=opus');
+  assert.deepEqual(event.nativeMetadata.audio, { ptt: true });
+  console.log('  ✓ forwarded voice note (audioMessage, no ptt) classifies as ptt');
+}
+
+{
+  // Plain audio upload arriving as audioMessage keeps the conservative audio bucket.
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'plain-audio-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      messageTimestamp: 123,
+      message: {
+        audioMessage: { mimetype: 'audio/mpeg', seconds: 30 },
+      },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15551234567@s.whatsapp.net',
+    senderNumber: '15551234567',
+    downloadMedia: async () => Buffer.from(''),
+  });
+  assert.equal(event.mediaType, 'audio');
+  assert.equal(event.nativeType, 'audioMessage');
+  assert.deepEqual(event.nativeMetadata.audio, { ptt: false });
+  console.log('  ✓ plain audio without voice-note shape stays audio');
+}
+
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

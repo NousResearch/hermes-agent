@@ -296,6 +296,25 @@ export function appendMediaFailureNote(content, failures) {
   return content ? `${content}\n${note}` : note;
 }
 
+/**
+ * True when an inbound audioMessage is (or behaves like) a WhatsApp voice
+ * note. Direct voice notes carry `ptt: true`, but WhatsApp re-encodes
+ * *forwarded* voice notes and drops the flag, so they currently fall through
+ * to the plain-audio bucket and skip the automatic STT pipeline. Genuine
+ * audio FILE uploads (mp3/m4a) arrive as documentMessage, never as
+ * audioMessage, so the only audioMessage lacking `ptt` is a forwarded voice
+ * note — which keeps the voice-note shape: an ogg/opus mimetype plus the
+ * encoder's waveform. Recovering on that shape alone would be safe even
+ * without the mimetype guard, but requiring both keeps the conservative
+ * "never transcribe an mp3 upload" behaviour intact for exotic clients.
+ */
+export function isVoiceNoteAudioMessage(item) {
+  if (!item || typeof item !== 'object') return false;
+  if (item.ptt) return true;
+  const mime = String(item.mimetype || 'audio/ogg').toLowerCase();
+  return mime.startsWith('audio/ogg') && Boolean(item.waveform);
+}
+
 export async function extractBridgeEvent({
   msg,
   chatId,
@@ -375,7 +394,7 @@ export async function extractBridgeEvent({
   } else if (messageContent.audioMessage || messageContent.pttMessage) {
     const item = messageContent.pttMessage || messageContent.audioMessage;
     hasMedia = true;
-    mediaType = item.ptt || messageContent.pttMessage ? 'ptt' : 'audio';
+    mediaType = isVoiceNoteAudioMessage(item) || messageContent.pttMessage ? 'ptt' : 'audio';
     nativeType = messageContent.pttMessage ? 'pttMessage' : 'audioMessage';
     mime = item.mimetype || 'audio/ogg';
     nativeMetadata.audio = { ptt: mediaType === 'ptt' };

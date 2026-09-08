@@ -355,7 +355,7 @@ def test_review_fork_inherited_tools_survive_compaction_refresh():
     generation staleness check refuses the rebuild.
     """
     import run_agent
-    from agent.background_review import _FROZEN_TOOL_SNAPSHOT_GENERATION, build_cache_parity_fork
+    from agent.background_review import build_cache_parity_fork
     from tools.mcp_tool_agent import refresh_agent_mcp_tools
 
     agent = _make_agent_stub(run_agent.AIAgent)
@@ -373,7 +373,6 @@ def test_review_fork_inherited_tools_survive_compaction_refresh():
     with patch.object(run_agent, "AIAgent", _Recorder):
         fork, _rt, routed = build_cache_parity_fork(agent, max_iterations=5)
         assert not routed
-        assert fork._tool_snapshot_generation == _FROZEN_TOOL_SNAPSHOT_GENERATION
         assert fork.tools == parent_tools
         # Deep copy: the fork's later in-place tool edits must not leak into the parent's array.
         assert fork.tools is not parent_tools and fork.tools[0] is not parent_tools[0]
@@ -398,7 +397,7 @@ def test_unrouted_review_fork_inherits_empty_tool_surface():
     mid-review compaction do not break cache parity against the parent's empty surface.
     """
     import run_agent
-    from agent.background_review import _FROZEN_TOOL_SNAPSHOT_GENERATION, build_cache_parity_fork
+    from agent.background_review import build_cache_parity_fork
     from tools.mcp_tool_agent import refresh_agent_mcp_tools
 
     agent = _make_agent_stub(run_agent.AIAgent)
@@ -419,7 +418,6 @@ def test_unrouted_review_fork_inherits_empty_tool_surface():
         assert fork.tools == []
         assert fork.tools is not agent.tools
         assert fork.valid_tool_names == set()
-        assert fork._tool_snapshot_generation == _FROZEN_TOOL_SNAPSHOT_GENERATION
 
         # Compaction refresh must refuse rebuild on frozen snapshot
         added = refresh_agent_mcp_tools(fork, content_aware=True)

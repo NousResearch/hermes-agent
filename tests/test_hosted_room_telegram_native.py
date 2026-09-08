@@ -8,7 +8,7 @@ import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -594,6 +594,101 @@ def test_real_ptb_negative_responses_remain_blocked_and_retain_refusal(recovery,
         assert evidence['failure_kind'] == expected
         assert evidence['retry_after'] == attention['retry_after']
     assert len(request.sends) == 2  # No RPC calls the Bot or starts an agent.
+
+
+@pytest.mark.parametrize('decision', ['retry', 'confirmed-delivered'])
+@pytest.mark.parametrize('refused', [False, True], ids=['uncertain', 'rejected'])
+@pytest.mark.parametrize('unreadable', [False, True], ids=['readable', 'db-error'])
+def test_run_parks_failed_publication_until_durable_resolution(
+        recovery, monkeypatch, caplog, decision, refused, unreadable):
+    from telegram.error import BadRequest, TimedOut
+
+    item, resolve, _ = recovery
+    sends, closed, sleeps = [], [], []
+    original_status = item.status
+    for name in ('publish', 'published_media', 'events', 'status'):
+        original = getattr(item, name)
+        spy = AsyncMock(wraps=original) if name == 'publish' else Mock(wraps=original)
+        monkeypatch.setattr(item, name, spy)
+    cursor = original_status()['cursor']
+
+    class Bot:
+        def __init__(self, token):
+            self.profile = token
+
+        async def initialize(self):
+            pass
+
+        async def get_me(self):
+            return SimpleNamespace(**item.config['bots'][self.profile])
+
+        async def shutdown(self):
+            closed.append(self.profile)
+
+        async def send_message(self, **kwargs):
+            sends.append(kwargs['text'])
+            if len(sends) == 2:
+                raise BadRequest('refused') if refused else TimedOut('lost response')
+            return SimpleNamespace(message_id=100 + len(sends))
+
+        async def send_document(self, **kwargs):
+            sends.append(kwargs['document'])
+            return SimpleNamespace(message_id=100 + len(sends))
+
+    monkeypatch.setattr('telegram.Bot', Bot)
+    # Ingest uses the native queue and canonical service; no worker/model is started.
+    monkeypatch.setattr(item.service, 'prepare_room', lambda binding: None)
+
+    async def step(delay):
+        sleeps.append(delay)
+        turn = len(sleeps)
+        assert turn <= 6
+        if turn <= 4:
+            assert delay == 2
+            assert len(sends) == 2
+            assert item.publish.call_count == 1
+            assert item.published_media.call_count == 1
+            assert item.events.call_count == 1
+            assert item.status.call_count == turn - 1
+            with item.db() as db:
+                assert db.execute('SELECT seq FROM cursor').fetchone()[0] == cursor
+                assert db.execute("SELECT count(*) FROM inbox WHERE state='accepted'").fetchone()[0] == turn - 1
+                if unreadable and turn == 2:
+                    db.execute('ALTER TABLE hidden_deliveries RENAME TO deliveries')
+                if turn < 4:
+                    db.execute('INSERT INTO inbox(event_id,chat_id,message_id,user_id,text,received_at)'
+                               ' VALUES(?,-999,?,42,?,1)', (f'input-{turn}', turn, f'input {turn}'))
+                if unreadable and turn == 1:
+                    db.execute('ALTER TABLE deliveries RENAME TO hidden_deliveries')
+            if turn == 4:
+                assert original_status()['blocked']
+                args = {'decision': decision}
+                if decision == 'confirmed-delivered':
+                    args['message_id'] = 999
+                assert 'error' not in resolve(**args)
+                assert original_status()['cursor'] == cursor
+        else:
+            assert delay == 0.25
+            assert item.status.call_count == 4  # No receipt scan on the healthy loop.
+            assert len(sends) == 5 + (decision == 'retry')
+            assert original_status()['blocked'] is False
+            with item.db() as db:
+                assert all(row[0] == 'sent' for row in db.execute('SELECT status FROM deliveries'))
+            if turn == 6:
+                item.halt.set()
+
+    monkeypatch.setattr(transport.asyncio, 'sleep', step)
+    asyncio.run(item.run())
+    assert closed == ['alpha', 'beta']
+    errors = [record.message for record in caplog.records if record.levelname == 'ERROR']
+    assert errors == [f"hosted room transport iteration failed: {'BadRequest' if refused else 'TimedOut'}"] + (
+        ['hosted room transport iteration failed: OperationalError'] if unreadable else [])
+    expected: list[str | bytes] = ['a' * 1800, 'b' * 1800]
+    if decision == 'retry':
+        expected.append('b' * 1800)
+    expected += ['c' * 100, b'immutable committed source blob\n0', b'immutable committed source blob\n1']
+    assert sends == expected
+    assert original_status()['cursor'] == item.events()[-1]['seq']
 
 
 def test_reconciliation_guards_sending_identity_authority_and_stale_attempt(recovery):

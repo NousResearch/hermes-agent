@@ -600,13 +600,23 @@ class Transport:
             await asyncio.wait_for(initialize(), timeout=30)
             self.ready.set()
             logger.warning("hosted room transport ready chat=%s", self.config["chat_id"])
+            check_delivery = False
             while not self.halt.is_set():
                 try:
                     self.ingest()
-                    await self.publish(bots)
+                    # Only failed publication needs the receipt scan. Keep ingest alive while
+                    # waiting for durable operator readback, without reloading the canonical tail/media.
+                    if check_delivery:
+                        check_delivery = self.status()["blocked"]
+                    if not check_delivery:
+                        try:
+                            await self.publish(bots)
+                        except Exception:
+                            check_delivery = True
+                            raise
                 except Exception as exc:
                     logger.error("hosted room transport iteration failed: %s", type(exc).__name__)
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(2 if check_delivery else 0.25)
         finally:
             for bot in bots.values():
                 try:

@@ -193,6 +193,11 @@ jobs:
       - name: Public-surface diff vs base (advisory)
         if: github.event_name == 'pull_request'
         continue-on-error: true
+        # Bound the advisory step so a long deepen/fetch (e.g. a distant or missing
+        # merge-base) can't consume the blocking job's 5-minute budget and cancel it.
+        # continue-on-error already keeps a step *failure* off the job; a step-level
+        # timeout keeps a step *overrun* off the job-level timeout the same way.
+        timeout-minutes: 2
         run: |
           git fetch --no-tags --deepen=200 origin "${{ github.base_ref }}" HEAD
           for i in 1 2 3; do

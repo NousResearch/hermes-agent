@@ -492,10 +492,18 @@ def inject_new_comments_from_env(agent: Any) -> bool:
 
 @_kanban_handler("kanban_show")
 def _handle_show(args: dict, **kw) -> str:
-    """Full task state: row, parents, children, comments, runs, last 50 events."""
+    """Full task state: row, parents, children, comments, runs, last 50 events, memory hits."""
     tid = _require_task_id(args)
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
+        title = getattr(task, "title", "") or ""
+        body = getattr(task, "body", "") or ""
+        memory = []
+        try:
+            from scripts.kanban_rag_search import query as _rag_query
+            memory = _rag_query(tid, title, body, top=5)
+        except Exception as exc:
+            logger.debug("kanban memory enrichment failed: %s", exc)
         return json.dumps({
             "task": _fields(task, _TASK_FIELDS),
             "parents": kb.parent_ids(conn, tid),
@@ -505,7 +513,9 @@ def _handle_show(args: dict, **kw) -> str:
             "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
             "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
             # Same string build_worker_context hands the dispatcher at spawn time.
-            "worker_context": kb.build_worker_context(conn, tid)})
+            "worker_context": kb.build_worker_context(conn, tid),
+            "memory": memory,
+        })
 
 
 @_kanban_handler("kanban_list")

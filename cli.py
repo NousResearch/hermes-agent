@@ -2684,7 +2684,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         # --api-key wins; otherwise a URL-bearing startup alias carries its own credential.
         # See #28660.
         self._explicit_api_key = api_key or _startup_api_key_override or None
-        self._explicit_base_url = base_url
+        # A startup alias's base_url must survive runtime re-resolution the same way as its
+        # api_key above — without this, _ensure_runtime_credentials() re-resolves provider
+        # 'custom' with no explicit base_url and a named custom_providers entry hijacks the
+        # route (model from alias A sent to endpoint B -> 400, then fallback noise).
+        self._explicit_base_url = base_url or _startup_base_url_override or None
 
         # Resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (

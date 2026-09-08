@@ -1456,6 +1456,20 @@ def _sum_clarify(name, args, content, content_len, line_count):
     max_summary_chars = _PRUNE_MIN_CHARS - 1
     truncation_marker = "...[truncated]"
     response = _json_dict(content).get("user_response")
+    # Batch clarify nests answers inside responses[]. Extract from there when top-level is absent.
+    if not response:
+        responses = _json_dict(content).get("responses")
+        if isinstance(responses, list):
+            answers = []
+            for r in responses:
+                if isinstance(r, dict):
+                    ans = r.get("user_response")
+                    if isinstance(ans, str) and ans:
+                        answers.append(ans)
+                    elif isinstance(ans, list) and ans:
+                        answers.extend([s for s in ans if isinstance(s, str) and s])
+            if answers:
+                response = answers
     is_answer_shaped = (isinstance(response, str) and bool(response)) or (
         isinstance(response, list) and bool(response) and all(isinstance(s, str) and s for s in response)
     )

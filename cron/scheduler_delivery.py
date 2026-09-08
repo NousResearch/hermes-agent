@@ -792,12 +792,28 @@ def _delivery_lane_value(job: dict, *, for_failure: bool = False):
     return job.get("deliver", "local")
 
 
-def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[dict]:
+def _is_intentional_delivery_opt_out(part: str) -> bool:
+    """True when a discarded fan-out member is an intentional no-delivery token, not a genuine
+    resolution failure. ``local`` is the structural opt-out (whole-value ``deliver: local``
+    resolves to zero targets by design); ``origin`` with no origin and no home channel is the
+    documented origin-less no-op lane (``_unresolved_delivery_outcome``, #43014) — flagging it
+    would make every CLI ``deliver=origin`` job emit a spurious error on every run."""
+    return part in ("local", "origin")
+
+
+def _resolve_delivery_targets(
+    job: dict, *, for_failure: bool = False,
+    resolution_errors: Optional[List[str]] = None,
+) -> List[dict]:
     """Resolve auto-delivery targets from comma-separated ``deliver``; ``all`` expands to every
     platform with a home channel and combines with explicit targets. Dedup by (platform, chat_id,
     thread_id). ``for_failure=True`` (failure summaries, interrupted-run notices, drift/preflight
     alerts) resolves from ``failure_deliver`` INSTEAD when the job carries one —
-    ``failure_deliver: local`` is the structural opt-out; absent, failures follow ``deliver``."""
+    ``failure_deliver: local`` is the structural opt-out; absent, failures follow ``deliver``.
+
+    When ``resolution_errors`` is a list, every fan-out member that is discarded (rather than
+    intentionally opted out) appends a human-readable entry there, so callers that deliver to the
+    surviving targets can still report the drop instead of silently succeeding."""
     deliver = _normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure))
     if deliver == "local":
         return []
@@ -812,6 +828,10 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
     for part in parts:
         target = _resolve_single_delivery_target(job, part)
         if not target:
+            if resolution_errors is not None and not _is_intentional_delivery_opt_out(part):
+                resolution_errors.append(
+                    f"unresolvable delivery target '{part}': target skipped, "
+                    "output was not delivered there")
             continue
         key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
         kept = seen.get(key)
@@ -1598,8 +1618,11 @@ def _deliver_result(
     running) the live adapter is tried first (E2EE rooms can't use the standalone HTTP path), then
     standalone fallback. ``for_failure=True`` routes failure-category notices through the job's
     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
-    targets = _resolve_delivery_targets(job, for_failure=for_failure)
+    resolution_errors: List[str] = []
+    targets = _resolve_delivery_targets(
+        job, for_failure=for_failure, resolution_errors=resolution_errors)
     if not targets:
+        _record_delivery_verification(job, [])
         return _unresolved_delivery_outcome(job, for_failure)
 
     # Restart-safe workers have no live gateway adapters: hand the send back through a durable
@@ -1675,6 +1698,12 @@ def _deliver_result(
         return msg
 
     delivery_errors = []
+    # Fan-out members discarded at resolution time (unknown platform, invalid explicit
+    # target, missing home channel, deleted bot-chat profile) must fail the run's delivery
+    # accounting even when a surviving sibling delivers fine — otherwise the job records
+    # last_status=ok while a requested target never received anything.
+    for resolution_error in resolution_errors:
+        _note_target_error(job, resolution_error, delivery_errors)
     for target in targets:
         # bot-chat targets bypass gateway adapters: output becomes an inbound turn in the target
         # profile's Bot Chat via the chat CLI lane. Must precede the Platform enum, which lacks it.

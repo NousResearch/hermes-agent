@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConfigRecord } from '@/hermes'
@@ -28,6 +28,7 @@ describe('I18nProvider', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    vi.useRealTimers()
   })
 
   it('defaults to English without a config client', () => {
@@ -76,7 +77,9 @@ describe('I18nProvider', () => {
     expect(configClient.saveConfig).not.toHaveBeenCalled()
   })
 
-  it('keeps English usable when config loading fails', async () => {
+  it('keeps English usable when config loading permanently fails', async () => {
+    vi.useFakeTimers()
+
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockRejectedValue(new Error('config unavailable')),
       saveConfig: vi.fn()
@@ -88,11 +91,95 @@ describe('I18nProvider', () => {
       </I18nProvider>
     )
 
-    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+    // Exhaust the bounded retry backoff (~6.2s of retries).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7000)
+    })
 
     expect(screen.getByTestId('locale').textContent).toBe('en')
     expect(screen.getByTestId('label').textContent).toBe('Language')
     expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('retries the startup config read after a transient failure', async () => {
+    vi.useFakeTimers()
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi
+        .fn()
+        // The backend stack from a `hermes update` relaunch is still settling:
+        // the first reads reject, then the persisted language becomes reachable.
+        .mockRejectedValueOnce(new Error('backend still settling'))
+        .mockRejectedValueOnce(new Error('backend still settling'))
+        .mockResolvedValueOnce({ display: { language: 'zh-Hans' } }),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    // Attempt 0 rejects immediately; attempt 1 after 200ms; attempt 2 after
+    // another 400ms and succeeds.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(700)
+    })
+
+    expect(screen.getByTestId('locale').textContent).toBe('zh')
+    expect(screen.getByTestId('label').textContent).toBe('语言')
+    expect(screen.getByTestId('loading').textContent).toBe('false')
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('does not let a late config read clobber a language picked mid-retry', async () => {
+    vi.useFakeTimers()
+
+    let calls = 0
+    const getConfig = vi.fn(async () => {
+      calls += 1
+      // Startup effect attempts 1 and 2 fail while the backend settles; the
+      // read triggered by the user's explicit save succeeds, and the effect's
+      // later retries resolve with the (older) persisted English record.
+      if (calls <= 2) {
+        throw new Error('backend still settling')
+      }
+      return { display: { language: 'en', skin: 'mono' } }
+    })
+
+    const configClient: I18nConfigClient = {
+      getConfig,
+      saveConfig: vi.fn().mockResolvedValue({ ok: true })
+    }
+
+    render(
+      <I18nProvider configClient={configClient} initialLocale="zh">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    // Let the first two startup attempts reject (200ms apart), then pick a
+    // language while the next retry is still waiting out its backoff.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200)
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(screen.getByTestId('locale').textContent).toBe('zh')
+
+    // The effect's late retry resolves with `en` from the old record — it must
+    // not override the explicit choice.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+
+    expect(screen.getByTestId('locale').textContent).toBe('zh')
+    expect(screen.getByTestId('label').textContent).toBe('语言')
+    expect(screen.getByTestId('loading').textContent).toBe('false')
+    expect(configClient.saveConfig).toHaveBeenCalledTimes(1)
   })
 
   it('loads zh-hant from display.language config', async () => {

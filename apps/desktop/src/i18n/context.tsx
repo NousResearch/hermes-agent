@@ -57,6 +57,12 @@ function toError(error: unknown): Error {
 
 const RTL_LOCALES = new Set<Locale>(['ar'])
 
+// Startup config read: the renderer mounts while the backend stack from a
+// `hermes update` relaunch is still settling, so the one-shot GET can reject
+// in the first moments even though the persisted `display.language` is intact.
+// Retry with bounded backoff instead of pinning the session to English.
+const CONFIG_READ_RETRY_DELAYS_MS = [200, 400, 800, 1600, 3200]
+
 function applyDocumentLocale(locale: Locale) {
   if (typeof document === 'undefined') {
     return
@@ -100,6 +106,10 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   const [saveError, setSaveError] = useState<Error | null>(null)
   const localeRef = useRef(locale)
 
+  // Set when the user picks a language through setLocale. A late config read
+  // (retry resolution) must never overwrite an explicit in-session choice.
+  const userLocaleRef = useRef(false)
+
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     localeRef.current = locale
@@ -113,37 +123,63 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     }
 
     let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
 
     setIsLoadingConfig(true)
     setConfigLoadError(null)
 
-    configClient
-      .getConfig()
-      .then(config => {
-        if (!cancelled) {
+    const readConfig = async (attempt: number) => {
+      try {
+        const config = await configClient.getConfig()
+        if (!cancelled && !userLocaleRef.current) {
           setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
         }
-      })
-      .catch(error => {
-        if (!cancelled) {
-          setConfigLoadError(toError(error))
-          setLocaleState(DEFAULT_LOCALE)
+      } catch (error) {
+        if (cancelled) {
+          return
         }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsLoadingConfig(false)
+
+        const delay = CONFIG_READ_RETRY_DELAYS_MS[attempt]
+        if (delay === undefined) {
+          // Exhausted every retry: the config is genuinely unreachable. Keep
+          // English usable as the deterministic fallback — unless the user has
+          // already picked a language this session, which outranks a stale read.
+          if (!userLocaleRef.current) {
+            setConfigLoadError(toError(error))
+            setLocaleState(DEFAULT_LOCALE)
+          }
+          return
         }
-      })
+
+        await new Promise<void>(resolve => {
+          retryTimer = setTimeout(resolve, delay)
+        })
+        if (!cancelled) {
+          await readConfig(attempt + 1)
+        }
+      }
+    }
+
+    void readConfig(0).finally(() => {
+      if (!cancelled) {
+        setIsLoadingConfig(false)
+      }
+    })
 
     return () => {
       cancelled = true
+      if (retryTimer !== undefined) {
+        clearTimeout(retryTimer)
+      }
     }
   }, [configClient, initialLocale])
 
   const setLocale = useCallback(
     async (next: Locale) => {
       const previousLocale = localeRef.current
+
+      // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+      userLocaleRef.current = true
 
       setSaveError(null)
       setLocaleState(next)

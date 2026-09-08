@@ -1,7 +1,10 @@
 """Cron job argument normalization, validation and result shaping (re-exported by
 tools/cronjob_tools.py)."""
 
+import json
 import logging
+import shlex
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from cron.jobs import effective_job_state
@@ -288,25 +291,66 @@ def _validate_cron_base_url(
         f'use a configured custom provider (provider="custom") for a custom base_url.')
 
 
-def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
-    """Scripts must be relative paths within HERMES_HOME/scripts/ (absolute / ~ / drive-letter
-    rejected — prompt-injection guard). Error string if blocked, else None; empty = clear."""
+def _redact_backend_validation_text(value: object) -> str:
+    """Backend probes can surface remote errors; never return their secrets verbatim."""
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(str(value or "").strip(), force=True)
+    except Exception:
+        return "[REDACTED - redaction failed]"
+
+
+def _validate_backend_script(script: str, workdir: Optional[str] = None) -> Optional[str]:
+    """Require an absolute, non-traversing regular file in the active terminal backend."""
+    raw = script.strip()
+    path = Path(raw)
+    if any(part == ".." for part in path.parts):
+        return f"Backend script path must not contain traversal segments: {raw!r}."
+    if not path.is_absolute():
+        return f"Backend script path must be absolute: {raw!r}."
+    try:
+        from tools.terminal_tool import terminal_tool
+        response = terminal_tool(
+            command=f"test -f {shlex.quote(str(path))}", timeout=30,
+            workdir=workdir or str(path.parent))
+        result = json.loads(response) if isinstance(response, str) else response
+    except Exception as exc:
+        return f"Could not validate script in terminal backend: {_redact_backend_validation_text(exc)}"
+    if not isinstance(result, dict) or result.get("exit_code") != 0:
+        detail = _redact_backend_validation_text((result or {}).get("error"))
+        return f"Script not found in terminal backend: {path}" + (f" ({detail})" if detail else "")
+    return None
+
+
+def _terminal_backend_is_local() -> bool:
+    """Resolve the active terminal target using this upstream's terminal planner."""
+    from tools.terminal_tool import _get_env_config
+    return (_get_env_config() or {}).get("env_type", "local") == "local"
+
+
+def _validate_cron_script_path(
+    script: Optional[str], target: str = "scheduler", workdir: Optional[str] = None,
+) -> Optional[str]:
+    """Validate at the target's actual execution boundary; empty clears a script."""
     if not script or not script.strip():
         return None
 
     from hermes_constants import get_hermes_home
     raw = script.strip()
+    if target == "backend":
+        return _validate_backend_script(raw, workdir=workdir)
     if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
         return (
-            f"Script path must be relative to ~/.hermes/scripts/. "
-            f"Got absolute or home-relative path: {raw!r}. "
-            f"Place scripts in ~/.hermes/scripts/ and use just the filename.")
+            f"Scheduler script path must be relative to ~/.hermes/scripts/: {raw!r}. "
+            "Use target='backend' for a backend-visible absolute path.")
 
     from tools.path_security import validate_within_dir
     scripts_dir = get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     if validate_within_dir(scripts_dir / raw, scripts_dir):
         return f"Script path escapes the scripts directory via traversal: {raw!r}"
+    if not (scripts_dir / raw).is_file():
+        return f"Scheduler script is not a regular file: {scripts_dir / raw}"
     return None
 
 
@@ -339,7 +383,7 @@ def _validate_context_from_refs(refs: List[Any]) -> Optional[str]:
 
 # Optional fields echoed by _format_job only when truthy (order = JSON key order).
 _FORMAT_JOB_OPTIONAL_KEYS = (
-    "script", "reasoning_effort", "monitor_script", "monitor_url",
+    "script", "target", "reasoning_effort", "monitor_script", "monitor_url",
     "monitor_state", "no_agent", "enabled_toolsets", "workdir")
 
 

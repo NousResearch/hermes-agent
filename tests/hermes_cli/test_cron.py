@@ -168,12 +168,24 @@ class TestUnverifiedDeliveryVisibility:
 
 
 class TestCronDoctor:
-    def test_doctor_reports_cron_health_issues(self, tmp_cron_dir, capsys):
-        job = create_job(prompt="Daily digest", schedule="every 1h", script="missing.py")
+    def test_doctor_reports_cron_health_issues(self, tmp_cron_dir, capsys, monkeypatch):
+        from hermes_constants import get_hermes_home
+        monkeypatch.setattr("cron.jobs.HERMES_DIR", tmp_cron_dir)
+        scripts_dir = tmp_cron_dir / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "ok.py").write_text("print('ok')\n", encoding="utf-8")
+        validation_scripts_dir = get_hermes_home() / "scripts"
+        validation_scripts_dir.mkdir(parents=True, exist_ok=True)
+        (validation_scripts_dir / "ok.py").write_text("print('ok')\n", encoding="utf-8")
+        job = create_job(
+            prompt="Daily digest", schedule="every 1h", script="ok.py", target="scheduler"
+        )
         jobs = load_jobs()
         jobs[0]["last_status"] = "error"
         jobs[0]["last_error"] = "Provider returned error"
         jobs[0]["last_delivery_error"] = "telegram timeout"
+        jobs[0]["script"] = "missing.py"
+        jobs[0].pop("target", None)
         save_jobs(jobs)
 
         rc = cron_command(Namespace(cron_command="doctor"))
@@ -186,11 +198,16 @@ class TestCronDoctor:
         assert "last delivery failed: telegram timeout" in out
         assert "script not found" in out
 
-    def test_doctor_reports_healthy_jobs(self, tmp_cron_dir, capsys):
+    def test_doctor_reports_healthy_jobs(self, tmp_cron_dir, capsys, monkeypatch):
+        from hermes_constants import get_hermes_home
+        monkeypatch.setattr("cron.jobs.HERMES_DIR", tmp_cron_dir)
         scripts_dir = tmp_cron_dir / "scripts"
         scripts_dir.mkdir()
         (scripts_dir / "ok.py").write_text("print('ok')\n", encoding="utf-8")
-        create_job(prompt="Daily digest", schedule="every 1h", script="ok.py")
+        validation_scripts_dir = get_hermes_home() / "scripts"
+        validation_scripts_dir.mkdir(parents=True, exist_ok=True)
+        (validation_scripts_dir / "ok.py").write_text("print('ok')\n", encoding="utf-8")
+        create_job(prompt="Daily digest", schedule="every 1h", script="ok.py", target="scheduler")
 
         rc = cron_command(Namespace(cron_command="doctor"))
 

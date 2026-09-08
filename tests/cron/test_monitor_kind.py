@@ -140,6 +140,37 @@ def test_create_job_monitor_script_and_url_mutually_exclusive(hermes_env):
         )
 
 
+def test_create_job_rejects_backend_workdir_for_scheduler_monitor_script(hermes_env, monkeypatch):
+    """Monitor scripts execute on the scheduler and cannot use a backend-only cwd."""
+    from cron.jobs import create_job
+
+    monkeypatch.setattr("tools.cronjob_job_args._terminal_backend_is_local", lambda: False)
+    _write_script(hermes_env, "mon.sh", "echo stable\n")
+    with pytest.raises(ValueError, match="monitor_script cannot use a backend target with workdir"):
+        create_job(
+            prompt="React to the change",
+            schedule="every 5m",
+            target="backend",
+            workdir="/backend-only",
+            monitor_script="mon.sh",
+            deliver="local",
+        )
+
+
+def test_update_job_rejects_backend_workdir_for_scheduler_monitor_script(hermes_env, monkeypatch):
+    """The update path cannot introduce the scheduler/backend cwd mismatch either."""
+    from cron.jobs import create_job, update_job
+
+    monkeypatch.setattr("tools.cronjob_job_args._terminal_backend_is_local", lambda: False)
+    _write_script(hermes_env, "mon.sh", "echo stable\n")
+    job = create_job(prompt="React to the change", schedule="every 5m", deliver="local")
+    with pytest.raises(ValueError, match="monitor_script cannot use a backend target with workdir"):
+        update_job(
+            job["id"],
+            {"target": "backend", "workdir": "/backend-only", "monitor_script": "mon.sh"},
+        )
+
+
 def test_create_job_monitor_rejected_with_no_agent(hermes_env):
     from cron.jobs import create_job
 
@@ -150,6 +181,7 @@ def test_create_job_monitor_rejected_with_no_agent(hermes_env):
             schedule="every 5m",
             script="w.sh",
             no_agent=True,
+            target="scheduler",
             monitor_script="w.sh",
         )
 
@@ -183,6 +215,7 @@ def test_update_job_rejects_adding_monitor_to_no_agent_job(hermes_env):
         schedule="every 5m",
         script="w.sh",
         no_agent=True,
+        target="scheduler",
         deliver="local",
     )
     with pytest.raises(ValueError, match="no_agent"):

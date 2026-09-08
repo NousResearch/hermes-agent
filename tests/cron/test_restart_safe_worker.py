@@ -509,6 +509,7 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
             name="restart probe",
             script=probe.name,
             no_agent=True,
+            target="scheduler",
             deliver="telegram:123",
         )
     payload = tmp_path / "job.json"

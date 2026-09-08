@@ -20,7 +20,7 @@ from typing import Any, Callable, Literal, get_args
 from gateway.hosted_room_route_schema import require_room_work_open
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, compact_json, connect, fenced_update, identifier, table_columns, text,
-    transaction)
+    table_exists, transaction)
 
 Clock = Callable[[], float]
 TaskStatus = Literal["queued", "running", "settled", "failed", "cancelled", "indeterminate", "deferred", "stopping"]
@@ -356,6 +356,10 @@ def _load_active_room(conn: sqlite3.Connection, room_id: str) -> sqlite3.Row:
         raise
     if row is None or row["disbanded_at"] is not None:
         raise RoomUnavailableError("hosted room does not exist" if row is None else "hosted room is disbanded")
+    if table_exists(conn, "hosted_room_quarantine") and conn.execute(
+        "SELECT 1 FROM hosted_room_quarantine WHERE room_id=?", (room_id,)
+    ).fetchone() is not None:
+        raise RoomUnavailableError("hosted room authority is quarantined")
     return row
 
 

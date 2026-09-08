@@ -200,6 +200,13 @@ class ClaudeAgentSdkSession(ClaudeSdkTurnMixin, ClaudeSdkPermissionsMixin, Claud
         self._client: Any = None
         self._session_id: Optional[str] = None
         self._interrupt_event = threading.Event()
+        # Serializes pre-terminal interrupt admission with ResultMessage
+        # acceptance.  The boolean remains true through ownership release so
+        # a late /stop cannot still interrupt the persistent SDK client after
+        # the turn has committed.
+        self._interrupt_commit_lock = threading.Lock()
+        self._terminal_result_committed = False
+        self._post_terminal_interrupt_pending = False
         self._closed = False
         # Activity evidence for the in-flight turn (None between turns).
         self._turn_watch: Optional[_TurnWatch] = None
@@ -288,6 +295,16 @@ class ClaudeAgentSdkSession(ClaudeSdkTurnMixin, ClaudeSdkPermissionsMixin, Claud
         if self._closed:
             return
         self._closed = True
+        interrupt_commit_lock = getattr(self, "_interrupt_commit_lock", None)
+        if interrupt_commit_lock is not None:
+            with interrupt_commit_lock:
+                self._terminal_result_committed = False
+                self._post_terminal_interrupt_pending = False
+                self._interrupt_event.clear()
+        else:
+            interrupt_event = getattr(self, "_interrupt_event", None)
+            if interrupt_event is not None:
+                interrupt_event.clear()
         # Cancel the reader BEFORE disconnect so it unwinds on a live stream
         # instead of raising against a torn-down one.
         self._stop_reader()
@@ -323,11 +340,25 @@ class ClaudeAgentSdkSession(ClaudeSdkTurnMixin, ClaudeSdkPermissionsMixin, Claud
     def consume_interrupt(self) -> None:
         """Clear a pending interrupt signal — the caller honored it through
         another path (e.g. the runtime's cold-agent short-circuit)."""
-        self._interrupt_event.clear()
+        with self._interrupt_commit_lock:
+            self._interrupt_event.clear()
+            self._post_terminal_interrupt_pending = False
 
     def request_interrupt(self) -> None:
         """Idempotent: signal the active turn loop to interrupt and unwind."""
-        self._interrupt_event.set()
+        with self._interrupt_commit_lock:
+            if self._terminal_result_committed:
+                # Do not disturb a persistent client after terminal commit.
+                # Runtime consumes this during its terminal handoff; a direct
+                # session caller that leaves it unconsumed gets the signal as
+                # the next turn's ordinary pre-set interrupt.
+                self._post_terminal_interrupt_pending = True
+                logger.info(
+                    "claude-agent-sdk: /stop arrived after terminal commit — "
+                    "queued for the next turn, not sent to the CLI"
+                )
+                return
+            self._interrupt_event.set()
         if self._client is not None and self._loop is not None:
             try:
                 future = asyncio.run_coroutine_threadsafe(

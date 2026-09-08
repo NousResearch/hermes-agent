@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 from agent.redact import redact_sensitive_text
 from agent.claude_sdk_runtime_compaction import _on_compact_boundary, _on_compaction
 from agent.claude_sdk_runtime_continuity import (
+    _canonical_sdk_cwd,
     _persisted_sdk_session_id,
     _render_continuity_digest,
     _store_sdk_session_id,
@@ -446,9 +447,28 @@ def _create_session(
 
 
 def _refresh_turn_visibility(agent, state: _SdkTurnState) -> None:
-    """Per-turn: fresh visibility callbacks, pushed onto an already-live session."""
+    """Per-turn: fresh visibility callbacks, pushed onto an already-live session.
+
+    Also the workspace fence. A cached agent can be reused after the workspace
+    moved; its live SDK session is still bound to the OLD cwd, and the child
+    CLI's cwd is fixed at spawn. Retire it here — before the callbacks are
+    pushed onto a session we are about to discard — so the attempt loop creates
+    a fresh session in the current workspace.
+    """
     state.on_interim_assistant, state.on_tool_iteration = _make_visibility_callbacks(agent)
     live_session = getattr(agent, "_claude_sdk_session", None)
+    live_cwd = getattr(live_session, "_cwd", None) if live_session is not None else None
+    if isinstance(live_cwd, str):
+        if _canonical_sdk_cwd(live_cwd) != _canonical_sdk_cwd():
+            logger.info(
+                "claude-agent-sdk: retiring live session after workspace change"
+            )
+            try:
+                live_session.close()
+            except Exception:
+                logger.debug("workspace-change session close failed", exc_info=True)
+            agent._claude_sdk_session = None
+            live_session = None
     if live_session is not None:
         try:
             live_session.set_turn_visibility_callbacks(
@@ -495,10 +515,29 @@ def _run_sdk_attempts(agent, state: _SdkTurnState) -> Optional[Dict[str, Any]]:
                 on_tool_iteration=state.on_tool_iteration,
             )
 
+        turn_session_cwd = getattr(agent._claude_sdk_session, "_cwd", None)
+        if not isinstance(turn_session_cwd, str):
+            # The live session is the authority, but it can be absent here (a
+            # retired client, a stand-in). Resolve the fallback NOW rather than
+            # leaving None for the persist phase to fill in: persist runs after
+            # run_turn, so a workspace that moved mid-turn would be sampled
+            # post-move and the binding would always match itself. Sampling at
+            # turn start is what makes the check able to fail.
+            from agent.runtime_cwd import resolve_agent_cwd
+
+            try:
+                turn_session_cwd = str(resolve_agent_cwd())
+            except Exception:
+                logger.debug(
+                    "claude-agent-sdk: turn workspace unresolvable", exc_info=True
+                )
+                turn_session_cwd = None
+        state.turn_session_cwd = turn_session_cwd
         try:
             turn = agent._claude_sdk_session.run_turn(user_input=send_input)
         except Exception as exc:
             safe_exc = redact_sensitive_text(str(exc), force=True)
+            interrupted = bool(getattr(agent, "_interrupt_requested", False))
             # A PreCompact hook may have opened a transient user-visible status.
             # This exception bypasses the normal terminal edge below; clear it
             # here so a later unrelated turn cannot announce stale completion.
@@ -518,9 +557,27 @@ def _run_sdk_attempts(agent, state: _SdkTurnState) -> Optional[Dict[str, Any]]:
             except Exception:
                 pass
             agent._claude_sdk_session = None
-            if resumed and attempt == 0:
+            # The sample above was taken BEFORE close(). Tearing the transport
+            # down is not instantaneous, so a stop admitted during cleanup is
+            # still a stop against this turn — re-read the flag now that the
+            # session is gone. Deciding on the stale pre-close sample would
+            # replay the prompt the user just asked to abandon and leave the
+            # agent-level flag set to poison the next turn. Sticky OR: a stop
+            # observed before close stays observed regardless of cleanup.
+            interrupted = interrupted or bool(
+                getattr(agent, "_interrupt_requested", False)
+            )
+            if interrupted:
+                # The session close above consumes transport-local interrupt
+                # state, and the session object is discarded either way, so
+                # no live transport survives to carry it. Consume the agent
+                # layer too: this dead turn honored the user's stop and must
+                # not reject the next message.
+                agent._interrupt_requested = False
+            if resumed and attempt == 0 and not interrupted:
                 # A raising RESUMED session is a suspect resume — clear the
                 # id and give the turn one fresh chance (digest included).
+                # Never replay a turn that concurrently received /stop.
                 _store_sdk_session_id(agent, None)
                 resumed = False
                 continue
@@ -530,11 +587,12 @@ def _run_sdk_attempts(agent, state: _SdkTurnState) -> Optional[Dict[str, Any]]:
                 "api_calls": 0,
                 "completed": False,
                 "partial": True,
+                "interrupted": interrupted,
                 # run_turn consumes its own exceptions into TurnResult, so
                 # anything RAISING here is a dead turn, not a recoverable
                 # partial — mark it failed so one-shot runs exit nonzero
                 # (mirrors conversation_loop's generic non-retryable return).
-                "failed": True,
+                "failed": not interrupted,
                 "error": safe_exc,
             }
 
@@ -555,6 +613,7 @@ def _run_sdk_attempts(agent, state: _SdkTurnState) -> Optional[Dict[str, Any]]:
                 resumed
                 and attempt == 0
                 and not getattr(turn, "interrupted", False)
+                and not getattr(agent, "_interrupt_requested", False)
             ):
                 # Stale/failed resume: one fresh retry with digest. Never for
                 # an INTERRUPTED retire (user /stop that killed the CLI, or a

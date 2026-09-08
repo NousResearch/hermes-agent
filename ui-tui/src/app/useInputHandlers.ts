@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
-import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
+import { DOUBLE_CTRL_C_EXIT_MS, DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
 import type {
   ApprovalRespondResponse,
@@ -366,6 +366,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   // still the dedicated discard (pushes the draft to history so Up recalls it).
   const lastEscRef = useRef(0)
 
+  // Idle Ctrl+C double-press gate: hosts like herdr translate Cmd+C into
+  // plain Ctrl+C for the pane app, so a single press must never end the
+  // session. First press hints; second within the window exits.
+  const lastIdleCtrlCRef = useRef(0)
+
   useInput((ch, key) => {
     const live = getUiState()
 
@@ -636,6 +641,15 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {
+      // A live TUI selection means this Ctrl+C is a copy request, not an
+      // interrupt: herdr's copy bridge sends Ctrl+C after a forwarded drag
+      // (Cmd+C in a herdr pane), matching Claude Code's ctrl+c-copies
+      // behavior. copySelection() clears the selection, so a repeat press
+      // falls through to interrupt/exit as usual.
+      if (terminal.hasSelection) {
+        return copySelection()
+      }
+
       const ctrlC = resolveCtrlCComposerAction({
         busy: live.busy,
         hasDraft: Boolean(cState.input || cState.inputBuf.length),
@@ -653,6 +667,15 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
           sid: live.sid,
           sys: actions.sys
         })
+      }
+
+      const now = Date.now()
+      const isDouble = now - lastIdleCtrlCRef.current <= DOUBLE_CTRL_C_EXIT_MS
+
+      lastIdleCtrlCRef.current = isDouble ? 0 : now
+
+      if (!isDouble) {
+        return actions.sys('press Ctrl+C again to exit')
       }
 
       return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {

@@ -18,3 +18,9 @@ export const RESIZE_COALESCE_MS = 32
 // enough that two unrelated Escs — dismissing a completion, then a
 // selection — don't silently clear the composer.
 export const DOUBLE_ESC_MS = 500
+
+// Idle Ctrl+C must be pressed twice within this window to end the session
+// (Claude Code parity). Multiplexer hosts (herdr, tmux copy bindings)
+// translate a copy chord into plain Ctrl+C for the pane app, so a single
+// stray press must never tear the session down.
+export const DOUBLE_CTRL_C_EXIT_MS = 2000

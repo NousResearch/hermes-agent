@@ -21,7 +21,7 @@ class _EchoHandler(BaseHTTPRequestHandler):
             "path": self.path,
             "authorization": self.headers.get("Authorization"),
             "cookie": self.headers.get("Cookie"),
-            "dashboard_token": self.headers.get("X-Hermes-Dashboard-Token"),
+            "session_token": self.headers.get("X-Hermes-Session-Token"),
             "forwarded_host": self.headers.get("X-Forwarded-Host"),
             "forwarded_proto": self.headers.get("X-Forwarded-Proto"),
             "forwarded_prefix": self.headers.get("X-Forwarded-Prefix"),
@@ -150,7 +150,7 @@ def test_api_route_strips_dashboard_credentials_and_keeps_api_key(
         headers={
             "Authorization": "Bearer api-key",
             "Cookie": "hermes_session_at=private",
-            "X-Hermes-Dashboard-Token": "private",
+            "X-Hermes-Session-Token": "private",
         },
     )
 
@@ -159,7 +159,7 @@ def test_api_route_strips_dashboard_credentials_and_keeps_api_key(
     assert payload["path"] == "/api/sessions?limit=1"
     assert payload["authorization"] == "Bearer api-key"
     assert payload["cookie"] is None
-    assert payload["dashboard_token"] is None
+    assert payload["session_token"] is None
 
 
 def test_a2a_public_url_includes_forwarded_prefix(monkeypatch):

@@ -30,7 +30,7 @@ _HOP_BY_HOP_HEADERS = frozenset({
     "te", "trailer", "transfer-encoding", "upgrade",
 })
 _PRIVATE_REQUEST_HEADERS = frozenset({
-    "cookie", "host", "content-length", "x-hermes-dashboard-token",
+    "cookie", "host", "content-length", "x-hermes-session-token",
     "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-prefix",
     "x-forwarded-proto",
 })

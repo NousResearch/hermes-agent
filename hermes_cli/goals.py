@@ -48,6 +48,8 @@ DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
 # blow the judge context (the judge already sees a 4000-char response snippet; evidence is additive).
 _JUDGE_EVIDENCE_MAX_ITEMS = 5
 _JUDGE_EVIDENCE_MAX_CHARS = 1200
+_JUDGE_EVIDENCE_ARGS_MAX_CHARS = 700
+_JUDGE_EVIDENCE_RESULT_MAX_CHARS = 400
 
 JUDGE_EVIDENCE_BLOCK_TEMPLATE = (
     "Concrete evidence from the agent's recent work (tool results, file " 
@@ -186,7 +188,10 @@ def extract_turn_evidence(result: Any, *, max_items: int = _JUDGE_EVIDENCE_MAX_I
             tag = str(msg.get("tool_name") or msg.get("name") or "")
             cid = str(msg.get("tool_call_id") or "")
             name, args = call_by_id.get(cid) or call_by_name.get(tag) or (tag, "")
-            result_txt = _evidence_text(content)
+            # Preserve both the attempted work AND its outcome.  A large write payload must
+            # never crowd out a denial/error receipt that says it did not actually happen.
+            args = _truncate(args, _JUDGE_EVIDENCE_ARGS_MAX_CHARS)
+            result_txt = _truncate(_evidence_text(content), _JUDGE_EVIDENCE_RESULT_MAX_CHARS)
             if args:
                 block = f"{name or tag}: {args}"
                 # Append the result only when it adds beyond the call args (e.g. a receipt).
@@ -1341,6 +1346,8 @@ class GoalManager:
                 or current.created_at != state.created_at
                 or current.subgoals != state.subgoals
                 or current.max_turns != state.max_turns
+                or current.contract != state.contract
+                or current.gates != state.gates
             ):
                 outcome[0] = "replaced"
                 return current_json
@@ -1417,8 +1424,6 @@ class GoalManager:
             for fresh_gate, stale_gate in zip(fresh.gates, state.gates):
                 if fresh_gate.command != stale_gate.command:
                     continue
-                fresh_gate.timeout_seconds = stale_gate.timeout_seconds
-                fresh_gate.max_retries = stale_gate.max_retries
                 fresh_gate.attempts = stale_gate.attempts
                 fresh_gate.last_exit_code = stale_gate.last_exit_code
                 fresh_gate.last_output_tail = stale_gate.last_output_tail
@@ -1709,9 +1714,10 @@ class GoalManager:
         s = self._state
         if s is None or (s.waiting_on_pid is None and s.waiting_on_session is None and not s.waiting_until):
             return False
-        s.clear_wait()
-        self._save()
-        return True
+        def _clear(fresh: GoalState) -> None:
+            fresh.clear_wait()
+        _fresh, outcome = self._reconcile_turn_state(s, transform=_clear)
+        return outcome == "applied"
 
     def is_waiting(self) -> bool:
         """True iff a barrier is set AND not yet satisfied. A satisfied barrier is cleared here
@@ -1799,8 +1805,10 @@ class GoalManager:
         # Gates run BEFORE the judge: a failing gate is deterministic evidence the goal is not done,
         # so the judge is skipped and the gate's output drives the next turn (same turn budget).
         gate_decision = self._check_gates()
+        # Gate reconciliation may have updated only runtime fields on the fresh row. Judge that
+        # fresh state, otherwise the identity fence would correctly reject our own gate write.
+        state = self._state or state
         if gate_decision is not None:
-            state = self._state or state
             if gate_decision.get("should_continue") and state.turns_used >= state.max_turns:
                 return self._budget_pause(state, "gate_failed", gate_decision.get("reason", ""), note=" (a quality gate is still failing)")
             return gate_decision
@@ -1940,6 +1948,13 @@ class GoalManager:
             "active", True, self.next_continuation_prompt(), "continue", reason,
             f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}",
         )
+
+    def continuation_token(self) -> Optional[str]:
+        """Opaque fresh-state token for admitting one already-approved continuation."""
+        return self._state.to_json() if self.is_active() else None
+
+    def continuation_is_current(self, token: Any) -> bool:
+        return isinstance(token, str) and self.is_active() and self._state.to_json() == token
 
     def next_continuation_prompt(self) -> Optional[str]:
         s = self._state

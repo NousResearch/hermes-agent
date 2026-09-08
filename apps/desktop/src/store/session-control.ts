@@ -787,9 +787,10 @@ function isMethodNotFound(error: unknown): boolean {
 }
 
 function isApplicationRejection(error: unknown): boolean {
-  // A numeric JSON-RPC code means the backend was reached and declined this mutation.
-  // Method-not-found and gone have dedicated handling before this branch.
-  return isRecord(error) && typeof error.code === 'number'
+  // Only validation/busy rejections (the backend's 4004 class) leave the known snapshot
+  // safely retryable. Numeric 5xxx responses can mean the mutation succeeded but verification
+  // failed, so they remain an outage and force a refresh before another attempt.
+  return isRecord(error) && error.code === 4004
 }
 
 /** Hydrates one session's structured controls; background refreshes never flash a loading state. */

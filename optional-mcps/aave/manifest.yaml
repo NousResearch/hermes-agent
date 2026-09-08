@@ -1,0 +1,48 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: aave
+description: 'Aave V3 and V4: lending markets, positions, rewards, governance, and unsigned transaction building.'
+source: https://mcp.aave.com/llms.txt
+
+# Official protocol-hosted remote MCP (URL-only - Hermes never spawns a local
+# process for this entry). No authentication required (verified live
+# 2026-09-08: initialize succeeds anonymously, protocolVersion 2025-06-18,
+# streamable HTTP; a GET asking for text/event-stream returns 405 by design,
+# so this entry must not be configured as transport.type sse).
+
+transport:
+  type: http
+  url: https://mcp.aave.com
+
+auth:
+  type: none
+
+# No exclusions. 40 tools, 38 read-only; no meta-tool gateway, no generic
+# HTTP/SQL executor, no telemetry, feedback or upsell tools. The two writes
+# relay a signature the user already produced in their own wallet.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - aave
+    - lending apy
+    - borrow rate
+  hosts:
+    - aave.com
+    - app.aave.com
+
+post_install: |
+  No account or credentials needed - tools are available as soon as the
+  session restarts.
+
+  Non-custodial: the server holds no keys and submits nothing. Reads return
+  market and position data; every prepare_* tool returns an unsigned
+  transaction or EIP-712 typed data for the user's own wallet to sign.
+
+  CAUTION: two tools relay something the user already signed -
+  submit_signed_order (a CoW swap order, whose signature covers price,
+  amounts, recipient and deadline, so the relay cannot alter them) and
+  cancel_order (the user's own order). Hermes's normal tool-approval flow
+  applies.

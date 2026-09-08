@@ -192,6 +192,13 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
     monitor_source = job.get("monitor_script") or job.get("monitor_url")
     mon_state = job.get("monitor_state") or {}
     latest_execution = job.get("latest_execution") or {}
+    # Model/provider pin: an unpinned job runs on the profile default and can drift-skip
+    # silently when that default changes. Show the pin so `cron list` is the first place
+    # a user sees it, not a jobs.json read.
+    _model_val = job.get("model")
+    _provider_val = job.get("provider")
+    model_display = _model_val if _model_val else color("(profile default)", Colors.DIM)
+    provider_display = _provider_val if _provider_val else color("(profile default)", Colors.DIM)
     optional = [
         ("Skills", ", ".join(skills) if skills else ""),
         ("Script", job.get("script")),
@@ -211,6 +218,8 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
         ("Schedule", job.get("schedule_display", job.get("schedule", {}).get("value", "?"))),
         ("Repeat", f"{repeat_info.get('completed', 0)}/{repeat_times}" if repeat_times else "∞"),
         ("Next run", job.get("next_run_at", "?")),
+        ("Model", model_display),
+        ("Provider", provider_display),
         ("Deliver", deliver if isinstance(deliver, str) else ", ".join(deliver)),
     ] + [(label, value) for label, value in optional if value]
 

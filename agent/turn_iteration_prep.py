@@ -89,9 +89,12 @@ class IterationPrep:
     action: str
     messages: Any
     request_logger: Any
+    current_turn_user_idx: Any
 
 
-def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> IterationPrep:
+def prepare_iteration(
+    agent: Any, *, messages: Any, api_call_count: Any, user_message: Any = None, current_turn_user_idx: Any = None,
+) -> IterationPrep:
     """Prepare ``messages`` for this iteration in the original order. Every mutation here is
     cache-safe by construction: steer text lands in the newest tool result, the ghost-row
     filter only drops hidden scaffold placeholders, and repair runs BEFORE the request build."""
@@ -182,7 +185,31 @@ def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> Itera
             repaired_seq,
             agent.session_id or "-",
         )
-    return IterationPrep(action="fallthrough", messages=messages, request_logger=request_logger)
+        # The repair merges adjacent user rows in place (after a compaction the role=user
+        # summary sits next to the protected first user message), so the list shrinks and
+        # the index recorded at turn start points past this turn's user row. Re-anchor it
+        # like the compression restart path does, and mirror the value into
+        # _persist_user_message_idx, which hosts read when the result carries no index:
+        # a stale anchor injects prefetch into a historical row and makes hosts that settle
+        # their transcript by this index (hermes-webui) write the current turn to the FRONT
+        # of the context, rewriting the prompt's leading messages every turn.
+        _reanchored_idx = (
+            reanchor_current_turn_user_idx(messages, user_message) if user_message is not None
+            else current_turn_user_idx
+        )
+        if _reanchored_idx != current_turn_user_idx:
+            request_logger.info(
+                "Re-anchored current_turn_user_idx %s -> %s after alternation repair (session=%s)",
+                current_turn_user_idx,
+                _reanchored_idx,
+                agent.session_id or "-",
+            )
+            current_turn_user_idx = _reanchored_idx
+            agent._persist_user_message_idx = _reanchored_idx
+    return IterationPrep(
+        action="fallthrough", messages=messages, request_logger=request_logger,
+        current_turn_user_idx=current_turn_user_idx,
+    )
 
 
 def _previous_tool_round(messages: Any) -> list:

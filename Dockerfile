@@ -196,6 +196,37 @@ COPY apps/shared/ apps/shared/
 # guards against a future regression if the source npm version changes.
 ENV npm_config_install_links=false
 
+# ---------- npm engine range ----------
+# The node_source image ships whatever npm its Node major bundles, and that is
+# not guaranteed to satisfy this repo's `engines.npm`. npm 11.10.0-11.16.x in
+# particular honor `min-release-age` but ignore `min-release-age-exclude`,
+# both of which .npmrc sets — so they apply the 14-day age gate to packages we
+# deliberately exempted and fail on a freshly published dependency.
+#
+# Every other install path already handles this: _nb_ensure_bundled_npm_range()
+# in scripts/lib/node-bootstrap.sh, npm_supports_npmrc() in scripts/install.sh,
+# and hermes_cli/npm_engine.py as the reactive rung. The image had none, so a
+# bundled npm outside the range reached `npm install` and died there. It also
+# died opaquely rather than with EBADENGINE, because .npmrc (engine-strict) is
+# not in the build context at this point — only `COPY . .` further down brings
+# it in.
+#
+# The range is read from package.json rather than duplicated here so the two
+# cannot drift, mirroring _nb_npm_range(). Two details are load-bearing, both
+# copied from _nb_ensure_bundled_npm_range():
+#   - a temp cwd, so a .npmrc in the build tree cannot gate the very upgrade
+#     meant to satisfy it;
+#   - npm_config_min_release_age=0, so the age gate does not apply to npm.
+# Override with --build-arg NPM_RANGE=... to pin a specific npm.
+ARG NPM_RANGE=
+RUN set -eu; \
+    range="${NPM_RANGE:-$(node -p "require('/opt/hermes/package.json').engines.npm")}"; \
+    echo "npm before: $(npm --version) — required: ${range}"; \
+    cd /tmp && CI=1 npm_config_min_release_age=0 \
+        npm install -g --prefix /usr/local "npm@${range}" \
+        --no-fund --no-audit --progress=false; \
+    echo "npm after:  $(npm --version)"
+
 RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
     for i in 1 2 3; do \
         npx playwright install --with-deps chromium --only-shell && break || \

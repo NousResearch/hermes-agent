@@ -107,6 +107,7 @@ def test_live_route_changes_require_fresh_usage(tmp_path, monkeypatch, transitio
             assert agent._try_activate_fallback()
         _record_usage(agent, history, 60_000)
         assert _pressures(agent, history) == (60_030,) * 3
+        assert compute_session_context_breakdown(agent, history)["context_source"] == "provider_usage"
 
         if transition == "fallback":
             assert agent._try_activate_fallback()
@@ -134,6 +135,9 @@ def test_live_route_changes_require_fresh_usage(tmp_path, monkeypatch, transitio
         assert _pressures(agent, history) == uncalibrated
         assert uncalibrated[0] == expected
         assert not agent._request_pressure_anchored
+        display = compute_session_context_breakdown(agent, history)
+        assert display["context_source"] == "local_estimate"
+        assert display["context_estimated"] is True
 
         # A usage-less response cannot make the previous route's anchor authoritative again.
         _record_usage(agent, history, None, call=2)
@@ -147,6 +151,9 @@ def test_live_route_changes_require_fresh_usage(tmp_path, monkeypatch, transitio
         # Normal response accounting installs the new baseline, including a mid-turn fallback's display anchor.
         _record_usage(agent, history, 12_000, call=3)
         assert _pressures(agent, history) == (12_030,) * 3
+        display = compute_session_context_breakdown(agent, history)
+        assert display["context_source"] == "provider_usage"
+        assert display["context_estimated"] is False
         assert agent.session_prompt_tokens == 60_000 + 12_000  # historical spend is retained
     finally:
         agent.close()

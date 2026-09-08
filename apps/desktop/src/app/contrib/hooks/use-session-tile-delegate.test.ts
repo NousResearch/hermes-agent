@@ -65,6 +65,8 @@ describe('useSessionTileDelegate resumeTile', () => {
   beforeEach(() => {
     setSessions([])
     vi.mocked(getLatestSessionMessages).mockClear()
+    vi.mocked(requestGatewayForAgent).mockReset()
+    vi.mocked(requestGatewayForProfile).mockReset()
   })
 
   afterEach(() => {
@@ -180,18 +182,91 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(ambientRequest).not.toHaveBeenCalled()
   })
 
-  it('reuses a warm binding that still carries a transcript', async () => {
+  it('rebinds a warm binding via session.activate before reuse (#101408)', async () => {
     const stateA = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-a' }
     const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-a', 'runtime-a']]) }
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-a', stateA]]) }
-    const requestGateway = vi.fn(async () => ({}) as never)
+    const ambientRequest = vi.fn(async () => ({}) as never)
 
-    renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+    setSessions([row({ id: 'stored-a', profile: 'default' })])
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({ session_id: 'runtime-a' } as never)
+
+    renderTile(ambientRequest, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-a')
 
     expect(runtimeId).toBe('runtime-a')
-    expect(requestGateway).not.toHaveBeenCalled()
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'default',
+      'session.activate',
+      {
+        session_id: 'runtime-a',
+        cols: 96,
+        omit_messages: true
+      },
+      undefined,
+      undefined
+    )
     expect(getLatestSessionMessages).not.toHaveBeenCalled()
+  })
+
+  it('restores a pending approval from warm session.activate (#101408)', async () => {
+    const stateA = { busy: true, messages: [{ id: 'm1' }], storedSessionId: 'stored-appr', needsInput: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-appr', 'runtime-appr']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-appr', stateA]]) }
+    const updateSessionState = vi.fn((_id, updater) => {
+      const next = updater(stateA)
+      sessionStateByRuntimeIdRef.current.set('runtime-appr', next)
+
+      return next
+    })
+
+    setSessions([row({ id: 'stored-appr', profile: 'default' })])
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({
+      pending_approval: {
+        allow_permanent: true,
+        command: 'rm -rf /',
+        description: 'dangerous command',
+        request_id: 'req-1'
+      },
+      session_id: 'runtime-appr'
+    } as never)
+
+    const { clearApprovalRequest, sessionApprovalRequest } = await import('@/store/prompts')
+    clearApprovalRequest('runtime-appr')
+
+    renderTile(vi.fn(async () => ({}) as never), {
+      runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef,
+      updateSessionState
+    })
+    await sessionTileDelegate()!.resumeTile('stored-appr')
+
+    expect(sessionApprovalRequest('runtime-appr').get()?.command).toBe('rm -rf /')
+    expect(updateSessionState).toHaveBeenCalled()
+  })
+
+  it('falls through to cold resume when warm activate proves the runtime dead (#101408)', async () => {
+    // Reconnect busy-reconcile can re-seed the stored→runtime map while the
+    // gateway still parks the session on the drop sentinel. Activate 404s;
+    // cold resume must rebind a live runtime instead of painting the dead one.
+    setSessions([row({ id: 'stored-reseed', profile: 'default' })])
+
+    const liveState = { busy: true, messages: [{ id: 'm1' }], storedSessionId: 'stored-reseed' }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-reseed', 'runtime-dead']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', liveState]]) }
+
+    vi.mocked(requestGatewayForProfile)
+      .mockRejectedValueOnce(new Error('session not found'))
+      .mockResolvedValueOnce({ session_id: 'runtime-fresh' } as never)
+
+    renderTile(vi.fn(async () => ({}) as never), { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-reseed')
+
+    expect(runtimeId).toBe('runtime-fresh')
+    expect(requestGatewayForProfile.mock.calls.map(call => call[1])).toEqual([
+      'session.activate',
+      'session.resume'
+    ])
   })
 
   it('merges persisted messages into a warm tile on explicit reopen (#96183)', async () => {
@@ -206,6 +281,8 @@ describe('useSessionTileDelegate resumeTile', () => {
     const updateSessionState = vi.fn((_id, updater) => updater(stateA))
     const requestGateway = vi.fn(async () => ({}) as never)
 
+    setSessions([row({ id: 'stored-a', profile: 'default' })])
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({ session_id: 'runtime-a' } as never)
     vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
       messages: [
         { id: 'm1', content: 'old', role: 'user' },
@@ -218,14 +295,27 @@ describe('useSessionTileDelegate resumeTile', () => {
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-a', { refreshTranscript: true })
 
     expect(runtimeId).toBe('runtime-a')
-    expect(requestGateway).not.toHaveBeenCalled()
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'default',
+      'session.activate',
+      {
+        session_id: 'runtime-a',
+        cols: 96,
+        omit_messages: true
+      },
+      undefined,
+      undefined
+    )
     expect(getLatestSessionMessages).toHaveBeenCalled()
     expect(updateSessionState).toHaveBeenCalled()
 
-    const updater = updateSessionState.mock.calls[0][1] as (state: typeof stateA) => {
+    const updater = updateSessionState.mock.calls.find(call => call[0] === 'runtime-a')?.[1] as (
+      state: typeof stateA
+    ) => {
       messages: Array<{ parts?: Array<{ text?: string }> }>
     }
 
+    expect(updater).toBeTypeOf('function')
     const next = updater(stateA)
     const texts = next.messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
 

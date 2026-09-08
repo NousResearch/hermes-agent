@@ -69,6 +69,43 @@ async def test_operational_telegram_sender_failure_propagates_and_keeps_no_topic
 
 
 @pytest.mark.asyncio
+async def test_operational_telegram_delivery_does_not_require_profile_adapter():
+    notification = _notification()
+    notification.platform_cls = lambda _platform: "telegram"
+    notification.sub_profile = "orion"
+    notification._send_pings = AsyncMock(return_value=True)
+    notification.build_wake_text = MagicMock()
+    notification.wake_kinds = set()
+    notification.advance = AsyncMock()
+    notification.task = None
+
+    with patch(
+        "gateway.kanban_watchers_notifier._adapter_for_subscription",
+        side_effect=AssertionError("operational delivery must not resolve a profile adapter"),
+    ):
+        await notification.deliver()
+
+    notification.advance.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_operational_artifact_failure_does_not_retry_text():
+    notification = _notification()
+    notification.runner._deliver_kanban_artifacts = AsyncMock(
+        side_effect=RuntimeError("artifact transport unavailable")
+    )
+
+    with patch(
+        "tools.operational_sender.send_operational_message",
+        return_value={"ok": True},
+    ) as sender:
+        await notification._send_event(_Event(), "Kanban update")
+
+    sender.assert_called_once_with("Kanban update")
+    notification.runner._deliver_kanban_artifacts.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_non_operational_telegram_preserves_adapter_metadata():
     notification = _notification()
     notification.sub["chat_id"] = "other-chat"

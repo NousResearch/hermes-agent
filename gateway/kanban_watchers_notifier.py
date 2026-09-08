@@ -549,11 +549,20 @@ class _KanbanNotification:
 
             await asyncio.to_thread(send_operational_message, msg)
             if ev.kind == "completed":
-                await self.runner._deliver_kanban_artifacts(
-                    adapter=adapter, chat_id=sub["chat_id"], metadata={},
-                    event_payload=getattr(ev, "payload", None), task=self.task,
-                    operational=True,
-                )
+                try:
+                    await self.runner._deliver_kanban_artifacts(
+                        adapter=adapter, chat_id=sub["chat_id"], metadata={},
+                        event_payload=getattr(ev, "payload", None), task=self.task,
+                        operational=True,
+                    )
+                except Exception as art_exc:
+                    # Text delivery is the durable notification. An artifact
+                    # transport failure must not make the claimed event look
+                    # undelivered and trigger a text resend.
+                    logger.warning(
+                        "kanban notifier: operational artifact delivery for %s failed: %s",
+                        self.task_id, art_exc,
+                    )
             logger.debug(
                 "kanban notifier: delivered %s event for %s via verified operational Telegram sender",
                 ev.kind, self.task_id,
@@ -621,9 +630,17 @@ class _KanbanNotification:
         except ValueError:
             await self.advance()
             return
+        operational_telegram = (
+            self.platform_str == "telegram"
+            and str(self.sub.get("chat_id")) == _OPERATIONAL_TELEGRAM_CHAT_ID
+        )
         # Recheck the exact route after claiming: config/adapters can change between ticks.
-        adapter = _adapter_for_subscription(self.runner, self.plat, self.sub, self.sub_profile or None)
-        if adapter is None:
+        # The verified operational sender is intentionally independent of the
+        # subscription profile's adapter, which may not be configured here.
+        adapter = None if operational_telegram else _adapter_for_subscription(
+            self.runner, self.plat, self.sub, self.sub_profile or None
+        )
+        if adapter is None and not operational_telegram:
             logger.debug("kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
                          self.platform_str, self.task_id)
             await self.rewind()

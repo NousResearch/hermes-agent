@@ -12,7 +12,7 @@ from gateway import hosted_rooms as rooms, hosted_room_replicas as replicas
 from gateway.hosted_room_authority_history import read_history_locked
 from gateway.hosted_room_manual_promotion_schema import TABLE, initialize
 from gateway.hosted_room_manual_recovery import prepare_recovery_locked
-from gateway.hosted_room_work_records import TARGET_TABLE, validate as validate_work_record
+from gateway.hosted_room_work_records import TARGET_TABLE, validate as validate_work_record, _budget
 from gateway.hosted_rooms_common import table_exists
 
 _FENCE = "manual_recovery_pending"
@@ -77,6 +77,10 @@ def stage_manual_recovery(db_path, *, room_id, recovery_id, snapshot_id,
         validate_work_record(json.loads(record[0]))
         initialize(conn)
         timestamp = rooms._now(now)
+        # Transfer the existing metadata charge rather than temporarily keeping
+        # two charged copies. The writer transaction restores both on failure.
+        conn.execute(f"DELETE FROM {TARGET_TABLE} WHERE room_id=?", (room_id,))
+        _budget(conn, TABLE, room_id, record[0])
         conn.execute(f"INSERT INTO {TABLE} VALUES(?,?,?,?,?,?,?,?,?,?)", (
             room_id, recovery_id, snapshot_id, copy["authority_gateway_id"], copy["authority_epoch"],
             target, copy["last_seq"], record[0], timestamp, "transferring"))

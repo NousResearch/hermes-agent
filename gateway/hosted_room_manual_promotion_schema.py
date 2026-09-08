@@ -51,3 +51,5 @@ def initialize(conn):
             ON CONFLICT(room_id) DO UPDATE SET owner_kind='authority'
             WHERE {_TRANSFER_MATCH};
         END""")
+    from gateway.hosted_room_work_record_budget import install_recovery_budget_guards
+    install_recovery_budget_guards(conn)

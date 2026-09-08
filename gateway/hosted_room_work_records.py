@@ -191,14 +191,17 @@ def initialize_retirement_guards(conn):
 
 
 def _budget(conn, table, room_id, data, target_install_id=None):
+    from gateway.hosted_room_work_record_budget import stores
     total, count = 0, 0
-    for name in (SOURCE_TABLE, TARGET_TABLE, PENDING_TABLE):
-        row = conn.execute(f"SELECT COALESCE(SUM(length(CAST(record_json AS BLOB))),0),COUNT(*) FROM {name}").fetchone()
+    owners = stores(conn)
+    for name, column, _keys in owners:
+        row = conn.execute(f"SELECT COALESCE(SUM(length(CAST({column} AS BLOB))),0),COUNT(*) FROM {name}").fetchone()
         total, count = total + row[0], count + row[1]
     where, args = "room_id=?", (room_id,)
     if target_install_id is not None:
         where, args = where + " AND target_install_id=?", (*args, target_install_id)
-    old = conn.execute(f"SELECT length(CAST(record_json AS BLOB)) FROM {table} WHERE {where}", args).fetchone()
+    column = next(column for name, column, _keys in owners if name == table)
+    old = conn.execute(f"SELECT length(CAST({column} AS BLOB)) FROM {table} WHERE {where}", args).fetchone()
     if total - (old[0] if old else 0) + len(data.encode("utf-8")) > MAX_STORE_BYTES or (old is None and count >= MAX_STORE_ROWS):
         raise WorkRecordCapacityError("work record storage is full")
 

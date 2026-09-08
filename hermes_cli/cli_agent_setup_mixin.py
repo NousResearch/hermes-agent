@@ -184,7 +184,10 @@ class CLIAgentSetupMixin:
         try:
             runtime = resolve_runtime_provider(
                 requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
-                explicit_base_url=self._explicit_base_url)
+                explicit_base_url=self._explicit_base_url,
+                # Bedrock picks its wire per model (Claude -> anthropic_messages, else Converse);
+                # without target_model the resolver decides from model.default, not the session model.
+                target_model=self.model or None)
         except Exception as exc:
             _primary_exc = exc
         if _primary_exc is not None:

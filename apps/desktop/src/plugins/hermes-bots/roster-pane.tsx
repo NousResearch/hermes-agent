@@ -34,11 +34,13 @@ import { BotRow, GroupRow } from './bot-row'
 import {
   $botChatFocused,
   $botsPaneVisible,
+  $focusedBotOwner,
   $openBotChat,
   $rosterHydrated,
   $selectedRosterHydrated,
   $selectedRosterKey,
   clearSelectedRosterKey,
+  focusedRosterOwner,
   parseRosterKey,
   saveSelectedRosterBot
 } from './bot-state'
@@ -77,7 +79,7 @@ import {
 } from './roster-sections'
 import type { ResolvedRosterGatewaySection } from './roster-sections'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
-import { ACTIVE_WINDOW_S, activeBots, BOT_ROSTER_SEARCH_THRESHOLD, rosterActivityMatches } from './row-helpers'
+import { ACTIVE_WINDOW_S, activeBots, BOT_ROSTER_SEARCH_THRESHOLD, rosterActivityMatches, useTurnBusy } from './row-helpers'
 import { backfillMessagingProtocol } from './soul'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
 import {
@@ -256,7 +258,10 @@ export function BotsPane() {
   const { data, error, isLoading, refetch } = useRoster()
   const gatewayState = useValue(host.state.gateway)
   const gatewayUp = gatewayState === 'open'
-  const activeProfile = (useValue(host.state.profile) || 'default').trim() || 'default'
+
+  const turnBusy = useTurnBusy()
+  const workingOwner = focusedRosterOwner(useValue($focusedBotOwner))
+  const activeConnectionId = host.state.connectionId?.get?.() || 'local'
   const [createOpen, setCreateOpen] = useState(false)
   const [groupCreateOpen, setGroupCreateOpen] = useState(false)
   const [editing, setEditing] = useState<null | RosterRow>(null)
@@ -343,7 +348,7 @@ export function BotsPane() {
   // and the persisted connection registry hydrate. Keep that transition in a
   // neutral loading state instead of flashing the first-run "No bots" copy.
   const initialRosterLoading = !data && !error && roster.length === 0
-  const activeRosterKeys = new Set(activeBots(roster, activeProfile, gatewayState).map(botRosterKey))
+  const activeRosterKeys = new Set(activeBots(roster, workingOwner, turnBusy, Date.now(), activeConnectionId).map(botRosterKey))
   const gatewayOptions = rosterGatewayOptions(sourceSnapshot, roster)
   const selectedGateway = gatewayOptions.find(option => option.connectionId === gatewayFilter)
   const gatewayFilterExists = gatewayFilter === 'all' || Boolean(selectedGateway)

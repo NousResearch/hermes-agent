@@ -286,7 +286,7 @@ export type AvatarShape = 'circle' | 'cloud' | 'drop' | 'hexagon' | 'pill' | 'sq
 export type BlobKind =
   'boxy' | 'capsule' | 'cloud' | 'droplet' | 'hexagon' | 'nub' | 'organic' | 'round' | 'sun' | 'triangle'
 
-export type FaceMood = 'idle' | 'work'
+export type FaceMood = 'idle' | 'think' | 'work'
 
 export interface AvatarAppearance {
   /** `null` when nothing is picked — the name's deterministic hue stands in.

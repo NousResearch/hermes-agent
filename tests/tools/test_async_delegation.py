@@ -1126,3 +1126,229 @@ print(json.dumps(q.get_nowait(), sort_keys=True))
     assert by_index[1]["status"] == "unknown"
     assert "1/2 child results were recorded" in evt["error"]
     assert "done: fast member" in format_process_notification(evt)
+
+
+
+# ---------------------------------------------------------------------------
+# Durable delivery state machine: claim / release / defer / drop / complete
+# ---------------------------------------------------------------------------
+# The existing E2E (test_real_process_restart_restores_owned_completion_once)
+# only confirms `mark_completion_delivered` returns True for one pending row.
+# The claim/release/defer/drop/complete transitions — the multi-consumer
+# coordination path where a bug silently loses a result or deadlocks delivery —
+# had no direct unit coverage. These pin each guard so a refactor that drops one
+# (e.g. removing the claim-mismatch check, or the attempt-exhaustion drop)
+# fails fast at the unit level instead of only via a flaky multi-process E2E.
+
+def _seed_durable_row(monkeypatch, tmp_path, delegation_id="deleg_t1", *,
+                      delivery_state="pending", delivery_claim=None,
+                      delivery_attempts=0, delivery_claimed_at=None,
+                      state="completed", event_json=None, result_json=None):
+    """Seed one durable async_delegations row in an isolated HERMES_HOME."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    conn = ad._connect()
+    try:
+        conn.execute(
+            """INSERT INTO async_delegations
+               (delegation_id, origin_session, origin_ui_session_id, parent_session_id,
+                state, dispatched_at, completed_at, updated_at,
+                delivery_state, delivery_attempts, delivery_claim, delivery_claimed_at,
+                event_json, result_json, owner_pid, owner_started_at, task_json, origin_session_id)
+               VALUES (?, '', '', NULL, ?, 1000.0, 2000.0, 2000.0, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, '')""",
+            (delegation_id, state, delivery_state, delivery_attempts,
+             delivery_claim, delivery_claimed_at, event_json, result_json))
+        conn.commit()
+    finally:
+        conn.close()
+    return delegation_id
+
+
+def test_claim_returns_true_for_legacy_missing_row(tmp_path, monkeypatch):
+    """A durable event created before durable dispatch (no ledger row) is treated
+    as a legacy event: claim succeeds vacuously so its delivery is not blocked."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert ad.claim_completion_delivery("deleg_no_such_row", "c1") is True
+
+
+def test_claim_pending_row_sets_claim_and_increments_attempts(tmp_path, monkeypatch):
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="pending")
+    assert ad.claim_completion_delivery(did, "claim-A") is True
+    row = ad.get_durable_delegation(did)
+    assert row["delivery_state"] == "pending"
+    assert row["delivery_attempts"] == 1
+
+
+def test_claim_already_delivered_row_returns_false(tmp_path, monkeypatch):
+    """A delivered completion cannot be re-claimed (idempotency guard)."""
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="delivered")
+    assert ad.claim_completion_delivery(did, "claim-A") is False
+    assert ad.get_durable_delegation(did)["delivery_attempts"] == 0
+
+
+def test_claim_dropped_row_returns_false(tmp_path, monkeypatch):
+    """A terminally-dropped completion is not claimable (no replay)."""
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="dropped")
+    assert ad.claim_completion_delivery(did, "claim-A") is False
+
+
+def test_claim_steals_stale_claim_after_lease_window(tmp_path, monkeypatch):
+    """A claim older than the 300s lease window is abandoned and can be stolen by
+    another consumer, so a crashed claimer does not pin the completion forever."""
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="pending",
+                            delivery_claim="claim-A", delivery_claimed_at=1000.0)
+    assert ad.claim_completion_delivery(did, "claim-B") is True
+    row = ad.get_durable_delegation(did)
+    assert row["delivery_attempts"] == 1
+
+
+def test_claim_does_not_steal_fresh_claim(tmp_path, monkeypatch):
+    """A claim within the 300s lease window cannot be stolen by another consumer."""
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="pending",
+                            delivery_claim="claim-A", delivery_claimed_at=time.time())
+    assert ad.claim_completion_delivery(did, "claim-B") is False
+
+
+def test_release_matching_claim_clears_it(tmp_path, monkeypatch):
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="pending",
+                            delivery_claim="claim-A", delivery_attempts=1)
+    assert ad.release_completion_delivery(did, "claim-A") is True
+    row = ad.get_durable_delegation(did)
+    assert row["delivery_state"] == "pending"
+    assert row["delivery_attempts"] == 1
+
+
+def test_release_claim_mismatch_returns_false(tmp_path, monkeypatch):
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="pending",
+                            delivery_claim="claim-A", delivery_attempts=1)
+    assert ad.release_completion_delivery(did, "claim-OTHER") is False
+    # get_durable_delegation omits the internal delivery_claim field; read it
+    # directly to confirm the mismatched release did not clear the existing claim.
+    conn = ad._connect()
+    try:
+        row = conn.execute(
+            "SELECT delivery_claim, delivery_state FROM async_delegations WHERE delegation_id=?",
+            (did,)).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "claim-A"
+    assert row[1] == "pending"
+
+
+def test_release_exhausted_attempts_terminally_drops(tmp_path, monkeypatch):
+    """Once attempts reach _MAX_DELIVERY_ATTEMPTS, release converges to terminal
+    'dropped' so an unroutable row stops replaying forever."""
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="pending",
+                            delivery_claim="claim-A", delivery_attempts=ad._MAX_DELIVERY_ATTEMPTS)
+    assert ad.release_completion_delivery(did, "claim-A") is True
+    assert ad.get_durable_delegation(did)["delivery_state"] == "dropped"
+
+
+def test_defer_matching_claim_decrements_attempt(tmp_path, monkeypatch):
+    """defer returns the claim to pending WITHOUT spending an attempt (reverses the
+    claim-time increment), so a transiently-unadmitted completion is not penalised."""
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="pending",
+                            delivery_claim="claim-A", delivery_attempts=2)
+    assert ad.defer_completion_delivery(did, "claim-A") is True
+    assert ad.get_durable_delegation(did)["delivery_attempts"] == 1
+
+
+def test_defer_attempt_floors_at_zero(tmp_path, monkeypatch):
+    """decrement never goes negative."""
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="pending",
+                            delivery_claim="claim-A", delivery_attempts=0)
+    assert ad.defer_completion_delivery(did, "claim-A") is True
+    assert ad.get_durable_delegation(did)["delivery_attempts"] == 0
+
+
+def test_drop_matching_claim_terminally_drops(tmp_path, monkeypatch):
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="pending",
+                            delivery_claim="claim-A", delivery_attempts=3)
+    assert ad.drop_completion_delivery(did, "claim-A") is True
+    assert ad.get_durable_delegation(did)["delivery_state"] == "dropped"
+
+
+def test_complete_matching_claim_marks_delivered(tmp_path, monkeypatch):
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="pending",
+                            delivery_claim="claim-A", delivery_attempts=1)
+    assert ad.complete_completion_delivery(did, "claim-A") is True
+    assert ad.get_durable_delegation(did)["delivery_state"] == "delivered"
+
+
+def test_complete_claim_mismatch_returns_false(tmp_path, monkeypatch):
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="pending",
+                            delivery_claim="claim-A", delivery_attempts=1)
+    assert ad.complete_completion_delivery(did, "claim-OTHER") is False
+    assert ad.get_durable_delegation(did)["delivery_state"] == "pending"
+
+
+def test_mark_delivered_pending_returns_true(tmp_path, monkeypatch):
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="pending")
+    assert ad.mark_completion_delivered(did) is True
+    assert ad.get_durable_delegation(did)["delivery_state"] == "delivered"
+
+
+def test_mark_delivered_already_delivered_returns_false(tmp_path, monkeypatch):
+    """The guard prevents double-ack (idempotency)."""
+    did = _seed_durable_row(monkeypatch, tmp_path, delivery_state="delivered")
+    assert ad.mark_completion_delivered(did) is False
+
+
+def test_mark_delivered_unknown_id_returns_false(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert ad.mark_completion_delivered("deleg_does_not_exist") is False
+
+
+def test_is_interim_delegation_event_only_for_task_failure_notice():
+    assert ad.is_interim_delegation_event({"type": "async_delegation", "task_failure_notice": True}) is True
+    assert ad.is_interim_delegation_event({"type": "async_delegation"}) is False
+    assert ad.is_interim_delegation_event({"type": "other"}) is False
+    assert ad.is_interim_delegation_event({}) is False
+
+
+def test_claim_event_delivery_interim_returns_empty_token(tmp_path, monkeypatch):
+    """An interim task-failure notice must never claim the durable completion row."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    evt = {"type": "async_delegation", "task_failure_notice": True, "delegation_id": "deleg_x"}
+    assert ad.claim_event_delivery(evt, "consumer-1") == ""
+
+
+def test_claim_event_delivery_non_async_returns_empty_token():
+    evt = {"type": "other", "delegation_id": "deleg_x"}
+    assert ad.claim_event_delivery(evt, "consumer-1") == ""
+
+
+def test_claim_event_delivery_durable_returns_claim_or_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _seed_durable_row(monkeypatch, tmp_path, delegation_id="deleg_d", delivery_state="pending")
+    evt = {"type": "async_delegation", "delegation_id": "deleg_d"}
+    token = ad.claim_event_delivery(evt, "consumer-1")
+    assert token is not None and token.startswith("consumer-1:")
+    # a second claim on the now-claimed (fresh) row fails
+    assert ad.claim_event_delivery(evt, "consumer-2") is None
+
+
+def test_complete_event_delivery_noop_without_claim_id():
+    """A non-durable event (no claim token) must not touch the ledger."""
+    ad.complete_event_delivery({"type": "async_delegation", "delegation_id": "deleg_x"}, "")
+
+
+def test_release_event_delivery_noop_without_claim_id():
+    ad.release_event_delivery({"type": "async_delegation", "delegation_id": "deleg_x"}, "")
+
+
+def test_get_durable_delegation_unknown_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert ad.get_durable_delegation("deleg_no_such") is None
+
+
+def test_get_durable_delegation_present_returns_fields(tmp_path, monkeypatch):
+    did = _seed_durable_row(monkeypatch, tmp_path, delegation_id="deleg_g",
+                            delivery_state="pending", delivery_attempts=2,
+                            state="completed", result_json='{"status":"completed"}')
+    row = ad.get_durable_delegation(did)
+    assert row is not None
+    assert row["delegation_id"] == did
+    assert row["delivery_state"] == "pending"
+    assert row["delivery_attempts"] == 2
+    assert row["state"] == "completed"
+    assert row["result"] == {"status": "completed"}

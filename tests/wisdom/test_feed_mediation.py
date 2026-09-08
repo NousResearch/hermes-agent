@@ -382,6 +382,43 @@ def test_completed_install_retires_arrival_before_any_model_call(
     instance.service.version_detail.assert_not_called()
 
 
+@pytest.mark.parametrize("category", ["new_skill", "update_available"])
+def test_own_publication_skips_assessment_but_preserves_activity(mediation, category):
+    instance, actor, *_ = mediation
+    enqueue(instance, category)
+    instance.service.version_detail.return_value["version"]["published_by_user_id"] = "owner"
+    assessor = Mock(side_effect=AssertionError("must not assess our own publication"))
+    assert instance.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+    assessor.assert_not_called()
+    assert instance.queue.assessments("org")[0]["state"] == "retired"
+    assert instance.service.notifications(mark_seen=False)["events"] == [event(category)]
+    instance.ingest()
+    assert instance.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+    assert len(instance.queue.assessments("org")) == 1
+
+
+@pytest.mark.parametrize("category", ["new_skill", "update_available"])
+def test_own_publication_already_assessed_is_not_delivered(mediation, category):
+    instance, _, *_ = mediation
+    enqueue(instance, category)
+    item = ready(instance)
+    instance.service.version_detail.return_value["version"]["published_by_user_id"] = "owner"
+    assert instance.begin_delivery("org", [item]) == []
+    assert instance.queue.assessments("org")[0]["state"] == "retired"
+
+
+@pytest.mark.parametrize("category", ["new_skill", "update_available"])
+def test_teammate_version_stays_eligible_when_recipient_created_skill(mediation, category):
+    instance, _, *_ = mediation
+    enqueue(instance, category)
+    item = ready(instance)
+    detail = instance.service.version_detail.return_value
+    detail["skill"]["created_by_user_id"] = "owner"
+    detail["version"]["published_by_user_id"] = "teammate"
+    assert instance._current_feed_jobs("org", [item["assessment"]]) == [item["assessment"]]
+    assert instance.queue.assessments("org")[0]["state"] == "ready"
+
+
 def test_stale_owner_cannot_retire_reclaimed_arrival(mediation):
     instance, _, now, register = mediation
     enqueue(instance)

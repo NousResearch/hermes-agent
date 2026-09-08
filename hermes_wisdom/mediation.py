@@ -435,6 +435,13 @@ class WisdomMediation:
                     self.queue.retire(org, job)
                     continue
                 job["arrival_facts"] = self._skill_facts(job)
+                publisher = job["arrival_facts"]["version"].get("published_by_user_id")
+                owner = self.service.client.identity.get("owner")
+                # Exclude only this version's publisher, not the original
+                # creator: another teammate may publish a useful later update.
+                if owner and publisher == owner:
+                    self.queue.retire(org, job)
+                    continue
             except WisdomNotFound:
                 self.queue.retire(org, job)
                 continue

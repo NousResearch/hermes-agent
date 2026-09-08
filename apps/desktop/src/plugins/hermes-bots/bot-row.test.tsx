@@ -19,7 +19,7 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { BotRow } from './bot-row'
+import { BotRow, groupAttentionRoomVisible, groupMainVisibilityAtom, showGroupAttentionMarker } from './bot-row'
 import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
 
@@ -140,6 +140,28 @@ describe('the menu opens the same forever-chat a row click does', () => {
     fireEvent.click(await screen.findByText('Open Bot Chat'))
 
     expect(openRosterBot.mock.calls).toEqual([[bot]])
+  })
+})
+
+describe('Group Chat attention', () => {
+  it('shows unresolved attention only while the room is elsewhere', () => {
+    expect(showGroupAttentionMarker(true, false)).toBe(true)
+    expect(showGroupAttentionMarker(true, true)).toBe(false)
+    expect(showGroupAttentionMarker(false, false)).toBe(false)
+
+    expect(groupAttentionRoomVisible(true, false, false)).toBe(true)
+    expect(groupAttentionRoomVisible(false, true, true)).toBe(true)
+    expect(groupAttentionRoomVisible(false, true, false)).toBe(false)
+  })
+
+  it('fails closed when a shell cannot report main-pane visibility', () => {
+    expect(groupMainVisibilityAtom('Planning', null).get()).toBe(false)
+    expect(
+      groupMainVisibilityAtom('Planning', () => {
+        throw new Error('unsupported pane id')
+      }).get()
+    ).toBe(false)
+    expect(groupMainVisibilityAtom('Planning', (() => ({})) as never).get()).toBe(false)
   })
 })
 

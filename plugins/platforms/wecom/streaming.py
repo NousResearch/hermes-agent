@@ -132,6 +132,13 @@ class ReplyQueue:
         # Latest cumulative intermediate body buffered while an ack is pending (None = nothing waiting).
         self.coalesced_body: Optional[Dict[str, Any]] = None
         self.coalesce_count: int = 0  # frames folded into the current buffer (diagnostics)
+        # Finalizing fence (PR #96942 Part B). Set True the instant a final frame begins finalization
+        # (before its drain) and reset when it completes. While True, NO coalesced successor may be
+        # published into the ack slot — neither the skip_if_pending coalesce branch nor the ACK-triggered
+        # _flush_coalesced. WeCom acks carry only req_id (no per-frame id), so a successor sliding into the
+        # slot mid-finalization would let a later ACK for that successor certify the FINAL frame (stale ack
+        # misattribution). The final frame owns the slot once finalization starts.
+        self.finalizing: bool = False
 
 
 class StreamTurn:
@@ -211,41 +218,79 @@ class WeComStreamMixin:
         normalized = self._require_reply_req_id(reply_req_id)
         queue = self._reply_queues.setdefault(normalized, ReplyQueue(normalized))
         if skip_if_pending and queue.pending_ack is not None:
+            if queue.finalizing:
+                # Finalizing fence (PR #96942 Part B): a final frame owns the ack slot. Publishing a
+                # coalesced successor now would let its later ACK certify the final frame (stale ack
+                # misattribution). Drop it — the final frame carries the last word.
+                logger.debug("[%s] _send_reply_queued: coalesce suppressed — finalizing fence up (req_id=%s)", self.name, normalized)
+                return {"skipped": True, "errcode": 0, "errmsg": "coalesce_suppressed_finalizing"}
             # One frame in flight already — coalesce (buffer the latest cumulative snapshot). When the
             # pending ack resolves, _resolve_reply_ack flushes this so the newest content still reaches the
             # wire; dropping it here would freeze the bubble until an unrelated later frame.
             queue.coalesced_body = body
             queue.coalesce_count += 1
             return {"skipped": True, "errcode": 0, "errmsg": "coalesced"}
-        if is_final and queue.pending_ack is not None:
-            await self._drain_pending_ack(queue, normalized)
-        future: asyncio.Future = asyncio.get_running_loop().create_future()
-        frame = ReplyFrame(body=body, future=future, is_final=is_final, sent_at=time.monotonic())
-        # Register BEFORE sending so a mid-send ack routes; re-attach `queue` because the drain
-        # above may have let the intermediate ack pop it out of _reply_queues (orphan → timeout).
-        self._reply_queues[normalized] = queue
-        queue.pending_ack = frame
         logger.debug(
             "[%s] _send_reply_queued: req_id=%s is_final=%s skip_if_pending=%s stream_id=%s finish=%s content_len=%d", self.name, normalized, is_final, skip_if_pending, *_stream_desc(body), len(_stream_of(body).get("content", "") or ""),
         )
+        if not is_final:
+            await self._dispatch_reply_frame(queue, normalized, body, is_final=False)
+            return {"errcode": 0, "errmsg": "sent_nonblocking"}  # fire-and-forget; pending_ack stays registered
+        # ── FINAL frame ─────────────────────────────────────────────────────
+        # Raise the fence BEFORE the drain so no coalesced successor (from the skip branch or the
+        # ACK-triggered _flush_coalesced scheduled while draining) can occupy the slot once we start.
+        queue.finalizing = True
         try:
-            await self._send_json({"cmd": APP_CMD_RESPONSE, "headers": {"req_id": normalized}, "body": body})
+            if queue.pending_ack is not None:
+                await self._drain_pending_ack(queue, normalized)
+            # Attempt 1: send the final frame and await its ack.
+            frame = await self._dispatch_reply_frame(queue, normalized, body, is_final=True)
+            try:
+                return await asyncio.wait_for(frame.future, timeout=self._REPLY_ACK_TIMEOUT)
+            except asyncio.TimeoutError:
+                # Bytes went out, ack is late. Do NOT assume delivery (that can silently lose the final
+                # answer). Re-send the IDENTICAL final frame once — same stream_id + same content is
+                # cumulative and re-ACKed within the 10-min window (verified by live WS probe): no duplicate
+                # bubble, no errcode 6000.
+                logger.warning("[%s] Final frame ack timeout (req_id=%s) — re-sending the identical final frame once (cumulative; no duplicate bubble).", self.name, normalized)
+            finally:
+                self._release_pending(queue, normalized, frame)
+            # Attempt 2 (re-send). A transport raise here surfaces (real disconnect → consumer fallback);
+            # the ack payload is returned as-is so an 846608/846604 expiry is mapped to
+            # WeComStreamExpiredError by _send_stream_reply exactly like a first-attempt expiry.
+            frame = await self._dispatch_reply_frame(queue, normalized, body, is_final=True)
+            try:
+                return await asyncio.wait_for(frame.future, timeout=self._REPLY_ACK_TIMEOUT)
+            except asyncio.TimeoutError:
+                # Both attempts (~30s total) timed out — delivery is genuinely indeterminate. Degrade to the
+                # poison signal the consumer chain understands (sets _final_response_sent, NOT
+                # _final_content_delivered): no false finalize, no assume-delivered.
+                logger.warning("[%s] Final frame ack timeout after re-send (req_id=%s) — settlement indeterminate (delivery unconfirmed).", self.name, normalized)
+                return {"errcode": 0, "errmsg": "settlement_indeterminate", "ack_pending": True}
+            finally:
+                self._release_pending(queue, normalized, frame)
+        finally:
+            queue.finalizing = False
+
+    async def _dispatch_reply_frame(self, queue: ReplyQueue, req_id: str, body: Dict[str, Any], *, is_final: bool) -> ReplyFrame:
+        """Create the ack future, register it as the in-flight pending ack, and put the frame on the wire.
+
+        Registering BEFORE sending means a mid-send ack routes; re-attaching ``queue`` covers the case where
+        a prior drain let an intermediate ack pop it out of ``_reply_queues`` (orphan → timeout). On a
+        transport raise the pending slot is released and the (un-awaited) future cancelled before the
+        exception propagates, so it never logs "exception never retrieved"."""
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        frame = ReplyFrame(body=body, future=future, is_final=is_final, sent_at=time.monotonic())
+        self._reply_queues[req_id] = queue
+        queue.pending_ack = frame
+        try:
+            await self._send_json({"cmd": APP_CMD_RESPONSE, "headers": {"req_id": req_id}, "body": body})
         except Exception:
-            # Nobody awaits the future here — cancel it rather than log "exception never retrieved".
-            self._release_pending(queue, normalized, frame)
+            self._release_pending(queue, req_id, frame)
             if not future.done():
                 future.cancel()
             raise
-        if not is_final:  # fire-and-forget; pending_ack stays registered so later frames can skip
-            return {"errcode": 0, "errmsg": "sent_nonblocking"}
-        try:
-            return await asyncio.wait_for(future, timeout=self._REPLY_ACK_TIMEOUT)
-        except asyncio.TimeoutError:
-            # Bytes went out, ack is late — WeCom already rendered it; raising caused duplicates.
-            logger.warning("[%s] Final frame ack timeout (req_id=%s) — treating as delivered (matches official wecom-openclaw-plugin behaviour). No fallback send.", self.name, normalized)
-            return {"errcode": 0, "errmsg": "ack_timeout_assumed_delivered", "ack_pending": True}
-        finally:
-            self._release_pending(queue, normalized, frame)
+        return frame
 
     async def _drain_pending_ack(self, queue: ReplyQueue, req_id: str) -> None:
         """Before a final frame: wait (bounded) for the pending intermediate's ack, then clear it."""
@@ -305,6 +350,12 @@ class WeComStreamMixin:
         cumulative snapshot the next delta (or the finalize) supersedes."""
         queue = self._reply_queues.get(req_id)
         if queue is None or queue.coalesced_body is None or queue.pending_ack is not None:
+            return
+        if queue.finalizing:
+            # Finalizing fence (PR #96942 Part B): the final frame owns the slot. Do not republish a
+            # successor here — an ACK-triggered flush racing after the drain cleared the slot would let a
+            # later ACK for this successor certify the final frame (stale ack misattribution).
+            logger.debug("[%s] _flush_coalesced: suppressed — finalizing fence up (req_id=%s)", self.name, req_id)
             return
         body, queue.coalesced_body, queue.coalesce_count = queue.coalesced_body, None, 0
         future: asyncio.Future = asyncio.get_running_loop().create_future()

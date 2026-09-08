@@ -620,6 +620,28 @@ def _model_flow_copilot_acp(config, current_model=""):
                   base_url=effective_base, api_mode="chat_completions")
 
 
+def _model_flow_external_process(config, provider_id, current_model=""):
+    """Pick from a process profile without asking Hermes to own its CLI login."""
+    from hermes_cli.auth import AuthError, resolve_external_process_provider_credentials
+    from hermes_cli.models import provider_model_ids
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(provider_id)
+    if profile is None:
+        raise ValueError(f"Unknown process provider: {provider_id}")
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except AuthError as exc:
+        _say(f"  ⚠ {exc}")
+        return
+    _say(f"  {profile.display_name} uses its CLI's login; authenticate there first.")
+    selected = _pick_model_or_prompt(
+        provider_model_ids(provider_id), "Model name: ", current_model=current_model,
+        confirm_provider=provider_id, confirm_base_url=creds["base_url"])
+    _finish_model(selected, provider_id, f"Default model set to: {selected} (via {profile.display_name})",
+                  base_url=creds["base_url"], api_mode=profile.api_mode)
+
+
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection; the endpoint is chosen by key prefix (no URL prompt):
     ``sk-kimi-*`` → api.kimi.com/coding/v1 (Kimi Coding Plan), other keys → Moonshot."""

@@ -1453,6 +1453,10 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     from providers import get_provider_profile
 
     profile = get_provider_profile(normalized)
+    if profile and profile.auth_type == "external_process":
+        # Process providers have no HTTP /models endpoint. Keep their own aliases
+        # and model IDs rather than borrowing another provider's Claude catalog.
+        return list(profile.fallback_models) or None
     if not (profile and profile.auth_type == "api_key" and profile.base_url):
         return None
     api_key, base_url = _api_key_credentials(normalized)

@@ -376,6 +376,22 @@ def local_delivery_command(profile: str, query_file: str) -> list[str]:
     return [_hermes_cli(), "-p", profile, *BOT_CHAT_TURN_ARGS, "--query-file", query_file]
 
 
+class DeliveryAuthor:
+    """A relayed turn's author as an in-process object. A JSON client cannot build one, so
+    ``prompt.submit`` trusts it the way it trusts a hosted-room callback."""
+
+    __slots__ = ("author",)
+
+    def __init__(self, author: dict) -> None:
+        self.author = dict(author)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, DeliveryAuthor) and other.author == self.author
+
+    def __repr__(self) -> str:
+        return f"DeliveryAuthor({self.author!r})"
+
+
 def delivery_turn_author(from_profile: Any, from_handle: Any) -> Optional[dict]:
     """The author of a relayed DM's recipient turn, built from the envelope's sender fields.
     None when the envelope names no sender, so an unattributed delivery stays unattributed."""

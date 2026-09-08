@@ -94,10 +94,16 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
             if isinstance(record, dict) and (record.get("profile_home") or None) == want_home
             and _session_live_title(
                 record, _session_lookup_key(record, fallback=live_sid)) == BOT_CHAT_TITLE), "")
+        # The Desktop forwards the envelope's sender. The author labels memory only and grants nothing.
+        from tools.bot_relay import DeliveryAuthor, delivery_env, delivery_turn_author
+        author = delivery_turn_author(params.get("from_profile"), params.get("from_handle"))
         if live_sid:
             # queued=True: a teammate's DM runs as the NEXT turn and never interrupts or steers a
             # turn in flight (the default busy mode does); arrivals queue in order.
-            submitted = _methods["prompt.submit"](rid, {"session_id": live_sid, "text": message, "queued": True})
+            submit_params: dict = {"session_id": live_sid, "text": message, "queued": True}
+            if author:
+                submit_params["_turn_author"] = DeliveryAuthor(author)
+            submitted = _methods["prompt.submit"](rid, submit_params)
             if "error" in submitted:
                 return submitted
             reply = f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."
@@ -106,9 +112,7 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
         def _detail(p) -> str:
             return (p.stderr or p.stdout or "").strip()[-500:]
 
-        # The Desktop forwards the envelope's sender. The author labels memory only and grants nothing.
-        from tools.bot_relay import delivery_env, delivery_turn_author
-        turn_env = delivery_env(delivery_turn_author(params.get("from_profile"), params.get("from_handle")))
+        turn_env = delivery_env(author)
 
         fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
         try:

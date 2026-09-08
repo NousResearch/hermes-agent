@@ -121,7 +121,7 @@ def _write(path: Path, record: dict[str, Any]) -> None:
 
 def deliver_to_live_owner(
     profile_home: Path | str, owner: dict[str, Any], message: str,
-    *, delivery_id: str | None = None,
+    *, delivery_id: str | None = None, author: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return durable admission immediately, without waiting for the owner.
 
@@ -136,7 +136,7 @@ def deliver_to_live_owner(
         path = root / f"{key}.json"
         existing = _read(path)
         if existing is not None:
-            if existing["owner"] != pinned or existing["message"] != message:
+            if existing["owner"] != pinned or existing["message"] != message or existing.get("author") != author:
                 raise ValueError("delivery id already belongs to a different payload")
             return existing
         # Wall time can roll back. Permanent receipts retain the admission
@@ -146,7 +146,7 @@ def deliver_to_live_owner(
                         if (record := _read(candidate)) is not None), default=0) + 1
         record = dict(delivery_id=key, id=key, owner=pinned, **pinned,
                       message=message, status="queued", created_at=time.time_ns(),
-                      sequence=sequence)
+                      sequence=sequence, **({"author": dict(author)} if author else {}))
         _write(path, record)
         return record
 

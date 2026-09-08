@@ -402,7 +402,7 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
     return proc.returncode
 
 
-def _admit_live_dm(profile_home: Path | None, dm_file: str) -> dict | None:
+def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
     """Pin intent before admission; retries may inspect, never change transport."""
     from tools.bot_live_delivery import (
         _fsync_dir, deliver_to_live_owner, find_canonical_live_owner, read_delivery_result,
@@ -418,7 +418,8 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str) -> dict | None:
         if owner is None:
             return None
         intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8"),
-                      delivery_id=hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest())
+                      delivery_id=hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest(),
+                      **({"author": author} if author else {}))
         try:
             fd = os.open(intent_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
@@ -433,7 +434,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str) -> dict | None:
     record = read_delivery_result(home, intent["delivery_id"])
     if record is None:
         record = deliver_to_live_owner(home, intent["owner"], intent["message"],
-                                       delivery_id=intent["delivery_id"])
+                                       delivery_id=intent["delivery_id"], author=intent.get("author"))
     return record
 
 
@@ -470,8 +471,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
     retain their intent/payload and immutable receipt; only CLI/peer payloads are
     removed after consumption. The CLI turn window holds the profile lock, so two
     deliveries into one profile queue; a bounded wait ends in a 'target_busy' refusal.
-    ``author`` rides to the child as HERMES_TURN_AUTHOR: the local turn reads it directly and
-    ``hermes peer dm`` forwards it in the request body.
+    ``author`` rides to the child as HERMES_TURN_AUTHOR; ``hermes peer dm`` forwards it in the request body.
 
     Local (query-file) turns get one policy-gated retry (#93091 item 5): transient failures re-run the same
     session; a context_overflow re-run lets the retried turn's pre-API compaction pass compact the Bot Chat
@@ -484,7 +484,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
         home = profile_home or _local_delivery_home(argv)
         if home is not None or Path(dm_file + ".live.json").exists():
             try:
-                record = _admit_live_dm(home, dm_file)
+                record = _admit_live_dm(home, dm_file, author)
             except Exception as exc:
                 print(json.dumps({"status": "ambiguous", "delivery_id": hashlib.sha256(
                     str(Path(dm_file).resolve()).encode()).hexdigest(),
@@ -534,7 +534,7 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
     dm_file = _write_dm_file(content)
     if profile_home is not None:
         try:
-            record = _admit_live_dm(profile_home, dm_file)
+            record = _admit_live_dm(profile_home, dm_file, author)
         except Exception as exc:
             return json.dumps({"status": "ambiguous", "delivery_id": hashlib.sha256(
                 str(Path(dm_file).resolve()).encode()).hexdigest(),
@@ -598,8 +598,7 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
 
 
 def _delivery_main(args: list[str]) -> int:
-    """Runner entry: ``--run-delivery [--author <json>] <mode> <dm_file> [--profile-home <path>] <argv...>``.
-    Malformed argv exits 2 without touching the DM file; only ``_delivery_command`` builds this argv."""
+    """Runner entry for the argv ``_delivery_command`` builds. Malformed argv exits 2 without touching the DM file."""
     if not args or args[0] != "--run-delivery":
         return 2
     rest, author = args[1:], None

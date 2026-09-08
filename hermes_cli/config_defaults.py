@@ -1812,6 +1812,9 @@ DEFAULT_CONFIG = {
             # Range 200..60000.
             "listing_max_tokens": 4000,
         },
+        # Remote connector discovery/lifecycle. Free-tier identities do not need
+        # a subscription preflight; the gateway enforces their actual grant.
+        "connectors": {"enabled": True},
     },
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING
@@ -2506,6 +2509,14 @@ OPTIONAL_ENV_VARS = {
         "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
         "Firecrawl gateway URL (leave empty to derive from domain)", None, password=False,
         advanced=True),
+    "TOOL_GATEWAY_URL": _tool(
+        "Exact shared tool-gateway origin for on-origin vendors and media uploads (optional)",
+        "Shared tool-gateway URL (leave empty to derive from domain)", None,
+        password=False, advanced=True),
+    "CONNECTOR_GATEWAY_URL": _tool(
+        "Exact connector-gateway origin for the connectors API (optional)",
+        "Connector-gateway URL (leave empty to derive from domain)", None,
+        password=False, advanced=True),
     "TOOL_GATEWAY_DOMAIN": _tool(
         "Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor "
         "hosts, e.g. nousresearch.com -> firecrawl-gateway.nousresearch.com",

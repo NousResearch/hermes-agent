@@ -75,6 +75,15 @@ _PROCESS_KILL_BLOCK = [
 # Targeted process commands that must stay runnable: the floor has no approval
 # path, so a false positive here bans the command outright.
 _PROCESS_KILL_ALLOW = [
+    # Multi-line scripts. A newline is a command separator (see `_CMDPOS`), so a `-1` on a LATER
+    # line is that line's flag, never this `kill`'s operand. Nothing here is approvable — the floor
+    # has no approval path — so matching one of these bans an ordinary script outright.
+    "kill 4242\nls -1",
+    "kill 1234\ngit log -1",
+    "kill -0 $PID\nhead -1 /tmp/state",
+    "pkill -f worker\nkill 4242\nhead -1 out.txt",
+    "kill $(cat app.pid)\nsleep 2\ntail -1 /var/log/app.log",
+    "kill 4242\ncut -d: -f1 /etc/passwd\nuniq -c -1",
     # SIGHUP-to-a-pid reload idiom — signal 1 is HUP, the same thing `-HUP` spells.
     "kill -1 1234",
     "kill -1 $(cat /var/run/nginx.pid)",
@@ -162,3 +171,29 @@ def test_dangerous_tier_also_flags_renamed_fork_bomb():
         is_dangerous, _, desc = detect_dangerous_command(cmd)
         assert is_dangerous, f"fork bomb not flagged on the dangerous tier: {cmd!r}"
         assert desc == "fork bomb"
+
+
+# The floor is scanned synchronously by `_floor_block` before every terminal command, and
+# `_MAX_DETECTION_COMMAND_CHARS` (128_000) is the budget that keeps that bounded. A pattern that
+# backtracks quadratically turns the budget into a stall: measured, a bare `(?<!\w)` in front of a
+# NAME group that accepts `.` and `-` cost 1697 ms at 8 KB and over seven minutes at the limit,
+# and a `\s+` token run that crosses newlines cost 6344 ms on 28 KB of `kill 1` lines. The bounds
+# below sit ~25x above the healthy timings, so they cannot flake on a slow runner, while the
+# quadratic versions miss them by 3x and more. Sized deliberately: at half this input the
+# broken pattern still finishes inside two seconds and the test would pass while blind.
+@pytest.mark.parametrize("command,budget_s", [
+    ("echo hi\ncurl https://ex.com/" + "a-" * 8000, 2.0),
+    ("echo hi\ncurl https://ex.com/" + "a." * 8000, 2.0),
+    ("kill 1\n" * 4000, 3.0),
+])
+def test_the_floor_scan_stays_linear_on_adversarial_input(command, budget_s):
+    """A hardline pattern may not backtrack quadratically on attacker-shaped text."""
+    import time
+
+    started = time.perf_counter()
+    detect_hardline_command(command)
+    elapsed = time.perf_counter() - started
+    assert elapsed < budget_s, (
+        f"hardline scan took {elapsed:.1f}s on {len(command)} chars (budget {budget_s}s) — "
+        f"a pattern is backtracking; at _MAX_DETECTION_COMMAND_CHARS this is a multi-minute stall"
+    )

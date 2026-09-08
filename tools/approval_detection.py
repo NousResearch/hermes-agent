@@ -91,7 +91,17 @@ _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 # the quote-masked variant like the block-device redirect (_QUOTE_MASKED_HARDLINE_DESCRIPTIONS).
 # Each optional part hangs off a literal, never between two `\s*` runs: an ambiguous whitespace split
 # is what turns a failing match into quadratic backtracking.
-_FORK_BOMB = (r'(?<!\w)(?:function\s+)?(:|[a-z_][a-z0-9_.-]*)\s*(?:\(\s*\)\s*)?'
+# The lookbehind excludes ``.`` and ``-`` as well as word characters, because the NAME group
+# accepts both. With a bare ``(?<!\w)`` every character after a dot or a dash inside a run
+# like ``a-a-a-...`` is a fresh viable start; each start eats the rest of the run and gives it
+# back one character at a time, and the scan goes quadratic. Measured end-to-end through
+# detect_hardline_command on ``"echo hi\ncurl https://ex.com/" + "a-" * n``: 121 / 428 /
+# 1697 ms at n = 1000 / 2000 / 4000 -- 4x per doubling, against a flat 16-38 ms for the rule
+# this replaces. _MAX_DETECTION_COMMAND_CHARS is 128_000, so the budget that exists to bound
+# the scan became a multi-minute synchronous stall in _floor_block, which every terminal
+# command pays. A NAME is a shell identifier, so a dotted or kebab run cannot start one
+# part-way through anyway and nothing matchable is given up.
+_FORK_BOMB = (r'(?<![\w.-])(?:function\s+)?(:|[a-z_][a-z0-9_.-]*)\s*(?:\(\s*\)\s*)?'
               r'\{\s*\1\s*\|\s*\1\s*&\s*(?:;\s*)?\}[^\S\n]*[;\n]\s*\1(?!\w)')
 
 # `-1` (every process) as a kill TARGET. Where it sits decides what it means. As the FIRST token after
@@ -104,7 +114,14 @@ _FORK_BOMB = (r'(?<!\w)(?:function\s+)?(:|[a-z_][a-z0-9_.-]*)\s*(?:\(\s*\)\s*)?'
 # the floor as before. `-1` must be a whole token, so `kill -19 1234` (SIGSTOP) and `kill -- -1234` (a
 # process group) are not read as `-1`. Tokens are whitespace-delimited, so a failing match has one
 # parse per token and cannot backtrack quadratically.
-_KILL_ALL_TARGET = (r'(?:[^\s;&|]+\s+)+-1(?=[\s;&|)`<>#]|$)'
+# The separator between operand tokens is HORIZONTAL whitespace. _CMDPOS treats a newline as a
+# command separator (its own comment says so), so letting ``\s+`` cross one had two costs. It read
+# a ``-1`` on a LATER line as this ``kill``'s operand -- ``kill 4242\nls -1``,
+# ``kill 1234\ngit log -1`` and ``kill -0 $PID\nhead -1 /tmp/state`` are ordinary scripts, and
+# this floor has no approval path, so matching them banned them outright. And it made the run walk
+# the whole remaining input from every start: 505 / 1753 / 6459 ms on ``"kill 1\n" * n`` at
+# n = 1000 / 2000 / 4000, against 154-568 ms for the rule this replaces.
+_KILL_ALL_TARGET = (r'(?:[^\s;&|]+[^\S\n]+)+-1(?=[\s;&|)`<>#]|$)'
                     r'|-1(?=\s*(?:[;&|)`<>#]|$))')
 
 HARDLINE_PATTERNS = [

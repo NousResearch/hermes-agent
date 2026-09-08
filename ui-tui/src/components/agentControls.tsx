@@ -58,6 +58,7 @@ export function AgentSteerForm({
     if (!text.trim() || pending) {
       return
     }
+
     setPending(true)
 
     try {
@@ -107,6 +108,7 @@ export function AgentLiveTail({ gw, sid, id, t }: ControlProps) {
       if (pending) {
         return
       }
+
       pending = true
 
       try {

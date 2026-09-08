@@ -628,6 +628,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const selected = rows[cursor] ?? null
 
   const cols = stdout?.columns ?? 80
+
   const {
     rows: rowsH,
     start: listWindowStart,

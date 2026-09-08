@@ -1627,6 +1627,7 @@ _FALLBACK_REASON_LABELS = {
     FailoverReason.context_overflow: "context window exceeded",
     FailoverReason.payload_too_large: "request payload too large",
     FailoverReason.image_too_large: "image payload too large",
+    FailoverReason.too_many_images: "too many images in one prompt",
     FailoverReason.model_not_found: "model not found",
     FailoverReason.provider_policy_blocked: "provider policy blocked the request",
     FailoverReason.content_policy_blocked: "content policy blocked the request",

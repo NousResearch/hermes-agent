@@ -37,6 +37,9 @@ class FailoverReason(enum.Enum):
     payload_too_large = "payload_too_large"  # 413 — compress payload
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
     image_corrupt = "image_corrupt"       # Provider can't decode image bytes — strip and retry (shrinking won't help)
+    too_many_images = "too_many_images"   # Provider rejects more than N images in one prompt — strip oldest and retry
+
+    # Model / provider policy
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator account data/privacy policy excluded the only endpoint
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — don't retry unchanged
@@ -348,6 +351,7 @@ _V_CONTEXT_OVERFLOW = _v(_R.context_overflow, should_compress=True)
 _V_PAYLOAD_TOO_LARGE = _v(_R.payload_too_large, should_compress=True)
 _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded, _R.server_error, _R.timeout, _R.unknown))
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
+_V_TOO_MANY_IMAGES = _v(_R.too_many_images)
 _V_MULTIMODAL, _V_INVALID_ENCRYPTED = _v(_R.multimodal_tool_content_unsupported), _v(_R.invalid_encrypted_content)
 _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, should_fallback=False)
 # A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording).
@@ -545,6 +549,8 @@ def _by_message(c: _Ctx) -> Optional[Verdict]:
     head = _first_match(c.msg, _MESSAGE_HEAD_RULES)
     if head is not None:
         return head
+    if _is_image_count_limit(c.msg):
+        return _V_TOO_MANY_IMAGES
     usage_limit = any(p in c.msg for p in _USAGE_LIMIT_PATTERNS)
     return _classify_402(c.msg, dict) if usage_limit else _first_match(c.msg, _MESSAGE_TAIL_RULES)
 
@@ -713,6 +719,11 @@ def _classify_400(c: _Ctx) -> Verdict:
             "error=%.200s", c.num_messages, c.approx_tokens, msg,
         )
         return _V_FORMAT_ERROR
+    # Image-count limit from 400 (vLLM's ``--limit-mm-per-prompt``). Checked
+    # before context_overflow so the count-limit 400 is not mis-routed into
+    # the compression loop.
+    if _is_image_count_limit(msg):
+        return _V_TOO_MANY_IMAGES
     verdict = _first_match(msg, _400_TAIL_RULES)
     if verdict is not None:
         return verdict
@@ -788,6 +799,40 @@ def _is_server_injected_param_rejection(error_msg: str, provider: str) -> bool:
 _CODEX_MASKED_REPLAY_MESSAGE = "request blocked."
 
 
+def _is_image_count_limit(error_msg: str) -> bool:
+    """True when a 400 body indicates a per-prompt image *count* limit.
+
+    Distinct from ``_IMAGE_TOO_LARGE_PATTERNS`` (per-image byte/dimension
+    ceiling) and ``_IMAGE_CORRUPT_PATTERNS`` (undecodable bytes): the
+    provider decoded every image fine but rejects the request because it
+    carries more images than its per-prompt limit allows.
+
+    Confirmed local-engine wordings:
+      vLLM:   ``"At most 2 image(s) may be provided in one prompt."``
+      Ollama: contains ``"too many"`` + ``"image"``
+      SGLang: ``"Image count 5 exceeds limit 2 per request."``
+
+    ``error_msg`` is lowercased upstream — match accordingly.  The
+    ``"image"`` gate keeps this from firing on non-image count limits
+    (e.g. a max-tool-calls ceiling that happens to use the same phrasing).
+    """
+    if "image" not in error_msg:
+        return False
+    return any(
+        p in error_msg
+        for p in (
+            "at most",
+            "too many",
+            "no more than",
+            "maximum number",
+            "may be provided in one prompt",
+            "exceeds limit",
+        )
+    )
+
+
+
+
 def _is_codex_masked_replay_rejection(c: "_Ctx") -> bool:
     """HTTP 400 / status-less ``{code: invalid_prompt, message: "Request blocked."}`` from
     ``openai-codex`` — as an SDK error body, a Responses ``error`` SSE frame, or the
@@ -830,6 +875,7 @@ def _build_error_msg(error: Exception, body: Any) -> str:
     (OpenAI SDK's APIStatusError.__str__ omits the body, so it is appended)."""
     raw_msg = str(error).lower()
     body_msg = metadata_msg = ""
+
     if isinstance(body, dict):
         err_obj = _error_obj(body)
         body_msg = str(err_obj.get("message") or "").lower() or str(body.get("message") or "").lower()
@@ -853,6 +899,7 @@ def _body_message_candidates(body: dict) -> Iterator[Any]:
 
 def _from_cause_chain(error: Exception, pick: Callable[[Any], Any], default: Any) -> Any:
     """First non-None ``pick(exc)`` over the error and its __cause__/__context__ chain (max 5 deep)."""
+
     current = error
     for _ in range(5):
         found = pick(current)

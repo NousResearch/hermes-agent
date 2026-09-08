@@ -1262,6 +1262,107 @@ def evict_stale_outbound_tool_images(
     return _retire_stale_tool_result_images(api_messages, keep_newest=keep_newest)
 
 
+def _count_image_parts(content: Any) -> int:
+    """Count image parts in a message's ``content`` value.
+
+    Handles the two shapes that carry images:
+
+    * the native ``{_multimodal: True, content: [...]}`` envelope that
+      ``vision_analyze`` returns;
+    * OpenAI/Anthropic-style content-part lists (user uploads, tool
+      results, assistant echoes).
+
+    String content (and anything else) counts as ``0``.
+    """
+    if isinstance(content, dict) and content.get("_multimodal"):
+        content = content.get("content")
+    if not isinstance(content, list):
+        return 0
+    return sum(1 for p in content if _is_image_part(p))
+
+
+def strip_images_to_count_limit(
+    api_messages: List[Dict[str, Any]],
+    max_images: Optional[int],
+) -> int:
+    """Strip image parts to bring the total under ``max_images``.
+
+    Protects the last message when it is a user message carrying images
+    (the user's most recent intent). Strips oldest-first from all other
+    messages. When ``max_images`` is ``None`` the ``_MAX_KEEP_TOOL_IMAGES``
+    constant is used as the target.
+
+    Returns the number of image parts removed, or ``0`` when nothing could
+    be stripped — either no images are present, or the protected message
+    alone already meets/exceeds the target (in which case stripping the
+    rest cannot get under the limit and the caller should surface the
+    original error).
+
+    Mutates ``api_messages`` in place — this is a send-path rewrite; the
+    persisted history is untouched.
+    """
+    if not api_messages:
+        return 0
+    target = _MAX_KEEP_TOOL_IMAGES if max_images is None else max_images
+    if target < 0:
+        target = 0
+
+    total = sum(
+        _count_image_parts(m.get("content"))
+        for m in api_messages
+        if isinstance(m, dict)
+    )
+    if total <= target:
+        return 0
+
+    # Protect the last message only when it is a user message with images.
+    protected_idx = -1
+    last = api_messages[-1]
+    if (
+        isinstance(last, dict)
+        and last.get("role") == "user"
+        and _content_has_images(last.get("content"))
+    ):
+        protected_idx = len(api_messages) - 1
+    protected_count = (
+        _count_image_parts(api_messages[protected_idx].get("content"))
+        if protected_idx >= 0
+        else 0
+    )
+
+    # If the protected message alone exceeds the target, no amount of
+    # stripping elsewhere helps — the caller surfaces the original error.
+    if protected_idx >= 0 and protected_count > target:
+        return 0
+
+    stripped = 0
+    remaining = total
+    for i, msg in enumerate(api_messages):
+        if remaining <= target:
+            break
+        if not isinstance(msg, dict):
+            continue
+        if i == protected_idx:
+            continue
+        count = _count_image_parts(msg.get("content"))
+        if count == 0:
+            continue
+        if msg.get("role") == "tool":
+            new_msg = _strip_images_from_tool_msg(msg)
+            if new_msg is None:
+                continue
+            api_messages[i] = new_msg
+        else:
+            new_content = _strip_images_from_content(msg.get("content"))
+            if new_content is msg.get("content"):
+                continue
+            msg["content"] = new_content
+            drop_stale_api_content(msg)
+        stripped += count
+        remaining -= count
+    return stripped
+
+
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args)."""
     try:

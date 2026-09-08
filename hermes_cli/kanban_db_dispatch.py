@@ -126,6 +126,11 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    supervisor_restarts: list[str] = field(default_factory=list)
+    """Task ids reclaimed as gateway-restart collateral: dead pre-boot claim
+    (``unknown`` exit, claim predating this dispatcher process). Released to
+    ``ready`` WITHOUT counting a failure — the worker died with a previous
+    dispatcher/gateway life, not with this task."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -773,12 +778,19 @@ def _supervisor_restart_boot_ts() -> Optional[float]:
 
 
 def _supervisor_restart_collateral(claim_started_at: Optional[float]) -> bool:
-    """True when a dead pre-boot claim is provably supervisor-restart collateral.
+    """True when a dead pre-boot claim was spawned by a previous dispatcher life.
 
-    A task claimed before this process was created cannot have been served
-    by a child of this process: the previous dispatcher/gateway life (and
-    its in-flight workers) died with a supervisor restart. Fails safe
-    (False → legacy crash accounting) whenever either timestamp is missing.
+    Provable from durable state: a task claimed before this process was
+    created cannot have been served by a child of this process, so its exit
+    went unobserved by every live dispatcher. In the dominant deployment
+    (dispatcher runs inside the long-lived gateway, ``kanban.dispatch_in_gateway``),
+    ticks run every few seconds, so an exit stays unobserved only when the
+    worker died together with its owning dispatcher/gateway life — supervisor
+    restart collateral (OOM kill, operator restart, crash). Residual
+    ambiguity: a one-shot/standalone dispatcher that exits while its workers
+    keep running leaves the same signature (see discussion on this PR and
+    #83066/#103961). Fails safe (False → legacy crash accounting) whenever
+    either timestamp is missing.
     """
     boot_ts = _supervisor_restart_boot_ts()
     if claim_started_at is None or boot_ts is None:
@@ -1714,6 +1726,8 @@ def _run_reclaim_phase(
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
+    result.supervisor_restarts.extend(
+        getattr(detect_crashed_workers, "_last_supervisor_restart", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 

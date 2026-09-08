@@ -99,6 +99,7 @@ export interface WisdomTranslations {
   openCollective: string
   prepareExact: string
   skillName: string
+  whatItDoes: string
   editDefaultsNotice: string
   detailedRequirements: string
   hideDetailedRequirements: string

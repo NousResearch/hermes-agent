@@ -1251,7 +1251,7 @@ class WisdomCommandController:
                             if item.get("editorial_description")
                             else ""
                         )
-                        + "Why suggested: "
+                        + "Why others might benefit: "
                         + str(
                             item.get("qualification") or "manual selection"
                         ).replace("_", " ")

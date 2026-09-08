@@ -1520,6 +1520,7 @@ export const en: Translations = {
       openCollective: 'Open Collective',
       prepareExact: 'Review & edit',
       skillName: 'Skill name',
+      whatItDoes: 'What it does',
       editDefaultsNotice:
         'Review the skill name and instructions. Hermes has prefilled compatibility details from this device; expand them only if they need adjustment.',
       detailedRequirements: 'Edit detailed requirements',

@@ -78,7 +78,7 @@ def advice_view(
         item["advice"].get("assessment_status") == "unavailable" for item in items
     )
     view = WisdomView(
-        title="Collective Wisdom",
+        title="Hermes Collective Wisdom",
         summary=(
             "Your organization has enabled Collective Wisdom, a feature designed to "
             "automatically detect and share useful skills across all team members."
@@ -383,7 +383,7 @@ def interaction_view(
                 )
             )
     return WisdomView(
-        title="Collective Wisdom",
+        title="Hermes Collective Wisdom",
         summary="Deferred on this surface"
         if result.get("deferred")
         else result["state"].replace("_", " ").capitalize(),

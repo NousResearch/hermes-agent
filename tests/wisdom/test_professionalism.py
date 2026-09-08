@@ -131,3 +131,56 @@ def test_changed_description_gets_a_new_review_job(tmp_path: Path):
 
     assert second["id"] != first["id"]
     assert second["author_description_hash"] != first["author_description_hash"]
+
+
+def _review_with_checks(status, checks):
+    return {"status": status, "summary": "", "checks": checks}
+
+
+def test_review_text_pass_is_a_single_line_without_the_word_pass():
+    from hermes_wisdom.professionalism import CHECK_KEYS, review_text
+
+    text = review_text(
+        _review_with_checks(
+            "pass",
+            [{"key": key, "status": "pass", "finding_count": 0} for key in CHECK_KEYS],
+        ),
+        include_checks=True,
+    )
+
+    assert text == "Safe to share at work \u2713 (no inappropriate content found)"
+    assert "Pass" not in text
+    assert "Profanity" not in text
+
+
+def test_review_text_advisory_lists_only_failed_checks():
+    from hermes_wisdom.professionalism import review_text
+
+    text = review_text(
+        _review_with_checks(
+            "advisory",
+            [
+                {"key": "profanity_or_abuse", "status": "pass", "finding_count": 0},
+                {"key": "hate_or_harassment", "status": "advisory", "finding_count": 2},
+                {"key": "sexual_or_graphic_language", "status": "pass", "finding_count": 0},
+                {"key": "manipulative_or_spam", "status": "pass", "finding_count": 0},
+            ],
+        ),
+        include_checks=True,
+    )
+
+    assert text.splitlines() == [
+        "Needs a look before sharing at work (possible inappropriate content)",
+        "- Hate or harassment (2 findings)",
+    ]
+
+
+def test_review_text_pending_and_unavailable_keep_plain_status():
+    from hermes_wisdom.professionalism import review_text
+
+    assert review_text(None, include_checks=True) == (
+        "Professionalism check (agent-assessed): Pending"
+    )
+    assert review_text({"status": "unavailable"}, include_checks=True) == (
+        "Professionalism check (agent-assessed): Unavailable"
+    )

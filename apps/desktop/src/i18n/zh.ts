@@ -1695,6 +1695,7 @@ export const zh: Translations = {
       openCollective: '打开集体',
       prepareExact: '审核并编辑',
       skillName: '技能名称',
+      whatItDoes: '功能说明',
       editDefaultsNotice: '请审核技能名称和说明。Hermes 已根据此设备预填兼容性详情；仅在需要调整时展开。',
       detailedRequirements: '编辑详细要求',
       hideDetailedRequirements: '收起详细要求',

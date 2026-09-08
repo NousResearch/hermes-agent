@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-SHARE_HEADER = "Reusable skill ready to review"
+SHARE_HEADER = "Hermes Collective Wisdom"
 SHARE_WHY_HEADER = "Why we ask"
 SHARE_SAFE_YES = "Checks complete: no known matches detected."
 SHARE_SAFE_NO = "Checks found issues. Review the details before sharing."

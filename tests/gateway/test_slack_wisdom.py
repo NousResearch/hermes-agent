@@ -92,6 +92,10 @@ def test_candidate_card_uses_returning_copy_and_requested_action_order():
     assert "Transfer incident context between responders." in wisdom_fallback_text(view)
     text = wisdom_fallback_text(view)
     assert "Would you like to share it?" in text
+    assert "Skill name: Incident Handoff" in text
+    assert "What it does: Transfer incident context between responders." in text
+    assert "Why others might benefit: You used this skill consistently across many days." in text
+    assert "Why suggested" not in text
     assert text.index("Transfer incident context") < text.index("Would you like to share it?")
     assert "Nothing is shared without your approval" not in text
 

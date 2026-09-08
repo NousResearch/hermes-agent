@@ -434,12 +434,17 @@ class TestTelegramApprovalCallback:
         assert "Reuse a reliable Telegram workflow." in html
         assert "Your organization (Nous Research) has enabled Collective Wisdom" in html
         assert "Congratulations! Hermes detected a skill" in html
-        assert "Why suggested:" in html
-        assert "consistently across consecutive business days" in html
+        assert "Why others might benefit:" in html
+        assert "Why suggested:" not in html
+        assert "Reusable skill ready to review" not in html
+        assert "Skill name: <b>Telegram Workflow</b>" in html
+        assert "What it does: Reuse a reliable Telegram workflow." in html
+        assert "consistently across many days" in html
+        assert "consecutive business days" not in html
         assert "consecutive_business_days" not in html
         assert "Australia/Brisbane" not in html
         assert "Would you like to share it?" in html
-        assert html.index("Why suggested:") < html.index("Would you like to share it?")
+        assert html.index("Why others might benefit:") < html.index("Would you like to share it?")
         assert "Nothing is shared without your approval" not in html
         assert "Review first" in html
         assert "Yes" in html
@@ -501,9 +506,7 @@ class TestTelegramApprovalCallback:
     def test_wisdom_candidate_reason_explains_refinement_without_raw_evidence(self):
         reason = TelegramAdapter._wisdom_candidate_qualification_reason("refinement")
 
-        assert "refined this skill repeatedly" in reason
-        assert "used it recently" in reason
-        assert "remained stable" in reason
+        assert reason == "You've really refined this skill."
         assert "3" not in reason
         assert "7" not in reason
 

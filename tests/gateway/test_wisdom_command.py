@@ -301,7 +301,7 @@ def test_candidates_lists_skill_details_without_onboarding_announcement():
 
     assert view.items[0].detail == (
         "Transfer incident context between responders.\n"
-        "Why suggested: high usage"
+        "Why others might benefit: high usage"
     )
     assert view.items[0].title == "Incident Handoff"
     assert view.items[0].actions[0].label == "Create private draft"

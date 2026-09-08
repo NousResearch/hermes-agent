@@ -344,7 +344,8 @@ def test_share_template_exact_strings():
         checks_passed=True,
     )
     text = notice.text
-    assert notice.title == "Reusable skill ready to review"
+    assert notice.title == "Hermes Collective Wisdom"
+    assert "Reusable skill ready to review" not in text
     assert notice.lines[0] == "Release Notes Drafter"
     assert notice.lines[1] == "    Drafts release notes from merged PRs."
     assert "Why we ask" in notice.lines

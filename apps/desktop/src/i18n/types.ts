@@ -86,7 +86,6 @@ export interface WisdomTranslations {
   localSuggestion: string
   preparingLocal: string
   whySuggested: string
-  proposalNotice: string
   sharePrompt: string
   reviewFirst: string
   notNow: string

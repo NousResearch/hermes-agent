@@ -7891,8 +7891,7 @@ class SlackAdapter(BasePlatformAdapter):
                 skill_description=skill_description,
                 qualification=qualification,
                 status=(
-                    f"{notice}\n\nNothing is shared without your approval.\n\n"
-                    "Would you like to share?\n"
+                    f"{notice}\n\n"
                     + review_text(professionalism_review, include_checks=True)
                 ),
                 actions=[
@@ -8027,7 +8026,7 @@ class SlackAdapter(BasePlatformAdapter):
                     (
                         f"{skill_description}\n" if skill_description else ""
                     )
-                    + f"Why suggested: {cls._wisdom_candidate_reason(qualification)}",
+                    + f"Why suggested: {cls._wisdom_candidate_reason(qualification)}\n\nWould you like to share it?",
                     actions=list(actions),
                 )
             ],

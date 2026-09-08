@@ -438,7 +438,9 @@ class TestTelegramApprovalCallback:
         assert "consistently across consecutive business days" in html
         assert "consecutive_business_days" not in html
         assert "Australia/Brisbane" not in html
-        assert "Would you like to share?" in html
+        assert "Would you like to share it?" in html
+        assert html.index("Why suggested:") < html.index("Would you like to share it?")
+        assert "Nothing is shared without your approval" not in html
         assert "Review first" in html
         assert "Yes" in html
         assert html.index("Not Now") < html.index("Review first") < html.index("Yes")
@@ -485,10 +487,7 @@ class TestTelegramApprovalCallback:
         html = TelegramAdapter._wisdom_candidate_html(
             skill_name="another-skill",
             qualification_reason="It met the local rules.",
-            status=(
-                f"{notice}\n\nNothing is shared without your approval.\n\n"
-                "Would you like to share?"
-            ),
+            status=notice,
             actions=actions,
         )
         keyboard = TelegramAdapter._wisdom_candidate_keyboard(actions)

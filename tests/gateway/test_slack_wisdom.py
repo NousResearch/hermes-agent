@@ -68,9 +68,7 @@ def test_candidate_card_uses_returning_copy_and_requested_action_order():
         skill_description="Transfer incident context between responders.",
         qualification="high_usage",
         status=(
-            "Hermes detected another skill you created that could be useful to your team!\n\n"
-            "Nothing is shared without your approval.\n\n"
-            "Would you like to share?"
+            "Hermes detected another skill you created that could be useful to your team!"
         ),
         actions=[
             WisdomAction("Not Now", callback_data="wi:defer:event-2"),
@@ -92,7 +90,10 @@ def test_candidate_card_uses_returning_copy_and_requested_action_order():
     ]
     assert "Hermes detected *another* skill" in wisdom_fallback_text(view)
     assert "Transfer incident context between responders." in wisdom_fallback_text(view)
-    assert "Would you like to share?" in wisdom_fallback_text(view)
+    text = wisdom_fallback_text(view)
+    assert "Would you like to share it?" in text
+    assert text.index("Transfer incident context") < text.index("Would you like to share it?")
+    assert "Nothing is shared without your approval" not in text
 
 
 @pytest.mark.asyncio

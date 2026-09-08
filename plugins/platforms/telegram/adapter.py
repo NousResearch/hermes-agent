@@ -8740,7 +8740,7 @@ class TelegramAdapter(BasePlatformAdapter):
             f"<b>{_html.escape(skill_name)}</b><br/>"
             f"{description_html}"
             f"<b>Why suggested:</b> {_html.escape(qualification_reason)}<br/>"
-            f"{review_html}</p>{control_html}"
+            f"{review_html}<br/><br/><b>Would you like to share it?</b></p>{control_html}"
         )
 
     @staticmethod
@@ -8924,10 +8924,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 skill_name=skill_name,
                 skill_description=skill_description,
                 qualification_reason=qualification_reason,
-                status=(
-                    f"{notice}\n\nNothing is shared without your approval.\n\n"
-                    "Would you like to share?"
-                ),
+                status=notice,
                 actions=actions,
                 professionalism_review=professionalism_review,
             )
@@ -8976,9 +8973,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         )
                         + "<b>Why suggested:</b> "
                         f"{_html.escape(qualification_reason)}\n"
-                        "Nothing is shared without your approval.\n"
-                        "Would you like to share?\n\n"
-                        f"{_html.escape(review_text(professionalism_review, include_checks=True))}"
+                        f"{_html.escape(review_text(professionalism_review, include_checks=True))}\n\n"
+                        "Would you like to share it?"
                     ),
                     "parse_mode": ParseMode.HTML,
                     "reply_markup": self._wisdom_candidate_keyboard(actions),

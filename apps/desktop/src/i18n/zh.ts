@@ -1682,7 +1682,6 @@ export const zh: Translations = {
       localSuggestion: '可供你审核',
       preparingLocal: '正在准备可编辑的本地审核…',
       whySuggested: 'Hermes 推荐此技能的原因',
-      proposalNotice: '资格原因只保留在此设备上。未经你批准，不会共享任何内容。',
       sharePrompt: '你想分享吗？',
       reviewFirst: '先审核',
       notNow: '暂不',

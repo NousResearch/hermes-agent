@@ -156,7 +156,15 @@ afterEach(() => {
 describe('WisdomCandidateCard', () => {
   it('opens the entire local package before one final moderation submission', async () => {
     await renderCard()
-    expect(await screen.findByText('Safe Skill')).toBeTruthy()
+    expect(await screen.findByText(/Your organisation \(Nous Research\) has enabled Collective Wisdom/)).toBeTruthy()
+    expect(screen.getByText(/Congratulations! Hermes detected a skill/)).toBeTruthy()
+    expect(screen.getByText('Safe Skill')).toBeTruthy()
+    expect(screen.queryByText(/Nothing is shared without your approval/)).toBeNull()
+    expect(screen.queryByText(/Reusable skill ready to review/)).toBeNull()
+    expect(screen.getByText('Would you like to share it?')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Review first' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Not Now' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Yes' })).toBeTruthy()
     expect(submitWisdomPublication).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Review first' }))
     const submit = await screen.findByRole('button', { name: 'Submit for approval' })

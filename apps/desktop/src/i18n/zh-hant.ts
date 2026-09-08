@@ -1335,7 +1335,6 @@ export const zhHant = defineLocale({
       localSuggestion: '可供你審核',
       preparingLocal: '正在準備可編輯的本機審核…',
       whySuggested: 'Hermes 建議此技能的原因',
-      proposalNotice: '資格原因只保留在此裝置上。未經你核准，不會共享任何內容。',
       sharePrompt: '你想分享嗎？',
       reviewFirst: '先審核',
       notNow: '暫不',

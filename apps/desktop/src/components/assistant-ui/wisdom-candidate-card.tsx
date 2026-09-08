@@ -150,7 +150,6 @@ export function WisdomCandidateCard({ profile, sessionId }: { profile?: ProfileS
       <div className="border-b border-(--ui-stroke-tertiary) px-4 py-3">
         <p className="text-xs leading-5">{qualificationNotice}</p>
         {displayDescription && <p className="mt-1 text-xs text-muted-foreground">{displayDescription}</p>}
-        <p className="mt-1 text-xs text-muted-foreground">{copy.proposalNotice}</p>
         <p className="mt-2 text-xs font-medium">{copy.sharePrompt}</p>
       </div>
 

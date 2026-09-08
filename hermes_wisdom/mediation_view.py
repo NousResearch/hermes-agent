@@ -80,9 +80,8 @@ def advice_view(
     view = WisdomView(
         title="Collective Wisdom",
         summary=(
-            "Your organisation has enabled Collective Wisdom: Hermes can discover "
-            "useful team skills and explain how they fit your setup. Sharing and "
-            "new installations require your approval."
+            "Your organisation has enabled Collective Wisdom, a feature designed to "
+            "automatically detect and share useful skills across all team members."
         )
         if introduction
         else "Your skill is ready to review for sharing"

@@ -288,6 +288,48 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
         )
 
+    def test_edit_message_falls_back_to_text_on_99992402_field_validation(self):
+        """Regression: post updates rejected with generic code 99992402
+        ("field validation failed") must also downgrade to plain text —
+        previously only the friendlier content-format message triggered
+        the fallback, so dispatch progress reports failed outright."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def update(self, request):
+                captured["calls"].append(request)
+                if len(captured["calls"]) == 1:
+                    return SimpleNamespace(success=lambda: False, code=99992402, msg="field validation failed")
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_progress",
+                    content="**P0-T4 完成**（commit `909814b1`）",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "post")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
+
 
 class TestAdapterModule(unittest.TestCase):
     def test_load_settings_uses_sdk_defaults_for_invalid_ws_reconnect_values(self):

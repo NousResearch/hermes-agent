@@ -302,6 +302,7 @@
       "shortcutName": "Hermes",
       "uninstallDisplayName": "Hermes",
       "warningsAsErrors": false
-    }
+    },
+    "disableAsarIntegrity": true
   }
 }

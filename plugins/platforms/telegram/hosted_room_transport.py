@@ -175,6 +175,7 @@ class Transport:
         self._mutex = None
         self.member_profiles: dict[str, str] = {}
         self.profile_handles: dict[str, str] = {}
+        self._pending_outcome: tuple | None = None
 
     def start(self) -> None:
         """The lifecycle owner retains this handle before any resource is acquired."""
@@ -497,10 +498,41 @@ class Transport:
             text = "Room work was paused."
         return text, profile, thread_id
 
+    def _persist_outcome(self) -> None:
+        """Only the publisher retries its completed request, never an arbitrary sending row."""
+        if self._pending_outcome is None:
+            return
+        identity, outcome = self._pending_outcome
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT status,message_id,failure_kind,retry_after FROM deliveries"
+                " WHERE event_id=? AND chunk_index=? AND profile=? AND thread_id=? AND attempt=?",
+                identity).fetchone()
+            if row is None:
+                raise RuntimeError("Telegram receipt attempt identity changed")
+            if row["status"] == "sending":
+                db.execute(
+                    "UPDATE deliveries SET status=?,message_id=?,failure_kind=?,retry_after=?"
+                    " WHERE event_id=? AND chunk_index=? AND profile=? AND thread_id=? AND attempt=?"
+                    " AND status='sending'", (*outcome, *identity))
+            elif tuple(row) != outcome:
+                # A commit can succeed while its response is lost; an operator may already
+                # have reconciled that durable failure before this publisher gets another turn.
+                resolution = db.execute(
+                    "SELECT previous_status,failure_kind,retry_after FROM delivery_resolutions"
+                    " WHERE event_id=? AND chunk_index=? AND attempt=?",
+                    (identity[0], identity[1], identity[4])).fetchone()
+                if (resolution is None or outcome[0] == "sent"
+                        or tuple(resolution) != (outcome[0], outcome[2], outcome[3])):
+                    raise RuntimeError("Telegram receipt outcome changed")
+        self._pending_outcome = None
+
     async def publish(self, bots) -> None:
         from telegram import LinkPreviewOptions, ReplyParameters
         from telegram.error import BadRequest, Forbidden, InvalidToken, RetryAfter
 
+        self._persist_outcome()
         with self.db() as db:
             cursor = db.execute("SELECT seq FROM cursor WHERE singleton=1").fetchone()[0]
         events = self.events(cursor)
@@ -529,9 +561,11 @@ class Transport:
                     with self.db() as db:
                         db.execute("BEGIN IMMEDIATE")
                         existing = db.execute(
-                            "SELECT status FROM deliveries WHERE event_id=? AND chunk_index=?",
+                            "SELECT status,attempt,profile,thread_id FROM deliveries WHERE event_id=? AND chunk_index=?",
                             (event["event_id"], index)).fetchone()
                         if existing:
+                            if (existing["profile"], existing["thread_id"]) != (profile, thread_id):
+                                raise RuntimeError("Telegram delivery row identity mismatch")
                             if existing[0] == "sent":
                                 continue
                             if existing[0] != "retry_authorized":
@@ -545,6 +579,8 @@ class Transport:
                                 "INSERT INTO deliveries(event_id,chunk_index,profile,thread_id,status)"
                                 " VALUES(?,?,?,?,?)",
                                 (event["event_id"], index, profile, thread_id, "sending"))
+                        attempt = existing["attempt"] + 1 if existing else 1
+                    identity = (event["event_id"], index, profile, thread_id, attempt)
                     try:
                         if part_kind == "media":
                             message = await self.send_media(bots[profile], part[0], part[1], reply_id)
@@ -559,23 +595,24 @@ class Transport:
                                     message_id=reply_id, allow_sending_without_reply=True)
                                 if reply_id else None,
                                 read_timeout=30, write_timeout=30, connect_timeout=15)
+                        message_id = message.message_id
+                        if type(message_id) is not int or not 0 < message_id <= 2**53 - 1:
+                            raise ValueError("invalid Telegram delivery message ID")
                     except BaseException as exc:
                         refused = isinstance(exc, (BadRequest, Forbidden, InvalidToken, RetryAfter))
                         cooldown = None
                         if isinstance(exc, RetryAfter):
                             delay = exc.retry_after
                             cooldown = time.time() + (delay.total_seconds() if isinstance(delay, timedelta) else delay)
-                        with self.db() as db:
-                            db.execute(
-                                "UPDATE deliveries SET status=?,failure_kind=?,retry_after=?"
-                                " WHERE event_id=? AND chunk_index=?",
-                                ("rejected" if refused else "uncertain",
-                                 type(exc).__name__ if refused else "ambiguous", cooldown, event["event_id"], index))
+                        self._pending_outcome = (identity, (
+                            "rejected" if refused else "uncertain", None,
+                            type(exc).__name__ if refused else "ambiguous", cooldown))
+                        self._persist_outcome()
                         raise
-                    with self.db() as db:
-                        db.execute(
-                            "UPDATE deliveries SET status='sent',message_id=? WHERE event_id=? AND chunk_index=?",
-                            (message.message_id, event["event_id"], index))
+                    # Keep a known acknowledgement even if SQLite cannot commit. No later
+                    # network request is allowed until this exact receipt is durable.
+                    self._pending_outcome = (identity, ("sent", message_id, None, None))
+                    self._persist_outcome()
             with self.db() as db:
                 db.execute("UPDATE cursor SET seq=? WHERE singleton=1", (event["seq"],))
 
@@ -603,6 +640,7 @@ class Transport:
             check_delivery = False
             while not self.halt.is_set():
                 try:
+                    self._persist_outcome()
                     self.ingest()
                     # Only failed publication needs the receipt scan. Keep ingest alive while
                     # waiting for durable operator readback, without reloading the canonical tail/media.

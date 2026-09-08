@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -415,6 +416,180 @@ class DeliveryRequest(LocalRequest):
         return 200, json.dumps({'ok': True, 'result': {
             'message_id': 100 + len(self.sends), 'date': 1,
             'chat': {'id': -999, 'type': 'supergroup'}, 'text': 'scripted'}}).encode()
+
+
+@pytest.mark.parametrize('outcome', ['ack', 'timeout', 'invalid', 'cooldown', 'commit-lost'])
+@pytest.mark.parametrize('part', [0, 3], ids=['text', 'document'])
+def test_receipt_storage_recovers_without_resending_completed_request(recovery, monkeypatch, outcome, part):
+    from telegram import Bot
+    from gateway.hosted_room_driver import list_tasks
+
+    item, resolve, _ = recovery
+    before = item.events()
+    blobs = item.published_media(before[-2])
+    response = None
+    if outcome == 'invalid':
+        response = (200, b'{"ok":true,"result":true}')
+    if outcome == 'cooldown':
+        response = (429, b'{"ok":false,"error_code":429,"description":"offline",'
+                         b'"parameters":{"retry_after":30}}')
+    request = DeliveryRequest(fail_part=part if outcome in {'timeout', 'invalid', 'cooldown'} else -1,
+                              response=response)
+    original_db = item.db
+    lost = False
+
+    @contextmanager
+    def lose_commit_response():
+        nonlocal lost
+        with original_db() as db:
+            yield db
+            committed = db.execute("SELECT 1 FROM deliveries WHERE chunk_index=? AND status='sent'",
+                                   (part,)).fetchone()
+        if committed and not lost:
+            lost = True
+            raise sqlite3.OperationalError('commit response lost')
+
+    def interrupt():
+        if len(request.sends) != part + 1:
+            return
+        assert 'currently sending' in resolve(chunk_index=part)['error']['message']
+        if outcome == 'commit-lost':
+            monkeypatch.setattr(item, 'db', lose_commit_response)
+        else:
+            with original_db() as db:
+                db.execute("CREATE TRIGGER unavailable BEFORE UPDATE OF status ON deliveries "
+                           "WHEN NEW.status != 'sending' BEGIN SELECT RAISE(ABORT,'offline receipt'); END")
+
+    request.on_send = interrupt
+
+    async def exercise():
+        async with Bot('123:local-test', request=request) as bot:
+            with pytest.raises(sqlite3.DatabaseError):
+                await item.publish({'alpha': bot})
+            assert len(request.sends) == part + 1
+            cursor = item.status()['cursor']
+            if outcome != 'commit-lost':
+                with pytest.raises(sqlite3.DatabaseError):
+                    await item.publish({'alpha': bot})
+                assert len(request.sends) == part + 1
+                with original_db() as db:
+                    db.execute('DROP TRIGGER unavailable')
+                if outcome == 'ack' and part == 0:
+                    for field, changed, original in [('event_id', 'other', 'output'),
+                                                     ('chunk_index', 99, 0),
+                                                     ('profile', 'beta', 'alpha'),
+                                                     ('thread_id', 'other', 'thread'),
+                                                     ('attempt', 2, 1)]:
+                        with original_db() as db:
+                            db.execute(f'UPDATE deliveries SET {field}=?', (changed,))
+                        with pytest.raises(RuntimeError, match='attempt identity changed'):
+                            await item.publish({'alpha': bot})
+                        assert len(request.sends) == 1
+                        with original_db() as db:
+                            assert db.execute('SELECT status FROM deliveries').fetchone()[0] == 'sending'
+                            db.execute(f'UPDATE deliveries SET {field}=?', (original,))
+            if outcome in {'timeout', 'invalid', 'cooldown'}:
+                with pytest.raises(RuntimeError, match='requires readback'):
+                    await item.publish({'alpha': bot})
+                attention = item.status()['attention']
+                assert item.status()['blocked']
+                assert attention['attempt'] == 1 and attention['chunk_index'] == part
+                assert attention['failure_kind'] == ('RetryAfter' if outcome == 'cooldown' else 'ambiguous')
+                if outcome == 'cooldown':
+                    assert 'cooldown' in resolve(chunk_index=part)['error']['message']
+                ack = resolve(chunk_index=part, decision='confirmed-delivered', message_id=999)
+                assert 'error' not in ack
+                assert resolve(chunk_index=part, decision='confirmed-delivered', message_id=999) == ack
+                with original_db() as db:
+                    evidence = db.execute('SELECT * FROM delivery_resolutions').fetchone()
+                    assert evidence['failure_kind'] == attention['failure_kind']
+                    assert evidence['retry_after'] == attention['retry_after']
+                assert item.status()['cursor'] == cursor
+            await item.publish({'alpha': bot})
+            await item.publish({'alpha': bot})
+
+    asyncio.run(exercise())
+    assert len(request.sends) == 5
+    assert [params.get('text') if 'text' in params else next(iter(files.values()))[1]
+            for params, files in request.sends] == ['a' * 1800, 'b' * 1800, 'c' * 100,
+                                                   *[data for _, data in blobs]]
+    with original_db() as db:
+        rows = db.execute('SELECT * FROM deliveries ORDER BY chunk_index').fetchall()
+    assert len(rows) == 5 and all(row['status'] == 'sent' and row['attempt'] == 1 for row in rows)
+    assert rows[part]['message_id'] == (101 + part if outcome in {'ack', 'commit-lost'} else 999)
+    assert item.thread_for({'reply_to': rows[part]['message_id'], 'event_id': 'reply'}) == 'thread'
+    assert item.status()['cursor'] == before[-1]['seq']
+    assert item.events() == before
+    assert list_tasks(item.service.db_path, room_id=item.room) == []
+
+
+@pytest.mark.parametrize('outcome', ['ack', 'timeout', 'resolved-commit-lost'])
+def test_worker_flushes_only_completed_outcome_before_other_work(recovery, monkeypatch, caplog, outcome):
+    from telegram import Bot
+
+    item, resolve, _ = recovery
+    request = DeliveryRequest(fail_part=-1 if outcome == 'ack' else 0)
+    original_db = item.db
+    original_ingest = item.ingest
+    turns, ingests = [], []
+    lost = False
+
+    @contextmanager
+    def lose_commit_response():
+        nonlocal lost
+        with original_db() as db:
+            yield db
+            committed = db.execute("SELECT 1 FROM deliveries WHERE status='uncertain'").fetchone()
+        if committed and not lost:
+            lost = True
+            raise sqlite3.OperationalError('unsafe exception detail must not be logged')
+
+    def interrupt():
+        if len(request.sends) == 1:
+            assert 'currently sending' in resolve(chunk_index=0)['error']['message']
+            if outcome == 'resolved-commit-lost':
+                monkeypatch.setattr(item, 'db', lose_commit_response)
+            else:
+                with original_db() as db:
+                    db.execute("CREATE TRIGGER unavailable BEFORE UPDATE OF status ON deliveries "
+                               "BEGIN SELECT RAISE(ABORT,'unsafe exception detail must not be logged'); END")
+
+    def ingest():
+        ingests.append(len(turns))
+        original_ingest()
+
+    async def step(delay):
+        turns.append(delay)
+        assert len(turns) <= 5
+        if len(turns) <= 2 and outcome != 'resolved-commit-lost':
+            assert len(request.sends) == 1 and ingests == [0]
+            assert delay == 2
+            if len(turns) == 2:
+                with original_db() as db:
+                    db.execute('DROP TRIGGER unavailable')
+        elif item.status()['blocked']:
+            assert len(request.sends) == 1
+            ack = resolve(chunk_index=0, decision='confirmed-delivered', message_id=999)
+            assert 'error' not in ack
+            assert resolve(chunk_index=0, decision='confirmed-delivered', message_id=999) == ack
+        else:
+            assert len(request.sends) == 5
+            assert item.status()['cursor'] == item.events()[-1]['seq']
+            item.halt.set()
+
+    request.on_send = interrupt
+    monkeypatch.setattr(item, 'ingest', ingest)
+    monkeypatch.setattr(transport.asyncio, 'sleep', step)
+    monkeypatch.setattr(item, 'config', {**item.config, 'bots': {'alpha': item.config['bots']['alpha']}})
+
+    async def exercise():
+        bot = Bot('123:local-test', request=request)
+        monkeypatch.setattr('telegram.Bot', lambda token: bot)
+        await item.run()
+
+    asyncio.run(exercise())
+    assert len(request.sends) == 5
+    assert 'unsafe exception detail' not in caplog.text
 
 
 @pytest.fixture

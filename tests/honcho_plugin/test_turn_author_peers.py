@@ -117,6 +117,15 @@ class TestResolveAuthorPeerId:
         peer = mgr.resolve_author_peer_id("telegram:dm1", "bot:coder")
         assert peer != "coder" and peer.startswith("coder-")
 
+    def test_connection_qualified_bot_author_keeps_its_connection(self):
+        """The Desktop relays ``bot:<connection>/<profile>``; two connections' ``coder`` are two agents."""
+        mgr = _manager(_config(user_peer_aliases={"bot:local/coder": "coder-here"}), runtime_id="7654321")
+        east = mgr.resolve_author_peer_id("Bot-Chat", "bot:east/coder", is_bot=True)
+        west = mgr.resolve_author_peer_id("Bot-Chat", "bot:west/coder", is_bot=True)
+        assert east != west
+        assert east.startswith("east-coder-") and west.startswith("west-coder-")
+        assert mgr.resolve_author_peer_id("Bot-Chat", "bot:local/coder", is_bot=True) == "coder-here"
+
     def test_bot_author_without_a_profile_keeps_the_raw_id(self):
         mgr = _manager(_config(), runtime_id="7654321")
         peer = mgr.resolve_author_peer_id("telegram:dm1", "bot:")

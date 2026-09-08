@@ -12,10 +12,17 @@ import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 
 export function AgentsPanelView({ cols, hidden, rows, running, t }: AgentRows & { cols: number; t: Theme }) {
-  if (!running) {return null}
+  if (!running) {
+    return null
+  }
 
   return (
-    <Box backgroundColor={mix(t.color.statusBg, t.color.shellDollar, 0.12)} flexDirection="column" flexShrink={0} width={cols}>
+    <Box
+      backgroundColor={mix(t.color.statusBg, t.color.shellDollar, 0.12)}
+      flexDirection="column"
+      flexShrink={0}
+      width={cols}
+    >
       <Text bold color={t.color.accent} wrap="truncate-end">
         {`▾ ${running} live agents${hidden ? ` · +${hidden} more` : ''} · Ctrl+T expand`}
       </Text>
@@ -40,7 +47,9 @@ export function LiveAgentsPanel({ cols }: { cols: number }) {
   const live = subagents.some(s => s.status === 'running' || s.status === 'queued')
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
-    if (!live) {return}
+    if (!live) {
+      return
+    }
     const timer = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(timer)

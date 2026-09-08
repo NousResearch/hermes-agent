@@ -596,11 +596,15 @@ export function useMainApp(gw: GatewayClient) {
 
     const refresh = () => {
       const sid = ui.sid
-      gw.request<SubagentListResponse>('subagent.list', { session_id: sid }).then(raw => {
-        const result = asRpcResult<SubagentListResponse>(raw)
+      gw.request<SubagentListResponse>('subagent.list', { session_id: sid })
+        .then(raw => {
+          const result = asRpcResult<SubagentListResponse>(raw)
 
-        if (!stopped && result && getUiState().sid === sid) {applyAgentSnapshot(sid, result)}
-      }).catch(() => {})
+          if (!stopped && result && getUiState().sid === sid) {
+            applyAgentSnapshot(sid, result)
+          }
+        })
+        .catch(() => {})
       gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: getUiState().sid })
         .then(raw => {
           const result = asRpcResult<SessionActiveListResponse>(raw)

@@ -15,8 +15,12 @@ import type { SubagentProgress } from '../types.js'
 
 const colorLevel = chalk.level
 
-beforeEach(() => { chalk.level = 3 })
-afterEach(() => { chalk.level = colorLevel })
+beforeEach(() => {
+  chalk.level = 3
+})
+afterEach(() => {
+  chalk.level = colorLevel
+})
 
 const agent = (id: string): SubagentProgress => ({
   id,

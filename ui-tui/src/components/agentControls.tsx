@@ -49,18 +49,24 @@ export function AgentSteerForm({
   const [feedback, setFeedback] = useState('')
   const [pending, setPending] = useState(false)
   useInput((_ch, key) => {
-    if (key.escape && !pending) {onClose()}
+    if (key.escape && !pending) {
+      onClose()
+    }
   })
 
   const submit = async () => {
-    if (!text.trim() || pending) {return}
+    if (!text.trim() || pending) {
+      return
+    }
     setPending(true)
 
     try {
       const result = await sendAgentSteer(gw, sid, id, text)
       setFeedback(result.message)
 
-      if (result.accepted) {setText('')}
+      if (result.accepted) {
+        setText('')
+      }
     } catch (error) {
       setFeedback(`Not queued: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
@@ -98,7 +104,9 @@ export function AgentLiveTail({ gw, sid, id, t }: ControlProps) {
     let pending = false
 
     const refresh = async () => {
-      if (pending) {return}
+      if (pending) {
+        return
+      }
       pending = true
 
       try {
@@ -106,14 +114,17 @@ export function AgentLiveTail({ gw, sid, id, t }: ControlProps) {
           await gw.request('subagent.tail', { session_id: sid, subagent_id: id })
         )
 
-        if (active)
-          {setTail(
+        if (active) {
+          setTail(
             result?.available
               ? `${result.truncated ? '[last 16 KiB]\n' : ''}${result.text}`
               : 'Live transcript unavailable; child may have finished. Progress and output remain below.'
-          )}
+          )
+        }
       } catch {
-        if (active) {setTail('Could not refresh live transcript.')}
+        if (active) {
+          setTail('Could not refresh live transcript.')
+        }
       } finally {
         pending = false
       }

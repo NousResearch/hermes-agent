@@ -14,7 +14,9 @@ export const $agentSnapshot = atom<{ sid: string | null; data: SubagentListRespo
 export function applyAgentSnapshot(sid: string | null, data: SubagentListResponse = EMPTY) {
   const previous = $agentSnapshot.get()
 
-  if (previous.sid !== sid || JSON.stringify(previous.data) !== JSON.stringify(data)) {$agentSnapshot.set({ sid, data })}
+  if (previous.sid !== sid || JSON.stringify(previous.data) !== JSON.stringify(data)) {
+    $agentSnapshot.set({ sid, data })
+  }
 }
 
 export function mergeAgentRoster(events: SubagentProgress[], data: SubagentListResponse): SubagentProgress[] {

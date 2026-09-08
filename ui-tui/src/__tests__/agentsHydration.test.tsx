@@ -12,17 +12,24 @@ import { DEFAULT_THEME } from '../theme.js'
 it('does not undo an acknowledged pause when opening status resolves late', async () => {
   resetDelegationState()
   let resolveStatus!: (value: unknown) => void
-  const status = new Promise(resolve => { resolveStatus = resolve })
-  const request = vi.fn(async (method: string) => method === 'delegation.status' ? status : { paused: true })
+  const status = new Promise(resolve => {
+    resolveStatus = resolve
+  })
+  const request = vi.fn(async (method: string) => (method === 'delegation.status' ? status : { paused: true }))
   const stdout = Object.assign(new PassThrough(), { columns: 80, rows: 16, isTTY: false })
   const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => {}, ref: () => {}, unref: () => {} })
 
-  const view = renderSync(<Box height={16}><AgentsOverlay gw={{ request } as unknown as GatewayClient} onClose={() => {}} t={DEFAULT_THEME} /></Box>, {
-    stdout: stdout as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
-    stderr: new PassThrough() as unknown as NodeJS.WriteStream,
-    patchConsole: false
-  })
+  const view = renderSync(
+    <Box height={16}>
+      <AgentsOverlay gw={{ request } as unknown as GatewayClient} onClose={() => {}} t={DEFAULT_THEME} />
+    </Box>,
+    {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stderr: new PassThrough() as unknown as NodeJS.WriteStream,
+      patchConsole: false
+    }
+  )
 
   try {
     await vi.waitFor(() => expect(request).toHaveBeenCalledWith('delegation.status', {}))

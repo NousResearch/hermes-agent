@@ -6,9 +6,17 @@ import type { SubagentProgress } from '../types.js'
 
 it('never rolls event progress back when an older live snapshot arrives', () => {
   const event: SubagentProgress = {
-    id: 'child', goal: 'inspect', depth: 0, index: 0, parentId: null,
-    notes: [], thinking: [], tools: ['read_file'], taskCount: 1,
-    status: 'running', toolCount: 5
+    id: 'child',
+    goal: 'inspect',
+    depth: 0,
+    index: 0,
+    parentId: null,
+    notes: [],
+    thinking: [],
+    tools: ['read_file'],
+    taskCount: 1,
+    status: 'running',
+    toolCount: 5
   }
 
   const stale = {

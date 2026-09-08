@@ -133,7 +133,9 @@ export const buildAgentRows = (
       running += 1
       active.push(row)
     } else {
-      if (RESULT_READY.has(s.status)) {done += 1}
+      if (RESULT_READY.has(s.status)) {
+        done += 1
+      }
     }
   }
 

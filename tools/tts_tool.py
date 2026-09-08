@@ -296,11 +296,19 @@ def _resolve_output_base(
         file_path = Path(output_path).expanduser()
         if command_provider_config is not None:
             file_path = _configured_command_tts_output_path(file_path, command_provider_config)
-        from agent.file_safety import is_write_approval_required, is_write_denied
+        from agent.file_safety import get_write_denied_error, is_write_approval_required, is_write_denied
         if is_write_denied(str(file_path)) or is_write_approval_required(str(file_path)):
-            return None, _error_json(
-                f"output_path targets a protected credential or system path: "
-                f"{file_path}. Choose a normal audio output location.")
+            # Classification-aware message (safe-root vs credential), not the
+            # single conflated "protected credential or system path" string:
+            # a caller-supplied output_path outside HERMES_WRITE_SAFE_ROOT is
+            # a safe-root denial, not a credential-path one (#97110).
+            denial = get_write_denied_error(str(file_path), verb="output_path")
+            if denial is None:
+                denial = (
+                    f"output_path targets a protected credential or system path: "
+                    f"{file_path}. Choose a normal audio output location."
+                )
+            return None, _error_json(denial)
     else:
         if command_provider_config is not None:
             ext = _get_command_tts_output_format(command_provider_config)

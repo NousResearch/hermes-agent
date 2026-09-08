@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import random
 import re
 import time
 import uuid
@@ -62,6 +64,21 @@ HEARTBEAT_INTERVAL_SECONDS = 30.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 
 DEDUP_MAX_SIZE = 1000
+
+# Instant-acknowledgment phrases (upstream #16676): randomized so the client
+# shows fresh feedback rather than the same canned line. The ack is a
+# fire-and-forget APP_CMD_RESPONSE frame correlated to the inbound request id
+# — the only send mode WeCom AI Bots may use in group chats.
+WECOM_INSTANT_ACK_PHRASES = [
+    "收到，正在处理…",
+    "收到 ⏳ 这就开始",
+    "已收到，稍等片刻",
+    "收到，我去看看",
+    "好，收到，马上安排",
+    "来了来了，稍等",
+    "收到你的消息了",
+    "在的，这就处理",
+]
 
 
 def check_wecom_requirements() -> bool:
@@ -157,6 +174,15 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
         self._stream_keepalive_interval_seconds = _extra_float("stream_keepalive_interval_seconds", STREAM_KEEPALIVE_INTERVAL_SECONDS)
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
+
+        # Instant ack (upstream #16676): reply immediately so users don't think
+        # the bot is dead while a slow query runs. Fire-and-forget; failures
+        # are logged, never fatal. Opt out with HERMES_WECOM_INSTANT_ACK=false.
+        self._instant_ack_enabled = (
+            str(os.getenv("HERMES_WECOM_INSTANT_ACK", "1")).strip().lower()
+            not in {"0", "false", "no", "off"}
+        )
+        self._ack_tasks: "set[asyncio.Task]" = set()
         # Turns keyed f"{chat_id}:{req_id|turn_id}"; expired chats clear on the next inbound req_id.
         self._stream_turns: Dict[str, StreamTurn] = {}
         self._stream_expired_chats, self._group_chat_ids = set(), set()  # groups can't receive proactive APP_CMD_SEND
@@ -474,7 +500,51 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
         if (message_type == MessageType.TEXT and (self._text_batch_delay_seconds > 0 or has_pending_batch)) or (is_attachment_only and self._attachment_text_merge_delay_seconds > 0):
             self._enqueue_text_event(event)
         else:
-            await self.handle_message(event)
+            await self._dispatch_to_agent(event)
+
+    # ------------------------------------------------------------------
+    # Instant acknowledgment (upstream #16676)
+    # ------------------------------------------------------------------
+
+    async def _dispatch_to_agent(self, event: MessageEvent) -> None:
+        """Dispatch an accepted inbound event to the agent.
+
+        Fires a fire-and-forget instant acknowledgment first (non-blocking)
+        so the user gets immediate feedback on slow queries, then hands the
+        event to the normal handler. The ack is correlated to the inbound
+        request via APP_CMD_RESPONSE — the only send mode WeCom AI Bots may
+        use in group chats.
+        """
+        self._schedule_instant_ack(event)
+        await self.handle_message(event)
+
+    def _schedule_instant_ack(self, event: MessageEvent) -> None:
+        """Queue an ack unless disabled, a slash command, or un-correlatable."""
+        if not self._instant_ack_enabled:
+            return
+        text = (event.text or "").lstrip()
+        if text.startswith("/"):
+            return
+        req_id = self._payload_req_id(event.raw_message) if isinstance(event.raw_message, dict) else ""
+        if not req_id:
+            return
+        task = asyncio.create_task(self._send_instant_ack(req_id))
+        self._ack_tasks.add(task)
+        task.add_done_callback(self._ack_tasks.discard)
+
+    async def _send_instant_ack(self, reply_req_id: str) -> None:
+        """Send one short reply frame; never raise into the pipeline."""
+        phrase = random.choice(WECOM_INSTANT_ACK_PHRASES)
+        try:
+            await self._send_json(
+                {
+                    "cmd": APP_CMD_RESPONSE,
+                    "headers": {"req_id": reply_req_id},
+                    "body": self._markdown_body(phrase),
+                }
+            )
+        except Exception as exc:
+            logger.warning("[%s] Instant ack failed (ignored): %s", self.name, exc)
 
     def _admit_inbound(self, is_group: bool, chat_id: str, sender_id: str) -> bool:
         """Apply group_policy / dm_policy at intake; logs and returns False when dropped."""
@@ -521,7 +591,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
             if not event:
                 return
             logger.info("[WeCom] Flushing batch %s (%d chars, %d media)", key, len(event.text or ""), len(event.media_urls or []))
-            await self.handle_message(event)
+            await self._dispatch_to_agent(event)
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)

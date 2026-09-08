@@ -42,6 +42,12 @@ import argparse
 import json
 import sys
 
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
 try:
     from docx import Document
     from docx.enum.style import WD_STYLE_TYPE

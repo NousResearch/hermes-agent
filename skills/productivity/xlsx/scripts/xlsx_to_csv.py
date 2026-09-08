@@ -18,6 +18,12 @@ import json
 import sys
 from datetime import date, datetime, time
 
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
 try:
     from openpyxl import load_workbook
 except ImportError:

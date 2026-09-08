@@ -166,6 +166,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "httplib2==0.32.0",
         "pyasn1==0.6.4",
     ),
+    # Office document skills (skills/productivity/{docx,xlsx,pdf,powerpoint}).
+    # The skills ship the scripts; these are the libraries they import. Pins
+    # match the corresponding [documents] extra in pyproject.toml — update
+    # both this map AND the extra.
+    "skill.docx": ("python-docx==1.2.0",),
+    "skill.xlsx": ("openpyxl==3.1.5",),
+    "skill.powerpoint": ("python-pptx==1.0.2",),
+    "skill.pdf": ("reportlab==5.0.1", "pypdf==6.18.0", "pypdfium2==5.13.0"),
     "skill.youtube": ("youtube-transcript-api==1.2.4",),
 
     # ─── Tools ─────────────────────────────────────────────────────────────

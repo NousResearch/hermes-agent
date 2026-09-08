@@ -28,6 +28,12 @@ except ImportError:
 
 from docx_common import iter_all_paragraphs, replace_in_paragraph
 
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
 TOKEN_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 
 

@@ -36,6 +36,12 @@ except ImportError:
 
 from docx_common import iter_part_roots
 
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 COMMENTS_CT = ("application/vnd.openxmlformats-officedocument"
                ".wordprocessingml.comments+xml")

@@ -40,6 +40,12 @@ except ImportError:
 
 from docx_common import iter_all_paragraphs, replace_in_paragraph
 
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 

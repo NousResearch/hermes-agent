@@ -27,6 +27,12 @@ import posixpath
 import sys
 import zipfile
 
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
 try:
     from lxml import etree
 except ImportError:

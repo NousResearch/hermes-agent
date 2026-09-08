@@ -68,11 +68,11 @@ async def capture_media(adapter, message):
     }], None
 
 
-def wire(application, adapter) -> None:
-    """Called on every native PTB Application, including initialization retries."""
+def wire(application, adapter) -> bool:
+    """Wire each native PTB Application; return whether its binding is active."""
     path = hosted_room_binding_path()
     if path is None:
-        return
+        return False
     config = load_binding(path, include_disabled=True)
     assert config is not None  # include_disabled returns every validated binding.
     chat_id, owner_id = config["chat_id"], config["owner_id"]
@@ -114,3 +114,4 @@ def wire(application, adapter) -> None:
 
     application.add_handler(MessageHandler(filters.Chat(chat_id), incoming), group=-50)
     log.warning("Canonical Telegram ingress wired chat=%s owner=%s", chat_id, owner_id)
+    return config["enabled"]

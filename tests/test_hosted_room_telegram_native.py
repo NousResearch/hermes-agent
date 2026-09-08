@@ -8,6 +8,7 @@ import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -51,6 +52,13 @@ def binding_env(tmp_path, monkeypatch):
 
 
 class LocalRequest(BaseRequest):
+    def __init__(self, pending=None, *, fail_first=False):
+        self.pending = pending
+        self.fail_first = fail_first
+        self.drops = []
+        self.drained = asyncio.Event()
+        self.block = asyncio.Event()
+
     @property
     def read_timeout(self):
         return 10
@@ -62,8 +70,121 @@ class LocalRequest(BaseRequest):
         pass
 
     async def do_request(self, url, method, request_data=None, **kwargs):
+        if self.pending is not None:
+            if url.endswith("/deleteWebhook"):
+                assert request_data is not None
+                drop = request_data.parameters.get("drop_pending_updates")
+                self.drops.append(drop)
+                if drop:
+                    self.pending.clear()
+                return 200, b'{"ok":true,"result":true}'
+            if url.endswith("/getUpdates"):
+                if self.drained.is_set():
+                    await self.block.wait()
+                pending, self.pending = self.pending, []
+                self.drained.set()
+                return 200, json.dumps({"ok": True, "result": pending}).encode()
         assert url.endswith("/getMe"), "unexpected Telegram network operation"
+        if self.fail_first:
+            self.fail_first = False
+            raise OSError("offline transient initialization failure")
         return 200, b'{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"Test","username":"alpha_test_bot"}}'
+
+
+@pytest.mark.parametrize("mode", ["polling", "webhook"])
+@pytest.mark.parametrize("is_reconnect", [False, True])
+@pytest.mark.parametrize("binding_state", ["active", "disabled", "unbound", "unwired"])
+def test_startup_backlog_policy_uses_wired_binding(binding_env, monkeypatch, mode,
+                                                  is_reconnect, binding_state):
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    binding, path, _ = binding_env
+    binding["enabled"] = binding_state != "disabled"
+    path.write_text(json.dumps(binding), encoding="utf-8")
+    if binding_state == "unbound":
+        (path.parent / "config.yaml").write_text("{}", encoding="utf-8")
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="123:local-test"))
+    assert adapter._hosted_room_ingress_active is False
+    app = Application.builder().token("123:local-test").request(LocalRequest()).build()
+    if binding_state != "unwired":
+        # Rewiring must replace an earlier active decision, not leave it latched on.
+        adapter._hosted_room_ingress_active = True
+        adapter._wire_plugin_handlers(app)
+    else:
+        # Existing installed fixtures bypass __init__ and call startup directly.
+        vars(adapter).pop("_hosted_room_ingress_active", None)
+    # Moving config must not select a policy different from the handlers just wired.
+    binding["enabled"] = not binding["enabled"]
+    path.write_text(json.dumps(binding), encoding="utf-8")
+    starter = AsyncMock(return_value=True)
+    adapter._app = app
+    monkeypatch.setattr(adapter, "_delete_webhook_best_effort", AsyncMock())
+    monkeypatch.setattr(adapter, "_start_polling_resilient", starter)
+    monkeypatch.setattr(type(app.updater), "start_webhook", starter)
+    monkeypatch.setattr("agent.secret_scope.get_secret", lambda name: "offline-secret")
+    if mode == "polling":
+        asyncio.run(adapter._start_polling_mode(is_reconnect=is_reconnect))
+    else:
+        asyncio.run(adapter._start_webhook_mode("https://offline.invalid/telegram",
+                                               is_reconnect=is_reconnect))
+    assert starter.call_args.kwargs["drop_pending_updates"] is (
+        not is_reconnect and binding_state != "active")
+
+
+@pytest.mark.parametrize("rebuild", [False, True])
+def test_real_ptb_initial_polling_captures_pending_room_message(binding_env, monkeypatch, rebuild):
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    binding, _, _ = binding_env
+
+    async def exercise():
+        pending = [{"update_id": 1, "message": {
+            "message_id": 1, "date": 1, "chat": {"id": -999, "type": "supergroup"},
+            "from": {"id": 42, "is_bot": False, "first_name": "Owner"},
+            "text": "sent during cutover"}}, {"update_id": 2, "message": {
+            "message_id": 2, "date": 1, "chat": {"id": -555, "type": "supergroup"},
+            "from": {"id": 42, "is_bot": False, "first_name": "Owner"},
+            "text": "other chat backlog"}}]
+        request = LocalRequest(pending, fail_first=rebuild)
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="123:local-test"))
+        builder = (Application.builder().token("123:local-test").request(request)
+                   .get_updates_request(adapter._instrument_polling_request(request)))
+        adapter._app = original = builder.build()
+        adapter._bot = original.bot
+        adapter._wire_plugin_handlers(original)
+        # Sentinel core handler detects any owned-room fallthrough after a retry rebuild.
+        fallback = []
+
+        async def other(update, context):
+            fallback.append(update.update_id)
+
+        monkeypatch.setattr(adapter, "_register_handlers", lambda app: app.add_handler(
+            TypeHandler(Update, other), group=0))
+        adapter._register_handlers(original)
+        await adapter._initialize_app_with_retries(builder)
+        app = adapter._app
+        assert app is not None and app.updater is not None
+        assert (app is not original) is rebuild
+        await app.start()
+        try:
+            await adapter._start_polling_mode(is_reconnect=False)
+            await asyncio.wait_for(request.drained.wait(), timeout=2)
+            await asyncio.wait_for(app.update_queue.join(), timeout=2)
+            with sqlite3.connect(binding["queue_db"]) as db:
+                assert db.execute("SELECT message_id,text FROM inbox").fetchall() == [
+                    (1, "sent during cutover")]
+            assert request.drops and all(drop is False for drop in request.drops)
+            assert fallback == [2]
+        finally:
+            request.block.set()
+            if app.updater.running:
+                await app.updater.stop()
+            await app.stop()
+            await app.shutdown()
+
+    asyncio.run(exercise())
 
 
 def test_real_ptb_rebuild_reserves_room_and_never_falls_through(binding_env):
@@ -221,11 +342,21 @@ def test_startup_failure_closes_every_client_and_keeps_errors_redacted(binding_e
     {"bots": {"../escape": {"id": 1, "username": "alpha_test_bot"}}},
 ])
 def test_malformed_binding_never_mutates_the_queue(binding_env, change):
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
     binding, path, _ = binding_env
     binding.update(change)
     path.write_text(json.dumps(binding))
     with pytest.raises(ValueError):
         transport.load_binding(path)
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="123:local-test"))
+    adapter._hosted_room_ingress_active = True
+    app = Application.builder().token("123:local-test").request(LocalRequest()).build()
+    with pytest.raises(ValueError):
+        adapter._wire_plugin_handlers(app)
+    assert adapter._hosted_room_ingress_active is False
+    assert not app.handlers
     assert not Path(binding["queue_db"]).exists()
 
 

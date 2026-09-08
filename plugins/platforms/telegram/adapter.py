@@ -428,6 +428,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
         self._webhook_mode: bool = False
+        self._hosted_room_ingress_active: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
@@ -2851,7 +2852,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _wire_plugin_handlers(self, native=None) -> None:
         from .hosted_room_ingress import wire
-        wire(native, self)
+        self._hosted_room_ingress_active = False
+        self._hosted_room_ingress_active = wire(native, self)
         super()._wire_plugin_handlers(native)
 
     async def _start_webhook_mode(self, webhook_url: str, *, is_reconnect: bool) -> None:
@@ -2879,7 +2881,7 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._app.updater.start_webhook(
             listen=webhook_host, port=webhook_port, url_path=webhook_path, webhook_url=webhook_url,
             secret_token=webhook_secret, allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=not is_reconnect,  # push-based ⇒ practically a no-op; mirrors polling
+            drop_pending_updates=not is_reconnect and not getattr(self, "_hosted_room_ingress_active", False),
        )
         self._webhook_mode = True
         self._polling_progress_accepting = False
@@ -2910,8 +2912,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
         self._polling_error_callback_ref = _polling_error_callback  # reused by _handle_polling_conflict
         polling_started = await self._start_polling_resilient(
-            # Cold first boot drops the stale Bot API queue; a watcher reconnect preserves it.
-            drop_pending_updates=not is_reconnect, error_callback=_polling_error_callback, require_progress=not is_reconnect)
+            # A wired active room must capture outage backlog even on a fresh gateway process.
+            drop_pending_updates=not is_reconnect and not getattr(self, "_hosted_room_ingress_active", False),
+            error_callback=_polling_error_callback, require_progress=not is_reconnect)
         if not polling_started:
             logger.warning(
                 "[%s] Connected in degraded Telegram mode: gateway is alive, polling will be retried in the background", self.name)
@@ -2919,7 +2922,8 @@ class TelegramAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect via long polling, or a webhook server if ``TELEGRAM_WEBHOOK_URL`` is set.
 
-        ``is_reconnect``: False = cold boot (drop the stale Bot API queue); True = watcher reconnect (preserve queued
+        ``is_reconnect``: False = cold boot (drop the Bot API queue unless active room ingress is wired);
+        True = watcher reconnect (preserve queued
         updates, else every message sent during the outage is lost). Webhook env: TELEGRAM_WEBHOOK_URL,
         TELEGRAM_WEBHOOK_PORT (8443), TELEGRAM_WEBHOOK_HOST, TELEGRAM_WEBHOOK_SECRET."""
         # Explicit connect() is the only operation allowed to reopen polling after a completed teardown.

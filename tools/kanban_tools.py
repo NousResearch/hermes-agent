@@ -353,6 +353,43 @@ def _dir_workspace_uncommitted(path: str) -> Optional[list[str]]:
     return [ln[3:].strip() for ln in proc.stdout.splitlines() if ln.strip()] or None
 
 
+
+
+def _complete_ci_gate_rejection(task_id: str) -> Optional[str]:
+    """Refuse `kanban_complete` without a green CI check. See tools/kanban_ci_gate.py."""
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return None  # orchestrator / CLI path, as with the uncommitted gate.
+    try:
+        from tools.kanban_ci_gate import evaluate
+    except Exception:  # noqa: BLE001 — module absent: gate not installed, not a crash
+        return None
+    kb, conn = _connect()
+    try:
+        task = kb.get_task(conn, task_id)
+        if task is None:
+            return None
+        workspace = task.workspace_path or ""
+        tenant = getattr(task, "tenant", None)
+    finally:
+        conn.close()
+    try:
+        result = evaluate(workspace, tenant)
+    except Exception as exc:  # noqa: BLE001
+        # The gate itself failing is uncertainty, and uncertainty blocks — but it
+        # says so plainly rather than pretending to be a CI verdict.
+        return tool_error(
+            f"kanban_complete rejected: the CI gate could not run ({exc}). This is a fault "
+            f"in the gate, not in your work. Call kanban_block so a human sees it.")
+    if not result.blocked:
+        return None
+    return tool_error(
+        "kanban_complete rejected: this card's tenant requires a passing CI check before "
+        f"done.\n\n  {result.reason}\n\n"
+        "Done means a green check on a clean checkout, not a local run in your own worktree. "
+        "On 2026-09-04 four cards were built, reviewed and marked done on local evidence and "
+        "the work was lost. If the check cannot go green for a reason outside this card, call "
+        "kanban_block and say which. Your task is still in-flight; nothing was changed."
+    )
 def _complete_uncommitted_work_rejection(task_id: str) -> Optional[str]:
     """Refuse ``kanban_complete`` on a ``dir`` card with uncommitted source.
 
@@ -2009,6 +2046,14 @@ def _handle_complete(args: dict, **kw) -> str:
     uncommitted_rejection = _complete_uncommitted_work_rejection(tid)
     if uncommitted_rejection is not None:
         return uncommitted_rejection
+
+    # CI gate: for a tenant that declares `ci_gate`, done requires a GREEN CHECK
+    # RUN on the PR's head SHA — not a local test run in the card's own worktree.
+    # Fails CLOSED (unlike the guard above): an unreadable check is not a green
+    # one. Out-of-scope tenants pass straight through.
+    ci_rejection = _complete_ci_gate_rejection(tid)
+    if ci_rejection is not None:
+        return ci_rejection
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)

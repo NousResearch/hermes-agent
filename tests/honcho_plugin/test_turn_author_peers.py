@@ -112,6 +112,19 @@ class TestResolveAuthorPeerId:
             assert peer != mgr._declared_owner_peer_id()
             assert peer.startswith("eri-")
 
+    def test_bot_author_never_lands_on_the_sessions_human_runtime_peer(self):
+        """The human's peer on this session is not always ``peerName``: a bare or prefixed runtime id is one too."""
+        cases = [
+            (_config(), "coder", None, "bot:coder", "coder"),
+            (_config(), "7654321", "coder", "bot:coder", "coder"),
+            (_config(runtime_peer_prefix="tg_"), "7654321", None, "bot:tg_7654321", "tg_7654321"),
+        ]
+        for config, runtime_id, alt, author, human_peer in cases:
+            mgr = _manager(config, runtime_id=runtime_id, runtime_id_alt=alt)
+            assert human_peer in mgr._session_human_peer_ids("telegram:dm1")
+            peer = mgr.resolve_author_peer_id("telegram:dm1", author, is_bot=True)
+            assert peer != human_peer and peer.startswith(f"{human_peer}-")
+
     def test_bot_author_named_like_an_alias_target_gets_a_digest(self):
         mgr = _manager(_config(user_peer_aliases={"111222": "coder"}), runtime_id="7654321")
         peer = mgr.resolve_author_peer_id("telegram:dm1", "bot:coder")

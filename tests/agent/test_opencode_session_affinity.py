@@ -161,3 +161,24 @@ def test_stateless_oneshot_still_sends_an_opencode_session_header(out_of_turn):
 
     assert opencode_session_headers("opencode-go", None, session_id=None).get("x-opencode-session")
     assert opencode_session_headers("openrouter", "https://openrouter.ai/api/v1", session_id=None) == {}
+
+def test_stateless_oneshot_still_sends_the_session_header():
+    """Review-panel one-shots run between turns: no live session, no ambient
+    conversation. The relay still requires the header for routing (Console Go
+    400 MissingSessionID), so derive a stable per-task key instead of sending
+    nothing (#105841)."""
+    kwargs = aux._build_call_kwargs(
+        "opencode-go", "glm-5", _MSGS, base_url="https://opencode.ai/zen/go/v1", task="commit_message",
+    )
+    assert kwargs["extra_headers"]["x-opencode-session"] == "oneshot:commit_message"
+
+    taskless = aux._build_call_kwargs(
+        "opencode-go", "glm-5", _MSGS, base_url="https://opencode.ai/zen/go/v1",
+    )
+    assert taskless["extra_headers"]["x-opencode-session"] == "oneshot"
+
+    plain = aux._build_call_kwargs(
+        "openrouter", "anthropic/claude-sonnet-4.6", _MSGS, base_url="https://openrouter.ai/api/v1",
+        task="commit_message",
+    )
+    assert "x-opencode-session" not in (plain.get("extra_headers") or {})

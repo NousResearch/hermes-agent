@@ -189,5 +189,7 @@ export function composerFocusKeysAllowed(event: KeyboardEvent, combo: string): b
     return false
   }
 
-  return !(combo === 'enter' && isActivateOnEnterTarget(event.target))
+  // Space belongs to the focused control too (native activation or keyboard
+  // reordering). Other printable keys can still hand typing to the composer.
+  return !((combo === 'enter' || event.key === ' ') && isActivateOnEnterTarget(event.target))
 }

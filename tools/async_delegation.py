@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_state_common import state_db_begin_immediate
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 
@@ -85,7 +86,11 @@ def _db_path():
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
+    # ``isolation_level=None`` opts out of sqlite3's implicit transaction
+    # wrapper so the shared ``state_db_begin_immediate`` primitive issues
+    # ``BEGIN IMMEDIATE`` explicitly (the WAL write lock is acquired at
+    # transaction start, not lazily on the first INSERT/UPDATE).
+    conn = sqlite3.connect(path, timeout=10, isolation_level=None)
     try:
         _initialize_schema(conn)
     except Exception:
@@ -139,10 +144,16 @@ def _transaction() -> Iterator[sqlite3.Connection]:
     file descriptors — on every durable dispatch, completion, and delivery-claim, deferring the close to the
     garbage collector. On a long-running gateway that exhausts ``RLIMIT_NOFILE`` (the cron-ledger sibling of
     this bug was #69567 / PR #69594).
+
+    ``BEGIN IMMEDIATE`` is acquired BEFORE the body runs via the shared
+    ``hermes_state_common.state_db_begin_immediate`` primitive, so a
+    competing writer's hold surfaces at BEGIN time (and is retried with
+    bounded jitter) rather than mid-batch. Mid-body contention rides on
+    SQLite's own ``timeout=10`` busy handler.
     """
     conn = _connect()
     try:
-        with conn:
+        with state_db_begin_immediate(conn):
             yield conn
     finally:
         conn.close()

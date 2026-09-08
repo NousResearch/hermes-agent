@@ -23,6 +23,7 @@ from contextlib import closing, contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_state_common import state_db_begin_immediate
 
 logger = logging.getLogger(__name__)
 _DB_LOCK = threading.Lock()
@@ -145,7 +146,11 @@ def _db_path():
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
+    # ``isolation_level=None`` opts out of sqlite3's implicit transaction
+    # wrapper so the shared ``state_db_begin_immediate`` primitive issues
+    # ``BEGIN IMMEDIATE`` explicitly (the WAL write lock is acquired at
+    # transaction start, not lazily on the first INSERT/UPDATE).
+    conn = sqlite3.connect(path, timeout=10, isolation_level=None)
     try:
         _initialize_schema(conn)
     except Exception:
@@ -155,8 +160,16 @@ def _connect() -> sqlite3.Connection:
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_state_wal import apply_wal_with_fallback
-    apply_wal_with_fallback(conn, db_label="state.db (delivery_ledger)")
+    from hermes_state_repair import apply_durability_barriers
+
+    # state.db's owning SessionDB connection establishes the configured journal
+    # mode. This secondary durability ledger is a GUEST of state.db and must
+    # preserve that mode: ``apply_wal_with_fallback`` on every short-lived
+    # connection requires an exclusive lock when the file is not already WAL
+    # and can collide with live transcript/FTS writers. ``apply_durability_barriers``
+    # applies the per-connection durability setup (including the configured
+    # ``database.synchronous`` level) without touching journal mode.
+    apply_durability_barriers(conn)
     conn.execute(
         """CREATE TABLE IF NOT EXISTS delivery_obligations (
             obligation_id TEXT PRIMARY KEY,
@@ -193,9 +206,15 @@ def _transaction() -> Iterator[sqlite3.Connection]:
     On a long-running gateway that exhausts ``RLIMIT_NOFILE`` (the cron-ledger sibling of this bug was
     #69567 / PR #69594). ``record_obligation`` runs on every outbound final response, so this ledger is the
     highest-frequency leaker.
+
+    ``BEGIN IMMEDIATE`` is acquired BEFORE the body runs via the shared
+    ``hermes_state_common.state_db_begin_immediate`` primitive, so a
+    competing writer's hold surfaces at BEGIN time (and is retried with
+    bounded jitter) rather than mid-batch. Mid-body contention rides on
+    SQLite's own ``timeout=10`` busy handler.
     """
     conn = _connect()
-    with closing(conn), conn:
+    with closing(conn), state_db_begin_immediate(conn):
         yield conn
 
 

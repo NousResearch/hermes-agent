@@ -67,7 +67,9 @@ export function AutomationComposerDialog({
   const controls = useStore($sessionControlBySession)
   const entry = sessionId ? controls[sessionId] : undefined
   const existing = !isEdit ? entry?.snapshot?.[type] : undefined
-  const unavailable = !!entry && (entry.capability === 'unsupported' || !!entry.error || entry.loading)
+  // A rejected control action (such as a busy Goal) is kept separately as actionError and stays
+  // retryable. Connection/read errors and an unsupported backend remain unavailable.
+  const unavailable = !!entry && (entry.capability === 'unsupported' || !!entry.error)
   const [prefilledEditKey, setPrefilledEditKey] = useState<string | null>(null)
 
   useEffect(() => {

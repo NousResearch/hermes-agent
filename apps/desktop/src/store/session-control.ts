@@ -144,6 +144,8 @@ export interface SessionControlEntry {
   loading: boolean
   pendingAction: SessionControlAction | null
   snapshot: SessionControlSnapshot | null
+  /** A mutation was rejected by a reachable backend; this remains retryable. */
+  actionError: string | null
 }
 
 interface RefreshOptions {
@@ -518,7 +520,7 @@ function parseSessionControlDispatch(value: unknown): SessionControlDispatch | n
 }
 
 function emptyEntry(): SessionControlEntry {
-  return { capability: 'unknown', error: null, loading: false, pendingAction: null, snapshot: null }
+  return { capability: 'unknown', error: null, loading: false, pendingAction: null, snapshot: null, actionError: null }
 }
 
 function currentVersion(sessionId: string): number {
@@ -551,6 +553,7 @@ function sameEntry(first: SessionControlEntry, second: SessionControlEntry): boo
   return (
     first.capability === second.capability &&
     first.error === second.error &&
+    first.actionError === second.actionError &&
     first.loading === second.loading &&
     first.pendingAction === second.pendingAction &&
     first.snapshot === second.snapshot
@@ -578,6 +581,7 @@ function applyParsedSnapshot(sessionId: string, snapshot: SessionControlSnapshot
   return publishEntry(sessionId, {
     capability: 'supported',
     error: null,
+    actionError: null,
     loading: false,
     pendingAction: null,
     snapshot: nextSnapshot
@@ -622,6 +626,7 @@ export function applySessionControlUpdate(sessionId: string, rawSnapshot: unknow
     ...current,
     capability: 'supported',
     error: null,
+    actionError: null,
     loading: actionIsPending ? current.loading : false,
     pendingAction: actionIsPending ? current.pendingAction : null,
     snapshot: nextSnapshot
@@ -668,6 +673,7 @@ function beginRead(sessionId: string, background: boolean): number {
   publishEntry(sessionId, {
     ...current,
     error: null,
+    actionError: null,
     loading: background ? current.loading : true
   })
 
@@ -681,6 +687,7 @@ function beginAction(sessionId: string, action: SessionControlAction): number {
   publishEntry(sessionId, {
     ...current,
     error: null,
+    actionError: null,
     loading: true,
     pendingAction: action
   })
@@ -708,8 +715,24 @@ function publishFailure(sessionId: string, token: number, error: unknown, clearP
   publishEntry(sessionId, {
     ...current,
     error: boundedError(error),
+    actionError: null,
     loading: false,
     pendingAction: clearPendingAction ? null : current.pendingAction
+  })
+}
+
+function publishActionRejection(sessionId: string, token: number, error: unknown): void {
+  if (!isCurrent(sessionId, token)) {
+    return
+  }
+
+  const current = $sessionControlBySession.get()[sessionId] ?? emptyEntry()
+  publishEntry(sessionId, {
+    ...current,
+    error: null,
+    actionError: boundedError(error),
+    loading: false,
+    pendingAction: null
   })
 }
 
@@ -723,7 +746,8 @@ function finishGoneRequest(sessionId: string, token: number, clearPendingAction:
   publishEntry(sessionId, {
     ...current,
     loading: false,
-    pendingAction: clearPendingAction ? null : current.pendingAction
+    pendingAction: clearPendingAction ? null : current.pendingAction,
+    actionError: null
   })
 }
 
@@ -743,6 +767,7 @@ function markUnsupported(sessionId: string, token: number): boolean {
     ...current,
     capability: 'unsupported',
     error: null,
+    actionError: null,
     loading: false,
     pendingAction: null
   })
@@ -759,6 +784,12 @@ function isMethodNotFound(error: unknown): boolean {
     error instanceof Error ? error.message : isRecord(error) && typeof error.message === 'string' ? error.message : ''
 
   return message.toLowerCase().includes('method not found') || message.toLowerCase().includes('method-not-found')
+}
+
+function isApplicationRejection(error: unknown): boolean {
+  // A numeric JSON-RPC code means the backend was reached and declined this mutation.
+  // Method-not-found and gone have dedicated handling before this branch.
+  return isRecord(error) && typeof error.code === 'number'
 }
 
 /** Hydrates one session's structured controls; background refreshes never flash a loading state. */
@@ -883,6 +914,8 @@ export async function runSessionControlAction(
       }
     } else if (isSessionGoneForBackgroundPolling(error)) {
       finishGoneRequest(sessionId, token, true)
+    } else if (isApplicationRejection(error)) {
+      publishActionRejection(sessionId, token, error)
     } else {
       publishFailure(sessionId, token, error, true)
     }

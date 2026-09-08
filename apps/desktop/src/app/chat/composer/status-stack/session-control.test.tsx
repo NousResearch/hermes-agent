@@ -122,6 +122,7 @@ const mockEntry = (overrides?: Partial<SessionControlEntry>): SessionControlEntr
   error: null,
   loading: false,
   pendingAction: null,
+  actionError: null,
   snapshot: sampleSnapshot(),
   ...overrides
 })
@@ -162,7 +163,7 @@ describe('ComposerStatusStack session-control UI', () => {
       [SID]: { status: 'active', title: 'Legacy Goal Title', updatedAt: Date.now() }
     })
     $sessionControlBySession.set({
-      [SID]: { capability: 'unknown', error: null, loading: false, pendingAction: null, snapshot: null }
+      [SID]: { capability: 'unknown', error: null, loading: false, pendingAction: null, actionError: null, snapshot: null }
     })
 
     renderStack()

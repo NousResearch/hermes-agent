@@ -154,6 +154,42 @@ describe('AutomationComposerDialog', () => {
     expect((screen.getByLabelText(/goal prompt/i) as HTMLTextAreaElement).value).toBe('My unsaved objective')
   })
 
+  it('keeps an editable goal available while its control snapshot refreshes', async () => {
+    $sessionControlBySession.set({
+      'session-123': {
+        capability: 'supported',
+        error: null,
+        actionError: null,
+        loading: true,
+        pendingAction: null,
+        snapshot: { goal: { title: 'Original objective', status: 'active', subgoals: [], max_turns: 12 } }
+      }
+    } as never)
+    await renderDialog()
+    act(() => openAutomationComposerForEdit('goal', 'session-123'))
+    await screen.findByLabelText(/goal prompt/i)
+    expect(screen.queryByText('Automation controls are unavailable. Check the connection and refresh.')).toBeNull()
+    expect((screen.getByRole('button', { name: 'Save goal' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('keeps Save enabled after a transient busy action rejection', async () => {
+    $sessionControlBySession.set({
+      'session-123': {
+        capability: 'supported',
+        error: null,
+        actionError: 'Session is busy',
+        loading: false,
+        pendingAction: null,
+        snapshot: { goal: { title: 'Original objective', status: 'active', subgoals: [], max_turns: 12 } }
+      }
+    } as never)
+    await renderDialog()
+    act(() => openAutomationComposerForEdit('goal', 'session-123'))
+    await screen.findByLabelText(/goal prompt/i)
+    expect(screen.queryByText('Automation controls are unavailable. Check the connection and refresh.')).toBeNull()
+    expect((screen.getByRole('button', { name: 'Save goal' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
   it('switching to loop reveals interval, run limit and stop condition fields', async () => {
     await renderDialog()
     act(() => openAs('goal'))

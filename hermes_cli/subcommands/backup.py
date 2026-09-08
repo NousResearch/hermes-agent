@@ -26,4 +26,7 @@ def build_backup_parser(subparsers, *, cmd_backup: Callable) -> None:
         action="store_true",
         help="List files that would be backed up without creating the archive.",
     )
+    backup_parser.add_argument(
+        "--report", metavar="PATH",
+        help="Write a complete JSON audit with included/excluded/error paths (mode 0600; full backup only).")
     backup_parser.set_defaults(func=cmd_backup)

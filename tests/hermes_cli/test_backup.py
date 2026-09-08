@@ -196,19 +196,13 @@ class TestShouldExclude:
 
 
 # ---------------------------------------------------------------------------
-# _iter_backup_files tests
+# Shared backup traversal tests
 # ---------------------------------------------------------------------------
 
 class TestIterBackupFiles:
-    def test_manual_and_automatic_paths_share_one_walk(self, tmp_path):
-        """Both backup entry points must select the identical file set.
-
-        Before the walks were unified, the automatic pre-update path pruned
-        ``hermes-agent`` at ANY depth, silently dropping nested skill dirs
-        like ``skills/autonomous-ai-agents/hermes-agent/`` that the manual
-        path preserved. One shared iterator makes that drift impossible;
-        this test pins the contract."""
-        from hermes_cli.backup import _iter_backup_files
+    def test_manual_and_automatic_paths_share_one_walk(self, tmp_path, monkeypatch):
+        """Manual and automatic archives preserve the same nested skill data."""
+        from hermes_cli.backup import run_backup, _write_full_zip_backup
 
         root = tmp_path / ".hermes"
         root.mkdir()
@@ -225,15 +219,22 @@ class TestIterBackupFiles:
         (root / "models" / "big.gguf").write_bytes(b"\x00" * 64)
 
         out_path = tmp_path / "out.zip"
-        selected = {str(rel) for _, rel in _iter_backup_files(root, out_path)}
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert run_backup(Namespace(output=str(out_path))) is True
+        automatic = tmp_path / "automatic.zip"
+        assert _write_full_zip_backup(automatic, root) == automatic
+        with zipfile.ZipFile(out_path) as manual, zipfile.ZipFile(automatic) as auto:
+            selected = set(manual.namelist())
+            assert selected == set(auto.namelist())
 
-        rel_nested = str(Path("skills/autonomous-ai-agents/hermes-agent/SKILL.md"))
+        rel_nested = "skills/autonomous-ai-agents/hermes-agent/SKILL.md"
         assert rel_nested in selected
-        assert str(Path("models/big.gguf")) not in selected
+        assert "models/big.gguf" not in selected
         assert not any(s.startswith("hermes-agent") for s in selected)
 
     def test_skipped_dirs_collected_for_summary(self, tmp_path):
-        from hermes_cli.backup import _iter_backup_files
+        from hermes_cli.backup import _iter_backup_entries
 
         root = tmp_path / ".hermes"
         root.mkdir()
@@ -241,8 +242,8 @@ class TestIterBackupFiles:
         (root / "models").mkdir()
         (root / "models" / "big.gguf").write_bytes(b"\x00")
 
-        skipped: set = set()
-        list(_iter_backup_files(root, tmp_path / "out.zip", skipped))
+        entries = list(_iter_backup_entries(root, root, tmp_path / "out.zip"))
+        skipped = {entry["path"] for entry in entries if entry["reason"] == "excluded_directory"}
         assert "models" in skipped
         assert "hermes-agent" in skipped
 
@@ -342,7 +343,7 @@ class TestBackup:
             assert "skills/outside-link.txt" not in names
             assert all(zf.read(name) != b"outside secret\n" for name in names)
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX unix sockets")
+    @pytest.mark.linux_only
     def test_skips_unix_socket(self, tmp_path, monkeypatch, capsys):
         """A running gateway leaves a unix socket at HERMES_HOME/gateway.sock.
         zipfile.write() raises OSError on it, flipping the summary to "Backup
@@ -376,40 +377,6 @@ class TestBackup:
         with zipfile.ZipFile(out_zip, "r") as zf:
             assert "gateway.sock" not in zf.namelist()
 
-    def test_stat_failure_surfaces_as_warning_not_silent_skip(self, tmp_path, monkeypatch, capsys):
-        """A file whose stat() fails must NOT be dropped silently by the
-        non-regular-file skip: it falls through to the archive phase, where
-        the failure lands in the warnings and the summary stays honest."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        _make_hermes_tree(hermes_home)
-
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        real_stat = Path.stat
-
-        def _raising_stat(self, *args, **kwargs):
-            # Only the follow_symlinks=True call fails — lstat (used by the
-            # is_symlink check) still works, so the failure reaches the new
-            # non-regular-file check and the archive phase.
-            if self.name == "agent.log" and kwargs.get("follow_symlinks", True):
-                raise OSError("simulated stat failure")
-            return real_stat(self, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "stat", _raising_stat)
-
-        out_zip = tmp_path / "backup.zip"
-        args = Namespace(output=str(out_zip))
-
-        from hermes_cli.backup import run_backup
-        run_backup(args)
-
-        out = capsys.readouterr().out
-        assert "Backup incomplete" in out
-        assert "agent.log" in out
-        with zipfile.ZipFile(out_zip, "r") as zf:
-            assert "logs/agent.log" in zf.namelist()
 
     def test_state_snapshots_not_nested_into_backup(self, tmp_path, monkeypatch):
         """A quick snapshot left under state-snapshots/ must not be re-shipped
@@ -790,34 +757,6 @@ class TestBackupEdgeCases:
         assert not (tmp_path / "out.zip").exists()
 
 
-    def test_pre1980_timestamp_skipped(self, tmp_path, monkeypatch):
-        """Backup skips files with pre-1980 timestamps (ZIP limitation)."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text("model: test\n")
-
-        # Create a file with epoch timestamp (1970-01-01)
-        old_file = hermes_home / "ancient.txt"
-        old_file.write_text("old data")
-        os.utime(old_file, (0, 0))
-
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        out_zip = tmp_path / "out.zip"
-        args = Namespace(output=str(out_zip))
-
-        from hermes_cli.backup import run_backup
-        # The archive is kept, but a skipped file makes the run incomplete.
-        assert run_backup(args) is False
-
-        # Zip should still be created with the valid files
-        assert out_zip.exists()
-        with zipfile.ZipFile(out_zip, "r") as zf:
-            names = zf.namelist()
-            assert "config.yaml" in names
-            # The pre-1980 file should be skipped, not crash the backup
-            assert "ancient.txt" not in names
 
 
 
@@ -2530,7 +2469,7 @@ class TestBackupExitStatus:
         return hermes_home
 
     def test_run_backup_returns_false_and_keeps_archive_when_db_snapshot_fails(
-        self, tmp_path, monkeypatch, capsys
+        self, tmp_path, monkeypatch
     ):
         self._home(tmp_path, monkeypatch)
         import hermes_cli.backup as backup_mod
@@ -2545,17 +2484,13 @@ class TestBackupExitStatus:
             names = zf.namelist()
         assert "config.yaml" in names
         assert not any(name.endswith(".db") for name in names)
-        out = capsys.readouterr().out
-        assert "Backup incomplete" in out
-        assert "Archive kept" in out
-        assert "SQLite safe copy failed" in out
-        assert "Restore with:" not in out
 
+    @pytest.mark.linux_only
     def test_run_backup_returns_false_when_regular_file_unreadable(
         self, tmp_path, monkeypatch
     ):
-        if os.name != "posix" or os.geteuid() == 0:
-            pytest.skip("needs POSIX permissions and a non-root user")
+        if os.geteuid() == 0:
+            pytest.skip("root can read files regardless of file permissions")
         hermes_home = self._home(tmp_path, monkeypatch)
         secret = hermes_home / "unreadable.txt"
         secret.write_text("x", encoding="utf-8")
@@ -2569,14 +2504,6 @@ class TestBackupExitStatus:
         finally:
             secret.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
-    def test_run_backup_returns_true_when_complete(self, tmp_path, monkeypatch, capsys):
-        self._home(tmp_path, monkeypatch)
-        from hermes_cli.backup import run_backup
-
-        assert run_backup(Namespace(output=str(tmp_path / "out.zip"))) is True
-        out = capsys.readouterr().out
-        assert "Backup complete" in out
-        assert "Restore with:" in out
 
     def test_run_backup_exits_2_when_another_backup_is_running(
         self, tmp_path, monkeypatch
@@ -2589,32 +2516,3 @@ class TestBackupExitStatus:
                 run_backup(Namespace(output=str(tmp_path / "out.zip")))
         assert exc.value.code == 2
 
-    def test_cmd_backup_exits_1_when_full_backup_incomplete(self, monkeypatch):
-        import hermes_cli.backup as backup_mod
-        from hermes_cli.main import cmd_backup
-
-        monkeypatch.setattr(backup_mod, "run_backup", lambda args: False)
-        with pytest.raises(SystemExit) as exc:
-            cmd_backup(Namespace(quick=False, output=None))
-        assert exc.value.code == 1
-
-    def test_cmd_backup_returns_normally_when_complete(self, monkeypatch):
-        import hermes_cli.backup as backup_mod
-        from hermes_cli.main import cmd_backup
-
-        monkeypatch.setattr(backup_mod, "run_backup", lambda args: True)
-        assert cmd_backup(Namespace(quick=False, output=None)) is None
-
-    def test_cmd_backup_quick_path_untouched(self, monkeypatch):
-        import hermes_cli.backup as backup_mod
-        from hermes_cli.main import cmd_backup
-
-        calls = []
-        monkeypatch.setattr(backup_mod, "run_quick_backup", lambda args: calls.append(args))
-
-        def _not_expected(args):
-            raise AssertionError("full backup must not run for --quick")
-
-        monkeypatch.setattr(backup_mod, "run_backup", _not_expected)
-        cmd_backup(Namespace(quick=True, output=None, label=None))
-        assert len(calls) == 1

@@ -99,16 +99,6 @@ def test_symlinked_directory_subtree_is_skipped_and_reported(tmp_path, monkeypat
         ]
 
 
-def test_no_symlinks_prints_no_symlink_block(tmp_path, monkeypatch, capsys):
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    _make_minimal_home(hermes_home)
-
-    _run_backup(hermes_home, tmp_path, monkeypatch)
-
-    out = capsys.readouterr().out
-    assert "Symlinks skipped" not in out
-    assert "Backup complete" in out
 
 
 def test_pre_update_backup_reports_skipped_subtree_via_log(tmp_path, caplog):

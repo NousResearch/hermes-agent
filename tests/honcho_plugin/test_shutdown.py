@@ -17,7 +17,7 @@ from plugins.memory.honcho.client import (
     spawn_context_thread,
 )
 from plugins.memory.honcho.client_cache import _client_slots, _client_slots_lock
-from plugins.memory.honcho.session import HonchoSessionManager
+from plugins.memory.honcho.session import HonchoSession, HonchoSessionManager
 from plugins.plugin_utils import SingletonSlot
 
 
@@ -156,6 +156,31 @@ class TestProviderShutdown:
         finally:
             release.set()
             provider._recall_sync_thread.join(timeout=2)
+
+    def test_shutdown_skips_a_flush_whose_lock_an_upload_holds_past_the_budget(self, async_manager, monkeypatch, caplog):
+        provider = self._provider(async_manager)
+        monkeypatch.setattr(provider, "_shutdown_join_budget", lambda: 0.2)
+        session = HonchoSession("test-session", "user", "assistant", "sid")
+        session.add_message("user", "pending")
+        async_manager._cache["test-session"] = session
+        entered, release = threading.Event(), threading.Event()
+
+        def upload(messages):
+            entered.set()
+            release.wait(timeout=5)
+
+        async_manager._sessions_cache["sid"] = SimpleNamespace(add_messages=upload)
+        async_manager.save(session)
+        try:
+            assert entered.wait(timeout=1)
+            started = time.monotonic()
+            with caplog.at_level(logging.WARNING, logger="plugins.memory.honcho"):
+                provider.shutdown()
+            assert time.monotonic() - started < 1.0
+            assert "1 message(s) in 1 session(s) still unsynced" in caplog.text
+            assert session.messages[0].get("_synced") is None
+        finally:
+            release.set()
 
     def test_shutdown_does_not_close_the_shared_client(self, async_manager):
         provider = self._provider(async_manager)

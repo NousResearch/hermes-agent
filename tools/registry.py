@@ -439,7 +439,10 @@ class ToolRegistry:
     def get_entry(self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
         """Active profile's entry by name, falling back to global."""
         with self._lock:
-            return self._merged_tools(scope).get(name)
+            scoped = self._scoped_tools.get(scope or self.current_scope_key())
+            if scoped is not None and name in scoped:
+                return scoped[name]
+            return self._tools.get(name)
 
     def snapshot_registration(
         self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:

@@ -175,6 +175,62 @@ def test_tick_once_elevated_cpu_pressure_with_pid_persistence_fault_still_launch
                 assert row is not None and row.status == "ready", (slug, task_id, row and row.status)
 
 
+def test_tick_once_board_aware_callback_typeerror_invokes_exactly_once(
+    kanban_home, dispatcher, monkeypatch,
+):
+    """Regression for the t_75790124 review finding: a board-aware
+    ``_default_spawn`` replacement that raises ``TypeError`` from its own body
+    (not a signature mismatch) must be invoked exactly once across the whole
+    host cycle -- ``_call_spawn_fn`` must not mistake the callback's own
+    ``TypeError`` for an ``inspect.signature`` failure and retry it a second
+    time without ``board``."""
+    monkeypatch.setattr(kbd, "_system_cpu_sample", lambda: _cpu_sample("elevated"))
+    calls = []
+
+    def board_aware_spawn(task, workspace, *, board=None):
+        calls.append((board, task.id))
+        raise TypeError("callback's own bug, not a signature mismatch")
+
+    monkeypatch.setattr(kbd, "_default_spawn", board_aware_spawn)
+
+    results = dispatcher.tick_once()
+
+    assert len(calls) <= 1, calls
+    assert _total_spawned(results) == 0
+
+
+def test_tick_once_elevated_pre_spawn_rejection_leaves_shared_slot_for_later_board(
+    kanban_home, dispatcher, monkeypatch,
+):
+    """A row rejected before any spawn attempt (nonspawnable profile) on the
+    FIRST board must not spend the host-cycle-shared elevated reservation --
+    a later board's eligible row must still get the one shared spawn."""
+    monkeypatch.setattr(kbd, "_system_cpu_sample", lambda: _cpu_sample("elevated"))
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name != "not-a-profile")
+
+    with kbc.connect(board=BOARDS[0]) as conn:
+        conn.execute(
+            "UPDATE tasks SET assignee = ? WHERE id = ?",
+            ("not-a-profile", kanban_home[BOARDS[0]]["ready"]),
+        )
+
+    spawned = []
+
+    def fake_default_spawn(task, workspace, *, board=None):
+        spawned.append((board, task.id))
+        return 4242
+
+    monkeypatch.setattr(kbd, "_default_spawn", fake_default_spawn)
+
+    results = dispatcher.tick_once()
+    results_by_slug = dict(results)
+
+    assert kanban_home[BOARDS[0]]["ready"] in results_by_slug[BOARDS[0]].skipped_nonspawnable
+    assert len(spawned) == 1, spawned
+    assert _total_spawned(results) == 1
+
+
 def test_tick_once_critical_cpu_pressure_spawns_nothing_but_still_reclaims_and_promotes(
     kanban_home, dispatcher, monkeypatch,
 ):

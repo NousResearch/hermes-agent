@@ -1555,15 +1555,22 @@ def dispatch_once(
 
 def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -> Optional[int]:
     """Back-compat: older spawn_fn signatures (and test stubs) accept only
-    ``(task, workspace)``; pass ``board`` only when the callable supports it."""
+    ``(task, workspace)``; pass ``board`` only when the callable supports it.
+
+    Signature inspection is the only thing guarded by the ``except`` below --
+    ``spawn_fn`` itself is invoked exactly once, outside the handler, so a
+    ``TypeError``/``ValueError`` raised by the callback's own body propagates
+    once instead of being mistaken for a signature-inspection failure and
+    retried without ``board``.
+    """
     import inspect
     try:
-        sig = inspect.signature(spawn_fn)
-        if "board" in sig.parameters:
-            return spawn_fn(task, workspace, board=board)
-        return spawn_fn(task, workspace)
+        passes_board = "board" in inspect.signature(spawn_fn).parameters
     except (TypeError, ValueError):
-        return spawn_fn(task, workspace)
+        passes_board = False
+    if passes_board:
+        return spawn_fn(task, workspace, board=board)
+    return spawn_fn(task, workspace)
 
 
 def _dispatch_lane_task(
@@ -1749,8 +1756,9 @@ def _tick_spawn_budget(
     max_in_progress: Optional[int],
     board: Optional[str],
     host_cycle: Optional[HostCyclePressure] = None,
-) -> tuple[bool, Optional[int]]:
-    """``(may_spawn, spawn_budget)`` for this tick; ``budget None`` = uncapped.
+) -> tuple[bool, Optional[int], Optional[HostCyclePressure]]:
+    """``(may_spawn, spawn_budget, effective_host_cycle)``; ``budget None`` =
+    uncapped.
 
     ``max_spawn`` is a live per-board concurrency cap (running + this tick's
     spawns), not a per-tick budget — a per-tick reading would grow concurrency
@@ -1763,6 +1771,13 @@ def _tick_spawn_budget(
     cycle plus the cycle's shared remaining elevated-admission slots — this call
     must not resample CPU itself (that would double-sample and let each board
     see a different reading) and must not widen the shared budget back to 1.
+
+    ``effective_host_cycle`` is ``host_cycle`` unchanged when the caller supplied
+    one. When the caller omitted it (direct/manual call) and this tick classifies
+    as elevated, a fresh single-call :class:`HostCyclePressure` is created here so
+    the caller's ready and review loops share one mutable elevated-admission
+    reservation for this call, exactly like the gateway's cross-board one --
+    otherwise ``None`` (no elevated reservation needed this tick).
     """
     # Count already-running tasks so max_spawn enforces concurrency, not a
     # per-tick budget: "running" tasks stay running until the worker calls
@@ -1775,13 +1790,13 @@ def _tick_spawn_budget(
     # Both ready and review loops consume from the same budget.
     if max_spawn is not None:
         if running_count >= max_spawn:
-            return False, None
+            return False, None, host_cycle
         spawn_budget = max_spawn - running_count
 
     if max_in_progress is not None:
         total_running = running_count + count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
-            return False, None
+            return False, None, host_cycle
         remaining = max_in_progress - total_running
         if spawn_budget is None or spawn_budget > remaining:
             spawn_budget = remaining
@@ -1797,7 +1812,7 @@ def _tick_spawn_budget(
             "kanban dispatch: system memory pressure is critical; "
             "spawning no new workers this tick (deferred, not dropped)"
         )
-        return False, None
+        return False, None, host_cycle
 
     # Host-wide CPU-pressure guard (t_4008d306): same defer-not-drop contract as
     # the memory guard above, applied to load average / PSI instead of
@@ -1813,8 +1828,9 @@ def _tick_spawn_budget(
             "kanban dispatch: host CPU pressure is critical; "
             "spawning no new workers this tick (deferred, not dropped)"
         )
-        return False, None
+        return False, None, host_cycle
 
+    effective_host_cycle = host_cycle
     if mem_pressure == "elevated":
         result.memory_pressure = mem_pressure
     if cpu_pressure == "elevated":
@@ -1826,6 +1842,13 @@ def _tick_spawn_budget(
             # cycle's slot already spent (an earlier board in this same cycle
             # consumed it) gets 0, never a fresh 1.
             elevated_cap = max(host_cycle.remaining_elevated_spawns, 0)
+        elif cpu_pressure == "elevated":
+            # Direct/manual call (no shared host_cycle): create this call's own
+            # single-use elevated reservation so the ready and review loops
+            # below share and permanently deplete the same slot, instead of
+            # each independently counting successful spawns only.
+            effective_host_cycle = HostCyclePressure(cpu_pressure="elevated")
+            elevated_cap = effective_host_cycle.remaining_elevated_spawns
         else:
             elevated_cap = 1
         if spawn_budget is None or spawn_budget > elevated_cap:
@@ -1834,7 +1857,7 @@ def _tick_spawn_budget(
                 "limiting to at most %d new worker(s) this tick", mem_pressure, cpu_pressure, elevated_cap,
             )
             spawn_budget = elevated_cap
-    return True, spawn_budget
+    return True, spawn_budget, effective_host_cycle
 
 
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
@@ -1908,7 +1931,7 @@ def _dispatch_once_locked(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
     )
-    may_spawn, spawn_budget = _tick_spawn_budget(
+    may_spawn, spawn_budget, host_cycle = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
         host_cycle=host_cycle,
     )

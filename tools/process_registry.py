@@ -1939,6 +1939,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
             ]
         result = []
         for s in all_sessions:
+            # List-only refreshes must observe child exit even while descendants
+            # keep the capture pipe open; retain the existing completion owner.
+            self._reconcile_local_exit(s)
             entry = {
                 "session_id": s.id,
                 "command": s.command[:200],

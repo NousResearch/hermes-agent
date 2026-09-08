@@ -241,12 +241,19 @@ def _codex_http_client(**kwargs: Any) -> "httpx.Client":
 
 
 def _codex_quota_exhausted_error(retry_after: Optional[int]) -> AuthError:
-    message = (
-        f"Codex provider quota exhausted (429); retry after {retry_after}s. "
-        "Credentials are still valid."
-        if retry_after is not None else
-        "Codex provider quota exhausted (429). Credentials are still valid; "
-        "retry after the usage limit resets.")
+    if retry_after is not None:
+        # Humanize the raw seconds the API reports: "retry after 79m" instead of
+        # "retry after 4767s" (format_duration_compact keeps <60s as "Ns").
+        from agent.usage_pricing import format_duration_compact
+        message = (
+            f"Codex provider quota exhausted (429); retry after "
+            f"{format_duration_compact(float(retry_after))}. "
+            "Credentials are still valid."
+        )
+    else:
+        message = (
+            "Codex provider quota exhausted (429). Credentials are still valid; "
+            "retry after the usage limit resets.")
     return _codex_err(message, CODEX_RATE_LIMITED_CODE, relogin=False)
 
 

@@ -1568,7 +1568,10 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
             config[key] = value
         else:
             config.pop(key, None)
-    config["reasoning_user_override"] = bool(getattr(agent, "reasoning_user_override", False))
+    if isinstance(reasoning_config, dict):
+        config["reasoning_user_override"] = bool(getattr(agent, "reasoning_user_override", False))
+    else:
+        config.pop("reasoning_user_override", None)
     return config
 
 

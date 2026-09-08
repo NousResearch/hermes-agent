@@ -42,6 +42,54 @@ export interface HostedCapabilities {
   persistentHolds: boolean
   /** Whether this gateway both mints attachment ids and serves the byte RPCs. */
   attachments: boolean
+  telegramRecovery?: boolean
+}
+
+export interface HostedTelegramDelivery {
+  event_id: string
+  chunk_index: number
+  attempt: number
+  profile: string
+  thread_id: string
+  status: 'uncertain' | 'rejected' | 'sending' | 'retry_authorized'
+  failure_kind?: string
+  retry_after?: number
+}
+
+export interface HostedTelegramStatus {
+  room_id: string
+  chat_id: number
+  blocked: boolean
+  attention: HostedTelegramDelivery | null
+}
+
+export function parseHostedTelegramStatus(raw: unknown, roomId: string): HostedTelegramStatus | undefined {
+  if (raw == null) {return undefined}
+  const value = hostedRecord(raw)
+
+  if (value.room_id !== roomId || typeof value.chat_id !== 'number' || !Number.isSafeInteger(value.chat_id) || value.chat_id >= 0 || typeof value.blocked !== 'boolean') {
+    throw new Error('Invalid Telegram transport identity')
+  }
+
+  let attention: HostedTelegramDelivery | null = null
+
+  if (value.attention !== null) {
+    const row = hostedRecord(value.attention)
+
+    if (!['uncertain', 'rejected', 'sending', 'retry_authorized'].includes(String(row.status))) {
+      throw new Error('Invalid Telegram delivery state')
+    }
+
+    attention = {
+      event_id: text(row.event_id), chunk_index: integer(row.chunk_index), attempt: integer(row.attempt, 1),
+      profile: text(row.profile), thread_id: typeof row.thread_id === 'string' ? row.thread_id : '',
+      status: row.status as HostedTelegramDelivery['status'],
+      failure_kind: typeof row.failure_kind === 'string' ? row.failure_kind : undefined,
+      retry_after: typeof row.retry_after === 'number' && Number.isFinite(row.retry_after) ? row.retry_after : undefined
+    }
+  }
+
+  return { room_id: roomId, chat_id: value.chat_id, blocked: value.blocked, attention }
 }
 
 /** One member the user has paused, as the owning gateway reports it. */
@@ -102,6 +150,7 @@ export function parseHostedCapabilities(raw: unknown): HostedCapabilities {
     logLimit: Math.min(100, integer(value.max_log_limit, 1)),
     driver: value.driver === true,
     persistentProcess: value.persistent_process === true,
+    telegramRecovery: methods.includes('groups.telegram.resolve_delivery'),
     // Optional on purpose: a gateway without durable holds still serves this room, it just
     // cannot promise a pause survives. Requiring the feature would push it into a fallback.
     persistentHolds: features.includes('persistent_member_holds'),

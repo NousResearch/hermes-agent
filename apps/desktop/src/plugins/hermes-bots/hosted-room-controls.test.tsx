@@ -65,6 +65,75 @@ beforeEach(async () => {
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() })
 
+it.each(['retry', 'confirmed-delivered'] as const)('confirms Telegram %s with frozen exact part and external-readback warning', async decision => {
+  const delivery = { event_id: 'output', chunk_index: 1, attempt: 2, profile: 'helper', thread_id: 'thread', status: 'uncertain' as const }
+  const resolve = vi.spyOn(client, 'resolveHostedTelegramDelivery').mockResolvedValue(undefined)
+  client.$hostedRooms.set({ [key]: { ...client.$hostedRooms.get()[key],
+    capabilities: { ...client.$hostedRooms.get()[key].capabilities!, telegramRecovery: true },
+    telegramStatus: { room_id: identity.roomId, chat_id: -999, blocked: true, attention: delivery }
+  } })
+  render(<controls.HostedRoomStatus roomKey={key} visible={false} />)
+  expect(screen.getByText(/Telegram delivery blocked/)).toBeTruthy()
+  expect(screen.getByText(/Bot API cannot read chat history/)).toBeTruthy()
+  const mark = screen.getByRole('button', { name: 'Mark delivered' }) as HTMLButtonElement
+  expect(mark.disabled).toBe(true)
+  const field = screen.getByRole('textbox', { name: /Telegram message ID/ })
+  fireEvent.change(field, { target: { value: '1.5' } })
+  expect(mark.disabled).toBe(true)
+  fireEvent.change(field, { target: { value: '777' } })
+  expect(mark.disabled).toBe(false)
+  const launch = decision === 'retry' ? 'Authorize delivery retry' : 'Mark delivered'
+  fireEvent.click(screen.getByRole('button', { name: launch }))
+  expect(resolve).not.toHaveBeenCalled()
+  expect(screen.getByRole('dialog').textContent).toContain('Telegram chat -999, helper: output, part 2, attempt 2')
+  expect(screen.getByRole('dialog').textContent).toMatch(decision === 'retry' ? /external readback.*duplicate/ : /message 777.*Bot API cannot verify/)
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  expect(resolve).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: launch }))
+  act(() => client.$hostedRooms.set({ [key]: { ...client.$hostedRooms.get()[key], telegramStatus: {
+    room_id: identity.roomId, chat_id: -999, blocked: true, attention: { ...delivery, attempt: 3 }
+  } } }))
+  fireEvent.click(screen.getByRole('button', { name: decision === 'retry' ? 'Retry this part' : 'Confirm delivered' }))
+  await waitFor(() => expect(resolve).toHaveBeenCalledExactlyOnceWith(key, delivery, decision, decision === 'retry' ? undefined : 777))
+  expect(client.retryHostedTask).not.toHaveBeenCalled()
+})
+
+it('keeps Telegram confirmation errors visible without claiming success', async () => {
+  const delivery = { event_id: 'output', chunk_index: 1, attempt: 2, profile: 'helper', thread_id: 'thread', status: 'uncertain' as const }
+  vi.spyOn(client, 'resolveHostedTelegramDelivery').mockRejectedValue(new Error('currently sending'))
+  client.$hostedRooms.set({ [key]: { ...client.$hostedRooms.get()[key],
+    capabilities: { ...client.$hostedRooms.get()[key].capabilities!, telegramRecovery: true },
+    telegramStatus: { room_id: identity.roomId, chat_id: -999, blocked: true, attention: delivery }
+  } })
+  render(<controls.HostedRoomStatus roomKey={key} visible={false} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Authorize delivery retry' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Retry this part' }))
+  await screen.findByText('currently sending')
+  expect(screen.getByRole('dialog')).toBeTruthy()
+  expect(screen.queryByText('Done')).toBeNull()
+})
+
+it.each(['busy', 'sending', 'unsupported'] as const)('does not offer actionable recovery while %s', mode => {
+  const resolve = vi.spyOn(client, 'resolveHostedTelegramDelivery').mockResolvedValue(undefined)
+  client.$hostedRooms.set({ [key]: { ...client.$hostedRooms.get()[key], busy: mode === 'busy',
+    capabilities: { ...client.$hostedRooms.get()[key].capabilities!, telegramRecovery: mode !== 'unsupported' },
+    telegramStatus: { room_id: identity.roomId, chat_id: -999, blocked: mode !== 'sending', attention: {
+      event_id: 'output', chunk_index: 1, attempt: 2, profile: 'helper', thread_id: 'thread', status: mode === 'sending' ? 'sending' : 'uncertain'
+    } }
+  } })
+  render(<controls.HostedRoomStatus roomKey={key} visible={false} />)
+  const button = screen.queryByRole('button', { name: 'Authorize delivery retry' }) as HTMLButtonElement | null
+
+  if (mode === 'busy') {
+    expect(button?.disabled).toBe(true)
+    fireEvent.click(button!)
+  } else {
+    expect(button).toBeNull()
+  }
+
+  expect(resolve).not.toHaveBeenCalled()
+})
+
 it('stops fetching on error and resumes polling after explicit successful refresh', async () => {
   vi.useFakeTimers()
   vi.mocked(client.refreshHostedRoom).mockImplementationOnce(async () => {

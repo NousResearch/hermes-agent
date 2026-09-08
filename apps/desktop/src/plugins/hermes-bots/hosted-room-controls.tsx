@@ -3,9 +3,10 @@ import { useEffect, useRef, useState } from 'react'
 
 import {
   $hostedDirectories, $hostedRooms, approveHostedTask, discardHostedInput, discoverHostedRooms, fetchHostedAttachment, invalidateHostedRoom,
-  refreshHostedRoom, retryHostedTask, sendHostedInput, stopHostedRoom
+  refreshHostedRoom, resolveHostedTelegramDelivery, retryHostedTask, sendHostedInput, stopHostedRoom
 } from './hosted-room-client'
 import { hostedHolds, hostedPendingActions } from './hosted-room-protocol'
+import type { HostedTelegramDelivery } from './hosted-room-protocol'
 import { useBots } from './i18n'
 import type { Attachment } from './types'
 
@@ -111,6 +112,12 @@ export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
   const cache = useValue($hostedRooms)[roomKey]
   const gateway = useValue(host.state.gateway)
   const [discard, setDiscard] = useState<{ roomKey: string; eventId: string } | null>(null)
+  const [telegramId, setTelegramId] = useState('')
+
+  const [resolution, setResolution] = useState<{
+    roomKey: string; chatId: number; delivery: HostedTelegramDelivery; decision: 'retry' | 'confirmed-delivered'; messageId?: number
+  } | null>(null)
+
   useEffect(() => {
     if (!visible) {return}
     let disposed = false
@@ -135,7 +142,10 @@ export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
   }, [roomKey, visible, gateway])
 
   const driver = cache?.driverStatus
-  const status = !driver?.running ? 'Worker unavailable' : driver.blocked ? 'Blocked' : driver.working ? 'Working' : 'Idle'
+  const telegram = cache?.telegramStatus
+  const delivery = telegram?.attention
+  const messageId = /^\d+$/.test(telegramId.trim()) ? Number(telegramId.trim()) : NaN
+  const status = telegram?.blocked ? 'Telegram delivery blocked' : !driver?.running ? 'Worker unavailable' : driver.blocked ? 'Blocked' : driver.working ? 'Working' : 'Idle'
   const actions = hostedPendingActions(driver)
   const reported = Array.isArray(driver?.pending_actions) ? driver.pending_actions.length : 0
   const unsupported = Math.max(0, reported - actions.length)
@@ -153,6 +163,26 @@ export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
         <Button disabled={cache?.busy} onClick={() => void refreshHostedRoom(roomKey)} size="xs" variant="ghost">Refresh room</Button>
         <Button disabled={cache?.busy || !driver?.running} onClick={() => void stopHostedRoom(roomKey)} size="xs" variant="ghost">Stop room work</Button>
       </div>
+      {delivery ? (
+        <div className="grid min-w-0 gap-1" role="status">
+          <p className="break-words">Telegram chat {telegram.chat_id}: {delivery.profile}, event {delivery.event_id}, part {delivery.chunk_index + 1}, attempt {delivery.attempt}: {delivery.status}.</p>
+          {delivery.retry_after ? <p>Telegram cooldown until {new Date(delivery.retry_after * 1000).toLocaleString()}.</p> : null}
+          {telegram.blocked ? <p>Check this exact part and sender in Telegram first. The Bot API cannot read chat history; these controls record your external readback, not Telegram proof. No model task is rerun.</p> : null}
+          {telegram.blocked && !cache?.capabilities?.telegramRecovery ? <p>This gateway does not advertise Telegram delivery recovery. Update the backend to reconcile this part.</p> : null}
+          {telegram.blocked && cache?.capabilities?.telegramRecovery ? (
+            <>
+              <label className="grid gap-1">
+                Telegram message ID (last numeric segment of the copied message link)
+                <input className="min-w-0 rounded border border-(--ui-stroke-secondary) p-1" disabled={cache.busy} inputMode="numeric" onChange={event => setTelegramId(event.target.value)} value={telegramId} />
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <Button disabled={cache.busy || !Number.isSafeInteger(messageId) || messageId <= 0} onClick={() => setResolution({ roomKey, chatId: telegram.chat_id, delivery, decision: 'confirmed-delivered', messageId })} size="xs" variant="secondary">Mark delivered</Button>
+                <Button disabled={cache.busy || Boolean(delivery.retry_after && delivery.retry_after * 1000 > Date.now())} onClick={() => setResolution({ roomKey, chatId: telegram.chat_id, delivery, decision: 'retry' })} size="xs" variant="ghost">Authorize delivery retry</Button>
+              </div>
+            </>
+          ) : null}
+        </div>
+      ) : null}
       {holds.length ? (
         <p role="status">
           Paused by you: {holds.map(hold => hold.label).join(', ')}. Send “@{holds[0].handle} resume”
@@ -196,6 +226,19 @@ export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
           <Button disabled={cache.busy} onClick={() => setDiscard({ roomKey, eventId: cache.pending!.eventId })} size="xs" variant="ghost">{b.group.discardSavedInput}</Button>
         </div>
       ) : null}
+      <ConfirmDialog
+        confirmLabel={resolution?.decision === 'retry' ? 'Retry this part' : 'Confirm delivered'}
+        description={`Telegram chat ${resolution?.chatId}, ${resolution?.delivery.profile}: ${resolution?.delivery.event_id || ''}, part ${(resolution?.delivery.chunk_index ?? 0) + 1}, attempt ${resolution?.delivery.attempt || ''}. ${resolution?.decision === 'retry'
+          ? 'Retry only after external readback in Telegram shows this exact part was not delivered. An ambiguous send may already have arrived: retry can create a duplicate. Only this part is authorized, without rerunning the agent.'
+          : `Confirm you checked the exact chat, sender and part in Telegram and message ${resolution?.messageId} is its delivered copy. This records your assertion and skips sending only this part. The Bot API cannot verify chat history.`}`}
+        destructive={resolution?.decision === 'retry'}
+        onClose={() => setResolution(null)}
+        onConfirm={async () => {
+          if (resolution) {await resolveHostedTelegramDelivery(resolution.roomKey, resolution.delivery, resolution.decision, resolution.messageId)}
+        }}
+        open={resolution !== null}
+        title="Reconcile Telegram delivery?"
+      />
       <ConfirmDialog
         confirmLabel={b.group.discardLocalInput}
         description={b.group.discardSavedWarning}

@@ -19,7 +19,9 @@ import os
 import re
 import sqlite3
 import threading
+import time
 from contextlib import closing, contextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +42,11 @@ CREATE TABLE IF NOT EXISTS deliveries (
  PRIMARY KEY(event_id,chunk_index));
 CREATE TABLE IF NOT EXISTS cursor (singleton INTEGER PRIMARY KEY CHECK(singleton=1), seq INTEGER NOT NULL);
 INSERT OR IGNORE INTO cursor VALUES(1,0);
+CREATE TABLE IF NOT EXISTS delivery_resolutions (
+ event_id TEXT NOT NULL, chunk_index INTEGER NOT NULL, attempt INTEGER NOT NULL,
+ decision TEXT NOT NULL, message_id INTEGER, previous_status TEXT NOT NULL,
+ failure_kind TEXT, retry_after REAL,
+ PRIMARY KEY(event_id,chunk_index,attempt));
 """
 
 _BINDING_FIELDS = ("room_id", "queue_db", "chat_id", "owner_id", "control_profile", "bots")
@@ -129,6 +136,11 @@ def initialize_queue(path: Path, *, recover: bool = False) -> None:
         db.execute("BEGIN IMMEDIATE")
         if not any(row[1] == "media_json" for row in db.execute("PRAGMA table_info(inbox)")):
             db.execute("ALTER TABLE inbox ADD COLUMN media_json TEXT")
+        columns = {row[1] for row in db.execute("PRAGMA table_info(deliveries)")}
+        for name, declaration in (("attempt", "INTEGER NOT NULL DEFAULT 1"),
+                                  ("failure_kind", "TEXT"), ("retry_after", "REAL")):
+            if name not in columns:
+                db.execute(f"ALTER TABLE deliveries ADD COLUMN {name} {declaration}")
         if recover:
             db.execute("UPDATE deliveries SET status='uncertain' WHERE status='sending'")
     path.chmod(0o600)
@@ -246,6 +258,92 @@ class Transport:
             # A reply must not silently become a different conversation.
             raise ValueError("unmapped Telegram reply")
         return row["event_id"]
+
+    def status(self) -> dict[str, Any]:
+        with self.db() as db:
+            row = db.execute(
+                "SELECT * FROM deliveries WHERE status != 'sent' ORDER BY rowid LIMIT 1").fetchone()
+            cursor = db.execute("SELECT seq FROM cursor WHERE singleton=1").fetchone()[0]
+        return {"room_id": self.room, "chat_id": self.config["chat_id"], "cursor": cursor,
+                "blocked": bool(row and row["status"] in {"uncertain", "rejected"}),
+                "attention": dict(row) if row else None}
+
+    def resolve_delivery(self, *, room_id, event_id, chunk_index, attempt, decision,
+                         message_id=None, authority_gateway_id, authority_epoch) -> dict[str, Any]:
+        """Record a human's external readback, never Telegram history proof or model work.
+
+        The attempt is also the idempotency key: replaying an old decision cannot authorize a
+        later failed send. Keep its original ambiguity/refusal evidence after reconciliation.
+        """
+        from gateway import hosted_rooms
+        from gateway.hosted_room_route_schema import require_room_work_open
+
+        if room_id != self.room or not isinstance(event_id, str) or not event_id:
+            raise ValueError("Telegram delivery room/event mismatch")
+        if (type(chunk_index) is not int or chunk_index < 0 or type(attempt) is not int or attempt < 1
+                or type(authority_epoch) is not int or authority_epoch < 1):
+            raise ValueError("delivery chunk, attempt and authority epoch must be integers")
+        if decision not in ("retry", "confirmed-delivered"):
+            raise ValueError("delivery decision must be retry or confirmed-delivered")
+        if ((decision == "confirmed-delivered" and
+             (type(message_id) is not int or not 0 < message_id <= 2**53 - 1))
+                or (decision == "retry" and message_id is not None)):
+            raise ValueError("confirmed delivery requires a positive integer Telegram message ID only")
+        # Serialize authority/disband with the existing room writer, then queue mutation with
+        # the publisher's reservation. No network operation runs under either transaction.
+        with closing(hosted_rooms._read_connection(self.service.db_path)) as canonical, canonical:
+            canonical.execute("BEGIN IMMEDIATE")
+            room = canonical.execute(
+                "SELECT * FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL",
+                (self.room,)).fetchone()
+            if room is None or authority_gateway_id != hosted_rooms.local_authority_gateway_id():
+                raise ValueError("Telegram delivery authority mismatch")
+            hosted_rooms._require_authority(
+                room, authority_gateway_id, authority_epoch, "Telegram delivery authority changed")
+            require_room_work_open(canonical, self.room, error=ValueError)
+            events = self.events()
+            event = next((item for item in events if item["event_id"] == event_id), None)
+            if event is None:
+                raise ValueError("Telegram delivery event is not in this room")
+            text, profile, thread_id = self.delivery_content(event, {
+                item["payload"].get("message_event_id") for item in events if item["kind"] == "turn.settled"})
+            count = (len(text or "") + 1799) // 1800 + len(event["payload"].get("attachments") or [])
+            if text is None or chunk_index >= count:
+                raise ValueError("Telegram delivery does not identify a committed part")
+            with self.db() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute("SELECT * FROM deliveries WHERE event_id=? AND chunk_index=?",
+                                 (event_id, chunk_index)).fetchone()
+                if row is None or (row["profile"], row["thread_id"]) != (profile, thread_id):
+                    raise ValueError("Telegram delivery row identity mismatch")
+                if row["status"] == "sending":
+                    raise ValueError("Telegram delivery is currently sending; refresh after it finishes")
+                previous = db.execute(
+                    "SELECT * FROM delivery_resolutions WHERE event_id=? AND chunk_index=? AND attempt=?",
+                    (event_id, chunk_index, attempt)).fetchone()
+                if previous:
+                    if (previous["decision"], previous["message_id"]) != (decision, message_id):
+                        raise ValueError("Telegram delivery attempt already has a different decision")
+                else:
+                    if row["attempt"] != attempt or row["status"] not in {"uncertain", "rejected"}:
+                        raise ValueError("Telegram delivery state changed; refresh before reconciling")
+                    if decision == "retry" and row["retry_after"] and time.time() < row["retry_after"]:
+                        raise ValueError("Telegram RetryAfter cooldown has not elapsed")
+                    if message_id is not None and (db.execute(
+                            "SELECT 1 FROM deliveries WHERE message_id=?", (message_id,)).fetchone()
+                            or db.execute("SELECT 1 FROM inbox WHERE message_id=?", (message_id,)).fetchone()):
+                        raise ValueError("Telegram message ID is already mapped")
+                    db.execute("INSERT INTO delivery_resolutions VALUES(?,?,?,?,?,?,?,?)",
+                               (event_id, chunk_index, attempt, decision, message_id,
+                                row["status"], row["failure_kind"], row["retry_after"]))
+                    db.execute("UPDATE deliveries SET status=?,message_id=? WHERE event_id=? AND chunk_index=?",
+                               ("sent" if decision == "confirmed-delivered" else "retry_authorized",
+                                message_id, event_id, chunk_index))
+                current = db.execute("SELECT * FROM deliveries WHERE event_id=? AND chunk_index=?",
+                                     (event_id, chunk_index)).fetchone()
+                return {"room_id": self.room, "event_id": event_id, "chunk_index": chunk_index,
+                        "attempt": attempt, "decision": decision, "message_id": message_id,
+                        "delivery": dict(current)}
 
     def media_for(self, row):
         """Verified ``(reference, bytes)`` for one input's captured media.
@@ -387,8 +485,21 @@ class Transport:
             return await bot.send_photo(photo=bytes(data), **common)
         return await bot.send_document(document=bytes(data), filename=attachment["name"], **common)
 
+    def delivery_content(self, event, committed):
+        payload, kind = event["payload"], event["kind"]
+        text, profile = None, self.config["control_profile"]
+        thread_id = payload.get("thread_id", "")
+        if kind == "message.member" and event["event_id"] in committed:
+            profile, text = self.member_profiles[payload["member_id"]], payload["text"]
+        elif kind == "message.user" and event["actor"].get("id") != f"telegram:{self.config['owner_id']}":
+            text = f"{event['actor'].get('id', 'user')}:\n{payload['text']}"
+        elif kind == "room.stop_requested":
+            text = "Room work was paused."
+        return text, profile, thread_id
+
     async def publish(self, bots) -> None:
         from telegram import LinkPreviewOptions, ReplyParameters
+        from telegram.error import BadRequest, Forbidden, InvalidToken, RetryAfter
 
         with self.db() as db:
             cursor = db.execute("SELECT seq FROM cursor WHERE singleton=1").fetchone()[0]
@@ -399,19 +510,9 @@ class Transport:
         for event in events:
             if event["seq"] <= cursor:
                 continue
-            payload, kind = event["payload"], event["kind"]
-            text, profile = None, self.config["control_profile"]
-            thread_id = payload.get("thread_id", "")
-            if kind == "message.member":
-                if event["event_id"] not in committed:
-                    return
-                profile, text = self.member_profiles[payload["member_id"]], payload["text"]
-            elif kind == "message.user" and event["actor"].get("id") != f"telegram:{self.config['owner_id']}":
-                # Anything the room accepted from another surface is rendered with its own actor,
-                # never re-sent to the chat it came from.
-                text = f"{event['actor'].get('id', 'user')}:\n{payload['text']}"
-            elif kind == "room.stop_requested":
-                text = "Room work was paused."
+            if event["kind"] == "message.member" and event["event_id"] not in committed:
+                return
+            text, profile, thread_id = self.delivery_content(event, committed)
             # An attachment-only message has no text and still has to reach the group.
             media = self.published_media(event) if text is not None else []
             if text or media:
@@ -426,6 +527,7 @@ class Transport:
                 parts.extend(("media", item) for item in media)
                 for index, (part_kind, part) in enumerate(parts):
                     with self.db() as db:
+                        db.execute("BEGIN IMMEDIATE")
                         existing = db.execute(
                             "SELECT status FROM deliveries WHERE event_id=? AND chunk_index=?",
                             (event["event_id"], index)).fetchone()
@@ -435,7 +537,8 @@ class Transport:
                             if existing[0] != "retry_authorized":
                                 raise RuntimeError("uncertain Telegram delivery requires readback")
                             db.execute(
-                                "UPDATE deliveries SET status='sending' WHERE event_id=? AND chunk_index=?",
+                                "UPDATE deliveries SET status='sending',attempt=attempt+1,"
+                                "failure_kind=NULL,retry_after=NULL WHERE event_id=? AND chunk_index=?",
                                 (event["event_id"], index))
                         else:
                             db.execute(
@@ -456,11 +559,18 @@ class Transport:
                                     message_id=reply_id, allow_sending_without_reply=True)
                                 if reply_id else None,
                                 read_timeout=30, write_timeout=30, connect_timeout=15)
-                    except BaseException:
+                    except BaseException as exc:
+                        refused = isinstance(exc, (BadRequest, Forbidden, InvalidToken, RetryAfter))
+                        cooldown = None
+                        if isinstance(exc, RetryAfter):
+                            delay = exc.retry_after
+                            cooldown = time.time() + (delay.total_seconds() if isinstance(delay, timedelta) else delay)
                         with self.db() as db:
                             db.execute(
-                                "UPDATE deliveries SET status='uncertain' WHERE event_id=? AND chunk_index=?",
-                                (event["event_id"], index))
+                                "UPDATE deliveries SET status=?,failure_kind=?,retry_after=?"
+                                " WHERE event_id=? AND chunk_index=?",
+                                ("rejected" if refused else "uncertain",
+                                 type(exc).__name__ if refused else "ambiguous", cooldown, event["event_id"], index))
                         raise
                     with self.db() as db:
                         db.execute(
@@ -517,4 +627,3 @@ class Transport:
             self._mutex.close()
             self._mutex = None
         return True
-

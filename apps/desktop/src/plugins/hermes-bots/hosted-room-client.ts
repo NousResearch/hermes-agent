@@ -2,10 +2,10 @@ import { atom, host } from '@hermes/plugin-sdk'
 
 import { prepareHostedMessageAttachments, readHostedMessageAttachment, stageHostedMessageAttachments } from './hosted-room-attachments-client'
 import {
-  applyHostedPage, hostedRecord, hostedRoomKey, parseHostedCapabilities, parseHostedRoom
+  applyHostedPage, hostedRecord, hostedRoomKey, parseHostedCapabilities, parseHostedRoom, parseHostedTelegramStatus
 } from './hosted-room-protocol'
 import type {
-  HostedCapabilities, HostedPendingAction, HostedReplay, HostedRoomIdentity, HostedRoomSummary
+  HostedCapabilities, HostedPendingAction, HostedReplay, HostedRoomIdentity, HostedRoomSummary, HostedTelegramDelivery, HostedTelegramStatus
 } from './hosted-room-protocol'
 import { getPluginCtx } from './shared'
 import type { Attachment, ProfileRoute } from './types'
@@ -27,6 +27,7 @@ export interface HostedRoomCache extends HostedReplay {
   room?: HostedRoomSummary
   capabilities?: HostedCapabilities
   driverStatus?: Record<string, unknown>
+  telegramStatus?: HostedTelegramStatus
   pending?: PendingInput
   busy: boolean
   loading: boolean
@@ -242,6 +243,7 @@ export async function refreshHostedRoom(key: string): Promise<void> {
     patchRoom(key, {
       ...replay, room, name: room.name, capabilities,
       driverStatus: state.driver_status ? hostedRecord(state.driver_status) : undefined,
+      telegramStatus: parseHostedTelegramStatus(state.telegram_status, room.room_id),
       pending: pending || undefined, loading: false, error: undefined
     })
   } catch (error) {
@@ -453,10 +455,15 @@ export async function fetchHostedAttachment(key: string, eventId: string, attach
 
 /** One exclusive room command: same authority re-check before it runs, the same visible
  * failure, and an authoritative read-back after it succeeded. */
-async function roomAction(key: string, run: (route: ProfileRoute, roomId: string) => Promise<void>): Promise<void> {
+async function roomAction(key: string, run: (route: ProfileRoute, roomId: string, capabilities: HostedCapabilities, room: HostedRoomSummary) => Promise<void>, reportFailure = false): Promise<void> {
   const cache = $hostedRooms.get()[key]
 
-  if (!cache || operations.has(key)) {return}
+  if (!cache || operations.has(key)) {
+    if (reportFailure) {throw new Error('A room operation is active or the room is unavailable. Try again when it finishes.')}
+
+    return
+  }
+
   operations.add(key)
   bump(key)
   patchRoom(key, { busy: true, error: undefined })
@@ -464,13 +471,15 @@ async function roomAction(key: string, run: (route: ProfileRoute, roomId: string
 
   try {
     const route = await routeFor(cache.identity.connectionId)
-    await negotiate(route, cache.identity)
+    const capabilities = await negotiate(route, cache.identity)
     const state = hostedRecord(await host.requestProfile(route, 'groups.state', { room_id: cache.identity.roomId }))
-    parseHostedRoom(state.room, cache.identity)
-    await run(route, cache.identity.roomId)
+    const room = parseHostedRoom(state.room, cache.identity)
+    await run(route, cache.identity.roomId, capabilities, room)
     acted = true
   } catch (error) {
     patchRoom(key, { error: message(error) })
+
+    if (reportFailure) {throw error}
   } finally {
     operations.delete(key)
     patchRoom(key, { busy: false })
@@ -483,6 +492,29 @@ export async function stopHostedRoom(key: string): Promise<void> {
   await roomAction(key, async (route, roomId) => {
     await host.requestProfile(route, 'groups.stop', { room_id: roomId, cancel_id: crypto.randomUUID() })
   })
+}
+
+export async function resolveHostedTelegramDelivery(
+  key: string, delivery: HostedTelegramDelivery, decision: 'retry' | 'confirmed-delivered', messageId?: number
+): Promise<void> {
+  await roomAction(key, async (route, roomId, capabilities, room) => {
+    if (!capabilities.telegramRecovery) {throw new Error('This gateway does not support Telegram delivery recovery')}
+
+    if (decision === 'confirmed-delivered' && (!Number.isSafeInteger(messageId) || messageId! <= 0)) {
+      throw new Error('Enter a positive Telegram message ID from the copied message link')
+    }
+
+    const result = hostedRecord(await host.requestProfile(route, 'groups.telegram.resolve_delivery', {
+      room_id: roomId, authority_gateway_id: room.authority_gateway_id, authority_epoch: room.authority_epoch,
+      event_id: delivery.event_id, chunk_index: delivery.chunk_index, attempt: delivery.attempt,
+      decision, ...(messageId === undefined ? {} : { message_id: messageId }), confirm: true
+    }))
+
+    if (result.room_id !== roomId || result.event_id !== delivery.event_id || result.chunk_index !== delivery.chunk_index ||
+        result.attempt !== delivery.attempt || result.decision !== decision || result.message_id !== (messageId ?? null)) {
+      throw new Error('The gateway did not confirm this delivery decision. Refresh before reconciling again.')
+    }
+  }, true)
 }
 
 /** Retry exactly one indeterminate task the gateway reported, and read the receipt back. */

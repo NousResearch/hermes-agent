@@ -107,7 +107,25 @@ A gateway-owned room has one canonical transcript, one coordinator and persisten
 
 The built-in Telegram transport binds **one local-member room to one private group**. It uses each member profile's own bot identity for attributed output and the existing Telegram adapters for input. It does not create another poller, copy credentials or forward bot messages back into the coordinator. Public bot mentions resolve to the canonical member handles; replies retain their canonical threads. Files use native media capture and the room's Files storage, including documents, audio/video and files produced by members.
 
-After creating the canonical room, configure its backend and each participating Telegram profile to read the same private binding file:
+Create the member profiles first. Start the independent backend with `hermes serve --isolated` and `gateway.multiplex_profiles: true`, initially without a Telegram binding. A legacy Desktop group is not automatically a gateway-owned room. Create the latter through the existing authenticated JSON-RPC WebSocket at `/api/ws`, using the gateway's session token and a request such as:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "create-planning-room",
+  "method": "groups.create",
+  "params": {
+    "room_id": "planning-room",
+    "name": "Planning",
+    "members": [
+      {"member_id": "planner", "profile": "planner", "handle": "planner", "target": {"kind": "local", "profile": "planner"}},
+      {"member_id": "writer", "profile": "writer", "handle": "writer", "target": {"kind": "local", "profile": "writer"}}
+    ]
+  }
+}
+```
+
+Use `groups.state` with that `room_id` to verify creation, then refresh **Hosted group chats** in Desktop. Room creation is idempotent for the same identity and roster; it does not import or execute a legacy conversation. Keep the API token private. Configure the backend and each participating Telegram profile to read the same private binding file, then restart them:
 
 ```yaml
 gateway:
@@ -144,6 +162,61 @@ Run the backend with the normal `hermes serve --isolated` command and keep the e
 An active room binding preserves pending Telegram updates on normal cold gateway startup. Telegram's queue is per bot, so this also preserves backlog in other chats on that gateway; those messages still use normal routing and authorization. Unbound or disabled gateways keep the existing cold-start behavior. Do not run competing pollers: forced polling-conflict takeover can still discard pending updates, and preserving startup backlog does not make Telegram acknowledgement and local persistence atomic.
 
 The transport holds a machine-local OS lock before recovering its queue. A second backend for the same room/group cannot take ownership. Accepted input IDs, reply mappings and per-part delivery receipts survive restart. A send with an unknown outcome is **not automatically repeated**: reconcile it against Telegram before authorizing a retry. Stop cancels current room work; persistent member holds are a separate room policy.
+
+#### Recovering blocked Telegram output
+
+Desktop's existing hosted-room status shows **Telegram delivery blocked**, the private chat ID,
+sender profile, canonical event ID, part number and attempt. Check that exact text chunk or file in
+the Telegram app before choosing a recovery action. Text chunks precede attachments in their
+committed manifest order. This is output recovery, not **Retry task** or **Retry saved input**.
+
+- If it arrived, copy the message link in Telegram and enter its message ID (the final numeric path
+  segment, for example `456` in `https://t.me/c/1234567890/456`). Verify the chat, bot sender and
+  content yourself, then choose **Mark delivered** and confirm. This maps that message ID to the
+  existing canonical thread and skips sending only that part.
+- If external readback establishes it did not arrive, choose **Authorize delivery retry** and
+  confirm the duplicate warning. The existing worker may then resend only that part and continue
+  the saved output. Ambiguous sends may already have arrived, so an incorrect decision can duplicate
+  that part. No model task, input or attachment is regenerated.
+- A network exception remains `uncertain`. Explicit Telegram API refusals (`BadRequest`, `Forbidden`,
+  `InvalidToken`, `RetryAfter`) are recorded as `rejected`, not treated as delivery. Fix the refusal
+  first. A `RetryAfter` deadline survives restart and prevents early authorization. Neither class
+  triggers automatic retries or discards accepted room work.
+
+**The Bot API cannot read chat history.** These controls persist the operator's assertion, not
+`getMessage` proof. There is no exactly-once delivery guarantee against incorrect external readback.
+If a request loses its response, refresh the room or repeat the same exact decision and attempt;
+do not invent a newer attempt. Decisions and their previous uncertainty/refusal evidence survive
+restart. A repeated decision returns its receipt and current delivery state without authorizing a
+later attempt. Conflicting decisions, IDs already mapped in the queue, stale attempts, wrong room
+or authority, disbanding rooms, and currently sending parts are rejected. If the worker died with a
+part still `sending`, restart the owning backend to recover it to `uncertain` before reconciling.
+
+Native clients negotiate the optional `groups.telegram.resolve_delivery` method through
+`groups.capabilities`. It uses the existing gateway administrative RPC connection, not a Telegram
+sender permission or a new endpoint. `groups.state` supplies `telegram_status.attention` and the
+room's current authority. An illustrative request over that same connection:
+
+```json
+{
+  "jsonrpc": "2.0", "id": 1, "method": "groups.telegram.resolve_delivery",
+  "params": {
+    "room_id": "planning-room", "authority_gateway_id": "the-owning-gateway-id",
+    "authority_epoch": 1, "event_id": "the-exact-canonical-event-id",
+    "chunk_index": 0, "attempt": 1, "decision": "confirmed-delivered",
+    "message_id": 456, "confirm": true
+  }
+}
+```
+
+RPC `chunk_index` is zero-based (Desktop displays part 1 for index 0). For `decision: "retry"`,
+omit `message_id`. IDs, indices, attempts and epochs must be integers, not strings or booleans.
+The result identifies the recorded decision plus the current `delivery`; it does not claim a retry
+has already reached Telegram. The operation never advances the output cursor itself. Normal
+publication skips acknowledged parts and advances only after every part is accounted for. Existing
+reply-target selection still applies: a replay can quote an already delivered prefix in the same
+canonical thread. Older clients/backends without the optional method need an update for recovery;
+do not edit SQLite receipts by hand.
 
 Back up the canonical database and Files, the transport queue/binding, and the owning profile sessions together before migration or update. Do not combine old Desktop and Telegram histories by pretending their messages were newly executed turns. Preserve provenance and post-cutover records during rollback. An unmerged feature branch must remain pinned until its changes are available upstream; updating to a branch without the feature is not a compatible upgrade.
 

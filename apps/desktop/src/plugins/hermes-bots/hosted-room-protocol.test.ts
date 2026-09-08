@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   applyHostedPage, hostedHolds, hostedMembers, hostedPendingActions, hostedRoomKey, hostedTranscript,
-  isHostedRoomKey, parseHostedCapabilities, parseHostedRoom
+  isHostedRoomKey, parseHostedCapabilities, parseHostedRoom, parseHostedTelegramStatus
 } from './hosted-room-protocol'
 import type { HostedEvent, HostedReplay, HostedRoomSummary } from './hosted-room-protocol'
 
@@ -51,10 +51,14 @@ it('keys identity by connection, authority and room, not display name or ambiguo
 })
 
 describe('capability negotiation', () => {
+  it('negotiates delivery recovery independently of required room capabilities', () => {
+    expect(parseHostedCapabilities(capabilities).telegramRecovery).toBe(false)
+    expect(parseHostedCapabilities({ ...capabilities, methods: [...capabilities.methods, 'groups.telegram.resolve_delivery'] }).telegramRecovery).toBe(true)
+  })
   it('accepts v2, caps pages, and treats worker/lifetime flags as strict booleans', () => {
     expect(parseHostedCapabilities(capabilities)).toEqual({
       authorityGatewayId: identity.authorityGatewayId, logLimit: 100, driver: true, persistentProcess: true,
-      persistentHolds: false, attachments: false
+      persistentHolds: false, attachments: false, telegramRecovery: false
     })
     expect(parseHostedCapabilities({ ...capabilities, max_log_limit: 7, driver: 'true', persistent_process: 1 }))
       .toMatchObject({ logLimit: 7, driver: false, persistentProcess: false })
@@ -76,6 +80,18 @@ describe('capability negotiation', () => {
     // A gateway without the feature still negotiates: it just cannot promise a pause sticks.
     expect(parseHostedCapabilities(capabilities).persistentHolds).toBe(false)
   })
+})
+
+it('rejects malformed Telegram attention rather than manufacturing a recovery identity', () => {
+  const delivery = { event_id: 'output', chunk_index: 0, attempt: 1, profile: 'helper', thread_id: 'thread', status: 'uncertain' }
+  const status = { room_id: room.room_id, chat_id: -999, blocked: true, attention: delivery }
+  expect(parseHostedTelegramStatus(undefined, room.room_id)).toBeUndefined()
+  expect(parseHostedTelegramStatus(status, room.room_id)?.attention).toMatchObject(delivery)
+  expect(() => parseHostedTelegramStatus(status, 'other')).toThrow()
+
+  for (const patch of [{ event_id: '' }, { chunk_index: true }, { chunk_index: -1 }, { attempt: '1' }, { attempt: 0 }, { status: 'unknown' }]) {
+    expect(() => parseHostedTelegramStatus({ ...status, attention: { ...delivery, ...patch } }, room.room_id)).toThrow()
+  }
 })
 
 describe('backend-owned pending actions', () => {

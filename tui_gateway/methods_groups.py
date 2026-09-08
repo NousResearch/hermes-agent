@@ -20,7 +20,8 @@ _METHODS = (
     "groups.attachment.put", "groups.attachment.list", "groups.attachment.read",
     "groups.rename", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
     "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
-    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register")
+    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register",
+    "groups.telegram.resolve_delivery")
 LONG_HANDLERS = frozenset(_METHODS)
 
 _service_lock = threading.Lock()
@@ -134,6 +135,27 @@ def get_hosted_room_service():
     except Exception:
         return None
     return service if status.get("running") and not status.get("stopping") else None
+
+
+def _telegram_delivery(service, room_id, params=None):
+    # This default-bound helper retains methods_groups' lifetime globals after handler rebinding.
+    with _service_lock:
+        transport = _transport
+        if transport is None or transport.service is not service or transport.room != room_id:
+            if params is None:
+                return None
+            raise ValueError("This room has no active Telegram transport")
+        if params is None:
+            return transport.status()
+        if (transport.halt.is_set() or transport.error or not transport.ready.is_set()
+                or transport.thread is None or not transport.thread.is_alive()):
+            raise ValueError("Telegram transport is unavailable; restart the gateway before reconciling")
+        if params.get("confirm") is not True:
+            raise ValueError("Telegram reconciliation requires confirm=true after external readback")
+        return transport.resolve_delivery(
+            room_id=room_id, **{key: params.get(key) for key in (
+                "event_id", "chunk_index", "attempt", "decision", "message_id",
+                "authority_gateway_id", "authority_epoch")})
 
 
 def _profile_name() -> str:
@@ -431,7 +453,7 @@ def _(rid, params: dict, service) -> dict:
 
 
 @_room_method("groups.state", code=5115, room_code=4114, db=True)
-def _(rid, params: dict, db_path) -> dict:
+def _(rid, params: dict, db_path, _telegram=_telegram_delivery) -> dict:
     """Return one hosted room's replay cursor and fenced authority state."""
     from gateway.hosted_rooms import room_state
     room = room_state(
@@ -441,7 +463,14 @@ def _(rid, params: dict, db_path) -> dict:
     result = {"room": room}
     if service is not None and room.get("disbanded_at") is None:
         result["driver_status"] = service.status(str(room["room_id"]))
+        result["telegram_status"] = _telegram(service, room["room_id"])
     return _ok(rid, result)
+
+
+@_room_method("groups.telegram.resolve_delivery", code=4144, service_code=4115)
+def _(rid, params: dict, service, _telegram=_telegram_delivery) -> dict:
+    """Reconcile one output part; native gateway admin authority, never a room-task retry."""
+    return _ok(rid, _telegram(service, params.get("room_id"), params))
 
 
 @_room_method(

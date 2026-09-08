@@ -257,7 +257,8 @@ def test_live_owner_excludes_both_processes_before_recovering_receipts(binding_e
         assert owner.member_profiles == {"one": "alpha", "two": "beta"}
         assert owner.profile_handles == {"alpha": "@first", "beta": "@second"}
         with owner.db() as db:
-            db.execute("INSERT INTO deliveries VALUES('in-flight',0,'alpha','thread','sending',NULL)")
+            db.execute("INSERT INTO deliveries(event_id,chunk_index,profile,thread_id,status)"
+                       " VALUES('in-flight',0,'alpha','thread','sending')")
         with pytest.raises(RuntimeError, match="already owned"):
             contender.start()
         code = """import json,sys
@@ -388,3 +389,301 @@ def test_transport_prepares_native_dependency_before_sdk_import(tmp_path, monkey
         assert not item.ready.is_set()
     assert calls == ["platform.telegram"]
     assert not item.path.exists()
+
+
+class DeliveryRequest(LocalRequest):
+    """Real PTB serialization/error decoding; no request can leave this scripted boundary."""
+
+    def __init__(self, fail_part=1, response=None):
+        super().__init__()
+        self.fail_part, self.response = fail_part, response
+        self.sends = []
+        self.on_send = None
+
+    async def do_request(self, url, method, request_data=None, **kwargs):
+        if url.endswith('/getMe'):
+            return await super().do_request(url, method, request_data, **kwargs)
+        assert url.rsplit('/', 1)[-1] in {'sendMessage', 'sendDocument', 'sendPhoto'}
+        self.sends.append((request_data.parameters, request_data.multipart_data))
+        if self.on_send:
+            self.on_send()
+        if len(self.sends) - 1 == self.fail_part:
+            if self.response:
+                return self.response
+            from telegram.error import TimedOut
+            raise TimedOut('response lost; unsafe exception detail must not be persisted')
+        return 200, json.dumps({'ok': True, 'result': {
+            'message_id': 100 + len(self.sends), 'date': 1,
+            'chat': {'id': -999, 'type': 'supergroup'}, 'text': 'scripted'}}).encode()
+
+
+@pytest.fixture
+def recovery(binding_env, monkeypatch):
+    from gateway import hosted_rooms
+    from tui_gateway import methods_groups, server
+    from tui_gateway.hosted_room_service import HostedRoomService
+
+    binding, _, original = binding_env
+    monkeypatch.setattr(hosted_rooms, 'local_authority_gateway_id', lambda: 'test-owner')
+    monkeypatch.setattr(hosted_rooms, 'default_db_path', lambda: original.db_path)
+    service = HostedRoomService(SimpleNamespace(), db_path=original.db_path)
+    data = b'immutable committed source blob\n'
+    manifests = []
+    for index in range(2):
+        uploaded = service.attachments.put(
+            room_id=binding['room_id'], upload_id=f'upload-{index}', kind='file',
+            name=f'output-{index}.txt', mime='text/plain', data=data + str(index).encode())
+        manifests.append({key: uploaded[key] for key in ('attachment_id', 'kind', 'name', 'size', 'mime')})
+    service.attachments.commit_message(
+        room_id=binding['room_id'], event_id='output', manifest=manifests,
+        recipient_member_ids=['one', 'two'], viewer_access=True, hold_until_event=True)
+    common = dict(room_id=binding['room_id'], authority_gateway_id='test-owner', authority_epoch=1)
+    hosted_rooms.append_event(
+        service.db_path, **common, event_id='output', kind='message.member',
+        actor={'kind': 'member', 'id': 'one'}, payload={
+            'text': 'a' * 1800 + 'b' * 1800 + 'c' * 100, 'member_id': 'one',
+            'thread_id': 'thread', 'attachments': manifests})
+    hosted_rooms.append_event(
+        service.db_path, **common, event_id='settled', kind='turn.settled',
+        actor={'kind': 'gateway', 'id': 'test-owner'}, payload={'message_event_id': 'output'})
+    item = transport.Transport(service, binding)
+
+    def parked_worker():
+        # The real lifetime lock/start/recovery are exercised; publication is stepped explicitly
+        # through real PTB below, rather than letting the native loop race test assertions.
+        item.ready.set()
+        item.halt.wait(10)
+
+    monkeypatch.setattr(item, '_run', parked_worker)
+    monkeypatch.setattr(methods_groups, '_transport', item)
+    monkeypatch.setattr(server, 'get_hosted_room_service', lambda: service)
+    monkeypatch.setattr(service, 'status', lambda room_id: {'running': False})
+    item.start()
+
+    def resolve(**changes):
+        params = dict(room_id=item.room, event_id='output', chunk_index=1, attempt=1,
+                      decision='retry', confirm=True, authority_gateway_id='test-owner', authority_epoch=1)
+        params.update(changes)
+        return server._methods['groups.telegram.resolve_delivery'](123, params)
+
+    try:
+        yield item, resolve, server
+    finally:
+        if methods_groups._transport is not item:
+            methods_groups._transport.stop(timeout=10)
+        item.stop(timeout=10)
+
+
+@pytest.mark.parametrize('part', [1, 3], ids=['text', 'document'])
+@pytest.mark.parametrize('decision', ['retry', 'confirmed-delivered'])
+def test_native_delivery_reconciliation_survives_lost_rpc_response_and_restart(recovery, monkeypatch, part, decision):
+    from telegram import Bot
+    from telegram.error import NetworkError
+    from gateway.hosted_room_driver import list_tasks
+    from tui_gateway import methods_groups
+
+    item, resolve, server = recovery
+    before = item.events()
+    blobs = item.published_media(before[-2])
+    tasks = list_tasks(item.service.db_path, room_id=item.room)
+    request = DeliveryRequest(fail_part=part)
+    args = dict(chunk_index=part, decision=decision,
+                **({'message_id': 999} if decision == 'confirmed-delivered' else {}))
+
+    async def first():
+        async with Bot('123:local-test', request=request) as bot:
+            with pytest.raises(NetworkError):
+                await item.publish({'alpha': bot})
+            with pytest.raises(RuntimeError, match='requires readback'):
+                await item.publish({'alpha': bot})
+    asyncio.run(first())
+    state = server._methods['groups.state'](1, {'room_id': item.room})['result']['telegram_status']
+    assert state['blocked'] is True
+    assert state['attention']['chunk_index'] == part
+    assert state['attention']['failure_kind'] == 'ambiguous'
+    assert len(request.sends) == part + 1
+    cursor = state['cursor']
+    ack = resolve(**args)  # Imagine this response is lost after the SQLite commit.
+    assert 'error' not in ack, ack
+    assert resolve(**args) == ack
+    assert item.status()['cursor'] == cursor  # Reconciliation itself never moves the cursor.
+    assert item.stop(timeout=10)
+    item = transport.Transport(item.service, item.config)
+
+    def parked_replacement():
+        item.ready.set()
+        item.halt.wait(10)
+
+    monkeypatch.setattr(item, '_run', parked_replacement)
+    monkeypatch.setattr(methods_groups, '_transport', item)
+    item.start()
+    assert resolve(**args) == ack
+
+    async def finish():
+        async with Bot('123:local-test', request=request) as bot:
+            await item.publish({'alpha': bot})
+            await item.publish({'alpha': bot})
+    asyncio.run(finish())
+    # Five parts total. The already-sent prefix is not repeated; only authorized part replay is extra.
+    assert len(request.sends) == 5 + (decision == 'retry')
+    expected_parts = ['a' * 1800, 'b' * 1800, 'c' * 100, *[data for _, data in blobs]]
+    if decision == 'retry':
+        expected_parts.insert(part, expected_parts[part])
+    actual_parts = [params.get('text') if 'text' in params else next(iter(files.values()))[1]
+                    for params, files in request.sends]
+    assert actual_parts == expected_parts
+    if decision == 'retry':
+        # Existing reply policy can now quote the delivered prefix in the SAME thread.
+        first_params, first_files = request.sends[part]
+        retry_params, retry_files = request.sends[part + 1]
+        assert {k: v for k, v in first_params.items() if k != 'reply_parameters'} == {
+            k: v for k, v in retry_params.items() if k != 'reply_parameters'}
+        assert list(first_files.values()) == list(retry_files.values())
+    with item.db() as db:
+        rows = db.execute('SELECT * FROM deliveries ORDER BY chunk_index').fetchall()
+        assert len(rows) == 5 and all(row['status'] == 'sent' for row in rows)
+        mapped = rows[part]['message_id']
+        evidence = db.execute('SELECT * FROM delivery_resolutions').fetchone()
+        assert evidence['previous_status'] == 'uncertain' and evidence['failure_kind'] == 'ambiguous'
+    assert item.thread_for({'reply_to': mapped, 'event_id': 'reply'}) == 'thread'
+    assert resolve(**args)['result']['decision'] == decision
+    assert item.status()['cursor'] == before[-1]['seq']
+    assert item.events() == before
+    assert item.published_media(before[-2]) == blobs
+    assert list_tasks(item.service.db_path, room_id=item.room) == tasks == []
+    for _, multipart in request.sends:
+        for _, content, _ in multipart.values():
+            assert content in [data for _, data in blobs]
+
+
+@pytest.mark.parametrize('code,parameters,expected', [
+    (400, {}, 'BadRequest'), (403, {}, 'Forbidden'), (401, {}, 'InvalidToken'),
+    (429, {'retry_after': 30}, 'RetryAfter'),
+])
+def test_real_ptb_negative_responses_remain_blocked_and_retain_refusal(recovery, monkeypatch, code, parameters, expected):
+    from telegram import Bot
+    from telegram.error import TelegramError
+
+    item, resolve, _ = recovery
+    request = DeliveryRequest(response=(code, json.dumps({
+        'ok': False, 'error_code': code, 'description': 'scripted refusal', 'parameters': parameters}).encode()))
+
+    async def fail():
+        async with Bot('123:local-test', request=request) as bot:
+            with pytest.raises(TelegramError):
+                await item.publish({'alpha': bot})
+            with pytest.raises(RuntimeError):
+                await item.publish({'alpha': bot})
+    asyncio.run(fail())
+    attention = item.status()['attention']
+    assert attention['status'] == 'rejected' and attention['failure_kind'] == expected
+    assert len(request.sends) == 2
+    if expected == 'RetryAfter':
+        assert attention['retry_after'] > transport.time.time()
+        assert item.stop(timeout=10)
+        item.halt.clear()
+        item.start()
+        assert item.status()['attention']['retry_after'] == attention['retry_after']
+        assert 'cooldown' in resolve()['error']['message']
+        monkeypatch.setattr(transport.time, 'time', lambda: attention['retry_after'] + 1)
+    assert 'error' not in resolve()
+    assert item.status()['attention']['status'] == 'retry_authorized'
+    with item.db() as db:
+        evidence = db.execute('SELECT * FROM delivery_resolutions').fetchone()
+        assert evidence['previous_status'] == 'rejected'
+        assert evidence['failure_kind'] == expected
+        assert evidence['retry_after'] == attention['retry_after']
+    assert len(request.sends) == 2  # No RPC calls the Bot or starts an agent.
+
+
+def test_reconciliation_guards_sending_identity_authority_and_stale_attempt(recovery):
+    from telegram import Bot
+    from telegram.error import NetworkError
+
+    item, resolve, server = recovery
+    request = DeliveryRequest()
+    in_flight = []
+    request.on_send = lambda: in_flight.append(resolve()) if len(request.sends) == 2 else None
+
+    async def fail():
+        async with Bot('123:local-test', request=request) as bot:
+            with pytest.raises(NetworkError):
+                await item.publish({'alpha': bot})
+    asyncio.run(fail())
+    assert 'currently sending' in in_flight[0]['error']['message']
+    before = item.status()
+    bad = [{'room_id': 'wrong'}, {'event_id': 'missing'}, {'chunk_index': 99}, {'chunk_index': True},
+           {'attempt': True}, {'attempt': 2}, {'authority_gateway_id': 'other'}, {'authority_epoch': 2},
+           {'authority_epoch': True}, {'confirm': False}, {'decision': 'skip'}, {'message_id': 9}]
+    bad += [dict(decision='confirmed-delivered', message_id=value)
+            for value in [None, True, '999', 1.5, 0, -1, 2**53, 101]]
+    for params in bad:
+        assert 'error' in resolve(**params), params
+        assert item.status() == before
+    with item.db() as db:
+        db.execute("INSERT INTO inbox(event_id,chat_id,message_id,user_id,text,received_at)"
+                   " VALUES('mapped-input',-999,998,42,'input',1)")
+    assert 'already mapped' in resolve(decision='confirmed-delivered', message_id=998)['error']['message']
+    with item.db() as db:
+        db.execute("UPDATE deliveries SET profile='beta' WHERE chunk_index=1")
+    assert 'identity mismatch' in resolve()['error']['message']
+    with item.db() as db:
+        db.execute("UPDATE deliveries SET profile='alpha' WHERE chunk_index=1")
+        db.execute("UPDATE deliveries SET thread_id='wrong' WHERE chunk_index=1")
+    assert 'identity mismatch' in resolve()['error']['message']
+    with item.db() as db:
+        db.execute("UPDATE deliveries SET thread_id='thread' WHERE chunk_index=1")
+    assert 'error' not in resolve()
+    request.fail_part = len(request.sends)  # Explicit replay also loses its response.
+    request.on_send = None
+    asyncio.run(fail())
+    second = item.status()
+    assert second['attention']['attempt'] == 2 and second['blocked']
+    assert 'error' not in resolve()  # Old response readback, NOT a second authorization.
+    assert item.status() == second
+    assert 'different decision' in resolve(decision='confirmed-delivered', message_id=999)['error']['message']
+    assert 'groups.telegram.resolve_delivery' in server._LONG_HANDLERS
+    item.halt.set()
+    assert 'unavailable' in resolve(attempt=2)['error']['message']
+
+
+def test_restart_recovers_legacy_sending_then_native_resolution_is_fenced_by_room_state(recovery):
+    from gateway import hosted_rooms
+
+    item, resolve, _ = recovery
+    # Old queue rows migrate with attempt=1, and only the exclusive replacement can recover them.
+    with item.db() as db:
+        db.execute("INSERT INTO deliveries(event_id,chunk_index,profile,thread_id,status)"
+                   " VALUES('output',1,'alpha','thread','sending')")
+    assert 'currently sending' in resolve()['error']['message']
+    assert item.stop(timeout=10)
+    item.halt.clear()
+    item.start()
+    assert item.status()['attention']['status'] == 'uncertain'
+    # Canonical authority is checked even if the caller supplies the old, otherwise valid identity.
+    with sqlite3.connect(item.service.db_path) as db:
+        db.execute("UPDATE hosted_rooms SET authority_gateway_id='other' WHERE room_id=?", (item.room,))
+    assert 'authority changed' in resolve()['error']['message']
+    with sqlite3.connect(item.service.db_path) as db:
+        db.execute("UPDATE hosted_rooms SET authority_gateway_id='test-owner' WHERE room_id=?", (item.room,))
+    ack = resolve(decision='confirmed-delivered', message_id=999)
+    assert 'error' not in ack
+    assert resolve(decision='confirmed-delivered', message_id=999) == ack
+    hosted_rooms.begin_room_disband(
+        item.service.db_path, room_id=item.room, expected_gateway_id='test-owner', expected_epoch=1)
+    assert 'being disbanded' in resolve(decision='confirmed-delivered', message_id=999)['error']['message']
+
+
+def test_queue_migration_preserves_old_ambiguous_delivery_and_cursor(tmp_path):
+    path = tmp_path / 'legacy-queue.db'
+    with sqlite3.connect(path) as db:
+        db.executescript(transport.SCHEMA)
+        db.execute("INSERT INTO deliveries VALUES('old-output',1,'alpha','thread','uncertain',NULL)")
+        db.execute('UPDATE cursor SET seq=12')
+    transport.initialize_queue(path)
+    transport.initialize_queue(path, recover=True)
+    with sqlite3.connect(path) as db:
+        assert db.execute('SELECT * FROM deliveries').fetchone() == (
+            'old-output', 1, 'alpha', 'thread', 'uncertain', None, 1, None, None)
+        assert db.execute('SELECT seq FROM cursor').fetchone() == (12,)
+        assert db.execute('SELECT count(*) FROM delivery_resolutions').fetchone() == (0,)

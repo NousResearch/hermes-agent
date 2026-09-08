@@ -106,6 +106,65 @@ async function respond(_route: ProfileRoute, method: string, params: Record<stri
 
 function sentCalls() { return rpc.mock.calls.filter(([, method]) => method === 'groups.send') }
 
+const telegramDelivery = {
+  event_id: 'member-output', chunk_index: 2, attempt: 3, profile: 'helper', thread_id: 'thread', status: 'uncertain' as const
+}
+
+it('negotiates optional recovery, serializes controls and replays the exact decision after a lost response', async () => {
+  caps.methods = [...baseCapabilities.methods, 'groups.telegram.resolve_delivery']
+  const blocked = { room_id: identity.roomId, chat_id: -999, blocked: true, attention: telegramDelivery }
+  const gate = deferred<unknown>()
+  const resolutions: Record<string, unknown>[] = []
+  rpc.mockImplementation(async (...args) => {
+    if (args[1] === 'groups.state') {return { room, telegram_status: blocked }}
+
+    if (args[1] === 'groups.telegram.resolve_delivery') {
+      resolutions.push(args[2])
+
+      if (resolutions.length === 1) {return gate.promise}
+
+      return { ...args[2], message_id: args[2].message_id ?? null }
+    }
+
+    return respond(...args)
+  })
+  await client.refreshHostedRoom(key)
+  expect(cache().telegramStatus).toEqual(blocked)
+  const first = client.resolveHostedTelegramDelivery(key, telegramDelivery, 'retry')
+  const failed = expect(first).rejects.toThrow('response lost')
+  await vi.waitFor(() => expect(resolutions).toHaveLength(1))
+  await expect(client.resolveHostedTelegramDelivery(key, telegramDelivery, 'retry')).rejects.toThrow('operation is active')
+  expect(await client.sendHostedInput(key, 'must not send')).toBe(false)
+  gate.reject(new Error('response lost'))
+  await failed
+  expect(cache().busy).toBe(false)
+  expect(cache().telegramStatus).toEqual(blocked)
+  await client.resolveHostedTelegramDelivery(key, telegramDelivery, 'retry')
+  expect(resolutions).toHaveLength(2)
+  expect(resolutions[1]).toEqual(resolutions[0])
+  expect(resolutions[0]).toEqual({
+    room_id: identity.roomId, authority_gateway_id: identity.authorityGatewayId, authority_epoch: 1,
+    event_id: 'member-output', chunk_index: 2, attempt: 3, decision: 'retry', confirm: true
+  })
+  expect(cache().error).toBeUndefined()
+  expect(sentCalls()).toHaveLength(0)
+  expect(rpc.mock.calls.some(([, method]) => method === 'groups.retry')).toBe(false)
+})
+
+it('refuses recovery on older gateways or changed authorities, and checks exact recovery acknowledgements', async () => {
+  await expect(client.resolveHostedTelegramDelivery(key, telegramDelivery, 'retry')).rejects.toThrow('does not support')
+  caps.methods = [...baseCapabilities.methods, 'groups.telegram.resolve_delivery']
+  caps.authority_gateway_id = 'wrong-owner'
+  await expect(client.resolveHostedTelegramDelivery(key, telegramDelivery, 'retry')).rejects.toThrow('different authority')
+  expect(rpc.mock.calls.some(([, method]) => method === 'groups.telegram.resolve_delivery')).toBe(false)
+  caps.authority_gateway_id = identity.authorityGatewayId
+  rpc.mockImplementation(async (...args) => args[1] === 'groups.telegram.resolve_delivery'
+    ? { ...args[2], event_id: 'wrong-event' } : respond(...args))
+  await expect(client.resolveHostedTelegramDelivery(key, telegramDelivery, 'confirmed-delivered', 777)).rejects.toThrow('did not confirm')
+  expect(cache().error).toContain('did not confirm')
+  expect(rpc.mock.calls.at(-1)?.[2]).toMatchObject({ message_id: 777, decision: 'confirmed-delivered', attempt: 3 })
+})
+
 beforeEach(async () => {
   vi.resetModules()
 

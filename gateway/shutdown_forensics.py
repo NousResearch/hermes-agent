@@ -180,10 +180,16 @@ def resolve_ancestor_chain(pid: int, *, max_depth: int = 12) -> List[Dict[str, A
 
 
 def _format_ancestor_chain(chain: List[Dict[str, Any]]) -> str:
-    """One line per ancestor, shell-safe for embedding in the diagnostic script."""
+    """One line per ancestor, shell-safe for embedding in the diagnostic script.
+
+    Control characters are collapsed to spaces: a ``python -c '<script>'`` parent carries literal
+    newlines in its cmdline, which would otherwise split one ancestor across many lines and make
+    the section unparseable (and its line count meaningless).
+    """
     lines = []
     for entry in chain:
-        cmd = str(entry.get("cmdline") or entry.get("name") or "?")[:200]
+        raw = str(entry.get("cmdline") or entry.get("name") or "?")
+        cmd = " ".join(raw.split())[:200]
         lines.append(f"pid={entry.get('pid')} ppid={entry.get('ppid', '?')} {cmd}")
     return "\n".join(lines) or "(chain unavailable)"
 

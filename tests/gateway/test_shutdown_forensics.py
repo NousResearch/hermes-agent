@@ -141,6 +141,26 @@ class TestResolveAncestorChain:
         assert f"pid={emitter.pid}" in chain_section, chain_section
 
 
+    def test_multiline_cmdline_stays_one_line_per_ancestor(self):
+        """A `python -c '<script>'` parent embeds newlines in its cmdline.
+
+        Left raw, one ancestor renders as many lines: the section becomes unparseable and its
+        line count silently overstates the chain depth (5 ancestors reading as 9 rows).
+        """
+        chain = [
+            {"pid": 10, "ppid": 11, "cmdline": "python -c \nimport os\nimport sys\nrun()"},
+            {"pid": 11, "ppid": 1, "cmdline": "bash script.sh"},
+        ]
+        out = sf._format_ancestor_chain(chain)
+        assert len(out.splitlines()) == 2, f"expected 1 line per ancestor, got:\n{out}"
+        assert "pid=10 ppid=11" in out
+        assert "import os import sys run()" in out
+
+    def test_falls_back_to_name_then_placeholder(self):
+        assert "bash" in sf._format_ancestor_chain([{"pid": 5, "ppid": 1, "name": "bash"}])
+        assert sf._format_ancestor_chain([]) == "(chain unavailable)"
+
+
 class TestProcSummary:
     """`_proc_summary` must name the parent on every platform, not just Linux.
 

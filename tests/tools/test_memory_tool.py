@@ -718,6 +718,112 @@ class TestBomToleranceInMemoryFiles:
 # =========================================================================
 
 
+# =========================================================================
+# Failure-payload size bound + batch action inference (Sep 2026 token-bloat fix)
+#
+# Observed traffic (48h window on state.db): 171 memory-tool failures averaging
+# ~19k chars each — 87% of it the `current_entries` full-store echo repeated on
+# every consolidation retry, ~2.9M chars total. The full text already sits in
+# the model's system prompt (frozen memory block), so failure payloads now carry
+# bounded PREVIEWS (head + total-size). The largest failure class (48×) was batch
+# ops with no `action` field (patch-tool shape confusion) — now inferred from the
+# op shape instead of failing the whole batch.
+# =========================================================================
+
+
+class TestFailurePayloadBounded:
+    """current_entries in ANY failure must be previews, never the full store."""
+
+    def test_overflow_failure_payload_is_bounded(self, store):
+        big = "x" * 490
+        store.add("memory", big)
+        result = store.add("memory", "this will exceed the limit")
+        assert result["success"] is False
+        previews = result["current_entries"]
+        # Preview keeps the head but caps it well under the entry's 490 chars.
+        assert all(len(p) <= 120 + 40 for p in previews)  # cap + ellipsis suffix
+        assert any("490 chars total" in p for p in previews)
+        # Overall payload is small, not a full-store echo.
+        assert len(json.dumps(result)) < 1500
+
+    def test_no_match_failure_uses_previews(self, store):
+        store.add("memory", "e" * 400)
+        result = store.remove("memory", "nonexistent")
+        assert result["success"] is False
+        assert any("400 chars total" in p for p in result["current_entries"])
+
+    def test_batch_failure_payload_is_bounded(self, store):
+        store.add("memory", "z" * 490)
+        result = store.apply_batch("memory", [
+            {"action": "replace", "old_text": "nope", "content": "y" * 400}])
+        assert result["success"] is False
+        assert len(json.dumps(result)) < 1500
+
+    def test_over_limit_error_reports_chars_over(self, store):
+        store.add("memory", "x" * 490)
+        result = store.apply_batch("memory", [
+            {"action": "add", "content": "y" * 300}])
+        assert result["success"] is False
+        assert "over by" in result["error"]
+
+
+class TestBatchActionInference:
+    """Batch ops missing `action` are inferred from their shape instead of
+    failing the whole batch with 'unknown action' (the top observed failure)."""
+
+    def test_patch_shaped_op_infers_replace(self, store):
+        store.add("memory", "old entry text")
+        result = store.apply_batch("memory", [
+            {"old_text": "old entry", "new_string": "new entry text"}])
+        assert result["success"] is True
+        assert "new entry text" in store.memory_entries
+
+    def test_patch_shaped_op_infers_remove(self, store):
+        store.add("memory", "old entry text")
+        store.add("memory", "another entry")
+        result = store.apply_batch("memory", [{"old_text": "old entry"}])
+        assert result["success"] is True
+        assert "another entry" in store.memory_entries
+        assert "old entry text" not in store.memory_entries
+
+    def test_bare_content_infers_add(self, store):
+        result = store.apply_batch("memory", [{"content": "bare add fact"}])
+        assert result["success"] is True
+        assert "bare add fact" in store.memory_entries
+
+    def test_new_string_alias_in_batch(self, store):
+        store.add("memory", "original entry")
+        result = store.apply_batch("memory", [
+            {"action": "replace", "old_text": "original", "new_string": "via new_string"}])
+        assert result["success"] is True
+        assert "via new_string" in store.memory_entries
+
+    def test_uninferrable_op_still_fails_atomic(self, store):
+        store.add("memory", "kept entry")
+        result = store.apply_batch("memory", [{"old_text": ""}])
+        assert result["success"] is False
+        assert "kept entry" in store.memory_entries  # nothing written
+
+    def test_garbage_action_still_rejected(self, store):
+        result = store.apply_batch("memory", [{"action": "delete", "old_text": "x"}])
+        assert result["success"] is False
+        assert "unknown action 'delete'" in result["error"]
+
+
+class TestNearestEntryHint:
+    def test_no_match_includes_nearest_hint(self, store):
+        store.add("memory", "SE-FI sync job runs nightly via Bull queue")
+        result = store.remove("memory", "SE-FI sync job runs nightly via Bull queues")
+        assert result["success"] is False
+        assert "Nearest existing entry" in result["error"]
+
+    def test_no_hint_when_nothing_similar(self, store):
+        store.add("memory", "completely unrelated fact")
+        result = store.remove("memory", "zzzz totally different qqqq")
+        assert result["success"] is False
+        assert "Nearest existing entry" not in result["error"]
+
+
 class TestBatchRefusesToEmptyNonEmptyStore:
     @pytest.mark.parametrize(
         ("target", "seed"),

@@ -21,6 +21,53 @@ MEMORY_BLOCK_HEADERS = {
 
 ENTRY_DELIMITER = "\n§\n"
 
+# Failure payloads carry entry PREVIEWS, not the full store. The full text already
+# lives in the model's context (frozen memory block in the system prompt, or a
+# prior tool result in-session), so echoing it back in every consolidation error
+# was pure waste: ~20k chars per retry, 2.8M chars over 48h of observed traffic.
+# The preview keeps the distinctive head of each entry plus its char size, which
+# is what the model needs to pick what to consolidate and budget how much it frees.
+ENTRY_PREVIEW_CHARS = 120
+# Cap for the whole preview list: with dozens of entries even previews add up,
+# so past this budget the list is cut and the model is pointed at its memory block.
+PREVIEW_LIST_BUDGET = 2400
+
+
+def _entry_preview(entry: str, cap: int = ENTRY_PREVIEW_CHARS) -> str:
+    if len(entry) <= cap:
+        return entry
+    return f"{entry[:cap]} …[{len(entry)} chars total]"
+
+
+def _previews(entries: List[str]) -> List[str]:
+    previews = [_entry_preview(e) for e in entries]
+    total = sum(len(p) + 3 for p in previews)
+    if total <= PREVIEW_LIST_BUDGET or not previews:
+        return previews
+    # Keep whole entries until the budget, then point at the system-prompt block.
+    kept, used = [], 0
+    for p in previews:
+        if used + len(p) + 3 > PREVIEW_LIST_BUDGET:
+            break
+        kept.append(p)
+        used += len(p) + 3
+    kept.append(f"[+{len(previews) - len(kept)} more entries — full text in your memory block in the system prompt]")
+    return kept
+
+
+def _nearest_entry_hint(entries: List[str], old_text: str) -> Optional[str]:
+    """Closest existing entry to a non-matching *old_text*, for the observed
+    retry loop where the model resubmits the same stale substring. None when
+    nothing is similar enough to be a useful hint."""
+    if not entries:
+        return None
+    import difflib
+    best = max(entries, key=lambda e: difflib.SequenceMatcher(None, old_text, e).ratio())
+    ratio = difflib.SequenceMatcher(None, old_text, best).ratio()
+    if ratio < 0.4:
+        return None
+    return f"Nearest existing entry ({ratio:.0%} similar): {_entry_preview(best)}"
+
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Error string if *content* matches injection/exfil patterns. Strict scope:
@@ -183,9 +230,11 @@ class MemoryStore:
         return f"{min(100, int((current / limit) * 100)) if limit > 0 else 0}% — {current:,}/{limit:,} chars"
 
     def _failure_with_entries(self, target: str, message: str) -> Dict[str, Any]:
-        """Consolidation failure carrying the live entries so the model can consolidate."""
+        """Consolidation failure carrying entry previews (head + char size) so the
+        model can pick what to consolidate without echoing the whole store — the
+        full text is already in its system prompt / this session's context."""
         return self._consolidation_failure(
-            _error(message, current_entries=self._entries_for(target), usage=self._usage(target)))
+            _error(message, current_entries=_previews(self._entries_for(target)), usage=self._usage(target)))
 
     def _mutate(self, target: str, mutate, *, skip_drift: bool = False) -> Dict[str, Any]:
         """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
@@ -258,23 +307,40 @@ class MemoryStore:
                 return _error(f"Multiple entries matched '{old_text}'. Be more specific.",
                               matches=[e[:80] + ("..." if len(e) > 80 else "") for e in entries if old_text in e])
             if idx is None:
+                hint = _nearest_entry_hint(entries, old_text)
+                hint_text = f" {hint}." if hint else ""
                 return self._consolidation_failure(_error(
-                    f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
-                    f"of the entry you want to {'replace' if new_content else 'remove'}.", current_entries=entries))
+                    f"No entry matched '{old_text[:160]}'. Check current_entries below and retry with the exact text "
+                    f"of the entry you want to {'replace' if new_content else 'remove'}.{hint_text}",
+                    current_entries=_previews(entries)))
             replaced = entries[:idx] + ([] if new_content is None else [new_content]) + entries[idx + 1:]
             if new_content is None:
                 return replaced, "Entry removed."
             new_total = len(ENTRY_DELIMITER.join(replaced))
             if new_total > limit:
                 return self._failure_with_entries(target, (
-                    f"Replacement would put memory at {new_total:,}/{limit:,} chars. Shorten the new content, "
+                    f"Replacement would put memory at {new_total:,}/{limit:,} chars "
+                    f"(over by {new_total - limit:,}). Shorten the new content, "
                     f"or 'remove' other stale or less important entries to make room (see current_entries "
                     f"below), then retry — all in this turn."))
             return replaced, "Entry replaced."
         return self._mutate(target, _apply)
 
     @staticmethod
-    def _apply_batch_op(working: List[str], act: str, content: str, old_text: str, pos: str) -> Optional[str]:
+    def _infer_batch_action(op: Dict[str, Any], pos: str) -> Optional[str]:
+        """Observed traffic: models emit patch-tool-shaped batch ops — {old_text,
+        new_string/new_text} or bare {content} — with no ``action``. Infer it from
+        the shape instead of failing the batch (48 'unknown action' failures, each
+        echoing the full store, in a 48h window). None when the shape is ambiguous."""
+        if old := op.get("old_text"):
+            content = op.get("content") or op.get("new_text") or op.get("new_string")
+            return "replace" if content else "remove"
+        if op.get("content") or op.get("new_text") or op.get("new_string"):
+            return "add"
+        return None
+
+    @staticmethod
+    def _apply_batch_op(working: List[str], act: Optional[str], content: str, old_text: str, pos: str) -> Optional[str]:
         """Apply one batch op to *working* in place; return an error message or None."""
         if act == "add":
             if not content:
@@ -283,16 +349,17 @@ class MemoryStore:
                 working.append(content)
             return None
         if act not in ("replace", "remove"):
-            return f"{pos}: unknown action. Use add, replace, or remove."
+            return f"{pos}: unknown action '{act}'. Use add, replace, or remove."
         if not old_text:
             return f"{pos}: old_text is required."
         if act == "replace" and not content:
             return f"{pos}: content is required (use action='remove' to delete)."
         idx, ambiguous = _find_unique_match(working, old_text)
         if ambiguous:
-            return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific."
+            return f"{pos}: '{old_text[:160]}' matched multiple distinct entries -- be more specific."
         if idx is None:
-            return f"{pos}: no entry matched '{old_text}'."
+            hint = _nearest_entry_hint(working, old_text)
+            return f"{pos}: no entry matched '{old_text[:160]}'." + (f" {hint}." if hint else "")
         working[idx:idx + 1] = [content] if act == "replace" else []
         return None
 
@@ -313,7 +380,11 @@ class MemoryStore:
             working = list(entries)  # only committed if the whole batch validates
             for i, op in enumerate(ops):
                 act = op.get("action")
-                msg = self._apply_batch_op(working, act, (op.get("content") or op.get("new_text") or "").strip(),
+                if not op.get("action"):
+                    inferred = self._infer_batch_action(op, f"Operation {i + 1}")
+                    if inferred is not None:
+                        act = inferred
+                msg = self._apply_batch_op(working, act, (op.get("content") or op.get("new_text") or op.get("new_string") or "").strip(),
                                            (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
                 if msg:
                     return self._failure_with_entries(target, msg + " No operations were applied (batch is all-or-nothing).")
@@ -332,8 +403,8 @@ class MemoryStore:
             if new_total > limit:
                 return self._failure_with_entries(target, (
                     f"After applying all {len(operations)} operations, memory would be at "
-                    f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
-                    f"entries in the same batch (see current_entries below), then retry."))
+                    f"{new_total:,}/{limit:,} chars -- over by {new_total - limit:,}. Remove or shorten "
+                    f"more entries in the same batch (see current_entries below), then retry."))
             return working, f"Applied {len(operations)} operation(s)."
         return self._mutate(target, _apply)
 

@@ -20,6 +20,7 @@ from agent.message_sanitization import close_interrupted_tool_sequence
 from agent.repetition_guard import is_repetition_dominated
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_retry_state import TurnRetryState
+from agent.turn_failure import finalize_failed_turn
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -111,6 +112,7 @@ class _Trunc(TruncationVerdict):
     api_call_count: int
     effective_task_id: Any
     current_turn_user_idx: Any
+    turn_id: Any = None
     action: str = "fallthrough"
     result: Optional[Dict[str, Any]] = None
 
@@ -128,10 +130,11 @@ class _Trunc(TruncationVerdict):
         if cleanup:
             agent._cleanup_task_resources(self.effective_task_id)
         agent._persist_session(self.messages, self.conversation_history)
-        return self.done("return", partial_result(
+        return self.done("return", finalize_failed_turn(agent, partial_result(
             self.messages if result_messages is None else result_messages, self.api_call_count,
             final_response, error, failed=failed,
-        ))
+        ), task_id=self.effective_task_id, turn_id=self.turn_id,
+            failure_reason="provider_finish_reason_length", finish_reason=self.finish_reason))
 
     @property
     def is_stub(self) -> bool:
@@ -304,14 +307,14 @@ def recover_from_truncation(
     messages: List[Dict[str, Any]], conversation_history: Any, api_kwargs: Any, api_call_count: int,
     effective_task_id: Any, current_turn_user_idx: Any, length_continue_retries: int,
     truncated_response_parts: List[str], truncated_tool_call_retries: int, retry_count: int,
-    compression_attempts: int,
+    compression_attempts: int, turn_id: Any = None,
 ) -> TruncationVerdict:
     """Recover from a truncated response. Order is load-bearing: thinking exhaustion and
     repetition abort BEFORE any continuation; a content-filter stall escalates to the
     fallback chain BEFORE the primary is retried; text continuation (no tool calls) then
     truncated tool-call retry; finally roll back to the last complete assistant turn."""
     st = _Trunc(
-        agent=agent, response=response, finish_reason=finish_reason,
+        agent=agent, response=response, finish_reason=finish_reason, turn_id=turn_id,
         conversation_history=conversation_history, api_call_count=api_call_count,
         effective_task_id=effective_task_id, current_turn_user_idx=current_turn_user_idx,
         messages=messages, length_continue_retries=length_continue_retries,

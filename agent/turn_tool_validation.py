@@ -68,7 +68,7 @@ def _partial_exit(agent, messages, conversation_history, api_call_count, final_r
 
 def validate_tool_calls(
     agent: Any, assistant_message: Any, finish_reason: str, *, messages: List[Dict[str, Any]],
-    conversation_history: Any, api_call_count: int, effective_task_id: Any,
+    conversation_history: Any, api_call_count: int, effective_task_id: Any, turn_id: Any = None,
 ) -> ToolValidationVerdict:
     """Validate ``assistant_message.tool_calls`` in place (ids uniquified, names
     repaired, dict/empty args normalized to JSON strings). Strikes for invalid names
@@ -175,10 +175,12 @@ def validate_tool_calls(
             )
             agent._invalid_json_retries = 0
             agent._cleanup_task_resources(effective_task_id)
-            return _verdict("return", _partial_exit(
+            from agent.turn_failure import finalize_failed_turn
+            return _verdict("return", finalize_failed_turn(agent, _partial_exit(
                 agent, messages, conversation_history, api_call_count,
                 "Response truncated due to output length limit",
-            ))
+            ), task_id=effective_task_id, turn_id=turn_id,
+                failure_reason="incomplete_tool_arguments", finish_reason=finish_reason))
 
         agent._invalid_json_retries += 1
         tool_name, error_msg = invalid_json_args[0]

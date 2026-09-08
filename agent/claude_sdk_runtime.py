@@ -15,6 +15,7 @@ issue #25267.
 from __future__ import annotations
 
 import copy
+import functools
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -31,7 +32,13 @@ from agent.claude_sdk_runtime_fallback import (
 from agent.claude_sdk_runtime_prompt import (
     build_system_prompt_append,
 )
+from agent.claude_sdk_runtime_compaction import (
+    _emit_dangling_compaction_done,
+    _on_compact_boundary,
+    _on_compaction,
+)
 from agent.claude_sdk_runtime_session import (
+    _approval_bypass_active,
     _make_visibility_callbacks,
 )
 from agent.claude_sdk_runtime_tools import (
@@ -327,82 +334,11 @@ def run_claude_agent_sdk_turn(
 
             on_unsolicited_result = _deliver_background_result
 
-        def _on_compaction(trigger: str) -> None:
-            """CLI is compacting — surface it with the SHARED status wording.
-
-            Reuses conversation_compression's constants rather than inventing a
-            second vocabulary: the gateway's noise filter is built from those
-            same templates (#69550), so a re-inlined string would be silently
-            dropped on chat surfaces.
-
-            A manual /compact is the user's own action and already has its own
-            feedback, so only the automatic case is announced -- that is the one
-            that stalls a turn with no explanation.
-            """
-            if str(trigger).strip().lower() == "manual":
-                return
-            try:
-                from agent.conversation_compression import (
-                    COMPACTION_STATUS,
-                    COMPACTION_STATUS_KEY,
-                )
-
-                agent._sdk_compaction_pending = True
-                emit = getattr(agent, "_emit_status_kind", None)
-                if callable(emit):
-                    emit(COMPACTION_STATUS_KEY, COMPACTION_STATUS, origin="claude_sdk_compaction")
-                    logger.info("CLI compaction started (trigger=%s); status emitted", trigger)
-                else:
-                    logger.info(
-                        "CLI compaction started (trigger=%s); no _emit_status_kind, "
-                        "status not emitted",
-                        trigger,
-                    )
-            except Exception:
-                logger.debug("failed to emit CLI compaction status", exc_info=True)
-
-        def _on_compact_boundary(trigger: str) -> None:
-            """Compaction finished — close the status the PreCompact hook opened.
-
-            This is the real terminal edge, mid-turn, ~1 minute before the turn
-            ends. The end-of-turn emit below is now only a fallback for a CLI
-            that stops streaming compact_boundary; whichever fires first clears
-            the pending flag, so the notice is emitted exactly once.
-
-            Guarded on the pending flag rather than emitted unconditionally: a
-            manual /compact is never announced on the start side, and announcing
-            only its completion would be a notice for an event the user was
-            never told had begun.
-            """
-            if not getattr(agent, "_sdk_compaction_pending", False):
-                return
-            agent._sdk_compaction_pending = False
-            try:
-                from agent.conversation_compression import _emit_compaction_done
-
-                logger.info("CLI compaction finished (trigger=%s)", trigger)
-                _emit_compaction_done(agent)
-            except Exception:
-                logger.debug("failed to emit CLI compaction completion", exc_info=True)
-
-        def _approval_bypass_active() -> bool:
-            """Resolve live trusted bypass posture for the foreign SDK thread."""
-            try:
-                from tools.approval import is_approval_bypass_active_for_session
-
-                ctx = getattr(agent, "_sdk_approval_turn_ctx", None)
-                session_key = (
-                    ctx.get("session_key", "") if type(ctx) is dict else ""
-                )
-                return is_approval_bypass_active_for_session(session_key)
-            except Exception:
-                return False
-
         agent._claude_sdk_session = ClaudeAgentSdkSession(
             cwd=cwd,
             model=getattr(agent, "model", None) or None,
             approval_callback=approval_callback,
-            approval_bypass_provider=_approval_bypass_active,
+            approval_bypass_provider=functools.partial(_approval_bypass_active, agent),
             on_tool_started=_on_tool_started,
             system_prompt_append=append,
             hermes_session_id=getattr(agent, "session_id", None),
@@ -411,8 +347,8 @@ def run_claude_agent_sdk_turn(
             on_interim_assistant=on_interim_assistant,
             on_tool_iteration=on_tool_iteration,
             on_unsolicited_result=on_unsolicited_result,
-            on_compaction=_on_compaction,
-            on_compact_boundary=_on_compact_boundary,
+            on_compaction=functools.partial(_on_compaction, agent),
+            on_compact_boundary=functools.partial(_on_compact_boundary, agent),
             # Operator budget cap (agent.claude_agent_sdk.max_budget_usd);
             # None = no budget. Read per session creation so a config edit
             # applies on the next session, same as the append snapshot.
@@ -637,18 +573,7 @@ def run_claude_agent_sdk_turn(
     # Do NOT promote this back to the primary path: end-of-turn is exactly where
     # end-of-turn progress cleanup deletes the message, so the notice is emitted
     # and destroyed in the same instant (see _handle_compact_boundary).
-    if getattr(agent, "_sdk_compaction_pending", False):
-        agent._sdk_compaction_pending = False
-        try:
-            from agent.conversation_compression import _emit_compaction_done
-
-            logger.info(
-                "CLI compaction: no compact_boundary seen; emitting completion "
-                "at turn end (fallback)"
-            )
-            _emit_compaction_done(agent)
-        except Exception:
-            logger.debug("failed to emit CLI compaction completion", exc_info=True)
+    _emit_dangling_compaction_done(agent)
 
     # Interrupt handoff (codex_runtime parity, its ~739-746): capture BEFORE
     # the consume below zeroes the agent flag — the result dict needs it, and

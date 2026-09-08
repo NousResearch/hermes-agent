@@ -159,10 +159,53 @@ def test_missing_callback_is_logged_not_silent(caplog):
     assert "not emitted" in caplog.text
 
 
-# The START-side log lives in a closure nested inside run_claude_agent_sdk_turn,
-# which cannot be exercised without standing up a full turn. It is deliberately
-# left to production verification rather than covered by a source-text grep --
-# a test that asserts on source is not evidence the line ever runs.
+# The START-side edge and the boundary edge are module-level functions on
+# agent.claude_sdk_runtime_compaction (the session receives them bound with
+# functools.partial), so both are exercised directly.
+
+
+class _EmitKindAgent:
+    def __init__(self):
+        self.seen = []
+        self._sdk_compaction_pending = False
+
+    def _emit_status_kind(self, key, text, *, origin=None):
+        self.seen.append((key, text, origin))
+
+
+def test_start_edge_announces_only_automatic_compactions(caplog):
+    from agent.claude_sdk_runtime_compaction import _on_compaction
+
+    agent = _EmitKindAgent()
+    with caplog.at_level("INFO", logger="agent.claude_sdk_runtime"):
+        _on_compaction(agent, "manual")
+        assert agent.seen == []
+        assert agent._sdk_compaction_pending is False
+        _on_compaction(agent, "auto")
+
+    assert agent.seen == [
+        (COMPACTION_STATUS_KEY, COMPACTION_STATUS, "claude_sdk_compaction")
+    ]
+    assert agent._sdk_compaction_pending is True
+    assert "CLI compaction started (trigger=auto); status emitted" in caplog.text
+
+
+def test_boundary_edge_closes_a_pending_status_exactly_once(caplog):
+    from agent.claude_sdk_runtime_compaction import _on_compact_boundary
+
+    agent = _AgentWithCallback()
+    agent._sdk_compaction_pending = False
+    _on_compact_boundary(agent, "auto")  # nothing pending: no notice
+    assert agent.seen == []
+
+    agent._sdk_compaction_pending = True
+    with caplog.at_level("INFO", logger="agent.claude_sdk_runtime"):
+        _on_compact_boundary(agent, "auto")
+        _on_compact_boundary(agent, "auto")
+
+    assert agent.seen == [(COMPACTION_STATUS_KEY, COMPACTION_DONE_STATUS)]
+    assert agent._sdk_compaction_pending is False
+    assert caplog.text.count("CLI compaction finished (trigger=auto)") == 1
 
 
 # ── Completion edge: compact_boundary ───────────────────────────────────────

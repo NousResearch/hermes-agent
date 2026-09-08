@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from tools.computer_use.backend import ActionResult, CaptureResult, UIElement
 from tools.computer_use.cua_backend_input import _BTF_UNSUPPORTED_MSG
@@ -20,6 +20,9 @@ from tools.computer_use.cua_backend_parse import (
     _is_real_app_window, _parse_elements_from_structured, _parse_elements_from_tree, _parse_xprop_net_active_window,
     _positive_int, _split_tree_text, _windows_from_tool_result, _z_index_uninformative,
 )
+
+if TYPE_CHECKING:
+    from tools.computer_use.remote import RemoteCuaConfig
 
 logger = logging.getLogger("tools.computer_use.cua_backend")
 
@@ -108,6 +111,8 @@ def _is_desktop_window(w: Dict[str, Any], names: Tuple[str, ...] = _DESKTOP_WIND
 
 class _CaptureMixin:
     """capture()/list_windows()/list_apps()/focus_app() and their window-discovery helpers."""
+
+    _remote_config: Optional[RemoteCuaConfig]
 
     @contextmanager
     def _disarming(self) -> Iterator[None]:
@@ -218,7 +223,8 @@ class _CaptureMixin:
         if not windows:
             # Diagnose instead of a bare 0x0: the dominant real-world cause on Linux is a locked desktop session.
             from tools.computer_use import cua_backend as _cb
-            return self._failed_capture(mode, _cb._empty_discovery_reason())
+            return self._failed_capture(mode, _cb._empty_discovery_reason(
+                remote=self._remote_config is not None))
         if not app:
             return windows
         if app.strip().lower() in _DESKTOP_SHELL_SENTINELS:

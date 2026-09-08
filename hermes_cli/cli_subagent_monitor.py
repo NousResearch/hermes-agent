@@ -83,9 +83,9 @@ class SubagentMonitor:
             count = f'{len(self.entries)} live'
             # Keep both controls before spending scarce cells on activity.
             headings = (
-                f'Subagents · {count} · F6 expand · F7 restore',
-                f'{count} · F6 expand · F7 restore',
-                f'{count} · F6 · F7',
+                f'Subagents · {count} · Ctrl+T expand · F7 restore',
+                f'{count} · Ctrl+T expand · F7 restore',
+                f'{count} · Ctrl+T · F7',
                 count,
             )
             width = max(0, columns - 1)
@@ -98,7 +98,7 @@ class SubagentMonitor:
         columns = max(0, columns - 2)
         count = min(len(self.entries), max(1, min(4, (rows - 10) // 3)))
         hidden = len(self.entries) - count
-        heading = f' Subagents · {len(self.entries)} live · F6 expand · F7 collapse'
+        heading = f' Subagents · {len(self.entries)} live · Ctrl+T expand · F7 collapse'
         lines = [_clip(heading, columns)]
         for row in self.entries[:count]:
             activity = f"{row['elapsed']}s · " + (f"last: {row['last_tool']}" if row['last_tool'] else row.get('status') or 'starting')
@@ -106,7 +106,7 @@ class SubagentMonitor:
             goal_width = max(3, columns - get_cwidth(activity) - 5)
             lines.append(_clip(f" ● {_clip(row.get('goal'), goal_width)} · {activity}", columns))
         if hidden:
-            lines.append(_clip(f' +{hidden} more · F6 all subagents', columns))
+            lines.append(_clip(f' +{hidden} more · Ctrl+T all subagents', columns))
         return '\n'.join(' ' + line for line in lines)
 
 
@@ -186,9 +186,9 @@ def build_monitor_application(monitor, **kwargs):
         if state['steering']:
             return 'Enter send · Esc cancel' if narrow else 'Enter queues guidance · Esc cancels (does not interrupt)'
         if narrow:
-            return 'PgUp/Dn · s steer x stop · Esc' if state['detail'] else '↑↓ select Enter tail F6 close'
+            return 'PgUp/Dn · s steer x stop · Esc' if state['detail'] else '↑↓ · Enter tail · Ctrl+T close'
         return ('Esc roster · PgUp/PgDn tail · s steer · x stop' if state['detail'] else
-                '↑/↓ select · Enter tail · s steer · x stop · q/F6 close')
+                '↑/↓ select · Enter tail · s steer · x stop · q/Ctrl+T close')
 
     kb = KeyBindings()
     normal = Condition(lambda: not state['steering'] and not state['confirm'])
@@ -251,6 +251,7 @@ def build_monitor_application(monitor, **kwargs):
 
     @kb.add('q', filter=normal)
     @kb.add('f6', filter=normal)
+    @kb.add('c-t', filter=normal)
     @kb.add('c-c')
     def close(event):
         app.exit()

@@ -73,6 +73,42 @@ RUN apt-get -o Acquire::Retries=3 update && \
     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
+# ---------- GitHub / GitLab CLI clients ----------
+# Baked in so kanban workers can run gh/glab without a first-use lazy install
+# (the image seals /opt/hermes and blocks most runtime installs). Same
+# curl+sha256 pattern as the s6-overlay layer below: checksums pinned per
+# arch, tarball/deb verified before install.
+#
+# gh: official .deb from cli/cli GitHub releases.
+# glab: official tarball from gitlab-org/cli GitLab releases (extracts
+# bin/glab + CHANGELOG.md + LICENSE + README.md).
+ARG TARGETARCH
+ARG GH_VERSION=2.100.0
+ARG GH_AMD64_SHA256=698c8d88cc19cc92bfe96bad58d10b2a5b274c52433d6dc57799c81f6139d5fc
+ARG GH_ARM64_SHA256=33ccd2ad7ce639c927e1cb209e36555b0e1fbb89f7a38239c0568040ec758612
+ARG GLAB_VERSION=1.117.0
+ARG GLAB_AMD64_SHA256=1edfd0fba284e93396a9fd8899b9fff10f34f90b733943b1a70e21431a1991ab
+ARG GLAB_ARM64_SHA256=ce533c314b69014664020567d006b5c86435f0fa16561aba18929bea26506828
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) gh_sha="${GH_AMD64_SHA256}"; glab_sha="${GLAB_AMD64_SHA256}" ;; \
+        arm64) gh_sha="${GH_ARM64_SHA256}"; glab_sha="${GLAB_ARM64_SHA256}" ;; \
+        *) echo "Unsupported TARGETARCH=${TARGETARCH} for gh/glab" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL --retry 3 -o /tmp/gh.deb \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.deb"; \
+    printf '%s  %s\n' "${gh_sha}" /tmp/gh.deb | sha256sum -c -; \
+    apt-get -o Acquire::Retries=3 update -qq && \
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends /tmp/gh.deb && \
+    rm -rf /var/lib/apt/lists/* /tmp/gh.deb; \
+    curl -fsSL --retry 3 -o /tmp/glab.tar.gz \
+        "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${TARGETARCH}.tar.gz"; \
+    printf '%s  %s\n' "${glab_sha}" /tmp/glab.tar.gz | sha256sum -c -; \
+    tar -xzf /tmp/glab.tar.gz -C /tmp && \
+    install -m 0755 /tmp/bin/glab /usr/local/bin/glab; \
+    rm -rf /tmp/glab.tar.gz /tmp/bin /tmp/CHANGELOG.md /tmp/LICENSE /tmp/README.md; \
+    gh --version && glab --version
+
 # Prefer the fixed SQLite over Debian's vulnerable libsqlite3.so.0. Keep the
 # public library name stable so both the system interpreter and the uv-created
 # venv resolve the replacement without changing Python import paths.
@@ -197,9 +233,9 @@ COPY apps/shared/ apps/shared/
 ENV npm_config_install_links=false
 
 RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
-    for i in 1 2 3; do \
-        npx playwright install --with-deps chromium --only-shell && break || \
-        { [ "$i" = 3 ] && exit 1; echo "playwright install failed (attempt $i); retrying in 10s"; sleep 10; }; \
+    for i in 1 2 3 4 5 6; do \
+        PLAYWRIGHT_DOWNLOAD_TIMEOUT=300000 npx playwright install --with-deps chromium --only-shell && break || \
+        { [ "$i" = 6 ] && exit 1; echo "playwright install failed (attempt $i); retrying in 15s"; sleep 15; }; \
     done && \
     npm cache clean --force
 

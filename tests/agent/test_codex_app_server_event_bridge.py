@@ -320,7 +320,8 @@ class TestBridgeWiredInRuntime:
     a future refactor from dropping the bridge wiring and silently
     regressing Discord/Telegram live progress visibility."""
 
-    def test_session_constructor_receives_on_event(self, monkeypatch):
+    @pytest.mark.parametrize("model", ["gpt-5.6-codex", "gpt-5.7-codex"])
+    def test_session_constructor_receives_on_event(self, monkeypatch, model):
         from agent import codex_runtime
 
         captured: dict = {}
@@ -350,6 +351,8 @@ class TestBridgeWiredInRuntime:
         # Minimal stub agent — the runtime only touches a handful of
         # attributes and we mock the heavy ones to keep the test fast.
         agent = SimpleNamespace(
+            model=model,
+            _codex_app_server_config={"model_reasoning_effort": "high"},
             session_cwd=None,
             _codex_session=None,
             tool_progress_callback=MagicMock(),
@@ -388,6 +391,8 @@ class TestBridgeWiredInRuntime:
         assert callable(captured["on_event"]), (
             "on_event must be the bridge callable, not None or a sentinel"
         )
+        assert captured["model"] == model
+        assert captured["config"] == {"model_reasoning_effort": "high"}
 
         # And the bridge must actually drive the agent's callbacks when
         # fed a representative notification.

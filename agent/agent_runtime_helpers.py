@@ -2159,6 +2159,15 @@ def switch_model(
     # short-circuiting the freshly selected healthy provider.
     from agent.chat_completion_helpers import _reset_stale_streak
     _reset_stale_streak(agent)
+    if (
+        getattr(agent, "_codex_session", None) is not None
+        and (
+            old_model != agent.model
+            or old_provider != agent.provider
+            or snapshot.get("api_mode") != agent.api_mode
+        )
+    ):
+        agent._close_codex_session()
     agent._primary_runtime = _build_primary_runtime_snapshot(agent, api_mode)
     _finish_switch(agent, new_provider, old_norm, new_norm)
     logger.info(

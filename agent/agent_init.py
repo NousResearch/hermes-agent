@@ -2291,6 +2291,13 @@ def init_agent(
     except Exception:
         _agent_cfg = {}
 
+    _model_cfg = _agent_cfg.get("model") if isinstance(_agent_cfg, dict) else None
+    _codex_cfg = _model_cfg.get("codex_app_server") if isinstance(_model_cfg, dict) else None
+    agent._codex_app_server_config = {
+        key: list(value) if isinstance(value, list) else value
+        for key, value in (_codex_cfg.items() if isinstance(_codex_cfg, dict) else ())
+    }
+
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform)
     _apply_agent_section(agent, _agent_cfg)

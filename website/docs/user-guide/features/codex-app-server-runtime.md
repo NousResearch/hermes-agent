@@ -194,8 +194,36 @@ To check current state without changing anything:
 You can also set it manually in `~/.hermes/config.yaml`:
 ```yaml
 model:
+  default: gpt-5.3-codex
   openai_runtime: codex_app_server   # default is "auto" (= Hermes runtime)
+  codex_app_server:                  # all fields are optional
+    model_reasoning_effort: high     # minimal | low | medium | high | xhigh
+    sandbox_mode: workspace-write    # read-only | workspace-write | danger-full-access
+    ask_for_approval: on-request     # untrusted | on-request | never
+    network_access: true             # workspace-write only
+    writable_roots:                  # workspace-write only; absolute paths
+      - /absolute/path/to/artifacts
 ```
+
+Hermes always passes the model already resolved for this session as a
+process-local `codex app-server -c 'model="<model>"'` override. The existing
+`model.default` remains the only model source; there is no separate
+`codex_app_server.model`. This keeps profiles independent when they select
+different defaults.
+
+The optional `model.codex_app_server` values are validated and passed as
+additional `-c key=value` arguments for that app-server process only. Hermes
+does not write them to `~/.codex/config.toml`. If the block is absent, no
+reasoning, sandbox, approval, network, or writable-root override is added.
+The Hermes field `ask_for_approval` maps to Codex's `approval_policy` key.
+`network_access` and `writable_roots` apply only with `workspace-write`, and
+every writable root must be absolute.
+
+Kanban workers retain their existing managed boundary regardless of the generic
+profile settings: `workspace-write`, network access disabled, and only the Kanban
+root authorized by the dispatcher writable. Profile-level `sandbox_mode`,
+`network_access`, and `writable_roots` therefore cannot widen a dispatcher-owned
+worker's sandbox.
 
 ## Self-improvement loop (memory + skill nudges)
 

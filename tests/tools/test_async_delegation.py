@@ -1128,7 +1128,6 @@ print(json.dumps(q.get_nowait(), sort_keys=True))
     assert "done: fast member" in format_process_notification(evt)
 
 
-
 def _recovered_task(**over):
     """Minimal batch task for ``_recovered_results`` unit tests."""
     base = {"is_batch": True, "goals": ["g0", "g1", "g2"], "task_indexes": [0, 1, 2]}

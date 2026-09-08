@@ -1,10 +1,12 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { toggleTargetZoneTabStrip } from '@/components/pane-shell/tree/store'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
 import { writeClipboardText } from '@/components/ui/copy-button'
@@ -56,6 +58,25 @@ const EDIT_SHORTCUTS = {
   paste: formatCombo('mod+v'),
   selectAll: formatCombo('mod+a')
 } as const
+
+interface ChatSelectionAction {
+  text: string
+  x: number
+  y: number
+}
+
+function addChatSelectionToComposer(text: string): void {
+  const selected = text.trim()
+
+  if (!selected) {
+    return
+  }
+
+  const fence = '`'.repeat(Array.from(selected.matchAll(/`+/g)).reduce((length, match) => Math.max(length, match[0].length + 1), 3))
+
+  requestComposerInsert(`[Selected chat text]\n${fence}text\n${selected}\n${fence}\n\n[My annotation]\n`, { mode: 'block' })
+  requestComposerFocus('active')
+}
 
 function isLoopbackUrl(url: string): boolean {
   try {
@@ -362,6 +383,12 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   } else if (target.selectionText) {
     sections.push([
       <Item
+        icon="comment-discussion"
+        key="selection-add-to-chat"
+        label={t.rightSidebar.addToChat}
+        onSelect={() => addChatSelectionToComposer(target.selectionText)}
+      />,
+      <Item
         icon="copy"
         key="selection-copy"
         label={t.common.copy}
@@ -517,6 +544,12 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
     ])
   } else if (params.selectionText.trim()) {
     sections.push([
+      <Item
+        icon="comment-discussion"
+        key="guest-selection-add-to-chat"
+        label={t.rightSidebar.addToChat}
+        onSelect={() => guest.addSelectionToChat(params.selectionText)}
+      />,
       <Item icon="copy" key="guest-selection-copy" label={t.common.copy} onSelect={() => guestEdit('copy')} />
     ])
   }
@@ -616,6 +649,57 @@ export function AppContextMenu() {
   const { t } = useI18n()
   const navigate = useNavigate()
   const open = useStore($contextMenu)
+  const [chatSelectionAction, setChatSelectionAction] = useState<ChatSelectionAction | null>(null)
+
+  useEffect(() => {
+    const syncChatSelection = () => {
+      const selection = window.getSelection()
+
+      if (!selection || selection.isCollapsed || !selection.rangeCount) {
+        setChatSelectionAction(null)
+
+        return
+      }
+
+      const text = selection.toString().trim()
+      const range = selection.getRangeAt(0)
+      const node = range.commonAncestorContainer
+      const element = node instanceof Element ? node : node.parentElement
+
+      const message = element?.closest('[data-slot="aui_assistant-message-root"], [data-slot="aui_user-message-root"]')
+
+      if (!text || !message) {
+        setChatSelectionAction(null)
+
+        return
+      }
+
+      // jsdom does not implement Range geometry. More importantly, a partial
+      // DOM implementation must never make selecting a message throw.
+      if (typeof range.getBoundingClientRect !== 'function') {
+        return
+      }
+
+      const rect = range.getBoundingClientRect()
+
+      setChatSelectionAction(previous =>
+        previous &&
+        previous.text === text &&
+        Math.abs(previous.x - rect.right) < 2 &&
+        Math.abs(previous.y - rect.bottom) < 2
+          ? previous
+          : { text: text.slice(0, 12000), x: rect.right, y: rect.bottom }
+      )
+    }
+
+    window.addEventListener('selectionchange', syncChatSelection)
+    window.addEventListener('pointerup', syncChatSelection, true)
+
+    return () => {
+      window.removeEventListener('selectionchange', syncChatSelection)
+      window.removeEventListener('pointerup', syncChatSelection, true)
+    }
+  }, [])
 
   useEffect(() => {
     // stopPropagation beats other renderer handlers; preventDefault is never
@@ -667,46 +751,71 @@ export function AppContextMenu() {
   // them on its own context-menu event); attach them to the open menu.
   useEffect(() => window.hermesDesktop?.onContextMenuSpellcheck?.(augmentSpellcheck), [])
 
-  if (!open) {
-    return null
-  }
-
-  const sections =
-    open.kind === 'terminal'
-      ? terminalSections(open, t)
-      : open.kind === 'guest'
-        ? guestSections(open, t)
-        : (list => (list.length ? list : shellSections({ navigate, t })))(domSections(open, t))
-
   return (
-    <DropdownMenu
-      onOpenChange={openState => {
-        if (!openState) {
-          closeContextMenu()
-        }
-      }}
-      open
-    >
-      <DropdownMenuTrigger asChild>
-        {/* A zero-size anchor at the click point: the menu positions against
-            it exactly like a real trigger. */}
-        <span aria-hidden style={{ left: open.x, position: 'fixed', top: open.y }} />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="start"
-        className="w-56"
-        onCloseAutoFocus={event => event.preventDefault()}
-        portalContainer={open.kind === 'dom' ? open.target.dialogPortalContainer : undefined}
-        side="bottom"
-      >
-        {sections.map((section, index) => (
-          // Sections are positional by construction, so the index IS the key.
-          <div className="contents" key={index}>
-            {index > 0 && <DropdownMenuSeparator />}
-            {section}
-          </div>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <>
+      {chatSelectionAction && (
+        <div
+          className="pointer-events-none fixed z-50 -translate-x-1/2 pt-2"
+          style={{ left: chatSelectionAction.x, top: chatSelectionAction.y }}
+        >
+          <Button
+            aria-label={t.rightSidebar.addToChat}
+            className="pointer-events-auto"
+            onClick={() => {
+              addChatSelectionToComposer(chatSelectionAction.text)
+              setChatSelectionAction(null)
+              window.getSelection()?.removeAllRanges()
+            }}
+            onMouseDown={event => event.preventDefault()}
+            size="sm"
+            type="button"
+            variant="secondary"
+          >
+            {t.rightSidebar.addToChat}
+          </Button>
+        </div>
+      )}
+      {open &&
+        (() => {
+          const sections =
+            open.kind === 'terminal'
+              ? terminalSections(open, t)
+              : open.kind === 'guest'
+                ? guestSections(open, t)
+                : (list => (list.length ? list : shellSections({ navigate, t })))(domSections(open, t))
+
+          return (
+            <DropdownMenu
+              onOpenChange={openState => {
+                if (!openState) {
+                  closeContextMenu()
+                }
+              }}
+              open
+            >
+              <DropdownMenuTrigger asChild>
+                {/* A zero-size anchor at the click point: the menu positions against
+                  it exactly like a real trigger. */}
+                <span aria-hidden style={{ left: open.x, position: 'fixed', top: open.y }} />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                className="w-56"
+                onCloseAutoFocus={event => event.preventDefault()}
+                portalContainer={open.kind === 'dom' ? open.target.dialogPortalContainer : undefined}
+                side="bottom"
+              >
+                {sections.map((section, index) => (
+                  // Sections are positional by construction, so the index IS the key.
+                  <div className="contents" key={index}>
+                    {index > 0 && <DropdownMenuSeparator />}
+                    {section}
+                  </div>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )
+        })()}
+    </>
   )
 }

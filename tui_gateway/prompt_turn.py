@@ -780,9 +780,12 @@ def _run_prompt_submit(
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
-        st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None)
         goal_followup = None
         try:
+            # A marker write is turn setup too: its failure must release the
+            # session and restore the thread-local scopes below.
+            st.marker_key = _record_turn_marker(
+                session, text, auto_continue=terminal_callback is None)
             prepared = _prepare_turn_input(sid, session, st, text, images)
             if prepared is None:
                 if st.terminal_callback is not None and not st.receipt_attempted:

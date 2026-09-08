@@ -1,5 +1,6 @@
 /**
- * Minimal OpenAI-compatible mock inference server for E2E tests.
+ * Minimal OpenAI-compatible mock inference server for E2E tests and the
+ * dev:mock dev flow.
  *
  * Implements just enough of the /v1/* surface for `hermes serve` to resolve a
  * provider, list models, and stream a canned chat completion back to the
@@ -12,13 +13,19 @@
  * The canned response is a short, deterministic assistant message. Tool-call
  * requests are not simulated — the E2E tests only need the chat surface to
  * prove the full boot → gateway → inference → renderer chain works.
+ *
+ * Import the module to get the server as a library (the Playwright E2E
+ * suite). Run the file directly to also write an isolated mock config and
+ * launch the built Electron app against it (`npm run dev:mock`).
  */
 
+import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import type { ServerResponse } from 'node:http'
 import os from 'node:os'
 import nodePath from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 /** A canned assistant reply used for every chat completion request. */
 export const MOCK_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
@@ -204,10 +211,12 @@ function sidebarCrossBgCommand(releasePath?: string): string {
   if (!releasePath) {
     return 'echo "long bg output" && sleep 5 && echo "finished"'
   }
+
   // Bounded wait (60s): if a test forgets to release (or crashes mid-way),
   // the process still exits instead of hanging the worker until the suite
   // times out.
   const quoted = JSON.stringify(releasePath)
+
   return [
     'echo "long bg output"',
     `for _ in $(seq 1 600); do [ -e ${quoted} ] && break; sleep 0.1; done`,
@@ -400,12 +409,15 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
     let resolveHeldStreamStarted: (() => void) | null = null
     let releaseHeldStream: (() => void) | null = null
     let heldCompletionCount = 0
+
     const heldStreamStarted = new Promise<void>(resolveHeld => {
       resolveHeldStreamStarted = resolveHeld
     })
+
     const heldStreamReleased = new Promise<void>(resolveRelease => {
       releaseHeldStream = resolveRelease
     })
+
     const server = http.createServer((req, res) => {
       // CORS headers — the Electron renderer doesn't need them, but they
       // don't hurt and make the server usable from a browser context too.
@@ -416,6 +428,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
       if (req.method === 'OPTIONS') {
         res.writeHead(204)
         res.end()
+
         return
       }
 
@@ -435,6 +448,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             ],
           }),
         )
+
         return
       }
 
@@ -465,6 +479,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
           const stream = parsed.stream === true
           const model = parsed.model || 'mock-model'
+
           const holdThisCompletion = Boolean(
             options.holdFirstCompletionContaining &&
             heldCompletionCount === 0 &&
@@ -480,9 +495,11 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const messages: any[] = Array.isArray(parsed.messages) ? parsed.messages : []
           const lastUserMsg = [...messages].reverse().find(m => m?.role === 'user')
           const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : ''
+
           if (userText) {
             _receivedUserTexts.push(userText)
           }
+
           const isInterimTrigger = userText.includes('E2E_INTERIM_TRIGGER')
           const isSidebarTrigger = userText.includes('E2E_SIDEBAR_TRIGGER')
           const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
@@ -491,6 +508,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const isVerificationStopTrigger = messages.some(
             message => typeof message?.content === 'string' && message.content.includes(VERIFICATION_STOP_TRIGGER),
           )
+
           const isCorrectionSwitchTrigger = messages.some(
             message => typeof message?.content === 'string' && message.content.includes(CORRECTION_SWITCH_TRIGGER),
           )
@@ -542,17 +560,20 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             } else {
               nonStreamingScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
             }
+
             return
           }
 
           if (isQueueStopTrigger) {
             const turn = QUEUE_STOP_SCRIPT[_queueStopIndex] ?? QUEUE_STOP_SCRIPT[QUEUE_STOP_SCRIPT.length - 1]
             _queueStopIndex++
+
             if (stream) {
               streamScriptedTurn(res, model, turn)
             } else {
               nonStreamingScriptedTurn(res, model, turn)
             }
+
             return
           }
 
@@ -560,22 +581,26 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             const script = verificationStopScript(options.verificationWritePath ?? 'e2e-verification-target.py')
             const turn = script[_verificationStopIndex] ?? script[script.length - 1]
             _verificationStopIndex++
+
             if (stream) {
               streamScriptedTurn(res, model, turn)
             } else {
               nonStreamingScriptedTurn(res, model, turn)
             }
+
             return
           }
 
           if (isCorrectionSwitchTrigger) {
             const turn = CORRECTION_SWITCH_SCRIPT[_correctionSwitchIndex] ?? CORRECTION_SWITCH_SCRIPT[CORRECTION_SWITCH_SCRIPT.length - 1]
             _correctionSwitchIndex++
+
             if (stream) {
               streamScriptedTurn(res, model, turn)
             } else {
               nonStreamingScriptedTurn(res, model, turn)
             }
+
             return
           }
 
@@ -589,6 +614,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             } else {
               nonStreamingScriptedTurn(res, model, turn)
             }
+
             return
           }
 
@@ -601,17 +627,20 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             } else {
               nonStreamingScriptedTurn(res, model, turn)
             }
+
             return
           }
 
           if (isInterimTrigger) {
             const turn = INTERIM_SCRIPT[_scriptIndex] ?? INTERIM_SCRIPT[INTERIM_SCRIPT.length - 1]
             _scriptIndex++
+
             if (stream) {
               streamScriptedTurn(res, model, turn)
             } else {
               nonStreamingScriptedTurn(res, model, turn)
             }
+
             return
           }
 
@@ -620,11 +649,14 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
               options.holdFirstStreamForPrompt && typeof lastUserMessage?.content === 'string' &&
                 lastUserMessage.content.includes(options.holdFirstStreamForPrompt),
             )
+
             streamTextResponse(res, model, MOCK_REPLY, holdThisStream || holdThisCompletion ? () => {
               if (holdThisCompletion) {
                 heldCompletionCount++
               }
+
               resolveHeldStreamStarted?.()
+
               return heldStreamReleased
             } : undefined)
           } else {
@@ -642,6 +674,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           res.writeHead(400)
           res.end('Bad request')
         })
+
         return
       }
 
@@ -654,8 +687,10 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
     server.listen(0, '127.0.0.1', () => {
       const addr = server.address()
+
       if (addr === null || typeof addr === 'string') {
         reject(new Error('Failed to get server address'))
+
         return
       }
 
@@ -722,16 +757,20 @@ function streamTextResponse(
       res.write(sseChunk(model, {}, 'stop'))
       res.write('data: [DONE]\n\n')
       res.end()
+
       return
     }
 
     const word = i === 0 ? words[i] : ' ' + words[i]
     res.write(sseChunk(model, { content: word }))
     i++
+
     if (waitForRelease && i === 1) {
       waitForRelease().then(() => setTimeout(sendChunk, 20))
+
       return
     }
+
     setTimeout(sendChunk, 20)
   }
 
@@ -798,8 +837,10 @@ function streamScriptedTurn(
     } else {
       res.write(sseChunk(model, {}, finishReason))
     }
+
     res.write('data: [DONE]\n\n')
     res.end()
+
     return
   }
 
@@ -824,8 +865,10 @@ function streamScriptedTurn(
       } else {
         res.write(sseChunk(model, {}, finishReason))
       }
+
       res.write('data: [DONE]\n\n')
       res.end()
+
       return
     }
 
@@ -848,9 +891,11 @@ function nonStreamingScriptedTurn(
   const finishReason = hasToolCalls ? 'tool_calls' : 'stop'
 
   const message: Record<string, unknown> = { role: 'assistant' }
+
   if (turn.text) {
     message.content = turn.text
   }
+
   if (hasToolCalls) {
     message.tool_calls = turn.toolCalls!.map((tc, idx) => ({
       id: `call_e2e_${_scriptIndex}_${idx}`,
@@ -919,6 +964,7 @@ export function createBackgroundReleaseHandle(): BackgroundReleaseHandle {
     os.tmpdir(),
     `hermes-e2e-bg-release-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   )
+
   return {
     path,
     release: () => {
@@ -982,3 +1028,136 @@ export const SIDEBAR_CROSS_TEXTS = {
   /** The subagent's goal. */
   subagentGoal: 'Analyze cross-session state',
 } as const
+
+// ─── Dev launcher ──────────────────────────────────────────────────────
+//
+// Running this file directly (`node tests-js/scripts/mock-server.ts`)
+// starts the server, writes an isolated config.yaml + .env that point at
+// it, and launches the built Electron app against them — the `dev:mock`
+// flow. Importing the module never runs this block: the Playwright E2E
+// suite imports the server as a library instead.
+
+interface DevSandbox {
+  root: string
+  hermesHome: string
+  userDataDir: string
+  cleanup: () => void
+}
+
+/** Create an isolated HERMES_HOME + Electron user-data dir in the OS temp dir. */
+function createDevSandbox(): DevSandbox {
+  const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), `hermes-dev-mock-${Date.now()}`))
+  const hermesHome = nodePath.join(root, 'hermes-home')
+  const userDataDir = nodePath.join(root, 'electron-user-data')
+  fs.mkdirSync(hermesHome, { recursive: true })
+  fs.mkdirSync(userDataDir, { recursive: true })
+
+  return {
+    root,
+    hermesHome,
+    userDataDir,
+    cleanup: () => {
+      try {
+        fs.rmSync(root, { recursive: true, force: true })
+      } catch {
+        // best-effort
+      }
+    },
+  }
+}
+
+/** Write a config.yaml + .env that pre-configure the mock provider. */
+function writeMockConfig(hermesHome: string, mockUrl: string): void {
+  fs.writeFileSync(
+    nodePath.join(hermesHome, 'config.yaml'),
+    `# Auto-generated by dev-mock
+model:
+  default: mock-model
+  provider: mock
+providers:
+  mock:
+    api: ${mockUrl}/v1
+    name: Mock
+    api_mode: chat_completions
+    key_env: MOCK_API_KEY
+    models:
+      mock-model: {}
+    context_length: 4096
+`,
+    'utf8',
+  )
+  fs.writeFileSync(nodePath.join(hermesHome, '.env'), 'MOCK_API_KEY=e2e-mock-key\n', 'utf8')
+}
+
+/** Resolve the Electron binary: the repo's own install, then PATH. */
+function findElectron(repoRoot: string): string {
+  const local = nodePath.join(repoRoot, 'node_modules', 'electron', 'dist', 'electron')
+
+  if (fs.existsSync(local)) {return local}
+  const r = spawnSync('which', ['electron'], { encoding: 'utf8' })
+
+  if (r.status === 0 && r.stdout.trim()) {return r.stdout.trim()}
+  throw new Error('Electron binary not found. Run "npm install" from the repo root.')
+}
+
+/** Fail fast with a clear message when the desktop dist/ is missing. */
+function assertDistBuilt(desktopRoot: string): void {
+  const electronMain = nodePath.join(desktopRoot, 'dist', 'electron-main.mjs')
+  const indexHtml = nodePath.join(desktopRoot, 'dist', 'index.html')
+
+  if (!fs.existsSync(electronMain) || !fs.existsSync(indexHtml)) {
+    throw new Error(
+      `Desktop dist not built. Run 'cd apps/desktop && npm run build' first.\n` +
+        `Missing: ${electronMain}`,
+    )
+  }
+}
+
+/** Start the mock, write the sandbox, and launch the built Electron app. */
+async function runDevLaunch(): Promise<void> {
+  const desktopRoot = nodePath.resolve(import.meta.dirname, '..', '..', 'apps', 'desktop')
+  const repoRoot = nodePath.resolve(desktopRoot, '..', '..')
+
+  assertDistBuilt(desktopRoot)
+
+  console.log('Starting mock inference server...')
+  const mock = await startMockServer()
+  console.log(`  Mock server: ${mock.url}`)
+
+  const sandbox = createDevSandbox()
+  writeMockConfig(sandbox.hermesHome, mock.url)
+  console.log(`  HERMES_HOME: ${sandbox.hermesHome}`)
+
+  const electronBin = findElectron(repoRoot)
+
+  const env: Record<string, string> = {
+    ...process.env,
+    HERMES_HOME: sandbox.hermesHome,
+    HERMES_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
+    HERMES_DESKTOP_IGNORE_EXISTING: '1',
+    HERMES_DESKTOP_HERMES_ROOT: repoRoot,
+    HERMES_DESKTOP_APP_NAME: `HermesDevMock-${Date.now()}`,
+  }
+
+  console.log('Launching Electron...')
+
+  const child = spawn(electronBin, [desktopRoot, '--disable-gpu', '--no-sandbox'], {
+    env,
+    cwd: desktopRoot,
+    stdio: 'inherit',
+  })
+
+  child.on('exit', (code: number | null) => {
+    void mock.close()
+    sandbox.cleanup()
+    process.exit(code ?? 0)
+  })
+}
+
+// Only run the dev launcher when this file is executed directly.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  runDevLaunch().catch((err: unknown) => {
+    console.error(err)
+    process.exit(1)
+  })
+}

@@ -45,6 +45,8 @@ from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
+from cron.scheduler_identity import (
+    clear_cron_job_identity, cron_job_identity_scope, set_cron_job_identity)
 
 logger = logging.getLogger(__name__)
 
@@ -2032,7 +2034,8 @@ def _prepare_job_prompt(
 
     # no_agent short-circuits BEFORE importing run_agent / opening SessionDB.
     if job.get("no_agent"):
-        return _run_no_agent_job(job, job_id, job_name, cancel_event), None
+        with cron_job_identity_scope(job, job_id):
+            return _run_no_agent_job(job, job_id, job_name, cancel_event), None
 
     # Legacy / hand-edited job with nothing to run: pause it instead of waking the LLM every fire.
     from cron.jobs import EMPTY_PAYLOAD_ERROR, job_payload_is_empty
@@ -2054,7 +2057,9 @@ def _prepare_job_prompt(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script_with_claim_heartbeat(job, script_path, cancel_event=cancel_event)
+        with cron_job_identity_scope(job, job_id):
+            prerun_script = _run_job_script_with_claim_heartbeat(
+                job, script_path, cancel_event=cancel_event)
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)
@@ -2136,6 +2141,7 @@ class _CronRunScope:
         )
         for name in _CRON_DELIVERY_VARS:
             _VAR_MAP[name].set("")
+        set_cron_job_identity(job, job_id)
         # Workdir binds to the per-run task id (tool-layer cwd authority) instead of mutating
         # global TERMINAL_CWD; _SESSION_CWD above remains the prompt/context-file authority.
         self.task_id = f"cron:{job_id}:{execution_id or job.get('execution_id') or uuid.uuid4().hex}"
@@ -2167,6 +2173,7 @@ class _CronRunScope:
             exit_non_dispatcher_owned_context(self._non_dispatcher_token)
         for name in _CRON_DELIVERY_VARS:
             self._var_map[name].set("")
+        clear_cron_job_identity()
 
 
 def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:

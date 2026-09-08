@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import subprocess
 from unittest.mock import patch
@@ -105,6 +106,113 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert error is None
     assert "RAM 92% on host" in final_response
     assert "RAM 92% on host" in doc
+
+
+def test_run_job_no_agent_injects_stored_cron_origin_without_leaking(hermes_env, monkeypatch):
+    """Script-only jobs receive their own persisted identity, never ambient cron metadata."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    names = (
+        "HERMES_CRON_JOB_ID",
+        "HERMES_CRON_JOB_ORIGIN_USER_ID",
+        "HERMES_CRON_JOB_ORIGIN_PLATFORM",
+    )
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+
+    script_path = hermes_env / "scripts" / "identity.py"
+    script_path.write_text(
+        "import json, os\n"
+        f"print(json.dumps({{k: os.environ.get(k, '') for k in {names!r}}}))\n",
+        encoding="utf-8",
+    )
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="identity.py",
+        no_agent=True,
+        deliver="origin",
+        origin={"platform": "telegram", "chat_id": "123456789"},
+    )
+
+    success, _doc, response, error = run_job(job)
+
+    assert success is True and error is None
+    assert json.loads(response) == {
+        "HERMES_CRON_JOB_ID": job["id"],
+        "HERMES_CRON_JOB_ORIGIN_USER_ID": "123456789",
+        "HERMES_CRON_JOB_ORIGIN_PLATFORM": "telegram",
+    }
+    assert all(os.getenv(name) is None for name in names)
+
+    other = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="identity.py",
+        no_agent=True,
+        deliver="local",
+        origin=None,
+    )
+    success, _doc, response, error = run_job(other)
+    assert success is True and error is None
+    assert json.loads(response) == {
+        "HERMES_CRON_JOB_ID": other["id"],
+        "HERMES_CRON_JOB_ORIGIN_USER_ID": "",
+        "HERMES_CRON_JOB_ORIGIN_PLATFORM": "",
+    }
+
+
+def test_agent_backed_cron_subprocesses_inject_stored_origin_without_leaking(
+    hermes_env, monkeypatch,
+):
+    """Context scripts and later agent tools receive identity without live sender state."""
+    from cron.jobs import create_job
+    from cron.scheduler import _CronRunScope, _prepare_job_prompt
+    from tools.environments.local import build_subprocess_env
+
+    names = (
+        "HERMES_CRON_JOB_ID",
+        "HERMES_CRON_JOB_ORIGIN_USER_ID",
+        "HERMES_CRON_JOB_ORIGIN_PLATFORM",
+    )
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+
+    script_path = hermes_env / "scripts" / "context_identity.py"
+    script_path.write_text(
+        "import json, os\n"
+        f"print(json.dumps({{k: os.environ.get(k, '') for k in {names!r}}}))\n",
+        encoding="utf-8",
+    )
+    job = create_job(
+        prompt="Summarize the script context.",
+        schedule="every 5m",
+        script="context_identity.py",
+        deliver="local",
+        origin={"platform": "telegram", "user_id": "123456789"},
+    )
+    expected = {
+        "HERMES_CRON_JOB_ID": job["id"],
+        "HERMES_CRON_JOB_ORIGIN_USER_ID": "123456789",
+        "HERMES_CRON_JOB_ORIGIN_PLATFORM": "telegram",
+    }
+
+    early, prompt = _prepare_job_prompt(job, job["id"], "context job", None, None)
+    assert early is None
+    assert prompt is not None
+    assert json.dumps(expected) in prompt
+
+    scope = _CronRunScope(job, job["id"], "execution")
+    try:
+        scope.enter()
+        env = build_subprocess_env()
+        assert {name: env.get(name, "") for name in names} == expected
+    finally:
+        scope.exit()
+
+    after = build_subprocess_env()
+    assert all(after.get(name, "") == "" for name in names)
 
 
 def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):

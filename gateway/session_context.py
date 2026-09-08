@@ -57,11 +57,18 @@ _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", de
 _CRON_AUTO_DELIVER_CHAT_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
 _CRON_AUTO_DELIVER_THREAD_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 
+# Persisted cron identity for guarded child processes. These stay separate from
+# HERMES_SESSION_*: a job's stored origin authorizes the job, but is not a live sender session.
+_CRON_JOB_ID = ContextVar("HERMES_CRON_JOB_ID", default=_UNSET)
+_CRON_JOB_ORIGIN_USER_ID = ContextVar("HERMES_CRON_JOB_ORIGIN_USER_ID", default=_UNSET)
+_CRON_JOB_ORIGIN_PLATFORM = ContextVar("HERMES_CRON_JOB_ORIGIN_PLATFORM", default=_UNSET)
+
 # Legacy env-var name -> ContextVar for get_session_env (_SESSION_ASYNC_DELIVERY deliberately
 # absent: it is a bool capability, read via async_delivery_supported).
 _VAR_MAP = {var.name: var for var in (
     *_SESSION_VARS, _CRON_AUTO_DELIVER_PLATFORM, _CRON_AUTO_DELIVER_CHAT_ID,
-    _CRON_AUTO_DELIVER_THREAD_ID,
+    _CRON_AUTO_DELIVER_THREAD_ID, _CRON_JOB_ID, _CRON_JOB_ORIGIN_USER_ID,
+    _CRON_JOB_ORIGIN_PLATFORM,
 )}
 
 

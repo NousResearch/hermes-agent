@@ -5,6 +5,7 @@ can enter a wedged state where ``bot.send_message()`` returns a valid Message
 but nothing reaches the recipient.  ``_send_path_degraded`` short-circuits
 ``send()`` so cron's live-adapter branch falls through to standalone HTTP.
 """
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -182,4 +183,82 @@ def test_record_polling_progress_does_not_flip_when_not_running_or_fatal(running
         adapter._record_polling_progress(generation)
 
     write_status.assert_not_called()
+    assert adapter._send_path_degraded is False
+
+
+@pytest.mark.asyncio
+async def test_in_place_polling_recovery_sweeps_failed_obligations():
+    """An in-place polling recovery (no adapter replacement) must replay the
+    failed obligations the degraded send path stranded (#105804): the
+    reconnect hook never fires and the finalize compensation requires a
+    replacement adapter, so this sweep is the only redelivery trigger."""
+    adapter = _make_adapter()
+    generation, _event = adapter._begin_polling_generation()
+    adapter._running = True
+    redeliver = AsyncMock(return_value=0)
+    adapter.gateway_runner = MagicMock()
+    adapter.gateway_runner._redeliver_failed_obligations_for_platform = redeliver
+
+    with patch.object(adapter, "_write_runtime_status_safe"):
+        adapter._record_polling_progress(generation)
+    await asyncio.sleep(0)  # let the scheduled sweep task start
+
+    redeliver.assert_awaited_once_with(adapter.platform, profile=None)
+    assert adapter._send_path_degraded is False
+    await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_in_place_polling_recovery_scopes_sweep_to_owner_profile():
+    """A secondary-profile adapter's sweep must claim only that profile's
+    rows, mirroring the reconnect hook's profile-scoped redelivery."""
+    adapter = _make_adapter()
+    generation, _event = adapter._begin_polling_generation()
+    adapter._running = True
+    adapter._owner_profile = "secondary"
+    redeliver = AsyncMock(return_value=0)
+    adapter.gateway_runner = MagicMock()
+    adapter.gateway_runner._redeliver_failed_obligations_for_platform = redeliver
+
+    with patch.object(adapter, "_write_runtime_status_safe"):
+        adapter._record_polling_progress(generation)
+    await asyncio.sleep(0)  # let the scheduled sweep task start
+
+    redeliver.assert_awaited_once_with(adapter.platform, profile="secondary")
+    await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_healthy_progress_without_degraded_send_path_skips_sweep():
+    """Progress on an already-healthy send path must not spawn sweep tasks:
+    every getUpdates round-trip would otherwise schedule redundant ledger
+    queries."""
+    adapter = _make_adapter()
+    generation, _event = adapter._begin_polling_generation()
+    adapter._running = True
+    adapter._send_path_degraded = False
+    redeliver = AsyncMock(return_value=0)
+    adapter.gateway_runner = MagicMock()
+    adapter.gateway_runner._redeliver_failed_obligations_for_platform = redeliver
+
+    with patch.object(adapter, "_write_runtime_status_safe") as write_status:
+        adapter._record_polling_progress(generation)
+    await asyncio.sleep(0)
+
+    redeliver.assert_not_awaited()
+    write_status.assert_not_called()
+    await adapter.cancel_background_tasks()
+
+
+def test_polling_recovery_sweep_survives_missing_runner_or_loop():
+    """No gateway_runner wired (standalone adapter use): the sweep is a no-op,
+    not a crash. Same for sync callers with no running event loop."""
+    adapter = _make_adapter()
+    generation, _event = adapter._begin_polling_generation()
+    adapter._running = True
+
+    with patch.object(adapter, "_write_runtime_status_safe") as write_status:
+        adapter._record_polling_progress(generation)
+
+    write_status.assert_called_once()
     assert adapter._send_path_degraded is False

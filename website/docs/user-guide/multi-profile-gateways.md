@@ -517,7 +517,7 @@ hot-added profile that reuses another profile's token is parked with a
 Multiplexing selects a profile per **credential** (each profile's own bot
 token) or per **URL prefix** (`/p/<profile>/` for HTTP platforms). When several
 communities share **one** bot token — for example one Discord bot serving many
-guilds — you can additionally route specific guilds/channels/threads to
+guilds — you can additionally route specific users/guilds/channels/threads to
 different profiles with `gateway.profile_routes`:
 
 ```yaml
@@ -548,9 +548,15 @@ gateway:
       platform: whatsapp
       chat_id: "15551234567"
       profile: owner
+
+    # One Teams user across DMs, groups, and channels (exact sender id)
+    - name: teams-owner
+      platform: teams
+      user_id: "00000000-0000-0000-0000-000000000000"
+      profile: owner
 ```
 
-Routes are matched most-specific-first (`thread_id` > `chat_id` > `guild_id`),
+Routes are matched most-specific-first (`user_id` > `thread_id` > `chat_id` > `guild_id`),
 all declared fields must hold (AND), and a route keyed on a channel also
 matches threads/forum posts whose parent is that channel. Messages that match
 no route stay on the default/active profile. The routed profile gets the full
@@ -603,9 +609,11 @@ only to targets an enabled route with a `chat_id`/`thread_id` maps to that
 profile (a `guild_id + chat_id` route qualifies its channel) — a routed
 profile's job targeting an unrouted chat (or a chat routed to another profile)
 is never sent through the shared bot. Guild-only routes do not qualify a cron
-target; add a `chat_id` route for the delivery channel. The routed profile does
-not need its own `platforms.<platform>` block for this: the shared bot's
-authorization comes from the route, not from the satellite's config.
+target; add a `chat_id` route for the delivery channel. Routes declaring
+`user_id` do not qualify either: cron has no authenticated inbound sender, so
+they need a separate location-only route. The routed profile does not need its
+own `platforms.<platform>` block for this: the shared bot's authorization comes
+from the route, not from the satellite's config.
 
 ## Start, stop, or restart all gateways at once
 

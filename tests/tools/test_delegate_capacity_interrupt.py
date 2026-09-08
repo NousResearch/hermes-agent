@@ -135,7 +135,8 @@ def test_rejected_background_child_stops_with_parent(
         # Three independent units: one accepted, one rejected, one not yet submitted.
         # The model-facing batch width is legal under the configured limit.
         (tmp_path / "config.yaml").write_text(
-            "delegation:\n  max_concurrent_children: 3\n  worktree_isolation: false\n",
+            "delegation:\n  max_concurrent_children: 3\n  worktree_isolation: false\n"
+            "  independent_completions: true\n",
             encoding="utf-8",
         )
         background_child, pending_child = _ControlledChild(), _ControlledChild()

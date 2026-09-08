@@ -54,17 +54,12 @@ def _unlink_sidecars(db_path: Path) -> None:
             os.unlink(sidecar)
 
 
-class _RecordingConn:
-    def __init__(self, real_conn):
-        self._real = real_conn
-        self.recorded = []
-
-    def execute(self, sql, *args, **kwargs):
-        self.recorded.append(str(sql))
-        return self._real.execute(sql, *args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._real, name)
+def _immutable_message_count(db_path: Path) -> int:
+    conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    finally:
+        conn.close()
 
 
 def test_classify_deleted_wal_is_replaced_not_disk():
@@ -182,20 +177,23 @@ def test_writer_halts_after_own_wal_unlinked(tmp_path, force_wal):
     db.close()
 
 
-def test_close_quarantines_a_lost_wal_generation_before_checkpoint(
-    tmp_path, force_wal, monkeypatch, caplog
+def test_quarantined_close_does_not_checkpoint_wal_into_main_file(
+    tmp_path, force_wal, caplog
 ):
-    db = _make_db(tmp_path / "state.db", "s", "before-close")
-    real_conn = db._conn
-    recorder = _RecordingConn(real_conn)
-    db._conn = recorder
-    monkeypatch.setattr(db, "_wal_generation_was_lost", lambda: True)
+    path = tmp_path / "state.db"
+    db = SessionDB(db_path=path)
+    before = _immutable_message_count(path)
+    db.create_session("s", "cli")
+    db.append_message("s", role="user", content="wal-only")
+    assert _immutable_message_count(path) == before
+    assert Path(os.fspath(path) + "-wal").is_file()
+    db._db_wal_generation_lost = True
 
     with caplog.at_level("WARNING", logger="hermes_state"):
         db.close()
 
-    assert db._db_wal_generation_lost is True
-    assert not any("wal_checkpoint" in sql for sql in recorder.recorded)
+    assert _immutable_message_count(path) == before
+    assert Path(os.fspath(path) + "-wal").is_file()
     assert "Skipping the close-time WAL checkpoint" in caplog.text
 
 

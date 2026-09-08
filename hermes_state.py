@@ -1053,22 +1053,57 @@ class SessionDB(
         self._disable_close_time_checkpoint()
 
     def _disable_close_time_checkpoint(self) -> None:
-        """Best-effort SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE (Python 3.12+): sqlite3's
-        close() otherwise runs an internal last-connection checkpoint. It is unsafe
-        after structural corruption or when the connection holds a stale WAL generation.
-        <3.12 has no setconfig; skipping our explicit checkpoint is the available guard."""
-        flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
+        """Best-effort SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE on every supported CPython."""
         conn = self._conn
-        setconfig = getattr(conn, "setconfig", None)
-        if flag is None or setconfig is None:
+        if conn is None:
             return
+        flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", 1006)
+        setconfig = getattr(conn, "setconfig", None)
         try:
-            setconfig(flag, True)
+            if setconfig is not None:
+                setconfig(flag, True)
+            else:
+                self._set_legacy_no_checkpoint_on_close(conn, flag)
         except Exception:
             logger.debug(
                 "Could not disable SQLite's close-time checkpoint on the unsafe handle for %s",
                 self.db_path, exc_info=True,
             )
+
+    @staticmethod
+    def _set_legacy_no_checkpoint_on_close(conn: sqlite3.Connection, flag: int) -> None:
+        """Call sqlite3_db_config for CPython 3.11, before setconfig was exposed."""
+        import _sqlite3
+        import ctypes
+
+        if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 11):
+            raise RuntimeError("legacy sqlite db-config bridge requires CPython 3.11")
+
+        class _ConnectionHead(ctypes.Structure):
+            _fields_ = [
+                ("ob_refcnt", ctypes.c_ssize_t),
+                ("ob_type", ctypes.c_void_p),
+                ("db", ctypes.c_void_p),
+            ]
+
+        db = _ConnectionHead.from_address(id(conn)).db
+        if not db:
+            raise RuntimeError("sqlite connection is already closed")
+
+        if sys.platform == "win32":
+            sqlite_lib = Path(_sqlite3.__file__).with_name("sqlite3.dll")
+            if not sqlite_lib.is_file():
+                sqlite_lib = Path(sys.base_prefix) / "DLLs" / "sqlite3.dll"
+            lib = ctypes.CDLL(str(sqlite_lib))
+        else:
+            lib = ctypes.CDLL(_sqlite3.__file__)
+        db_config = lib.sqlite3_db_config
+        db_config.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        db_config.restype = ctypes.c_int
+        enabled = ctypes.c_int()
+        rc = db_config(db, flag, 1, ctypes.byref(enabled))
+        if rc != 0 or enabled.value != 1:
+            raise RuntimeError(f"sqlite3_db_config failed with code {rc}")
 
     def _raise_if_db_corrupt(self) -> None:
         if self._db_corrupt:

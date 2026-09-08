@@ -129,23 +129,44 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
 _BG_DELETE_ACTIONS = ("replace", "remove")
 
 
-def _background_delete_gate(action, operations) -> Optional[str]:
+def _background_delete_gate(action, operations, target="memory", content=None, old_text=None) -> Optional[str]:
     """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
     stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
-    single or inside a batch — are denied. The near-limit "consolidate now" hint is otherwise
-    an instruction to decide what to forget, executed with no human in the loop."""
+    single or inside a batch — are never applied unattended. The op is staged in the pending
+    store instead of merely denied: the fork's own review summary is never published back, so
+    a plain denial would drop the consolidation request with no surfacing path at all. A
+    staging failure fails closed to a plain denial."""
     from tools.skill_provenance import is_background_review
 
     if not is_background_review():
         return None
-    if action in _BG_DELETE_ACTIONS or any(
-        isinstance(op, dict) and op.get("action") in _BG_DELETE_ACTIONS for op in (operations or [])
-    ):
+    hit = action in _BG_DELETE_ACTIONS or any(
+        isinstance(op, dict) and op.get("action") in _BG_DELETE_ACTIONS for op in (operations or []))
+    if not hit:
+        return None
+    payload = ({"action": "batch", "target": target, "operations": operations}
+               if operations is not None else
+               {"action": action, "target": target, "content": content, "old_text": old_text})
+    detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
+              else _batch_op_line({"action": action, "content": content, "old_text": old_text}))
+    try:
+        from tools import write_approval as wa
+        record = wa.stage_write(
+            wa.MEMORY, payload,
+            summary=(f"background review consolidation ({'batch' if operations is not None else action} "
+                     f"on {target}): {detail}")[:200],
+            origin=wa.current_origin())
+        return json.dumps({
+            "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
+            "message": ("Background review may not delete memory entries unattended. The proposed "
+                        f"{'batch' if operations is not None else action} was staged for your approval — "
+                        "review it with /memory pending (approve to apply, discard to drop)."),
+        }, ensure_ascii=False)
+    except Exception:
+        logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)
         return tool_error(
             "Background review may not delete memory entries ('replace'/'remove', including in a "
-            "batch); 'add' is still available. Propose a consolidation in your review summary "
-            "instead.", success=False)
-    return None
+            "batch); 'add' is still available.", success=False)
 
 
 def memory_tool(action: str = None, target: str = "memory", content: str = None, old_text: str = None,
@@ -163,7 +184,7 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return json.dumps(target_error)
-    denied = _background_delete_gate(action, operations)
+    denied = _background_delete_gate(action, operations, target, content, old_text)
     if denied is not None:
         return denied
     if operations:

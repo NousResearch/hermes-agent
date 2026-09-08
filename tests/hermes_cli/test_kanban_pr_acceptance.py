@@ -22,7 +22,7 @@ def github(tmp_path, monkeypatch):
             if self.path == "/graphql":
                 value = {"data": {"repository": {"pullRequest": {
                     "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
-                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
+                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [] if state.get("no_required") else [
                         {"context": "required", "app": {"databaseId": 1}}]}}}}}}
             elif "/rules/branches/" in self.path:
                 value = [[]]
@@ -129,3 +129,35 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
             assert kb.get_task(conn, tid).status != "done"
             assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0] == 0
             github.pop("race")
+
+
+@pytest.mark.linux_only
+def test_pr_completion_accepts_explicit_successful_workflow_without_required_checks(github, monkeypatch):
+    from hermes_cli import kanban_pr_acceptance as acceptance
+
+    sha = "a" * 40
+    workflow = {"url": "https://github.com/acme/repo/actions/runs/42", "head_sha": sha,
+                "status": "completed", "conclusion": "success",
+                "jobs": [{"id": 7, "name": "test", "status": "completed", "conclusion": "success"}]}
+    original = acceptance._api
+    def api(endpoint, **kwargs):
+        if endpoint.endswith("/actions/runs/42"):
+            return {"head_sha": sha, "status": "completed", "conclusion": "success",
+                    "pull_requests": [{"number": 7}]}
+        if endpoint.endswith("/actions/runs/42/jobs?per_page=100"):
+            return [{"total_count": 1, "jobs": [workflow["jobs"][0]]}]
+        return original(endpoint, **kwargs)
+    monkeypatch.setattr(acceptance, "_api", api)
+    github["no_required"] = True
+    with connect() as conn:
+        for evidence in (
+            [workflow],
+            [{**workflow, "head_sha": "b" * 40}],
+            [{**workflow, "conclusion": "skipped"}],
+            [{**workflow, "jobs": [{**workflow["jobs"][0], "conclusion": "cancelled"}]}],
+            [],
+        ):
+            tid = kb.create_task(conn, title="workflow", completion_contract="acme/repo")
+            ok = kb.complete_task(conn, tid, metadata={"published_pr": "https://github.com/acme/repo/pull/7",
+                "workflow_evidence": evidence})
+            assert ok is (evidence == [workflow])

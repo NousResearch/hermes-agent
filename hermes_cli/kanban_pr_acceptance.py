@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
+_WORKFLOW = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/actions/runs/([1-9][0-9]*)")
 
 
 def validate_contract(value: str | None) -> str:
@@ -36,7 +37,7 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
     return value
 
 
-def collect_acceptance(contract: str, published_pr: str | None) -> dict:
+def collect_acceptance(contract: str, published_pr: str | None, metadata: dict | None = None) -> dict:
     receipt = {"ok": False, "classification": "missing", "head_sha": None,
                "pr_url": published_pr, "checks": [],
                "recovery": "Fix required failures, rerun infrastructure checks or wait, then retry completion. "
@@ -69,7 +70,13 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
                                     for r in rule["parameters"]["required_status_checks"])
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         if not required:
-            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
+            _collect_workflow_evidence(repo, number, sha, metadata, receipt)
+            current = _api(f"repos/{repo}/pulls/{number}")
+            if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
+                receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
+                return receipt
+            receipt["classification"] = "success"
+            receipt["ok"] = True
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest", paginate=True)
         runs = [run for page in pages for run in page["check_runs"]]
@@ -115,3 +122,45 @@ def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:
     if is_run and check.get("status") != "completed":
         return "pending"
     return {"success": "success", "failure": "failure", "error": "infra", "pending": "pending"}.get(outcome, "infra")
+
+
+def _collect_workflow_evidence(repo: str, number: int, sha: str, metadata: dict | None, receipt: dict) -> None:
+    """Accept only explicitly declared, API-confirmed successful Actions runs."""
+    evidence = metadata.get("workflow_evidence") if isinstance(metadata, dict) else None
+    if not isinstance(evidence, list) or not evidence:
+        raise ValueError("explicit workflow evidence is required when no checks are configured")
+    seen = set()
+    for item in evidence:
+        if not isinstance(item, dict):
+            raise ValueError("malformed workflow evidence")
+        url = item.get("url")
+        match = _WORKFLOW.fullmatch(url or "")
+        if not match or match[1] != repo or match[2] in seen or item.get("head_sha") != sha:
+            raise ValueError("workflow evidence is not tied to the current PR head")
+        seen.add(match[2])
+        if item.get("status") != "completed" or item.get("conclusion") != "success":
+            raise ValueError("workflow evidence is not terminal-successful")
+        jobs = item.get("jobs")
+        if not isinstance(jobs, list) or not jobs:
+            raise ValueError("workflow job evidence is missing or incomplete")
+        run = _api(f"repos/{repo}/actions/runs/{match[2]}")
+        if (run.get("head_sha") != sha or run.get("status") != "completed" or
+                run.get("conclusion") != "success" or
+                not any(p.get("number") == number for p in run.get("pull_requests", []))):
+            raise ValueError("workflow run is stale, unsuccessful, or unrelated")
+        job_pages = _api(f"repos/{repo}/actions/runs/{match[2]}/jobs?per_page=100", paginate=True)
+        api_jobs = {job.get("id"): job for page in job_pages for job in page.get("jobs", [])}
+        if not api_jobs:
+            raise ValueError("workflow jobs are missing")
+        for job in jobs:
+            if not isinstance(job, dict) or job.get("id") not in api_jobs:
+                raise ValueError("declared workflow job is missing")
+            actual = api_jobs[job["id"]]
+            if (job.get("name") != actual.get("name") or job.get("status") != "completed" or
+                    job.get("conclusion") != "success" or actual.get("status") != "completed" or
+                    actual.get("conclusion") != "success"):
+                raise ValueError("workflow job is not terminal-successful")
+        receipt["checks"].append({"name": item.get("name") or f"workflow-{match[2]}",
+                                   "id": int(match[2]), "url": url, "head_sha": sha,
+                                   "classification": "success", "conclusion": "success",
+                                   "jobs": [job["id"] for job in jobs]})

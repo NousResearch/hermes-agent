@@ -17,6 +17,8 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
     run_id, status, contract = snapshot
     if not contract or contract == "local-only":
         return None
+    if not isinstance(contract, str):
+        return False
     if status not in {"running", "ready", "blocked", "review"} or (expected_run_id is not None and run_id != expected_run_id):
         return False
     published_pr = metadata.get("published_pr") if isinstance(metadata, dict) else None
@@ -29,7 +31,7 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
             conn.execute("UPDATE tasks SET completion_contract=? WHERE id=?", (published_pr, task_id))
         snapshot = (run_id, status, published_pr)
         contract = published_pr
-    return snapshot, collect_acceptance(contract, published_pr)
+    return snapshot, collect_acceptance(contract, published_pr, metadata)
 
 
 def record_acceptance(conn, task_id, acceptance):

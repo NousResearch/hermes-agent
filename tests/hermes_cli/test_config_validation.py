@@ -155,6 +155,16 @@ class TestStringifiedContainers:
         cases = (
             ({"mcp_servers": "{demo: {command: python, args: [server.py]}}"},
              "mcp_servers", "mcp_servers", "mapping"),
+            ({"signal": "{enabled: true, require_mention: false}"},
+             "signal", "signal", "mapping"),
+            ({"mcp_servers": {"demo": {"args": "[server.py]"}}},
+             "mcp_servers.demo.args", "mcp_servers.demo.args", "list"),
+            ({"mcp_servers": {"demo": {"env": "{TOKEN: abc}"}}},
+             "mcp_servers.demo.env", "mcp_servers.demo.env", "mapping"),
+            ({"mcp_servers": {"demo": {"headers": "{Authorization: Bearer token}"}}},
+             "mcp_servers.demo.headers", "mcp_servers.demo.headers", "mapping"),
+            ({"mcp_servers": {"demo": {"identity_header": "{name: X-User, value: alice}"}}},
+             "mcp_servers.demo.identity_header", "mcp_servers.demo.identity_header", "mapping"),
             ({"model_catalog": {"excluded_providers": '["openai-api", "copilot"]'}},
              "model_catalog.excluded_providers", "model_catalog.excluded_providers", "list"),
             ({"plugins": {"enabled": "['state', 'status']"}},
@@ -219,7 +229,14 @@ class TestStringifiedContainers:
     def test_legitimate_strings_and_real_containers_are_not_reported(self):
         config = {
             "approvals": {"mode": "[off]"},
-            "mcp_servers": {"demo": {"command": "python", "args": ["server.py"]}},
+            "mcp_servers": {"demo": {
+                "command": "python",
+                "args": ["server.py"],
+                "env": {"TOKEN": "abc"},
+                "headers": {"Authorization": "Bearer token"},
+                "identity_header": {"name": "X-User", "value": "alice"},
+            }},
+            "signal": {"enabled": True, "require_mention": False},
             "model_catalog": {"excluded_providers": ["openai-api"]},
             "plugins": {"enabled": ["state", "[literal-plugin-name]"]},
             "custom_note": "[INST] not a list",

@@ -929,10 +929,9 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         </Box>
       ) : (
         <Box flexDirection="row" flexGrow={1} flexShrink={1} minHeight={0}>
-          <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} ref={detailScrollRef}>
+          <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} ref={detailScrollRef} stickyScroll={mode === 'tail'}>
             <Box flexDirection="column" paddingBottom={4} paddingRight={1}>
-              {selected && mode === 'tail' && sid && !replayMode ? <AgentLiveTail gw={gw} id={selected.item.id} key={selected.item.id} sid={sid} t={t} /> : null}
-              {selected ? <Detail id={selected.item.id} node={selected} t={t} /> : null}
+              {selected && mode === 'tail' && sid && !replayMode ? <AgentLiveTail gw={gw} id={selected.item.id} key={selected.item.id} sid={sid} t={t} /> : selected ? <Detail id={selected.item.id} node={selected} t={t} /> : null}
             </Box>
           </ScrollBox>
 

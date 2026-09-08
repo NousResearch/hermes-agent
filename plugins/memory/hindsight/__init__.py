@@ -760,7 +760,10 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _apply_recall_settings(self, cfg: dict) -> None:
         """Recall knobs are pure config too (``{}`` yields the defaults)."""
-        self._recall_tags = cfg.get("recall_tags") or None
+        # Config documents recall_tags as comma-separated (parity with retain_tags and
+        # recall_types below), but Hindsight's RecallRequest.tags is list[str] — passing a
+        # raw CSV string 422s the API. Normalize with the same helper retain_tags uses.
+        self._recall_tags = _normalize_retain_tags(cfg.get("recall_tags")) or None
         self._recall_tags_match = cfg.get("recall_tags_match", "any")
         self._auto_recall = cfg.get("auto_recall", True)
         self._recall_sync = bool(cfg.get("recall_sync", False))

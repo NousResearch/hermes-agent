@@ -1585,7 +1585,11 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
     session_tokens = _set_session_context(session_key, cwd=_session_cwd(session))
     try:
         prompt = agent._cached_system_prompt = agent._build_system_prompt(None)
-        db.update_system_prompt(getattr(agent, "session_id", None) or session_key, prompt)
+        db.update_system_prompt(
+            getattr(agent, "session_id", None) or session_key,
+            prompt,
+            global_policy_snapshot=getattr(agent, "_global_policy_snapshot", ""),
+        )
     except Exception:
         logger.warning("failed to persist live session system prompt for session %s", session_key, exc_info=True)
     finally:

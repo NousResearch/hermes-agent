@@ -630,7 +630,11 @@ def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool =
     if not agent._session_db:
         return
     try:
-        agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+        agent._session_db.update_system_prompt(
+            agent.session_id,
+            agent._cached_system_prompt,
+            global_policy_snapshot=agent._global_policy_snapshot,
+        )
         if persist_tools:
             from tools.mcp_tool_agent import persist_agent_tool_names
             persist_agent_tool_names(agent)
@@ -652,6 +656,11 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             session_row = agent._session_db.get_session(agent.session_id)
             if session_row is not None:
                 raw_prompt = session_row.get("system_prompt")
+                stored_snapshot = session_row.get("global_policy_snapshot")
+                if isinstance(stored_snapshot, str):
+                    agent._global_policy_snapshot = stored_snapshot
+                elif not raw_prompt or "GLOBAL POLICY (shared across all Hermes profiles)" not in raw_prompt:
+                    agent._global_policy_snapshot = ""
                 stored_state = "null" if raw_prompt is None else ("empty" if raw_prompt == "" else "present")
                 stored_prompt = raw_prompt or None
         except Exception as exc:

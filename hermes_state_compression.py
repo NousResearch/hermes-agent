@@ -156,7 +156,7 @@ class SessionCompressionMixin:
         return bool(self._execute_write(_do))
 
     def _publish_child_session_row(self, conn, parent, *, parent_session_id, child_session_id, source,
-                                   model, model_config, system_prompt, cwd, profile_name) -> None:
+                                   model, model_config, system_prompt, global_policy_snapshot, cwd, profile_name) -> None:
         """INSERT the compression child's ``sessions`` row copied from *parent*. Same contract as
         _insert_session_row's compression-fork backfill: the child stays on the parent's profile and keeps
         gateway routing/origin columns; no owner on either side -> this store's profile."""
@@ -164,14 +164,14 @@ class SessionCompressionMixin:
         conn.execute(
             """INSERT INTO sessions (
                    id, source, model, model_config, system_prompt,
-                   system_prompt_hash,
+                   system_prompt_hash, global_policy_snapshot,
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
                    thread_id, display_name, origin_json, started_at
                 ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 child_session_id, source, model, json.dumps(model_config) if model_config else None,
-                system_prompt_hash, parent_session_id, cwd or parent["cwd"], parent["git_branch"],
+                system_prompt_hash, global_policy_snapshot, parent_session_id, cwd or parent["cwd"], parent["git_branch"],
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
                 parent["user_id"], parent["session_key"], parent["chat_id"], parent["chat_type"],
@@ -181,7 +181,7 @@ class SessionCompressionMixin:
     def publish_compression_child(
         self, *, parent_session_id: str, child_session_id: str, source: str,
         messages: List[Dict[str, Any]], model: str = None, model_config: Dict[str, Any] = None,
-        system_prompt: str = None, cwd: str = None, profile_name: str = None,
+        system_prompt: str = None, global_policy_snapshot: Any = None, cwd: str = None, profile_name: str = None,
         compression_lock_holder: str = None, require_compression_lease: bool = True,
         require_lease_refresh: bool = False, lease_ttl_seconds: float = 300.0,
         watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None) -> None:
@@ -236,7 +236,7 @@ class SessionCompressionMixin:
             self._publish_child_session_row(
                 conn, parent, parent_session_id=parent_session_id, child_session_id=child_session_id,
                 source=source, model=model, model_config=model_config, system_prompt=system_prompt,
-                cwd=cwd, profile_name=profile_name)
+                global_policy_snapshot=global_policy_snapshot, cwd=cwd, profile_name=profile_name)
             total_messages, total_tool_calls = self._insert_message_rows(conn, child_session_id, messages)
             if watermark is not None:
                 # Clone the parent's concurrent tail into the child after the handoff;

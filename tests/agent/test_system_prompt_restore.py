@@ -32,6 +32,7 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent.provider = "openrouter"
     agent.platform = "cli"
     agent._session_db = session_db
+    agent._global_policy_snapshot = ""
     # MagicMock attributes are truthy by default; the static-prefix
     # reconstruction is gated on _use_prompt_caching, so default it off
     # for the legacy restore tests (the reconstruction tests enable it).
@@ -46,6 +47,46 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
 
 
 class TestStoredPromptReuse:
+    def test_restores_explicit_snapshot_before_stale_prompt_rebuild(self):
+        """A resumed model-switch rebuild retains its session-owned policy."""
+        stored = (
+            "You are Hermes Agent.\n\n"
+            "Session ID: test-session-id\n"
+            "Model: old-model\nProvider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {
+            "system_prompt": stored,
+            "global_policy_snapshot": "<GLOBAL>Policy A</GLOBAL>",
+        }
+        agent = _make_agent(session_db=db, prebuilt_prompt="rebuilt with Policy A")
+        agent.model = "new-model"
+        agent._global_policy_snapshot = "Policy B from constructor"
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._global_policy_snapshot == "<GLOBAL>Policy A</GLOBAL>"
+        db.update_system_prompt.assert_called_once_with(
+            agent.session_id,
+            "rebuilt with Policy A",
+            global_policy_snapshot="<GLOBAL>Policy A</GLOBAL>",
+        )
+
+    def test_legacy_prompt_without_global_header_restores_explicit_empty_snapshot(self):
+        """Legacy NULL metadata cannot acquire a newly-created GLOBAL policy."""
+        stored = "legacy prompt without a GLOBAL block"
+        db = MagicMock()
+        db.get_session.return_value = {
+            "system_prompt": stored,
+            "global_policy_snapshot": None,
+        }
+        agent = _make_agent(session_db=db)
+        agent._global_policy_snapshot = "Policy B from constructor"
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._global_policy_snapshot == ""
+
     def test_present_row_is_reused_verbatim(self, caplog):
         """Continuing session with a stored prompt → reuse byte-for-byte."""
         stored = "Stored prompt from turn 1 — byte-identical reuse"
@@ -109,7 +150,7 @@ class TestStoredPromptReuse:
         )
         agent._build_system_prompt.assert_called_once_with(None)
         db.update_system_prompt.assert_called_once_with(
-            agent.session_id, agent._cached_system_prompt
+            agent.session_id, agent._cached_system_prompt, global_policy_snapshot=""
         )
         assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
 
@@ -133,8 +174,14 @@ class TestLegitimateFreshBuild:
         agent._build_system_prompt.assert_called_once_with(None)
         assert agent._cached_system_prompt == "BUILT_PROMPT"
         # Persisted to DB
-        db.update_system_prompt.assert_called_once_with(agent.session_id, "BUILT_PROMPT")
-        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        db.update_system_prompt.assert_called_once_with(
+            agent.session_id, "BUILT_PROMPT", global_policy_snapshot=""
+        )
+        assert not [
+            r
+            for r in caplog.records
+            if r.name == "agent.conversation_loop" and r.levelno >= logging.WARNING
+        ]
 
     def test_no_db_skips_persistence(self):
         """When session DB is None, build and skip persistence silently."""

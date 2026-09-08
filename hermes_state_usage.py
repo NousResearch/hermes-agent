@@ -405,8 +405,7 @@ class SessionUsageMixin:
                         WHERE session_model_usage.task <> ''
                    ), 0),
                    COALESCE(SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)), 0) + COALESCE((
-                       SELECT SUM(COALESCE(session_model_usage.actual_cost_usd,
-                                           session_model_usage.estimated_cost_usd, 0))
+                       SELECT SUM(session_model_usage.estimated_cost_usd)
                          FROM session_model_usage
                          JOIN eligible ON eligible.id = session_model_usage.session_id
                         WHERE session_model_usage.task <> ''

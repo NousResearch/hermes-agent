@@ -51,6 +51,7 @@ class TestRecordAuxiliaryUsage:
             cache_write_tokens=364_768,
             model="claude-opus-4-6",
             billing_provider="anthropic",
+            estimated_cost_usd=2.00,
         )
         db.record_auxiliary_usage(
             "anthropic-session",
@@ -59,9 +60,12 @@ class TestRecordAuxiliaryUsage:
             billing_provider="anthropic",
             input_tokens=1_000,
             output_tokens=100,
+            estimated_cost_usd=1.25,
         )
 
-        assert db.usage_totals()["tokens"] == 4_041_832
+        totals = db.usage_totals()
+        assert totals["tokens"] == 4_041_832
+        assert totals["cost_usd"] == 3.25
 
     def test_records_task_row(self, db):
         db.create_session("s1", source="cli")

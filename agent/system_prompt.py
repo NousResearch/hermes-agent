@@ -381,7 +381,7 @@ def _active_profile_line(agent: Any) -> str:
     )
 
 
-def _platform_hint(agent: Any) -> str:
+def platform_hint(agent: Any) -> str:
     """Built-in/plugin platform hint + Telegram rich-messages opt-in + config
     override + desktop TUI clarifier."""
     platform_key = (agent.platform or "").lower().strip()
@@ -455,16 +455,6 @@ def _timestamp_line(agent: Any) -> str:
     trailer = (("Session ID", agent.session_id if agent.pass_session_id else None), ("Model", agent.model),
                ("Provider", agent.provider), ("Platform", agent.platform))
     return timestamp_line + "".join(f"\n{label}: {value}" for label, value in trailer if value)
-
-
-def platform_surface_hint(agent: Any) -> str:
-    """The rendering-surface guidance for ``agent.platform`` ("" when the surface has none).
-
-    Public because a session that changed surface mid-conversation keeps its stored prompt
-    (rebuilding it re-prefills the whole request) and delivers the CURRENT surface's guidance
-    through the per-turn user-message channel instead — see ``_SURFACE_SWITCH_NOTE_PREFIX``
-    in ``agent.conversation_loop`` (#104414)."""
-    return _platform_hint(agent) or ""
 
 
 def _memory_parts(agent: Any) -> List[str]:
@@ -589,7 +579,7 @@ def _post_workspace_parts(agent: Any) -> List[str]:
             pass  # Probe failure must never block prompt build.
     if getattr(agent, "_bot_mode_protocol", True):
         parts.extend(_bot_mode_parts(agent))
-    parts += [_active_profile_line(agent), _platform_hint(agent)]
+    parts += [_active_profile_line(agent), platform_hint(agent)]
     return parts
 
 
@@ -746,7 +736,7 @@ def format_tools_for_system_message(agent: Any) -> str:
 
 
 __all__ = ["build_system_prompt_parts", "build_system_prompt", "invalidate_system_prompt",
-           "platform_surface_hint", "restore_plugin_prompt_sections", "format_tools_for_system_message"]
+           "platform_hint", "restore_plugin_prompt_sections", "format_tools_for_system_message"]
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

@@ -29,7 +29,9 @@ from agent.prompt_caching import (
     strip_anthropic_tool_cache_control,
 )
 from agent.runtime_cwd import resolve_agent_cwd
-from agent.surface_switch import identity_line_value, note_inert_pinned_tools, stage_surface_switch_note
+from agent.surface_switch import (
+    identity_line_value, note_inert_pinned_tools, split_runtime_boundary, stage_surface_switch_note,
+)
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from agent.turn_retry_state import TurnRetryState
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
@@ -705,8 +707,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         try:
             saved_tools = session_row.get("tool_names") if session_row else None
             if saved_tools:
-                from tools.mcp_tool_agent import _def_name, restore_agent_tool_prefix
-                built_for_this_surface = [_def_name(t) for t in agent.tools or []]
+                from tools.mcp_tool_agent import agent_tool_names, restore_agent_tool_prefix
+                # Captured BEFORE the pin merges the previous surface's tools back in.
+                built_for_this_surface = agent_tool_names(agent) if announced_switch else []
                 restore_agent_tool_prefix(agent, json.loads(saved_tools))
                 if announced_switch:
                     note_inert_pinned_tools(agent, built_for_this_surface)
@@ -777,9 +780,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     """Return False when the persisted runtime-identity lines are stale."""
 
-    identity, runtime_marker, runtime = prompt.rpartition(f"\n\n{RUNTIME_ENVIRONMENT_HEADING}\n\n")
-    # Legacy prose may quote the heading, but only the new renderer ends in this boundary.
-    runtime_marker = runtime_marker if prompt.endswith(RUNTIME_ENVIRONMENT_END) else ""
+    _identity, runtime_marker, runtime = split_runtime_boundary(prompt)
 
     def host_info_value(label: str) -> str:
         """New prompts delimit runtime hints; legacy prompts put them before context."""

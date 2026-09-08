@@ -114,22 +114,25 @@ def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:
     return v if isinstance(v, str) else None
 
 
-def consume_gateway_turn_context_notes(agent: Any) -> str:
-    """Pop the gateway's per-turn must-deliver notes off the agent (one-shot, so the
-    system prompt stays byte-stable and a cached agent never replays a stale note)."""
-    notes = getattr(agent, "_gateway_turn_context_notes", "") or ""
-    if hasattr(agent, "_gateway_turn_context_notes"):
+def _pop_turn_note(agent: Any, attr: str) -> str:
+    """One-shot per-turn note: read and clear, so the system prompt stays byte-stable and a
+    cached agent never replays a stale note."""
+    note = getattr(agent, attr, "") or ""
+    if hasattr(agent, attr):
         with suppress(Exception):
-            agent._gateway_turn_context_notes = ""
-    return notes if isinstance(notes, str) else ""
+            setattr(agent, attr, "")
+    return note if isinstance(note, str) else ""
+
+
+def consume_gateway_turn_context_notes(agent: Any) -> str:
+    """Pop the gateway's per-turn must-deliver notes."""
+    return _pop_turn_note(agent, "_gateway_turn_context_notes")
 
 
 def consume_surface_switch_note(agent: Any) -> str:
-    """Pop the one-shot surface-switch note staged by the system-prompt restore (#104414); it rides
-    the same user-message channel as the gateway's must-deliver notes, behind the cached prefix."""
-    note = getattr(agent, "_surface_switch_note", "") or ""
-    agent._surface_switch_note = ""
-    return note if isinstance(note, str) else ""
+    """Pop the surface-switch note staged by the system-prompt restore (#104414); rides the same
+    user-message channel as the gateway notes, behind the cached prefix."""
+    return _pop_turn_note(agent, "_surface_switch_note")
 
 
 def append_notes_to_multimodal_content(content: Any, notes: str) -> bool:

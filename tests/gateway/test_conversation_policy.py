@@ -150,6 +150,46 @@ async def test_inbound_audit_records_matching_rule_without_message(tmp_path):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("text", [
+    (
+        "⚠️ **Dangerous command requires approval** ``` <write to AGENTS.md> ``` "
+        "Reason: Write to protected agent-instruction file(s): AGENTS.md. "
+        "Reply `!approve` to execute once, or `!deny` to cancel."
+    ),
+    (
+        "⚠️ **Dangerous request requires approval**\n"
+        "Reason: This operation requires explicit approval."
+    ),
+    (
+        "This approval prompt has expired. Run the command again if you still "
+        "want to approve it."
+    ),
+])
+async def test_approval_lifecycle_messages_are_dropped_before_routing(text, tmp_path):
+    adapter = Adapter(Platform.MATRIX, {
+        "relevance": {"enabled": True},
+        "pingpong_guard": {"enabled": False},
+    })
+    gate = adapter.conversation_policy().relevance
+    gate._throttled_evaluate = AsyncMock(
+        side_effect=AssertionError("approval lifecycle message reached scorer")
+    )
+    message = event(Platform.MATRIX, text=text)
+    message.metadata["conversation_mentioned"] = False
+
+    await adapter.handle_message(message)
+
+    assert adapter.delivered == []
+    record = json.loads(
+        (tmp_path / "logs/matrix-relevance-decisions.jsonl")
+        .read_text()
+        .splitlines()[-1]
+    )
+    assert record["reason_code"] == "system_message_before_routing"
+    await adapter.disconnect()
+
+
+@pytest.mark.anyio
 async def test_configured_pingpong_patterns_reach_worker():
     adapter = Adapter(settings={"pingpong_guard": {
         "enabled": True, "min_chars": 1, "silence_patterns": [r"custom-block"]}})

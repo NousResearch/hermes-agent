@@ -96,7 +96,7 @@ import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify } from './labels'
-import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
+import { botRosterMeta, groupTranscriptSpeakerMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
 
@@ -915,7 +915,6 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
-    const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
 
     // Match this speaker back to its member descriptor so display
     // names and disambiguating handles come from the roster (the
@@ -929,6 +928,10 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             (entry.from.source ? (b.connectionLabel || b.connectionId) === entry.from.source : !b.remoteSource)
         ) || null
 
+    // Resolve meta through the scoped member lookup so same-named bots
+    // on different connections get their own avatar/title instead of
+    // falling back to the bare-name lookup that always picks the local one.
+    const meta = groupTranscriptSpeakerMeta(entry, members, allMeta)
     const display = isUser
       ? 'You'
       : displayName(

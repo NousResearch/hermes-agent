@@ -21,6 +21,7 @@ import {
   beginAliasRouteIndex,
   botConnectionRoute,
   botRosterMeta,
+  groupTranscriptSpeakerMeta,
   indexAliasRoutes,
   requestForBot,
   resolveBotConnectionRoute
@@ -284,5 +285,71 @@ describe('requestForBot rides the bot’s own source', () => {
     expect(error).toBeInstanceOf(Error)
     expect(typeof (error as Error).name).toBe('string')
     expect((error as Error).message).toBe('profile busy')
+  })
+})
+
+describe('groupTranscriptSpeakerMeta — group chat avatar/display lookup (#96432)', () => {
+  const localCto = { name: 'cto' } as RosterRow
+  const remoteCto = {
+    name: 'cto',
+    connectionId: 'spark',
+    connectionLabel: 'spark',
+    remoteSource: true,
+    sourceScoped: true
+  } as RosterRow
+
+  const allMeta = {
+    cto: { title: 'Local CTO', image: 'local-cto.png', color: 'red', shape: 'cat' },
+    'spark::cto': { title: 'Remote CTO', image: 'remote-cto.png', color: 'blue', shape: 'dog' }
+  }
+
+  const members = [localCto, remoteCto]
+
+  it('returns null for user lines', () => {
+    expect(
+      groupTranscriptSpeakerMeta({ from: { kind: 'user', name: 'You' } }, members, allMeta)
+    ).toBeNull()
+  })
+
+  it('resolves a local bot by name (no source)', () => {
+    const meta = groupTranscriptSpeakerMeta(
+      { from: { kind: 'member', name: 'cto' } },
+      members,
+      allMeta
+    )
+
+    expect(meta?.image).toBe('local-cto.png')
+    expect(meta?.title).toBe('Local CTO')
+  })
+
+  it('resolves a remote bot by name + source, not the local twin', () => {
+    const meta = groupTranscriptSpeakerMeta(
+      { from: { kind: 'member', name: 'cto', source: 'spark' } },
+      members,
+      allMeta
+    )
+
+    expect(meta?.image).toBe('remote-cto.png')
+    expect(meta?.title).toBe('Remote CTO')
+  })
+
+  it('returns null for an unknown speaker (not in roster)', () => {
+    expect(
+      groupTranscriptSpeakerMeta(
+        { from: { kind: 'member', name: 'nobody' } },
+        members,
+        allMeta
+      )
+    ).toBeNull()
+  })
+
+  it('returns null when no meta exists for the matched member', () => {
+    expect(
+      groupTranscriptSpeakerMeta(
+        { from: { kind: 'member', name: 'cto', source: 'spark' } },
+        members,
+        {}
+      )
+    ).toBeNull()
   })
 })

@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   openSessionInTerminal: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openInTerminal', sessionId, opts),
   openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
   openBrowserWindow: tabId => ipcRenderer.invoke('hermes:window:openBrowser', tabId),
+  openPluginViewer: (pluginId, input) => ipcRenderer.invoke('hermes:window:openPluginViewer', pluginId, input),
+  closePluginViewer: (pluginId, id) => ipcRenderer.invoke('hermes:window:closePluginViewer', pluginId, id),
   onBrowserPopoutClosed: callback => {
     const listener = (_event, tabId) => callback(tabId)
     ipcRenderer.on('hermes:browser-popout:closed', listener)

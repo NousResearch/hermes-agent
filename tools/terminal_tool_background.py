@@ -91,7 +91,8 @@ def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, 
                   owner_task_id=task_id or effective_task_id, session_key=session_key)
     if env_type == "local":
         return process_registry.spawn_local(
-            env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty, **common)
+            env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty,
+            **({"execution_context": env.execution_context} if getattr(env, "execution_context", None) else {}), **common)
     return process_registry.spawn_via_env(env=env, **common)
 
 

@@ -406,6 +406,12 @@ export interface Translations {
         search: string
         noMatches: string
         toggleFailed: (name: string) => string
+        setupInstalled: string
+        reviewSetup: string
+        setupTitle: string
+        setupConfirm: string
+        setupBusy: string
+        setupTrust: string
         updateBackendToManage: string
         sources: Record<string, string>
       }

@@ -157,6 +157,9 @@ class _CaptureMixin:
 
     def list_windows(self) -> List[Dict[str, Any]]:
         """Visible windows frontmost-first, re-fetching over the CLI transport when MCP returns nothing."""
+        if getattr(self, "desktop_only", False):
+            self.execution_context.check()
+            return []
         return _sorted_windows(self._fetch_or_refetch(
             "list_windows", {"on_screen_only": True, "session": self._session_id}, 20.0, "list_windows",
             lambda out: not _sorted_windows(out),
@@ -280,6 +283,11 @@ class _CaptureMixin:
         """Capture the frontmost on-screen window or an exact known target: `list_windows` +
         `get_window_state` (ax/som) or `screenshot` (vision). Only the structured
         ``structuredContent.windows`` shape is supported."""
+        if getattr(self, "desktop_only", False):
+            from tools.computer_use.session_context import check_desktop_request
+            check_desktop_request(self, {"app": app, "pid": pid, "window_id": window_id})
+            self.execution_context.check()
+            return self._capture_full_screen(mode)
         # Schema-filler ids (models zero-fill optional properties) must not read as a targeting request.
         pid, window_id = [None if _is_placeholder_id(v) else v for v in (pid, window_id)]
         exact_target = pid is not None or window_id is not None
@@ -332,14 +340,22 @@ class _CaptureMixin:
         png_b64, image_mime_type = _image_from_tool_result(out)
         if not png_b64:
             return self._failed_capture(mode, _NO_DESKTOP_IMAGE_MSG)
+        if getattr(self, "desktop_only", False):
+            self._last_app = "screen"
+            self._desktop_target_ready = True
         sc = out.get("structuredContent") or {}
         png_bytes_len, width, height = _png_metrics(png_b64, int(sc.get("screenshot_width") or sc.get("screen_width") or 0),
                                                     int(sc.get("screenshot_height") or sc.get("screen_height") or 0))
         return CaptureResult(mode="vision", width=width, height=height, png_b64=png_b64, app="screen",
                              window_title="Full screen (composited)", png_bytes_len=png_bytes_len,
-                             image_mime_type=image_mime_type, note=_FULL_SCREEN_NOTE)
+                             image_mime_type=image_mime_type,
+                             note=("Desktop-only context: use coordinates with app='screen'; window/AX targeting is unavailable."
+                                   if getattr(self, "desktop_only", False) else _FULL_SCREEN_NOTE))
 
     def list_apps(self) -> List[Dict[str, Any]]:
+        if getattr(self, "desktop_only", False):
+            self.execution_context.check()
+            return []
         out = self._session.call_tool("list_apps", {"session": self._session_id})
         structured, data = out.get("structuredContent"), out.get("data")
         # structuredContent is canonical; empty lists fall through so a populated compatibility envelope

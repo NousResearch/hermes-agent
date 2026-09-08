@@ -492,7 +492,10 @@ class ThemeSetBody(BaseModel):
 class FontSetBody(BaseModel):
     font: str
 
-class _AgentPluginInstallBody(BaseModel):
+class _AgentPluginEnableBody(BaseModel):
+    setup_consent: Optional[dict] = None
+
+class _AgentPluginInstallBody(_AgentPluginEnableBody):
     identifier: str
     force: bool = False
     enable: bool = True

@@ -12,6 +12,9 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
+import { useContributions } from '@/contrib'
+import { SESSION_AREAS } from '@/contrib/session'
+import { SessionContributions } from '@/contrib/session-contributions'
 import { type Translations, useI18n } from '@/i18n'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -91,6 +94,7 @@ interface ComposerStatusStackProps {
  */
 export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
+  const pluginRows = useContributions(SESSION_AREAS.statusStack)
   const navigate = useNavigate()
   // Subscribe to THIS session's slice only. Both maps churn on other
   // sessions' activity (subagent ticks, background polls, preview updates in
@@ -253,6 +257,34 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
     sections.push({ key: 'preview', node: previewBlock })
   }
 
+  const hasCoreSections = sections.length > 0 || Boolean(queue)
+
+  if (sessionId && pluginRows.length > 0) {
+    // Every other section in the stack is self-delimiting: status groups carry
+    // a caret + icon + label header, the billing wall and session control have
+    // their own chrome. A plugin's contribution is raw content with none of
+    // that, so dropped straight under the section above it it reads as a
+    // footnote of that section rather than as its own status. One hairline
+    // gives it an edge — only when something actually precedes it, so a lone
+    // plugin row never carries a stray line above it, and two headered
+    // sections are never separated by a divider they don't need.
+    const followsSection = sections.length > 0
+
+    sections.push({
+      key: 'session-contributions',
+      node: (
+        // Matches a StatusSection header's inset, so the row shares the stack's
+        // gutter instead of sitting at its own left edge.
+        <div
+          className={cn('px-2 py-1 empty:hidden', followsSection && 'border-t border-(--ui-stroke-tertiary)')}
+          data-session-contribution-content=""
+        >
+          <SessionContributions area={SESSION_AREAS.statusStack} runtimeSessionId={sessionId} />
+        </div>
+      )
+    })
+  }
+
   if (queue) {
     sections.push({ key: 'queue', node: queue })
   }
@@ -276,7 +308,10 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
       // In flow in the dock column, directly above the composer. The dock is
       // bottom-anchored, so this grows upward over the thread without needing
       // to be positioned — and it shares the dock's left edge for free.
-      className="flex max-h-[40vh] min-h-0 flex-col overflow-y-auto"
+      className={cn(
+        'flex max-h-[40vh] min-h-0 flex-col overflow-y-auto',
+        !hasCoreSections && '[&:not(:has([data-session-contribution-content]:not(:empty)))]:hidden'
+      )}
       data-slot="composer-status-stack"
       onPointerDownCapture={() => blurComposerInput()}
     >

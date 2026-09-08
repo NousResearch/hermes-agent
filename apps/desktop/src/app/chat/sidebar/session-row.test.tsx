@@ -3,6 +3,8 @@ import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { registry } from '@/contrib/registry'
+import { SESSION_AREAS, type SessionContributionProps } from '@/contrib/session'
 import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
@@ -143,6 +145,29 @@ function makeSession(overrides: Partial<SessionInfo> & { title: string }): Sessi
     ...overrides
   } as unknown as SessionInfo
 }
+
+it.each([false, true])('renders the qualified list badge in card=%s without replacing the status dot', card => {
+  const dispose = registry.register({
+    id: 'fixture-badge',
+    area: SESSION_AREAS.listBadge,
+    data: {
+      render: ({ session }: SessionContributionProps) => (
+        <span>
+          {session.connectionId}:{session.profile}:{session.storedSessionId}
+        </span>
+      )
+    }
+  })
+
+  try {
+    renderRow(makeSession({ title: 'Foreign session', id: 'foreign', profile: 'worker', connection_id: 'remote' }), {
+      card
+    })
+    expect(screen.getByText('remote:worker:foreign')).toBeTruthy()
+  } finally {
+    dispose()
+  }
+})
 
 const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
 

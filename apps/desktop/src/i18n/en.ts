@@ -465,6 +465,14 @@ export const en: Translations = {
         search: 'Search plugins…',
         noMatches: 'No plugins match your search.',
         toggleFailed: (name: string) => `Could not toggle ${name}`,
+        setupInstalled:
+          'Files installed; enablement was not changed. Open Plugins and enable this plugin to review or retry setup.',
+        reviewSetup: 'Review setup in Plugins',
+        setupTitle: 'Native plugin setup',
+        setupConfirm: 'Set up and enable',
+        setupBusy: 'Setting up…',
+        setupTrust:
+          'This runs trusted plugin code on the selected backend. Existing sessions stay unchanged; restart the gateway to activate.',
         updateBackendToManage: 'Update the Hermes backend to manage this plugin from Desktop.',
         sources: { bundled: 'bundled', user: 'user', git: 'git', project: 'project', entrypoint: 'pip' }
       },

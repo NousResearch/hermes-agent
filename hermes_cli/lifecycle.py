@@ -25,8 +25,11 @@ def _plugin_hooks(hook_name: str, **kwargs: Any) -> List[Any]:
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """Notify first-party observers, then invoke compatibility plugin hooks."""
-    _observe(hook_name, **kwargs)
-    return _plugin_hooks(hook_name, **kwargs)
+    from hermes_cli.session_hook_context import hook_profile_scope
+
+    with hook_profile_scope(kwargs.get("hermes_home")):
+        _observe(hook_name, **kwargs)
+        return _plugin_hooks(hook_name, **kwargs)
 
 
 def has_hook(hook_name: str) -> bool:
@@ -46,6 +49,13 @@ def has_hook(hook_name: str) -> bool:
 
 def finalize_session(**kwargs: Any) -> List[Any]:
     """Notify observers and hard-close one core-owned Relay conversation."""
+    from hermes_cli.session_hook_context import hook_profile_scope
+
+    with hook_profile_scope(kwargs.get("hermes_home")):
+        return _finalize_session_scoped(**kwargs)
+
+
+def _finalize_session_scoped(**kwargs: Any) -> List[Any]:
     _observe("on_session_finalize", **kwargs)
 
     session_id = str(kwargs.get("session_id") or "")

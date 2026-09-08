@@ -5,6 +5,7 @@ import { type ReactNode, useEffect, useState } from 'react'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
@@ -24,6 +25,7 @@ import {
   type GatewayRequest,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
+  type PluginSetupReview,
   toggleAgentPlugin
 } from '@/store/agent-plugins'
 import { notifyError } from '@/store/notifications'
@@ -130,9 +132,21 @@ function PluginLine({
 function AgentPluginRowView({ row, profile }: { row: AgentPluginRow; profile: string | null }) {
   const { t } = useI18n()
   const p = t.settings.plugins
-  const { requestGateway } = useGatewayRequest()
+  const { requestGateway, gateway } = useGatewayRequest()
   const busy = useStore($agentPluginBusy)
+
+  const [setup, setSetup] = useState<{
+    review: PluginSetupReview
+    request: GatewayRequest
+    profile: string | null
+  } | null>(null)
+
   const key = row.key
+
+  // Pin the exact socket for the consented write: the recovering request
+  // helper can retarget to a newly active gateway after reconnecting.
+  const request: GatewayRequest = gateway ? gateway.request.bind(gateway) : requestGateway
+  const reviewSetup = (review: PluginSetupReview) => setSetup({ review, request, profile })
 
   // Pre-contract-v6 backends return rows without a canonical key. Name-addressed
   // toggles silently flip every same-named plugin across category dirs
@@ -142,31 +156,75 @@ function AgentPluginRowView({ row, profile }: { row: AgentPluginRow; profile: st
     <Switch
       aria-label={`${row.status === 'enabled' ? p.disable : p.enable} ${row.name}`}
       checked={row.status === 'enabled'}
-      disabled={!key || busy === key}
+      disabled={!key || busy !== null || setup !== null}
       onCheckedChange={on => {
         if (!key) {
           return
         }
 
         triggerHaptic('selection')
-        void toggleAgentPlugin(requestGateway, key, on, p.agent.toggleFailed(row.name), profile)
+        void toggleAgentPlugin(request, key, on, p.agent.toggleFailed(row.name), profile, {
+          onSetupRequired: reviewSetup
+        })
       }}
     />
   )
 
   return (
-    <PluginLine
-      controls={key ? toggle : <Tip label={p.agent.updateBackendToManage}>{toggle}</Tip>}
-      description={row.description || (row.version ? `v${row.version}` : undefined)}
-      id={pluginElementId(key ?? row.name)}
-      title={
-        <>
-          <span>{row.name}</span>
-          <Pill>{p.agent.sources[row.source] ?? row.source}</Pill>
-          {row.portable && <Pill tone="primary">{p.agent.portable}</Pill>}
-        </>
-      }
-    />
+    <>
+      <PluginLine
+        controls={key ? toggle : <Tip label={p.agent.updateBackendToManage}>{toggle}</Tip>}
+        description={row.description || (row.version ? `v${row.version}` : undefined)}
+        id={pluginElementId(key ?? row.name)}
+        title={
+          <>
+            <span>{row.name}</span>
+            <Pill>{p.agent.sources[row.source] ?? row.source}</Pill>
+            {row.portable && <Pill tone="primary">{p.agent.portable}</Pill>}
+          </>
+        }
+      />
+      {setup && key && (
+        <ConfirmDialog
+          busyLabel={p.agent.setupBusy}
+          confirmLabel={p.agent.setupConfirm}
+          description={
+            <span className="flex flex-col gap-2 break-words">
+              <span>{setup.review.setup.summary}</span>
+              <span>
+                {setup.review.consent.key} · {setup.review.consent.hermes_home}
+              </span>
+              <span>{setup.review.setup.revision}</span>
+              {setup.review.setup.details.map((detail, index) => (
+                <span key={index}>{detail}</span>
+              ))}
+              <span>{p.agent.setupTrust}</span>
+            </span>
+          }
+          onClose={() => setSetup(null)}
+          onConfirm={async () => {
+            const ok = await toggleAgentPlugin(
+              setup.request,
+              key,
+              true,
+              p.agent.toggleFailed(row.name),
+              setup.profile,
+              {
+                setupConsent: setup.review.consent,
+                onSetupRequired: review => setSetup({ ...setup, review }),
+                throwOnError: true
+              }
+            )
+
+            if (!ok) {
+              throw new Error(p.agent.toggleFailed(row.name))
+            }
+          }}
+          open
+          title={p.agent.setupTitle}
+        />
+      )}
+    </>
   )
 }
 
@@ -302,7 +360,7 @@ function AgentPluginsSection() {
       ) : (
         <div>
           {sorted.map(row => (
-            <AgentPluginRowView key={agentPluginRowKey(row)} profile={requestProfile} row={row} />
+            <AgentPluginRowView key={`${scopeProfile}:${agentPluginRowKey(row)}`} profile={requestProfile} row={row} />
           ))}
         </div>
       )}

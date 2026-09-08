@@ -448,6 +448,9 @@ class EmailAdapter(BasePlatformAdapter):
             self._seen_uids_snapshot[self._address] = set(self._seen_uids)
             return True
         except Exception as e:
+            if isinstance(e, imaplib.IMAP4.error) and not isinstance(e, imaplib.IMAP4.abort) and "[AUTHENTICATIONFAILED]" in str(e).upper():
+                return self._fail("[Email] IMAP authentication failed: %s", e, "email_auth_error",
+                                  "IMAP authentication failed. Check EMAIL_ADDRESS and EMAIL_PASSWORD.", retryable=False)
             # Always set an explicit fatal code, else the gateway treats every failure as transient with zero
             # owner signal. retryable=True because imaplib raises the same generic IMAP4.error for bad credentials
             # AND transient NOs (Gmail "too many simultaneous connections"); loops surface via NEEDS_ATTENTION.
@@ -461,14 +464,18 @@ class EmailAdapter(BasePlatformAdapter):
             try:
                 smtp.login(self._address, self._password)
             finally:
-                smtp.quit()
+                try:
+                    smtp.quit()
+                except Exception:
+                    with suppress(Exception):
+                        smtp.close()
             logger.info("[Email] SMTP connection test passed.")
             return True
         except smtplib.SMTPAuthenticationError as e:
-            # Typed auth failure (535 & friends) can never self-heal, so drop out of the reconnect queue — unambiguous, unlike IMAP4.error.
+            # 4xx authentication failures (e.g. 454) are temporary; 5xx requires operator action.
             return self._fail("[Email] SMTP authentication failed: %s", e, "email_auth_error",
                               f"SMTP authentication failed for {self._address}: {e}. Check EMAIL_PASSWORD (for Gmail/Outlook "
-                              "this must be an app password, not the account password).", retryable=False)
+                              "this must be an app password, not the account password).", retryable=e.smtp_code < 500)
         except Exception as e:
             return self._fail("[Email] SMTP connection failed: %s", e, "email_smtp_connect_error",
                               f"SMTP connection to {self._smtp_host} failed: {e}", retryable=True)
@@ -483,6 +490,7 @@ class EmailAdapter(BasePlatformAdapter):
             return self._fail("[Email] %s", message, "email_missing_configuration", message, retryable=False)
         if not self._probe_imap(is_reconnect) or not self._probe_smtp():
             return False
+        self._mark_connected()
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
         print(f"[Email] Connected as {self._address}")

@@ -151,6 +151,32 @@ jobs:
         run: |
           ruff check .
 
+  changed-python:
+    name: changed Python correctness (blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+      - name: Install pinned project and checkers
+        run: |
+          uv venv --python 3.11
+          uv pip install -e ".[dev]"
+      - name: Check changed lines
+        env:
+          TARGET_BRANCH: ${{ github.base_ref }}
+        run: |
+          if [ -n "$TARGET_BRANCH" ]; then
+            BASE_SHA=$(git merge-base "origin/$TARGET_BRANCH" HEAD)
+          else
+            BASE_SHA=$(git rev-parse HEAD~1)
+          fi
+          .venv/bin/python scripts/check_changed_python.py --base "$BASE_SHA"
+
   windows-footguns:
     # Static guardrails on Windows-unsafe Python primitives — os.kill(pid, 0),
     # os.killpg, os.setsid, signal.SIGKILL without getattr fallback,

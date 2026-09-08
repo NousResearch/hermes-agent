@@ -42,7 +42,7 @@ class TestA2aRouting:
 
         _sync(provider, turn_author=BOT_AUTHOR)
 
-        provider._manager.get_or_create.assert_called_once_with(provider._a2a_session_key("bot:coder"), user_peer_id="coder")
+        provider._manager.get_or_create.assert_called_once_with(provider._a2a_session_key({"id": "bot:coder", "is_bot": True}), user_peer_id="coder")
         session = provider._manager.get_or_create.return_value
         roles = [c[0][0] for c in session.add_message.call_args_list]
         assert roles == ["user", "assistant"]
@@ -66,7 +66,7 @@ class TestA2aRouting:
         _sync(provider, turn_author=BOT_AUTHOR)
 
         keys = {c[0][0] for c in provider._manager.get_or_create.call_args_list}
-        assert keys == {provider._a2a_session_key("bot:coder")}
+        assert keys == {provider._a2a_session_key({"id": "bot:coder", "is_bot": True})}
 
     def test_two_bots_get_two_sessions(self):
         provider = _provider()
@@ -76,7 +76,7 @@ class TestA2aRouting:
         _sync(provider, turn_author={"id": "bot:writer", "name": "writer", "is_bot": True})
 
         keys = [c[0][0] for c in provider._manager.get_or_create.call_args_list]
-        assert keys == [provider._a2a_session_key("bot:coder"), provider._a2a_session_key("bot:writer")]
+        assert keys == [provider._a2a_session_key({"id": "bot:coder", "is_bot": True}), provider._a2a_session_key({"id": "bot:writer", "is_bot": True})]
 
     def test_bot_author_without_an_id_is_skipped(self):
         provider = _provider()
@@ -93,7 +93,7 @@ class TestA2aRouting:
         _sync(provider, turn_author={"id": "5551234", "name": "SomeBot", "is_bot": True})
 
         provider._manager.resolve_author_peer_id.assert_called_once_with("Bot-Chat", "5551234", "SomeBot", is_bot=True)
-        provider._manager.get_or_create.assert_called_once_with(provider._a2a_session_key("5551234"), user_peer_id="tg_5551234")
+        provider._manager.get_or_create.assert_called_once_with(provider._a2a_session_key({"id": "5551234", "is_bot": True}), user_peer_id="tg_5551234")
 
     def test_unresolvable_bot_peer_skips_the_write(self):
         """A bot's words never land under the human's peer, so no peer means no write."""
@@ -116,7 +116,7 @@ class TestA2aRouting:
 
     def test_ids_that_sanitize_alike_get_different_sessions(self):
         provider = _provider()
-        keys = {provider._a2a_session_key(bot) for bot in ("bot:a.b", "bot:a-b", "bot:a_b", "bot:a:b")}
+        keys = {provider._a2a_session_key({"id": bot, "is_bot": True}) for bot in ("bot:a.b", "bot:a-b", "bot:a_b", "bot:a:b")}
         assert len(keys) == 4
         assert all(key.startswith("Bot-Chat:a2a:bot-a") for key in keys)
 
@@ -129,7 +129,7 @@ class TestA2aRouting:
 
         key = provider._manager.get_or_create.call_args[0][0]
         assert len(key) <= 100
-        assert key == provider._a2a_session_key("bot:coder")
+        assert key == provider._a2a_session_key({"id": "bot:coder", "is_bot": True})
 
 
 class TestToolWritesDuringBotTurn:

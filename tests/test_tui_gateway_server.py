@@ -5300,7 +5300,7 @@ def test_close_transport_rebinds_session_to_remaining_viewer(monkeypatch):
     The rebind #83716 added is gone; multi-client fan-out subsumes it. Both
     windows are attached to the slot at once, so the pop-out is a fan-out peer
     rather than a viewer waiting to be promoted, and closing it detaches that
-    peer and collapses the slot back onto the main window. This pins the same
+    peer while retaining the surviving ordered mailbox. This pins the same
     guarantee through the mechanism that replaced the rebind: the session is
     not parked, not reaped, not handed to the orphan reaper, and the surviving
     window keeps receiving frames.
@@ -5311,9 +5311,11 @@ def test_close_transport_rebinds_session_to_remaining_viewer(monkeypatch):
     class _LiveTransport:
         def __init__(self):
             self.frames = []
+            self.received = threading.Event()
 
         def write(self, obj=None, *a, **k):
             self.frames.append(obj)
+            self.received.set()
             return True
 
     main = _LiveTransport()
@@ -5332,14 +5334,14 @@ def test_close_transport_rebinds_session_to_remaining_viewer(monkeypatch):
         reaped, detached = server._close_sessions_for_transport(popout)
 
         assert reaped == 0 and detached == 0
-        # One peer left, so the fan-out collapses back to the bare transport —
-        # the slot is indistinguishable from a session that never fanned out.
-        assert session["transport"] is main
+        assert server._session_transport_contains(session, main)
+        assert not server._session_transport_contains(session, popout)
         assert "multi-sid" not in reap_calls
         assert server._ws_session_is_orphaned(session) is False
 
         # And it is still a working stream, not just a surviving reference.
         server._emit("message.delta", "multi-sid", {"text": "still here"})
+        assert main.received.wait(timeout=5)
         assert [(f.get("params") or {}).get("type") for f in main.frames] == [
             "message.delta"
         ]

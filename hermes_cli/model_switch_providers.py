@@ -13,7 +13,7 @@ import time
 import threading as _threading
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
-from agent.command_token_source import resolve_probe_token
+from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
 from utils import base_url_host_matches
 
@@ -26,7 +26,7 @@ _UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencod
 
 def _save_discovered_models_to_config(
     api_url: str, model_ids: list[str], *, api_mode: Optional[str] = None,
-    headers: Optional[dict[str, str]] = None) -> None:
+    headers: Optional[dict[str, str]] = None, credential_identity: str | None = None) -> None:
     """Persist a successful ``/v1/models`` probe into the matching ``custom_providers`` entry.
 
     Matches by base_url (slash-normalised), api_mode and headers. A failed config write is
@@ -50,6 +50,8 @@ def _save_discovered_models_to_config(
             if entry_url.rstrip("/").lower() != norm_url or _entry_api_mode(entry) != api_mode:
                 continue
             if headers is not None and _extra_headers_from_config(entry) != headers:
+                continue
+            if credential_identity is not None and _entry_credentials(entry, "key_env", "api_key_env")[2] != credential_identity:
                 continue
             if not _discovered_catalog_stale(entry, model_ids):
                 continue
@@ -86,16 +88,24 @@ class _NativePickerModelList(list[str]):
 
 
 def _fetch_picker_live_models(
-    api_key: str, api_url: str, native_catalog_provider: str, preserve_native_models: bool,
+    api_key: Any, api_url: str, native_catalog_provider: str, preserve_native_models: bool,
     headers: dict[str, str] | None = None, timeout: float = 5.0,
-    api_mode: str | None = None) -> list[str] | None:
+    api_mode: str | None = None, *, cache: bool = True) -> list[str] | None:
     """Fetch picker models with native Ollama and cached generic discovery."""
-    from hermes_cli.models import _get_ollama_native_headers, cached_fetch_api_models
+    from hermes_cli.models import _get_ollama_native_headers, cached_fetch_api_models, fetch_api_models
     from hermes_cli.models_local import (
         _normalize_openai_base_url,
         fetch_ollama_local_models,
         should_use_ollama_native_catalog,
     )
+
+    if callable(api_key):
+        # Let the catalog cache decide whether any token or network I/O is needed.
+        return cached_fetch_api_models(
+            api_key, api_url, timeout=timeout, headers=headers, api_mode=api_mode,
+            fetch_models=lambda: _fetch_picker_live_models(
+                materialize_probe_api_key(api_key), api_url, native_catalog_provider,
+                preserve_native_models, headers, timeout, api_mode, cache=False))
 
     candidate_headers = _get_ollama_native_headers(api_url, api_key=api_key)
 
@@ -124,7 +134,7 @@ def _fetch_picker_live_models(
             return _NativePickerModelList(native_models)
         # A failed native probe is not authoritative: retry the cached generic catalog.
         api_url = _normalize_openai_base_url(api_url)
-    generic_models = cached_fetch_api_models(
+    generic_models = (cached_fetch_api_models if cache else fetch_api_models)(
         api_key, api_url, timeout=timeout, headers=resolved_headers, api_mode=api_mode)
     return generic_models if generic_models or use_native else None
 
@@ -468,31 +478,14 @@ def _entry_api_mode(entry: dict) -> str | None:
     return str(entry.get("api_mode") or entry.get("transport") or "").strip().lower() or None
 
 
-def _entry_credentials(entry: dict, *key_env_keys: str) -> tuple[str, str, str]:
-    """``(inline_api_key, key_env, identity)`` — identity is the inline key, else
-    ``env:<VAR>``, else ``cmd:<key_cmd>``, else "".
-
-    ``key_cmd`` (#86891) authenticates a provider with a SHORT-LIVED bearer
-    minted by a command — SSO/OIDC brokers, cloud IAM, internal auth proxies.
-    The request path has honoured it since it landed, but the picker resolved
-    probe credentials from ``api_key``/``key_env`` only, so a key_cmd provider
-    probed ``/v1/models`` with an EMPTY key. An authenticated endpoint answers
-    401, discovery returns nothing, and the row collapses to its single
-    configured default model — indistinguishable from an endpoint that
-    genuinely serves one, while inference keeps working.
-
-    The identity is keyed on the COMMAND, never the minted token: the token
-    rotates on every refresh, so keying on its value would change the group
-    fingerprint constantly and force a re-probe on every open. Two entries on
-    one URL with different helpers still get distinct rows.
-    """
-    inline_api_key = str(entry.get("api_key", "") or "").strip()
+def _entry_credentials(entry: dict, *key_env_keys: str) -> tuple[Any, str, str]:
+    """Unminted credential, env fallback, and stable grouping identity."""
     key_env = str(next((entry.get(k) for k in key_env_keys if entry.get(k)), "")).strip()
-    key_cmd = str(entry.get("key_cmd", "") or "").strip()
-    identity = inline_api_key or (
-        f"env:{key_env}" if key_env else (f"cmd:{key_cmd}" if key_cmd else "")
-    )
-    return inline_api_key, key_env, identity
+    source = build_command_token_provider(entry.get("key_cmd", ""), entry.get("name") or "custom")
+    if source is not None:
+        return source, key_env, source.cache_identity
+    inline_api_key = str(entry.get("api_key", "") or "").strip()
+    return inline_api_key, key_env, inline_api_key or (f"env:{key_env}" if key_env else "")
 
 
 def _discover_flag(entry: dict):
@@ -521,7 +514,7 @@ def _group_display_name(display_name: str) -> str:
 
 
 def _discover_endpoint_models(
-    api_key: str, api_url: str, native_catalog_provider: str, has_explicit_models: bool, *,
+    api_key: Any, api_url: str, native_catalog_provider: str, has_explicit_models: bool, *,
     headers: dict | None, api_mode: str | None, probe_live: bool, discovery_allowed: bool,
     for_picker: bool) -> tuple[list | None, bool]:
     """Return ``(models, native_catalog_empty)`` for a custom endpoint row.
@@ -538,6 +531,8 @@ def _discover_endpoint_models(
                 api_key, api_url, native_catalog_provider, has_explicit_models,
                 headers=headers, timeout=timeout, api_mode=api_mode)
             is_native = isinstance(live_models, _NativePickerModelList)
+            if is_native and has_explicit_models:
+                return None, False
             if live_models is not None and (live_models or not has_explicit_models or is_native):
                 return live_models, (is_native and not live_models)
         except Exception:
@@ -548,8 +543,10 @@ def _discover_endpoint_models(
             cached_models = cached_fetch_api_models(
                 api_key, api_url, cache_only=True, timeout=timeout, headers=headers, api_mode=api_mode,
             )
-            if cached_models:
-                return cached_models, False
+            if has_explicit_models and isinstance(cached_models, _NativePickerModelList):
+                return None, False
+            if cached_models or isinstance(cached_models, _NativePickerModelList):
+                return cached_models, isinstance(cached_models, _NativePickerModelList) and not cached_models
         except (ImportError, OSError, RuntimeError, TimeoutError, TypeError, ValueError, http.client.HTTPException):
             pass
     return None, False
@@ -689,7 +686,7 @@ class _PickerBuild:
                 and url_norm == self.current_base_url_norm and url_match_ok))
 
     def discover_endpoint(
-        self, api_key: str, api_url: str, native_provider: str, has_explicit_models: bool, *,
+        self, api_key: Any, api_url: str, native_provider: str, has_explicit_models: bool, *,
         headers: dict | None, api_mode: str | None, discovery_allowed: bool, is_current: bool,
     ) -> tuple[list | None, bool, bool]:
         """Probe policy shared by sections 3 and 4 (returns ``(models, native_empty, probed)``):
@@ -864,7 +861,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
             ep_groups[group_key] = {
                 "slug": ep_name, "name": _group_display_name(display_name), "api_url": api_url, "models": [],
                 "has_explicit_models": False,
-                "api_key": inline_api_key or _scoped_key_env(key_env) or resolve_probe_token(ep_cfg),
+                "api_key": inline_api_key or _scoped_key_env(key_env),
                 "headers": headers, "api_mode": ep_cfg.get("api_mode"),
                 "discovery_allowed": bool(api_url) and _discover_flag(ep_cfg), "raw_names": [], "aliases": set()}
         grp = ep_groups[group_key]
@@ -944,7 +941,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         if not raw_name or not api_url:
             continue
         inline_api_key, key_env, cred_identity = _entry_credentials(entry, "key_env")
-        api_key = inline_api_key or _scoped_key_env(key_env) or resolve_probe_token(entry)
+        api_key = inline_api_key or _scoped_key_env(key_env)
         api_mode = _entry_api_mode(entry)
         discover = _discover_flag(entry)
         entry_extra_headers = _extra_headers_from_config(entry)
@@ -954,7 +951,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         display_name = prefix or raw_name
         grp = groups.setdefault(group_key, {
             "slug": custom_provider_slug(display_name, provider_key), "name": display_name,
-            "api_url": api_url, "api_key": "", "models": [], "has_explicit_models": False,
+            "api_url": api_url, "api_key": "", "credential_identity": cred_identity, "models": [], "has_explicit_models": False,
             "discover_models": True, "api_mode": api_mode, "extra_headers": entry_extra_headers,
             "aliases": set()})
         grp["api_key"] = grp["api_key"] or api_key  # first member with a key wins
@@ -1001,7 +998,8 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
             if probe_live:  # a successful live probe persists the catalog for no-probe surfaces
                 try:
                     _save_discovered_models_to_config(
-                        api_url, discovered, api_mode=grp.get("api_mode"), headers=grp.get("extra_headers") or None)
+                        api_url, discovered, api_mode=grp.get("api_mode"), headers=grp.get("extra_headers") or None,
+                        credential_identity=grp["credential_identity"])
                 except Exception:
                     pass
         b.add_endpoint_row(slug, grp["name"], grp["api_url"], grp["models"], is_current, native_catalog_empty)

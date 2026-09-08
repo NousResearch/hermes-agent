@@ -31,6 +31,7 @@ import {
   testMcpServer
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
+import { createSerialTask, startCompletionPoll } from '@/lib/completion-poll'
 import { compactNumber } from '@/lib/format'
 import { brandFor } from '@/lib/mcp-brands'
 import { estimateServerTokens, serverUsageCount } from '@/lib/mcp-cost'
@@ -1728,34 +1729,28 @@ function McpLogs({
   // the active profile tears down the old poll (its `cancelled` flag blocks a
   // late setLines) so profile A's logs never flash in B.
   const activeProfile = useStore($activeGatewayProfile)
+  const readLogs = useMemo(() => createSerialTask(getLogs), [])
 
   useEffect(() => {
-    let cancelled = false
+    setLines(null)
 
-    const poll = async () => {
-      try {
+    return startCompletionPoll({
+      delayMs: LOG_POLL_MS,
+      poll: async signal => {
         const response =
           source === 'stdio'
-            ? await getLogs({ file: 'mcp', lines: 500 })
-            : await getLogs({ file: 'agent', lines: 300, search: server ?? 'mcp' })
+            ? await readLogs({ file: 'mcp', lines: 500 }, signal)
+            : await readLogs({ file: 'agent', lines: 300, search: server ?? 'mcp' }, signal)
 
-        if (!cancelled) {
-          setLines(source === 'stdio' && server ? filterStdioSections(response.lines, server) : response.lines)
+        if (signal.aborted) {
+          throw new DOMException('Polling stopped', 'AbortError')
         }
-      } catch {
-        // Backend momentarily unavailable — keep the last tail.
-      }
-    }
 
-    setLines(null)
-    void poll()
-    const timer = window.setInterval(() => void poll(), LOG_POLL_MS)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [server, source, activeProfile])
+        return source === 'stdio' && server ? filterStdioSections(response.lines, server) : response.lines
+      },
+      publish: setLines
+    })
+  }, [server, source, activeProfile, readLogs])
 
   return <LogTail emptyLabel={emptyLabel} lines={lines} />
 }

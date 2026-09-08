@@ -60,3 +60,22 @@ def test_auxiliary_calls_share_the_main_turn_session_key():
         assert "x-opencode-session" not in (other.get("extra_headers") or {})
     finally:
         aux._RUNTIME_MAIN_CONTEXT.reset(token)
+
+
+def test_no_conversation_scope_still_sends_stable_process_key():
+    """Post-turn aux callers (goal judge, /loop, kanban) run on executor threads with no
+    affinity contextvars. An empty header makes OpenCode's relay reject the request with
+    MissingSessionID (HTTP 400), so a scope-less OpenCode target must still send a header —
+    a stable process-lifetime key."""
+    from agent.opencode_affinity import _process_affinity_key, opencode_session_headers
+
+    first = opencode_session_headers("opencode-go", "https://opencode.ai/go/v1/", None)
+    second = opencode_session_headers("opencode-go", "https://opencode.ai/go/v1/", None)
+    assert first["x-opencode-session"] == second["x-opencode-session"]
+    assert first["x-opencode-session"].startswith("aux-")
+
+    # The key is stable for the life of the process and unique per process seed.
+    assert _process_affinity_key() == first["x-opencode-session"]
+
+    # Non-OpenCode targets are still left untouched.
+    assert opencode_session_headers("openrouter", "https://openrouter.ai/api/v1", None) == {}

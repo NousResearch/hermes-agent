@@ -17,9 +17,35 @@ so the header cannot drift per code path.
 
 from __future__ import annotations
 
+import hashlib
+import os
+import threading
+import time
 from typing import Any, Optional
 
 OPENCODE_SESSION_HEADER = "x-opencode-session"
+
+_PROCESS_FALLBACK_KEY: Optional[str] = None
+_PROCESS_FALLBACK_LOCK = threading.Lock()
+
+
+def _process_affinity_key() -> str:
+    """Stable process-lifetime affinity key for OpenCode callers with NO conversation scope.
+
+    Post-turn auxiliary callers (goal judge, /loop, kanban loops) run on executor threads
+    where the turn-scoped affinity contextvars are not set. OpenCode's relay rejects headerless
+    requests with ``MissingSessionID`` (HTTP 400), so an empty scope must still send a header —
+    the process itself is the scope then. Cached once per process so repeated aux calls stay
+    pinned to one warm upstream; unique per process so concurrent Hermes instances don't share
+    a routing bucket.
+    """
+    global _PROCESS_FALLBACK_KEY
+    if _PROCESS_FALLBACK_KEY is None:
+        with _PROCESS_FALLBACK_LOCK:
+            if _PROCESS_FALLBACK_KEY is None:
+                seed = f"{os.getpid()}-{time.time_ns()}"
+                _PROCESS_FALLBACK_KEY = "aux-" + hashlib.sha256(seed.encode()).hexdigest()[:24]
+    return _PROCESS_FALLBACK_KEY
 
 
 def is_opencode_target(provider: Optional[str], base_url: Optional[str]) -> bool:
@@ -72,7 +98,10 @@ def opencode_session_headers(
         )
     except Exception:
         key = str(session_id or "")
-    return {OPENCODE_SESSION_HEADER: key} if key else {}
+    # Post-turn aux callers (goal judge, /loop, kanban) have no conversation scope at all.
+    # An empty header means OpenCode rejects the request with MissingSessionID — send a
+    # stable process-lifetime key instead so the process is its own affinity scope.
+    return {OPENCODE_SESSION_HEADER: key or _process_affinity_key()}
 
 
 def merge_opencode_session_headers(

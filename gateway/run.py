@@ -902,6 +902,32 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
+def _warn_status_reroute_target(
+    event_type: str,
+    chat_type: Optional[str],
+    current_chat_id: str,
+    home_channel,
+) -> Optional[str]:
+    """Return the chat_id a warn-class gateway status should be sent to.
+
+    warn-class statuses carry internal agent diagnostics (compression
+    overflow notices, auxiliary-model failures) meant for the operator. On
+    shared surfaces (group chats / channels) delivering them to the
+    triggering chat leaks framework internals to every participant. When the
+    platform has an explicit home channel configured, reroute warn statuses
+    there instead. DMs / 1:1 threads are left untouched (the operator is the
+    only participant). Returns the reroute target chat_id, or ``None`` when
+    the status should stay on the triggering chat.
+    """
+    if event_type != "warn" or chat_type not in ("group", "channel"):
+        return None
+    if home_channel is None or not home_channel.chat_id:
+        return None
+    if str(home_channel.chat_id) == str(current_chat_id):
+        return None
+    return home_channel.chat_id
+
+
 def _approval_send_outcome(future, timeout: float) -> str:
     """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
 
@@ -5328,8 +5354,34 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
+        _status_chat_id = ctx._status_chat_id
+        _status_thread_metadata = ctx._status_thread_metadata
+        # warn-class statuses carry internal agent diagnostics (compression
+        # overflow notices, auxiliary-model failures) meant for the operator.
+        # On shared surfaces (group chats / channels) the message would leak
+        # framework internals to every participant, so when the platform has
+        # an explicit home channel configured, reroute warn statuses there
+        # instead of the triggering chat. DMs and 1:1 threads are left
+        # untouched (the operator is the only participant there).
+        try:
+            _home = self._runner.config.get_home_channel(ctx.source.platform)
+        except Exception:
+            _home = None
+        _reroute_target = _warn_status_reroute_target(
+            event_type,
+            getattr(ctx.source, "chat_type", None),
+            _status_chat_id,
+            _home,
+        )
+        if _reroute_target is not None:
+            _status_chat_id = _reroute_target
+            # Source-thread metadata belongs to the triggering chat; the
+            # home channel is a different conversation (possibly a DM or a
+            # different topic), so drop it rather than misroute the
+            # rerouted status into the source thread.
+            _status_thread_metadata = None
         _fut = safe_schedule_threadsafe(
-            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared_message, ctx._status_thread_metadata),
+            _send_or_update_status_coro(ctx._status_adapter, _status_chat_id, event_type, prepared_message, _status_thread_metadata),
             ctx._loop_for_step,
             logger=logger,
             log_message=f"status_callback ({event_type}) scheduling error",

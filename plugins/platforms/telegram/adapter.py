@@ -2843,7 +2843,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     old_app = self._app
                     self._app = builder.build()
                     self._bot = self._app.bot
-                    self._register_handlers(self._app)  # keep core and observer handlers in lockstep
+                    # Reapply plugin, core, and observer handlers: the old Application — and every
+                    # handler wired to it — is discarded above. Plugin handlers go first, matching
+                    # normal startup, because PTB dispatches the first match per group.
+                    self._wire_plugin_handlers(self._app)
+                    self._register_handlers(self._app)
                     with contextlib.suppress(Exception):
                         await _shutdown_abandoned_app(old_app)
 

@@ -575,6 +575,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             cfg = HonchoClientConfig.from_global_config(config_path=path)
             aliases = cfg.user_peer_aliases if isinstance(cfg.user_peer_aliases, dict) else {}
             values = {
+                "workspace": cfg.workspace_id,
                 "user_identity": cfg.peer_name,
                 "agent_identity": cfg.ai_peer,
                 "pin_user_identity": bool(cfg.pin_peer_name),

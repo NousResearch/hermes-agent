@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router'
 
+import { insertMessageReply } from '@/app/chat/composer/message-reply'
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { toggleTargetZoneTabStrip } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
@@ -361,6 +362,17 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
     ])
   } else if (target.selectionText) {
     sections.push([
+      target.composerTarget ? (
+        <Item
+          icon="reply"
+          key="selection-reply"
+          label={t.assistant.thread.reply}
+          onSelect={() => {
+            closeContextMenu()
+            insertMessageReply(target.selectionText, { target: target.composerTarget })
+          }}
+        />
+      ) : null,
       <Item
         icon="copy"
         key="selection-copy"

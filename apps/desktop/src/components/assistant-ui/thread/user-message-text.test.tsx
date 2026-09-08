@@ -58,4 +58,56 @@ describe('a sent reference renders as the chip the composer showed', () => {
 
     expect(document.querySelector('[data-slot="aui_user-fence"]')?.textContent).toBe('const x = 1\n')
   })
+
+  it('renders consecutive quote lines as one blockquote without visible markers', () => {
+    render(<UserMessageText text={'> First line\n> \n> Second line\n\nMy response'} />)
+
+    const quote = document.querySelector('[data-slot="aui_user-quote"]')
+
+    expect(quote?.tagName).toBe('BLOCKQUOTE')
+    expect(quote?.textContent).toBe('First line\n\nSecond line')
+    expect(quote?.getAttribute('dir')).toBe('auto')
+    expect(document.body.textContent).not.toContain('> First line')
+    expect(document.body.textContent).toContain('My response')
+  })
+
+  it('does not treat a greater-than line inside a fence as a quote', () => {
+    render(<UserMessageText text={'```text\n> shell output\n```'} />)
+
+    expect(document.querySelector('[data-slot="aui_user-quote"]')).toBeNull()
+    expect(document.querySelector('[data-slot="aui_user-fence"]')?.textContent).toBe('> shell output\n')
+  })
+
+  it('renders a fenced code block inside a quoted reply without leaking quote markers into the code', () => {
+    render(<UserMessageText text={'> Here is code\n> ```ts\n> const x = 1\n> ```\n\nMy response'} />)
+
+    const quote = document.querySelector('[data-slot="aui_user-quote"]')
+    const fence = quote?.querySelector('[data-slot="aui_user-fence"]')
+
+    expect(quote).not.toBeNull()
+    expect(fence?.textContent).toBe('const x = 1\n')
+    expect(fence?.textContent).not.toContain('>')
+    expect(document.body.textContent).toContain('My response')
+  })
+
+  it('renders nested quote levels recursively', () => {
+    render(<UserMessageText text={'> Outer\n> > Inner\n> >\n> > More\n\nMy response'} />)
+
+    const quotes = document.querySelectorAll('[data-slot="aui_user-quote"]')
+
+    expect(quotes).toHaveLength(2)
+    expect(quotes[0]?.contains(quotes[1]!)).toBe(true)
+    expect(quotes[1]?.textContent).toBe('Inner\n\nMore')
+    expect(document.body.textContent).toContain('My response')
+  })
+
+  it('renders inline code and a directive inside a quote', () => {
+    render(<UserMessageText text={'> run `npm test` on @file:`apps/desktop/a b.ts`'} />)
+
+    const quote = document.querySelector('[data-slot="aui_user-quote"]')
+
+    expect(quote?.querySelector('[data-slot="aui_user-inline-code"]')?.textContent).toBe('npm test')
+    expect(quote?.querySelector('[title="apps/desktop/a b.ts"]')).not.toBeNull()
+    expect(quote?.textContent).not.toContain('@file:')
+  })
 })

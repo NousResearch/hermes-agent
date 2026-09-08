@@ -7,7 +7,13 @@
  * image section still appears because the target carries both.
  */
 
+import { type ComposerTarget, getActiveComposer } from '@/app/chat/composer/focus'
+import { queryVisible } from '@/components/pane-shell/pane-visibility'
+import { isWatchWindow } from '@/store/windows'
+
 export interface ContextMenuDomTarget {
+  /** Capture before the menu takes focus or obscures the clicked surface. */
+  composerTarget?: ComposerTarget
   /** The enclosing dialog content node, when the click landed inside one. */
   dialogPortalContainer: HTMLElement | null
   /** The clicked editable, when the click landed in one. */
@@ -46,6 +52,10 @@ export function resolveDomTarget(element: Element | null): ContextMenuDomTarget 
   const linkUrl = anchor?.getAttribute('href')?.trim() ?? ''
 
   return {
+    composerTarget:
+      !isWatchWindow() && queryVisible('[data-composer-target]')
+        ? (element?.closest<HTMLElement>('[data-composer-target]')?.dataset.composerTarget ?? getActiveComposer())
+        : undefined,
     dialogPortalContainer: dialogContent instanceof HTMLElement ? dialogContent : null,
     editable: editableFrom(element),
     // A placeholder anchor is not a link the menu can act on.

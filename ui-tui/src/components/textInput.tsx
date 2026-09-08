@@ -793,6 +793,7 @@ export function TextInput({
   const [cur, setCur] = useState(() =>
     cursorSnapshotRef?.current?.value === value ? cursorSnapshotRef.current.cursor : value.length
   )
+
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()

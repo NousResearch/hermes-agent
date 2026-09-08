@@ -348,6 +348,7 @@ const DEFAULT_COUNT_NOUN_BY_TOOL: Record<string, string> = {
   search_files: 'result',
   session_search_recall: 'result',
   todo: 'todo',
+  todo_list: 'todo',
   web_search: 'result'
 }
 

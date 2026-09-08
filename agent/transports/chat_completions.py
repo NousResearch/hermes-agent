@@ -250,7 +250,7 @@ def _swap_developer_role(sanitized: list, model_lower: str) -> list:
 
 
 def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, params: dict, profile_max: Any = None) -> None:
-    """Resolve max_tokens — priority: ephemeral > user > profile default > anthropic_max_output."""
+    """Preserve internal task/recovery budgets and provider protocol exceptions."""
     max_tokens_fn = params.get("max_tokens_param_fn")
     for candidate in (params.get("ephemeral_max_output_tokens"), params.get("max_tokens")):
         if candidate is not None and max_tokens_fn:
@@ -258,8 +258,7 @@ def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, param
             return
     if profile_max and max_tokens_fn:
         api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, profile_max)))
-    elif params.get("anthropic_max_output") is not None:
-        api_kwargs["max_tokens"] = params["anthropic_max_output"]
+
 
 
 def _base_kwargs(model: str, sanitized: list, tools: Any, params: dict, profile: Any = None) -> dict[str, Any]:
@@ -298,12 +297,19 @@ def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
     """Sanitized copy of ``msg``, or None when nothing needs stripping.
 
     Drops persistence sidecars, ``_``-prefixed scaffolding markers, tool-call ``call_id`` /
-    ``response_item_id`` (and ``extra_content`` unless Gemini), and an assistant
-    ``tool_calls: []`` / ``null`` (strict providers reject both).
+    ``response_item_id`` (and ``extra_content`` unless Gemini), an assistant
+    ``tool_calls: []`` / ``null`` (strict providers reject both), and ``name``
+    on tool results (schema-valid only on user/assistant messages; strict
+    providers reject it with ``contains item with unknown key name``).
     """
     if not isinstance(msg, dict):
         return None
     strip_keys = [k for k in msg if k in _STRIP_MSG_KEYS or (isinstance(k, str) and k.startswith("_"))]
+    # ``name`` is schema-valid on user/assistant messages, so the removal is
+    # role-qualified: only tool results carry it illegally (strict providers
+    # reject with "contains item with unknown key name").
+    if msg.get("role") == "tool" and "name" in msg:
+        strip_keys.append("name")
     out_msg = {k: v for k, v in msg.items() if k not in strip_keys}
     tool_calls = msg.get("tool_calls")
     copied_tool_calls = None

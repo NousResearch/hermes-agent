@@ -472,7 +472,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
 
   // Interrupt the member actually mid-turn. room.turn is runtime-only and
   // names exactly one member (the loop is serial); a settled room has none.
-  const onTurn = turnName ? roster.find((member: GroupMember) => member?.name === turnName) : null
+  const onTurn = turnName ? roster.find((member: GroupMember) => groupMemberKey(member) === turnName) : null
   const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
 
   if (onTurn && sessionId) {
@@ -633,7 +633,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         // room shows "Radar is thinking…" instead of a generic working line —
         // long model turns otherwise read as the room being stuck.
         updateGroupChat(group, (r: GroupChatRoom) => {
-          r.turn = member.name
+          r.turn = groupMemberKey(member)
 
           return r
         })
@@ -800,7 +800,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
               })
 
               updateGroupChat(group, (r: GroupChatRoom) => {
-                r.turn = member.name
+                r.turn = groupMemberKey(member)
 
                 return r
               })

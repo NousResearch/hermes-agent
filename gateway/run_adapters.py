@@ -159,6 +159,11 @@ class GatewayAdapterLifecycleMixin:
         to spend before the gateway reaches ``running`` (#85993 — Telegram's 180s).
         """
         timeout = self._platform_connect_timeout_secs(platform, initial=initial)
+        if platform == Platform.DISCORD and timeout > 0:
+            # Discord owns an inner ready deadline using the same configured budget.
+            # Let its timeout handler cancel/await Bot.start() before detaching it here.
+            from gateway.run import _DISCORD_CONNECT_CLEANUP_GRACE_SECS
+            timeout += _DISCORD_CONNECT_CLEANUP_GRACE_SECS
         if timeout <= 0:
             return await adapter.connect(is_reconnect=is_reconnect)
         task = asyncio.ensure_future(adapter.connect(is_reconnect=is_reconnect))

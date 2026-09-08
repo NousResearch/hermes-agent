@@ -827,6 +827,22 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
             _ph = _gpf(agent.provider)
             if _ph and _ph.default_headers:
                 client_kwargs["default_headers"] = dict(_ph.default_headers)
+    # OpenCode Go routes requests that carry an ``x-opencode-session`` header
+    # to the same upstream backend, keeping its prompt cache warm.  The header
+    # is also injected per-request by ``chat_completion_helpers.build_api_kwargs``
+    # (via ``opencode_affinity.merge_opencode_session_headers``), but setting it
+    # here on the SDK client ensures every request — including those that bypass
+    # ``build_api_kwargs`` — carries the affinity key.
+    if base_url_host_matches(base_url, "opencode.ai"):
+        try:
+            from gateway.session_context import get_session_env
+            _session_id = get_session_env("HERMES_SESSION_ID", "")
+            if _session_id:
+                _headers = client_kwargs.get("default_headers") or {}
+                _headers["x-opencode-session"] = _session_id
+                client_kwargs["default_headers"] = _headers
+        except Exception:
+            pass
     return client_kwargs
 
 

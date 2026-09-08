@@ -26,6 +26,14 @@ def _schema_for_local_validation(node: Any) -> Any:
     normalized = {key: (copy.deepcopy(value) if key in _SCHEMA_LITERAL_KEYS
                         else _schema_for_local_validation(value))
                   for key, value in node.items() if key != "nullable"}
+    # OpenAPI ``discriminator`` makes a ``oneOf`` mutually exclusive by a property value.
+    # Stock jsonschema ignores ``discriminator`` and enforces raw ``oneOf`` (exactly-one),
+    # which false-rejects any payload matching >1 branch — fatal when branches overlap or
+    # are identical (e.g. Zoho Desk draftsReply's FACEBOOK/FORUMS branches). Relax to
+    # ``anyOf`` (at-least-one) when a discriminator is present: the discriminator already
+    # guarantees exclusivity, and this validator fails open by design. See #5149.
+    if isinstance(node.get("discriminator"), dict) and "oneOf" in normalized:
+        normalized["anyOf"] = normalized.pop("oneOf")
     if node.get("nullable") is not True:
         return normalized
     schema_type = normalized.get("type")

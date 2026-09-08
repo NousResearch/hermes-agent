@@ -930,3 +930,70 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         assert validate_deferred_call_args(name, {"payload": {"anything": True}}) is None
+
+    def test_discriminated_oneof_accepts_valid_call(self):
+        # OpenAPI ``discriminator`` makes a ``oneOf`` mutually exclusive by a
+        # property value. Stock jsonschema ignores ``discriminator`` and enforces
+        # raw ``oneOf`` (exactly-one), which false-rejects a valid payload when
+        # branches overlap or are identical (e.g. an MCP server whose FACEBOOK and
+        # FORUMS branches are byte-identical). The probe must not block such a call.
+        from tools.tool_search import validate_deferred_call_args
+
+        def branch(required):
+            return {
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string"},
+                    "content": {"type": "string"},
+                    "sender": {"type": "string"},
+                },
+                "required": required,
+            }
+
+        calls = []
+        name = "mcp_probe_discriminated_oneof"
+        self._register_schema(name, "mcp-probe-discriminated-oneof", {
+            "type": "object",
+            "properties": {
+                "body": {
+                    "discriminator": {"propertyName": "channel"},
+                    "oneOf": [
+                        branch(["channel", "sender", "content"]),  # EMAIL
+                        branch(["channel", "content"]),            # FACEBOOK
+                        branch(["channel", "content"]),            # FORUMS (identical)
+                    ],
+                },
+            },
+            "required": ["body"],
+        }, calls)
+
+        # A valid EMAIL payload matches every branch, so raw ``oneOf`` would reject it.
+        args = {"body": {"channel": "EMAIL", "sender": "a@b.com", "content": "hi"}}
+        assert validate_deferred_call_args(name, args) is None
+
+    def test_plain_oneof_without_discriminator_stays_strict(self):
+        # The discriminator relaxation must be scoped: a plain ``oneOf`` with no
+        # discriminator keeps exactly-one semantics, so a payload matching two
+        # branches is still rejected before dispatch.
+        from tools.tool_search import validate_deferred_call_args
+
+        calls = []
+        name = "mcp_probe_plain_oneof"
+        self._register_schema(name, "mcp-probe-plain-oneof", {
+            "type": "object",
+            "properties": {
+                "body": {
+                    "oneOf": [
+                        {"type": "object", "properties": {"a": {"type": "string"}},
+                         "required": ["a"]},
+                        {"type": "object", "properties": {"b": {"type": "string"}},
+                         "required": ["b"]},
+                    ],
+                },
+            },
+            "required": ["body"],
+        }, calls)
+
+        err = validate_deferred_call_args(name, {"body": {"a": "x", "b": "y"}})
+        assert err is not None
+        assert calls == []

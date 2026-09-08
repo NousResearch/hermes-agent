@@ -91,7 +91,7 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
     _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
     _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
-    _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
+    _has_http_code, _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
     _normalize_managed_eol, _portable_git_candidates, _print_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
     _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
@@ -154,6 +154,43 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
         git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
         text=True, encoding="utf-8", errors="replace", check=check,
         **(_no_prompt_git_kwargs() if network else {}))
+
+
+# Bring the fresh-install clone resilience (#89624, install.sh) to the existing-install update path
+# (#105857). GitHub throttles packfile generation for this large repo with a repo-scoped HTTP 429
+# that a one-shot ``ls-remote`` slips past but a full ``fetch origin main`` dies on — so a single
+# failed attempt strands a healthy checkout behind upstream. Retry with bounded backoff, then degrade
+# to a blobless fetch (``--filter=blob:none``): commits+trees transfer as many small packs that get
+# past the throttle, and the blobs are then materialized by the checkout/pull below as a separate
+# request that the same throttle-aware handling can wrap.
+_FETCH_MAX_ATTEMPTS = 4
+
+
+def _fetch_is_rate_limited(stderr: str) -> bool:
+    """True when a failed git fetch's stderr is the repo-scoped HTTP 429 packfile throttle."""
+    return _has_http_code(stderr or "", "429") or "rate limit" in (stderr or "").lower()
+
+
+def _fetch_updates_resilient(git_cmd, branch, *, sleep=_time.sleep):
+    """``git fetch origin <branch>`` that degrades past a repo-scoped HTTP 429 (#105857).
+
+    Returns the final ``CompletedProcess`` (caller inspects ``returncode``). A non-rate-limit
+    failure is returned immediately so unrelated errors (no network, auth) still fail fast; only a
+    429 triggers the retry/backoff and blobless fallback. If the blobless attempt does not get
+    further, the original 429 result is preserved so ``_print_fetch_failure`` keeps its accurate
+    diagnosis."""
+    result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+    if result.returncode == 0 or not _fetch_is_rate_limited(result.stderr):
+        return result
+    for attempt in range(2, _FETCH_MAX_ATTEMPTS + 1):
+        sleep((attempt - 1) * 5)
+        print(f"  Rate-limited (HTTP 429) — retrying fetch (attempt {attempt}/{_FETCH_MAX_ATTEMPTS})...")
+        result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+        if result.returncode == 0 or not _fetch_is_rate_limited(result.stderr):
+            return result
+    print("  Still rate-limited — retrying with a blobless fetch (--filter=blob:none)...")
+    blobless = _git_run(git_cmd, ["fetch", "--filter=blob:none", "origin", branch], network=True)
+    return blobless if blobless.returncode == 0 else result
 
 
 def _capture_head_sha(git_cmd, cwd) -> str | None:
@@ -1319,7 +1356,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
-        fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+        fetch_result = _fetch_updates_resilient(git_cmd, branch)
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             sys.exit(1)

@@ -44,7 +44,10 @@ export function buildRailTasks(
       label: session ? sessionTitle(session) : 'Session task',
       detail: 'Agent task running',
       status: 'running',
-      updatedAt: session?.last_active || Date.now() - index
+      // A running session that has not reached the sidebar cache still belongs
+      // ahead of historical tasks, but its sort key must not change on every
+      // render while the inputs are unchanged.
+      updatedAt: session?.last_active || Number.MAX_SAFE_INTEGER - index
     }
   })
 
@@ -56,7 +59,7 @@ export function buildRailTasks(
           detail: previewRestart.message || previewRestart.url,
           status:
             previewRestart.status === 'error' ? 'error' : previewRestart.status === 'running' ? 'running' : 'success',
-          updatedAt: Date.now()
+          updatedAt: Number.MAX_SAFE_INTEGER
         }
       ]
     : []

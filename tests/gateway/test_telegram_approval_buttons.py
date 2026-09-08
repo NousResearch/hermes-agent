@@ -432,7 +432,7 @@ class TestTelegramApprovalCallback:
         html = raw_call.kwargs["api_kwargs"]["rich_message"]["html"]
         assert "Telegram Workflow" in html
         assert "Reuse a reliable Telegram workflow." in html
-        assert "Your organisation (Nous Research) has enabled Collective Wisdom" in html
+        assert "Your organization (Nous Research) has enabled Collective Wisdom" in html
         assert "Congratulations! Hermes detected a skill" in html
         assert "Why suggested:" in html
         assert "consistently across consecutive business days" in html

@@ -827,7 +827,7 @@ def test_candidate_notice_projection_is_stable_across_surfaces_and_uses_verified
         event["id"]: event["notice_variant"] for event in events
     }
     assert qualification_notice(events[0]).startswith(
-        "Your organisation (Nous Research) has enabled Collective Wisdom"
+        "Your organization (Nous Research) has enabled Collective Wisdom"
     )
     assert qualification_notice(events[1]) == (
         "Hermes detected another skill you created that could be useful to your team!"
@@ -910,7 +910,7 @@ def test_organization_name_mismatch_and_failure_are_negative_cached(
     )
     assert service.organization_display_name(force=True) is None
     assert qualification_notice({"notice_variant": "first"}).startswith(
-        "Your organisation has enabled Collective Wisdom"
+        "Your organization has enabled Collective Wisdom"
     )
 
 

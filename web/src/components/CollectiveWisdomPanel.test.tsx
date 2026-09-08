@@ -213,7 +213,7 @@ describe('CollectiveWisdomPanel', () => {
 
     render(<CollectiveWisdomPanel profile="research" />)
 
-    expect(await screen.findByText(/Your organisation \(Nous Research\) has enabled Collective Wisdom/)).toBeTruthy()
+    expect(await screen.findByText(/Your organization \(Nous Research\) has enabled Collective Wisdom/)).toBeTruthy()
     expect(screen.getByText('First Skill')).toBeTruthy()
     expect(screen.getByText('A friendly description for people.')).toBeTruthy()
     expect(screen.getByText(/Hermes detected another skill that could be useful to your team/)).toBeTruthy()

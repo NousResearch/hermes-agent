@@ -80,7 +80,7 @@ def advice_view(
     view = WisdomView(
         title="Collective Wisdom",
         summary=(
-            "Your organisation has enabled Collective Wisdom, a feature designed to "
+            "Your organization has enabled Collective Wisdom, a feature designed to "
             "automatically detect and share useful skills across all team members."
         )
         if introduction

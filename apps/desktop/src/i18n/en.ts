@@ -1448,7 +1448,7 @@ export const en: Translations = {
       localOnly: 'Available to share from this device.',
       qualifiedLocally: 'Hermes identified this local skill as a possible contribution.',
       qualificationFirst: organizationName =>
-        `${organizationName ? `Your organisation (${organizationName})` : 'Your organisation'} has enabled Collective Wisdom, a feature designed to automatically detect and share useful skills across all team members. Congratulations! Hermes detected a skill you created that could be useful to your team!`,
+        `${organizationName ? `Your organization (${organizationName})` : 'Your organization'} has enabled Collective Wisdom, a feature designed to automatically detect and share useful skills across all team members. Congratulations! Hermes detected a skill you created that could be useful to your team!`,
       qualificationReturning: 'Hermes detected another skill you created that could be useful to your team!',
       savedLocally: 'A private draft is saved on this device.',
       prepare: 'Start contribution',

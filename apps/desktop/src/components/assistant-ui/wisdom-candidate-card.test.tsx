@@ -156,7 +156,7 @@ afterEach(() => {
 describe('WisdomCandidateCard', () => {
   it('opens the entire local package before one final moderation submission', async () => {
     await renderCard()
-    expect(await screen.findByText(/Your organisation \(Nous Research\) has enabled Collective Wisdom/)).toBeTruthy()
+    expect(await screen.findByText(/Your organization \(Nous Research\) has enabled Collective Wisdom/)).toBeTruthy()
     expect(screen.getByText(/Congratulations! Hermes detected a skill/)).toBeTruthy()
     expect(screen.getByText('Safe Skill')).toBeTruthy()
     expect(screen.queryByText(/Nothing is shared without your approval/)).toBeNull()

@@ -21,6 +21,17 @@ _FILLER = r"(?:\w+\s+){0,8}"
 _SECRET_VAR = r"\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
 # Verb prefix for "modify agent config" patterns.
 _MODIFY = r"(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}"
+# Verb prefix for "read/ship out a secret" patterns. Imperative base forms only: attack
+# payloads give orders ("cat ~/.ssh/id_rsa"), prose describes ("key ~/.ssh/id_rsa"). Leading
+# \b stops sp[read] / [cat]alog. Connection verbs (ssh, use, connect, login) are DELIBERATELY
+# absent: recording which key opens which host is ordinary ops documentation, not exfiltration.
+_ACCESS = (r"\b(?:access|read|cat|copy|upload|send|post|transmit|exfiltrat\w*|steal|dump|leak"
+           r"|print|show|display|reveal|fetch|retrieve|grab|extract)\s+")
+# Secret targets, path-shape agnostic: the old ``~/``-or-``$HOME``-only spelling missed
+# /home/<user>/.ssh and /root/.ssh entirely, so it blocked honest prose and let an absolute
+# path walk straight through.
+_SSH_TARGET = r"(?:(?:\S{0,64}/)?\.ssh/|\b(?:id_rsa|id_ed25519|id_ecdsa|id_dsa)\b)"
+_HERMES_ENV_TARGET = r"(?:\S{0,64}/)?\.hermes/\.env\b"
 # (regex, pattern_id, scope); scope ∈ {"all", "context", "strict"}
 _PATTERNS: List[Tuple[str, str, str]] = [
     # ── Classic prompt injection (applies everywhere) ────────────────
@@ -80,8 +91,13 @@ _PATTERNS: List[Tuple[str, str, str]] = [
 
     # ── Persistence / SSH backdoor (strict scope — memory + skills) ──
     (r'authorized_keys', "ssh_backdoor", "strict"),
-    (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access", "strict"),
-    (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env", "strict"),
+    # Verb-anchored, not mention-anchored. A bare path is documentation ("deploy key is
+    # ~/.ssh/id_ed25519_org"); an attack tells the agent to READ or SHIP it. Same shape as
+    # agent_config_mod/hermes_config_mod above, which the memory tests already pin as
+    # must-not-block on bare mention. The persistence half of this attack class is
+    # ssh_backdoor (authorized_keys) and is unaffected by this anchoring.
+    (rf'{_ACCESS}{_FILLER}{_SSH_TARGET}', "ssh_access", "strict"),
+    (rf'{_ACCESS}{_FILLER}{_HERMES_ENV_TARGET}', "hermes_env", "strict"),
     (rf'{_MODIFY}(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)', "agent_config_mod", "strict"),
     (rf'{_MODIFY}\.hermes/(config\.yaml|SOUL\.md)', "hermes_config_mod", "strict"),
 

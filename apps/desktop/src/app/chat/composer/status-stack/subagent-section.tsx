@@ -64,32 +64,35 @@ export function SubagentSection({ sessionId }: SubagentSectionProps) {
   return (
     <div className="composer-no-drag min-w-0" data-slot="composer-subagents">
       <StatusSection
+        collapsedIndicator={
+          <GlyphSpinner
+            ariaLabel={live.some(item => item.status === 'running') ? t.agents.running : t.agents.queued}
+            className="text-(--ui-purple)"
+            spinner="braille"
+          />
+        }
+        defaultCollapsed={false}
         icon={<Codicon className="text-(--ui-purple)" name="agent" size="0.8rem" />}
         label={t.statusStack.subagents(live.length)}
-        preview={
-          <>
-            {live.slice(0, 3).map(row)}
-            {live.length > 3 && (
-              <p className="px-2 text-[0.68rem] text-(--ui-text-tertiary)">{t.agents.moreAgents(live.length - 3)}</p>
-            )}
-          </>
-        }
       >
         <div className="max-h-[25vh] overflow-y-auto overscroll-contain">{live.map(row)}</div>
+        {detail && (
+          <div
+            className="max-h-[25vh] overflow-y-auto overscroll-contain px-3 py-2"
+            data-slot="composer-subagent-detail"
+          >
+            <SubagentControls
+              key={`${sessionId}:${detail.id}`}
+              sessionId={sessionId}
+              setText={text => setDrafts(previous => ({ ...previous, [detail.id]: text }))}
+              subagentId={detail.id}
+              text={drafts[detail.id] ?? ''}
+            />
+            <SubagentRow node={{ ...detail, children: [] }} nowMs={nowMs} />
+            <SubagentTranscript key={`tail:${sessionId}:${detail.id}`} sessionId={sessionId} subagentId={detail.id} />
+          </div>
+        )}
       </StatusSection>
-      {detail && (
-        <div className="max-h-[25vh] overflow-y-auto overscroll-contain px-3 py-2" data-slot="composer-subagent-detail">
-          <SubagentControls
-            key={`${sessionId}:${detail.id}`}
-            sessionId={sessionId}
-            setText={text => setDrafts(previous => ({ ...previous, [detail.id]: text }))}
-            subagentId={detail.id}
-            text={drafts[detail.id] ?? ''}
-          />
-          <SubagentRow node={{ ...detail, children: [] }} nowMs={nowMs} />
-          <SubagentTranscript key={`tail:${sessionId}:${detail.id}`} sessionId={sessionId} subagentId={detail.id} />
-        </div>
-      )}
     </div>
   )
 }

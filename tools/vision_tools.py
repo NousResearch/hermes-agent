@@ -688,16 +688,33 @@ def _debug_call_data(kind: str, source: str, user_prompt: str, model) -> dict:
         "error": None, "success": False, "analysis_length": 0, "model_used": model, f"{kind}_size_bytes": 0}
 
 
-async def _call_vision_llm(call_kwargs: dict, empty_log: str, response=None):
-    """Aux vision LLM analysis text, retrying once on empty content (reasoning-only response).
-    ``response``: an already-made first call (the image path handles size-error retries itself)."""
+def _safe_route_info(route_info: Optional[dict]) -> dict:
+    """Keep only display-safe route identifiers from the auxiliary resolver."""
+    if not isinstance(route_info, dict):
+        return {}
+    return {
+        key: value.strip()
+        for key in ("provider", "model", "fallback_reason")
+        if isinstance((value := route_info.get(key)), str) and value.strip()
+    }
+
+
+async def _call_vision_llm(
+    call_kwargs: dict, empty_log: str, response=None, *, route_info: Optional[dict] = None,
+):
+    """Aux vision analysis text, retrying once on empty content.
+
+    ``route_info`` is populated by the auxiliary resolver with the selected provider/model and,
+    when provider fallback succeeds, a normalized fallback reason. It never carries credentials.
+    """
     _load_auxiliary_client()
     if response is None:
-        response = await async_call_llm(**call_kwargs)
+        response = await async_call_llm(**call_kwargs, route_info=route_info)
     analysis = extract_content_or_reasoning(response)
     if not analysis:
         logger.warning(empty_log)
-        analysis = extract_content_or_reasoning(await async_call_llm(**call_kwargs))
+        analysis = extract_content_or_reasoning(
+            await async_call_llm(**call_kwargs, route_info=route_info))
     return analysis
 
 
@@ -734,6 +751,12 @@ async def _run_analysis(
         result = {"success": True, "analysis": f"[{scale_note}] {analysis}" if scale_note else analysis}
         if scale_note:
             result["scale_note"] = scale_note
+        route_info = _safe_route_info(debug_call_data.get("route_info"))
+        for key in ("provider", "model"):
+            if value := route_info.get(key):
+                result[key] = value
+        if fallback_reason := route_info.get("fallback_reason"):
+            result["fallbackReason"] = fallback_reason
         debug_call_data.update(success=True, analysis_length=analysis_length)
         return finish(result)
     except Exception as e:
@@ -779,9 +802,10 @@ async def vision_analyze_tool(
         messages = _media_messages(prompt, "image_url", image_data_url)
         logger.info("Processing image with vision model...")
         call_kwargs = _aux_call_kwargs(messages, model, 120.0)
+        route_info: dict = {}
         _load_auxiliary_client()
         try:
-            response = await async_call_llm(**call_kwargs)
+            response = await async_call_llm(**call_kwargs, route_info=route_info)
         except Exception as _api_err:
             if not (_is_image_size_error(_api_err) and len(image_data_url) > _RESIZE_TARGET_BYTES):
                 raise
@@ -790,9 +814,12 @@ async def vision_analyze_tool(
                 len(image_data_url) / (1024 * 1024), _RESIZE_TARGET_BYTES / (1024 * 1024))
             image_data_url = await _resize_prepared(prepared, _scale_info)
             messages[0]["content"][1]["image_url"]["url"] = image_data_url
-            response = await async_call_llm(**call_kwargs)
+            response = await async_call_llm(**call_kwargs, route_info=route_info)
         analysis = await _call_vision_llm(
-            call_kwargs, "Vision LLM returned empty content, retrying once", response)
+            call_kwargs, "Vision LLM returned empty content, retrying once", response,
+            route_info=route_info,
+        )
+        debug_call_data["route_info"] = route_info
         return analysis, _build_scale_note(_scale_info or None, prepared.crop_offset or None)
     return await _run_analysis("image", image_url, user_prompt, model, stage)
 
@@ -999,7 +1026,11 @@ async def video_analyze_tool(
         debug_call_data["video_size_bytes"] = video_size_bytes
         messages = _media_messages(prompt, "video_url", video_data_url)
         call_kwargs = _aux_call_kwargs(messages, model, 180.0, min_timeout=180.0)
-        analysis = await _call_vision_llm(call_kwargs, "Empty video response, retrying once")
+        route_info: dict = {}
+        analysis = await _call_vision_llm(
+            call_kwargs, "Empty video response, retrying once", route_info=route_info,
+        )
+        debug_call_data["route_info"] = route_info
         return analysis, None
     return await _run_analysis("video", video_url, user_prompt, model, stage)
 

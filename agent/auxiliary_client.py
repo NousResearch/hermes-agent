@@ -2409,12 +2409,15 @@ def _set_relay_auxiliary_route(provider: str | None, model: str | None, api_mode
 
 
 def _record_route_info(
-    route_info: Optional[Dict[str, str]], provider: Optional[str], model: Optional[str]
+    route_info: Optional[Dict[str, str]], provider: Optional[str], model: Optional[str], *,
+    fallback_reason: Optional[str] = None,
 ) -> None:
-    """Expose the concrete route selected for one auxiliary call."""
+    """Expose the concrete route selected for one auxiliary call without request secrets."""
     if route_info is not None:
         route_info["provider"] = provider or "auto"
         route_info["model"] = model or "default"
+        if fallback_reason:
+            route_info["fallback_reason"] = fallback_reason
 
 
 def _relay_auxiliary_metadata(
@@ -6888,7 +6891,10 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         # Second pass: the candidate credential was stale and quarantined — walk the discovery
         # chain once more (unhealthy entries are skipped).
         for _pass in range(2):
-            _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
+            _record_route_info(
+                route.route_info, _fallback_provider_from_label(fb_label), fb_model,
+                fallback_reason=reason,
+            )
             fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
             if fb_resp is not None:
                 return fb_resp

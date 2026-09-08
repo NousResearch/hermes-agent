@@ -1,6 +1,36 @@
 import assert from 'node:assert/strict'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
+
+vi.mock('node:crypto', () => ({
+  X509Certificate: class {
+    fingerprint256: string
+    validToDate: Date
+    validTo = 'not a parseable display date'
+
+    constructor(pem: string) {
+      if (!pem.startsWith('cert:')) throw new Error('unparseable certificate')
+      const [, fingerprint, expiry] = pem.split(':')
+      this.fingerprint256 = fingerprint
+      this.validToDate = new Date(Number(expiry))
+    }
+  }
+}))
+
+test('excludes expired system roots and deduplicates by fingerprint with defaults first', () => {
+  const future = Date.now() + 86_400_000
+  const past = Date.now() - 86_400_000
+  const bundled = `cert:shared:${future}`
+  const privateRoot = `cert:private:${future}`
+  const tlsApi = fakeTlsApi(
+    [bundled, 'unparseable-default'],
+    [`cert:expired:${past}`, `${bundled}:alternate-pem`, privateRoot, privateRoot, 'unparseable-system']
+  )
+  const result = installWindowsSystemCaTrust(tlsApi, 'win32')
+  assert.deepEqual(tlsApi.installed, [[bundled, 'unparseable-default', privateRoot, 'unparseable-system']])
+  assert.equal(result.systemCertificateCount, 2)
+  assert.equal(result.totalCertificateCount, 4)
+})
 
 import { installWindowsSystemCaTrust, type NodeTlsCaApi } from './windows-system-ca'
 
